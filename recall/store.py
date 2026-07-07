@@ -27,6 +27,15 @@ class PgVectorStore:
         self._table = table
         self._conn = psycopg.connect(dsn, autocommit=True)
         try:
+            # register_vector needs the `vector` type to already exist, so ensure the extension
+            # is installed first — this makes a brand-new database work out of the box (the
+            # README quickstart path). If this role lacks privilege to create it, fall through:
+            # register_vector still succeeds when an admin has pre-installed the extension, and
+            # fails with a clear "vector type not found" if it genuinely isn't there.
+            try:
+                self._conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            except psycopg.Error:
+                pass
             register_vector(self._conn)
         except Exception:
             self._conn.close()

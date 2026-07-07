@@ -1,6 +1,12 @@
+import uuid
+from urllib.parse import urlsplit, urlunsplit
+
+import psycopg
+
+from recall.store import PgVectorStore
 from recall.types import Chunk
 
-from tests.conftest import requires_db
+from tests.conftest import TEST_DSN, requires_db
 
 
 @requires_db
@@ -52,3 +58,26 @@ def test_source_filter(make_store):
 def test_newest_indexed_at_none_when_empty(make_store):
     store = make_store(3)
     assert store.newest_indexed_at() is None
+
+
+@requires_db
+def test_fresh_database_bootstraps_vector_extension():
+    """A brand-new database (no `vector` extension yet) must work out of the box.
+
+    Regression guard: register_vector needs the `vector` type, so PgVectorStore.__init__ must
+    install the extension itself — otherwise the README quickstart crashes on a fresh DB.
+    """
+    parts = urlsplit(TEST_DSN)
+    fresh_name = "recall_fresh_" + uuid.uuid4().hex[:8]
+    admin = urlunsplit(parts._replace(path="/recall"))  # manage from the default db
+    fresh = urlunsplit(parts._replace(path="/" + fresh_name))
+    conn = psycopg.connect(admin, autocommit=True)
+    try:
+        conn.execute(f'CREATE DATABASE "{fresh_name}"')  # NO CREATE EXTENSION — store must self-bootstrap
+        with PgVectorStore(fresh, dim=8) as store:
+            store.ensure_schema()
+            store.upsert([Chunk("a", "f", "hello")], [[0.1] * 8])
+            assert store.count() == 1
+    finally:
+        conn.execute(f'DROP DATABASE IF EXISTS "{fresh_name}" WITH (FORCE)')
+        conn.close()
