@@ -1,111 +1,170 @@
-# recall — Retrieval-Augmented Self-Recall
+<!-- Banner: save your generated 1280x640 image to docs/banner.png and uncomment the next line -->
+<!-- <p align="center"><img src="docs/banner.png" alt="recall" width="900"></p> -->
 
-[![CI](https://github.com/GiulioDER/recall/actions/workflows/ci.yml/badge.svg)](https://github.com/GiulioDER/recall/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+<h1 align="center">recall</h1>
 
-RAG over a long-running agent's own memory, engineered to be **honest about what
-it doesn't know**: it detects corpus gaps (`gap_warning`), flags stale indexes,
-and is meant to be queried *before* the agent re-litigates a settled decision.
+<p align="center">
+  <b>Retrieval-Augmented Self-Recall</b><br>
+  RAG for an AI agent's own memory — that <i>knows when it doesn't know</i>.
+</p>
 
-Built on **PostgreSQL + pgvector** with hybrid dense + full-text retrieval and
-Reciprocal Rank Fusion.
+<p align="center">
+  <a href="https://github.com/GiulioDER/recall/actions/workflows/ci.yml"><img src="https://github.com/GiulioDER/recall/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/PostgreSQL-pgvector-336791" alt="PostgreSQL + pgvector">
+</p>
 
-**→ [Engineering writeup: the design, and the honest evaluation](docs/WRITEUP.md)** — the problem,
-the three honesty guards, and what the ablations (including two negative results) actually showed.
+---
 
-## Quickstart (≈2 minutes, no API key)
+A long-running agent piles up memory — decisions, closed experiments, incident notes. Two failure
+modes follow: it **re-litigates settled decisions**, and it **hallucinates over gaps** where the
+memory simply has no answer.
+
+**recall** is a RAG engine for that memory, built to be *honest about what it doesn't know*: it
+retrieves **before** the agent acts, and flags when the memory probably has no answer instead of
+returning confident noise.
+
+## ✨ What it does
+
+- 🕳️ **Gap-aware** — when the best match is weak, it returns a `gap_warning` (*"probable corpus gap — treat as noise"*) instead of hallucinating an answer.
+- ⏱️ **Freshness-aware** — every result reports how stale the index is, so a rotting memory warns instead of silently serving old facts.
+- 🔁 **Anti-re-litigation** — meant to be queried *before* re-proposing an idea, so closed decisions and falsified hypotheses resurface first.
+- 🧱 **Production-shaped** — PostgreSQL + pgvector, hybrid dense + full-text retrieval fused with RRF, cross-encoder reranking, and an MCP server. Integration-tested on a real database.
+
+## 🧭 How it works
+
+```mermaid
+flowchart LR
+    Q([query]) --> E[embed]
+    E --> D[dense · pgvector cosine]
+    Q --> S[sparse · Postgres full-text]
+    D --> F[Reciprocal Rank Fusion]
+    S --> F
+    F --> R[cross-encoder rerank]
+    R --> G{honesty guards}
+    G --> O([hits + gap_warning + freshness])
+```
+
+Dense semantic search and sparse keyword search each retrieve candidates; **Reciprocal Rank Fusion**
+merges them, a cross-encoder reranks, and the **honesty guards** annotate the result before it ever
+reaches the agent.
+
+## ⚡ See it work
+
+```text
+$ python -m recall.cli demo
+indexed 3 chunks from 3 files
+
+[ok]  query='what did we decide about caching?'
+  0.736  corpus/decisions.md   '# Decisions  ## 2026-05-02 — Caching layer We decided to add a read-th…'
+
+[ok]  query='do we inject retrieved context into the prompt?'
+  0.809  corpus/hypotheses.md  '# Hypotheses  ## H-014 — Prompt-injected context improves answers (CLO…'
+
+[GAP] query='how do we handle penguins on mars?'
+  0.468  corpus/decisions.md   '# Decisions  ## 2026-05-02 — Caching layer We decided to add a read-th…'
+```
+
+The two answerable queries return strong hits (**0.74**, **0.81**). The deliberately-unanswerable one's
+*best* match is only **0.468 — below the 0.50 gap threshold** — so it's flagged **`[GAP]`** instead of
+handing back that irrelevant chunk as if it were an answer. That single flag is the whole thesis.
+
+## 📊 Results that matter
+
+A reproducible ablation harness scores every `embedder × fusion` config on a labelled query set —
+precision@k, recall@k, MRR, nDCG, and a guard-specific **false-confident rate**.
+
+<p align="center">
+  <img src="results/guard_effect.png" width="48%" alt="Guard effect: false-confident rate on unanswerable queries">
+  &nbsp;
+  <img src="results/ndcg_by_config.png" width="48%" alt="Retrieval quality (nDCG@10) by config">
+</p>
+
+Two **honest** findings — including what *didn't* work:
+
+- 🎯 **The gap threshold doesn't transfer across embedders.** The default `0.50` gives a **0.80**
+  false-confident rate on FastEmbed (its cosines cluster high); per-embedder calibration to `~0.70`
+  makes the guard perfect. → *Calibrate against a small labelled set; don't hard-code.*
+- 🔁 **Reranking rescues a weak embedder.** Hybrid + cross-encoder lifts MRR **0.68 → 1.00** on the
+  offline embedder — but a strong embedder already saturates this corpus, so the gain is real yet
+  situational.
+
+> Full methodology, per-embedder tables, and a *fine-tuning null result* (base model already
+> saturated) → **[results/FINDINGS.md](results/FINDINGS.md)** and the **[engineering writeup](docs/WRITEUP.md)**.
+
+✅ **46 integration tests run against a real pgvector container** (no mock DB), verified in CI, with a
+dependency audit.
+
+## 🚀 Quickstart (≈2 minutes, no API key)
 
 ```bash
-git clone <this-repo> recall && cd recall
+git clone https://github.com/GiulioDER/recall && cd recall
 docker compose up -d --wait          # Postgres + pgvector (waits until healthy)
 python -m venv .venv && . .venv/bin/activate    # Windows: .\.venv\Scripts\activate
 pip install -e ".[fastembed,dev]"
 python -m recall.cli demo
 ```
 
-You'll see the caching and prompt-injection queries return relevant hits, and a
-deliberately-unanswerable query flagged `[GAP]` instead of confidently returning
-noise.
+Default embedder is local **FastEmbed** (no key); `--embedder hashing` is a fully-offline fallback.
 
-## The three honesty guards
-
-- **`gap_warning`** — when the best candidate similarity is below threshold
-  (~0.50 cosine), the result says "probable corpus gap — treat as noise".
-- **freshness / staleness** — every result reports how old the newest indexed
-  content is; a stale index warns instead of silently serving rot.
-- **anti-re-litigation** — the intended usage: an agent calls `search()` before
-  re-proposing an idea, so closed decisions resurface instead of being redone.
-
-## Usage
+## 🔧 Use it
 
 ```bash
 python -m recall.cli index ./path/to/markdown   # index your own docs
-python -m recall.cli search "your question"
+python -m recall.cli search "your question"     # -> hits + gap/freshness flags
 ```
 
-Set `RECALL_DSN` to point at another Postgres. Default embedder is local
-FastEmbed (no key); `--embedder hashing` is a fully-offline fallback.
+Point `RECALL_DSN` at any Postgres to use your own database.
 
-## MCP self-recall server
+## 🔌 MCP self-recall server
 
-Expose memory to an MCP client as tools — `recall_search`, `recall_index`, `recall_stats`:
+Expose memory to an MCP client (e.g. Claude Desktop) as three tools — `recall_search`,
+`recall_index`, `recall_stats`:
 
-    pip install -e ".[fastembed,mcp]"
-    python -m recall_mcp.server        # stdio server
+```bash
+pip install -e ".[fastembed,mcp]"
+python -m recall_mcp.server        # stdio server
+```
 
-Example client config (e.g. Claude Desktop):
+The pattern: an agent calls `recall_search` **before** proposing an idea; if a closed decision or
+falsified hypothesis surfaces (and it isn't a `gap_warning`), it backs off instead of re-litigating.
+See [`examples/self_recall_agent.py`](examples/self_recall_agent.py).
 
-    {
-      "mcpServers": {
-        "recall": {
-          "command": "python",
-          "args": ["-m", "recall_mcp.server"],
-          "env": { "RECALL_DSN": "postgresql://recall:recall@localhost:5432/recall" }
-        }
-      }
+<details>
+<summary>Example client config</summary>
+
+```json
+{
+  "mcpServers": {
+    "recall": {
+      "command": "python",
+      "args": ["-m", "recall_mcp.server"],
+      "env": { "RECALL_DSN": "postgresql://recall:recall@localhost:5432/recall" }
     }
+  }
+}
+```
 
-Additional server env: `RECALL_EMBEDDER=hashing` selects the fully-offline embedder (default
-`fastembed`); `RECALL_INDEX_ROOT` bounds where `recall_index` may read (default: the server's
-working directory).
+`RECALL_EMBEDDER=hashing` selects the offline embedder (default `fastembed`); `RECALL_INDEX_ROOT`
+bounds where `recall_index` may read (default: the server's working directory).
+</details>
 
-The self-recall pattern: an agent calls `recall_search` before proposing an idea; if a closed
-decision or falsified hypothesis surfaces (and it isn't a `gap_warning`), it backs off instead
-of re-litigating. See `examples/self_recall_agent.py`.
+## 🧪 Reproduce the evaluation
 
-## Evaluation
+```bash
+pip install -e ".[fastembed,rerank,eval]"
+make eval        # -> results/RESULTS.md + the charts above
+```
 
-A reproducible ablation harness lives in `recall/eval`. With Docker up and the eval extras installed:
+The Voyage cloud row appears when `VOYAGE_API_KEY` is set (shell env, or a gitignored `.env`).
 
-    pip install -e ".[fastembed,rerank,eval]"
-    make eval        # -> results/RESULTS.md + charts
-
-It scores every `embedder × fusion (dense / hybrid / +rerank)` config against a labeled query set
-on a synthetic corpus, using precision@k, recall@k, MRR, nDCG, and a guard-specific
-**false-confident rate**. Two honest findings (full writeup in
-[results/FINDINGS.md](results/FINDINGS.md)):
-
-- **Hybrid + cross-encoder rerank** lifts MRR from 0.68 to 1.00 on a weak embedder; a strong
-  embedder already saturates this corpus (so the gain is real but situational).
-- **The gap threshold does not transfer across embedders** — the default 0.50 gives a 0.80
-  false-confident rate on FastEmbed (whose cosines cluster high), but per-embedder calibration to
-  ~0.70 makes the guard perfect. Calibrate against a small labeled set; don't hard-code.
-
-The Voyage cloud row appears when `VOYAGE_API_KEY` is set — in your shell, or in a gitignored
-`recall/.env` (a tiny built-in loader picks it up).
-
-## Tests
+## 🧱 Tests
 
 ```bash
 docker compose up -d --wait
-pytest -v      # integration tests hit the real pgvector container (no mock DB)
+pytest -v      # integration tests hit the real pgvector container — no mock DB
 ```
-
-## Status
-
-M1 (engine + demo), M2 (self-recall MCP server), M3 (eval harness, ablations, cloud + local embedder
-comparison, gap-threshold calibration, and a domain fine-tuning study), and M4 (writeup, LICENSE,
-LF normalization, dependency audit) complete.
 
 ## License
 
