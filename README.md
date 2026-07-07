@@ -96,6 +96,16 @@ Two **honest** findings — including what *didn't* work:
 ✅ **46 integration tests run against a real pgvector container** (no mock DB), verified in CI, with a
 dependency audit.
 
+## 🏭 Where this comes from
+
+recall isn't a toy — it's extracted from the memory system I run for a **production trading-research
+agent** whose own memory outgrew its context window: **≈660 typed markdown memos (~5 MB), re-indexed
+daily.** Every guard here is a scar from a real failure — re-litigating an already-falsified
+experiment, trusting weak hits on a question the memory couldn't answer, serving a stale fact.
+
+**→ [Read the redacted case study](docs/CASE_STUDY.md)** — the real structure, the guards in action,
+and exactly what's public vs private.
+
 ## 🚀 Quickstart (≈2 minutes, no API key)
 
 ```bash
