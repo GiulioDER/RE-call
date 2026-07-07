@@ -73,8 +73,12 @@ a win would have meant evaluating on the *training* queries (memorization) or cr
 model on purpose.
 
 To demonstrate a *real* domain-adaptation lift you need a corpus the base model actually struggles
-on — many mutually-confusable documents (a dozen near-identical policy variants), or genuine domain
-jargon the base embedder never saw. The pipeline (held-out split, pre/post measurement, proven loss)
-is built and runs end-to-end; on this saturated corpus it correctly reports no gain. This mirrors a
-lesson from the production know-how the recipe came from: **embeddings only encode what they encode —
-measure honestly, don't force a result.**
+on. We built one — an **opaque-codename corpus** where the concept↔name mapping exists nowhere in
+pretraining — and there the same pipeline **nearly doubles held-out MRR (0.31 → 0.55, Δ +0.24)**.
+Same method, opposite outcome: **fine-tuning's payoff equals the vocabulary gap between the base
+model and your corpus** — zero on this rich corpus, large on the jargon one.
+
+**→ Full controlled study (both corpora, method, decision rule): [docs/RAG_TRAINING_STUDY.md](../docs/RAG_TRAINING_STUDY.md).**
+
+The lesson from the production know-how the recipe came from: **embeddings only encode what they
+encode — measure honestly, don't force a result.**

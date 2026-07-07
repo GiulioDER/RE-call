@@ -11,6 +11,16 @@ Output: base vs fine-tuned test MRR / nDCG@10 and the delta. The fine-tuned mode
 `finetune/model/` (gitignored — we commit the numbers, not the weights).
 
 **Result on this corpus: zero lift.** The base model already saturates the (highly separable) corpus,
-so there is no headroom — the honest, expected outcome. See `results/FINDINGS.md` §3 for the
-interpretation and what a corpus that *would* show a lift looks like. The recipe is adapted from a
-production `train_finetune_bge.py` (sentence-transformers + OnlineContrastiveLoss + pre/post eval).
+so there is no headroom — the honest, expected outcome. The recipe is adapted from a proven production
+fine-tuning trainer (sentence-transformers + OnlineContrastiveLoss + pre/post eval).
+
+For the **full study — including a second corpus where fine-tuning *does* lift retrieval** — see
+[`docs/RAG_TRAINING_STUDY.md`](../docs/RAG_TRAINING_STUDY.md).
+
+```bash
+# the null (easy corpus)      -> Delta = +0.00
+python finetune/train.py
+
+# the positive (confusable corpus)
+python finetune/train.py --corpus finetune/confusable_corpus --queries finetune/confusable_queries.json
+```

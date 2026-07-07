@@ -1,0 +1,33 @@
+{
+  "train": [
+    {"query": "which project is the one-tap reorder flow for returning buyers", "relevant_ids": ["aster.md:0"]},
+    {"query": "what lets a repeat shopper repurchase in a single tap", "relevant_ids": ["aster.md:0"]},
+    {"query": "which project is guest checkout with no sign-in", "relevant_ids": ["basil.md:0"]},
+    {"query": "what lets someone pay without creating an account", "relevant_ids": ["basil.md:0"]},
+    {"query": "which project splits a charge across two cards", "relevant_ids": ["clove.md:0"]},
+    {"query": "what lets a buyer pay with two cards at once", "relevant_ids": ["clove.md:0"]},
+    {"query": "which project is buy-now-pay-later at checkout", "relevant_ids": ["dill.md:0"]},
+    {"query": "what offers installment payments to shoppers", "relevant_ids": ["dill.md:0"]},
+    {"query": "which project saves a card for one-click next time", "relevant_ids": ["elm.md:0"]},
+    {"query": "what stores a card so checkout is one click later", "relevant_ids": ["elm.md:0"]},
+    {"query": "which project applies store credit before charging a card", "relevant_ids": ["fern.md:0"]},
+    {"query": "what spends account credit ahead of the card", "relevant_ids": ["fern.md:0"]},
+    {"query": "which project lets you gift a cart for someone else to pay", "relevant_ids": ["gorse.md:0"]},
+    {"query": "what sends a basket to another account to settle", "relevant_ids": ["gorse.md:0"]},
+    {"query": "which project retries a declined card on a backup processor", "relevant_ids": ["holly.md:0"]},
+    {"query": "what reattempts a failed charge through a second gateway", "relevant_ids": ["holly.md:0"]},
+    {"query": "which project pre-authorizes and captures on shipment", "relevant_ids": ["iris.md:0"]},
+    {"query": "what holds funds then charges when the order ships", "relevant_ids": ["iris.md:0"]}
+  ],
+  "test": [
+    {"query": "the express single-tap re-buy path for existing customers", "relevant_ids": ["aster.md:0"]},
+    {"query": "the no-login guest purchase flow", "relevant_ids": ["basil.md:0"]},
+    {"query": "paying part on one card and part on another", "relevant_ids": ["clove.md:0"]},
+    {"query": "spreading a purchase into scheduled installments", "relevant_ids": ["dill.md:0"]},
+    {"query": "remembering a payment card for faster future checkout", "relevant_ids": ["elm.md:0"]},
+    {"query": "drawing down store balance before the card is charged", "relevant_ids": ["fern.md:0"]},
+    {"query": "handing a cart to a friend so they can pay for it", "relevant_ids": ["gorse.md:0"]},
+    {"query": "falling back to another processor when a card is declined", "relevant_ids": ["holly.md:0"]},
+    {"query": "authorizing at order time and capturing at dispatch", "relevant_ids": ["iris.md:0"]}
+  ]
+}

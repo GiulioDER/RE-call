@@ -20,6 +20,8 @@
   &nbsp;·&nbsp;
   <a href="docs/WRITEUP.md">Engineering writeup</a>
   &nbsp;·&nbsp;
+  <a href="docs/RAG_TRAINING_STUDY.md">Fine-tuning study</a>
+  &nbsp;·&nbsp;
   <a href="#-quickstart-2-minutes-no-api-key">Quickstart</a>
 </p>
 
@@ -98,8 +100,9 @@ Two **honest** findings — including what *didn't* work:
   offline embedder — but a strong embedder already saturates this corpus, so the gain is real yet
   situational.
 
-> Full methodology, per-embedder tables, and a *fine-tuning null result* (base model already
-> saturated) → **[results/FINDINGS.md](results/FINDINGS.md)** and the **[engineering writeup](docs/WRITEUP.md)**.
+> Full methodology + per-embedder tables → **[results/FINDINGS.md](results/FINDINGS.md)**. When
+> embedding **fine-tuning helps vs. doesn't** — a controlled null (Δ+0.00 on a rich corpus) *and* a
+> **+0.24-MRR** positive on an opaque-jargon corpus → **[docs/RAG_TRAINING_STUDY.md](docs/RAG_TRAINING_STUDY.md)**.
 
 ✅ **46 integration tests run against a real pgvector container** (no mock DB), verified in CI, with a
 dependency audit.

@@ -26,10 +26,10 @@ HARD = ROOT / "hard_queries.json"
 OUT = ROOT / "model"
 
 
-def load_chunks() -> tuple[list[str], list[str]]:
+def load_chunks(corpus_dir: Path) -> tuple[list[str], list[str]]:
     ids: list[str] = []
     texts: list[str] = []
-    for f in sorted(CORPUS.glob("*.md")):
+    for f in sorted(corpus_dir.glob("*.md")):
         for i, c in enumerate(chunk_text(f.read_text(encoding="utf-8"))):
             ids.append(f"{f.name}:{i}")
             texts.append(c)
@@ -58,12 +58,15 @@ def main() -> None:
     ap.add_argument("--margin", type=float, default=0.5)
     ap.add_argument("--negatives", type=int, default=3, help="wrong chunks per query")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--corpus", default=str(CORPUS), help="folder of .md docs to index")
+    ap.add_argument("--queries", default=str(HARD), help="JSON with train/test query splits")
+    ap.add_argument("--out", default=str(OUT), help="where to save the fine-tuned model")
     args = ap.parse_args()
     random.seed(args.seed)
 
-    ids, texts = load_chunks()
+    ids, texts = load_chunks(Path(args.corpus))
     text_by_id = dict(zip(ids, texts))
-    data = json.loads(HARD.read_text(encoding="utf-8"))
+    data = json.loads(Path(args.queries).read_text(encoding="utf-8"))
     train_q, test_q = data["train"], data["test"]
 
     from datasets import Dataset
@@ -106,13 +109,14 @@ def main() -> None:
     )
     trainer = SentenceTransformerTrainer(model=model, args=targs, train_dataset=train_ds, loss=loss)
     trainer.train()
-    OUT.mkdir(parents=True, exist_ok=True)
-    model.save(str(OUT))
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    model.save(str(out))
 
     ft_mrr, ft_ndcg = evaluate(model, ids, texts, test_q)
     print(f"FINE-TUNED test MRR={ft_mrr:.3f}  nDCG@10={ft_ndcg:.3f}")
     print(f"delta MRR={ft_mrr - base_mrr:+.3f}   delta nDCG@10={ft_ndcg - base_ndcg:+.3f}")
-    print(f"saved fine-tuned model to {OUT}")
+    print(f"saved fine-tuned model to {out}")
 
 
 if __name__ == "__main__":
