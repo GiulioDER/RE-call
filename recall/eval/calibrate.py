@@ -44,6 +44,11 @@ def best_threshold(answerable: list[float], unanswerable: list[float]) -> float:
 def calibrate(
     dsn: str, embedder: Embedder, corpus_dir: Path | None = None, queries_path: Path | None = None
 ) -> Calibration:
+    """Measure the best dense cosine per query (answerable vs unanswerable) and suggest a gap
+    threshold that separates them. `Calibration.answerable_max_cos`/`unanswerable_max_cos` are the
+    raw per-query top-cosine samples; `fcr_at_050`/`fcr_at_suggested` are the false-confident rates
+    at the default 0.50 vs the suggested threshold.
+    """
     corpus_dir = corpus_dir or (EVAL_DIR / "corpus")
     queries = json.loads(
         Path(queries_path or (EVAL_DIR / "queries.json")).read_text(encoding="utf-8")
@@ -60,8 +65,12 @@ def calibrate(
             top = hits[0].score if hits else 0.0
             (ans if q["answerable"] else unans).append(top)
     finally:
-        store._conn.execute(f"DROP TABLE IF EXISTS {table}")
-        store.close()
+        try:
+            store._conn.execute(f"DROP TABLE IF EXISTS {table}")
+        except Exception:
+            pass  # best-effort drop of the throwaway uuid table
+        finally:
+            store.close()
 
     thr = best_threshold(ans, unans)
     # gap_warning fires when the best cosine is below the threshold; on an unanswerable query a

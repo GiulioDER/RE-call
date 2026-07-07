@@ -69,8 +69,9 @@ of re-litigating. See `examples/self_recall_agent.py`.
 
 ## Evaluation
 
-A reproducible ablation harness lives in `recall/eval`. With Docker up:
+A reproducible ablation harness lives in `recall/eval`. With Docker up and the eval extras installed:
 
+    pip install -e ".[fastembed,rerank,eval]"
     make eval        # -> results/RESULTS.md + charts
 
 It scores every `embedder × fusion (dense / hybrid / +rerank)` config against a labeled query set
@@ -84,7 +85,8 @@ on a synthetic corpus, using precision@k, recall@k, MRR, nDCG, and a guard-speci
   false-confident rate on FastEmbed (whose cosines cluster high), but per-embedder calibration to
   ~0.70 makes the guard perfect. Calibrate against a small labeled set; don't hard-code.
 
-Voyage/OpenAI rows appear automatically when `VOYAGE_API_KEY` / `OPENAI_API_KEY` are set.
+The Voyage cloud row appears when `VOYAGE_API_KEY` is set — in your shell, or in a gitignored
+`recall/.env` (a tiny built-in loader picks it up).
 
 ## Tests
 

@@ -1,6 +1,6 @@
 # recall — retrieval evaluation
 
-Reproduce the local (key-free) rows with `make eval` — needs Docker + the local embedder only. Cloud rows appear when `VOYAGE_API_KEY`/`OPENAI_API_KEY` are set.
+Reproduce the local (key-free) rows with `make eval` — needs Docker + the local embedder only. The Voyage cloud row appears when `VOYAGE_API_KEY` is set.
 
 | embedder | fusion | P@5 | R@5 | MRR | nDCG@10 | FCR no-guard | FCR guard |
 |---|---|---|---|---|---|---|---|

@@ -19,7 +19,7 @@ mcp = ["mcp>=1.7"]
 voyage = ["voyageai>=0.2"]
 rerank = ["sentence-transformers>=3.0"]
 eval = ["matplotlib>=3.7"]
-finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1"]
+finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
 dev = ["pytest>=8", "ruff>=0.5", "mcp>=1.7"]
 
 [project.scripts]

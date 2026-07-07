@@ -79,31 +79,6 @@ class FastEmbedEmbedder:
         return [[float(x) for x in vec] for vec in self._model.embed(texts)]
 
 
-class SentenceTransformerEmbedder:
-    """Local sentence-transformers embeddings (base or fine-tuned). Requires recall[rerank]."""
-
-    def __init__(self, model_path: str = "sentence-transformers/all-MiniLM-L6-v2") -> None:
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as exc:  # pragma: no cover - exercised only without the extra
-            raise ImportError("SentenceTransformerEmbedder requires: pip install recall[rerank]") from exc
-        self._model = SentenceTransformer(model_path)
-        self._name = f"st:{model_path.rsplit('/', 1)[-1]}"
-        self._dim = self._model.get_sentence_embedding_dimension()
-
-    @property
-    def dim(self) -> int:
-        return self._dim
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        vecs = self._model.encode(texts, normalize_embeddings=False)
-        return [[float(x) for x in v] for v in vecs]
-
-
 class VoyageEmbedder:
     """Voyage cloud embeddings. Requires `pip install recall[voyage]` and VOYAGE_API_KEY."""
 

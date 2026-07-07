@@ -64,7 +64,10 @@ def _score_config(
             unans_gaps.append(res.gap_warning)
     return AblationResult(
         embedder=embedder.name, fusion=fusion,
-        p_at_5=mean(ps), r_at_5=mean(rs), mrr=mean(ms), ndcg_at_10=mean(ns),
+        p_at_5=mean(ps) if ps else 0.0,
+        r_at_5=mean(rs) if rs else 0.0,
+        mrr=mean(ms) if ms else 0.0,
+        ndcg_at_10=mean(ns) if ns else 0.0,
         fcr_no_guard=1.0, fcr_with_guard=false_confident_rate(unans_gaps),
     )
 
@@ -96,8 +99,12 @@ def run_ablations(
             for fusion in fusions:
                 results.append(_score_config(store, emb, queries, fusion, reranker))
         finally:
-            store._conn.execute(f"DROP TABLE IF EXISTS {table}")
-            store.close()
+            try:
+                store._conn.execute(f"DROP TABLE IF EXISTS {table}")
+            except Exception:
+                pass  # best-effort drop of the throwaway uuid table
+            finally:
+                store.close()
     return results
 
 
