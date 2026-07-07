@@ -36,6 +36,7 @@ class HybridRetriever:
       gap_threshold: dense cosine below which the corpus is treated as lacking an answer.
       max_age:       index age beyond which results are flagged stale.
       candidate_k:   how many candidates each of dense/sparse contributes before fusion.
+      use_sparse:    include the sparse full-text leg in fusion; False = dense-only (ablations).
     """
 
     def __init__(
@@ -47,6 +48,7 @@ class HybridRetriever:
         gap_threshold: float = DEFAULT_GAP_THRESHOLD,
         max_age: timedelta = timedelta(days=2),
         candidate_k: int = 20,
+        use_sparse: bool = True,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -54,6 +56,7 @@ class HybridRetriever:
         self._gap_threshold = gap_threshold
         self._max_age = max_age
         self._candidate_k = candidate_k
+        self._use_sparse = use_sparse
 
     def search(self, query: str, k: int = 5, source: str | None = None) -> RetrievalResult:
         """Retrieve the top-`k` chunks for `query` (optionally filtered to one `source`).
@@ -65,7 +68,11 @@ class HybridRetriever:
         """
         qvec = self._embedder.embed([query])[0]
         dense = self._store.query_dense(qvec, k=self._candidate_k, source=source)
-        sparse = self._store.query_sparse(query, k=self._candidate_k, source=source)
+        sparse = (
+            self._store.query_sparse(query, k=self._candidate_k, source=source)
+            if self._use_sparse
+            else []
+        )
 
         fused = _rrf([[h.chunk.id for h in dense], [h.chunk.id for h in sparse]])
         chunk_by_id = {h.chunk.id: h.chunk for h in dense}
