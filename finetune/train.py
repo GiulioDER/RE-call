@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Fine-tune a small embedding model for retrieval on the recall eval corpus, and measure the lift.
+
+Recipe adapted from a proven production trainer: sentence-transformers + OnlineContrastiveLoss
+over (query, chunk) pairs. Positives = query <-> its gold chunk; negatives = query <-> wrong chunks.
+Trains on finetune/hard_queries.json["train"] and evaluates retrieval on the HELD-OUT ["test"] split
+(differently-phrased queries), so the measured lift is generalization, not memorization.
+
+CPU is fine for this tiny model/dataset.
+    python finetune/train.py --epochs 8
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import random
+from pathlib import Path
+from statistics import mean
+
+from recall.eval.metrics import mrr, ndcg_at_k
+from recall.index import chunk_text
+
+ROOT = Path(__file__).resolve().parent
+CORPUS = ROOT.parent / "recall" / "eval" / "corpus"
+HARD = ROOT / "hard_queries.json"
+OUT = ROOT / "model"
+
+
+def load_chunks() -> tuple[list[str], list[str]]:
+    ids: list[str] = []
+    texts: list[str] = []
+    for f in sorted(CORPUS.glob("*.md")):
+        for i, c in enumerate(chunk_text(f.read_text(encoding="utf-8"))):
+            ids.append(f"{f.name}:{i}")
+            texts.append(c)
+    return ids, texts
+
+
+def evaluate(model, ids: list[str], texts: list[str], queries: list[dict]) -> tuple[float, float]:
+    import numpy as np
+
+    chunk_emb = model.encode(texts, normalize_embeddings=True)
+    q_emb = model.encode([q["query"] for q in queries], normalize_embeddings=True)
+    mrrs, ndcgs = [], []
+    for i, q in enumerate(queries):
+        sims = chunk_emb @ q_emb[i]
+        ranked = [ids[j] for j in np.argsort(-sims)]
+        mrrs.append(mrr(ranked, q["relevant_ids"]))
+        ndcgs.append(ndcg_at_k(ranked, q["relevant_ids"], 10))
+    return mean(mrrs), mean(ndcgs)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--base", default="sentence-transformers/all-MiniLM-L6-v2")
+    ap.add_argument("--epochs", type=int, default=8)
+    ap.add_argument("--batch-size", type=int, default=16)
+    ap.add_argument("--margin", type=float, default=0.5)
+    ap.add_argument("--negatives", type=int, default=3, help="wrong chunks per query")
+    ap.add_argument("--seed", type=int, default=42)
+    args = ap.parse_args()
+    random.seed(args.seed)
+
+    ids, texts = load_chunks()
+    text_by_id = dict(zip(ids, texts))
+    data = json.loads(HARD.read_text(encoding="utf-8"))
+    train_q, test_q = data["train"], data["test"]
+
+    from datasets import Dataset
+    from sentence_transformers import (
+        SentenceTransformer,
+        SentenceTransformerTrainer,
+        SentenceTransformerTrainingArguments,
+        losses,
+    )
+
+    model = SentenceTransformer(args.base)
+
+    base_mrr, base_ndcg = evaluate(model, ids, texts, test_q)
+    print(f"BASE       test MRR={base_mrr:.3f}  nDCG@10={base_ndcg:.3f}")
+
+    s1, s2, labels = [], [], []
+    for q in train_q:
+        gold = q["relevant_ids"][0]
+        s1.append(q["query"])
+        s2.append(text_by_id[gold])
+        labels.append(1)
+        wrong = [cid for cid in ids if cid != gold]
+        for neg in random.sample(wrong, min(args.negatives, len(wrong))):
+            s1.append(q["query"])
+            s2.append(text_by_id[neg])
+            labels.append(0)
+    train_ds = Dataset.from_dict({"sentence1": s1, "sentence2": s2, "label": labels})
+    print(f"built {len(labels)} pairs from {len(train_q)} train queries")
+
+    loss = losses.OnlineContrastiveLoss(model=model, margin=args.margin)
+    targs = SentenceTransformerTrainingArguments(
+        output_dir=str(ROOT / "model_ckpt"),
+        num_train_epochs=args.epochs,
+        per_device_train_batch_size=args.batch_size,
+        warmup_steps=10,
+        learning_rate=2e-5,
+        report_to=[],
+        logging_steps=10_000,
+        save_strategy="no",
+    )
+    trainer = SentenceTransformerTrainer(model=model, args=targs, train_dataset=train_ds, loss=loss)
+    trainer.train()
+    OUT.mkdir(parents=True, exist_ok=True)
+    model.save(str(OUT))
+
+    ft_mrr, ft_ndcg = evaluate(model, ids, texts, test_q)
+    print(f"FINE-TUNED test MRR={ft_mrr:.3f}  nDCG@10={ft_ndcg:.3f}")
+    print(f"delta MRR={ft_mrr - base_mrr:+.3f}   delta nDCG@10={ft_ndcg - base_ndcg:+.3f}")
+    print(f"saved fine-tuned model to {OUT}")
+
+
+if __name__ == "__main__":
+    main()

@@ -54,3 +54,28 @@ Takeaway for anyone building gap/abstention into a RAG system: **calibrate the t
 embedding model against a small labeled answerable/unanswerable set; do not ship a hard-coded
 constant, and do not assume a strong embedder's cosines are centered where a weak one's are.**
 `recall.eval.calibrate.calibrate()` reproduces these numbers.
+
+## 3. Domain fine-tuning: an honest null result on this corpus
+
+`finetune/train.py` fine-tunes `all-MiniLM-L6-v2` with OnlineContrastiveLoss on `(query, gold-chunk)`
+positive / `(query, wrong-chunk)` negative pairs (recipe adapted from a proven production trainer),
+then measures retrieval on a **held-out** set of differently-phrased queries:
+
+| model | test MRR | test nDCG@10 |
+|---|---|---|
+| all-MiniLM-L6-v2 (base) | 1.00 | 1.00 |
+| + fine-tuned | 1.00 | 1.00 |
+| **Δ** | **+0.00** | **+0.00** |
+
+**Zero lift — and that is the honest, expected outcome here.** The 14-document corpus is highly
+separable; a modern small embedder already retrieves the correct chunk for every held-out query,
+even when it is paraphrased with different vocabulary. There is no headroom to improve. Manufacturing
+a win would have meant evaluating on the *training* queries (memorization) or crippling the base
+model on purpose.
+
+To demonstrate a *real* domain-adaptation lift you need a corpus the base model actually struggles
+on — many mutually-confusable documents (a dozen near-identical policy variants), or genuine domain
+jargon the base embedder never saw. The pipeline (held-out split, pre/post measurement, proven loss)
+is built and runs end-to-end; on this saturated corpus it correctly reports no gain. This mirrors a
+lesson from the production know-how the recipe came from: **embeddings only encode what they encode —
+measure honestly, don't force a result.**

@@ -95,5 +95,6 @@ pytest -v      # integration tests hit the real pgvector container (no mock DB)
 
 ## Status
 
-M1 (engine + demo), M2 (self-recall MCP server), and M3 (eval harness + ablations + honest
-findings) complete. The domain fine-tuning study and cloud-embedder rows are in progress.
+M1 (engine + demo), M2 (self-recall MCP server), and M3 (eval harness, ablations, cloud + local
+embedder comparison, gap-threshold calibration, and a domain fine-tuning study) complete. Next: M4
+— publish (LICENSE, `.gitattributes`, GitHub).

@@ -1,0 +1,30 @@
+{
+  "train": [
+    {"query": "what made pricing reads so much faster after the march change", "relevant_ids": ["cache_decision.md:0"]},
+    {"query": "how many times do we reattempt a failed downstream call", "relevant_ids": ["retry_policy.md:0"]},
+    {"query": "what backs our orders and inventory, and why not a document store", "relevant_ids": ["datastore_choice.md:0"]},
+    {"query": "was stuffing context into the prompt a good idea", "relevant_ids": ["h014_prompt_injection.md:0"]},
+    {"query": "why did buyers see errors during the june rollout", "relevant_ids": ["incident_checkout_500.md:0"]},
+    {"query": "why did the new recs box not show up for a while", "relevant_ids": ["incident_stale_flag.md:0"]},
+    {"query": "how do we know the memory is out of date", "relevant_ids": ["indexer_freshness.md:0"]},
+    {"query": "what triggers spinning up an extra server", "relevant_ids": ["autoscaling.md:0"]},
+    {"query": "how do we make sure we can actually restore data", "relevant_ids": ["backups.md:0"]},
+    {"query": "where do credentials come from at runtime", "relevant_ids": ["secrets_handling.md:0"]},
+    {"query": "how do we merge two ranked result lists", "relevant_ids": ["rrf_definition.md:0"]},
+    {"query": "how do we avoid re-arguing settled questions", "relevant_ids": ["anti_relitigation.md:0"]}
+  ],
+  "test": [
+    {"query": "which layer dropped read latency to about twenty milliseconds", "relevant_ids": ["cache_decision.md:0"]},
+    {"query": "do we give up on a 404 or keep hammering it", "relevant_ids": ["retry_policy.md:0"]},
+    {"query": "why is the primary store relational rather than schemaless", "relevant_ids": ["datastore_choice.md:0"]},
+    {"query": "did the falsified hypothesis about prompt context hold up", "relevant_ids": ["h014_prompt_injection.md:0"]},
+    {"query": "what exhausted the connection pool that june morning", "relevant_ids": ["incident_checkout_500.md:0"]},
+    {"query": "which cache was not invalidated when a flag changed", "relevant_ids": ["incident_stale_flag.md:0"]},
+    {"query": "after how long is indexed content treated as stale", "relevant_ids": ["indexer_freshness.md:0"]},
+    {"query": "at what cpu level does a replica get added", "relevant_ids": ["autoscaling.md:0"]},
+    {"query": "how frequently are snapshots taken", "relevant_ids": ["backups.md:0"]},
+    {"query": "are secrets ever baked into the container image", "relevant_ids": ["secrets_handling.md:0"]},
+    {"query": "what fusion method sums one over the rank", "relevant_ids": ["rrf_definition.md:0"]},
+    {"query": "what discipline resurfaces closed decisions before you act", "relevant_ids": ["anti_relitigation.md:0"]}
+  ]
+}
