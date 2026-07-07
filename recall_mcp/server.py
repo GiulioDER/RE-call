@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
 
-from recall_mcp.service import make_embedder, search_memory
+from recall_mcp.service import index_memory, make_embedder, search_memory
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 EMBEDDER_NAME = os.environ.get("RECALL_EMBEDDER", "fastembed")
@@ -65,8 +65,18 @@ def build_server() -> FastMCP:
                      "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
     )
     def recall_index(path: str) -> str:
-        """Index a file/folder of markdown into memory (stub — implemented in Task 3)."""
-        return "not implemented"
+        """Index a markdown file or folder into the agent's memory so it can be recalled later.
+
+        Args:
+            path: a file or directory path (``**/*.md`` is indexed for directories).
+
+        Returns:
+            JSON of {files, chunks, message}.
+        """
+        import json
+
+        state = _state()
+        return json.dumps(index_memory(state["store"], state["embedder"], path), indent=2)
 
     @mcp.tool(
         name="recall_stats",

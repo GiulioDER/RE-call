@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from recall.embeddings import Embedder, HashingEmbedder
+from recall.index import Indexer
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
 
@@ -64,3 +65,13 @@ def search_memory(
         advice=advice,
         hits=hits,
     )
+
+
+def index_memory(store: PgVectorStore, embedder: Embedder, path: str) -> dict:
+    """Index a markdown file or folder into memory; return counts + a human message."""
+    stats = Indexer(store, embedder).index_path(path)
+    return {
+        "files": stats.files,
+        "chunks": stats.chunks,
+        "message": f"Indexed {stats.chunks} chunk(s) from {stats.files} file(s) into memory.",
+    }
