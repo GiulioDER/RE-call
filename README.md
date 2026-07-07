@@ -7,6 +7,9 @@ and is meant to be queried *before* the agent re-litigates a settled decision.
 Built on **PostgreSQL + pgvector** with hybrid dense + full-text retrieval and
 Reciprocal Rank Fusion.
 
+**→ [Engineering writeup: the design, and the honest evaluation](docs/WRITEUP.md)** — the problem,
+the three honesty guards, and what the ablations (including two negative results) actually showed.
+
 ## Quickstart (≈2 minutes, no API key)
 
 ```bash
@@ -97,6 +100,10 @@ pytest -v      # integration tests hit the real pgvector container (no mock DB)
 
 ## Status
 
-M1 (engine + demo), M2 (self-recall MCP server), and M3 (eval harness, ablations, cloud + local
-embedder comparison, gap-threshold calibration, and a domain fine-tuning study) complete. Next: M4
-— publish (LICENSE, `.gitattributes`, GitHub).
+M1 (engine + demo), M2 (self-recall MCP server), M3 (eval harness, ablations, cloud + local embedder
+comparison, gap-threshold calibration, and a domain fine-tuning study), and M4 (writeup, LICENSE,
+LF normalization, dependency audit) complete.
+
+## License
+
+[MIT](LICENSE).

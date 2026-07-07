@@ -1,0 +1,20 @@
+# Normalize all text files to LF in the repo, regardless of author OS.
+# Prevents the CRLF/LF churn that shows up when committing from Windows.
+* text=auto eol=lf
+
+# Explicit rules for common types (belt-and-suspenders).
+*.py    text eol=lf
+*.md    text eol=lf
+*.toml  text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.sh    text eol=lf
+Makefile text eol=lf
+
+# Binary assets — never touch line endings.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.gz binary
