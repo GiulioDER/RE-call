@@ -67,6 +67,25 @@ The self-recall pattern: an agent calls `recall_search` before proposing an idea
 decision or falsified hypothesis surfaces (and it isn't a `gap_warning`), it backs off instead
 of re-litigating. See `examples/self_recall_agent.py`.
 
+## Evaluation
+
+A reproducible ablation harness lives in `recall/eval`. With Docker up:
+
+    make eval        # -> results/RESULTS.md + charts
+
+It scores every `embedder × fusion (dense / hybrid / +rerank)` config against a labeled query set
+on a synthetic corpus, using precision@k, recall@k, MRR, nDCG, and a guard-specific
+**false-confident rate**. Two honest findings (full writeup in
+[results/FINDINGS.md](results/FINDINGS.md)):
+
+- **Hybrid + cross-encoder rerank** lifts MRR from 0.68 to 1.00 on a weak embedder; a strong
+  embedder already saturates this corpus (so the gain is real but situational).
+- **The gap threshold does not transfer across embedders** — the default 0.50 gives a 0.80
+  false-confident rate on FastEmbed (whose cosines cluster high), but per-embedder calibration to
+  ~0.70 makes the guard perfect. Calibrate against a small labeled set; don't hard-code.
+
+Voyage/OpenAI rows appear automatically when `VOYAGE_API_KEY` / `OPENAI_API_KEY` are set.
+
 ## Tests
 
 ```bash
@@ -76,5 +95,5 @@ pytest -v      # integration tests hit the real pgvector container (no mock DB)
 
 ## Status
 
-M1 (engine + demo) and M2 (self-recall MCP server) complete. Next: a reproducible eval
-harness with ablations and an honest negative result, then the fine-tuning study.
+M1 (engine + demo), M2 (self-recall MCP server), and M3 (eval harness + ablations + honest
+findings) complete. The domain fine-tuning study and cloud-embedder rows are in progress.

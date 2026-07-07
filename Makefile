@@ -1,4 +1,4 @@
-.PHONY: db-up demo test lint
+.PHONY: db-up demo test lint eval
 db-up:
 	docker compose up -d --wait
 demo:
@@ -7,3 +7,5 @@ test:
 	pytest -v
 lint:
 	ruff check .
+eval:
+	python -m recall.eval
