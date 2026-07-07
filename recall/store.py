@@ -61,6 +61,17 @@ class PgVectorStore:
             )
             """
         )
+        actual_dim = self._conn.execute(
+            "SELECT atttypmod FROM pg_attribute "
+            "WHERE attrelid = %s::regclass AND attname = 'embedding'",
+            (t,),
+        ).fetchone()[0]
+        if actual_dim > 0 and actual_dim != self._dim:
+            raise ValueError(
+                f"table {t!r} has a vector({actual_dim}) embedding column but this store is "
+                f"configured for dim {self._dim} — use a matching embedder or a different table "
+                f"(drop and re-index for a clean slate)."
+            )
         self._conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_tsv_idx ON {t} USING GIN (tsv)")
         self._conn.execute(
             f"CREATE INDEX IF NOT EXISTS {t}_emb_idx ON {t} USING hnsw (embedding vector_cosine_ops)"

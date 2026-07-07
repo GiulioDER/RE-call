@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -71,8 +73,22 @@ def search_memory(
 
 
 def index_memory(store: PgVectorStore, embedder: Embedder, path: str) -> dict:
-    """Index a markdown file or folder into memory; return counts + a human message."""
-    stats = Indexer(store, embedder).index_path(path)
+    """Index a markdown file or folder into memory; return counts + a human message.
+
+    `path` is confined to RECALL_INDEX_ROOT (default: the current working directory) so a client
+    cannot read arbitrary files off the server's filesystem. Re-indexing overwrites a file's chunks
+    in place; if a file shrinks, orphaned trailing chunks are not garbage-collected.
+    """
+    root = Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve()
+    target = Path(path).resolve()
+    if not target.is_relative_to(root):
+        raise ValueError(
+            f"path {path!r} is outside the allowed index root {str(root)!r}; "
+            "set RECALL_INDEX_ROOT to widen it."
+        )
+    if not target.exists():
+        raise ValueError(f"path not found: {path!r}")
+    stats = Indexer(store, embedder).index_path(target)
     return {
         "files": stats.files,
         "chunks": stats.chunks,
@@ -81,7 +97,7 @@ def index_memory(store: PgVectorStore, embedder: Embedder, path: str) -> dict:
 
 
 def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -> dict:
-    """Report memory size and freshness."""
+    """Report memory size and freshness (`stale` is True when the newest chunk is older than `max_age`, default 2 days)."""
     newest = store.newest_indexed_at()
     stale = staleness(newest, datetime.now(timezone.utc), max_age).stale
     return {

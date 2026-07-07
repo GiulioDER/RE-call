@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import traceback
 from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
@@ -17,9 +18,22 @@ async def _lifespan(_server: FastMCP):
     """Open one PgVectorStore + embedder for the server's lifetime, reused by every tool."""
     from recall.store import PgVectorStore
 
-    embedder = make_embedder(EMBEDDER_NAME)
-    store = PgVectorStore(DEFAULT_DSN, dim=embedder.dim)
-    store.ensure_schema()
+    try:
+        embedder = make_embedder(EMBEDDER_NAME)
+        store = PgVectorStore(DEFAULT_DSN, dim=embedder.dim)
+    except Exception:
+        print(
+            f"recall_mcp: startup failed (RECALL_DSN={DEFAULT_DSN!r}, "
+            f"RECALL_EMBEDDER={EMBEDDER_NAME!r}):\n{traceback.format_exc()}",
+            file=sys.stderr,
+        )
+        raise
+    try:
+        store.ensure_schema()
+    except Exception:
+        store.close()
+        print(f"recall_mcp: schema check failed:\n{traceback.format_exc()}", file=sys.stderr)
+        raise
     try:
         yield {"store": store, "embedder": embedder}
     finally:
@@ -67,6 +81,10 @@ def build_server() -> FastMCP:
     def recall_index(path: str) -> str:
         """Index a markdown file or folder into the agent's memory so it can be recalled later.
 
+        Re-indexing a file overwrites its chunks in place (safe to re-run after edits). Known
+        limitation: if a file shrinks, its now-orphaned trailing chunks are not garbage-collected.
+        `path` is confined to RECALL_INDEX_ROOT (default: the server's working directory).
+
         Args:
             path: a file or directory path (``**/*.md`` is indexed for directories).
 
@@ -85,6 +103,8 @@ def build_server() -> FastMCP:
     )
     def recall_stats() -> str:
         """Report how much memory exists and whether it is stale (freshness check).
+
+        `stale` is True when the newest indexed content is older than 2 days.
 
         Returns:
             JSON of {chunks, newest_indexed_at, stale}.

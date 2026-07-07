@@ -59,6 +59,10 @@ Example client config (e.g. Claude Desktop):
       }
     }
 
+Additional server env: `RECALL_EMBEDDER=hashing` selects the fully-offline embedder (default
+`fastembed`); `RECALL_INDEX_ROOT` bounds where `recall_index` may read (default: the server's
+working directory).
+
 The self-recall pattern: an agent calls `recall_search` before proposing an idea; if a closed
 decision or falsified hypothesis surfaces (and it isn't a `gap_warning`), it backs off instead
 of re-litigating. See `examples/self_recall_agent.py`.
