@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 from typing import Protocol, runtime_checkable
 
 
@@ -76,3 +77,62 @@ class FastEmbedEmbedder:
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return [[float(x) for x in vec] for vec in self._model.embed(texts)]
+
+
+class VoyageEmbedder:
+    """Voyage cloud embeddings. Requires `pip install recall[voyage]` and VOYAGE_API_KEY."""
+
+    def __init__(self, model: str = "voyage-3", api_key: str | None = None) -> None:
+        key = api_key or os.environ.get("VOYAGE_API_KEY")
+        if not key:
+            raise RuntimeError("VoyageEmbedder needs VOYAGE_API_KEY (env) or an explicit api_key")
+        try:
+            import voyageai
+        except ImportError as exc:  # pragma: no cover - exercised only without the extra
+            raise ImportError("VoyageEmbedder requires: pip install recall[voyage]") from exc
+        self._client = voyageai.Client(api_key=key)
+        self._model = model
+        self._name = f"voyage:{model}"
+        self._dim = len(self._client.embed(["probe"], model=model).embeddings[0])
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        result = self._client.embed(texts, model=self._model)
+        return [[float(x) for x in v] for v in result.embeddings]
+
+
+class OpenAIEmbedder:
+    """OpenAI cloud embeddings. Requires `pip install recall[openai]` and OPENAI_API_KEY."""
+
+    def __init__(self, model: str = "text-embedding-3-small", api_key: str | None = None) -> None:
+        key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not key:
+            raise RuntimeError("OpenAIEmbedder needs OPENAI_API_KEY (env) or an explicit api_key")
+        try:
+            from openai import OpenAI
+        except ImportError as exc:  # pragma: no cover - exercised only without the extra
+            raise ImportError("OpenAIEmbedder requires: pip install recall[openai]") from exc
+        self._client = OpenAI(api_key=key)
+        self._model = model
+        self._name = f"openai:{model}"
+        probe = self._client.embeddings.create(input=["probe"], model=model)
+        self._dim = len(probe.data[0].embedding)
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        resp = self._client.embeddings.create(input=texts, model=self._model)
+        return [[float(x) for x in d.embedding] for d in resp.data]

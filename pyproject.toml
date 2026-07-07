@@ -16,6 +16,8 @@ dependencies = [
 [project.optional-dependencies]
 fastembed = ["fastembed>=0.3"]
 mcp = ["mcp>=1.7"]
+voyage = ["voyageai>=0.2"]
+openai = ["openai>=1.0"]
 dev = ["pytest>=8", "ruff>=0.5", "mcp>=1.7"]
 
 [project.scripts]
