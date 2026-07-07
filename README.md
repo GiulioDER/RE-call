@@ -1,15 +1,13 @@
-<!-- Banner: save your generated 1280x640 image to docs/banner.png and uncomment the next line -->
-<!-- <p align="center"><img src="docs/banner.png" alt="recall" width="900"></p> -->
-
-<h1 align="center">RE-call</h1>
+<p align="center">
+  <img src="docs/banner.png" alt="RE-call — Retrieval-Augmented Self-Recall" width="900">
+</p>
 
 <p align="center">
-  <b>Retrieval-Augmented Self-Recall</b><br>
   RAG for an AI agent's own memory — that <i>knows when it doesn't know</i>.
 </p>
 
 <p align="center">
-  <a href="https://github.com/GiulioDER/recall/actions/workflows/ci.yml"><img src="https://github.com/GiulioDER/recall/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml"><img src="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-pgvector-336791" alt="PostgreSQL + pgvector">
@@ -117,7 +115,7 @@ and exactly what's public vs private.
 ## 🚀 Quickstart (≈2 minutes, no API key)
 
 ```bash
-git clone https://github.com/GiulioDER/recall && cd recall
+git clone https://github.com/GiulioDER/RE-call && cd RE-call
 docker compose up -d --wait          # Postgres + pgvector (waits until healthy)
 python -m venv .venv && . .venv/bin/activate    # Windows: .\.venv\Scripts\activate
 pip install -e ".[fastembed,dev]"
