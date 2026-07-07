@@ -10,3 +10,6 @@ Reproduce the local (key-free) rows with `make eval` — needs Docker + the loca
 | BAAI/bge-small-en-v1.5 | dense | 0.200 | 1.000 | 1.000 | 1.000 | 1.00 | 0.80 |
 | BAAI/bge-small-en-v1.5 | hybrid | 0.200 | 1.000 | 1.000 | 1.000 | 1.00 | 0.80 |
 | BAAI/bge-small-en-v1.5 | hybrid+rerank | 0.200 | 1.000 | 1.000 | 1.000 | 1.00 | 0.80 |
+| voyage:voyage-3 | dense | 0.200 | 1.000 | 1.000 | 1.000 | 1.00 | 0.00 |
+| voyage:voyage-3 | hybrid | 0.200 | 1.000 | 1.000 | 1.000 | 1.00 | 0.00 |
+| voyage:voyage-3 | hybrid+rerank | 0.200 | 1.000 | 1.000 | 1.000 | 1.00 | 0.00 |

@@ -37,6 +37,9 @@ def _build_embedders() -> list[Embedder]:
 
 
 def main() -> None:
+    from recall._env import load_dotenv
+
+    load_dotenv()  # pick up VOYAGE_API_KEY / OPENAI_API_KEY from a gitignored .env if present
     embedders = _build_embedders()
     print(f"embedders: {[e.name for e in embedders]}")
     results = run_ablations(DEFAULT_DSN, embedders)

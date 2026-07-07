@@ -26,8 +26,17 @@ We measured the top-cosine distribution for answerable vs. unanswerable queries 
 
 | embedder | answerable cos (min–max) | unanswerable cos (min–max) | separable? | good threshold | FCR @0.50 | FCR @calibrated |
 |---|---|---|---|---|---|---|
-| hashing-64 | 0.30 – 0.68 | 0.35 – 0.45 | no (overlap) | — | 0.00 | — |
+| hashing-64 | 0.30 – 0.68 | 0.35 – 0.45 | no (overlap) | — | 0.00\* | — |
 | bge-small (FastEmbed) | 0.70 – 0.90 | 0.50 – 0.64 | yes | ~0.70 | **0.80** | **0.00** |
+| voyage-3 | 0.53 – 0.70 | 0.09 – 0.32 | yes | ~0.50 | **0.00** | **0.00** |
+
+Three embedders, three completely different cosine regimes. The fixed 0.50 threshold happens to sit
+in Voyage's clean gap (unanswerable ≈ 0.1–0.3, answerable ≈ 0.5–0.7), sits *below the entire* bge
+distribution (so the guard never fires — FCR 0.80), and lands inside hashing's overlap. **It works
+for one strong model by luck, fails for another strong model, and cannot work for the weak one.**
+(\* hashing's 0.00 at 0.50 is misleading: every hashing cosine is low, so it also wrongly flags many
+*answerable* queries as gaps.) OpenAI is omitted — the available key had no quota, and the harness
+skipped it cleanly (graceful degradation is itself a design goal).
 
 Two lessons:
 
