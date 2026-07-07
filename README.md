@@ -1,5 +1,8 @@
 # recall — Retrieval-Augmented Self-Recall
 
+[![CI](https://github.com/GiulioDER/recall/actions/workflows/ci.yml/badge.svg)](https://github.com/GiulioDER/recall/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 RAG over a long-running agent's own memory, engineered to be **honest about what
 it doesn't know**: it detects corpus gaps (`gap_warning`), flags stale indexes,
 and is meant to be queried *before* the agent re-litigates a settled decision.

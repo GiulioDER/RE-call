@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # Integration tests hit a real pgvector database — no mock DB. Spin one up as a service.
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: recall
+          POSTGRES_PASSWORD: recall
+          POSTGRES_DB: recall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recall"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    env:
+      RECALL_DSN: postgresql://recall:recall@localhost:5432/recall
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Engine + dev tooling only. The optional heavy extras are exercised locally:
+      #   rerank -> sentence-transformers (its one test self-skips here)
+      #   voyage -> cloud embedder (its one test skips without VOYAGE_API_KEY)
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Test (pytest on real pgvector)
+        run: pytest -q
