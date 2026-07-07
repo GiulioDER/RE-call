@@ -40,6 +40,29 @@ python -m recall.cli search "your question"
 Set `RECALL_DSN` to point at another Postgres. Default embedder is local
 FastEmbed (no key); `--embedder hashing` is a fully-offline fallback.
 
+## MCP self-recall server
+
+Expose memory to an MCP client as tools — `recall_search`, `recall_index`, `recall_stats`:
+
+    pip install -e ".[fastembed,mcp]"
+    python -m recall_mcp.server        # stdio server
+
+Example client config (e.g. Claude Desktop):
+
+    {
+      "mcpServers": {
+        "recall": {
+          "command": "python",
+          "args": ["-m", "recall_mcp.server"],
+          "env": { "RECALL_DSN": "postgresql://recall:recall@localhost:5432/recall" }
+        }
+      }
+    }
+
+The self-recall pattern: an agent calls `recall_search` before proposing an idea; if a closed
+decision or falsified hypothesis surfaces (and it isn't a `gap_warning`), it backs off instead
+of re-litigating. See `examples/self_recall_agent.py`.
+
 ## Tests
 
 ```bash
@@ -49,5 +72,5 @@ pytest -v      # integration tests hit the real pgvector container (no mock DB)
 
 ## Status
 
-M1 (engine + demo). Next: agentic self-recall MCP server, a reproducible eval
-harness with ablations and an honest negative result, and the fine-tuning study.
+M1 (engine + demo) and M2 (self-recall MCP server) complete. Next: a reproducible eval
+harness with ablations and an honest negative result, then the fine-tuning study.
