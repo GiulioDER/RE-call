@@ -37,6 +37,13 @@ class Indexer:
         self._embedder = embedder
 
     def index_path(self, path: str | Path, glob: str = "**/*.md") -> IndexStats:
+        """Index a markdown file, or a directory of them, into the vector store.
+
+        Chunk ids are deterministic (md5 of ``<file>:<ordinal>``), so re-indexing an
+        unchanged file overwrites its chunks in place. Known limitation: if a file shrinks
+        (produces fewer chunks than before), the now-orphaned trailing chunks are not
+        garbage-collected — drop and re-index the table for a clean slate.
+        """
         root = Path(path)
         files = sorted(root.glob(glob)) if root.is_dir() else [root]
         all_chunks: list[Chunk] = []

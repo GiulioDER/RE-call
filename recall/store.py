@@ -14,6 +14,10 @@ class PgVectorStore:
     """The single, production-grade vector store: PostgreSQL + pgvector."""
 
     def __init__(self, dsn: str, dim: int, table: str = "chunks") -> None:
+        # `dim` and `table` are interpolated directly into SQL — as a type modifier and an
+        # identifier respectively — because Postgres cannot bind those as parameters. They
+        # are therefore strictly validated here: this is the SQL-injection guard. Every
+        # other value in this class is passed via psycopg bound parameters, never formatted.
         if not isinstance(dim, int) or dim <= 0:
             raise ValueError("dim must be a positive int")
         if not table.isidentifier():
@@ -22,7 +26,11 @@ class PgVectorStore:
         self._dim = dim
         self._table = table
         self._conn = psycopg.connect(dsn, autocommit=True)
-        register_vector(self._conn)
+        try:
+            register_vector(self._conn)
+        except Exception:
+            self._conn.close()
+            raise
 
     @property
     def table(self) -> str:
@@ -62,7 +70,9 @@ class PgVectorStore:
         if len(chunks) != len(embeddings):
             raise ValueError("chunks and embeddings length mismatch")
         t = self._table
-        with self._conn.cursor() as cur:
+        # One transaction for the whole batch: a mid-loop failure rolls the batch back
+        # instead of leaving earlier rows committed (the connection is autocommit).
+        with self._conn.transaction(), self._conn.cursor() as cur:
             for c, e in zip(chunks, embeddings):
                 cur.execute(
                     f"""
@@ -94,6 +104,8 @@ class PgVectorStore:
     def query_dense(
         self, vector: list[float], k: int, source: str | None = None
     ) -> list[ScoredChunk]:
+        if k <= 0:
+            raise ValueError("k must be a positive int")
         t = self._table
         where = "WHERE source = %(source)s" if source else ""
         sql = f"""
@@ -112,6 +124,8 @@ class PgVectorStore:
     def query_sparse(
         self, text: str, k: int, source: str | None = None
     ) -> list[ScoredChunk]:
+        if k <= 0:
+            raise ValueError("k must be a positive int")
         t = self._table
         where = "AND source = %(source)s" if source else ""
         sql = f"""

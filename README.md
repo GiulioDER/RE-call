@@ -11,7 +11,7 @@ Reciprocal Rank Fusion.
 
 ```bash
 git clone <this-repo> recall && cd recall
-docker compose up -d                 # Postgres + pgvector
+docker compose up -d --wait          # Postgres + pgvector (waits until healthy)
 python -m venv .venv && . .venv/bin/activate    # Windows: .\.venv\Scripts\activate
 pip install -e ".[fastembed,dev]"
 python -m recall.cli demo
@@ -43,7 +43,7 @@ FastEmbed (no key); `--embedder hashing` is a fully-offline fallback.
 ## Tests
 
 ```bash
-docker compose up -d
+docker compose up -d --wait
 pytest -v      # integration tests hit the real pgvector container (no mock DB)
 ```
 

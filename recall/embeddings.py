@@ -7,6 +7,11 @@ from typing import Protocol, runtime_checkable
 
 @runtime_checkable
 class Embedder(Protocol):
+    """Turns text into dense vectors. Implementations must be deterministic and
+    order-preserving: `embed(texts)` returns one vector per input text, in input order,
+    each of length `dim`. `name` identifies the backend (used in logging / evals).
+    """
+
     @property
     def dim(self) -> int: ...
 

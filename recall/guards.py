@@ -4,8 +4,12 @@ from datetime import datetime, timedelta
 
 from recall.types import StalenessReport
 
+#: Default cosine-similarity floor: if every candidate scores below this, the corpus is
+#: treated as lacking a relevant answer. Single source of truth for the gap heuristic.
+DEFAULT_GAP_THRESHOLD = 0.50
 
-def gap_warning(scores: list[float], threshold: float = 0.50) -> bool:
+
+def gap_warning(scores: list[float], threshold: float = DEFAULT_GAP_THRESHOLD) -> bool:
     """True when the corpus probably lacks a relevant answer.
 
     Fires when every candidate similarity score is below `threshold`

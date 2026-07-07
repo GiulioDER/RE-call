@@ -51,25 +51,25 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
     embedder = _make_embedder(args.embedder)
-    store = PgVectorStore(args.dsn, dim=embedder.dim)
-    store.ensure_schema()
+    with PgVectorStore(args.dsn, dim=embedder.dim) as store:
+        store.ensure_schema()
 
-    if args.cmd == "index":
-        stats = Indexer(store, embedder).index_path(args.path)
-        print(f"indexed {stats.chunks} chunks from {stats.files} files")
-    elif args.cmd == "search":
-        _print_result(HybridRetriever(store, embedder).search(args.query, k=args.k))
-    elif args.cmd == "demo":
-        stats = Indexer(store, embedder).index_path("corpus")
-        print(f"indexed {stats.chunks} chunks from {stats.files} files\n")
-        retriever = HybridRetriever(store, embedder)
-        for q in [
-            "what did we decide about caching?",
-            "do we inject retrieved context into the prompt?",
-            "how do we handle penguins on mars?",
-        ]:
-            _print_result(retriever.search(q))
-            print()
+        if args.cmd == "index":
+            stats = Indexer(store, embedder).index_path(args.path)
+            print(f"indexed {stats.chunks} chunks from {stats.files} files")
+        elif args.cmd == "search":
+            _print_result(HybridRetriever(store, embedder).search(args.query, k=args.k))
+        elif args.cmd == "demo":
+            stats = Indexer(store, embedder).index_path("corpus")
+            print(f"indexed {stats.chunks} chunks from {stats.files} files\n")
+            retriever = HybridRetriever(store, embedder)
+            for q in [
+                "what did we decide about caching?",
+                "do we inject retrieved context into the prompt?",
+                "how do we handle penguins on mars?",
+            ]:
+                _print_result(retriever.search(q))
+                print()
 
 
 if __name__ == "__main__":
