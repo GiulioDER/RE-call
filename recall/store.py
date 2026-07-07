@@ -146,3 +146,7 @@ class PgVectorStore:
     def newest_indexed_at(self) -> datetime | None:
         row = self._conn.execute(f"SELECT max(indexed_at) FROM {self._table}").fetchone()
         return row[0] if row else None
+
+    def count(self) -> int:
+        row = self._conn.execute(f"SELECT count(*) FROM {self._table}").fetchone()
+        return int(row[0]) if row else 0

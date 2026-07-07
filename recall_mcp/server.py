@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
 
-from recall_mcp.service import index_memory, make_embedder, search_memory
+from recall_mcp.service import index_memory, make_embedder, memory_stats, search_memory
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 EMBEDDER_NAME = os.environ.get("RECALL_EMBEDDER", "fastembed")
@@ -84,8 +84,15 @@ def build_server() -> FastMCP:
                      "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
     )
     def recall_stats() -> str:
-        """Report memory size and freshness (stub — implemented in Task 4)."""
-        return "not implemented"
+        """Report how much memory exists and whether it is stale (freshness check).
+
+        Returns:
+            JSON of {chunks, newest_indexed_at, stale}.
+        """
+        import json
+
+        state = _state()
+        return json.dumps(memory_stats(state["store"]), indent=2)
 
     return mcp
 

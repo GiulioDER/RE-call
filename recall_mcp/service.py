@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from pydantic import BaseModel, Field
 
 from recall.embeddings import Embedder, HashingEmbedder
+from recall.guards import staleness
 from recall.index import Indexer
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
@@ -74,4 +77,15 @@ def index_memory(store: PgVectorStore, embedder: Embedder, path: str) -> dict:
         "files": stats.files,
         "chunks": stats.chunks,
         "message": f"Indexed {stats.chunks} chunk(s) from {stats.files} file(s) into memory.",
+    }
+
+
+def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -> dict:
+    """Report memory size and freshness."""
+    newest = store.newest_indexed_at()
+    stale = staleness(newest, datetime.now(timezone.utc), max_age).stale
+    return {
+        "chunks": store.count(),
+        "newest_indexed_at": newest.isoformat() if newest else None,
+        "stale": stale,
     }
