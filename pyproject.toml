@@ -15,13 +15,14 @@ dependencies = [
 
 [project.optional-dependencies]
 fastembed = ["fastembed>=0.3"]
+mcp = ["mcp>=1.2"]
 dev = ["pytest>=8", "ruff>=0.5"]
 
 [project.scripts]
 recall = "recall.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["recall"]
+packages = ["recall", "recall_mcp"]
 
 [tool.ruff]
 line-length = 100
