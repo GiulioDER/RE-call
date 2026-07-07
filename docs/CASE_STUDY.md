@@ -1,14 +1,14 @@
-# Case study: where recall comes from
+# Case study: where RE-call comes from
 
-recall didn't start as a library. It's the extraction of a memory system I run for a **production,
+RE-call didn't start as a library. It's the extraction of a memory system I run for a **production,
 long-running trading-research agent** — an autonomous Claude-based operator that has driven a
 multi-strategy research program across many months and hundreds of experiments.
 
-That agent's problem is the one recall solves: **its own memory outgrew its context window.** The
+That agent's problem is the one RE-call solves: **its own memory outgrew its context window.** The
 guards in this repo aren't hypothetical — each one exists because the agent failed a specific way
 without it.
 
-> **Honest boundary.** recall is a clean-room extraction of that engine — the same hybrid retrieval
+> **Honest boundary.** RE-call is a clean-room extraction of that engine — the same hybrid retrieval
 > and the same three guards, rebuilt as a standalone public library. The trading memory itself stays
 > private; the corpus shipped in this repo is synthetic but mirrors the real one's shape. Nothing
 > below reveals a strategy, threshold, or result — only the *system*, redacted.

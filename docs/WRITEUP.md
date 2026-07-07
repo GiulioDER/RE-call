@@ -3,7 +3,7 @@
 > A RAG system engineered to be **honest about what it doesn't know**, built for a use case most
 > RAG demos ignore: a long-running agent retrieving over *its own accumulated memory*.
 
-This is the design story behind [`recall`](../README.md): the problem it targets, the architecture,
+This is the design story behind [**RE-call**](../README.md): the problem it targets, the architecture,
 and — most importantly — the evaluation, including the results that *didn't* go the way a demo would
 want them to. If you are reviewing this as a work sample, the [Evaluation](#3-evaluation) and
 [What this demonstrates](#4-what-this-demonstrates) sections are the ones to read.
@@ -12,7 +12,7 @@ want them to. If you are reviewing this as a work sample, the [Evaluation](#3-ev
 
 ## 1. The problem: retrieval for an agent's own memory
 
-Most RAG systems answer a human's question over a document corpus. `recall` targets a different
+Most RAG systems answer a human's question over a document corpus. **RE-call** targets a different
 setting that shows up in every long-running autonomous agent:
 
 **An agent accumulates memory — decisions it made, hypotheses it falsified, incidents it resolved —

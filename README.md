@@ -1,7 +1,7 @@
 <!-- Banner: save your generated 1280x640 image to docs/banner.png and uncomment the next line -->
 <!-- <p align="center"><img src="docs/banner.png" alt="recall" width="900"></p> -->
 
-<h1 align="center">recall</h1>
+<h1 align="center">RE-call</h1>
 
 <p align="center">
   <b>Retrieval-Augmented Self-Recall</b><br>
@@ -15,13 +15,21 @@
   <img src="https://img.shields.io/badge/PostgreSQL-pgvector-336791" alt="PostgreSQL + pgvector">
 </p>
 
+<p align="center">
+  <a href="docs/CASE_STUDY.md"><b>📄 Real-world usage →</b></a>
+  &nbsp;·&nbsp;
+  <a href="docs/WRITEUP.md">Engineering writeup</a>
+  &nbsp;·&nbsp;
+  <a href="#-quickstart-2-minutes-no-api-key">Quickstart</a>
+</p>
+
 ---
 
 A long-running agent piles up memory — decisions, closed experiments, incident notes. Two failure
 modes follow: it **re-litigates settled decisions**, and it **hallucinates over gaps** where the
 memory simply has no answer.
 
-**recall** is a RAG engine for that memory, built to be *honest about what it doesn't know*: it
+**RE-call** is a RAG engine for that memory, built to be *honest about what it doesn't know*: it
 retrieves **before** the agent acts, and flags when the memory probably has no answer instead of
 returning confident noise.
 
@@ -98,7 +106,7 @@ dependency audit.
 
 ## 🏭 Where this comes from
 
-recall isn't a toy — it's extracted from the memory system I run for a **production trading-research
+RE-call isn't a toy — it's extracted from the memory system I run for a **production trading-research
 agent** whose own memory outgrew its context window: **≈660 typed markdown memos (~5 MB), re-indexed
 daily.** Every guard here is a scar from a real failure — re-litigating an already-falsified
 experiment, trusting weak hits on a question the memory couldn't answer, serving a stale fact.
