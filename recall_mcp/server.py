@@ -45,7 +45,13 @@ def build_server() -> FastMCP:
     mcp = FastMCP("recall_mcp", lifespan=_lifespan)
 
     def _state() -> dict:
-        return mcp.get_context().request_context.lifespan_context
+        ctx = mcp.get_context().request_context.lifespan_context
+        if not isinstance(ctx, dict) or "store" not in ctx or "embedder" not in ctx:
+            raise RuntimeError(
+                "recall_mcp lifespan context is not initialized — tools must be invoked within "
+                "the running server (store/embedder are opened in the lifespan)."
+            )
+        return ctx
 
     @mcp.tool(
         name="recall_search",
@@ -91,10 +97,8 @@ def build_server() -> FastMCP:
         Returns:
             JSON of {files, chunks, message}.
         """
-        import json
-
         state = _state()
-        return json.dumps(index_memory(state["store"], state["embedder"], path), indent=2)
+        return index_memory(state["store"], state["embedder"], path).model_dump_json(indent=2)
 
     @mcp.tool(
         name="recall_stats",
@@ -109,10 +113,8 @@ def build_server() -> FastMCP:
         Returns:
             JSON of {chunks, newest_indexed_at, stale}.
         """
-        import json
-
         state = _state()
-        return json.dumps(memory_stats(state["store"]), indent=2)
+        return memory_stats(state["store"]).model_dump_json(indent=2)
 
     return mcp
 

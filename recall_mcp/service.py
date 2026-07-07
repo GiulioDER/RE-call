@@ -12,11 +12,14 @@ from recall.index import Indexer
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
 
+HASHING_DIM = 64  # offline HashingEmbedder width; matches the eval/test default
+MAX_SEARCH_K = 50  # upper bound on hits per search — clamps untrusted client input
+
 
 def make_embedder(name: str) -> Embedder:
     """Return the embedder backend by name ('fastembed' local default, or offline 'hashing')."""
     if name == "hashing":
-        return HashingEmbedder(dim=64)
+        return HashingEmbedder(dim=HASHING_DIM)
     if name == "fastembed":
         from recall.embeddings import FastEmbedEmbedder
 
@@ -38,6 +41,20 @@ class SearchResult(BaseModel):
     hits: list[SearchHit]
 
 
+class IndexResult(BaseModel):
+    files: int = Field(description="Number of files indexed.")
+    chunks: int = Field(description="Number of chunks written to memory.")
+    message: str = Field(description="Human-readable summary of what was indexed.")
+
+
+class MemoryStatsResult(BaseModel):
+    chunks: int = Field(description="Total chunks currently in memory.")
+    newest_indexed_at: str | None = Field(
+        description="ISO-8601 timestamp of the newest chunk, or null if memory is empty."
+    )
+    stale: bool = Field(description="True when the newest chunk is older than the freshness window.")
+
+
 def search_memory(
     store: PgVectorStore,
     embedder: Embedder,
@@ -45,7 +62,11 @@ def search_memory(
     source: str | None = None,
     k: int = 5,
 ) -> SearchResult:
-    """Run a hybrid search and format it into actionable self-recall guidance."""
+    """Run a hybrid search and format it into actionable self-recall guidance.
+
+    `k` is clamped to [1, MAX_SEARCH_K] so an untrusted client cannot request an unbounded result set.
+    """
+    k = max(1, min(k, MAX_SEARCH_K))
     result = HybridRetriever(store, embedder).search(query, k=k, source=source)
     hits = [
         SearchHit(source=h.chunk.source, score=round(h.score, 4), text=h.chunk.text)
@@ -72,7 +93,7 @@ def search_memory(
     )
 
 
-def index_memory(store: PgVectorStore, embedder: Embedder, path: str) -> dict:
+def index_memory(store: PgVectorStore, embedder: Embedder, path: str) -> IndexResult:
     """Index a markdown file or folder into memory; return counts + a human message.
 
     `path` is confined to RECALL_INDEX_ROOT (default: the current working directory) so a client
@@ -89,19 +110,21 @@ def index_memory(store: PgVectorStore, embedder: Embedder, path: str) -> dict:
     if not target.exists():
         raise ValueError(f"path not found: {path!r}")
     stats = Indexer(store, embedder).index_path(target)
-    return {
-        "files": stats.files,
-        "chunks": stats.chunks,
-        "message": f"Indexed {stats.chunks} chunk(s) from {stats.files} file(s) into memory.",
-    }
+    return IndexResult(
+        files=stats.files,
+        chunks=stats.chunks,
+        message=f"Indexed {stats.chunks} chunk(s) from {stats.files} file(s) into memory.",
+    )
 
 
-def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -> dict:
+def memory_stats(
+    store: PgVectorStore, max_age: timedelta = timedelta(days=2)
+) -> MemoryStatsResult:
     """Report memory size and freshness (`stale` is True when the newest chunk is older than `max_age`, default 2 days)."""
     newest = store.newest_indexed_at()
     stale = staleness(newest, datetime.now(timezone.utc), max_age).stale
-    return {
-        "chunks": store.count(),
-        "newest_indexed_at": newest.isoformat() if newest else None,
-        "stale": stale,
-    }
+    return MemoryStatsResult(
+        chunks=store.count(),
+        newest_indexed_at=newest.isoformat() if newest else None,
+        stale=stale,
+    )

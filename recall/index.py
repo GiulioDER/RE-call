@@ -8,8 +8,10 @@ from recall.embeddings import Embedder
 from recall.store import PgVectorStore
 from recall.types import Chunk
 
+DEFAULT_MAX_CHARS = 800  # target chunk size in characters; paragraphs are packed up to this
 
-def chunk_text(text: str, max_chars: int = 800) -> list[str]:
+
+def chunk_text(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
     """Split text into chunks on blank lines, packing paragraphs up to max_chars."""
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     chunks: list[str] = []
