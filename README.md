@@ -16,6 +16,8 @@
 <p align="center">
   <a href="docs/CASE_STUDY.md"><b>📄 Real-world usage →</b></a>
   &nbsp;·&nbsp;
+  <a href="docs/USING_WITH_CLAUDE.md">Use with Claude</a>
+  &nbsp;·&nbsp;
   <a href="docs/WRITEUP.md">Engineering writeup</a>
   &nbsp;·&nbsp;
   <a href="#-quickstart-2-minutes-no-api-key">Quickstart</a>
@@ -133,38 +135,39 @@ python -m recall.cli search "your question"     # -> hits + gap/freshness flags
 
 Point `RECALL_DSN` at any Postgres to use your own database.
 
-## 🔌 MCP self-recall server
+**Code, not just prose.** The engine is content-agnostic — point it at source and it chunks on
+`def` / `class` boundaries, so natural-language questions land the exact function:
 
-Expose memory to an MCP client (e.g. Claude Desktop) as three tools — `recall_search`,
-`recall_index`, `recall_stats`:
+```text
+$ python -m recall.cli index ./src --glob "**/*.py"   # your codebase
+$ python -m recall.cli code                            # demo: search RE-call's OWN source
+indexed 42 code chunks from 16 files
+
+[ok] query='where is reciprocal rank fusion implemented?'
+  0.805  recall/retriever.py  'def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:…'
+
+[ok] query='how are embeddings stored in postgres?'
+  0.789  recall/store.py      'class PgVectorStore:     """The single, production-grade vector store:…'
+
+[ok] query='how does cross-encoder reranking reorder hits?'
+  0.878  recall/rerank.py     'class CrossEncoderReranker:     """Reorder hits by cross-encoder relev…'
+```
+
+## 🔌 Use it with Claude (MCP)
+
+Expose memory to **Claude Code** or **Claude Desktop** as three tools — `recall_search`,
+`recall_index`, `recall_stats` — so the agent queries its memory *before* it acts:
 
 ```bash
 pip install -e ".[fastembed,mcp]"
 python -m recall_mcp.server        # stdio server
 ```
 
-The pattern: an agent calls `recall_search` **before** proposing an idea; if a closed decision or
-falsified hypothesis surfaces (and it isn't a `gap_warning`), it backs off instead of re-litigating.
-See [`examples/self_recall_agent.py`](examples/self_recall_agent.py).
+The self-recall pattern: Claude calls `recall_search` **before** proposing an idea; if a closed
+decision surfaces (and it isn't a `gap_warning`), it backs off instead of re-litigating.
 
-<details>
-<summary>Example client config</summary>
-
-```json
-{
-  "mcpServers": {
-    "recall": {
-      "command": "python",
-      "args": ["-m", "recall_mcp.server"],
-      "env": { "RECALL_DSN": "postgresql://recall:recall@localhost:5432/recall" }
-    }
-  }
-}
-```
-
-`RECALL_EMBEDDER=hashing` selects the offline embedder (default `fastembed`); `RECALL_INDEX_ROOT`
-bounds where `recall_index` may read (default: the server's working directory).
-</details>
+**→ [Full guide: config for Claude Code + Desktop, the three tools, and a real redacted loop](docs/USING_WITH_CLAUDE.md)**
+&nbsp;·&nbsp; example agent: [`examples/self_recall_agent.py`](examples/self_recall_agent.py).
 
 ## 🧪 Reproduce the evaluation
 

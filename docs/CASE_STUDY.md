@@ -42,6 +42,20 @@ metadata: { type: project | feedback | reference | incident }
 <the fact. For project/feedback: **Why** + **How to apply**. Links related memos via [[slug]].>
 ```
 
+## Not just memory — code, too
+
+The same *retrieve-before-you-act* pattern runs over the **codebase**, not only the memory: a sibling
+code-RAG (production uses a code-tuned embedder + BM25) that the agent queries — *"where is X
+handled?"* — **before grepping** across a large multi-service repository. RE-call carries this too:
+point it at source and it chunks on `def`/`class` boundaries —
+
+```bash
+python -m recall.cli index ./src --glob "**/*.py"
+python -m recall.cli code      # searches RE-call's own source: "where is RRF implemented?"
+```
+
+Same engine, same guards — only the content and the chunker change.
+
 ## Why each guard exists
 
 Every guard is a scar. Before it existed, the agent failed this way:
