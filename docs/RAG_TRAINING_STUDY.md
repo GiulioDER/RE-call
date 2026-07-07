@@ -2,7 +2,7 @@
 
 **Short answer: only as much as your corpus's vocabulary diverges from what the base model already
 knows.** On a semantically-rich corpus a modern small embedder leaves *zero* headroom; on an
-opaque-jargon corpus, fine-tuning nearly doubles retrieval. This is a controlled demonstration of
+opaque-jargon corpus, fine-tuning lifts retrieval by ~79%. This is a controlled demonstration of
 both, with the same pipeline, so the difference is the corpus — not the method.
 
 > Reproduce everything below with `finetune/train.py` (see the commands at the end). Weights are
@@ -48,7 +48,7 @@ near-duplicate documents effortlessly when the discriminators (service, dependen
 words it understands. **Structural confusability is not enough** — the base has to be missing actual
 *knowledge*.
 
-## Result 2 — an opaque-jargon corpus: fine-tuning nearly doubles retrieval
+## Result 2 — an opaque-jargon corpus: fine-tuning lifts retrieval ~79%
 
 So I removed the knowledge. Nine documents that are **pure metadata behind an opaque codename** —
 no description of what the feature does:
@@ -107,7 +107,7 @@ python finetune/train.py
 python finetune/train.py \
   --corpus finetune/confusable_corpus \
   --queries finetune/confusable_queries.json \
-  --epochs 10
+  --epochs 10 --out finetune/model_confusable
 ```
 
 — See the [engineering writeup](WRITEUP.md) · the retrieval [evaluation findings](../results/FINDINGS.md)

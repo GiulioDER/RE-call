@@ -22,5 +22,6 @@ For the **full study — including a second corpus where fine-tuning *does* lift
 python finetune/train.py
 
 # the positive (confusable corpus)
-python finetune/train.py --corpus finetune/confusable_corpus --queries finetune/confusable_queries.json
+python finetune/train.py --corpus finetune/confusable_corpus \
+  --queries finetune/confusable_queries.json --epochs 10 --out finetune/model_confusable
 ```

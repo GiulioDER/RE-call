@@ -74,7 +74,7 @@ model on purpose.
 
 To demonstrate a *real* domain-adaptation lift you need a corpus the base model actually struggles
 on. We built one — an **opaque-codename corpus** where the concept↔name mapping exists nowhere in
-pretraining — and there the same pipeline **nearly doubles held-out MRR (0.31 → 0.55, Δ +0.24)**.
+pretraining — and there the same pipeline **lifts held-out MRR by ~79% (0.31 → 0.55, Δ +0.24)**.
 Same method, opposite outcome: **fine-tuning's payoff equals the vocabulary gap between the base
 model and your corpus** — zero on this rich corpus, large on the jargon one.
 

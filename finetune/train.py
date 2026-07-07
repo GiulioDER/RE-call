@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Fine-tune a small embedding model for retrieval on the recall eval corpus, and measure the lift.
+"""Fine-tune a small embedding model for retrieval, and measure the lift on a held-out query split.
 
 Recipe adapted from a proven production trainer: sentence-transformers + OnlineContrastiveLoss
 over (query, chunk) pairs. Positives = query <-> its gold chunk; negatives = query <-> wrong chunks.
-Trains on finetune/hard_queries.json["train"] and evaluates retrieval on the HELD-OUT ["test"] split
-(differently-phrased queries), so the measured lift is generalization, not memorization.
+Trains on the --queries JSON ["train"] split over the --corpus folder, and evaluates retrieval on
+the HELD-OUT ["test"] split (differently-phrased queries), so the measured lift is generalization,
+not memorization. Two-corpus study: docs/RAG_TRAINING_STUDY.md.
 
 CPU is fine for this tiny model/dataset.
-    python finetune/train.py --epochs 8
+    python finetune/train.py                                       # null (rich corpus) -> delta ~ +0.00
+    python finetune/train.py --corpus finetune/confusable_corpus \
+        --queries finetune/confusable_queries.json --epochs 10     # positive (opaque-jargon corpus)
 """
 from __future__ import annotations
 
@@ -65,9 +68,24 @@ def main() -> None:
     random.seed(args.seed)
 
     ids, texts = load_chunks(Path(args.corpus))
+    if not ids:
+        raise SystemExit(f"no .md chunks found under --corpus {args.corpus!r}")
     text_by_id = dict(zip(ids, texts))
     data = json.loads(Path(args.queries).read_text(encoding="utf-8"))
     train_q, test_q = data["train"], data["test"]
+
+    # --corpus and --queries are independent flags; guard the invariant that every query's gold
+    # chunk exists in the loaded corpus. Without this a mismatch either crashes with a cryptic
+    # KeyError (train) or, worse, silently collapses every metric to ~0 (test) — a misleading
+    # "fine-tuning did nothing" result rather than an error.
+    missing = sorted(
+        {rid for q in train_q + test_q for rid in q["relevant_ids"] if rid not in text_by_id}
+    )
+    if missing:
+        raise SystemExit(
+            f"--queries {args.queries!r} references chunk ids absent from --corpus {args.corpus!r}: "
+            f"{missing[:5]}{' and more' if len(missing) > 5 else ''}. Do --corpus and --queries match?"
+        )
 
     from datasets import Dataset
     from sentence_transformers import (
