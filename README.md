@@ -91,7 +91,7 @@ precision@k, recall@k, MRR, nDCG, and a guard-specific **false-confident rate**.
   <img src="results/ndcg_by_config.png" width="48%" alt="Retrieval quality (nDCG@10) by config">
 </p>
 
-Two **honest** findings — including what *didn't* work:
+Three **honest** findings — including what *didn't* work:
 
 - 🎯 **The gap threshold doesn't transfer across embedders.** The default `0.50` gives a **0.80**
   false-confident rate on FastEmbed (its cosines cluster high); per-embedder calibration to `~0.70`
@@ -99,10 +99,12 @@ Two **honest** findings — including what *didn't* work:
 - 🔁 **Reranking rescues a weak embedder.** Hybrid + cross-encoder lifts MRR **0.68 → 1.00** on the
   offline embedder — but a strong embedder already saturates this corpus, so the gain is real yet
   situational.
+- 🧪 **Fine-tuning the embedder pays off only for a vocabulary gap.** A controlled study: on a rich
+  corpus the base already saturates (Δ **+0.00**); on an opaque-jargon corpus it can't decode,
+  fine-tuning lifts held-out MRR **0.31 → 0.55 (+79%)** and generalizes to unseen paraphrases.
+  → *Measure the base–corpus gap before fine-tuning.* **[Read the study →](docs/RAG_TRAINING_STUDY.md)**
 
-> Full methodology + per-embedder tables → **[results/FINDINGS.md](results/FINDINGS.md)**. When
-> embedding **fine-tuning helps vs. doesn't** — a controlled null (Δ+0.00 on a rich corpus) *and* a
-> **+0.24-MRR** positive on an opaque-jargon corpus → **[docs/RAG_TRAINING_STUDY.md](docs/RAG_TRAINING_STUDY.md)**.
+> Full methodology + per-embedder tables → **[results/FINDINGS.md](results/FINDINGS.md)**.
 
 ✅ **46 integration tests run against a real pgvector container** (no mock DB), verified in CI, with a
 dependency audit.
