@@ -115,8 +115,10 @@ def main() -> None:
     print(f"built {len(labels)} pairs from {len(train_q)} train queries")
 
     loss = losses.OnlineContrastiveLoss(model=model, margin=args.margin)
+    out = Path(args.out)
     targs = SentenceTransformerTrainingArguments(
-        output_dir=str(ROOT / "model_ckpt"),
+        # scratch/checkpoint dir tracks --out, so parallel runs (null vs confusable) don't collide
+        output_dir=str(out.parent / f"{out.name}_ckpt"),
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
         warmup_steps=10,
@@ -127,7 +129,6 @@ def main() -> None:
     )
     trainer = SentenceTransformerTrainer(model=model, args=targs, train_dataset=train_ds, loss=loss)
     trainer.train()
-    out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     model.save(str(out))
 
