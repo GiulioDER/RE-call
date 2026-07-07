@@ -131,33 +131,3 @@ class VoyageEmbedder:
     def embed(self, texts: list[str]) -> list[list[float]]:
         result = self._client.embed(texts, model=self._model)
         return [[float(x) for x in v] for v in result.embeddings]
-
-
-class OpenAIEmbedder:
-    """OpenAI cloud embeddings. Requires `pip install recall[openai]` and OPENAI_API_KEY."""
-
-    def __init__(self, model: str = "text-embedding-3-small", api_key: str | None = None) -> None:
-        key = api_key or os.environ.get("OPENAI_API_KEY")
-        if not key:
-            raise RuntimeError("OpenAIEmbedder needs OPENAI_API_KEY (env) or an explicit api_key")
-        try:
-            from openai import OpenAI
-        except ImportError as exc:  # pragma: no cover - exercised only without the extra
-            raise ImportError("OpenAIEmbedder requires: pip install recall[openai]") from exc
-        self._client = OpenAI(api_key=key)
-        self._model = model
-        self._name = f"openai:{model}"
-        probe = self._client.embeddings.create(input=["probe"], model=model)
-        self._dim = len(probe.data[0].embedding)
-
-    @property
-    def dim(self) -> int:
-        return self._dim
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        resp = self._client.embeddings.create(input=texts, model=self._model)
-        return [[float(x) for x in d.embedding] for d in resp.data]

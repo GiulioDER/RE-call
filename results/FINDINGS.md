@@ -35,8 +35,7 @@ in Voyage's clean gap (unanswerable ≈ 0.1–0.3, answerable ≈ 0.5–0.7), si
 distribution (so the guard never fires — FCR 0.80), and lands inside hashing's overlap. **It works
 for one strong model by luck, fails for another strong model, and cannot work for the weak one.**
 (\* hashing's 0.00 at 0.50 is misleading: every hashing cosine is low, so it also wrongly flags many
-*answerable* queries as gaps.) OpenAI is omitted — the available key had no quota, and the harness
-skipped it cleanly (graceful degradation is itself a design goal).
+*answerable* queries as gaps.)
 
 Two lessons:
 

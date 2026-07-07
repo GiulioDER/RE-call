@@ -22,7 +22,6 @@ def _build_embedders() -> list[Embedder]:
         print(f"skip fastembed: {exc}")
     for cls_name, keyenv in [
         ("VoyageEmbedder", "VOYAGE_API_KEY"),
-        ("OpenAIEmbedder", "OPENAI_API_KEY"),
     ]:
         if not os.environ.get(keyenv):
             print(f"skip {cls_name}: no {keyenv} set")
@@ -39,7 +38,7 @@ def _build_embedders() -> list[Embedder]:
 def main() -> None:
     from recall._env import load_dotenv
 
-    load_dotenv()  # pick up VOYAGE_API_KEY / OPENAI_API_KEY from a gitignored .env if present
+    load_dotenv()  # pick up VOYAGE_API_KEY from a gitignored .env if present
     embedders = _build_embedders()
     print(f"embedders: {[e.name for e in embedders]}")
     results = run_ablations(DEFAULT_DSN, embedders)
@@ -49,7 +48,7 @@ def main() -> None:
     (out / "RESULTS.md").write_text(
         "# recall — retrieval evaluation\n\n"
         "Reproduce the local (key-free) rows with `make eval` — needs Docker + the local "
-        "embedder only. Cloud rows appear when `VOYAGE_API_KEY`/`OPENAI_API_KEY` are set.\n\n"
+        "embedder only. The Voyage cloud row appears when `VOYAGE_API_KEY` is set.\n\n"
         + md
         + "\n",
         encoding="utf-8",
