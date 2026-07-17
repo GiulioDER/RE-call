@@ -40,6 +40,23 @@ def ndcg_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> floa
     return dcg / idcg if idcg > 0 else 0.0
 
 
+def superseded_trust_rate(stale_trusted_flags: list[bool]) -> float:
+    """Fraction of trust-sensitive queries where a superseded/expired memory was presented as a
+    trustworthy answer (flag True = the system trusted a stale memory). Lower is better — this
+    is the false-positive-retrieval failure mode the trust layer exists to kill.
+    """
+    if not stale_trusted_flags:
+        return 0.0
+    return sum(1 for f in stale_trusted_flags if f) / len(stale_trusted_flags)
+
+
+def successor_accuracy(successor_hit_flags: list[bool]) -> float:
+    """Fraction of supersession queries where the top trusted answer was the current successor."""
+    if not successor_hit_flags:
+        return 0.0
+    return sum(1 for f in successor_hit_flags if f) / len(successor_hit_flags)
+
+
 def false_confident_rate(gap_warnings: list[bool]) -> float:
     """Given the `gap_warning` flags for the UNANSWERABLE queries, the fraction where the system
     was (wrongly) confident — i.e. gap_warning was False. Lower is better; this is the guard's job.

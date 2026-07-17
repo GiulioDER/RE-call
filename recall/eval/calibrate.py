@@ -53,6 +53,8 @@ def calibrate(
         ans: list[float] = []
         unans: list[float] = []
         for q in queries:
+            if q.get("trust"):
+                continue  # validity-sensitive queries have no answerable label; skip them here
             hits = store.query_dense(embedder.embed([q["query"]])[0], k=1)
             top = hits[0].score if hits else 0.0
             (ans if q["answerable"] else unans).append(top)

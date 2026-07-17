@@ -115,3 +115,23 @@ def test_provenance_and_validity_populated():
     assert h.provenance.indexed_at == NOW
     assert h.validity.valid_from is not None and h.validity.valid_until is not None
     assert h.cosine == 0.9
+
+
+def test_successor_promotion_when_stale_hit_was_confident():
+    # stale v1 matches strongly; its successor is retrieved but worded differently (low cosine)
+    hits = [_hit("old", "v1.md", 0.95), _hit("new", "v2.md", 0.30, supersedes="v1.md")]
+    res = evaluate(_result(hits), {"v1.md": "v2.md"}, CAL, NOW)
+    by_file = {h.provenance.file: h for h in res.hits}
+    assert by_file["v2.md"].verdict == "ok"  # promoted: the supersession edge transfers relevance
+    assert by_file["v2.md"].confidence < 0.5  # confidence stays honest (low)
+    assert res.hits[0].provenance.file == "v2.md"
+    assert res.abstained is False
+
+
+def test_no_successor_promotion_when_stale_hit_was_weak():
+    # neither hit clears the threshold: an unrelated query must NOT ride the supersession edge
+    hits = [_hit("old", "v1.md", 0.20), _hit("new", "v2.md", 0.10, supersedes="v1.md")]
+    res = evaluate(_result(hits, gap=True), {"v1.md": "v2.md"}, CAL, NOW)
+    by_file = {h.provenance.file: h for h in res.hits}
+    assert by_file["v2.md"].verdict == "low_confidence"
+    assert res.abstained is True

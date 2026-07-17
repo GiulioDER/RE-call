@@ -82,3 +82,38 @@ model and your corpus** — zero on this rich corpus, large on the jargon one.
 
 The lesson from the production know-how the recipe came from: **embeddings only encode what they
 encode — measure honestly, don't force a result.**
+
+## 4. Validity beats similarity: the trust layer kills stale-memory false positives
+
+v0.2 adds a trust layer: every hit returns **confidence + provenance + validity** (verdict:
+`ok | superseded | expired | not_yet_valid | low_confidence`), and the result **abstains** when no
+valid hit clears the calibrated threshold. The motivating failure: a memory that is *semantically
+closest* to the query but **superseded** keeps winning plain vector search forever — the agent
+confidently builds on a decision that was reversed. Six validity-sensitive queries (worded
+deliberately closer to the *stale* version — the adversarial case) measure it. STR =
+superseded-trust rate: how often a stale memory is presented as the answer (lower is better).
+
+| embedder | STR plain search | STR trust layer | successor acc | abstain acc | MRR answerable (plain → trust) |
+|---|---|---|---|---|---|
+| hashing-64 | **1.00** | **0.00** | 0.25 | 0.00 | 0.737 → 0.737 |
+| bge-small (FastEmbed) | **0.83** | **0.00** | 0.75 | 1.00 | 1.000 → 1.000 |
+
+- **Plain search fails exactly as predicted**: on 83–100% of the trust queries the top answer is
+  the superseded/expired memory — semantic similarity cannot see supersession. With the trust
+  layer the stale memory is *never* presented as trustworthy (STR 0.00 on both embedders), and
+  ordinary answerable retrieval is untouched (identical MRR).
+- **Successor redirect**: an explicit `supersedes:` edge transfers relevance — when the stale hit
+  scored above the threshold, its retrieved successor is promoted even if its own (different)
+  wording scores lower. On bge the successor is the top trusted answer in 3/4 cases; the "miss"
+  is honest ranking, not stale trust: the successor was verdict-ok but ranked behind *another
+  valid, topically-related memory* (strict top-1 metric).
+- **Abstention quality is bounded by the embedder — §2's lesson resurfaces.** bge + calibrated
+  threshold abstains perfectly on expired/not-yet-valid-only queries (2/2). hashing-64 cannot
+  abstain at all (0/2): its answerable/unanswerable cosine regimes overlap, so unrelated
+  memories clear any workable threshold. A weak embedder cannot support calibrated abstention,
+  at any threshold — same failure mode as gap detection.
+- **Limits stated plainly**: the redirect requires the successor to be *retrieved* (it is not
+  re-queried); validity metadata is declared by the memory author, not inferred; and the
+  calibration comes from a small labeled query set (see §2 for why it must be per-embedder).
+
+Reproduce: `make eval` → the trust table in `RESULTS.md` + `results/trust_effect.png`.

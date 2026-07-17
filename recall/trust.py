@@ -14,6 +14,7 @@ step over `HybridRetriever.search()`:
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from recall.calibration import Calibration
@@ -98,8 +99,11 @@ def evaluate(
     """Pure trust evaluation of a retrieval result (no DB access, no clock reads).
 
     Verdict precedence per hit: superseded > expired / not_yet_valid > low_confidence > ok.
-    Hits are reordered valid-first so a retrieved successor outranks the superseded memory
-    that outscored it semantically. `abstained` is True when no hit earned verdict ``ok``.
+    Successor promotion: when a superseded hit scored above the threshold (it would have been
+    the confident answer), its retrieved successor is promoted from ``low_confidence`` to
+    ``ok`` even if its own wording scores lower — the explicit supersession edge transfers the
+    topical relevance the stale memory proved. Hits are then reordered valid-first so the
+    successor outranks the stale memory. `abstained` is True when no hit earned verdict ``ok``.
     """
     cal = calibration or _UNCALIBRATED
     trusted: list[TrustedHit] = []
@@ -121,6 +125,17 @@ def evaluate(
                 validity=validity,
             )
         )
+    promoted_files = {
+        h.validity.superseded_by
+        for h in trusted
+        if h.verdict == "superseded" and h.cosine >= cal.threshold
+    }
+    trusted = [
+        replace(h, verdict="ok")
+        if h.verdict == "low_confidence" and h.provenance.file in promoted_files
+        else h
+        for h in trusted
+    ]
     ok = [h for h in trusted if h.verdict == "ok"]
     rest = [h for h in trusted if h.verdict != "ok"]
     abstained = not ok
