@@ -1,3 +1,5 @@
+import pytest
+
 from recall.index import Indexer, chunk_code, chunk_text
 from recall.embeddings import HashingEmbedder
 
@@ -29,6 +31,33 @@ def test_index_path_ingests_markdown(tmp_path, make_store):
     assert stats.chunks == 2
     hits = store.query_sparse("caching", k=5)
     assert hits and hits[0].chunk.text == "caching decision one"
+
+
+@requires_db
+def test_index_path_stores_validity_frontmatter_in_metadata(tmp_path, make_store):
+    (tmp_path / "policy_v2.md").write_text(
+        "---\nvalid_until: 2099-12-31\nsupersedes: policy_v1.md\n---\nnew policy body",
+        encoding="utf-8",
+    )
+    emb = HashingEmbedder(dim=64)
+    store = make_store(64)
+    Indexer(store, emb).index_path(tmp_path)
+    hits = store.query_sparse("policy", k=5)
+    assert hits
+    md = hits[0].chunk.metadata
+    assert md["supersedes"] == "policy_v1.md"
+    assert md["valid_until"] == "2099-12-31"
+    assert md["file"] == "policy_v2.md" and md["ord"] == 0
+    assert "---" not in hits[0].chunk.text  # frontmatter block is not indexed
+
+
+@requires_db
+def test_index_path_malformed_date_raises_with_filename(tmp_path, make_store):
+    (tmp_path / "bad.md").write_text("---\nvalid_until: soonish\n---\nbody", encoding="utf-8")
+    emb = HashingEmbedder(dim=64)
+    store = make_store(64)
+    with pytest.raises(ValueError, match="bad.md"):
+        Indexer(store, emb).index_path(tmp_path)
 
 
 def test_chunk_code_keeps_top_level_blocks_whole():
