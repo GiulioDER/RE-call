@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
 
+from recall.calibration import load_for
 from recall_mcp.service import index_memory, make_embedder, memory_stats, search_memory
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
@@ -34,8 +35,15 @@ async def _lifespan(_server: FastMCP):
         store.close()
         print(f"recall_mcp: schema check failed:\n{traceback.format_exc()}", file=sys.stderr)
         raise
+    calibration = load_for(embedder.name)  # None -> uncalibrated fallback, flagged in results
+    if calibration is None:
+        print(
+            f"recall_mcp: no calibration for embedder {embedder.name!r} — using the default "
+            "threshold (results will say calibrated=false). Run `recall calibrate` to fix.",
+            file=sys.stderr,
+        )
     try:
-        yield {"store": store, "embedder": embedder}
+        yield {"store": store, "embedder": embedder, "calibration": calibration}
     finally:
         store.close()
 
@@ -62,9 +70,11 @@ def build_server() -> FastMCP:
         """Search the agent's OWN memory before acting, and get actionable guidance.
 
         Call this before proposing an idea, forming a hypothesis, or repeating past work:
-        if a closed decision or falsified hypothesis surfaces, do not re-litigate it. The
-        result's `gap_warning` marks when memory has no relevant answer (treat hits as noise
-        rather than hallucinating), and `advice` states what to do.
+        if a closed decision or falsified hypothesis surfaces, do not re-litigate it. Every hit
+        carries a trust verdict (only `ok` hits should be relied on), a calibrated confidence,
+        provenance (indexed_at) and validity (superseded_by / valid_until). When `abstained` is
+        true, NO valid hit survived — say you don't know instead of answering from the hits.
+        `advice` states what to do.
 
         Args:
             query: what to recall (natural language).
@@ -72,11 +82,14 @@ def build_server() -> FastMCP:
             k: max hits to return (default 5).
 
         Returns:
-            JSON of {query, gap_warning, stale, advice, hits:[{source, score, text}]}.
+            JSON of {query, abstained, reason, calibrated, gap_warning, stale, advice,
+            hits:[{source, score, confidence, verdict, superseded_by, valid_until,
+            indexed_at, text}]}.
         """
         state = _state()
         return search_memory(
-            state["store"], state["embedder"], query, source=source, k=k
+            state["store"], state["embedder"], query, source=source, k=k,
+            calibration=state.get("calibration"),
         ).model_dump_json(indent=2)
 
     @mcp.tool(
