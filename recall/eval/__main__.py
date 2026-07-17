@@ -5,7 +5,14 @@ import os
 from pathlib import Path
 
 from recall.embeddings import Embedder
-from recall.eval.harness import results_to_markdown, run_ablations, save_charts
+from recall.eval.harness import (
+    results_to_markdown,
+    run_ablations,
+    run_trust_eval,
+    save_charts,
+    save_trust_chart,
+    trust_results_to_markdown,
+)
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 
@@ -42,24 +49,34 @@ def main() -> None:
     embedders = _build_embedders()
     print(f"embedders: {[e.name for e in embedders]}")
     results = run_ablations(DEFAULT_DSN, embedders)
+    trust_results = run_trust_eval(DEFAULT_DSN, embedders)
     out = Path("results")
     out.mkdir(exist_ok=True)
     md = results_to_markdown(results)
+    trust_md = trust_results_to_markdown(trust_results)
     (out / "RESULTS.md").write_text(
         "# recall — retrieval evaluation\n\n"
         "Reproduce the local (key-free) rows with `make eval` — needs Docker + the local "
         "embedder only. The Voyage cloud row appears when `VOYAGE_API_KEY` is set.\n\n"
         + md
+        + "\n\n## Trust layer — superseded/expired memories vs plain search\n\n"
+        "STR = superseded-trust rate: how often a stale memory was presented as the answer "
+        "on the validity-sensitive queries (lower is better). The final two columns verify "
+        "the trust layer does not change ordinary answerable retrieval.\n\n"
+        + trust_md
         + "\n",
         encoding="utf-8",
     )
     try:
         charts = save_charts(results, out)
+        charts.append(save_trust_chart(trust_results, out))
         print(f"charts: {[str(c) for c in charts]}")
     except Exception as exc:
         print(f"charts skipped: {exc}")
     print(f"\nwrote {out / 'RESULTS.md'} ({len(results)} ablations)\n")
     print(md)
+    print()
+    print(trust_md)
 
 
 if __name__ == "__main__":

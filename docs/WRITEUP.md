@@ -46,18 +46,26 @@ is **calibrated abstention**: the system has to know, and say, when it doesn't k
 - **Pluggable embedders** behind one `Embedder` protocol: a dependency-free `HashingEmbedder` (so the
   whole test suite runs offline), local `FastEmbed` (bge-small, no API key), and cloud `Voyage`.
 
-### 2.2 The three honesty guards
+### 2.2 The honesty guards
 
 These are the point of the project. Each one converts a silent failure into an explicit signal.
 
 | Guard | Silent failure it prevents | Mechanism |
 |---|---|---|
 | **`gap_warning`** | Confident retrieval on an uncovered topic | If the best dense cosine for a query is below a calibrated threshold, the result is flagged "probable corpus gap — treat as noise" instead of returning nearest-noise as if it were an answer. |
+| **trust verdicts + abstention** (v0.2) | Confidently building on a memory that is no longer true | Every hit returns confidence + provenance + validity: a verdict (`ok / superseded / expired / not_yet_valid / low_confidence`), a calibrated confidence, and `indexed_at`. A superseded or out-of-window memory loses to its retrieved successor — or, when no valid hit clears the calibrated threshold, to an explicit abstention with a reason. |
 | **freshness / staleness** | Serving stale memory as current | Every result reports how old the newest indexed content is; a stale index warns instead of silently serving rot. |
 | **anti-re-litigation** | Re-deciding a settled question | The intended call pattern: an agent runs `search()` *before* proposing an idea; a surfaced closed decision (that is **not** itself a `gap_warning`) tells it to back off. Demonstrated end-to-end in [`examples/self_recall_agent.py`](../examples/self_recall_agent.py). |
 
-The `gap_warning` guard is the one with real engineering depth, because a threshold that abstains
-correctly is not a constant you can hard-code — which the evaluation is what proved.
+The trust layer exists because relevance and trustworthiness are different questions. Traditional
+RAG assumes the answer exists and optimizes retrieval quality; an agent's memory has to answer a
+prior question — *should I trust any retrieved memory at all?* A false-positive retrieval is worse
+than a miss, because the agent confidently builds on a reversed decision. So retrieval here returns
+**confidence + provenance + validity, not just relevance**, and a memory that is semantically
+similar but superseded or outside its validity window loses to "I don't know". Validity is declared
+in the memory itself (frontmatter: `supersedes:`, `valid_from:` / `valid_until:`) and enforced as a
+pure post-processing layer over the retriever ([`recall/trust.py`](../recall/trust.py)); the
+threshold it abstains at is not a constant you can hard-code — which the evaluation proved.
 
 ### 2.3 Exposed as an MCP server
 
@@ -144,9 +152,12 @@ engineered and judged*:
 - **RAG beyond the demo**: hybrid dense + sparse retrieval with RRF, cross-encoder reranking, and a
   pluggable embedder abstraction — on a production-shaped Postgres + pgvector stack, not a toy
   in-memory index.
-- **Calibrated abstention as a first-class feature.** The `gap_warning` guard, and the calibration
-  study behind it, treat "knowing when you don't know" as the actual deliverable — the thing that
-  makes retrieval safe to wire into an autonomous agent's decision loop.
+- **Calibrated abstention as a first-class feature.** The `gap_warning` guard, the trust verdicts,
+  and the calibration study behind them treat "knowing when you don't know" as the actual
+  deliverable — the thing that makes retrieval safe to wire into an autonomous agent's decision
+  loop. The v0.2 evaluation makes the failure concrete: on validity-sensitive queries, plain
+  vector search returns the superseded memory as the answer 83–100% of the time; the trust layer
+  never does (superseded-trust rate 0.00) at zero cost to ordinary retrieval (FINDINGS §4).
 - **Evaluation rigor**: an ablation harness with ranking metrics *and* a guard-specific
   false-confident rate; per-embedder threshold calibration; a held-out fine-tuning split.
 - **Intellectual honesty.** Two of the three headline findings are negatives — a threshold that

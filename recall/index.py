@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from recall.embeddings import Embedder
+from recall.frontmatter import parse_frontmatter, validity_bounds
 from recall.store import PgVectorStore
 from recall.types import Chunk
 
@@ -88,11 +89,20 @@ class Indexer:
         files = sorted(root.glob(glob)) if root.is_dir() else [root]
         all_chunks: list[Chunk] = []
         for f in files:
-            text = f.read_text(encoding="utf-8")
-            for i, ct in enumerate(self._chunker(text)):
+            meta, body = parse_frontmatter(f.read_text(encoding="utf-8"))
+            try:
+                validity_bounds(meta)  # fail fast on malformed dates, before anything is embedded
+            except ValueError as exc:
+                raise ValueError(f"{f}: {exc}") from exc
+            for i, ct in enumerate(self._chunker(body)):
                 cid = hashlib.md5(f"{f}:{i}".encode("utf-8")).hexdigest()
                 all_chunks.append(
-                    Chunk(id=cid, source=str(f), text=ct, metadata={"file": f.name, "ord": i})
+                    Chunk(
+                        id=cid,
+                        source=str(f),
+                        text=ct,
+                        metadata={"file": f.name, "ord": i, **meta},
+                    )
                 )
         if all_chunks:
             embeddings = self._embedder.embed([c.text for c in all_chunks])

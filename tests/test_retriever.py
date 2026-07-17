@@ -53,3 +53,22 @@ def test_search_reports_staleness(make_store):
     # max_age=0 forces "stale" for a just-written row.
     result = HybridRetriever(store, emb, max_age=timedelta(0)).search("cats")
     assert result.staleness.stale is True
+
+
+@requires_db
+def test_sparse_only_hit_carries_true_dense_cosine(make_store):
+    store = make_store(3)
+    store.upsert(
+        [
+            Chunk("a", "f.md", "felines"),          # dense match, no lexical overlap
+            Chunk("b", "g.md", "cats cats cats"),   # lexical match only
+        ],
+        [[1.0, 0.0, 0.0], [0.6, 0.8, 0.0]],
+    )
+    emb = DictEmbedder({"cats": [1.0, 0.0, 0.0]}, default=[0.0, 0.0, 1.0])
+    # candidate_k=1: the dense leg only surfaces "felines", so "cats cats cats" is sparse-only
+    result = HybridRetriever(store, emb, candidate_k=1).search("cats", k=5)
+    by_id = {h.chunk.id: h for h in result.hits}
+    assert "b" in by_id
+    assert abs(by_id["b"].score - 0.6) < 1e-6  # true cosine, not the old 0.0 placeholder
+    assert by_id["b"].indexed_at is not None

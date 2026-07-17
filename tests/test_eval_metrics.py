@@ -41,3 +41,18 @@ def test_false_confident_rate():
     assert false_confident_rate([True, True, False, False]) == pytest.approx(0.5)
     assert false_confident_rate([True, True]) == 0.0  # guard fired on all -> good
     assert false_confident_rate([]) == 0.0
+
+
+def test_superseded_trust_rate():
+    from recall.eval.metrics import superseded_trust_rate
+
+    assert superseded_trust_rate([True, True, False, False]) == 0.5
+    assert superseded_trust_rate([]) == 0.0
+    assert superseded_trust_rate([False]) == 0.0
+
+
+def test_successor_accuracy():
+    from recall.eval.metrics import successor_accuracy
+
+    assert successor_accuracy([True, False]) == 0.5
+    assert successor_accuracy([]) == 0.0

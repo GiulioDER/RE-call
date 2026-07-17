@@ -1,21 +1,212 @@
 [
-  {"id": "q01", "query": "how much did the read-through cache reduce latency", "relevant_ids": ["cache_decision.md:0"], "answerable": true},
-  {"id": "q02", "query": "do we retry requests on 4xx client errors", "relevant_ids": ["retry_policy.md:0"], "answerable": true},
-  {"id": "q03", "query": "why did we pick postgres over a document store", "relevant_ids": ["datastore_choice.md:0"], "answerable": true},
-  {"id": "q04", "query": "did injecting retrieved context into the prompt improve answers", "relevant_ids": ["h014_prompt_injection.md:0"], "answerable": true},
-  {"id": "q05", "query": "is cross-encoder reranking confirmed to help", "relevant_ids": ["h021_reranking.md:0"], "answerable": true},
-  {"id": "q06", "query": "what caused the checkout 500 errors in june", "relevant_ids": ["incident_checkout_500.md:0"], "answerable": true},
-  {"id": "q07", "query": "why was the recommendations widget disabled for some users", "relevant_ids": ["incident_stale_flag.md:0"], "answerable": true},
-  {"id": "q08", "query": "when is indexed content considered stale", "relevant_ids": ["indexer_freshness.md:0"], "answerable": true},
-  {"id": "q09", "query": "when does autoscaling add another replica", "relevant_ids": ["autoscaling.md:0"], "answerable": true},
-  {"id": "q10", "query": "how often do backups run and how long are they retained", "relevant_ids": ["backups.md:0"], "answerable": true},
-  {"id": "q11", "query": "how are secrets provided to the application", "relevant_ids": ["secrets_handling.md:0"], "answerable": true},
-  {"id": "q12", "query": "what is reciprocal rank fusion", "relevant_ids": ["rrf_definition.md:0"], "answerable": true},
-  {"id": "q13", "query": "what is a corpus gap and how is it detected", "relevant_ids": ["corpus_gap_definition.md:0"], "answerable": true},
-  {"id": "q14", "query": "what does anti-re-litigation mean", "relevant_ids": ["anti_relitigation.md:0"], "answerable": true},
-  {"id": "u01", "query": "what is our kubernetes pod eviction policy", "relevant_ids": [], "answerable": false},
-  {"id": "u02", "query": "how do we handle gdpr data deletion requests", "relevant_ids": [], "answerable": false},
-  {"id": "u03", "query": "what is the on-call rotation schedule", "relevant_ids": [], "answerable": false},
-  {"id": "u04", "query": "which third-party payment processor do we use", "relevant_ids": [], "answerable": false},
-  {"id": "u05", "query": "how do penguins survive antarctic winters", "relevant_ids": [], "answerable": false}
+  {
+    "id": "q01",
+    "query": "how much did the read-through cache reduce latency",
+    "relevant_ids": [
+      "cache_decision.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q02",
+    "query": "do we retry requests on 4xx client errors",
+    "relevant_ids": [
+      "retry_policy.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q03",
+    "query": "why did we pick postgres over a document store",
+    "relevant_ids": [
+      "datastore_choice.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q04",
+    "query": "did injecting retrieved context into the prompt improve answers",
+    "relevant_ids": [
+      "h014_prompt_injection.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q05",
+    "query": "is cross-encoder reranking confirmed to help",
+    "relevant_ids": [
+      "h021_reranking.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q06",
+    "query": "what caused the checkout 500 errors in june",
+    "relevant_ids": [
+      "incident_checkout_500.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q07",
+    "query": "why was the recommendations widget disabled for some users",
+    "relevant_ids": [
+      "incident_stale_flag.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q08",
+    "query": "when is indexed content considered stale",
+    "relevant_ids": [
+      "indexer_freshness.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q09",
+    "query": "when does autoscaling add another replica",
+    "relevant_ids": [
+      "autoscaling.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q10",
+    "query": "how often do backups run and how long are they retained",
+    "relevant_ids": [
+      "backups.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q11",
+    "query": "how are secrets provided to the application",
+    "relevant_ids": [
+      "secrets_handling.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q12",
+    "query": "what is reciprocal rank fusion",
+    "relevant_ids": [
+      "rrf_definition.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q13",
+    "query": "what is a corpus gap and how is it detected",
+    "relevant_ids": [
+      "corpus_gap_definition.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q14",
+    "query": "what does anti-re-litigation mean",
+    "relevant_ids": [
+      "anti_relitigation.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "u01",
+    "query": "what is our kubernetes pod eviction policy",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u02",
+    "query": "how do we handle gdpr data deletion requests",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u03",
+    "query": "what is the on-call rotation schedule",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u04",
+    "query": "which third-party payment processor do we use",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u05",
+    "query": "how do penguins survive antarctic winters",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "t01",
+    "query": "what is the cache TTL for the pricing snapshot",
+    "trust": true,
+    "expect": "successor",
+    "stale_ids": [
+      "cache_ttl_v1.md:0"
+    ],
+    "successor_ids": [
+      "cache_ttl_v2.md:0"
+    ]
+  },
+  {
+    "id": "t02",
+    "query": "which engine runs the site search full-text ranking",
+    "trust": true,
+    "expect": "successor",
+    "stale_ids": [
+      "search_engine_v1.md:0"
+    ],
+    "successor_ids": [
+      "search_engine_v2.md:0"
+    ]
+  },
+  {
+    "id": "t03",
+    "query": "what percent of users get the recommendations rollout flag",
+    "trust": true,
+    "expect": "successor",
+    "stale_ids": [
+      "rollout_flag_v1.md:0"
+    ],
+    "successor_ids": [
+      "rollout_flag_v2.md:0"
+    ]
+  },
+  {
+    "id": "t04",
+    "query": "is a deploy freeze in effect for production deploys",
+    "trust": true,
+    "expect": "abstain",
+    "stale_ids": [
+      "deploy_freeze.md:0"
+    ],
+    "successor_ids": []
+  },
+  {
+    "id": "t05",
+    "query": "what is the minimum supported browser matrix policy",
+    "trust": true,
+    "expect": "abstain",
+    "stale_ids": [
+      "browser_support.md:0"
+    ],
+    "successor_ids": []
+  },
+  {
+    "id": "t06",
+    "query": "how long do pricing snapshot cache entries live before expiry",
+    "trust": true,
+    "expect": "successor",
+    "stale_ids": [
+      "cache_ttl_v1.md:0"
+    ],
+    "successor_ids": [
+      "cache_ttl_v2.md:0"
+    ]
+  }
 ]
