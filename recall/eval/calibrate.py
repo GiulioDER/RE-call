@@ -12,10 +12,13 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from recall.calibration import best_threshold
 from recall.embeddings import Embedder
 from recall.eval.metrics import false_confident_rate
 from recall.index import Indexer
 from recall.store import PgVectorStore
+
+__all__ = ["Calibration", "best_threshold", "calibrate"]
 
 EVAL_DIR = Path(__file__).parent
 
@@ -28,17 +31,6 @@ class Calibration:
     suggested_threshold: float
     fcr_at_050: float
     fcr_at_suggested: float
-
-
-def best_threshold(answerable: list[float], unanswerable: list[float]) -> float:
-    """Threshold minimising misclassification: answerable should score >= it, unanswerable below."""
-    candidates = sorted(set(answerable + unanswerable))
-    best_thr, best_err = 0.5, len(answerable) + len(unanswerable) + 1
-    for c in candidates:
-        err = sum(1 for a in answerable if a < c) + sum(1 for u in unanswerable if u >= c)
-        if err < best_err:
-            best_err, best_thr = err, c
-    return round(best_thr, 3)
 
 
 def calibrate(
