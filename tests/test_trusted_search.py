@@ -57,3 +57,27 @@ def test_provenance_populated_end_to_end(tmp_path, make_store):
     assert h.provenance.ord == 0
     assert h.provenance.indexed_at is not None
     assert h.provenance.source.endswith("rate_v1.md")
+
+
+@requires_db
+def test_malformed_metadata_from_direct_upsert_does_not_crash_search(make_store):
+    from recall.types import Chunk
+
+    store = make_store(64)
+    store.upsert(
+        [Chunk("bad", "bad.md", "deploy freeze notes",
+               metadata={"file": "bad.md", "ord": 0, "valid_until": "June 2026"})],
+        [[1.0] + [0.0] * 63],
+    )
+    res = trusted_search(store, HashingEmbedder(dim=64), "deploy freeze notes", k=3)
+    bad = next(h for h in res.hits if h.provenance.file == "bad.md")
+    assert bad.verdict == "invalid_metadata"  # fail closed, no ValueError
+
+
+@requires_db
+def test_trusted_search_rejects_nonpositive_k(make_store):
+    import pytest
+
+    store = make_store(64)
+    with pytest.raises(ValueError):
+        trusted_search(store, HashingEmbedder(dim=64), "anything", k=0)

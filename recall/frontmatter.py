@@ -19,7 +19,9 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     unchanged as ``({}, text)``.
     """
     lines = text.split("\n")
-    if not lines or lines[0].strip() != "---":
+    # tolerate a UTF-8 BOM before the opening fence — Windows editors add one, and a BOM
+    # that silently disabled frontmatter would mean validity metadata lost without a signal
+    if not lines or lines[0].lstrip("\ufeff").strip() != "---":
         return {}, text
     meta: dict[str, str] = {}
     for i, line in enumerate(lines[1:], start=1):
@@ -28,7 +30,12 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
         if ":" in line:
             key, _, value = line.partition(":")
             if key.strip() in VALIDITY_KEYS:
-                meta[key.strip()] = value.strip()
+                value = value.strip()
+                # strip one layer of matching quotes: YAML-habit `supersedes: "v1.md"` must
+                # match the unquoted file name, not silently never apply
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                    value = value[1:-1].strip()
+                meta[key.strip()] = value
     return {}, text  # unclosed block: treat the whole text as body
 
 

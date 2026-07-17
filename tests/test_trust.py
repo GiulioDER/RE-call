@@ -135,3 +135,27 @@ def test_no_successor_promotion_when_stale_hit_was_weak():
     by_file = {h.provenance.file: h for h in res.hits}
     assert by_file["v2.md"].verdict == "low_confidence"
     assert res.abstained is True
+
+
+def test_invalid_metadata_verdict_instead_of_crash():
+    # a malformed date (reachable via direct store.upsert) must not crash retrieval,
+    # and must fail CLOSED: the hit is not trustworthy
+    res = evaluate(_result([_hit("x", "d.md", 0.9, valid_until="June 2026")]), {}, CAL, NOW)
+    assert res.hits[0].verdict == "invalid_metadata"
+    assert res.abstained is True
+    assert "malformed" in res.reason
+
+
+def test_self_supersession_is_ignored():
+    # `supersedes:` the file's own name is an authoring mistake, not a real edge
+    assert resolve_successor("a.md", {"a.md": "a.md"}) is None
+    res = evaluate(_result([_hit("x", "a.md", 0.9)]), {"a.md": "a.md"}, CAL, NOW)
+    assert res.hits[0].verdict == "ok"
+
+
+def test_naive_now_is_interpreted_as_utc():
+    naive = NOW.replace(tzinfo=None)
+    res = evaluate(
+        _result([_hit("x", "d.md", 0.9, valid_until="2026-07-16")]), {}, CAL, naive
+    )
+    assert res.hits[0].verdict == "expired"  # no TypeError on naive-vs-aware comparison

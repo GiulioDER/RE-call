@@ -40,21 +40,34 @@ def ndcg_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> floa
     return dcg / idcg if idcg > 0 else 0.0
 
 
+def fraction_true(flags: list[bool]) -> float:
+    """Mean of boolean flags; NaN on empty input — a rate with no data is NOT a score.
+
+    (0.0-on-empty would read as a PERFECT superseded-trust rate and a CATASTROPHIC accuracy at
+    the same time; NaN forces publishers to render 'n/a' instead of a fake number.)
+    """
+    if not flags:
+        return float("nan")
+    return sum(1 for f in flags if f) / len(flags)
+
+
 def superseded_trust_rate(stale_trusted_flags: list[bool]) -> float:
     """Fraction of trust-sensitive queries where a superseded/expired memory was presented as a
     trustworthy answer (flag True = the system trusted a stale memory). Lower is better — this
-    is the false-positive-retrieval failure mode the trust layer exists to kill.
+    is the false-positive-retrieval failure mode the trust layer exists to kill. NaN on empty.
     """
-    if not stale_trusted_flags:
-        return 0.0
-    return sum(1 for f in stale_trusted_flags if f) / len(stale_trusted_flags)
+    return fraction_true(stale_trusted_flags)
 
 
 def successor_accuracy(successor_hit_flags: list[bool]) -> float:
-    """Fraction of supersession queries where the top trusted answer was the current successor."""
-    if not successor_hit_flags:
-        return 0.0
-    return sum(1 for f in successor_hit_flags if f) / len(successor_hit_flags)
+    """Fraction of supersession queries where the top trusted answer was the current successor.
+    NaN on empty."""
+    return fraction_true(successor_hit_flags)
+
+
+def abstention_accuracy(abstained_flags: list[bool]) -> float:
+    """Fraction of expected-abstain queries where the system actually abstained. NaN on empty."""
+    return fraction_true(abstained_flags)
 
 
 def false_confident_rate(gap_warnings: list[bool]) -> float:

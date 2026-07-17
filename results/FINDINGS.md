@@ -10,12 +10,12 @@ and then the cross-encoder reranker:
 
 | fusion | MRR | nDCG@10 |
 |---|---|---|
-| dense only | 0.68 | 0.76 |
-| + sparse (hybrid) | 0.79 | 0.84 |
+| dense only | 0.63 | 0.72 |
+| + sparse (hybrid) | 0.74 | 0.80 |
 | + cross-encoder rerank | 1.00 | 1.00 |
 
-On the strong FastEmbed (bge-small) embedder, dense retrieval already scores a perfect nDCG@10 on
-this corpus, so the fusion arms have nothing left to gain. Honest reading: **hybrid + rerank buys
+On the strong FastEmbed (bge-small) embedder, dense retrieval already scores nDCG@10 0.97 (MRR
+0.96) and the hybrid arm saturates the corpus at 1.00, so the reranker has nothing left to gain. Honest reading: **hybrid + rerank buys
 the most on weaker embedders or harder corpora; on an easy corpus with a strong embedder it is
 redundant.** A rigorous eval has to be able to show that, not just a win.
 
@@ -26,28 +26,30 @@ We measured the top-cosine distribution for answerable vs. unanswerable queries 
 
 | embedder | answerable cos (min–max) | unanswerable cos (min–max) | separable? | good threshold | FCR @0.50 | FCR @calibrated |
 |---|---|---|---|---|---|---|
-| hashing-64 | 0.30 – 0.68 | 0.35 – 0.45 | no (overlap) | — | 0.00\* | — |
-| bge-small (FastEmbed) | 0.70 – 0.90 | 0.50 – 0.64 | yes | ~0.70 | **0.80** | **0.00** |
-| voyage-3 | 0.53 – 0.70 | 0.09 – 0.32 | yes | ~0.50 | **0.00** | **0.00** |
+| hashing-64 | 0.30 – 0.68 | 0.35 – 0.53 | no (overlap) | — | 0.20\* | — |
+| bge-small (FastEmbed) | 0.70 – 0.90 | 0.51 – 0.64 | yes | ~0.70 | **1.00** | **0.00** |
+| voyage-3\† | 0.53 – 0.70 | 0.09 – 0.32 | yes | ~0.50 | **0.00** | **0.00** |
 
 Three embedders, three completely different cosine regimes. The fixed 0.50 threshold happens to sit
 in Voyage's clean gap (unanswerable ≈ 0.1–0.3, answerable ≈ 0.5–0.7), sits *below the entire* bge
-distribution (so the guard never fires — FCR 0.80), and lands inside hashing's overlap. **It works
+distribution (so the guard never fires — FCR 1.00), and lands inside hashing's overlap. **It works
 for one strong model by luck, fails for another strong model, and cannot work for the weak one.**
-(\* hashing's 0.00 at 0.50 is misleading: every hashing cosine is low, so it also wrongly flags many
-*answerable* queries as gaps.)
+(\* hashing's 0.20 at 0.50 is misleading: with overlapping distributions the guard also wrongly
+flags answerable queries whose cosines sit below 0.50, and its error-minimizing threshold (~0.30)
+simply stops firing at all — FCR 1.00. No threshold works.
+\† voyage-3 was measured on the v0.1 corpus; the cloud row is not re-runnable key-free.)
 
 Two lessons:
 
 - **The default 0.50 is miscalibrated for a strong dense embedder.** bge-small's cosines live in
   roughly [0.50, 0.90]; 0.50 sits *below the entire distribution*, so the guard almost never fires
-  and the false-confident rate on unanswerable queries is 0.80. Recalibrated to ~0.70 — the gap
+  and the false-confident rate on unanswerable queries is 1.00. Recalibrated to ~0.70 — the gap
   between the unanswerable ceiling (0.64) and the answerable floor (0.70) — the guard becomes
   perfect: FCR 0.00, with cleanly separable distributions.
 - **Gap-detection quality is bounded by the embedder.** hashing-64's answerable and unanswerable
   distributions overlap, so no single threshold separates them: a weak, non-semantic embedder
-  cannot support reliable gap detection at all, at any threshold. (0.50 scores FCR 0.00 only because
-  every hashing cosine is low — it would also wrongly flag many *answerable* queries as gaps.)
+  cannot support reliable gap detection at all, at any threshold. (0.50 scores FCR 0.20 while also
+  wrongly flagging *answerable* queries whose cosines sit below 0.50.)
 
 Takeaway for anyone building gap/abstention into a RAG system: **calibrate the threshold per
 embedding model against a small labeled answerable/unanswerable set; do not ship a hard-coded
@@ -86,7 +88,7 @@ encode — measure honestly, don't force a result.**
 ## 4. Validity beats similarity: the trust layer kills stale-memory false positives
 
 v0.2 adds a trust layer: every hit returns **confidence + provenance + validity** (verdict:
-`ok | superseded | expired | not_yet_valid | low_confidence`), and the result **abstains** when no
+`ok | superseded | expired | not_yet_valid | low_confidence | invalid_metadata`), and the result **abstains** when no
 valid hit clears the calibrated threshold. The motivating failure: a memory that is *semantically
 closest* to the query but **superseded** keeps winning plain vector search forever — the agent
 confidently builds on a decision that was reversed. Six validity-sensitive queries (worded

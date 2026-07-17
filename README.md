@@ -105,11 +105,13 @@ Four **honest** findings — including what *didn't* work:
   (worded deliberately closer to the *stale* memory), plain search returns the superseded/expired
   memory as the answer **83–100% of the time**; with the trust layer that rate is **0.00 on every
   embedder**, ordinary retrieval quality is untouched (identical MRR), and abstention fires on the
-  expired-only cases. → *Full table + limits in [FINDINGS §4](results/FINDINGS.md).*
-- 🎯 **The gap threshold doesn't transfer across embedders.** The default `0.50` gives a **0.80**
-  false-confident rate on FastEmbed (its cosines cluster high); per-embedder calibration to `~0.70`
-  makes the guard perfect. → *Calibrate against a small labelled set; don't hard-code.*
-- 🔁 **Reranking rescues a weak embedder.** Hybrid + cross-encoder lifts MRR **0.68 → 1.00** on the
+  expired-only cases on the calibrated semantic embedder (a weak embedder cannot support
+  abstention at any threshold). → *Full table + limits in [FINDINGS §4](results/FINDINGS.md).*
+- 🎯 **The gap threshold doesn't transfer across embedders.** The default `0.50` sits below
+  FastEmbed's entire cosine distribution — a **1.00** false-confident rate (the guard never fires);
+  per-embedder calibration to `~0.70` makes it perfect (0.00). → *Calibrate against a small
+  labelled set; don't hard-code.*
+- 🔁 **Reranking rescues a weak embedder.** Hybrid + cross-encoder lifts MRR **0.63 → 1.00** on the
   offline embedder — but a strong embedder already saturates this corpus, so the gain is real yet
   situational.
 - 🧪 **Fine-tuning the embedder pays off only for a vocabulary gap.** A controlled study: on a rich
@@ -119,7 +121,7 @@ Four **honest** findings — including what *didn't* work:
 
 > Full methodology + per-embedder tables → **[results/FINDINGS.md](results/FINDINGS.md)**.
 
-✅ **95 integration tests run against a real pgvector container** (no mock DB), verified in CI, with a
+✅ **117 tests — the DB-touching ones against a real pgvector container** (no mock DB), verified in CI, with a
 dependency audit.
 
 ## 🏭 Where this comes from
@@ -149,11 +151,12 @@ Default embedder is local **FastEmbed** (no key); `--embedder hashing` is a full
 ```bash
 python -m recall.cli index ./path/to/markdown   # index your own docs
 python -m recall.cli search "your question"     # -> verdicts + confidence + gap/freshness flags
-python -m recall.cli calibrate labeled.json     # per-embedder abstention threshold -> calibration.json
+python -m recall.cli calibrate recall/eval/queries.json   # per-embedder abstention threshold -> calibration.json
 ```
 
 Point `RECALL_DSN` at any Postgres to use your own database. Declare validity in the memory
-itself — plain frontmatter, no schema changes:
+itself — plain frontmatter, no schema changes (validity is *authored, not verified*: index only
+content you trust, because a `supersedes:` claim is honored as written):
 
 ```markdown
 ---
@@ -170,16 +173,16 @@ valid_until: 2026-12-31
 ```text
 $ python -m recall.cli index ./src --glob "**/*.py"   # your codebase
 $ python -m recall.cli code                            # demo: search RE-call's OWN source
-indexed 42 code chunks from 16 files
+indexed 67 code chunks from 19 files
 
 [ok] query='where is reciprocal rank fusion implemented?'
-  0.805  recall/retriever.py  'def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:…'
+  ok             conf=1.00 cos=0.805  retriever.py  'def _rrf(rankings: list[list[str]], k: int = 60) -> '
 
 [ok] query='how are embeddings stored in postgres?'
-  0.789  recall/store.py      'class PgVectorStore:     """The single, production-grade vector store:…'
+  ok             conf=1.00 cos=0.788  store.py  'class PgVectorStore:     """The single, production-g'
 
 [ok] query='how does cross-encoder reranking reorder hits?'
-  0.878  recall/rerank.py     'class CrossEncoderReranker:     """Reorder hits by cross-encoder relev…'
+  ok             conf=1.00 cos=0.886  rerank.py  'class CrossEncoderReranker:     """Reorder hits by c'
 ```
 
 ## 🔌 Use it with Claude (MCP)

@@ -7,9 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
 
+import math
+
 from recall.calibration import from_samples
 from recall.embeddings import Embedder
+from recall.eval.calibrate import measure_top_cosines
 from recall.eval.metrics import (
+    abstention_accuracy,
     false_confident_rate,
     mrr,
     ndcg_at_k,
@@ -153,17 +157,14 @@ def run_trust_eval(
     for emb in embedders:
         table = "trust_" + uuid.uuid4().hex[:8]
         store = PgVectorStore(dsn, dim=emb.dim, table=table)
-        store.ensure_schema()
-        Indexer(store, emb).index_path(corpus_dir)
         try:
+            # schema/indexing inside the try: a failure here must still drop the throwaway
+            # table and close the connection in the finally below
+            store.ensure_schema()
+            Indexer(store, emb).index_path(corpus_dir)
             # in-run calibration from the labeled plain queries (per-embedder threshold —
             # a fixed constant does not transfer across embedders, see FINDINGS §2)
-            ans, unans = [], []
-            for q in plain:
-                hits = store.query_dense(emb.embed([q["query"]])[0], k=1)
-                top = hits[0].score if hits else 0.0
-                (ans if q["answerable"] else unans).append(top)
-            cal = from_samples(emb.name, ans, unans)
+            cal = from_samples(emb.name, *measure_top_cosines(store, emb, plain))
 
             retr = HybridRetriever(store, emb)
             base_flags, trust_flags, succ_flags, abst_flags = [], [], [], []
@@ -195,7 +196,7 @@ def run_trust_eval(
                     str_baseline=superseded_trust_rate(base_flags),
                     str_trust=superseded_trust_rate(trust_flags),
                     successor_acc=successor_accuracy(succ_flags),
-                    abstain_acc=successor_accuracy(abst_flags),
+                    abstain_acc=abstention_accuracy(abst_flags),
                     mrr_answerable_baseline=mean(base_mrrs) if base_mrrs else 0.0,
                     mrr_answerable_trust=mean(trust_mrrs) if trust_mrrs else 0.0,
                 )
@@ -210,6 +211,10 @@ def run_trust_eval(
     return results
 
 
+def _fmt_rate(x: float, digits: int = 2) -> str:
+    return "n/a" if math.isnan(x) else f"{x:.{digits}f}"
+
+
 def trust_results_to_markdown(results: list[TrustEvalResult]) -> str:
     lines = [
         "| embedder | STR baseline | STR trust | successor acc | abstain acc | "
@@ -218,9 +223,9 @@ def trust_results_to_markdown(results: list[TrustEvalResult]) -> str:
     ]
     for r in results:
         lines.append(
-            f"| {r.embedder} | {r.str_baseline:.2f} | {r.str_trust:.2f} | "
-            f"{r.successor_acc:.2f} | {r.abstain_acc:.2f} | "
-            f"{r.mrr_answerable_baseline:.3f} | {r.mrr_answerable_trust:.3f} |"
+            f"| {r.embedder} | {_fmt_rate(r.str_baseline)} | {_fmt_rate(r.str_trust)} | "
+            f"{_fmt_rate(r.successor_acc)} | {_fmt_rate(r.abstain_acc)} | "
+            f"{_fmt_rate(r.mrr_answerable_baseline, 3)} | {_fmt_rate(r.mrr_answerable_trust, 3)} |"
         )
     return "\n".join(lines)
 

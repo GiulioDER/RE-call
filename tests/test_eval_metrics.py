@@ -47,12 +47,15 @@ def test_superseded_trust_rate():
     from recall.eval.metrics import superseded_trust_rate
 
     assert superseded_trust_rate([True, True, False, False]) == 0.5
-    assert superseded_trust_rate([]) == 0.0
+    assert math.isnan(superseded_trust_rate([]))  # a rate with no data is NOT a (perfect) score
     assert superseded_trust_rate([False]) == 0.0
 
 
-def test_successor_accuracy():
-    from recall.eval.metrics import successor_accuracy
+def test_successor_accuracy_and_abstention_accuracy():
+    from recall.eval.metrics import abstention_accuracy, fraction_true, successor_accuracy
 
     assert successor_accuracy([True, False]) == 0.5
-    assert successor_accuracy([]) == 0.0
+    assert math.isnan(successor_accuracy([]))
+    assert abstention_accuracy([True, True]) == 1.0
+    assert math.isnan(abstention_accuracy([]))
+    assert fraction_true([True, False, False, False]) == 0.25

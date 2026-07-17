@@ -36,8 +36,8 @@ class SearchHit(BaseModel):
         "threshold. Uncalibrated when the result says calibrated=false."
     )
     verdict: str = Field(
-        description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence. "
-        "Only 'ok' hits should be relied on."
+        description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence "
+        "| invalid_metadata. Only 'ok' hits should be relied on."
     )
     superseded_by: str | None = Field(
         default=None, description="File of the memory that replaces this one, when superseded."
@@ -150,8 +150,8 @@ def index_memory(store: PgVectorStore, embedder: Embedder, path: str) -> IndexRe
     """Index a markdown file or folder into memory; return counts + a human message.
 
     `path` is confined to RECALL_INDEX_ROOT (default: the current working directory) so a client
-    cannot read arbitrary files off the server's filesystem. Re-indexing overwrites a file's chunks
-    in place; if a file shrinks, orphaned trailing chunks are not garbage-collected.
+    cannot read arbitrary files off the server's filesystem. Re-indexing REPLACES each file's
+    chunks completely, so a shrunk file leaves no stale chunks behind.
     """
     root = Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve()
     target = Path(path).resolve()

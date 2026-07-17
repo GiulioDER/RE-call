@@ -100,8 +100,8 @@ def build_server() -> FastMCP:
     def recall_index(path: str) -> str:
         """Index a markdown file or folder into the agent's memory so it can be recalled later.
 
-        Re-indexing a file overwrites its chunks in place (safe to re-run after edits). Known
-        limitation: if a file shrinks, its now-orphaned trailing chunks are not garbage-collected.
+        Re-indexing a file REPLACES its chunks completely (safe to re-run after edits; a shrunk
+        file leaves no stale chunks behind).
         `path` is confined to RECALL_INDEX_ROOT (default: the server's working directory).
 
         Args:

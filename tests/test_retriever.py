@@ -72,3 +72,17 @@ def test_sparse_only_hit_carries_true_dense_cosine(make_store):
     assert "b" in by_id
     assert abs(by_id["b"].score - 0.6) < 1e-6  # true cosine, not the old 0.0 placeholder
     assert by_id["b"].indexed_at is not None
+
+
+@requires_db
+def test_search_rejects_nonpositive_k(make_store):
+    import pytest
+
+    store = make_store(3)
+    store.upsert([Chunk("a", "f.md", "cats")], [[1.0, 0.0, 0.0]])
+    emb = DictEmbedder({}, default=[1.0, 0.0, 0.0])
+    retr = HybridRetriever(store, emb)
+    with pytest.raises(ValueError):
+        retr.search("cats", k=0)
+    with pytest.raises(ValueError):
+        retr.search("cats", k=-3)

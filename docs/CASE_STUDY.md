@@ -9,7 +9,8 @@ guards in this repo aren't hypothetical — each one exists because the agent fa
 without it.
 
 > **Honest boundary.** RE-call is a clean-room extraction of that engine — the same hybrid retrieval
-> and the same three guards, rebuilt as a standalone public library. The trading memory itself stays
+> and the same guards (four as of v0.2, with trust verdicts + calibrated abstention), rebuilt as a
+> standalone public library. The trading memory itself stays
 > private; the corpus shipped in this repo is synthetic but mirrors the real one's shape. Nothing
 > below reveals a strategy, threshold, or result — only the *system*, redacted.
 
@@ -63,7 +64,7 @@ Every guard is a scar. Before it existed, the agent failed this way:
 | Guard | The failure it fixes |
 |-------|----------------------|
 | 🔁 **Anti-re-litigation** | The agent kept re-proposing experiments that had *already been falsified* — burning a day re-deriving a known-dead result. Now it searches a closed-hypotheses index *before* scaffolding anything; a settled decision resurfaces and it backs off. |
-| 🕳️ **gap_warning** | Semantic search always returns *something*. On a question the memory had no answer for, the top hits were weakly-related memos — and the agent treated them as if they were relevant. Now, when the top matches all fall below ~0.50 cosine, the result is flagged a **probable corpus gap** and treated as noise. |
+| 🕳️ **gap_warning** | Semantic search always returns *something*. On a question the memory had no answer for, the top hits were weakly-related memos — and the agent treated them as if they were relevant. Now, when the top matches all fall below the calibrated threshold (~0.50–0.70 depending on the embedder), the result is flagged a **probable corpus gap** and treated as noise. |
 | ⏱️ **Freshness** | Between sessions the index went stale, and the agent silently retrieved facts that a newer memo had already overturned. Now every result reports index age, and a stale index warns instead of serving rot. |
 
 ## Anti-re-litigation in action (redacted)
@@ -91,7 +92,7 @@ noise:
 ```text
 agent> recall_search("<question the memory has never covered>")
 
-[recall]  [GAP] top match 0.41 < 0.50 threshold — probable corpus gap.
+[recall]  abstained — top match below the calibrated threshold; probable corpus gap.
           Treat these hits as noise; do not rely on them.
 
 agent> memory has no real answer here. Not going to fabricate one from weak hits.

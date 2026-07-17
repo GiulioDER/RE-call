@@ -25,6 +25,7 @@ class PgVectorStore:
         self._dsn = dsn
         self._dim = dim
         self._table = table
+        self._supersession_cache: dict[str, str] | None = None
         self._conn = psycopg.connect(dsn, autocommit=True)
         try:
             # register_vector needs the `vector` type to already exist, so ensure the extension
@@ -89,6 +90,7 @@ class PgVectorStore:
     def upsert(self, chunks: list[Chunk], embeddings: list[list[float]]) -> int:
         if len(chunks) != len(embeddings):
             raise ValueError("chunks and embeddings length mismatch")
+        self._supersession_cache = None  # metadata may change; recompute on next read
         t = self._table
         # One transaction for the whole batch: a mid-loop failure rolls the batch back
         # instead of leaving earlier rows committed (the connection is autocommit).
@@ -152,19 +154,33 @@ class PgVectorStore:
             raise ValueError("k must be a positive int")
         t = self._table
         where = "AND source = %(source)s" if source else ""
-        score_expr = (
-            "1 - (embedding <=> %(vec)s)"
-            if vec is not None
-            else "ts_rank(tsv, websearch_to_tsquery('english', %(q)s))"
-        )
-        sql = f"""
-            SELECT id, source, text, metadata, indexed_at, {score_expr} AS score
-            FROM {t}
-            WHERE tsv @@ websearch_to_tsquery('english', %(q)s)
-            {where}
-            ORDER BY ts_rank(tsv, websearch_to_tsquery('english', %(q)s)) DESC
-            LIMIT %(k)s
-        """
+        if vec is not None:
+            # cosine only for the k ts_rank winners — computed in the SELECT list of the flat
+            # query it would run for EVERY tsquery-matching row before the sort discards them
+            sql = f"""
+                SELECT id, source, text, metadata, indexed_at,
+                       1 - (embedding <=> %(vec)s) AS score
+                FROM (
+                    SELECT id, source, text, metadata, indexed_at, embedding,
+                           ts_rank(tsv, websearch_to_tsquery('english', %(q)s)) AS rank
+                    FROM {t}
+                    WHERE tsv @@ websearch_to_tsquery('english', %(q)s)
+                    {where}
+                    ORDER BY rank DESC
+                    LIMIT %(k)s
+                ) top_k
+                ORDER BY rank DESC
+            """
+        else:
+            sql = f"""
+                SELECT id, source, text, metadata, indexed_at,
+                       ts_rank(tsv, websearch_to_tsquery('english', %(q)s)) AS score
+                FROM {t}
+                WHERE tsv @@ websearch_to_tsquery('english', %(q)s)
+                {where}
+                ORDER BY score DESC
+                LIMIT %(k)s
+            """
         params: dict = {"q": text, "k": k}
         if vec is not None:
             params["vec"] = Vector(vec)
@@ -173,20 +189,59 @@ class PgVectorStore:
         rows = self._conn.execute(sql, params).fetchall()
         return self._rows_to_hits(rows)
 
+    def replace_sources(
+        self, sources: list[str], chunks: list[Chunk], embeddings: list[list[float]]
+    ) -> int:
+        """Atomically replace every row of `sources` with the given chunks.
+
+        Delete + insert run in ONE transaction: a failure (or a concurrent reader) never
+        observes the sources deleted without their replacement rows. Callers must compute
+        `embeddings` BEFORE calling — an embedding failure then leaves the old rows intact.
+        """
+        if len(chunks) != len(embeddings):
+            raise ValueError("chunks and embeddings length mismatch")
+        self._supersession_cache = None
+        with self._conn.transaction():
+            if sources:
+                self._conn.execute(
+                    f"DELETE FROM {self._table} WHERE source = ANY(%s)", (sources,)
+                )
+            if chunks:
+                self.upsert(chunks, embeddings)  # nested transaction -> savepoint, same commit
+        return len(chunks)
+
+    def delete_sources(self, sources: list[str]) -> int:
+        """Delete every chunk belonging to the given `source` values; returns rows removed.
+
+        Standalone removal API (the Indexer uses the atomic `replace_sources` instead).
+        """
+        if not sources:
+            return 0
+        self._supersession_cache = None
+        cur = self._conn.execute(
+            f"DELETE FROM {self._table} WHERE source = ANY(%s)", (sources,)
+        )
+        return cur.rowcount or 0
+
     def supersession_map(self) -> dict[str, str]:
         """Map of superseded file -> superseding file, from `supersedes` chunk metadata.
 
         If several documents claim to supersede the same file, the last row wins (no defined
-        order) — declare a single successor per file for deterministic behavior.
+        order) — declare a single successor per file for deterministic behavior. The result is
+        cached per store instance and invalidated by this instance's own writes (upsert /
+        delete_sources); a concurrent writer on another connection is not observed until a
+        new store is opened.
         """
-        rows = self._conn.execute(
-            f"""
-            SELECT DISTINCT metadata->>'supersedes' AS old, metadata->>'file' AS new
-            FROM {self._table}
-            WHERE metadata ? 'supersedes'
-            """
-        ).fetchall()
-        return {old: new for old, new in rows if old and new}
+        if self._supersession_cache is None:
+            rows = self._conn.execute(
+                f"""
+                SELECT DISTINCT metadata->>'supersedes' AS old, metadata->>'file' AS new
+                FROM {self._table}
+                WHERE metadata ? 'supersedes'
+                """
+            ).fetchall()
+            self._supersession_cache = {old: new for old, new in rows if old and new}
+        return dict(self._supersession_cache)
 
     def newest_indexed_at(self) -> datetime | None:
         row = self._conn.execute(f"SELECT max(indexed_at) FROM {self._table}").fetchone()

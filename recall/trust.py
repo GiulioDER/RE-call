@@ -31,6 +31,7 @@ from recall.types import (
     TrustedHit,
     TrustedResult,
     Validity,
+    Verdict,
 )
 
 _UNCALIBRATED = Calibration(embedder="uncalibrated", threshold=DEFAULT_GAP_THRESHOLD)
@@ -40,9 +41,10 @@ def resolve_successor(file: str, supersession: dict[str, str]) -> str | None:
     """Terminal successor of `file` in the supersession chain, or None if it has none.
 
     A cycle (a.md -> b.md -> a.md) cannot loop: the walk stops on the first revisit and the
-    cycle member resolves to its direct successor.
+    cycle member resolves to its direct successor. A self-claim (`supersedes:` the file's own
+    name — an authoring mistake) is ignored: a document cannot supersede itself.
     """
-    if file not in supersession:
+    if supersession.get(file) in (None, file):
         return None
     seen = {file}
     cur = file
@@ -57,10 +59,16 @@ def resolve_successor(file: str, supersession: dict[str, str]) -> str | None:
 
 def _verdict(
     hit: ScoredChunk, supersession: dict[str, str], threshold: float, now: datetime
-) -> tuple[str, Validity]:
+) -> tuple[Verdict, Validity]:
     meta = hit.chunk.metadata
     file = meta.get("file")
-    start, end = validity_bounds(meta)
+    try:
+        start, end = validity_bounds(meta)
+    except ValueError:
+        # Malformed validity metadata (reachable via direct store.upsert, which bypasses the
+        # Indexer's fail-fast). Fail CLOSED per hit: an unparseable window must not read as
+        # trustworthy, and one bad row must not crash every search that retrieves it.
+        return "invalid_metadata", Validity(valid_from=None, valid_until=None, superseded_by=None)
     successor = resolve_successor(file, supersession) if file else None
     validity = Validity(valid_from=start, valid_until=end, superseded_by=successor)
     if successor is not None:
@@ -87,6 +95,8 @@ def _abstain_reason(hits: list[TrustedHit]) -> str:
         return f"best candidate ({best.provenance.file}) is outside its validity window (expired)"
     if best.verdict == "not_yet_valid":
         return f"best candidate ({best.provenance.file}) is not yet valid"
+    if best.verdict == "invalid_metadata":
+        return f"best candidate ({best.provenance.file}) carries malformed validity metadata"
     return "no hit above the calibrated confidence threshold (probable corpus gap)"
 
 
@@ -98,13 +108,17 @@ def evaluate(
 ) -> TrustedResult:
     """Pure trust evaluation of a retrieval result (no DB access, no clock reads).
 
-    Verdict precedence per hit: superseded > expired / not_yet_valid > low_confidence > ok.
+    Verdict precedence per hit: invalid_metadata > superseded > expired / not_yet_valid >
+    low_confidence > ok.
     Successor promotion: when a superseded hit scored above the threshold (it would have been
     the confident answer), its retrieved successor is promoted from ``low_confidence`` to
     ``ok`` even if its own wording scores lower — the explicit supersession edge transfers the
     topical relevance the stale memory proved. Hits are then reordered valid-first so the
     successor outranks the stale memory. `abstained` is True when no hit earned verdict ``ok``.
+    A tz-naive `now` is interpreted as UTC.
     """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     cal = calibration or _UNCALIBRATED
     trusted: list[TrustedHit] = []
     for hit in result.hits:
@@ -161,12 +175,17 @@ def trusted_search(
     now: datetime | None = None,
 ) -> TrustedResult:
     """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point."""
-    threshold = calibration.threshold if calibration else DEFAULT_GAP_THRESHOLD
-    retriever = HybridRetriever(store, embedder, reranker=reranker, gap_threshold=threshold)
+    if k < 1:
+        raise ValueError("k must be >= 1")
+    # single fallback resolution: the retriever's gap threshold and the verdict threshold must
+    # always come from the same calibration (or the same uncalibrated default)
+    cal = calibration or _UNCALIBRATED
+    retriever = HybridRetriever(store, embedder, reranker=reranker, gap_threshold=cal.threshold)
     result = retriever.search(query, k=k, source=source)
+    supersession = store.supersession_map() if result.hits else {}
     return evaluate(
         result,
-        store.supersession_map(),
+        supersession,
         calibration,
         now or datetime.now(timezone.utc),
     )

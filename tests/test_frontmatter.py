@@ -60,3 +60,16 @@ def test_validity_bounds_absent_keys_are_none():
 def test_validity_bounds_malformed_date_raises():
     with pytest.raises(ValueError, match="valid_until"):
         validity_bounds({"valid_until": "June 30th"})
+
+
+def test_bom_does_not_disable_frontmatter():
+    meta, body = parse_frontmatter("﻿---\nsupersedes: old.md\n---\nbody text")
+    assert meta == {"supersedes": "old.md"}
+    assert body == "body text"
+
+
+def test_quoted_values_are_unquoted():
+    # YAML-habit quoting must match unquoted file names, not silently never apply
+    meta, _ = parse_frontmatter("---\nsupersedes: \"v1.md\"\nvalid_from: '2026-01-01'\n---\nx")
+    assert meta["supersedes"] == "v1.md"
+    assert meta["valid_from"] == "2026-01-01"

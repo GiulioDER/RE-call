@@ -86,3 +86,60 @@ def test_index_code_with_code_chunker(tmp_path, make_store):
     assert stats.files == 1
     hits = store.query_sparse("reciprocal rank fusion", k=5)
     assert hits and "reciprocal_rank_fusion" in hits[0].chunk.text
+
+
+@requires_db
+def test_reindex_replaces_rows_no_orphans_and_no_stale_supersedes(tmp_path, make_store):
+    emb = HashingEmbedder(dim=64)
+    store = make_store(64)
+    big = tmp_path / "doc.md"
+    # two chunks + a supersedes claim
+    big.write_text(
+        "---\nsupersedes: other.md\n---\n" + ("alpha " * 100) + "\n\n" + ("beta " * 100),
+        encoding="utf-8",
+    )
+    Indexer(store, emb).index_path(tmp_path)
+    assert store.count() == 2
+    assert store.supersession_map() == {"other.md": "doc.md"}
+    # shrink the doc AND withdraw the claim: no orphan chunk, no stale supersession
+    big.write_text("gamma only", encoding="utf-8")
+    Indexer(store, emb).index_path(tmp_path)
+    assert store.count() == 1
+    assert store.supersession_map() == {}
+
+
+@requires_db
+def test_bom_file_frontmatter_still_parsed(tmp_path, make_store):
+    emb = HashingEmbedder(dim=64)
+    store = make_store(64)
+    (tmp_path / "bom.md").write_bytes(
+        b"\xef\xbb\xbf---\nsupersedes: old.md\n---\nbody words here"
+    )
+    Indexer(store, emb).index_path(tmp_path)
+    hits = store.query_sparse("body words", k=1)
+    assert hits and hits[0].chunk.metadata.get("supersedes") == "old.md"
+
+
+@requires_db
+def test_failed_embedding_leaves_existing_rows_intact(tmp_path, make_store):
+    # re-index must not destroy memory when embedding fails: embed runs BEFORE the
+    # delete+insert transaction, so the old rows survive an embedder outage
+    class BoomEmbedder:
+        dim = 64
+        name = "boom"
+
+        def embed(self, texts):
+            raise RuntimeError("embedder outage")
+
+    store = make_store(64)
+    doc = tmp_path / "doc.md"
+    doc.write_text("original memory content", encoding="utf-8")
+    Indexer(store, HashingEmbedder(dim=64)).index_path(tmp_path)
+    assert store.count() == 1
+
+    doc.write_text("updated memory content", encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        Indexer(store, BoomEmbedder()).index_path(tmp_path)
+    assert store.count() == 1  # old row still present
+    hits = store.query_sparse("original memory", k=1)
+    assert hits and "original" in hits[0].chunk.text

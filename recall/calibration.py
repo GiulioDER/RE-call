@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import quantiles
@@ -31,7 +32,10 @@ def best_threshold(answerable: list[float], unanswerable: list[float]) -> float:
         err = sum(1 for a in answerable if a < c) + sum(1 for u in unanswerable if u >= c)
         if err < best_err:
             best_err, best_thr = err, c
-    return round(best_thr, 3)
+    # Round DOWN: the optimizer guarantees answerable samples score >= the chosen candidate;
+    # nearest-rounding could lift the threshold above the candidate and flip a boundary
+    # answerable case to low_confidence at runtime.
+    return math.floor(best_thr * 1000) / 1000
 
 
 @dataclass(frozen=True)
@@ -42,7 +46,9 @@ class Calibration:
 
     def confidence(self, cosine: float) -> float:
         """Monotone cosine -> [0, 1] mapping; exactly 0.5 at the calibrated threshold."""
-        return 1.0 / (1.0 + math.exp(-(cosine - self.threshold) / self.scale))
+        x = (cosine - self.threshold) / self.scale
+        x = max(-60.0, min(60.0, x))  # clamp: math.exp overflows past ~709; ±60 already saturates
+        return 1.0 / (1.0 + math.exp(-x))
 
 
 def from_samples(embedder: str, answerable: list[float], unanswerable: list[float]) -> Calibration:
@@ -54,8 +60,10 @@ def from_samples(embedder: str, answerable: list[float], unanswerable: list[floa
     """
     thr = best_threshold(answerable, unanswerable)
     if len(answerable) >= 2 and len(unanswerable) >= 2:
-        q25_ans = quantiles(answerable, n=4)[0]
-        q75_unans = quantiles(unanswerable, n=4)[2]
+        # method="inclusive" stays bounded by the observed data; the default exclusive
+        # method extrapolates beyond [min, max] for n=2 samples.
+        q25_ans = quantiles(answerable, n=4, method="inclusive")[0]
+        q75_unans = quantiles(unanswerable, n=4, method="inclusive")[2]
         scale = max((q25_ans - q75_unans) / 4, 0.01)
     else:
         scale = DEFAULT_SCALE
@@ -79,14 +87,31 @@ def save(cal: Calibration, path: str | Path | None = None) -> Path:
 
 
 def load_for(embedder: str, path: str | Path | None = None) -> Calibration | None:
-    """Load the calibration for `embedder`, or None when absent or calibrated for a different
-    embedder — a threshold calibrated in another model's cosine regime must never be applied."""
+    """Load the calibration for `embedder`, or None when it cannot be applied safely.
+
+    Returns None (uncalibrated fallback, flagged in every result) when the file is absent,
+    unreadable, malformed, calibrated for a DIFFERENT embedder, or carries out-of-range values —
+    a threshold calibrated in another model's cosine regime must never be applied, and a
+    corrupt file must never be able to disable abstention silently (NaN threshold) or crash
+    every search (zero/negative scale).
+    """
     p = _resolve_path(path)
     if not p.exists():
         return None
-    data = json.loads(p.read_text(encoding="utf-8"))
-    if data.get("embedder") != embedder:
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if data.get("embedder") != embedder:
+            return None
+        threshold = float(data["threshold"])
+        scale = float(data["scale"])
+    except (OSError, json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
+        print(f"recall: ignoring unreadable calibration file {p} (uncalibrated fallback)",
+              file=sys.stderr)
         return None
-    return Calibration(
-        embedder=data["embedder"], threshold=float(data["threshold"]), scale=float(data["scale"])
-    )
+    if not (math.isfinite(threshold) and -1.0 <= threshold <= 1.0
+            and math.isfinite(scale) and scale > 0.0):
+        print(f"recall: ignoring out-of-range calibration in {p} "
+              f"(threshold={threshold!r}, scale={scale!r}) — uncalibrated fallback",
+              file=sys.stderr)
+        return None
+    return Calibration(embedder=embedder, threshold=threshold, scale=scale)

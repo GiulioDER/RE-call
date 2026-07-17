@@ -124,7 +124,31 @@ def main(argv: list[str] | None = None) -> None:
                 "how does cross-encoder reranking reorder hits?",
             ], calibration)
     elif args.cmd == "calibrate":
+        import json
+
+        from recall.calibration import ENV_VAR, _resolve_path
         from recall.eval.calibrate import calibrate as run_calibration
+
+        # fail fast on a malformed or one-class queries file: a calibration built without both
+        # answerable AND unanswerable samples is degenerate, and saving it silently would arm a
+        # meaningless threshold
+        try:
+            entries = json.loads(Path(args.queries).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"cannot read queries file {args.queries!r}: {exc}") from exc
+        labeled = [q for q in entries if isinstance(q, dict) and not q.get("trust")]
+        if not all("query" in q and "answerable" in q for q in labeled):
+            raise SystemExit(
+                "queries file entries need 'query' and 'answerable' keys "
+                "(see recall/eval/queries.json for the format)"
+            )
+        if not any(q["answerable"] for q in labeled) or not any(
+            not q["answerable"] for q in labeled
+        ):
+            raise SystemExit(
+                "queries file needs at least one answerable AND one unanswerable entry — "
+                "a one-class file cannot calibrate an abstention threshold"
+            )
 
         measured = run_calibration(
             args.dsn,
@@ -141,6 +165,9 @@ def main(argv: list[str] | None = None) -> None:
         print(f"FCR at default 0.50: {measured.fcr_at_050:.2f} -> at calibrated: "
               f"{measured.fcr_at_suggested:.2f}")
         print(f"saved: {path}")
+        if args.out and Path(args.out).resolve() != _resolve_path(None).resolve():
+            print(f"note: searches load {_resolve_path(None)} by default — set "
+                  f"{ENV_VAR}={path} for this file to be used")
 
 
 if __name__ == "__main__":

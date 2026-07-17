@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
+
+#: Trust verdict for a retrieved hit. Only ``ok`` hits should be relied on.
+Verdict = Literal[
+    "ok", "superseded", "expired", "not_yet_valid", "low_confidence", "invalid_metadata"
+]
 
 
 @dataclass(frozen=True)
@@ -62,7 +67,7 @@ class TrustedHit:
     chunk: Chunk
     cosine: float
     confidence: float
-    verdict: str  # ok | superseded | expired | not_yet_valid | low_confidence
+    verdict: Verdict
     provenance: Provenance
     validity: Validity
 

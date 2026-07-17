@@ -65,3 +65,50 @@ def test_eval_calibrate_reexports_best_threshold():
     from recall.eval.calibrate import best_threshold as reexported
 
     assert reexported is best_threshold
+
+
+def test_load_for_corrupt_file_returns_none(tmp_path, capsys):
+    path = tmp_path / "calibration.json"
+    path.write_text('{"embedder": "bge", "thresh', encoding="utf-8")  # truncated write
+    assert load_for("bge", path) is None
+
+
+def test_load_for_missing_key_returns_none(tmp_path):
+    path = tmp_path / "calibration.json"
+    path.write_text('{"embedder": "bge", "threshold": 0.7}', encoding="utf-8")  # no scale
+    assert load_for("bge", path) is None
+
+
+def test_load_for_non_dict_json_returns_none(tmp_path):
+    path = tmp_path / "calibration.json"
+    path.write_text("[1, 2, 3]", encoding="utf-8")
+    assert load_for("bge", path) is None
+
+
+def test_load_for_nan_threshold_returns_none(tmp_path):
+    # NaN threshold would make every `score < threshold` False -> abstention silently dead
+    path = tmp_path / "calibration.json"
+    path.write_text('{"embedder": "bge", "threshold": NaN, "scale": 0.05}', encoding="utf-8")
+    assert load_for("bge", path) is None
+
+
+def test_load_for_nonpositive_scale_returns_none(tmp_path):
+    path = tmp_path / "calibration.json"
+    for bad in ("0", "-0.05"):
+        path.write_text(
+            '{"embedder": "bge", "threshold": 0.7, "scale": %s}' % bad, encoding="utf-8"
+        )
+        assert load_for("bge", path) is None
+
+
+def test_confidence_tiny_scale_does_not_overflow():
+    cal = Calibration(embedder="e", threshold=0.7, scale=0.002)
+    assert cal.confidence(-1.0) == 0.0 or cal.confidence(-1.0) < 1e-9  # saturates, no OverflowError
+    assert cal.confidence(1.0) > 0.999
+
+
+def test_best_threshold_never_rounds_above_its_candidate():
+    # nearest-rounding could lift the threshold past the chosen boundary cosine, flipping a
+    # boundary answerable sample to low_confidence
+    thr = best_threshold(answerable=[0.6125001, 0.9], unanswerable=[0.1, 0.2])
+    assert thr <= 0.6125001

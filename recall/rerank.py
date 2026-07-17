@@ -30,4 +30,8 @@ class CrossEncoderReranker:
             return hits
         scores = self._model.predict([(query, h.chunk.text) for h in hits])
         order = sorted(range(len(hits)), key=lambda i: scores[i], reverse=True)
-        return [ScoredChunk(chunk=hits[i].chunk, score=float(scores[i])) for i in order]
+        # Reorder ONLY — each hit keeps its dense cosine `score` and `indexed_at`. The
+        # cross-encoder logit is an unbounded relevance score in different units; leaking it
+        # into `score` would corrupt every downstream consumer that reads it as a cosine
+        # (the trust layer's thresholds and calibrated confidence in particular).
+        return [hits[i] for i in order]

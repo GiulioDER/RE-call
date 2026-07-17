@@ -80,16 +80,16 @@ class Indexer:
     def index_path(self, path: str | Path, glob: str = "**/*.md") -> IndexStats:
         """Index a markdown file, or a directory of them, into the vector store.
 
-        Chunk ids are deterministic (md5 of ``<file>:<ordinal>``), so re-indexing an
-        unchanged file overwrites its chunks in place. Known limitation: if a file shrinks
-        (produces fewer chunks than before), the now-orphaned trailing chunks are not
-        garbage-collected — drop and re-index the table for a clean slate.
+        Re-indexing REPLACES each file's rows completely (delete then insert), so a file that
+        shrinks — or withdraws a frontmatter claim like ``supersedes`` — leaves no stale
+        chunks behind to poison retrieval or the supersession map.
         """
         root = Path(path)
         files = sorted(root.glob(glob)) if root.is_dir() else [root]
         all_chunks: list[Chunk] = []
         for f in files:
-            meta, body = parse_frontmatter(f.read_text(encoding="utf-8"))
+            # utf-8-sig: a BOM must not silently disable frontmatter parsing
+            meta, body = parse_frontmatter(f.read_text(encoding="utf-8-sig"))
             try:
                 validity_bounds(meta)  # fail fast on malformed dates, before anything is embedded
             except ValueError as exc:
@@ -104,7 +104,7 @@ class Indexer:
                         metadata={"file": f.name, "ord": i, **meta},
                     )
                 )
-        if all_chunks:
-            embeddings = self._embedder.embed([c.text for c in all_chunks])
-            self._store.upsert(all_chunks, embeddings)
+        # embed BEFORE touching the store: if embedding fails, the old rows stay intact
+        embeddings = self._embedder.embed([c.text for c in all_chunks]) if all_chunks else []
+        self._store.replace_sources([str(f) for f in files], all_chunks, embeddings)
         return IndexStats(files=len(files), chunks=len(all_chunks))

@@ -61,11 +61,15 @@ class HybridRetriever:
     def search(self, query: str, k: int = 5, source: str | None = None) -> RetrievalResult:
         """Retrieve the top-`k` chunks for `query` (optionally filtered to one `source`).
 
+        `k` must be >= 1 (a negative k would silently slice from the wrong end).
+
         `gap_warning` is computed from the DENSE cosine scores only (not the fused ranks),
         so a purely lexical / sparse-only match still reports a gap — the intended "honest
         about what it doesn't know" behavior. Each hit's `score` is its true dense cosine
         similarity, including hits that arrived via the sparse leg.
         """
+        if k < 1:
+            raise ValueError("k must be >= 1")
         qvec = self._embedder.embed([query])[0]
         dense = self._store.query_dense(qvec, k=self._candidate_k, source=source)
         sparse = (

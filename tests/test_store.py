@@ -133,3 +133,32 @@ def test_supersession_map_empty_when_no_supersedes(make_store):
     store = make_store(3)
     store.upsert([Chunk("a", "f.md", "cats")], [[1.0, 0.0, 0.0]])
     assert store.supersession_map() == {}
+
+
+@requires_db
+def test_delete_sources_removes_all_rows_for_a_source(make_store):
+    store = make_store(3)
+    store.upsert(
+        [Chunk("a1", "f.md", "one"), Chunk("a2", "f.md", "two"), Chunk("b1", "g.md", "keep")],
+        [[1.0, 0.0, 0.0]] * 3,
+    )
+    removed = store.delete_sources(["f.md"])
+    assert removed == 2
+    assert store.count() == 1
+
+
+@requires_db
+def test_supersession_map_cache_invalidated_by_writes(make_store):
+    store = make_store(3)
+    store.upsert(
+        [Chunk("old", "v1.md", "old", metadata={"file": "v1.md", "ord": 0})], [[1.0, 0.0, 0.0]]
+    )
+    assert store.supersession_map() == {}  # primes the cache
+    store.upsert(
+        [Chunk("new", "v2.md", "new",
+               metadata={"file": "v2.md", "ord": 0, "supersedes": "v1.md"})],
+        [[0.0, 1.0, 0.0]],
+    )
+    assert store.supersession_map() == {"v1.md": "v2.md"}  # upsert invalidated the cache
+    store.delete_sources(["v2.md"])
+    assert store.supersession_map() == {}  # delete invalidated it too
