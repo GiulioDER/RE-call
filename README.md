@@ -27,17 +27,20 @@
 
 ---
 
-A long-running agent piles up memory — decisions, closed experiments, incident notes. Two failure
-modes follow: it **re-litigates settled decisions**, and it **hallucinates over gaps** where the
-memory simply has no answer.
+A long-running agent piles up memory — decisions, closed experiments, incident notes. Three failure
+modes follow: it **re-litigates settled decisions**, it **hallucinates over gaps** where the
+memory simply has no answer, and it **confidently builds on memories that are no longer true** —
+the semantically-closest match wins even after the decision it records was reversed.
 
 **RE-call** is a RAG engine for that memory, built to be *honest about what it doesn't know*: it
-retrieves **before** the agent acts, and flags when the memory probably has no answer instead of
-returning confident noise.
+retrieves **before** the agent acts, returns **confidence + provenance + validity** with every hit
+— not just similarity — and prefers an explicit *"I don't know"* over confident noise.
 
 ## ✨ What it does
 
 - 🕳️ **Gap-aware** — when the best match is weak, it returns a `gap_warning` (*"probable corpus gap — treat as noise"*) instead of hallucinating an answer.
+- 🧾 **Trust verdicts** — every hit carries a verdict (`ok · superseded · expired · not_yet_valid · low_confidence`), a **calibrated confidence**, and provenance (`indexed_at`, source, chunk). A memory that is superseded or outside its validity window **loses to its successor — or to "I don't know"** — even when it has the top cosine.
+- 🎯 **Calibrated abstention** — the confidence threshold is calibrated *per embedder* against a labelled query set (`recall calibrate`); when no valid hit clears it, the result abstains with a reason instead of answering.
 - ⏱️ **Freshness-aware** — every result reports how stale the index is, so a rotting memory warns instead of silently serving old facts.
 - 🔁 **Anti-re-litigation** — meant to be queried *before* re-proposing an idea, so closed decisions and falsified hypotheses resurface first.
 - 🧱 **Production-shaped** — PostgreSQL + pgvector, hybrid dense + full-text retrieval fused with RRF, cross-encoder reranking, and an MCP server. Integration-tested on a real database.
@@ -52,33 +55,38 @@ flowchart LR
     D --> F[Reciprocal Rank Fusion]
     S --> F
     F --> R[cross-encoder rerank]
-    R --> G{honesty guards}
-    G --> O([hits + gap_warning + freshness])
+    R --> G{trust layer}
+    G --> O([verdict + confidence + provenance per hit, or ABSTAIN])
 ```
 
 Dense semantic search and sparse keyword search each retrieve candidates; **Reciprocal Rank Fusion**
-merges them, a cross-encoder reranks, and the **honesty guards** annotate the result before it ever
-reaches the agent.
+merges them, a cross-encoder reranks, and the **trust layer** judges every hit — supersession,
+validity window, calibrated confidence — before it ever reaches the agent. Validity is plain
+frontmatter in the memory itself (`supersedes: old_doc.md`, `valid_until: 2026-06-30`).
 
 ## ⚡ See it work
 
 ```text
 $ python -m recall.cli demo
-indexed 3 chunks from 3 files
+indexed 5 chunks from 5 files
 
-[ok]  query='what did we decide about caching?'
-  0.736  corpus/decisions.md   '# Decisions  ## 2026-05-02 — Caching layer We decided to add a read-th…'
+[ok] query='how many requests per second can a client make?'
+  ok             conf=1.00 cos=0.784  rate_limits_v2.md  '# API rate limits (revised)  Rate limiting was tight'
+  ok             conf=0.96 cos=0.655  decisions.md       '# Decisions  ## 2026-05-02 — Caching layer We decide'
+  ...
+  superseded     conf=1.00 cos=0.806  rate_limits_v1.md -> use rate_limits_v2.md  '# API rate limits  Each client key is limited to 100'
 
-[ok]  query='do we inject retrieved context into the prompt?'
-  0.809  corpus/hypotheses.md  '# Hypotheses  ## H-014 — Prompt-injected context improves answers (CLO…'
-
-[GAP] query='how do we handle penguins on mars?'
-  0.468  corpus/decisions.md   '# Decisions  ## 2026-05-02 — Caching layer We decided to add a read-th…'
+[ABSTAIN GAP] query='how do we handle penguins on mars?'
+  reason: no hit above the calibrated confidence threshold (probable corpus gap)
+  low_confidence conf=0.35 cos=0.468  decisions.md  '# Decisions  ## 2026-05-02 — Caching layer We decide'
 ```
 
-The two answerable queries return strong hits (**0.74**, **0.81**). The deliberately-unanswerable one's
-*best* match is only **0.468 — below the 0.50 gap threshold** — so it's flagged **`[GAP]`** instead of
-handing back that irrelevant chunk as if it were an answer. That single flag is the whole thesis.
+Look at the first query: the *stale* rate-limit memory has the **highest cosine in the whole result
+(0.806)** — plain vector search would hand it back as the answer, and the agent would build on a
+limit that no longer exists. The trust layer flags it `superseded`, points at its successor, and
+puts the *current* memory on top. And when the memory genuinely has no answer, the result is an
+explicit **`ABSTAIN`** with a reason — not the least-irrelevant chunk dressed up as one. That
+ordering decision is the whole thesis.
 
 ## 📊 Results that matter
 
@@ -86,13 +94,18 @@ A reproducible ablation harness scores every `embedder × fusion` config on a la
 precision@k, recall@k, MRR, nDCG, and a guard-specific **false-confident rate**.
 
 <p align="center">
-  <img src="results/guard_effect.png" width="48%" alt="Guard effect: false-confident rate on unanswerable queries">
+  <img src="results/trust_effect.png" width="48%" alt="Superseded-trust rate: plain search vs trust layer">
   &nbsp;
-  <img src="results/ndcg_by_config.png" width="48%" alt="Retrieval quality (nDCG@10) by config">
+  <img src="results/guard_effect.png" width="48%" alt="Guard effect: false-confident rate on unanswerable queries">
 </p>
 
-Three **honest** findings — including what *didn't* work:
+Four **honest** findings — including what *didn't* work:
 
+- 🧾 **Similarity cannot see supersession — the trust layer can.** On validity-sensitive queries
+  (worded deliberately closer to the *stale* memory), plain search returns the superseded/expired
+  memory as the answer **83–100% of the time**; with the trust layer that rate is **0.00 on every
+  embedder**, ordinary retrieval quality is untouched (identical MRR), and abstention fires on the
+  expired-only cases. → *Full table + limits in [FINDINGS §4](results/FINDINGS.md).*
 - 🎯 **The gap threshold doesn't transfer across embedders.** The default `0.50` gives a **0.80**
   false-confident rate on FastEmbed (its cosines cluster high); per-embedder calibration to `~0.70`
   makes the guard perfect. → *Calibrate against a small labelled set; don't hard-code.*
@@ -106,7 +119,7 @@ Three **honest** findings — including what *didn't* work:
 
 > Full methodology + per-embedder tables → **[results/FINDINGS.md](results/FINDINGS.md)**.
 
-✅ **46 integration tests run against a real pgvector container** (no mock DB), verified in CI, with a
+✅ **95 integration tests run against a real pgvector container** (no mock DB), verified in CI, with a
 dependency audit.
 
 ## 🏭 Where this comes from
@@ -135,10 +148,21 @@ Default embedder is local **FastEmbed** (no key); `--embedder hashing` is a full
 
 ```bash
 python -m recall.cli index ./path/to/markdown   # index your own docs
-python -m recall.cli search "your question"     # -> hits + gap/freshness flags
+python -m recall.cli search "your question"     # -> verdicts + confidence + gap/freshness flags
+python -m recall.cli calibrate labeled.json     # per-embedder abstention threshold -> calibration.json
 ```
 
-Point `RECALL_DSN` at any Postgres to use your own database.
+Point `RECALL_DSN` at any Postgres to use your own database. Declare validity in the memory
+itself — plain frontmatter, no schema changes:
+
+```markdown
+---
+supersedes: rate_limits_v1.md
+valid_until: 2026-12-31
+---
+# API rate limits (revised)
+...
+```
 
 **Code, not just prose.** The engine is content-agnostic — point it at source and it chunks on
 `def` / `class` boundaries, so natural-language questions land the exact function:
@@ -169,7 +193,9 @@ python -m recall_mcp.server        # stdio server
 ```
 
 The self-recall pattern: Claude calls `recall_search` **before** proposing an idea; if a closed
-decision surfaces (and it isn't a `gap_warning`), it backs off instead of re-litigating.
+decision surfaces (and it isn't a `gap_warning`), it backs off instead of re-litigating. Every hit
+now carries `verdict` / `confidence` / `superseded_by` / `indexed_at`, and when `abstained` is
+true the advice says so explicitly: *say you don't know — do not answer from these hits.*
 
 **→ [Full guide: config for Claude Code + Desktop, the three tools, and a real redacted loop](docs/USING_WITH_CLAUDE.md)**
 &nbsp;·&nbsp; example agent: [`examples/self_recall_agent.py`](examples/self_recall_agent.py).

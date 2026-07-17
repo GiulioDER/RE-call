@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 from recall.calibration import Calibration, from_samples, load_for, save
@@ -54,6 +55,8 @@ def _run_queries(
 
 
 def main(argv: list[str] | None = None) -> None:
+    if hasattr(sys.stdout, "reconfigure"):  # clean UTF-8 output on Windows consoles
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(prog="recall")
     parser.add_argument("--dsn", default=DEFAULT_DSN)
     parser.add_argument("--embedder", default="fastembed", choices=["fastembed", "hashing"])
