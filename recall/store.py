@@ -111,12 +111,13 @@ class PgVectorStore:
 
     def _rows_to_hits(self, rows: list[tuple]) -> list[ScoredChunk]:
         hits: list[ScoredChunk] = []
-        for cid, source, text, metadata, score in rows:
+        for cid, source, text, metadata, indexed_at, score in rows:
             md = metadata if isinstance(metadata, dict) else json.loads(metadata)
             hits.append(
                 ScoredChunk(
                     chunk=Chunk(id=cid, source=source, text=text, metadata=md),
                     score=float(score),
+                    indexed_at=indexed_at,
                 )
             )
         return hits
@@ -129,7 +130,7 @@ class PgVectorStore:
         t = self._table
         where = "WHERE source = %(source)s" if source else ""
         sql = f"""
-            SELECT id, source, text, metadata, 1 - (embedding <=> %(vec)s) AS score
+            SELECT id, source, text, metadata, indexed_at, 1 - (embedding <=> %(vec)s) AS score
             FROM {t}
             {where}
             ORDER BY embedding <=> %(vec)s
@@ -142,26 +143,50 @@ class PgVectorStore:
         return self._rows_to_hits(rows)
 
     def query_sparse(
-        self, text: str, k: int, source: str | None = None
+        self, text: str, k: int, source: str | None = None, vec: list[float] | None = None
     ) -> list[ScoredChunk]:
+        """Full-text search. Ranking is always ts_rank; when `vec` is given, each hit's `score`
+        is its true dense cosine against `vec` instead of the ts_rank value, so lexical-only
+        hits are comparable with dense hits downstream."""
         if k <= 0:
             raise ValueError("k must be a positive int")
         t = self._table
         where = "AND source = %(source)s" if source else ""
+        score_expr = (
+            "1 - (embedding <=> %(vec)s)"
+            if vec is not None
+            else "ts_rank(tsv, websearch_to_tsquery('english', %(q)s))"
+        )
         sql = f"""
-            SELECT id, source, text, metadata,
-                   ts_rank(tsv, websearch_to_tsquery('english', %(q)s)) AS score
+            SELECT id, source, text, metadata, indexed_at, {score_expr} AS score
             FROM {t}
             WHERE tsv @@ websearch_to_tsquery('english', %(q)s)
             {where}
-            ORDER BY score DESC
+            ORDER BY ts_rank(tsv, websearch_to_tsquery('english', %(q)s)) DESC
             LIMIT %(k)s
         """
         params: dict = {"q": text, "k": k}
+        if vec is not None:
+            params["vec"] = Vector(vec)
         if source:
             params["source"] = source
         rows = self._conn.execute(sql, params).fetchall()
         return self._rows_to_hits(rows)
+
+    def supersession_map(self) -> dict[str, str]:
+        """Map of superseded file -> superseding file, from `supersedes` chunk metadata.
+
+        If several documents claim to supersede the same file, the last row wins (no defined
+        order) — declare a single successor per file for deterministic behavior.
+        """
+        rows = self._conn.execute(
+            f"""
+            SELECT DISTINCT metadata->>'supersedes' AS old, metadata->>'file' AS new
+            FROM {self._table}
+            WHERE metadata ? 'supersedes'
+            """
+        ).fetchall()
+        return {old: new for old, new in rows if old and new}
 
     def newest_indexed_at(self) -> datetime | None:
         row = self._conn.execute(f"SELECT max(indexed_at) FROM {self._table}").fetchone()

@@ -63,26 +63,30 @@ class HybridRetriever:
 
         `gap_warning` is computed from the DENSE cosine scores only (not the fused ranks),
         so a purely lexical / sparse-only match still reports a gap — the intended "honest
-        about what it doesn't know" behavior. Each hit's `score` is its dense cosine
-        similarity (0.0 for hits that appeared only in the sparse results).
+        about what it doesn't know" behavior. Each hit's `score` is its true dense cosine
+        similarity, including hits that arrived via the sparse leg.
         """
         qvec = self._embedder.embed([query])[0]
         dense = self._store.query_dense(qvec, k=self._candidate_k, source=source)
         sparse = (
-            self._store.query_sparse(query, k=self._candidate_k, source=source)
+            self._store.query_sparse(query, k=self._candidate_k, source=source, vec=qvec)
             if self._use_sparse
             else []
         )
 
         fused = _rrf([[h.chunk.id for h in dense], [h.chunk.id for h in sparse]])
-        chunk_by_id = {h.chunk.id: h.chunk for h in dense}
+        by_id = {h.chunk.id: h for h in dense}
         for h in sparse:
-            chunk_by_id.setdefault(h.chunk.id, h.chunk)
+            by_id.setdefault(h.chunk.id, h)  # sparse hits carry their true cosine (vec=qvec)
         dense_score = {h.chunk.id: h.score for h in dense}
 
         ranked_ids = sorted(fused, key=lambda cid: fused[cid], reverse=True)[:k]
         hits = [
-            ScoredChunk(chunk=chunk_by_id[cid], score=dense_score.get(cid, 0.0))
+            ScoredChunk(
+                chunk=by_id[cid].chunk,
+                score=dense_score.get(cid, by_id[cid].score),
+                indexed_at=by_id[cid].indexed_at,
+            )
             for cid in ranked_ids
         ]
         if self._reranker is not None:

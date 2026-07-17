@@ -17,6 +17,7 @@ class Chunk:
 class ScoredChunk:
     chunk: Chunk
     score: float
+    indexed_at: datetime | None = None
 
 
 @dataclass(frozen=True)

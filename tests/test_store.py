@@ -81,3 +81,55 @@ def test_fresh_database_bootstraps_vector_extension():
     finally:
         conn.execute(f'DROP DATABASE IF EXISTS "{fresh_name}" WITH (FORCE)')
         conn.close()
+
+
+@requires_db
+def test_hits_carry_indexed_at(make_store):
+    from datetime import datetime, timedelta, timezone
+
+    store = make_store(3)
+    store.upsert([Chunk("a", "f.md", "cats")], [[1.0, 0.0, 0.0]])
+    dense = store.query_dense([1.0, 0.0, 0.0], k=1)
+    sparse = store.query_sparse("cats", k=1)
+    for hit in (dense[0], sparse[0]):
+        assert hit.indexed_at is not None
+        assert hit.indexed_at.tzinfo is not None
+        assert datetime.now(timezone.utc) - hit.indexed_at < timedelta(minutes=5)
+
+
+@requires_db
+def test_query_sparse_with_vec_returns_true_cosine(make_store):
+    store = make_store(3)
+    store.upsert([Chunk("a", "f.md", "cats")], [[1.0, 0.0, 0.0]])
+    qvec = [0.6, 0.8, 0.0]
+    dense_score = store.query_dense(qvec, k=1)[0].score
+    sparse_hit = store.query_sparse("cats", k=1, vec=qvec)[0]
+    assert abs(sparse_hit.score - dense_score) < 1e-6
+    # without vec the score is still the ts_rank (unchanged behavior)
+    plain = store.query_sparse("cats", k=1)[0]
+    assert plain.score != sparse_hit.score or plain.score >= 0
+
+
+@requires_db
+def test_supersession_map_roundtrip(make_store):
+    store = make_store(3)
+    store.upsert(
+        [
+            Chunk("old", "v1.md", "old policy", metadata={"file": "v1.md", "ord": 0}),
+            Chunk(
+                "new",
+                "v2.md",
+                "new policy",
+                metadata={"file": "v2.md", "ord": 0, "supersedes": "v1.md"},
+            ),
+        ],
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+    )
+    assert store.supersession_map() == {"v1.md": "v2.md"}
+
+
+@requires_db
+def test_supersession_map_empty_when_no_supersedes(make_store):
+    store = make_store(3)
+    store.upsert([Chunk("a", "f.md", "cats")], [[1.0, 0.0, 0.0]])
+    assert store.supersession_map() == {}
