@@ -34,3 +34,47 @@ class RetrievalResult:
     hits: list[ScoredChunk]
     gap_warning: bool
     staleness: StalenessReport
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """Where a memory came from and when it entered the index."""
+
+    source: str
+    file: str | None
+    ord: int | None
+    indexed_at: datetime | None
+
+
+@dataclass(frozen=True)
+class Validity:
+    """A memory's validity window and supersession status."""
+
+    valid_from: datetime | None
+    valid_until: datetime | None
+    superseded_by: str | None  # terminal successor file, when superseded
+
+
+@dataclass(frozen=True)
+class TrustedHit:
+    """A retrieved chunk annotated with everything needed to decide whether to trust it."""
+
+    chunk: Chunk
+    cosine: float
+    confidence: float
+    verdict: str  # ok | superseded | expired | not_yet_valid | low_confidence
+    provenance: Provenance
+    validity: Validity
+
+
+@dataclass(frozen=True)
+class TrustedResult:
+    """Trust-evaluated retrieval: hits ordered valid-first, plus the abstention decision."""
+
+    query: str
+    hits: list[TrustedHit]  # verdict-ok hits first (original order kept within each group)
+    abstained: bool
+    reason: str  # non-empty only when abstained
+    calibrated: bool
+    gap_warning: bool
+    staleness: StalenessReport
