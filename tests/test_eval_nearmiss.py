@@ -56,6 +56,27 @@ def test_accept_all_judge_cannot_change_the_threshold_arm():
     assert arms["threshold"].entail_latency_ms_mean == 0.0
 
 
+def test_near_miss_distractor_ids_resolve_against_the_eval_corpus():
+    # deferred DAT-001: distractor_ids were documentation-only — a renamed corpus file would
+    # silently degrade the near-miss set into far-gap queries, flattering the threshold arm
+    import json
+    from pathlib import Path
+
+    from recall.index import chunk_text
+
+    eval_dir = Path("recall/eval")
+    nearmiss = json.loads((eval_dir / "near_miss.json").read_text(encoding="utf-8"))
+    assert nearmiss, "near-miss set must not be empty"
+    for q in nearmiss:
+        assert q["distractor_ids"], f"{q['id']}: no distractor declared"
+        for did in q["distractor_ids"]:
+            fname, ord_s = did.rsplit(":", 1)
+            f = eval_dir / "corpus" / fname
+            assert f.is_file(), f"{q['id']}: distractor file {fname} missing from corpus"
+            n_chunks = len(chunk_text(f.read_text(encoding="utf-8-sig")))
+            assert int(ord_s) < n_chunks, f"{q['id']}: chunk ord {ord_s} out of range"
+
+
 @requires_db
 def test_reject_all_judge_abstains_on_everything():
     emb = HashingEmbedder(dim=64)

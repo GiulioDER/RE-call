@@ -72,6 +72,11 @@ def main(argv: list[str] | None = None) -> None:
     p_search = sub.add_parser("search", help="search the index")
     p_search.add_argument("query")
     p_search.add_argument("-k", type=int, default=5)
+    p_search.add_argument(
+        "--entail", action="store_true",
+        help="opt-in entailment stage: demote hits that don't answer the query "
+             "(requires recall[entail]; downloads the QNLI judge on first use)",
+    )
 
     sub.add_parser("demo", help="index corpus/ and run sample memory queries")
     sub.add_parser("code", help="index recall's own source and run sample code queries")
@@ -96,7 +101,11 @@ def main(argv: list[str] | None = None) -> None:
     if args.cmd == "lint":  # pure filesystem check — no embedder, no DB
         from recall.lint import lint_corpus
 
-        issues = lint_corpus(args.path, glob=args.glob)
+        try:
+            issues = lint_corpus(args.path, glob=args.glob)
+        except FileNotFoundError as exc:
+            print(f"recall lint: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
         for i in issues:
             print(f"{i.level:<8} {i.code:<26} {i.file}: {i.message}")
         errors = sum(1 for i in issues if i.level == "error")
@@ -116,10 +125,16 @@ def main(argv: list[str] | None = None) -> None:
             stats = Indexer(store, embedder, chunker=chunker).index_path(args.path, glob=args.glob)
             print(f"indexed {stats.chunks} chunks from {stats.files} files")
     elif args.cmd == "search":
+        entail_judge = None
+        if args.entail:
+            from recall.entailment import QnliEntailmentJudge
+
+            entail_judge = QnliEntailmentJudge()
         with PgVectorStore(args.dsn, dim=embedder.dim) as store:
             store.ensure_schema()
             _print_result(
-                trusted_search(store, embedder, args.query, k=args.k, calibration=calibration)
+                trusted_search(store, embedder, args.query, k=args.k, calibration=calibration,
+                               entailment=entail_judge)
             )
     elif args.cmd == "demo":
         with PgVectorStore(args.dsn, dim=embedder.dim) as store:

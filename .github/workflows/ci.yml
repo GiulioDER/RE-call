@@ -37,7 +37,7 @@ jobs:
           cache: pip
 
       # Engine + dev tooling only. The optional heavy extras are exercised locally:
-      #   rerank -> sentence-transformers (its one test self-skips here)
+      #   rerank/entail -> sentence-transformers (their real-model tests self-skip here)
       #   voyage -> cloud embedder (its one test skips without VOYAGE_API_KEY)
       - name: Install
         run: pip install -e ".[dev]"

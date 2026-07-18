@@ -49,7 +49,7 @@ MCP client, so a cwd-relative file will silently not be found (results then say 
 
 | Tool | When the agent calls it |
 |------|-------------------------|
-| **`recall_search`** | *Before* proposing an idea, forming a hypothesis, or repeating past work — to check what memory already says. Every hit carries a trust `verdict` (`ok / superseded / expired / not_yet_valid / low_confidence / invalid_metadata`), the true dense cosine (`score`), a calibrated `confidence`, `superseded_by`, `valid_until`, and `indexed_at`; the result adds `abstained` + `reason` + `calibrated` + `stale` + `gap_warning` + `advice`. When `abstained` is true, the advice is explicit: say you don't know, do not answer from the hits. |
+| **`recall_search`** | *Before* proposing an idea, forming a hypothesis, or repeating past work — to check what memory already says. Every hit carries a trust `verdict` (`ok / superseded / expired / not_yet_valid / low_confidence / invalid_metadata` — plus `not_entailed` when the opt-in entailment stage is enabled; this MCP server keeps it off), the true dense cosine (`score`), a calibrated `confidence`, `superseded_by`, `valid_until`, and `indexed_at`; the result adds `abstained` + `reason` + `calibrated` + `stale` + `gap_warning` + `advice`. When `abstained` is true, the advice is explicit: say you don't know, do not answer from the hits. |
 | **`recall_index`** | To add a markdown file/folder to memory (bounded by `RECALL_INDEX_ROOT`). |
 | **`recall_stats`** | To check how much memory exists and whether the index is stale. |
 

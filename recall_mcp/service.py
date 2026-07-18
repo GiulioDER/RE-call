@@ -37,7 +37,8 @@ class SearchHit(BaseModel):
     )
     verdict: str = Field(
         description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence "
-        "| invalid_metadata. Only 'ok' hits should be relied on."
+        "| invalid_metadata. Only 'ok' hits should be relied on. (The library also defines "
+        "not_entailed for the opt-in entailment stage, which this server does not enable.)"
     )
     superseded_by: str | None = Field(
         default=None, description="File of the memory that replaces this one, when superseded."

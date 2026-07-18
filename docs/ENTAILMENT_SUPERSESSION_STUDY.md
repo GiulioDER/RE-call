@@ -81,7 +81,7 @@ Four honest readings:
   far gaps; the judge catches near-misses; **they guard different failure classes and must be
   stacked**. The commenter's thesis needed this refinement.
 - **The judge is the new quality bound.** The residual FCR (0.40–0.60) is all one class: the
-  five surviving near-misses ask for a *specific absent detail* (a multiplier, a constant, a
+  4–6 surviving near-misses (per embedder) ask for a *specific absent detail* (a multiplier, a constant, a
   duration, an affected-user count) inside a strongly on-topic memo, and a small QNLI model
   judges "on-topic" as "answers". Finding 2 said gap detection is bounded by the embedder;
   the same law applies one layer up — **abstention-by-entailment is bounded by the judge.**

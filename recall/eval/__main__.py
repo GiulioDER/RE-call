@@ -62,6 +62,9 @@ def main() -> None:
         judge = QnliEntailmentJudge()
     except Exception as exc:
         print(f"skip near-miss stage (judge unavailable): {exc!r}")
+    # Each stage builds its own throwaway index ON PURPOSE: stages stay independently
+    # runnable and measurement-isolated. Sharing one index would save ~3x corpus embedding
+    # per embedder at the price of coupling the stages (declined — offline cost).
     results = run_ablations(DEFAULT_DSN, embedders)
     trust_results = run_trust_eval(DEFAULT_DSN, embedders)
     nearmiss_results = (

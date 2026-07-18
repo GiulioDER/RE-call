@@ -118,6 +118,48 @@ def test_ambiguous_supersedes_target_is_a_warning(tmp_path):
     assert "ambiguous-supersedes-target" in _codes(issues)
 
 
+def test_zero_padded_version_siblings_warn(tmp_path):
+    # deferred NUM-003: reconstructing "stem_v{n+1}" missed zero-padded series entirely —
+    # x_v01/x_v02 never triggered the warning (silent false negative in a completeness lint)
+    _write(tmp_path, "policy_v01.md", "old policy")
+    _write(tmp_path, "policy_v02.md", "new policy, forgot the frontmatter")
+    issues = lint_corpus(tmp_path)
+    assert _codes(issues) == {"version-sibling-unlinked"}
+    assert "policy_v01.md" in issues[0].message
+
+
+def test_non_contiguous_version_siblings_warn(tmp_path):
+    _write(tmp_path, "policy_v1.md", "old policy")
+    _write(tmp_path, "policy_v3.md", "new policy, v2 was deleted")
+    issues = lint_corpus(tmp_path)
+    assert _codes(issues) == {"version-sibling-unlinked"}
+
+
+def test_missing_root_raises_cleanly_and_cli_exits_2(tmp_path):
+    # deferred BUG-003: a nonexistent path fell into the single-file branch and died with a
+    # raw FileNotFoundError traceback from read_text
+    import pytest
+
+    from recall.cli import main
+    from recall.lint import lint_corpus as lc
+
+    with pytest.raises(FileNotFoundError):
+        lc(tmp_path / "does-not-exist")
+    with pytest.raises(SystemExit) as exc:
+        main(["lint", str(tmp_path / "does-not-exist")])
+    assert exc.value.code == 2
+
+
+def test_unreadable_file_is_reported_and_rest_of_corpus_still_linted(tmp_path):
+    # deferred BUG-003: one non-UTF8 file aborted the whole lint with zero issues reported
+    (tmp_path / "binary.md").write_bytes(b"\xff\xfe\x00broken")
+    _write(tmp_path, "new.md", "---\nsupersedes: ghost.md\n---\ntext")
+    issues = lint_corpus(tmp_path)
+    codes = _codes(issues)
+    assert "unreadable-file" in codes
+    assert "dangling-supersedes" in codes  # healthy files still checked
+
+
 def test_cli_lint_exits_nonzero_on_errors_and_zero_on_clean(tmp_path, capsys):
     from recall.cli import main
 

@@ -223,6 +223,24 @@ class PgVectorStore:
         )
         return cur.rowcount or 0
 
+    def touch_files(self, files: list[str]) -> int:
+        """Reset ``indexed_at`` to now() for every chunk whose metadata file name matches.
+
+        A timestamp-only touch — text and embeddings are untouched by construction, so it is
+        the honest way to simulate a re-sync (the eval's recency arm uses it; re-indexing
+        identical text would also re-embed, which is only a no-op for deterministic
+        embedders). Matches on the ``file`` metadata key (basename), so it works for nested
+        corpora too. Returns rows updated.
+        """
+        if not files:
+            return 0
+        cur = self._conn.execute(
+            f"UPDATE {self._table} SET indexed_at = now() "
+            f"WHERE metadata->>'file' = ANY(%s)",
+            (files,),
+        )
+        return cur.rowcount or 0
+
     def supersession_map(self) -> dict[str, str]:
         """Map of superseded file -> superseding file, from `supersedes` chunk metadata.
 

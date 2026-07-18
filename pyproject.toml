@@ -17,6 +17,7 @@ dependencies = [
 fastembed = ["fastembed>=0.3"]
 mcp = ["mcp>=1.7"]
 voyage = ["voyageai>=0.2"]
+# NB: rerank / entail / finetune pin the same sentence-transformers floor — bump all three together.
 rerank = ["sentence-transformers>=3.0"]
 entail = ["sentence-transformers>=3.0"]
 eval = ["matplotlib>=3.7"]

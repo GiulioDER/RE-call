@@ -33,6 +33,31 @@ def test_upsert_is_idempotent_on_id(make_store):
 
 
 @requires_db
+def test_touch_files_bumps_indexed_at_without_reembedding(make_store):
+    # deferred PERF-004/DAT-003: the trust eval's stale-touch re-embedded identical text to
+    # refresh a timestamp; a store-level touch makes "only indexed_at changes" true by
+    # construction (and works for nested corpora, which keyed the old path-join variant out)
+    import time
+
+    store = make_store(3)
+    store.upsert(
+        [Chunk("a", "f.md", "alpha", metadata={"file": "a.md", "ord": 0}),
+         Chunk("b", "f.md", "beta", metadata={"file": "b.md", "ord": 0})],
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+    )
+    before = {h.chunk.id: (h.indexed_at, h.score)
+              for h in store.query_dense([1.0, 0.0, 0.0], k=5)}
+    time.sleep(0.01)
+    touched = store.touch_files(["a.md"])
+    assert touched == 1
+    after = {h.chunk.id: (h.indexed_at, h.score)
+             for h in store.query_dense([1.0, 0.0, 0.0], k=5)}
+    assert after["a"][0] > before["a"][0]          # timestamp moved
+    assert after["b"][0] == before["b"][0]         # untouched file untouched
+    assert after["a"][1] == before["a"][1]         # embedding (hence score) unchanged
+
+
+@requires_db
 def test_sparse_query_matches_keyword(make_store):
     store = make_store(3)
     store.upsert(

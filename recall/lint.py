@@ -81,9 +81,20 @@ def _find_cycles(graph: dict[str, list[str]]) -> list[frozenset[str]]:
     return cycles
 
 
-def lint_corpus(path: str | Path, glob: str = "**/*.md") -> list[LintIssue]:
-    """Lint a markdown corpus; returns issues sorted by (level, file). Empty list = clean."""
+#: Default file pattern — shared with the CLI so the two defaults cannot drift.
+DEFAULT_GLOB = "**/*.md"
+
+
+def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
+    """Lint a markdown corpus; returns issues sorted by (level, file). Empty list = clean.
+
+    Raises FileNotFoundError on a nonexistent root. An individual unreadable file (bad UTF-8,
+    permissions) becomes an ``unreadable-file`` error and the REST of the corpus is still
+    linted — one broken file must not abort a CI run with zero issues reported.
+    """
     root = Path(path)
+    if not root.exists():
+        raise FileNotFoundError(f"corpus path does not exist: {root}")
     files = sorted(root.glob(glob)) if root.is_dir() else [root]
     # keys are root-relative paths so same-named files in different directories cannot shadow
     # each other; `supersedes:` targets stay basenames (the frontmatter convention)
@@ -99,8 +110,15 @@ def lint_corpus(path: str | Path, glob: str = "**/*.md") -> list[LintIssue]:
 
     metas: dict[str, dict[str, str]] = {}
     bodies: dict[str, str] = {}
+    readable: list[Path] = []
     for f in files:
-        meta, body = parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+        try:
+            text = f.read_text(encoding="utf-8-sig")
+        except (UnicodeDecodeError, OSError) as exc:
+            issues.append(LintIssue(rel[f], "error", "unreadable-file", str(exc)))
+            continue
+        readable.append(f)
+        meta, body = parse_frontmatter(text)
         metas[rel[f]], bodies[rel[f]] = meta, body
         try:
             validity_bounds(meta)
@@ -136,19 +154,25 @@ def lint_corpus(path: str | Path, glob: str = "**/*.md") -> list[LintIssue]:
         )
 
     superseded_targets = set(superseders)  # basenames some file claims to supersede
-    for f in files:
+    # group version siblings by (stem, parsed int) — reconstructing "stem_v{n+1}" as a string
+    # missed zero-padded series (x_v01/x_v02) and non-contiguous ones (x_v1/x_v3) entirely
+    by_stem: dict[tuple[str, str], list[tuple[int, Path]]] = {}
+    for f in readable:
         m = _VERSION_STEM.match(f.stem)
-        if not m:
-            continue
-        newer = f"{m['stem']}_v{int(m['num']) + 1}{f.suffix}"
-        if newer in names and f.name not in superseded_targets:
-            issues.append(
-                LintIssue(newer, "warning", "version-sibling-unlinked",
-                          f"{newer} looks like the successor of {f.name} but declares no "
-                          f"`supersedes: {f.name}` — retrieval will keep serving both as valid")
-            )
+        if m:
+            by_stem.setdefault((m["stem"], f.suffix), []).append((int(m["num"]), f))
+    for versions in by_stem.values():
+        versions.sort(key=lambda t: t[0])
+        for (_, older), (_, newer) in zip(versions, versions[1:]):
+            if older.name not in superseded_targets:
+                issues.append(
+                    LintIssue(newer.name, "warning", "version-sibling-unlinked",
+                              f"{newer.name} looks like the successor of {older.name} but no "
+                              f"file declares `supersedes: {older.name}` — retrieval will "
+                              f"keep serving both as valid")
+                )
 
-    for f in files:
+    for f in readable:
         meta = metas[rel[f]]
         declares_relation = (
             "supersedes" in meta or "valid_until" in meta or f.name in superseded_targets

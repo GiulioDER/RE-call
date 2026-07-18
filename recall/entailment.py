@@ -35,21 +35,31 @@ class EntailmentJudge(Protocol):
     def judge(self, query: str, texts: list[str]) -> list[bool]: ...
 
 
+DEFAULT_QNLI_MODEL = "cross-encoder/qnli-distilroberta-base"
+#: Pinned Hub commit of the DEFAULT model. An unpinned Hub reference is mutable — the repo
+#: owner (or a compromise) can swap the weights and every consumer silently picks them up on
+#: the next cold cache. Pinning makes the resolved artifact immutable.
+DEFAULT_QNLI_REVISION = "7dd04ee0a6040c06fb381ad7edcb8585f4d937fd"
+
+
 class QnliEntailmentJudge:
     """QNLI cross-encoder judge — "does this sentence answer this question?" as a binary decision.
 
     The decision boundary (sigmoid 0.5) is the model's own trained boundary: fixed per judge
     model, independent of whichever embedder retrieved the candidates. Requires
-    `pip install recall[entail]` (sentence-transformers).
+    `pip install recall[entail]` (sentence-transformers). The default model is pinned to a
+    Hub revision; if you supply your own `model`, pin your own `revision` too.
     """
 
-    def __init__(self, model: str = "cross-encoder/qnli-distilroberta-base",
-                 threshold: float = 0.5) -> None:
+    def __init__(self, model: str = DEFAULT_QNLI_MODEL, threshold: float = 0.5,
+                 revision: str | None = DEFAULT_QNLI_REVISION) -> None:
         try:
             from sentence_transformers import CrossEncoder
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError("QnliEntailmentJudge requires: pip install recall[entail]") from exc
-        self._model = CrossEncoder(model)
+        if model != DEFAULT_QNLI_MODEL and revision == DEFAULT_QNLI_REVISION:
+            revision = None  # the default pin belongs to the default model only
+        self._model = CrossEncoder(model, revision=revision)
         self._threshold = threshold
 
     def judge(self, query: str, texts: list[str]) -> list[bool]:

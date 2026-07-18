@@ -166,6 +166,7 @@ Default embedder is local **FastEmbed** (no key); `--embedder hashing` is a full
 ```bash
 python -m recall.cli index ./path/to/markdown   # index your own docs
 python -m recall.cli search "your question"     # -> verdicts + confidence + gap/freshness flags
+python -m recall.cli search "..." --entail      # + QNLI near-miss judge (recall[entail], opt-in)
 python -m recall.cli calibrate recall/eval/queries.json   # per-embedder abstention threshold -> calibration.json
 python -m recall.cli lint ./path/to/markdown    # supersession-graph completeness (no DB needed)
 ```
@@ -222,7 +223,7 @@ true the advice says so explicitly: *say you don't know — do not answer from t
 ## 🧪 Reproduce the evaluation
 
 ```bash
-pip install -e ".[fastembed,rerank,eval]"
+pip install -e ".[fastembed,rerank,entail,eval]"
 make eval        # -> results/RESULTS.md + the charts above
 ```
 

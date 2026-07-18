@@ -20,7 +20,7 @@ from recall.eval.metrics import (
     abstention_accuracy,
     false_abstain_rate,
     false_confident_rate,
-    fraction_true,
+    gap_false_confident_rate,
     mrr,
     near_miss_false_confident_rate,
     ndcg_at_k,
@@ -139,8 +139,12 @@ def run_ablations(
 
 #: Abstention arms. A = the calibrated cosine threshold (status quo). B = threshold plus
 #: the entailment judge. C = the judge alone (threshold disabled) — the ablation proving any
-#: near-miss win is the judge's, not the threshold's.
-ARMS = ["threshold", "threshold+entail", "entail-only"]
+#: near-miss win is the judge's, not the threshold's. Single definition: `arm_setup` and the
+#: chart colors are keyed by these constants so a typo cannot desynchronize them.
+ARM_THRESHOLD = "threshold"
+ARM_STACKED = "threshold+entail"
+ARM_ENTAIL_ONLY = "entail-only"
+ARMS = [ARM_THRESHOLD, ARM_STACKED, ARM_ENTAIL_ONLY]
 
 
 @dataclass
@@ -204,10 +208,15 @@ def run_nearmiss_eval(
             # threshold -1 passes every cosine: isolates the judge in the entail-only arm
             permissive = Calibration(embedder=emb.name, threshold=-1.0, scale=cal.scale)
             arm_setup = {
-                "threshold": (cal, None),
-                "threshold+entail": (cal, judge),
-                "entail-only": (permissive, judge),
+                ARM_THRESHOLD: (cal, None),
+                ARM_STACKED: (cal, judge),
+                ARM_ENTAIL_ONLY: (permissive, judge),
             }
+            # Each arm re-runs retrieval end-to-end ON PURPOSE: query_latency_ms_mean must
+            # measure real per-arm wall time, and the judge is deliberately un-memoized so
+            # its latency column counts model passes, not cache hits. Sharing arm A's
+            # results with arm B would save ~1/3 of the retrieval cost at the price of
+            # fabricating the latency columns.
             for arm in ARMS:
                 arm_cal, arm_judge = arm_setup[arm]
                 timed = _TimedJudge(arm_judge) if arm_judge is not None else None
@@ -233,7 +242,7 @@ def run_nearmiss_eval(
                         embedder=emb.name,
                         arm=arm,
                         nearmiss_fcr=near_miss_false_confident_rate(nm_confident),
-                        gap_fcr=fraction_true(gap_confident),
+                        gap_fcr=gap_false_confident_rate(gap_confident),
                         false_abstain=false_abstain_rate(abst_flags),
                         mrr_answerable=mean(mrrs) if mrrs else 0.0,
                         entail_latency_ms_mean=(
@@ -285,11 +294,11 @@ def run_trust_eval(
     baseline = plain hybrid search (no trust layer): a query counts as stale-trusted when its
     top-1 hit is a superseded/expired memory — exactly what a consumer would read as the answer.
     recency  = "trust the newest indexed hit" — the timestamp heuristic supersession is often
-    mistaken for. With `touch_stale` (default) the stale docs are re-indexed AFTER the initial
-    pass, simulating the re-sync/edit any living corpus performs constantly: the stale memory
-    then carries the newest timestamp, and a per-document timestamp cannot see the supersession
-    RELATION that makes it stale. Re-indexing identical text changes only `indexed_at`, so the
-    baseline and trust measurements are unaffected.
+    mistaken for. With `touch_stale` (default) the stale docs get a timestamp-only store touch
+    AFTER the initial pass (`store.touch_files` — no re-embed, so the baseline and trust
+    measurements are unaffected BY CONSTRUCTION, for any embedder), simulating the re-sync/edit
+    any living corpus performs constantly: the stale memory then carries the newest timestamp,
+    and a per-document timestamp cannot see the supersession RELATION that makes it stale.
     trust    = trusted_search with an in-run calibration (built from the labeled answerable/
     unanswerable queries): a query counts as stale-trusted only if a stale id still carries
     verdict `ok`. Also reports successor accuracy, abstention accuracy, and the answerable-MRR
@@ -305,13 +314,10 @@ def run_trust_eval(
     results: list[TrustEvalResult] = []
     for emb in embedders:
         with _throwaway_store(dsn, emb, corpus_dir, "trust_") as store:
-            indexer = Indexer(store, emb)
             if touch_stale:
-                stale_files = sorted(
+                store.touch_files(sorted(
                     {sid.rsplit(":", 1)[0] for q in trust_qs for sid in q["stale_ids"]}
-                )
-                for name in stale_files:
-                    indexer.index_path(corpus_dir / name)
+                ))
             # in-run calibration from the labeled plain queries (per-embedder threshold —
             # a fixed constant does not transfer across embedders, see FINDINGS §2)
             cal = from_samples(emb.name, *measure_top_cosines(store, emb, plain))
@@ -423,7 +429,7 @@ def save_nearmiss_chart(results: list[NearMissEvalResult], out_dir: Path) -> Pat
 
     out_dir.mkdir(parents=True, exist_ok=True)
     embs = list(dict.fromkeys(r.embedder for r in results))
-    colors = {"threshold": "#c44e52", "threshold+entail": "#55a868", "entail-only": "#4c72b0"}
+    colors = {ARM_THRESHOLD: "#c44e52", ARM_STACKED: "#55a868", ARM_ENTAIL_ONLY: "#4c72b0"}
     width = 0.8 / max(1, len(ARMS))
     fig, ax = plt.subplots(figsize=(max(5, len(embs) * 2.2), 4))
     for j, arm in enumerate(ARMS):

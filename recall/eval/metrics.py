@@ -80,6 +80,14 @@ def near_miss_false_confident_rate(confident_flags: list[bool]) -> float:
     return fraction_true(confident_flags)
 
 
+def gap_false_confident_rate(confident_flags: list[bool]) -> float:
+    """Fraction of FAR-GAP (off-topic, unanswerable) queries answered confidently (flag True =
+    did not abstain). Same polarity as `near_miss_false_confident_rate`; distinct from
+    `false_confident_rate`, which takes raw gap_warning flags instead. NaN on empty.
+    """
+    return fraction_true(confident_flags)
+
+
 def false_abstain_rate(abstained_flags: list[bool]) -> float:
     """Fraction of ANSWERABLE queries the system wrongly abstained on (flag True = abstained).
     Lower is better — the regression check for any abstention mechanism: killing near-misses is
