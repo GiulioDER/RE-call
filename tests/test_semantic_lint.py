@@ -143,6 +143,82 @@ def test_semantic_lint_flags_only_the_planted_orphan(tmp_path):
 
 
 @requires_db
+def test_long_multichunk_memo_still_finds_its_prior(tmp_path):
+    # BUG-001 (audit): self-hits are excluded only AFTER the retriever truncates to top-k, so a
+    # memo long enough to produce >= k chunks fills every slot with its own chunks and the real
+    # prior is dropped — a false negative that scales with memo length (the long-memo case the
+    # tool targets). Must survive that.
+    import pytest
+
+    try:
+        from recall.embeddings import FastEmbedEmbedder
+
+        emb = FastEmbedEmbedder()
+    except Exception:  # pragma: no cover
+        pytest.skip("fastembed not installed (recall[fastembed])")
+
+    from recall.semantic_lint import semantic_lint
+
+    d = tmp_path / "corpus"
+    d.mkdir()
+    (d / "pricing_cache_v1.md").write_text(
+        "# Pricing snapshot cache TTL\nThe pricing snapshot cache TTL is 15 minutes, refreshed "
+        "lazily on first read after expiry. Status: adopted.", encoding="utf-8")
+    # a long revision of the SAME decision (~15 chunks at 800 chars) that omits the supersedes
+    sentence = ("Snapshot pricing cache entries now expire after 60 seconds and are refreshed "
+                "proactively by a background worker instead of the old lazy read path. ")
+    (d / "pricing_cache_rev.md").write_text(
+        "# Snapshot caching update\n" + sentence * 90, encoding="utf-8")
+
+    findings = semantic_lint(TEST_DSN, emb, corpus_dir=d, threshold=0.70)
+    assert any(f.new_memo == "pricing_cache_rev.md" and f.prior == "pricing_cache_v1.md"
+               for f in findings)
+
+
+@requires_db
+def test_duplicate_basenames_in_subdirs_are_not_misqueried(tmp_path):
+    # DAT-001 (audit): keying per-file state by basename shadows same-named files in different
+    # subdirs (the BUG-004 class the static lint fixed by keying on rel-path). A shadowed file
+    # must not be queried with another file's body and fabricate a finding.
+    import pytest
+
+    try:
+        from recall.embeddings import FastEmbedEmbedder
+
+        emb = FastEmbedEmbedder()
+    except Exception:  # pragma: no cover
+        pytest.skip("fastembed not installed (recall[fastembed])")
+
+    from recall.semantic_lint import semantic_lint
+
+    d = tmp_path / "corpus"
+    (d / "a").mkdir(parents=True)
+    (d / "b").mkdir(parents=True)
+    # a prior closed decision about pricing cache
+    (d / "pricing_cache_v1.md").write_text(
+        "# Pricing snapshot cache TTL\nThe pricing snapshot cache TTL is 15 minutes. "
+        "Status: adopted.", encoding="utf-8")
+    # two DIFFERENT files sharing basename topic.md: a/ is about backups, b/ about pricing cache
+    (d / "a" / "topic.md").write_text(
+        "# Backup retention\nDatabase backups run every six hours, thirty-day retention. "
+        "Status: adopted.", encoding="utf-8")
+    (d / "b" / "topic.md").write_text(
+        "# Snapshot caching update\nSnapshot pricing cache entries now expire after 60 seconds, "
+        "refreshed proactively instead of lazily.", encoding="utf-8")
+    # a clean, uniquely-named orphan that MUST still be caught
+    (d / "clean_rev.md").write_text(
+        "# Cache refresh change\nThe pricing snapshot cache now refreshes proactively every 60 "
+        "seconds rather than lazily on read.", encoding="utf-8")
+
+    findings = semantic_lint(TEST_DSN, emb, corpus_dir=d, threshold=0.70)
+    # the ambiguous basename must never appear as a subject (it can't be disambiguated)
+    assert not any(f.new_memo == "topic.md" for f in findings)
+    # the unambiguous orphan is still surfaced
+    assert any(f.new_memo == "clean_rev.md" and f.prior == "pricing_cache_v1.md"
+               for f in findings)
+
+
+@requires_db
 def test_cli_lint_semantic_reports_the_orphan(tmp_path, capsys):
     import pytest
 

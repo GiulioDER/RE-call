@@ -29,7 +29,7 @@ from pathlib import Path
 
 from recall.embeddings import Embedder
 from recall.frontmatter import parse_frontmatter
-from recall.index import Indexer
+from recall.index import Indexer, chunk_text
 from recall.lint import CLOSURE_MARKERS, DEFAULT_GLOB
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
@@ -96,15 +96,29 @@ def semantic_lint(
     root = Path(corpus_dir)
     files = sorted(root.glob(glob)) if root.is_dir() else [root]
 
+    # Retrieval keys hits by basename (index.py stamps metadata['file'] = f.name), so a corpus
+    # with the SAME basename in two directories cannot be disambiguated — the shadowed file
+    # would be queried with the wrong body. Skip ambiguous basenames rather than mis-key them
+    # (the static lint flags them as `ambiguous-supersedes-target`; here they are simply out of
+    # scope). This mirrors lint.py's refusal to let same-named files shadow each other.
+    name_count: dict[str, int] = {}
+    for f in files:
+        name_count[f.name] = name_count.get(f.name, 0) + 1
+    ambiguous = {n for n, c in name_count.items() if c > 1}
+
     supersedes: dict[str, set[str]] = {}
     closed: dict[str, bool] = {}
     body_text: dict[str, str] = {}
+    self_chunks: dict[str, int] = {}
     for f in files:
+        if f.name in ambiguous:
+            continue
         meta, body = parse_frontmatter(f.read_text(encoding="utf-8-sig"))
         target = meta.get("supersedes")
         supersedes[f.name] = {target} if target else set()
         closed[f.name] = is_closed_decision(body)
         body_text[f.name] = body
+        self_chunks[f.name] = max(1, len(chunk_text(body)))
 
     table = "semlint_" + uuid.uuid4().hex[:8]
     store = PgVectorStore(dsn, dim=embedder.dim, table=table)
@@ -115,11 +129,17 @@ def semantic_lint(
         retr = HybridRetriever(store, embedder)
         for f in files:
             name = f.name
-            res = retr.search(body_text[name], k=k)
+            if name in ambiguous:
+                continue
+            # The query is the memo's own body, so its own chunks are the top hits and are
+            # dropped by the self-filter BELOW — after the retriever truncates to top-k. Ask for
+            # k PLUS this memo's chunk count so a long multi-chunk memo can't crowd every real
+            # prior out of the window before the self-filter runs.
+            res = retr.search(body_text[name], k=k + self_chunks[name])
             best: dict[str, float] = {}  # other-file -> max dense cosine
             for h in res.hits:
                 cname = h.chunk.metadata.get("file")
-                if not cname or cname == name:
+                if not cname or cname == name or cname in ambiguous:
                     continue
                 # skip pairs already linked either way — the chain is complete
                 if name in supersedes.get(cname, set()):
