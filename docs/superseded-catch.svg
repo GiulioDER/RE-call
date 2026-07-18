@@ -10,6 +10,7 @@
     .l5{animation-delay:1.25s}.l6{animation-delay:1.7s}.l8{animation-delay:2.2s}.l9{animation-delay:2.5s}
     .pulse{animation:pl 2.4s ease-in-out 1.5s infinite}
     @keyframes pl{0%,100%{opacity:.14}50%{opacity:.34}}
+    @media (prefers-reduced-motion:reduce){.ln{opacity:1;animation:none}.pulse{opacity:.22;animation:none}}
   </style>
 
   <rect x="1" y="1" width="778" height="320" rx="14" fill="#0d1117" stroke="#30363d"/>
