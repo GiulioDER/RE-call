@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.png" alt="RE-call — Retrieval-Augmented Self-Recall" width="900">
+  <img src="docs/banner.svg" alt="RE-call — Retrieval-Augmented Self-Recall" width="900">
 </p>
 
 <p align="center">
@@ -44,6 +44,13 @@ were superseded or expired, and prefers an explicit **abstention** over confiden
 
 ## See it in one screen
 
+<p align="center">
+  <img src="docs/superseded-catch.svg" width="740" alt="recall demo: the stale rate-limit memory has the highest cosine (0.806) but is flagged superseded and demoted below the current memory; an unanswerable query returns an explicit ABSTAIN.">
+</p>
+
+<details>
+<summary>same run, as text</summary>
+
 ```text
 $ python -m recall.cli demo
 
@@ -54,6 +61,7 @@ $ python -m recall.cli demo
 [ABSTAIN · gap] query='how do we handle penguins on mars?'
   reason: no hit above the calibrated confidence threshold (probable corpus gap)
 ```
+</details>
 
 Look at the cosines. The **stale** rate-limit memory scores **higher (0.806)** than the current one —
 plain vector search would return it, and the agent would build on a limit that no longer exists.

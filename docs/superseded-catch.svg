@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 322" width="780" height="322" role="img" aria-labelledby="t d">
+  <title id="t">recall demo — the superseded catch</title>
+  <desc id="d">A stale memory has the highest cosine (0.806) but RE-call demotes it as superseded and abstains when the corpus has no answer.</desc>
+  <style>
+    .mono{font-family:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;font-size:14.5px;}
+    .dim{fill:#6e7681}.fg{fill:#adbac7}.grn{fill:#3fb950}.amb{fill:#d29922}.red{fill:#f85149}.blu{fill:#58a6ff}
+    .ln{opacity:0;animation:in .45s ease forwards}
+    @keyframes in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+    .l1{animation-delay:.15s}.l3{animation-delay:.55s}.l4{animation-delay:.9s}
+    .l5{animation-delay:1.25s}.l6{animation-delay:1.7s}.l8{animation-delay:2.2s}.l9{animation-delay:2.5s}
+    .pulse{animation:pl 2.4s ease-in-out 1.5s infinite}
+    @keyframes pl{0%,100%{opacity:.14}50%{opacity:.34}}
+  </style>
+
+  <rect x="1" y="1" width="778" height="320" rx="14" fill="#0d1117" stroke="#30363d"/>
+  <!-- title bar -->
+  <circle cx="26" cy="27" r="6" fill="#ff5f56"/><circle cx="46" cy="27" r="6" fill="#febc2e"/><circle cx="66" cy="27" r="6" fill="#28c840"/>
+  <text x="390" y="31" class="mono" font-size="12.5" fill="#6e7681" text-anchor="middle">recall &#8212; demo</text>
+  <line x1="1" y1="52" x2="779" y2="52" stroke="#21262d"/>
+
+  <!-- command -->
+  <g class="ln l1"><text x="26" y="86" class="mono"><tspan class="grn">$</tspan> <tspan class="fg">python -m recall.cli demo</tspan></text></g>
+
+  <!-- query 1 -->
+  <g class="ln l3"><text x="26" y="122" class="mono dim">query: &#8220;how many requests/sec can a client make?&#8221;</text></g>
+
+  <!-- ok, current -->
+  <g class="ln l4"><text x="26" y="152" class="mono"><tspan class="grn">ok</tspan><tspan class="dim">          </tspan><tspan class="fg">conf 1.00  cos 0.784  </tspan><tspan class="blu">rate_limits_v2.md</tspan></text></g>
+
+  <!-- superseded, HIGHER cosine, demoted -->
+  <rect class="pulse" x="22" y="164" width="104" height="22" rx="5" fill="#d29922" opacity="0"/>
+  <g class="ln l5"><text x="26" y="180" class="mono"><tspan class="amb" font-weight="700">superseded</tspan><tspan class="dim">  conf 1.00  cos </tspan><tspan class="amb" font-weight="700">0.806</tspan><tspan class="dim">  </tspan><tspan class="amb">&#8594; use rate_limits_v2</tspan></text></g>
+
+  <!-- annotation -->
+  <g class="ln l6"><text x="26" y="206" class="mono" font-size="13" fill="#6e7681" font-style="italic">&#8593; higher cosine than the current memory &#8212; but stale, so it&#8217;s demoted.</text></g>
+
+  <line x1="26" y1="224" x2="754" y2="224" stroke="#161b22"/>
+
+  <!-- abstain -->
+  <rect class="ln l8" x="22" y="240" width="120" height="22" rx="5" fill="#f85149" fill-opacity="0.18"/>
+  <g class="ln l8"><text x="30" y="256" class="mono"><tspan class="red" font-weight="700">ABSTAIN &#183; gap</tspan></text><text x="156" y="256" class="mono fg">&#8220;how do we handle penguins on mars?&#8221;</text></g>
+  <g class="ln l9"><text x="26" y="282" class="mono dim" font-size="13">reason: nothing clears the calibrated confidence threshold</text></g>
+</svg>

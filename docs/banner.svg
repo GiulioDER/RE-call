@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 240" width="900" height="240" role="img" aria-labelledby="t d">
+  <title id="t">RE-call — trustworthy retrieval for an AI agent's own memory</title>
+  <desc id="d">RE-call returns verdict, confidence and provenance with every hit, and demotes stale memories even when they have the highest cosine.</desc>
+  <style>
+    .wm   { font-family: ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace; }
+    .sans { font-family: -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+    .mono { font-family: ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace; }
+  </style>
+
+  <!-- card -->
+  <rect x="1" y="1" width="898" height="238" rx="16" fill="#0d1117" stroke="#30363d"/>
+
+  <!-- accent bar -->
+  <rect x="48" y="58" width="5" height="70" rx="2.5" fill="#3fb950"/>
+
+  <!-- wordmark + taglines -->
+  <text x="70" y="104" class="wm" font-size="60" font-weight="700" fill="#e6edf3" letter-spacing="-1">RE-call</text>
+  <text x="72" y="150" class="sans" font-size="21" fill="#adbac7">Trustworthy retrieval for an AI agent&#8217;s own memory.</text>
+  <text x="72" y="180" class="sans" font-size="14.5" fill="#6e7681">verdict &#183; confidence &#183; provenance &#8212; or an honest &#8220;I don&#8217;t know.&#8221;</text>
+
+  <!-- right: the thesis, as a mini result -->
+  <rect x="566" y="52" width="290" height="136" rx="10" fill="#161b22" stroke="#21262d"/>
+  <text x="584" y="80" class="mono" font-size="10.5" letter-spacing="1.5" fill="#6e7681">TOP MATCHES</text>
+
+  <!-- current, ok -->
+  <circle cx="588" cy="102" r="4" fill="#3fb950"/>
+  <text x="602" y="106" class="mono" font-size="13.5" fill="#adbac7">ok<tspan fill="#6e7681">          </tspan>cos 0.78</text>
+  <text x="838" y="106" class="mono" font-size="12" fill="#3fb950" text-anchor="end">current</text>
+
+  <!-- superseded, higher cosine, demoted -->
+  <circle cx="588" cy="128" r="4" fill="#d29922"/>
+  <text x="602" y="132" class="mono" font-size="13.5" fill="#8b949e" text-decoration="line-through">superseded<tspan fill="#6e7681" text-decoration="none">  </tspan><tspan fill="#d29922" font-weight="700" text-decoration="none">cos 0.81</tspan></text>
+  <text x="838" y="132" class="mono" font-size="12" fill="#d29922" text-anchor="end">stale</text>
+
+  <line x1="584" y1="150" x2="838" y2="150" stroke="#21262d"/>
+  <text x="584" y="170" class="sans" font-size="11.5" fill="#6e7681" font-style="italic">highest cosine &#8800; the right answer</text>
+</svg>
