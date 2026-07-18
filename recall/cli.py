@@ -76,6 +76,13 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("demo", help="index corpus/ and run sample memory queries")
     sub.add_parser("code", help="index recall's own source and run sample code queries")
 
+    p_lint = sub.add_parser(
+        "lint",
+        help="check a corpus's supersession graph for broken/missing edges (no DB needed)",
+    )
+    p_lint.add_argument("path")
+    p_lint.add_argument("--glob", default="**/*.md")
+
     p_cal = sub.add_parser(
         "calibrate",
         help="calibrate the abstention threshold for this embedder against labeled queries",
@@ -85,6 +92,20 @@ def main(argv: list[str] | None = None) -> None:
     p_cal.add_argument("--out", default=None, help="output path (default: calibration.json)")
 
     args = parser.parse_args(argv)
+
+    if args.cmd == "lint":  # pure filesystem check — no embedder, no DB
+        from recall.lint import lint_corpus
+
+        issues = lint_corpus(args.path, glob=args.glob)
+        for i in issues:
+            print(f"{i.level:<8} {i.code:<26} {i.file}: {i.message}")
+        errors = sum(1 for i in issues if i.level == "error")
+        warnings = len(issues) - errors
+        print(f"{errors} errors, {warnings} warnings")
+        if errors:
+            raise SystemExit(1)
+        return
+
     embedder = _make_embedder(args.embedder)
     calibration = load_for(embedder.name)
 
