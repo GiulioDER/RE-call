@@ -77,3 +77,10 @@ def test_run_trust_eval_baseline_trusts_stale_and_trust_layer_does_not(tmp_path)
     assert r.abstain_acc == 1.0
     # trust evaluation must not damage ordinary answerable retrieval
     assert r.mrr_answerable_trust == r.mrr_answerable_baseline
+    # RECENCY baseline ("trust the newest indexed memory"): the stale docs are re-indexed after
+    # the successor — a re-sync/edit any living corpus performs constantly — so the newest
+    # timestamp IS the stale memory. A per-document timestamp cannot see the supersession
+    # relation; the heuristic picks the stale doc on every trust query here.
+    assert r.str_recency == 1.0
+    # while the trust layer, reading the declared relation, still never trusts it (same run)
+    assert r.str_trust == 0.0
