@@ -119,3 +119,40 @@ superseded-trust rate: how often a stale memory is presented as the answer (lowe
   calibration comes from a small labeled query set (see §2 for why it must be per-embedder).
 
 Reproduce: `make eval` → the trust table in `RESULTS.md` + `results/trust_effect.png`.
+
+**Timestamps are not a substitute (steelman tested).** The trust table's `STR recency` column
+scores the strongest reasonable timestamp heuristic — "among the confidently-relevant hits,
+trust the newest", with the stale docs re-synced after their successors, as any living corpus
+does constantly. It trusts the stale memory 83–100% of the time, and on bge-small it is *worse
+than plain ranking* (1.00 vs 0.83): the tie-break promotes the freshly-touched stale memo
+exactly where ranking had preferred the successor. A per-document timestamp cannot see a
+two-document relation. Full discussion:
+[docs/ENTAILMENT_SUPERSESSION_STUDY.md §3](../docs/ENTAILMENT_SUPERSESSION_STUDY.md).
+
+## 5. Entailment abstention: the near-miss class needs a judge, and the judge needs the threshold
+
+The calibrated threshold (§2) catches *far* gaps; it cannot catch the **near-miss** — a
+high-similarity memory that does not answer the query — because the distractor's cosine clears
+any threshold by construction. On a held-out 10-query near-miss set (excluded from
+calibration), the threshold's false-confident rate is 0.40–1.00 per embedder.
+
+v0.3 adds an optional entailment stage (`recall[entail]`, OFF by default): a QNLI cross-encoder
+judges the verdict-ok hits and demotes non-answering ones to `not_entailed`. The decision is at
+the judge's own trained boundary — no per-embedder constant to recalibrate, and none was tuned:
+
+| embedder | near-miss FCR: threshold → +entail | gap FCR | false-abstain cost | judge ms/query |
+|---|---|---|---|---|
+| hashing-64 | 1.00 → **0.60** | 1.00 → 0.20 | 0.00 → 0.21 | 652 |
+| bge-small | 0.80 → **0.50** | 0.00 → 0.00 | 0.00 → 0.07 | 184 |
+| voyage-3 | 0.40 → 0.40 | 0.00 → 0.00 | 0.00 → 0.07 | 140 |
+
+Honest reading: the same judge transfers across embedders with zero retuning (the property a
+score threshold provably lacks, §2) — but the **judge-alone ablation degrades far-gap detection**
+(gap FCR 0.00→0.40): threshold and judge guard *different failure classes* and must be stacked.
+The residual near-miss FCR is the judge's own quality bound (a small QNLI model reads
+"on-topic" as "answers" when the query asks for an absent detail), and the cost is real:
+~100× latency and one answerable query (a *negation* answer: "we do **not** retry on 4xx")
+wrongly rejected on both semantic embedders. §2's law, one layer up: **abstention quality is
+bounded by the judge.** Full tables + arms:
+[docs/ENTAILMENT_SUPERSESSION_STUDY.md](../docs/ENTAILMENT_SUPERSESSION_STUDY.md) and the
+near-miss table in `RESULTS.md`.

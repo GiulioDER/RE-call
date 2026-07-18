@@ -56,7 +56,9 @@ These are the point of the project. Each one converts a silent failure into an e
 | Guard | Silent failure it prevents | Mechanism |
 |---|---|---|
 | **`gap_warning`** | Confident retrieval on an uncovered topic | If the best dense cosine for a query is below a calibrated threshold, the result is flagged "probable corpus gap — treat as noise" instead of returning nearest-noise as if it were an answer. |
-| **trust verdicts + abstention** (v0.2) | Confidently building on a memory that is no longer true | Every hit returns confidence + provenance + validity: a verdict (`ok / superseded / expired / not_yet_valid / low_confidence / invalid_metadata`), a calibrated confidence, and `indexed_at`. A superseded or out-of-window memory loses to its retrieved successor — or, when no valid hit clears the calibrated threshold, to an explicit abstention with a reason. |
+| **trust verdicts + abstention** (v0.2) | Confidently building on a memory that is no longer true | Every hit returns confidence + provenance + validity: a verdict (`ok / superseded / expired / not_yet_valid / low_confidence / invalid_metadata / not_entailed`), a calibrated confidence, and `indexed_at`. A superseded or out-of-window memory loses to its retrieved successor — or, when no valid hit clears the calibrated threshold, to an explicit abstention with a reason. |
+| **entailment stage** (v0.3, opt-in) | Confident retrieval on a *near-miss* — a high-similarity memory that does not answer the query, which clears any cosine threshold by construction | An optional QNLI cross-encoder judges the verdict-ok hits ("does this sentence answer this question?") and demotes non-answering ones to `not_entailed`. A decision at the judge's own boundary, not another score to threshold — so nothing to recalibrate per embedder. OFF by default; measured cost and limits in [Finding 5](#finding-5--entailment-abstention-a-judged-decision-stacked-on-the-threshold-not-a-replacement). |
+| **`recall lint`** (v0.3) | An author closing a decision without declaring the supersession edge — an orphan memo that looks valid forever | Write-time completeness checks on the supersession graph (dangling/self/cyclic edges, malformed dates, version-sibling and closed-in-prose smells). No DB needed; exit 1 on errors, CI-ready. |
 | **freshness / staleness** | Serving stale memory as current | Every result reports how old the newest indexed content is; a stale index warns instead of silently serving rot. |
 | **anti-re-litigation** | Re-deciding a settled question | The intended call pattern: an agent runs `search()` *before* proposing an idea; a surfaced closed decision (that is **not** itself a `gap_warning`) tells it to back off. Demonstrated end-to-end in [`examples/self_recall_agent.py`](../examples/self_recall_agent.py). |
 
@@ -156,7 +158,25 @@ returns the superseded/expired memory as the answer 83-100% of the time; the tru
 presents it as trustworthy (superseded-trust rate 0.00 on both embedders) at zero cost to
 ordinary retrieval (identical answerable MRR). Abstention on expired-only queries works on the
 calibrated semantic embedder (2/2) and not at all on the weak one (0/2) - the same
-embedder-bound limit as Finding 2. Full table + limits: [FINDINGS.md §4](../results/FINDINGS.md).
+embedder-bound limit as Finding 2. The eval also scores the *steelman* timestamp alternative —
+"among the confidently-relevant hits, trust the newest", with stale docs re-synced later as any
+living corpus does: it trusts the stale memory 83–100% of the time and on bge-small is worse
+than plain ranking. Supersession is a relation between two documents; a per-document timestamp
+cannot see it. Full table + limits: [FINDINGS.md §4](../results/FINDINGS.md).
+
+### Finding 5 — entailment abstention: a judged decision stacked on the threshold, not a replacement
+
+The calibrated threshold cannot see the **near-miss** class — a high-similarity memory that
+does not answer the query (baseline false-confident rate 0.40–1.00 on a held-out 10-query
+challenge set). An optional QNLI judge (v0.3, `recall[entail]`, OFF by default) demotes
+non-answering hits and cuts near-miss FCR to 0.40–0.60 with the *identical judge on every
+embedder — no recalibration*, the transfer property Finding 2 proved a score threshold lacks.
+The ablation is the honest half: judge-alone *degrades* far-gap detection (0.00→0.40) — the
+threshold and the judge guard different failure classes and must be stacked — and the costs
+are measured: ~100× latency, one negation-phrased answerable query wrongly rejected (MRR
+1.000→0.929). Abstention quality is bounded by the judge, exactly as gap detection is bounded
+by the embedder. Full study:
+[docs/ENTAILMENT_SUPERSESSION_STUDY.md](ENTAILMENT_SUPERSESSION_STUDY.md).
 
 ## 4. What this demonstrates
 
