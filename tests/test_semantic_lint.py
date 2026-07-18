@@ -223,7 +223,11 @@ def test_cli_lint_semantic_reports_the_orphan(tmp_path, capsys):
     import pytest
 
     try:
-        from recall.embeddings import FastEmbedEmbedder  # noqa: F401
+        # instantiate, not just import: FastEmbedEmbedder imports fine without the extra and
+        # only raises ImportError in __init__ (which is what main() triggers below)
+        from recall.embeddings import FastEmbedEmbedder
+
+        FastEmbedEmbedder()
     except Exception:  # pragma: no cover
         pytest.skip("fastembed not installed (recall[fastembed])")
 
