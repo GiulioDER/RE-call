@@ -70,6 +70,24 @@ def abstention_accuracy(abstained_flags: list[bool]) -> float:
     return fraction_true(abstained_flags)
 
 
+def near_miss_false_confident_rate(confident_flags: list[bool]) -> float:
+    """Fraction of NEAR-MISS queries (high-similarity distractor, no answer in the corpus) the
+    system answered confidently (flag True = did not abstain). Lower is better — this is the
+    failure class a cosine threshold passes by construction: the distractor's similarity clears
+    any calibrated threshold, so only a judgment beyond the retriever's own score can catch it.
+    NaN on empty.
+    """
+    return fraction_true(confident_flags)
+
+
+def false_abstain_rate(abstained_flags: list[bool]) -> float:
+    """Fraction of ANSWERABLE queries the system wrongly abstained on (flag True = abstained).
+    Lower is better — the regression check for any abstention mechanism: killing near-misses is
+    worthless if it also kills real answers. NaN on empty.
+    """
+    return fraction_true(abstained_flags)
+
+
 def false_confident_rate(gap_warnings: list[bool]) -> float:
     """Given the `gap_warning` flags for the UNANSWERABLE queries, the fraction where the system
     was (wrongly) confident — i.e. gap_warning was False. Lower is better; this is the guard's job.

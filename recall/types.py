@@ -5,8 +5,10 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 #: Trust verdict for a retrieved hit. Only ``ok`` hits should be relied on.
+#: ``not_entailed`` (optional entailment stage): semantically close but does not answer the query.
 Verdict = Literal[
-    "ok", "superseded", "expired", "not_yet_valid", "low_confidence", "invalid_metadata"
+    "ok", "superseded", "expired", "not_yet_valid", "low_confidence", "invalid_metadata",
+    "not_entailed",
 ]
 
 

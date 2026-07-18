@@ -2,20 +2,26 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
 
 import math
 
-from recall.calibration import from_samples
+from recall.calibration import Calibration, from_samples
 from recall.embeddings import Embedder
+from recall.entailment import EntailmentJudge
 from recall.eval.calibrate import measure_top_cosines
 from recall.eval.metrics import (
     abstention_accuracy,
+    false_abstain_rate,
     false_confident_rate,
+    fraction_true,
     mrr,
+    near_miss_false_confident_rate,
     ndcg_at_k,
     precision_at_k,
     recall_at_k,
@@ -118,10 +124,141 @@ def run_ablations(
     return results
 
 
+#: Abstention arms. A = the calibrated cosine threshold (status quo). B = threshold plus
+#: the entailment judge. C = the judge alone (threshold disabled) — the ablation proving any
+#: near-miss win is the judge's, not the threshold's.
+ARMS = ["threshold", "threshold+entail", "entail-only"]
+
+
+@dataclass
+class NearMissEvalResult:
+    embedder: str
+    arm: str
+    nearmiss_fcr: float           # near-miss queries answered confidently (lower is better)
+    gap_fcr: float                # classic far-gap queries answered confidently — must not regress
+    false_abstain: float          # answerable queries wrongly abstained — must not regress
+    mrr_answerable: float
+    entail_latency_ms_mean: float  # judge stage only; 0.0 for the threshold arm
+    query_latency_ms_mean: float   # full trusted_search (+judge) wall time per query
+
+
+class _TimedJudge:
+    """Wraps a judge to measure its wall time — the honest cost column of the results table."""
+
+    def __init__(self, inner: EntailmentJudge) -> None:
+        self._inner = inner
+        self.samples_ms: list[float] = []
+
+    def judge(self, query: str, texts: list[str]) -> list[bool]:
+        t0 = time.perf_counter()
+        out = self._inner.judge(query, texts)
+        self.samples_ms.append((time.perf_counter() - t0) * 1000.0)
+        return out
+
+
+def run_nearmiss_eval(
+    dsn: str, embedders: list[Embedder], judge: EntailmentJudge,
+    corpus_dir: Path | None = None, queries_path: Path | None = None,
+    nearmiss_path: Path | None = None, k: int = 10,
+) -> list[NearMissEvalResult]:
+    """Score the three abstention arms per embedder on answerable / far-gap / near-miss queries.
+
+    The calibration is built ONLY from the labeled answerable/unanswerable queries in
+    `queries.json` — the near-miss set is a held-out challenge set and must never tune the
+    threshold it challenges. "Confident" for every arm means `trusted_search` did not abstain;
+    the entailment arms share the SAME judge instance across embedders with no per-embedder
+    adjustment — that transfer is the property under test.
+    """
+    corpus_dir = corpus_dir or (EVAL_DIR / "corpus")
+    queries = json.loads(
+        Path(queries_path or (EVAL_DIR / "queries.json")).read_text(encoding="utf-8")
+    )
+    nearmiss = json.loads(
+        Path(nearmiss_path or (EVAL_DIR / "near_miss.json")).read_text(encoding="utf-8")
+    )
+    plain = [q for q in queries if not q.get("trust")]
+    answerable = [q for q in plain if q["answerable"]]
+    gaps = [q for q in plain if not q["answerable"]]
+
+    results: list[NearMissEvalResult] = []
+    for emb in embedders:
+        table = "nm_" + uuid.uuid4().hex[:8]
+        store = PgVectorStore(dsn, dim=emb.dim, table=table)
+        try:
+            store.ensure_schema()
+            Indexer(store, emb).index_path(corpus_dir)
+            cal = from_samples(emb.name, *measure_top_cosines(store, emb, plain))
+            # threshold -1 passes every cosine: isolates the judge in the entail-only arm
+            permissive = Calibration(embedder=emb.name, threshold=-1.0, scale=cal.scale)
+            arm_setup = {
+                "threshold": (cal, None),
+                "threshold+entail": (cal, judge),
+                "entail-only": (permissive, judge),
+            }
+            for arm in ARMS:
+                arm_cal, arm_judge = arm_setup[arm]
+                timed = _TimedJudge(arm_judge) if arm_judge is not None else None
+                q_times: list[float] = []
+
+                def _search(text: str):
+                    t0 = time.perf_counter()
+                    res = trusted_search(store, emb, text, k=k, calibration=arm_cal,
+                                         entailment=timed)
+                    q_times.append((time.perf_counter() - t0) * 1000.0)
+                    return res
+
+                nm_confident = [not _search(q["query"]).abstained for q in nearmiss]
+                gap_confident = [not _search(q["query"]).abstained for q in gaps]
+                abst_flags, mrrs = [], []
+                for q in answerable:
+                    res = _search(q["query"])
+                    abst_flags.append(res.abstained)
+                    ok_keys = [_tkey(h) for h in res.hits if h.verdict == "ok"]
+                    mrrs.append(mrr(ok_keys, q["relevant_ids"]))
+                results.append(
+                    NearMissEvalResult(
+                        embedder=emb.name,
+                        arm=arm,
+                        nearmiss_fcr=near_miss_false_confident_rate(nm_confident),
+                        gap_fcr=fraction_true(gap_confident),
+                        false_abstain=false_abstain_rate(abst_flags),
+                        mrr_answerable=mean(mrrs) if mrrs else 0.0,
+                        entail_latency_ms_mean=(
+                            mean(timed.samples_ms) if timed and timed.samples_ms else 0.0
+                        ),
+                        query_latency_ms_mean=mean(q_times) if q_times else 0.0,
+                    )
+                )
+        finally:
+            try:
+                store._conn.execute(f"DROP TABLE IF EXISTS {table}")
+            except Exception:
+                pass  # best-effort drop of the throwaway uuid table
+            finally:
+                store.close()
+    return results
+
+
+def nearmiss_results_to_markdown(results: list[NearMissEvalResult]) -> str:
+    lines = [
+        "| embedder | arm | near-miss FCR | gap FCR | false-abstain | MRR ans | "
+        "judge ms/query | total ms/query |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for r in results:
+        lines.append(
+            f"| {r.embedder} | {r.arm} | {_fmt_rate(r.nearmiss_fcr)} | {_fmt_rate(r.gap_fcr)} | "
+            f"{_fmt_rate(r.false_abstain)} | {_fmt_rate(r.mrr_answerable, 3)} | "
+            f"{r.entail_latency_ms_mean:.0f} | {r.query_latency_ms_mean:.0f} |"
+        )
+    return "\n".join(lines)
+
+
 @dataclass
 class TrustEvalResult:
     embedder: str
     str_baseline: float          # superseded-trust rate of plain search (top-1 is a stale id)
+    str_recency: float           # STR of "trust the newest indexed hit" (stale docs re-synced)
     str_trust: float             # superseded-trust rate with the trust layer (stale id verdict ok)
     successor_acc: float         # expect=successor queries whose top trusted hit is the successor
     abstain_acc: float           # expect=abstain queries that actually abstained
@@ -135,12 +272,18 @@ def _tkey(hit: TrustedHit) -> str:
 
 def run_trust_eval(
     dsn: str, embedders: list[Embedder], corpus_dir: Path | None = None,
-    queries_path: Path | None = None,
+    queries_path: Path | None = None, touch_stale: bool = True,
 ) -> list[TrustEvalResult]:
-    """Score the validity-sensitive queries in two modes per embedder.
+    """Score the validity-sensitive queries in three modes per embedder.
 
     baseline = plain hybrid search (no trust layer): a query counts as stale-trusted when its
     top-1 hit is a superseded/expired memory — exactly what a consumer would read as the answer.
+    recency  = "trust the newest indexed hit" — the timestamp heuristic supersession is often
+    mistaken for. With `touch_stale` (default) the stale docs are re-indexed AFTER the initial
+    pass, simulating the re-sync/edit any living corpus performs constantly: the stale memory
+    then carries the newest timestamp, and a per-document timestamp cannot see the supersession
+    RELATION that makes it stale. Re-indexing identical text changes only `indexed_at`, so the
+    baseline and trust measurements are unaffected.
     trust    = trusted_search with an in-run calibration (built from the labeled answerable/
     unanswerable queries): a query counts as stale-trusted only if a stale id still carries
     verdict `ok`. Also reports successor accuracy, abstention accuracy, and the answerable-MRR
@@ -161,18 +304,36 @@ def run_trust_eval(
             # schema/indexing inside the try: a failure here must still drop the throwaway
             # table and close the connection in the finally below
             store.ensure_schema()
-            Indexer(store, emb).index_path(corpus_dir)
+            indexer = Indexer(store, emb)
+            indexer.index_path(corpus_dir)
+            if touch_stale:
+                stale_files = sorted(
+                    {sid.rsplit(":", 1)[0] for q in trust_qs for sid in q["stale_ids"]}
+                )
+                for name in stale_files:
+                    indexer.index_path(corpus_dir / name)
             # in-run calibration from the labeled plain queries (per-embedder threshold —
             # a fixed constant does not transfer across embedders, see FINDINGS §2)
             cal = from_samples(emb.name, *measure_top_cosines(store, emb, plain))
 
             retr = HybridRetriever(store, emb)
-            base_flags, trust_flags, succ_flags, abst_flags = [], [], [], []
+            base_flags, rec_flags, trust_flags, succ_flags, abst_flags = [], [], [], [], []
             for q in trust_qs:
                 stale = set(q["stale_ids"])
                 succ = set(q.get("successor_ids", []))
                 bres = retr.search(q["query"], k=10)
                 base_flags.append(bool(bres.hits) and _key(bres.hits[0]) in stale)
+                if bres.hits:
+                    # steelman of the timestamp approach: among the CONFIDENTLY-RELEVANT hits
+                    # (same calibrated threshold the guards use) prefer the newest — recency as
+                    # a tie-break, not a global newest-wins strawman. It still cannot see the
+                    # supersession relation.
+                    epoch = datetime.min.replace(tzinfo=timezone.utc)
+                    pool = [h for h in bres.hits if h.score >= cal.threshold] or bres.hits[:1]
+                    newest = max(pool, key=lambda h: h.indexed_at or epoch)
+                    rec_flags.append(_key(newest) in stale)
+                else:
+                    rec_flags.append(False)
                 tres = trusted_search(store, emb, q["query"], k=10, calibration=cal)
                 ok_keys = [_tkey(h) for h in tres.hits if h.verdict == "ok"]
                 trust_flags.append(any(k in stale for k in ok_keys))
@@ -194,6 +355,7 @@ def run_trust_eval(
                 TrustEvalResult(
                     embedder=emb.name,
                     str_baseline=superseded_trust_rate(base_flags),
+                    str_recency=superseded_trust_rate(rec_flags),
                     str_trust=superseded_trust_rate(trust_flags),
                     successor_acc=successor_accuracy(succ_flags),
                     abstain_acc=abstention_accuracy(abst_flags),
@@ -217,13 +379,14 @@ def _fmt_rate(x: float, digits: int = 2) -> str:
 
 def trust_results_to_markdown(results: list[TrustEvalResult]) -> str:
     lines = [
-        "| embedder | STR baseline | STR trust | successor acc | abstain acc | "
+        "| embedder | STR baseline | STR recency | STR trust | successor acc | abstain acc | "
         "MRR ans (base) | MRR ans (trust) |",
-        "|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         lines.append(
-            f"| {r.embedder} | {_fmt_rate(r.str_baseline)} | {_fmt_rate(r.str_trust)} | "
+            f"| {r.embedder} | {_fmt_rate(r.str_baseline)} | {_fmt_rate(r.str_recency)} | "
+            f"{_fmt_rate(r.str_trust)} | "
             f"{_fmt_rate(r.successor_acc)} | {_fmt_rate(r.abstain_acc)} | "
             f"{_fmt_rate(r.mrr_answerable_baseline, 3)} | {_fmt_rate(r.mrr_answerable_trust, 3)} |"
         )
@@ -253,6 +416,38 @@ def save_trust_chart(results: list[TrustEvalResult], out_dir: Path) -> Path:
     ax.legend()
     fig.tight_layout()
     path = out_dir / "trust_effect.png"
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    return path
+
+
+def save_nearmiss_chart(results: list[NearMissEvalResult], out_dir: Path) -> Path:
+    """Grouped bars: near-miss FCR per arm, per embedder (lower is better)."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    embs = list(dict.fromkeys(r.embedder for r in results))
+    colors = {"threshold": "#c44e52", "threshold+entail": "#55a868", "entail-only": "#4c72b0"}
+    width = 0.8 / max(1, len(ARMS))
+    fig, ax = plt.subplots(figsize=(max(5, len(embs) * 2.2), 4))
+    for j, arm in enumerate(ARMS):
+        vals = []
+        for e in embs:
+            row = next((r for r in results if r.embedder == e and r.arm == arm), None)
+            vals.append(0.0 if row is None or math.isnan(row.nearmiss_fcr) else row.nearmiss_fcr)
+        ax.bar([i + (j - 1) * width for i in range(len(embs))], vals, width=width,
+               label=arm, color=colors.get(arm))
+    ax.set_xticks(range(len(embs)))
+    ax.set_xticklabels(embs, rotation=20, ha="right")
+    ax.set_ylabel("near-miss false-confident rate")
+    ax.set_ylim(0, 1)
+    ax.set_title("Near-miss queries answered confidently (lower is better)")
+    ax.legend()
+    fig.tight_layout()
+    path = out_dir / "nearmiss_effect.png"
     fig.savefig(path, dpi=120)
     plt.close(fig)
     return path

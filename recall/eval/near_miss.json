@@ -1,0 +1,52 @@
+[
+  {
+    "id": "nm01",
+    "query": "how much did the read-through cache reduce memory usage",
+    "distractor_ids": ["cache_decision.md:0"]
+  },
+  {
+    "id": "nm02",
+    "query": "what backoff multiplier do retried outbound calls use",
+    "distractor_ids": ["retry_policy.md:0"]
+  },
+  {
+    "id": "nm03",
+    "query": "which document store did we evaluate against postgres",
+    "distractor_ids": ["datastore_choice.md:0"]
+  },
+  {
+    "id": "nm04",
+    "query": "when does autoscaling remove a replica after load drops",
+    "distractor_ids": ["autoscaling.md:0"]
+  },
+  {
+    "id": "nm05",
+    "query": "where are the backups stored geographically",
+    "distractor_ids": ["backups.md:0"]
+  },
+  {
+    "id": "nm06",
+    "query": "who gets notified when a secret rotation fails",
+    "distractor_ids": ["secrets_handling.md:0"]
+  },
+  {
+    "id": "nm07",
+    "query": "how many users were affected by the june checkout incident",
+    "distractor_ids": ["incident_checkout_500.md:0"]
+  },
+  {
+    "id": "nm08",
+    "query": "how long does the nightly indexer run take to complete",
+    "distractor_ids": ["indexer_freshness.md:0"]
+  },
+  {
+    "id": "nm09",
+    "query": "does cross-encoder reranking help on long multi-sentence queries",
+    "distractor_ids": ["h021_reranking.md:0"]
+  },
+  {
+    "id": "nm10",
+    "query": "what constant k do we use in reciprocal rank fusion",
+    "distractor_ids": ["rrf_definition.md:0"]
+  }
+]

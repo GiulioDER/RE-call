@@ -59,3 +59,21 @@ def test_successor_accuracy_and_abstention_accuracy():
     assert abstention_accuracy([True, True]) == 1.0
     assert math.isnan(abstention_accuracy([]))
     assert fraction_true([True, False, False, False]) == 0.25
+
+
+def test_near_miss_false_confident_rate():
+    from recall.eval.metrics import near_miss_false_confident_rate
+
+    # flag True = the system answered a near-miss query confidently (the failure)
+    assert near_miss_false_confident_rate([True, True, False, False]) == 0.5
+    assert near_miss_false_confident_rate([False, False]) == 0.0  # abstained on all -> good
+    assert math.isnan(near_miss_false_confident_rate([]))  # no data is NOT a perfect score
+
+
+def test_false_abstain_rate():
+    from recall.eval.metrics import false_abstain_rate
+
+    # flag True = the system abstained on an ANSWERABLE query (the regression to watch)
+    assert false_abstain_rate([True, False, False, False]) == 0.25
+    assert false_abstain_rate([False, False]) == 0.0
+    assert math.isnan(false_abstain_rate([]))
