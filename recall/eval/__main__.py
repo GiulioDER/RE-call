@@ -51,15 +51,22 @@ def main() -> None:
     load_dotenv()  # pick up VOYAGE_API_KEY from a gitignored .env if present
     embedders = _build_embedders()
     print(f"embedders: {[e.name for e in embedders]}")
-    results = run_ablations(DEFAULT_DSN, embedders)
-    trust_results = run_trust_eval(DEFAULT_DSN, embedders)
-    nearmiss_results = []
+    # Build the judge BEFORE the expensive stages: the optional near-miss stage must skip
+    # loudly on ANY judge failure (missing extra -> ImportError, cold-cache model download ->
+    # OSError-family) instead of crashing after minutes of eval work with nothing written.
+    # Failures inside run_nearmiss_eval itself still surface as failures, not skips.
+    judge = None
     try:
         from recall.entailment import QnliEntailmentJudge
 
-        nearmiss_results = run_nearmiss_eval(DEFAULT_DSN, embedders, QnliEntailmentJudge())
-    except ImportError as exc:
-        print(f"skip near-miss stage: {exc}")
+        judge = QnliEntailmentJudge()
+    except Exception as exc:
+        print(f"skip near-miss stage (judge unavailable): {exc!r}")
+    results = run_ablations(DEFAULT_DSN, embedders)
+    trust_results = run_trust_eval(DEFAULT_DSN, embedders)
+    nearmiss_results = (
+        run_nearmiss_eval(DEFAULT_DSN, embedders, judge) if judge is not None else []
+    )
     out = Path("results")
     out.mkdir(exist_ok=True)
     md = results_to_markdown(results)
@@ -81,7 +88,9 @@ def main() -> None:
             "cosine threshold passes by construction. Arms: `threshold` = calibrated cosine "
             "threshold (status quo), `threshold+entail` = threshold plus the QNLI judge, "
             "`entail-only` = judge alone (ablation). The judge is identical across embedders — "
-            "no per-embedder recalibration.\n\n" + nearmiss_md
+            "no per-embedder recalibration. The judge-ms column averages only over the queries "
+            "the judge actually ran on (threshold-abstained queries never reach it), so in the "
+            "stacked arm it can exceed the all-queries total mean.\n\n" + nearmiss_md
             if nearmiss_md
             else ""
         )

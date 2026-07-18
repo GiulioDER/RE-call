@@ -173,7 +173,8 @@ non-answering hits and cuts near-miss FCR to 0.40–0.60 with the *identical jud
 embedder — no recalibration*, the transfer property Finding 2 proved a score threshold lacks.
 The ablation is the honest half: judge-alone *degrades* far-gap detection (0.00→0.40) — the
 threshold and the judge guard different failure classes and must be stacked — and the costs
-are measured: ~100× latency, one negation-phrased answerable query wrongly rejected (MRR
+are measured: ~0.1–1.0 s of judge time per query (from ~1.3× total latency on voyage-3 to
+>200× on the near-instant offline embedder), one negation-phrased answerable query wrongly rejected (MRR
 1.000→0.929). Abstention quality is bounded by the judge, exactly as gap detection is bounded
 by the embedder. Full study:
 [docs/ENTAILMENT_SUPERSESSION_STUDY.md](ENTAILMENT_SUPERSESSION_STUDY.md).
@@ -194,8 +195,9 @@ engineered and judged*:
   never does (superseded-trust rate 0.00) at zero cost to ordinary retrieval (FINDINGS §4).
 - **Evaluation rigor**: an ablation harness with ranking metrics *and* a guard-specific
   false-confident rate; per-embedder threshold calibration; a held-out fine-tuning split.
-- **Intellectual honesty.** Two of the four headline findings are negatives — a threshold that
-  doesn't transfer, and a fine-tuning run with zero lift — reported as findings rather than buried.
+- **Intellectual honesty.** Two of the five headline findings are outright negatives — a threshold
+  that doesn't transfer, and a fine-tuning run with zero lift — and Finding 5 ships with its own
+  failure modes measured; all reported as findings rather than buried.
   That is deliberate: in the production system this was extracted from, the expensive mistakes came
   from *forced* positive results, and the discipline here is to measure honestly and say so.
 - **Production hygiene**: integration tests run against a real pgvector container (no mock DB), the

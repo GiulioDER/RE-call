@@ -26,16 +26,16 @@ STR = superseded-trust rate: how often a stale memory was presented as the answe
 
 ## Entailment abstention — near-miss queries (arms A/B/C)
 
-Near-miss = a high-similarity memory that does NOT answer the query — the class a cosine threshold passes by construction. Arms: `threshold` = calibrated cosine threshold (status quo), `threshold+entail` = threshold plus the QNLI judge, `entail-only` = judge alone (ablation). The judge is identical across embedders — no per-embedder recalibration.
+Near-miss = a high-similarity memory that does NOT answer the query — the class a cosine threshold passes by construction. Arms: `threshold` = calibrated cosine threshold (status quo), `threshold+entail` = threshold plus the QNLI judge, `entail-only` = judge alone (ablation). The judge is identical across embedders — no per-embedder recalibration. The judge-ms column averages only over the queries the judge actually ran on (threshold-abstained queries never reach it), so in the stacked arm it can exceed the all-queries total mean.
 
-| embedder | arm | near-miss FCR | gap FCR | false-abstain | MRR ans | judge ms/query | total ms/query |
+| embedder | arm | near-miss FCR | gap FCR | false-abstain | MRR ans | judge ms (judged calls) | total ms/query |
 |---|---|---|---|---|---|---|---|
 | hashing-64 | threshold | 1.00 | 1.00 | 0.00 | 0.696 | 0 | 4 |
-| hashing-64 | threshold+entail | 0.60 | 0.20 | 0.21 | 0.714 | 652 | 658 |
-| hashing-64 | entail-only | 0.60 | 0.40 | 0.07 | 0.881 | 1133 | 1139 |
-| BAAI/bge-small-en-v1.5 | threshold | 0.80 | 0.00 | 0.00 | 1.000 | 0 | 24 |
-| BAAI/bge-small-en-v1.5 | threshold+entail | 0.50 | 0.00 | 0.07 | 0.929 | 184 | 168 |
-| BAAI/bge-small-en-v1.5 | entail-only | 0.80 | 0.40 | 0.07 | 0.929 | 1061 | 1089 |
-| voyage:voyage-3 | threshold | 0.40 | 0.00 | 0.00 | 1.000 | 0 | 332 |
-| voyage:voyage-3 | threshold+entail | 0.40 | 0.00 | 0.07 | 0.929 | 140 | 439 |
-| voyage:voyage-3 | entail-only | 0.80 | 0.40 | 0.07 | 0.929 | 1085 | 1420 |
+| hashing-64 | threshold+entail | 0.60 | 0.20 | 0.21 | 0.714 | 856 | 863 |
+| hashing-64 | entail-only | 0.60 | 0.40 | 0.07 | 0.881 | 889 | 894 |
+| BAAI/bge-small-en-v1.5 | threshold | 0.80 | 0.00 | 0.00 | 1.000 | 0 | 19 |
+| BAAI/bge-small-en-v1.5 | threshold+entail | 0.50 | 0.00 | 0.07 | 0.929 | 149 | 139 |
+| BAAI/bge-small-en-v1.5 | entail-only | 0.80 | 0.40 | 0.07 | 0.929 | 827 | 854 |
+| voyage:voyage-3 | threshold | 0.40 | 0.00 | 0.00 | 1.000 | 0 | 306 |
+| voyage:voyage-3 | threshold+entail | 0.40 | 0.00 | 0.07 | 0.929 | 125 | 390 |
+| voyage:voyage-3 | entail-only | 0.80 | 0.40 | 0.07 | 0.929 | 1018 | 1329 |

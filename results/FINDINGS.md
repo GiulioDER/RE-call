@@ -140,18 +140,19 @@ v0.3 adds an optional entailment stage (`recall[entail]`, OFF by default): a QNL
 judges the verdict-ok hits and demotes non-answering ones to `not_entailed`. The decision is at
 the judge's own trained boundary — no per-embedder constant to recalibrate, and none was tuned:
 
-| embedder | near-miss FCR: threshold → +entail | gap FCR | false-abstain cost | judge ms/query |
+| embedder | near-miss FCR: threshold → +entail | gap FCR | false-abstain cost | judge ms (judged calls) |
 |---|---|---|---|---|
-| hashing-64 | 1.00 → **0.60** | 1.00 → 0.20 | 0.00 → 0.21 | 652 |
-| bge-small | 0.80 → **0.50** | 0.00 → 0.00 | 0.00 → 0.07 | 184 |
-| voyage-3 | 0.40 → 0.40 | 0.00 → 0.00 | 0.00 → 0.07 | 140 |
+| hashing-64 | 1.00 → **0.60** | 1.00 → 0.20 | 0.00 → 0.21 | 856 |
+| bge-small | 0.80 → **0.50** | 0.00 → 0.00 | 0.00 → 0.07 | 149 |
+| voyage-3 | 0.40 → 0.40 | 0.00 → 0.00 | 0.00 → 0.07 | 125 |
 
 Honest reading: the same judge transfers across embedders with zero retuning (the property a
 score threshold provably lacks, §2) — but the **judge-alone ablation degrades far-gap detection**
 (gap FCR 0.00→0.40): threshold and judge guard *different failure classes* and must be stacked.
 The residual near-miss FCR is the judge's own quality bound (a small QNLI model reads
 "on-topic" as "answers" when the query asks for an absent detail), and the cost is real:
-~100× latency and one answerable query (a *negation* answer: "we do **not** retry on 4xx")
+~0.1–1.0 s of judge time per query (~1.3× to >200× total latency depending on how fast the
+embedder underneath is) and one answerable query (a *negation* answer: "we do **not** retry on 4xx")
 wrongly rejected on both semantic embedders. §2's law, one layer up: **abstention quality is
 bounded by the judge.** Full tables + arms:
 [docs/ENTAILMENT_SUPERSESSION_STUDY.md](../docs/ENTAILMENT_SUPERSESSION_STUDY.md) and the

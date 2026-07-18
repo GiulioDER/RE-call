@@ -86,7 +86,7 @@ def _verdict(
     return "ok", validity
 
 
-def _abstain_reason(hits: list[TrustedHit]) -> str:
+def abstain_reason(hits: list[TrustedHit]) -> str:
     if not hits:
         return "no memory retrieved at all"
     best = max(hits, key=lambda h: h.cosine)
@@ -161,7 +161,7 @@ def evaluate(
         query=result.query,
         hits=ok + rest,
         abstained=abstained,
-        reason=_abstain_reason(rest) if abstained else "",
+        reason=abstain_reason(rest) if abstained else "",
         calibrated=calibration is not None,
         gap_warning=result.gap_warning,
         staleness=result.staleness,

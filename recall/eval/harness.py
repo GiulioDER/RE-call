@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +55,29 @@ class AblationResult:
 def _key(hit: ScoredChunk) -> str:
     md = hit.chunk.metadata
     return f"{md['file']}:{md['ord']}"
+
+
+@contextmanager
+def _throwaway_store(dsn: str, emb: Embedder, corpus_dir: Path, prefix: str):
+    """Schema-created, corpus-indexed throwaway store for one eval stage.
+
+    Setup runs INSIDE the guard: a failure while creating the schema or indexing must still
+    drop the uuid-named table and close the connection — and the single copy of the teardown
+    lives here instead of being repeated per runner.
+    """
+    table = prefix + uuid.uuid4().hex[:8]
+    store = PgVectorStore(dsn, dim=emb.dim, table=table)
+    try:
+        store.ensure_schema()
+        Indexer(store, emb).index_path(corpus_dir)
+        yield store
+    finally:
+        try:
+            store._conn.execute(f"DROP TABLE IF EXISTS {table}")
+        except Exception:
+            pass  # best-effort drop of the throwaway uuid table
+        finally:
+            store.close()
 
 
 def _score_config(
@@ -107,20 +131,9 @@ def run_ablations(
 
     results: list[AblationResult] = []
     for emb in embedders:
-        table = "eval_" + uuid.uuid4().hex[:8]
-        store = PgVectorStore(dsn, dim=emb.dim, table=table)
-        store.ensure_schema()
-        Indexer(store, emb).index_path(corpus_dir)
-        try:
+        with _throwaway_store(dsn, emb, corpus_dir, "eval_") as store:
             for fusion in fusions:
                 results.append(_score_config(store, emb, queries, fusion, reranker))
-        finally:
-            try:
-                store._conn.execute(f"DROP TABLE IF EXISTS {table}")
-            except Exception:
-                pass  # best-effort drop of the throwaway uuid table
-            finally:
-                store.close()
     return results
 
 
@@ -138,8 +151,12 @@ class NearMissEvalResult:
     gap_fcr: float                # classic far-gap queries answered confidently — must not regress
     false_abstain: float          # answerable queries wrongly abstained — must not regress
     mrr_answerable: float
-    entail_latency_ms_mean: float  # judge stage only; 0.0 for the threshold arm
-    query_latency_ms_mean: float   # full trusted_search (+judge) wall time per query
+    entail_latency_ms_mean: float  # judge stage, averaged over the queries the judge actually
+    #                                RAN on (threshold-abstained queries never reach it) — a
+    #                                different denominator than query_latency_ms_mean, so in the
+    #                                stacked arm this can EXCEED the all-queries total mean.
+    #                                0.0 for the threshold arm.
+    query_latency_ms_mean: float   # full trusted_search (+judge) wall time, mean over ALL queries
 
 
 class _TimedJudge:
@@ -182,11 +199,7 @@ def run_nearmiss_eval(
 
     results: list[NearMissEvalResult] = []
     for emb in embedders:
-        table = "nm_" + uuid.uuid4().hex[:8]
-        store = PgVectorStore(dsn, dim=emb.dim, table=table)
-        try:
-            store.ensure_schema()
-            Indexer(store, emb).index_path(corpus_dir)
+        with _throwaway_store(dsn, emb, corpus_dir, "nm_") as store:
             cal = from_samples(emb.name, *measure_top_cosines(store, emb, plain))
             # threshold -1 passes every cosine: isolates the judge in the entail-only arm
             permissive = Calibration(embedder=emb.name, threshold=-1.0, scale=cal.scale)
@@ -229,20 +242,13 @@ def run_nearmiss_eval(
                         query_latency_ms_mean=mean(q_times) if q_times else 0.0,
                     )
                 )
-        finally:
-            try:
-                store._conn.execute(f"DROP TABLE IF EXISTS {table}")
-            except Exception:
-                pass  # best-effort drop of the throwaway uuid table
-            finally:
-                store.close()
     return results
 
 
 def nearmiss_results_to_markdown(results: list[NearMissEvalResult]) -> str:
     lines = [
         "| embedder | arm | near-miss FCR | gap FCR | false-abstain | MRR ans | "
-        "judge ms/query | total ms/query |",
+        "judge ms (judged calls) | total ms/query |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
@@ -298,14 +304,8 @@ def run_trust_eval(
 
     results: list[TrustEvalResult] = []
     for emb in embedders:
-        table = "trust_" + uuid.uuid4().hex[:8]
-        store = PgVectorStore(dsn, dim=emb.dim, table=table)
-        try:
-            # schema/indexing inside the try: a failure here must still drop the throwaway
-            # table and close the connection in the finally below
-            store.ensure_schema()
+        with _throwaway_store(dsn, emb, corpus_dir, "trust_") as store:
             indexer = Indexer(store, emb)
-            indexer.index_path(corpus_dir)
             if touch_stale:
                 stale_files = sorted(
                     {sid.rsplit(":", 1)[0] for q in trust_qs for sid in q["stale_ids"]}
@@ -363,13 +363,6 @@ def run_trust_eval(
                     mrr_answerable_trust=mean(trust_mrrs) if trust_mrrs else 0.0,
                 )
             )
-        finally:
-            try:
-                store._conn.execute(f"DROP TABLE IF EXISTS {table}")
-            except Exception:
-                pass  # best-effort drop of the throwaway uuid table
-            finally:
-                store.close()
     return results
 
 
@@ -434,12 +427,18 @@ def save_nearmiss_chart(results: list[NearMissEvalResult], out_dir: Path) -> Pat
     width = 0.8 / max(1, len(ARMS))
     fig, ax = plt.subplots(figsize=(max(5, len(embs) * 2.2), 4))
     for j, arm in enumerate(ARMS):
-        vals = []
-        for e in embs:
+        xs, vals = [], []
+        for i, e in enumerate(embs):
             row = next((r for r in results if r.embedder == e and r.arm == arm), None)
-            vals.append(0.0 if row is None or math.isnan(row.nearmiss_fcr) else row.nearmiss_fcr)
-        ax.bar([i + (j - 1) * width for i in range(len(embs))], vals, width=width,
-               label=arm, color=colors.get(arm))
+            x = i + (j - 1) * width
+            if row is None or math.isnan(row.nearmiss_fcr):
+                # no data must NOT render as a zero-height bar — on a lower-is-better chart
+                # that reads as a PERFECT score (same rationale as fraction_true's NaN)
+                ax.annotate("n/a", (x, 0.02), ha="center", fontsize=8, rotation=90)
+                continue
+            xs.append(x)
+            vals.append(row.nearmiss_fcr)
+        ax.bar(xs, vals, width=width, label=arm, color=colors.get(arm))
     ax.set_xticks(range(len(embs)))
     ax.set_xticklabels(embs, rotation=20, ha="right")
     ax.set_ylabel("near-miss false-confident rate")

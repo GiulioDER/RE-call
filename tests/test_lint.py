@@ -85,6 +85,39 @@ def test_closure_prose_with_edge_is_clean(tmp_path):
     assert lint_corpus(tmp_path) == []
 
 
+def test_cycle_still_reported_when_a_member_has_a_second_superseder(tmp_path):
+    # regression (BUG-001): a single-valued edge map dropped one of two superseders of the
+    # same target, and the declared a<->z cycle silently vanished from the report
+    _write(tmp_path, "a.md", "---\nsupersedes: z.md\n---\nA")
+    _write(tmp_path, "z.md", "---\nsupersedes: a.md\n---\nZ")
+    _write(tmp_path, "m.md", "---\nsupersedes: z.md\n---\nM")
+    issues = lint_corpus(tmp_path)
+    assert "supersession-cycle" in _codes(issues)
+
+
+def test_same_filename_in_two_subdirs_does_not_shadow_checks(tmp_path):
+    # regression (BUG-004): dicts keyed by bare filename let sub2/x.md overwrite sub1/x.md,
+    # losing sub1's closure-marker warning entirely
+    (tmp_path / "sub1").mkdir()
+    (tmp_path / "sub2").mkdir()
+    _write(tmp_path / "sub1", "x.md", "This memo is deprecated and replaced by a new one.")
+    _write(tmp_path / "sub2", "x.md", "a perfectly healthy unrelated note")
+    issues = lint_corpus(tmp_path)
+    assert "closure-marker-unlinked" in _codes(issues)
+
+
+def test_ambiguous_supersedes_target_is_a_warning(tmp_path):
+    # a supersedes: edge pointing at a basename that exists in TWO places cannot be resolved
+    # unambiguously — surface it instead of silently picking one
+    (tmp_path / "sub1").mkdir()
+    (tmp_path / "sub2").mkdir()
+    _write(tmp_path / "sub1", "old.md", "v1")
+    _write(tmp_path / "sub2", "old.md", "also v1")
+    _write(tmp_path, "new.md", "---\nsupersedes: old.md\n---\nv2")
+    issues = lint_corpus(tmp_path)
+    assert "ambiguous-supersedes-target" in _codes(issues)
+
+
 def test_cli_lint_exits_nonzero_on_errors_and_zero_on_clean(tmp_path, capsys):
     from recall.cli import main
 

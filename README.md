@@ -125,7 +125,8 @@ Six **honest** findings — including what *didn't* work:
   construction); an optional QNLI entailment stage cuts it (**1.00→0.60, 0.80→0.50**) with the
   *identical judge on every embedder, zero recalibration* — but judge-alone *degrades* far-gap
   detection (0.00→0.40): they guard **different failure classes, so stack them**. Costs measured:
-  ~100× latency, one negation-phrased answer wrongly rejected.
+  ~0.1–1.0 s of judge time per query (~7× total latency on bge-small, ~1.3× on voyage-3,
+  >200× on the near-instant offline embedder), one negation-phrased answer wrongly rejected.
   **[Read the study →](docs/ENTAILMENT_SUPERSESSION_STUDY.md)**
 - ⏰ **Timestamps cannot replace declared supersession — even steelmanned.** "Trust the newest
   relevant hit" (stale docs re-synced later, as real corpora constantly do) still trusts the stale
@@ -135,7 +136,7 @@ Six **honest** findings — including what *didn't* work:
 
 > Full methodology + per-embedder tables → **[results/FINDINGS.md](results/FINDINGS.md)**.
 
-✅ **141 tests — the DB-touching ones against a real pgvector container** (no mock DB), verified in CI, with a
+✅ **144 tests — the DB-touching ones against a real pgvector container** (no mock DB), verified in CI, with a
 dependency audit.
 
 ## 🏭 Where this comes from

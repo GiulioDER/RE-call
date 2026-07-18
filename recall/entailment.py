@@ -23,6 +23,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Protocol, runtime_checkable
 
+# safe one-way import: trust never imports entailment at runtime (TYPE_CHECKING + lazy only)
+from recall.trust import abstain_reason as _trust_abstain_reason
 from recall.types import TrustedHit, TrustedResult
 
 
@@ -66,9 +68,7 @@ def _abstain_reason(hits: list[TrustedHit]) -> str:
         )
     # non-entailment abstentions (all ok hits were consumed by earlier verdicts) keep the
     # trust layer's wording
-    from recall.trust import _abstain_reason as trust_reason
-
-    return trust_reason(hits)
+    return _trust_abstain_reason(hits)
 
 
 def apply_entailment(result: TrustedResult, judge: EntailmentJudge) -> TrustedResult:

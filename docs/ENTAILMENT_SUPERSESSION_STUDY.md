@@ -51,21 +51,23 @@ verdict-ok hits, and an ok hit that does not entail the query is demoted to a ne
 per-embedder constant to recalibrate**, which is the property Finding 2 said a score threshold
 cannot have. Three arms, same judge everywhere, zero per-embedder tuning:
 
-| embedder | arm | near-miss FCR | gap FCR | false-abstain | MRR ans | judge ms/query |
+| embedder | arm | near-miss FCR | gap FCR | false-abstain | MRR ans | judge ms (judged calls) |
 |---|---|---|---|---|---|---|
 | hashing-64 | threshold | 1.00 | 1.00 | 0.00 | 0.696 | 0 |
-| hashing-64 | threshold+entail | **0.60** | 0.20 | 0.21 | 0.714 | 652 |
-| hashing-64 | entail-only | 0.60 | 0.40 | 0.07 | 0.881 | 1133 |
+| hashing-64 | threshold+entail | **0.60** | 0.20 | 0.21 | 0.714 | 856 |
+| hashing-64 | entail-only | 0.60 | 0.40 | 0.07 | 0.881 | 889 |
 | bge-small | threshold | 0.80 | 0.00 | 0.00 | 1.000 | 0 |
-| bge-small | threshold+entail | **0.50** | 0.00 | 0.07 | 0.929 | 184 |
-| bge-small | entail-only | 0.80 | 0.40 | 0.07 | 0.929 | 1061 |
+| bge-small | threshold+entail | **0.50** | 0.00 | 0.07 | 0.929 | 149 |
+| bge-small | entail-only | 0.80 | 0.40 | 0.07 | 0.929 | 827 |
 | voyage-3 | threshold | 0.40 | 0.00 | 0.00 | 1.000 | 0 |
-| voyage-3 | threshold+entail | 0.40 | 0.00 | 0.07 | 0.929 | 140 |
-| voyage-3 | entail-only | 0.80 | 0.40 | 0.07 | 0.929 | 1085 |
+| voyage-3 | threshold+entail | 0.40 | 0.00 | 0.07 | 0.929 | 125 |
+| voyage-3 | entail-only | 0.80 | 0.40 | 0.07 | 0.929 | 1018 |
 
-(Latency measured on CPU. The judge column averages over the queries where the judge actually
-ran — in the stacked arm, queries the threshold already abstained on never reach the judge,
-which is also why stacking is much cheaper than entail-only.)
+(Latency measured on CPU; wall-clock, so it varies run to run — the rates above are
+deterministic, the ms columns are measurements. The judge column averages over the queries
+where the judge actually ran — in the stacked arm, queries the threshold already abstained on
+never reach the judge, which is why stacking is much cheaper than entail-only on the semantic
+embedders.)
 
 Four honest readings:
 
@@ -85,7 +87,9 @@ Four honest readings:
   the same law applies one layer up — **abstention-by-entailment is bounded by the judge.**
   A stronger judge (large NLI model, LLM-as-judge) is the obvious next experiment; the harness
   now measures exactly that trade.
-- **The cost is real and must be stated.** ~140–650 ms/query on CPU (100× the plain search),
+- **The cost is real and must be stated.** ~0.1–1.0 s of judge time per query on CPU — from
+  ~1.3× total latency on voyage-3 (the judge rides on a ~300 ms cloud round-trip) through ~7×
+  on bge-small to >200× on the near-instant offline hashing embedder,
   and a new false-abstain failure: the judge rejects one legitimately answerable query (1/14)
   on *both* semantic embedders — q02, whose gold memo answers by **negation** ("do we retry on
   4xx?" → "we do **not** retry on 4xx"). MRR on answerable queries dips 1.000→0.929
