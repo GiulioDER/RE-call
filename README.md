@@ -44,7 +44,7 @@ retrieves **before** the agent acts, returns **confidence + provenance + validit
 - ⏱️ **Freshness-aware** — every result reports how stale the index is, so a rotting memory warns instead of silently serving old facts.
 - 🔁 **Anti-re-litigation** — meant to be queried *before* re-proposing an idea, so closed decisions and falsified hypotheses resurface first.
 - ⚖️ **Entailment stage (opt-in)** — a QNLI judge catches the **near-miss**: a high-similarity memory that doesn't actually answer the query (which clears any cosine threshold *by construction*). A decision, not another score — nothing to recalibrate per embedder. OFF by default; measured cost in [Finding 5](results/FINDINGS.md).
-- 🧹 **`recall lint`** — write-time checks on the supersession graph (dangling/cyclic `supersedes:`, versioned siblings with no edge, closures declared only in prose). No DB needed; exit 1 on errors, CI-ready.
+- 🧹 **`recall lint`** — write-time checks on the supersession graph (dangling/cyclic `supersedes:`, versioned siblings with no edge, closures declared only in prose). No DB needed; exit 1 on errors, CI-ready. `--semantic` adds a retrieval-based **missing-edge** check: a new memo highly similar to a prior closed decision it doesn't reference is surfaced for a one-keystroke confirm (opt-in, DB-backed — the write-time mirror of anti-re-litigation).
 - 🧱 **Production-shaped** — PostgreSQL + pgvector, hybrid dense + full-text retrieval fused with RRF, cross-encoder reranking, and an MCP server. Integration-tested on a real database.
 
 ## 🧭 How it works
@@ -136,7 +136,7 @@ Six **honest** findings — including what *didn't* work:
 
 > Full methodology + per-embedder tables → **[results/FINDINGS.md](results/FINDINGS.md)**.
 
-✅ **144 tests — the DB-touching ones against a real pgvector container** (no mock DB), verified in CI, with a
+✅ **161 tests — the DB-touching ones against a real pgvector container** (no mock DB), verified in CI, with a
 dependency audit.
 
 ## 🏭 Where this comes from
@@ -169,6 +169,7 @@ python -m recall.cli search "your question"     # -> verdicts + confidence + gap
 python -m recall.cli search "..." --entail      # + QNLI near-miss judge (recall[entail], opt-in)
 python -m recall.cli calibrate recall/eval/queries.json   # per-embedder abstention threshold -> calibration.json
 python -m recall.cli lint ./path/to/markdown    # supersession-graph completeness (no DB needed)
+python -m recall.cli lint ./docs --semantic     # + retrieval-based missing-edge check (DB, opt-in)
 ```
 
 Point `RECALL_DSN` at any Postgres to use your own database. Declare validity in the memory

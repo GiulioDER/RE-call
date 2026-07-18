@@ -87,6 +87,16 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_lint.add_argument("path")
     p_lint.add_argument("--glob", default="**/*.md")
+    p_lint.add_argument(
+        "--semantic", action="store_true",
+        help="also run the retrieval-based MISSING-edge check: flag memos highly similar to a "
+             "prior closed decision they don't reference (needs the DB + embedder; opt-in)",
+    )
+    p_lint.add_argument(
+        "--threshold", type=float, default=None,
+        help="cosine threshold for --semantic (default: the calibrated abstention threshold "
+             "for this embedder; must be calibrated per embedder — see FINDINGS section 2)",
+    )
 
     p_cal = sub.add_parser(
         "calibrate",
@@ -110,6 +120,23 @@ def main(argv: list[str] | None = None) -> None:
             print(f"{i.level:<8} {i.code:<26} {i.file}: {i.message}")
         errors = sum(1 for i in issues if i.level == "error")
         warnings = len(issues) - errors
+
+        chains = []
+        if args.semantic:  # opt-in retrieval-based missing-edge check (needs DB + embedder)
+            from recall.semantic_lint import semantic_lint
+
+            emb = _make_embedder(args.embedder)
+            cal = load_for(emb.name)
+            thr = args.threshold if args.threshold is not None else (
+                cal.threshold if cal else 0.70
+            )
+            chains = semantic_lint(args.dsn, emb, args.path, threshold=thr, glob=args.glob)
+            for c in chains:
+                print(f"warning  unlinked-chain             {c.new_memo}: highly similar "
+                      f"(cos={c.cosine:.2f}) to closed decision {c.prior!r} it does not "
+                      f"reference — add `supersedes: {c.prior}`?")
+            warnings += len(chains)
+
         print(f"{errors} errors, {warnings} warnings")
         if errors:
             raise SystemExit(1)

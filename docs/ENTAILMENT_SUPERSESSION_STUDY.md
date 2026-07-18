@@ -140,6 +140,37 @@ read time — both memos are individually fine — but it is **checkable at writ
 
 Exit code 1 on errors, so it drops into CI in one line. Both corpora in this repo pass clean.
 
+But this static lint only catches edges you *wrote* (and malformed). It is structurally blind
+to the edge you *forgot* entirely — a new memo that is really about a prior settled decision but
+declares no `supersedes:` at all, with no closure prose to trip the keyword heuristic. That
+relation is in the meaning, not the frontmatter.
+
+## 4b. Catching the *missing* edge with retrieval (a reader's idea, built and measured)
+
+A commenter proposed the fix I'd left on the table: run retrieval at write time. It costs
+nothing new — same embedder, same index, same trust layer, pointed at the commit path instead
+of the query. When a memo lands, search with its text; any high-similarity **closed decision**
+it does not reference is a candidate unlinked chain. It is the write-time mirror of
+anti-re-litigation: that guard queries before an agent *proposes*; this queries before a memo is
+*committed*. Shipped as `recall lint --semantic` (`recall/semantic_lint.py`, opt-in, DB-backed).
+
+The honest result has two halves. On a planted orphan — a pricing-cache revision that omits its
+`supersedes:` — at bge-small's **calibrated 0.70** threshold it surfaces the predecessor cleanly
+and alone (cos **0.847**, far above the noise), while the correctly-linked control pair and the
+unrelated decision stay quiet. Drop the threshold to 0.60 and it drowns: unrelated pairs land at
+0.60–0.63, which is exactly bge-small's unanswerable-cosine ceiling (§2). **Finding 2 bites
+again, one layer up — the threshold does not transfer, it must be calibrated per embedder.**
+
+The second half is why the human stays in the loop. Dogfooded on the (small, topically dense)
+eval corpus at 0.70, it over-surfaces: two *different* cache decisions at 0.82, an incident next
+to a rollout flag at 0.76, two RAG hypotheses at 0.71 — none of them missing edges, just co-valid
+near-neighbours. So it is a **candidate surfacer with a one-keystroke confirm, not an
+auto-linker** — precisely how the commenter framed it. Missing-edge detection is bounded by the
+(embedder, threshold) pair the same way gap detection is bounded by the embedder and
+abstention-by-entailment is bounded by the judge. The cost asymmetry makes over-surfacing the
+right default: a false positive is a keystroke to dismiss, a false negative is a silent orphan,
+so you tune it loose. It ships warnings-only (exit 0), so it never blocks CI.
+
 ## 5. What changed in the repo
 
 - `recall/entailment.py` — `EntailmentJudge` protocol, `QnliEntailmentJudge`,
@@ -147,7 +178,9 @@ Exit code 1 on errors, so it drops into CI in one line. Both corpora in this rep
 - `recall/eval/near_miss.json` — 10 held-out near-miss queries; `run_nearmiss_eval()` scores
   the three arms; `results/nearmiss_effect.png`.
 - `run_trust_eval()` — recency-steelman arm (`STR recency` column).
-- `recall/lint.py` + `recall lint` CLI — supersession-graph completeness checks.
+- `recall/lint.py` + `recall lint` CLI — static supersession-graph completeness checks.
+- `recall/semantic_lint.py` + `recall lint --semantic` — retrieval-based missing-edge check
+  (opt-in, DB-backed; the reader's write-time-retrieval idea, built and measured).
 - All measured numbers reproduce with `make eval` (Voyage rows appear when `VOYAGE_API_KEY`
   is set).
 

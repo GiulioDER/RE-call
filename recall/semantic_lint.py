@@ -1,0 +1,144 @@
+"""Write-time SEMANTIC lint: catch the supersession edge you *forgot* to write.
+
+The static `recall lint` verifies edges that exist (dangling / cycle / version-sibling). It is
+structurally blind to the failure that actually hurts — the MISSING edge: a new memo that is
+really about a prior settled decision but never declares `supersedes:`. That relation is not in
+the frontmatter, it is in the meaning, so no syntactic check can see it. Retrieval can.
+
+This is the write-time mirror of the anti-re-litigation guard: anti-re-litigation queries the
+index before an agent *proposes* an idea; this queries the index before a memo is *committed*.
+When a memo lands, search with its text; any high-similarity CLOSED decision it does not
+reference is a candidate unlinked chain — surfaced for a one-keystroke confirm. Same embedder,
+same index, same trust layer, pointed at the write path instead of the read path.
+
+Honest limits (measured, not hidden):
+- The similarity threshold inherits FINDINGS §2 — it does NOT transfer across embedders, so it
+  must be calibrated per model. The cost asymmetry is friendly though: a false positive is a
+  keystroke to dismiss, a false negative is a silent orphan, so tune it LOOSE and over-surface.
+- "closed decision" is detected from the memo's own prose (a settled-status marker or closure
+  wording). A fresh memo you are committing is typically unmarked, which conveniently orients
+  the check: it flags the settled PRIOR, not the new memo. Requires the DB (opt-in), unlike the
+  pure-filesystem `recall lint`.
+"""
+from __future__ import annotations
+
+import re
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+
+from recall.embeddings import Embedder
+from recall.frontmatter import parse_frontmatter
+from recall.index import Indexer
+from recall.lint import CLOSURE_MARKERS, DEFAULT_GLOB
+from recall.retriever import HybridRetriever
+from recall.store import PgVectorStore
+
+#: A memo reads as a settled decision (something a new related memo should reference) when its
+#: body carries a decision-status marker. An OPEN investigation is deliberately excluded — a
+#: live hypothesis legitimately coexists with a fresh related memo and is not a missing edge.
+_DECISION_STATUS = re.compile(
+    r"\bstatus:\s*(adopted|closed|superseded|replaced|deprecated|obsolete|falsified|"
+    r"rejected|decided|abandoned)\b",
+    re.IGNORECASE,
+)
+
+
+def is_closed_decision(body: str) -> bool:
+    """True if the memo body reads as a settled decision (status marker or closure prose)."""
+    return bool(_DECISION_STATUS.search(body) or CLOSURE_MARKERS.search(body))
+
+
+@dataclass(frozen=True)
+class ChainCandidate:
+    name: str            # basename of a retrieved prior memo
+    cosine: float        # dense cosine of the prior memo to the new memo
+    is_closed_decision: bool
+
+
+@dataclass(frozen=True)
+class UnlinkedChain:
+    new_memo: str        # the memo being committed
+    prior: str           # the unreferenced closed decision it is highly similar to
+    cosine: float
+
+
+def find_unlinked_chains(
+    new_memo: str, supersedes: set[str], candidates: list[ChainCandidate], threshold: float
+) -> list[UnlinkedChain]:
+    """Pure core: which retrieved candidates are unlinked chains for `new_memo`.
+
+    A candidate is flagged when it is a closed decision, scores at/above the threshold, is not
+    the memo itself, and is not already referenced by the memo. Highest similarity first.
+    """
+    out = [
+        UnlinkedChain(new_memo, c.name, c.cosine)
+        for c in candidates
+        if c.name != new_memo
+        and c.name not in supersedes
+        and c.is_closed_decision
+        and c.cosine >= threshold
+    ]
+    out.sort(key=lambda u: u.cosine, reverse=True)
+    return out
+
+
+def semantic_lint(
+    dsn: str, embedder: Embedder, corpus_dir: str | Path, threshold: float,
+    glob: str = DEFAULT_GLOB, k: int = 10,
+) -> list[UnlinkedChain]:
+    """Sweep a corpus: for each memo, retrieve and report unreferenced high-similarity closed
+    decisions (candidate missing `supersedes:` edges). Indexes into a throwaway table.
+
+    A pair already linked in EITHER direction (M references C, or C references M) is skipped —
+    the chain is complete regardless of which way the edge points.
+    """
+    root = Path(corpus_dir)
+    files = sorted(root.glob(glob)) if root.is_dir() else [root]
+
+    supersedes: dict[str, set[str]] = {}
+    closed: dict[str, bool] = {}
+    body_text: dict[str, str] = {}
+    for f in files:
+        meta, body = parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+        target = meta.get("supersedes")
+        supersedes[f.name] = {target} if target else set()
+        closed[f.name] = is_closed_decision(body)
+        body_text[f.name] = body
+
+    table = "semlint_" + uuid.uuid4().hex[:8]
+    store = PgVectorStore(dsn, dim=embedder.dim, table=table)
+    findings: list[UnlinkedChain] = []
+    try:
+        store.ensure_schema()
+        Indexer(store, embedder).index_path(corpus_dir, glob=glob)
+        retr = HybridRetriever(store, embedder)
+        for f in files:
+            name = f.name
+            res = retr.search(body_text[name], k=k)
+            best: dict[str, float] = {}  # other-file -> max dense cosine
+            for h in res.hits:
+                cname = h.chunk.metadata.get("file")
+                if not cname or cname == name:
+                    continue
+                # skip pairs already linked either way — the chain is complete
+                if name in supersedes.get(cname, set()):
+                    continue
+                if h.score > best.get(cname, -2.0):
+                    best[cname] = h.score
+            candidates = [
+                ChainCandidate(cn, sc, closed.get(cn, False)) for cn, sc in best.items()
+            ]
+            findings.extend(
+                find_unlinked_chains(name, supersedes.get(name, set()), candidates, threshold)
+            )
+    finally:
+        try:
+            store._conn.execute(f"DROP TABLE IF EXISTS {table}")
+        except Exception:
+            pass  # best-effort drop of the throwaway uuid table
+        finally:
+            store.close()
+
+    findings.sort(key=lambda u: u.cosine, reverse=True)
+    return findings
