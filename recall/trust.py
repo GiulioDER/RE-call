@@ -16,6 +16,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # avoid a runtime import cycle: entailment imports trust's abstain wording
+    from recall.entailment import EntailmentJudge
 
 from recall.calibration import Calibration
 from recall.embeddings import Embedder
@@ -82,7 +86,7 @@ def _verdict(
     return "ok", validity
 
 
-def _abstain_reason(hits: list[TrustedHit]) -> str:
+def abstain_reason(hits: list[TrustedHit]) -> str:
     if not hits:
         return "no memory retrieved at all"
     best = max(hits, key=lambda h: h.cosine)
@@ -157,7 +161,7 @@ def evaluate(
         query=result.query,
         hits=ok + rest,
         abstained=abstained,
-        reason=_abstain_reason(rest) if abstained else "",
+        reason=abstain_reason(rest) if abstained else "",
         calibrated=calibration is not None,
         gap_warning=result.gap_warning,
         staleness=result.staleness,
@@ -173,8 +177,14 @@ def trusted_search(
     calibration: Calibration | None = None,
     reranker: Reranker | None = None,
     now: datetime | None = None,
+    entailment: "EntailmentJudge | None" = None,
 ) -> TrustedResult:
-    """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point."""
+    """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point.
+
+    `entailment` is OFF by default: when a judge is passed, verdict-ok hits that do not entail
+    an answer to the query are demoted to ``not_entailed`` (see `recall.entailment`) — the
+    near-miss guard the cosine threshold cannot provide. Costs one judge pass per ok hit.
+    """
     if k < 1:
         raise ValueError("k must be >= 1")
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
@@ -183,9 +193,14 @@ def trusted_search(
     retriever = HybridRetriever(store, embedder, reranker=reranker, gap_threshold=cal.threshold)
     result = retriever.search(query, k=k, source=source)
     supersession = store.supersession_map() if result.hits else {}
-    return evaluate(
+    trusted = evaluate(
         result,
         supersession,
         calibration,
         now or datetime.now(timezone.utc),
     )
+    if entailment is not None:
+        from recall.entailment import apply_entailment
+
+        trusted = apply_entailment(trusted, entailment)
+    return trusted

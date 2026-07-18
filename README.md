@@ -43,6 +43,8 @@ retrieves **before** the agent acts, returns **confidence + provenance + validit
 - 🎯 **Calibrated abstention** — the confidence threshold is calibrated *per embedder* against a labelled query set (`recall calibrate`); when no valid hit clears it, the result abstains with a reason instead of answering.
 - ⏱️ **Freshness-aware** — every result reports how stale the index is, so a rotting memory warns instead of silently serving old facts.
 - 🔁 **Anti-re-litigation** — meant to be queried *before* re-proposing an idea, so closed decisions and falsified hypotheses resurface first.
+- ⚖️ **Entailment stage (opt-in)** — a QNLI judge catches the **near-miss**: a high-similarity memory that doesn't actually answer the query (which clears any cosine threshold *by construction*). A decision, not another score — nothing to recalibrate per embedder. OFF by default; measured cost in [Finding 5](results/FINDINGS.md).
+- 🧹 **`recall lint`** — write-time checks on the supersession graph (dangling/cyclic `supersedes:`, versioned siblings with no edge, closures declared only in prose). No DB needed; exit 1 on errors, CI-ready.
 - 🧱 **Production-shaped** — PostgreSQL + pgvector, hybrid dense + full-text retrieval fused with RRF, cross-encoder reranking, and an MCP server. Integration-tested on a real database.
 
 ## 🧭 How it works
@@ -99,7 +101,7 @@ precision@k, recall@k, MRR, nDCG, and a guard-specific **false-confident rate**.
   <img src="results/guard_effect.png" width="48%" alt="Guard effect: false-confident rate on unanswerable queries">
 </p>
 
-Four **honest** findings — including what *didn't* work:
+Six **honest** findings — including what *didn't* work:
 
 - 🧾 **Similarity cannot see supersession — the trust layer can.** On validity-sensitive queries
   (worded deliberately closer to the *stale* memory), plain search returns the superseded/expired
@@ -118,10 +120,23 @@ Four **honest** findings — including what *didn't* work:
   corpus the base already saturates (Δ **+0.00**); on an opaque-jargon corpus it can't decode,
   fine-tuning lifts held-out MRR **0.31 → 0.55 (+79%)** and generalizes to unseen paraphrases.
   → *Measure the base–corpus gap before fine-tuning.* **[Read the study →](docs/RAG_TRAINING_STUDY.md)**
+- ⚖️ **Near-misses need a judge — and the judge needs the threshold.** On a held-out set of
+  high-similarity-but-wrong queries the calibrated threshold is blind (FCR **0.40–1.00**, by
+  construction); an optional QNLI entailment stage cuts it (**1.00→0.60, 0.80→0.50**) with the
+  *identical judge on every embedder, zero recalibration* — but judge-alone *degrades* far-gap
+  detection (0.00→0.40): they guard **different failure classes, so stack them**. Costs measured:
+  ~0.1–1.0 s of judge time per query (~7× total latency on bge-small, ~1.3× on voyage-3,
+  >200× on the near-instant offline embedder), one negation-phrased answer wrongly rejected.
+  **[Read the study →](docs/ENTAILMENT_SUPERSESSION_STUDY.md)**
+- ⏰ **Timestamps cannot replace declared supersession — even steelmanned.** "Trust the newest
+  relevant hit" (stale docs re-synced later, as real corpora constantly do) still trusts the stale
+  memory **83–100%** of the time — and on bge-small it's *worse than plain ranking*. Supersession
+  is a relation between two documents; a per-document timestamp can't see it. The declared
+  `supersedes:` edge stays at **0.00** in the same runs.
 
 > Full methodology + per-embedder tables → **[results/FINDINGS.md](results/FINDINGS.md)**.
 
-✅ **117 tests — the DB-touching ones against a real pgvector container** (no mock DB), verified in CI, with a
+✅ **144 tests — the DB-touching ones against a real pgvector container** (no mock DB), verified in CI, with a
 dependency audit.
 
 ## 🏭 Where this comes from
@@ -152,6 +167,7 @@ Default embedder is local **FastEmbed** (no key); `--embedder hashing` is a full
 python -m recall.cli index ./path/to/markdown   # index your own docs
 python -m recall.cli search "your question"     # -> verdicts + confidence + gap/freshness flags
 python -m recall.cli calibrate recall/eval/queries.json   # per-embedder abstention threshold -> calibration.json
+python -m recall.cli lint ./path/to/markdown    # supersession-graph completeness (no DB needed)
 ```
 
 Point `RECALL_DSN` at any Postgres to use your own database. Declare validity in the memory

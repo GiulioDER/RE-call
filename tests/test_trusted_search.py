@@ -81,3 +81,24 @@ def test_trusted_search_rejects_nonpositive_k(make_store):
     store = make_store(64)
     with pytest.raises(ValueError):
         trusted_search(store, HashingEmbedder(dim=64), "anything", k=0)
+
+
+@requires_db
+def test_entailment_judge_is_off_by_default_and_demotes_when_passed(tmp_path, make_store):
+    """Ships-OFF: without a judge nothing changes; with one, a non-entailing ok hit abstains."""
+
+    class RejectAll:
+        def judge(self, query: str, texts: list[str]) -> list[bool]:
+            return [False] * len(texts)
+
+    store = make_store(64)
+    _index(tmp_path, store, {"rate_v1.md": V1})
+    emb = HashingEmbedder(dim=64)
+    plain = trusted_search(store, emb, "API rate limit requests per second", k=3)
+    assert plain.abstained is False  # no judge -> trust layer behavior untouched
+
+    judged = trusted_search(store, emb, "API rate limit requests per second", k=3,
+                            entailment=RejectAll())
+    assert judged.abstained is True
+    assert judged.hits[0].verdict == "not_entailed"
+    assert "entail" in judged.reason
