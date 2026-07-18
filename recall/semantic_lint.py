@@ -44,6 +44,10 @@ _DECISION_STATUS = re.compile(
 )
 
 
+#: Below any real cosine (which lies in [-1, 1]); the "no score yet, anything wins" floor.
+_NO_SCORE = float("-inf")
+
+
 def is_closed_decision(body: str) -> bool:
     """True if the memo body reads as a settled decision (status marker or closure prose)."""
     return bool(_DECISION_STATUS.search(body) or CLOSURE_MARKERS.search(body))
@@ -144,7 +148,7 @@ def semantic_lint(
                 # skip pairs already linked either way — the chain is complete
                 if name in supersedes.get(cname, set()):
                     continue
-                if h.score > best.get(cname, -2.0):
+                if h.score > best.get(cname, _NO_SCORE):
                     best[cname] = h.score
             candidates = [
                 ChainCandidate(cn, sc, closed.get(cn, False)) for cn, sc in best.items()
@@ -160,5 +164,13 @@ def semantic_lint(
         finally:
             store.close()
 
-    findings.sort(key=lambda u: u.cosine, reverse=True)
-    return findings
+    # Two mutually-similar unlinked closed decisions each surface the other (M->C and C->M).
+    # Report each missing link once, keeping the higher-cosine direction.
+    best_by_pair: dict[frozenset[str], UnlinkedChain] = {}
+    for u in findings:
+        key = frozenset({u.new_memo, u.prior})
+        if key not in best_by_pair or u.cosine > best_by_pair[key].cosine:
+            best_by_pair[key] = u
+    deduped = list(best_by_pair.values())
+    deduped.sort(key=lambda u: u.cosine, reverse=True)
+    return deduped

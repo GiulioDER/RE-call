@@ -8,6 +8,7 @@ from pathlib import Path
 from recall.calibration import Calibration, from_samples, load_for, save
 from recall.embeddings import HashingEmbedder
 from recall.index import Indexer, chunk_code, chunk_text
+from recall.lint import DEFAULT_GLOB
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
 from recall.types import TrustedResult
@@ -65,7 +66,7 @@ def main(argv: list[str] | None = None) -> None:
     p_index = sub.add_parser("index", help="index a folder of markdown or code")
     p_index.add_argument("path")
     p_index.add_argument(
-        "--glob", default="**/*.md",
+        "--glob", default=DEFAULT_GLOB,
         help="file glob to index — e.g. '**/*.py' for code (auto-uses code chunking). Default: markdown.",
     )
 
@@ -86,7 +87,7 @@ def main(argv: list[str] | None = None) -> None:
         help="check a corpus's supersession graph for broken/missing edges (no DB needed)",
     )
     p_lint.add_argument("path")
-    p_lint.add_argument("--glob", default="**/*.md")
+    p_lint.add_argument("--glob", default=DEFAULT_GLOB)
     p_lint.add_argument(
         "--semantic", action="store_true",
         help="also run the retrieval-based MISSING-edge check: flag memos highly similar to a "

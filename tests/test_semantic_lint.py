@@ -240,3 +240,34 @@ def test_cli_lint_semantic_reports_the_orphan(tmp_path, capsys):
     assert "unlinked-chain" in out
     assert "pricing_cache_v1.md" in out
     assert "retry_v1.md" not in out  # the linked pair stays quiet
+
+
+@requires_db
+def test_mutually_similar_pair_is_reported_once_not_both_directions(tmp_path):
+    # BUG-003 (deferred): two mutually-similar unlinked closed decisions each surface the other;
+    # the missing link must be reported ONCE, not as two opposite-direction warnings.
+    import pytest
+
+    try:
+        from recall.embeddings import FastEmbedEmbedder
+
+        emb = FastEmbedEmbedder()
+    except Exception:  # pragma: no cover
+        pytest.skip("fastembed not installed (recall[fastembed])")
+
+    from recall.semantic_lint import semantic_lint
+
+    d = tmp_path / "corpus"
+    d.mkdir()
+    # two settled decisions about the SAME topic, neither declaring an edge to the other
+    (d / "cache_ttl_a.md").write_text(
+        "# Pricing cache expiry\nThe pricing snapshot cache expires entries after 15 minutes. "
+        "Status: adopted.", encoding="utf-8")
+    (d / "cache_ttl_b.md").write_text(
+        "# Snapshot cache TTL policy\nSnapshot pricing cache records are evicted 15 minutes "
+        "after they are written. Status: adopted.", encoding="utf-8")
+
+    findings = semantic_lint(TEST_DSN, emb, corpus_dir=d, threshold=0.70)
+    pairs = [frozenset({f.new_memo, f.prior}) for f in findings]
+    # the a/b pair appears at most once (deduped), never as two opposite-direction rows
+    assert pairs.count(frozenset({"cache_ttl_a.md", "cache_ttl_b.md"})) <= 1
