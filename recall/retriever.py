@@ -84,7 +84,10 @@ class HybridRetriever:
             by_id.setdefault(h.chunk.id, h)  # sparse hits carry their true cosine (vec=qvec)
         dense_score = {h.chunk.id: h.score for h in dense}
 
-        ranked_ids = sorted(fused, key=lambda cid: fused[cid], reverse=True)[:k]
+        # Rerank the WHOLE fused candidate pool, then truncate to k — slicing to k first would
+        # hide a relevant doc sitting just below the fused cutoff from the cross-encoder, which
+        # is exactly the doc reranking exists to rescue.
+        ranked_ids = sorted(fused, key=lambda cid: fused[cid], reverse=True)
         hits = [
             ScoredChunk(
                 chunk=by_id[cid].chunk,
@@ -95,6 +98,7 @@ class HybridRetriever:
         ]
         if self._reranker is not None:
             hits = self._reranker.rerank(query, hits)
+        hits = hits[:k]
 
         gap = gap_warning(list(dense_score.values()), self._gap_threshold)
         stale = staleness(self._store.newest_indexed_at(), datetime.now(timezone.utc), self._max_age)

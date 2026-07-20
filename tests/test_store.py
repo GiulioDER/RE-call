@@ -3,10 +3,64 @@ from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
 
-from recall.store import PgVectorStore
+from recall.store import PgVectorStore, resolve_supersession, warn_if_insecure_dsn
 from recall.types import Chunk
 
 from tests.conftest import TEST_DSN, requires_db
+
+
+# --- resolve_supersession: pure, DB-free (the supersession-keying rule) ---------------------
+
+
+def test_resolve_supersession_basic_basename():
+    rows = [("v1.md", None), ("v2.md", "v1.md")]
+    assert resolve_supersession(rows) == {"v1.md": "v2.md"}
+
+
+def test_resolve_supersession_empty_when_no_supersedes():
+    assert resolve_supersession([("a.md", None), ("b.md", None)]) == {}
+
+
+def test_resolve_supersession_keys_on_relpath_no_basename_collision():
+    # Two files share the basename old.md in different directories. A memo supersedes old.md by
+    # basename; ONLY the file it actually points to may be marked superseded — but the basename
+    # is ambiguous, so neither is (skip beats a silent mis-map). The unrelated sibling stays valid.
+    rows = [
+        ("a/old.md", None),
+        ("b/old.md", None),
+        ("a/new.md", "old.md"),
+    ]
+    assert resolve_supersession(rows) == {}
+
+
+def test_resolve_supersession_unique_nested_target_resolves():
+    # Unambiguous basename in a nested layout resolves to its root-relative path.
+    rows = [("sub/old.md", None), ("sub/new.md", "old.md")]
+    assert resolve_supersession(rows) == {"sub/old.md": "sub/new.md"}
+
+
+def test_resolve_supersession_dangling_target_skipped():
+    # supersedes points at a basename absent from the corpus -> no edge (chain breaks).
+    assert resolve_supersession([("a/new.md", "ghost.md")]) == {}
+
+
+# --- warn_if_insecure_dsn: pure, DB-free (the default-credentials footgun guard) ---------------
+
+
+def test_warn_insecure_dsn_flags_default_creds_on_remote_host(capsys):
+    msg = warn_if_insecure_dsn("postgresql://recall:recall@db.prod.internal:5432/recall")
+    assert msg is not None
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "db.prod.internal" in err
+
+
+def test_warn_insecure_dsn_silent_on_localhost():
+    assert warn_if_insecure_dsn("postgresql://recall:recall@localhost:5432/recall") is None
+    assert warn_if_insecure_dsn("postgresql://recall:recall@127.0.0.1:5432/recall") is None
+
+
+def test_warn_insecure_dsn_silent_when_creds_are_not_default():
+    assert warn_if_insecure_dsn("postgresql://recall:s3cret@db.prod.internal:5432/recall") is None
 
 
 @requires_db

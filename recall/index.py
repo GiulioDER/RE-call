@@ -11,19 +11,56 @@ from recall.store import PgVectorStore
 from recall.types import Chunk
 
 DEFAULT_MAX_CHARS = 800  # target chunk size in characters; paragraphs are packed up to this
+DEFAULT_OVERLAP_CHARS = 80  # chars shared between adjacent pieces of a force-split oversized block
 
 # A chunker turns one document's text into a list of chunk strings.
 Chunker = Callable[[str], list[str]]
 
 
-def _pack(blocks: list[str], max_chars: int) -> list[str]:
-    """Greedily pack pre-split blocks into chunks no larger than max_chars (blocks are kept whole)."""
-    chunks: list[str] = []
-    buf = ""
+def _split_oversized(block: str, max_chars: int, overlap: int) -> list[str]:
+    """Force-split a single block that exceeds max_chars into <=max_chars pieces.
+
+    A block with no blank line (a log dump, a table, a wall of prose) would otherwise become one
+    chunk larger than the embedder's token window and be SILENTLY truncated, losing its tail. We
+    slide a max_chars window with a stride of ``max_chars - overlap`` so adjacent pieces share
+    ``overlap`` characters — a fact straddling a cut then survives in both neighbours.
+    """
+    if len(block) <= max_chars:
+        return [block]
+    step = max(1, max_chars - overlap)
+    pieces: list[str] = []
+    start = 0
+    n = len(block)
+    while start < n:
+        end = min(start + max_chars, n)
+        pieces.append(block[start:end])
+        if end >= n:
+            break
+        start += step
+    return pieces
+
+
+def _pack(
+    blocks: list[str], max_chars: int, hard_split: bool = False, overlap: int = DEFAULT_OVERLAP_CHARS
+) -> list[str]:
+    """Greedily pack pre-split blocks into chunks no larger than max_chars.
+
+    Blocks are kept whole when they fit. When ``hard_split`` is set, a block that is itself larger
+    than max_chars is force-split (with overlap) before packing, so no single chunk can exceed the
+    cap; without it an oversized block is preserved intact (the code chunker keeps functions whole).
+    """
+    prepared: list[str] = []
     for b in blocks:
         b = b.strip()
         if not b:
             continue
+        if hard_split and len(b) > max_chars:
+            prepared.extend(_split_oversized(b, max_chars, overlap))
+        else:
+            prepared.append(b)
+    chunks: list[str] = []
+    buf = ""
+    for b in prepared:
         if buf and len(buf) + len(b) + 2 > max_chars:
             chunks.append(buf)
             buf = b
@@ -34,9 +71,14 @@ def _pack(blocks: list[str], max_chars: int) -> list[str]:
     return chunks
 
 
-def chunk_text(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
-    """Split prose/markdown into chunks on blank lines, packing paragraphs up to max_chars."""
-    return _pack(text.split("\n\n"), max_chars)
+def chunk_text(
+    text: str, max_chars: int = DEFAULT_MAX_CHARS, overlap: int = DEFAULT_OVERLAP_CHARS
+) -> list[str]:
+    """Split prose/markdown into chunks on blank lines, packing paragraphs up to max_chars.
+
+    A paragraph longer than max_chars on its own is force-split with overlap so it is never
+    handed to the embedder oversized (which would truncate it silently)."""
+    return _pack(text.split("\n\n"), max_chars, hard_split=True, overlap=overlap)
 
 
 def chunk_code(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
@@ -86,6 +128,11 @@ class Indexer:
         """
         root = Path(path)
         files = sorted(root.glob(glob)) if root.is_dir() else [root]
+        # Identify each file by its ROOT-RELATIVE path, not its bare basename: two files with the
+        # same basename in different directories (a/notes.md, b/notes.md) must not collide in the
+        # supersession map or in provenance. Mirrors recall.lint's `rel` keying. A single-file
+        # index has no root to relativize against, so it falls back to the basename.
+        rel = {f: (f.relative_to(root).as_posix() if root.is_dir() else f.name) for f in files}
         all_chunks: list[Chunk] = []
         for f in files:
             # utf-8-sig: a BOM must not silently disable frontmatter parsing
@@ -101,7 +148,7 @@ class Indexer:
                         id=cid,
                         source=str(f),
                         text=ct,
-                        metadata={"file": f.name, "ord": i, **meta},
+                        metadata={"file": rel[f], "ord": i, **meta},
                     )
                 )
         # embed BEFORE touching the store: if embedding fails, the old rows stay intact
