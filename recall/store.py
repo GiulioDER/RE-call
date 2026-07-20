@@ -48,9 +48,21 @@ def resolve_supersession(rows: list[tuple[str | None, str | None]]) -> dict[str,
     """Build the superseded -> superseding map from ``(file, supersedes)`` rows.
 
     ``file`` is a root-relative path; ``supersedes`` references its target by basename (the
-    authoring convention). Each reference is resolved to the UNIQUE file bearing that basename;
-    an ambiguous basename (shared by two files) or a dangling one (no such file) is skipped
-    rather than mis-mapped. Both keys and values in the result are root-relative paths.
+    authoring convention). Three cases:
+
+    - **Unambiguous** (exactly one indexed file bears that basename): resolve to its
+      root-relative path. This is the fix for the original bug — a naive basename key would
+      have collided with an unrelated same-named file in another directory.
+    - **Dangling** (no indexed file bears that basename — the predecessor was never indexed,
+      or was deleted): fall back to the raw basename as the key. There is nothing to
+      disambiguate, so this cannot mis-map; dropping it would just as silently discard a valid
+      supersession claim (e.g. a memo intentionally superseding a doc that was since removed).
+    - **Ambiguous** (two or more indexed files share that basename): skip. A silent mis-map to
+      the wrong file is worse than a broken chain here, since we cannot tell which one the
+      author meant.
+
+    Both keys and values in the result are root-relative paths (or a bare basename for the
+    dangling case).
 
     Pure and DB-free so the resolution rule can be unit-tested without a database.
     """
@@ -62,9 +74,13 @@ def resolve_supersession(rows: list[tuple[str | None, str | None]]) -> dict[str,
     for file, supersedes in rows:
         if not file or not supersedes:
             continue
-        candidates = by_base.get(_basename(supersedes), [])
-        if len(candidates) == 1:  # unambiguous: resolve; else skip (ambiguous/dangling)
+        target_basename = _basename(supersedes)
+        candidates = by_base.get(target_basename, [])
+        if len(candidates) == 1:
             mapping[candidates[0]] = file
+        elif len(candidates) == 0:
+            mapping[target_basename] = file
+        # len(candidates) > 1: ambiguous — skip, don't guess.
     return mapping
 
 
