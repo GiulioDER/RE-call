@@ -1,5 +1,7 @@
+from datetime import datetime, timezone
+
 from recall.retriever import HybridRetriever
-from recall.types import Chunk
+from recall.types import Chunk, ScoredChunk
 
 from tests.conftest import requires_db
 
@@ -16,6 +18,49 @@ class DictEmbedder:
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return [self._mapping.get(t, self._default) for t in texts]
+
+
+class _FakeStore:
+    """DB-free store stub: returns a fixed dense ranking, no sparse hits."""
+
+    def __init__(self, dense: list[ScoredChunk]) -> None:
+        self._dense = dense
+
+    def query_dense(self, vector, k, source=None):
+        return self._dense[:k]
+
+    def query_sparse(self, query, k, source=None, vec=None):
+        return []
+
+    def newest_indexed_at(self):
+        return datetime.now(timezone.utc)
+
+
+class _PromoteReranker:
+    """Reranker that moves the hit with the given id to the front (simulating a rescue)."""
+
+    def __init__(self, winner: str) -> None:
+        self._winner = winner
+
+    def rerank(self, query, hits):
+        return sorted(hits, key=lambda h: h.chunk.id != self._winner)
+
+
+def test_reranker_rescues_doc_outside_naive_top_k():
+    # "c" is last in the fused ranking (fused rank 3), so a naive top-k=1 slice before reranking
+    # would drop it. Reranking the full candidate pool THEN truncating lets it be rescued.
+    now = datetime.now(timezone.utc)
+    dense = [
+        ScoredChunk(Chunk("a", "f.md", "alpha"), score=0.9, indexed_at=now),
+        ScoredChunk(Chunk("b", "f.md", "beta"), score=0.8, indexed_at=now),
+        ScoredChunk(Chunk("c", "f.md", "gamma"), score=0.7, indexed_at=now),
+    ]
+    emb = DictEmbedder({}, default=[0.0, 0.0, 1.0])
+    retr = HybridRetriever(
+        _FakeStore(dense), emb, reranker=_PromoteReranker("c"), candidate_k=3, use_sparse=False
+    )
+    result = retr.search("q", k=1)
+    assert [h.chunk.id for h in result.hits] == ["c"]
 
 
 @requires_db

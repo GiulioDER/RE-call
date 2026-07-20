@@ -17,8 +17,9 @@ EMBEDDER_NAME = os.environ.get("RECALL_EMBEDDER", "fastembed")
 @asynccontextmanager
 async def _lifespan(_server: FastMCP):
     """Open one PgVectorStore + embedder for the server's lifetime, reused by every tool."""
-    from recall.store import PgVectorStore
+    from recall.store import PgVectorStore, warn_if_insecure_dsn
 
+    warn_if_insecure_dsn(DEFAULT_DSN)  # loud stderr note if default creds target a remote host
     try:
         embedder = make_embedder(EMBEDDER_NAME)
         store = PgVectorStore(DEFAULT_DSN, dim=embedder.dim)

@@ -20,6 +20,24 @@ def test_chunk_text_ignores_empty_input():
     assert chunk_text("   \n\n  ") == []
 
 
+def test_chunk_text_force_splits_oversized_block_under_cap():
+    # a single block (no blank lines) longer than max_chars must not become one oversized chunk
+    # that the embedder would silently truncate — it is force-split into pieces under the cap
+    text = " ".join(f"word{i:03d}" for i in range(400))  # ~3200 chars, no blank lines
+    chunks = chunk_text(text, max_chars=200, overlap=40)
+    assert len(chunks) > 1
+    assert all(len(c) <= 200 for c in chunks)
+
+
+def test_chunk_text_oversized_split_has_overlap():
+    # adjacent pieces of a force-split block share `overlap` characters so a fact on the cut
+    # boundary survives in both neighbours
+    text = "x" * 500 + "y" * 500  # 1000 chars, single block
+    chunks = chunk_text(text, max_chars=300, overlap=50)
+    assert len(chunks) > 1
+    assert chunks[0][-50:] == chunks[1][:50]  # tail of one == head of the next
+
+
 @requires_db
 def test_index_path_ingests_markdown(tmp_path, make_store):
     (tmp_path / "a.md").write_text("caching decision one", encoding="utf-8")

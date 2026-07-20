@@ -32,7 +32,7 @@ from recall.frontmatter import parse_frontmatter
 from recall.index import Indexer, chunk_text
 from recall.lint import CLOSURE_MARKERS, DEFAULT_GLOB
 from recall.retriever import HybridRetriever
-from recall.store import PgVectorStore
+from recall.store import PgVectorStore, _basename
 
 #: A memo reads as a settled decision (something a new related memo should reference) when its
 #: body carries a decision-status marker. An OPEN investigation is deliberately excluded — a
@@ -100,11 +100,13 @@ def semantic_lint(
     root = Path(corpus_dir)
     files = sorted(root.glob(glob)) if root.is_dir() else [root]
 
-    # Retrieval keys hits by basename (index.py stamps metadata['file'] = f.name), so a corpus
+    # This check works in BASENAME space (the `supersedes:` authoring convention), so a corpus
     # with the SAME basename in two directories cannot be disambiguated — the shadowed file
     # would be queried with the wrong body. Skip ambiguous basenames rather than mis-key them
     # (the static lint flags them as `ambiguous-supersedes-target`; here they are simply out of
-    # scope). This mirrors lint.py's refusal to let same-named files shadow each other.
+    # scope). This mirrors lint.py's refusal to let same-named files shadow each other. Retrieval
+    # now stamps metadata['file'] with the ROOT-RELATIVE path, so hits are reduced back to their
+    # basename below; within the non-ambiguous set that basename is a unique key.
     name_count: dict[str, int] = {}
     for f in files:
         name_count[f.name] = name_count.get(f.name, 0) + 1
@@ -142,7 +144,9 @@ def semantic_lint(
             res = retr.search(body_text[name], k=k + self_chunks[name])
             best: dict[str, float] = {}  # other-file -> max dense cosine
             for h in res.hits:
-                cname = h.chunk.metadata.get("file")
+                relfile = h.chunk.metadata.get("file")
+                # reduce the root-relative id back to the basename this check keys on
+                cname = _basename(relfile) if relfile else None
                 if not cname or cname == name or cname in ambiguous:
                     continue
                 # skip pairs already linked either way — the chain is complete
