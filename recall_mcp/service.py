@@ -11,6 +11,7 @@ from recall.embeddings import Embedder, HashingEmbedder
 from recall.guards import staleness
 from recall.index import Indexer
 from recall.store import PgVectorStore
+from recall.timing import TimedEmbedder
 from recall.trust import trusted_search
 
 HASHING_DIM = 64  # offline HashingEmbedder width; matches the eval/test default
@@ -64,6 +65,11 @@ class SearchResult(BaseModel):
     gap_warning: bool = Field(description="True when the memory probably lacks a relevant answer.")
     stale: bool = Field(description="True when the memory index is older than the freshness window.")
     advice: str = Field(description="What the agent should do with this result.")
+    embed_ms: float | None = Field(
+        default=None,
+        description="Query-embedding latency in milliseconds (cost/latency metadata; null if "
+        "not measured). Additive — clients that ignore it are unaffected.",
+    )
     hits: list[SearchHit]
 
 
@@ -96,7 +102,8 @@ def search_memory(
     `k` is clamped to [1, MAX_SEARCH_K] so an untrusted client cannot request an unbounded result set.
     """
     k = max(1, min(k, MAX_SEARCH_K))
-    result = trusted_search(store, embedder, query, k=k, source=source, calibration=calibration)
+    timed = TimedEmbedder(embedder)  # measure embedding latency without altering trusted_search
+    result = trusted_search(store, timed, query, k=k, source=source, calibration=calibration)
     hits = [
         SearchHit(
             source=h.provenance.file or h.chunk.source,
@@ -143,6 +150,7 @@ def search_memory(
         gap_warning=result.gap_warning,
         stale=result.staleness.stale,
         advice=advice,
+        embed_ms=round(timed.stats.total_ms, 2),
         hits=hits,
     )
 

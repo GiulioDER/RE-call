@@ -77,3 +77,28 @@ def test_false_abstain_rate():
     assert false_abstain_rate([True, False, False, False]) == 0.25
     assert false_abstain_rate([False, False]) == 0.0
     assert math.isnan(false_abstain_rate([]))
+
+
+def test_bootstrap_ci_brackets_the_point_estimate():
+    from recall.eval.metrics import bootstrap_ci, fraction_true
+
+    flags = [True] * 7 + [False] * 3  # point estimate 0.70
+    lo, hi = bootstrap_ci(flags, n=2000, seed=1)
+    assert lo <= fraction_true(flags) <= hi
+    assert 0.0 <= lo <= hi <= 1.0
+    assert lo < hi  # a non-degenerate sample yields a real interval
+
+
+def test_bootstrap_ci_is_deterministic_for_a_seed():
+    from recall.eval.metrics import bootstrap_ci
+
+    flags = [True, False, True, True, False, False, True, False]
+    assert bootstrap_ci(flags, seed=42) == bootstrap_ci(flags, seed=42)
+
+
+def test_bootstrap_ci_degenerate_and_empty():
+    from recall.eval.metrics import bootstrap_ci
+
+    assert bootstrap_ci([True, True, True]) == (1.0, 1.0)  # no variance -> point interval
+    lo, hi = bootstrap_ci([])
+    assert math.isnan(lo) and math.isnan(hi)  # no data -> no interval
