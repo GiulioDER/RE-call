@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from datetime import datetime
+from typing import TypeVar
 from urllib.parse import urlsplit
 
 import psycopg
@@ -14,6 +16,8 @@ from recall.types import Chunk, ScoredChunk
 #: The built-in dev credentials shipped in the default DSN — safe only against a local database.
 _DEFAULT_CREDS = ("recall", "recall")
 _LOCAL_HOSTS = ("", "localhost", "127.0.0.1", "::1")
+
+_T = TypeVar("_T")
 
 
 def warn_if_insecure_dsn(dsn: str) -> str | None:
@@ -87,6 +91,10 @@ def resolve_supersession(rows: list[tuple[str | None, str | None]]) -> dict[str,
 class PgVectorStore:
     """The single, production-grade vector store: PostgreSQL + pgvector."""
 
+    #: Errors that mean the connection itself is broken (dropped socket, server restart, idle
+    #: timeout) — as opposed to a query/data error. These trigger a reconnect-and-retry.
+    _CONN_ERRORS = (psycopg.OperationalError, psycopg.InterfaceError)
+
     def __init__(self, dsn: str, dim: int, table: str = "chunks") -> None:
         # `dim` and `table` are interpolated directly into SQL — as a type modifier and an
         # identifier respectively — because Postgres cannot bind those as parameters. They
@@ -100,7 +108,11 @@ class PgVectorStore:
         self._dim = dim
         self._table = table
         self._supersession_cache: dict[str, str] | None = None
-        self._conn = psycopg.connect(dsn, autocommit=True)
+        self._conn = self._connect()
+
+    def _connect(self) -> "psycopg.Connection":
+        """Open one autocommit connection and prepare it (extension + vector type registration)."""
+        conn = psycopg.connect(self._dsn, autocommit=True)
         try:
             # register_vector needs the `vector` type to already exist, so ensure the extension
             # is installed first — this makes a brand-new database work out of the box (the
@@ -108,13 +120,37 @@ class PgVectorStore:
             # register_vector still succeeds when an admin has pre-installed the extension, and
             # fails with a clear "vector type not found" if it genuinely isn't there.
             try:
-                self._conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
             except psycopg.Error:
                 pass
-            register_vector(self._conn)
+            register_vector(conn)
         except Exception:
-            self._conn.close()
+            conn.close()
             raise
+        return conn
+
+    def _reconnect(self) -> None:
+        """Discard the (broken) connection and open a fresh, prepared one."""
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+        self._conn = self._connect()
+
+    def _with_retry(self, op: Callable[["psycopg.Connection"], _T]) -> _T:
+        """Run ``op(conn)``; on a broken-connection error, reconnect once and retry.
+
+        A single long-lived autocommit connection can be severed by the server (idle timeout,
+        restart, transient network blip). Rather than failing every subsequent call, transparently
+        reconnect and retry the operation exactly once — a second failure propagates. Safe because
+        every ``op`` here is a single self-contained statement or an atomic transaction that rolls
+        back cleanly, so re-running it on a fresh connection cannot double-apply.
+        """
+        try:
+            return op(self._conn)
+        except self._CONN_ERRORS:
+            self._reconnect()
+            return op(self._conn)
 
     @property
     def table(self) -> str:
@@ -130,45 +166,56 @@ class PgVectorStore:
         self.close()
 
     def ensure_schema(self) -> None:
-        t = self._table
-        self._conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        self._conn.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {t} (
-                id TEXT PRIMARY KEY,
-                source TEXT NOT NULL,
-                text TEXT NOT NULL,
-                metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-                embedding vector({self._dim}),
-                indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
+        def _op(conn: "psycopg.Connection") -> None:
+            t = self._table
+            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {t} (
+                    id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    embedding vector({self._dim}),
+                    indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
+                )
+                """
             )
-            """
-        )
-        actual_dim = self._conn.execute(
-            "SELECT atttypmod FROM pg_attribute "
-            "WHERE attrelid = %s::regclass AND attname = 'embedding'",
-            (t,),
-        ).fetchone()[0]
-        if actual_dim > 0 and actual_dim != self._dim:
-            raise ValueError(
-                f"table {t!r} has a vector({actual_dim}) embedding column but this store is "
-                f"configured for dim {self._dim} — use a matching embedder or a different table "
-                f"(drop and re-index for a clean slate)."
+            actual_dim = conn.execute(
+                "SELECT atttypmod FROM pg_attribute "
+                "WHERE attrelid = %s::regclass AND attname = 'embedding'",
+                (t,),
+            ).fetchone()[0]
+            if actual_dim > 0 and actual_dim != self._dim:
+                raise ValueError(
+                    f"table {t!r} has a vector({actual_dim}) embedding column but this store is "
+                    f"configured for dim {self._dim} — use a matching embedder or a different "
+                    f"table (drop and re-index for a clean slate)."
+                )
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_tsv_idx ON {t} USING GIN (tsv)")
+            conn.execute(
+                f"CREATE INDEX IF NOT EXISTS {t}_emb_idx ON {t} "
+                f"USING hnsw (embedding vector_cosine_ops)"
             )
-        self._conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_tsv_idx ON {t} USING GIN (tsv)")
-        self._conn.execute(
-            f"CREATE INDEX IF NOT EXISTS {t}_emb_idx ON {t} USING hnsw (embedding vector_cosine_ops)"
-        )
+
+        self._with_retry(_op)
 
     def upsert(self, chunks: list[Chunk], embeddings: list[list[float]]) -> int:
         if len(chunks) != len(embeddings):
             raise ValueError("chunks and embeddings length mismatch")
         self._supersession_cache = None  # metadata may change; recompute on next read
-        t = self._table
+        self._with_retry(lambda conn: self._upsert_in(conn, chunks, embeddings))
+        return len(chunks)
+
+    def _upsert_in(
+        self, conn: "psycopg.Connection", chunks: list[Chunk], embeddings: list[list[float]]
+    ) -> None:
         # One transaction for the whole batch: a mid-loop failure rolls the batch back
-        # instead of leaving earlier rows committed (the connection is autocommit).
-        with self._conn.transaction(), self._conn.cursor() as cur:
+        # instead of leaving earlier rows committed (the connection is autocommit). When called
+        # from replace_sources' outer transaction this becomes a savepoint (same commit).
+        t = self._table
+        with conn.transaction(), conn.cursor() as cur:
             for c, e in zip(chunks, embeddings):
                 cur.execute(
                     f"""
@@ -183,7 +230,6 @@ class PgVectorStore:
                     """,
                     (c.id, c.source, c.text, json.dumps(c.metadata), Vector(e)),
                 )
-        return len(chunks)
 
     def _rows_to_hits(self, rows: list[tuple]) -> list[ScoredChunk]:
         hits: list[ScoredChunk] = []
@@ -215,7 +261,7 @@ class PgVectorStore:
         params: dict = {"vec": Vector(vector), "k": k}
         if source:
             params["source"] = source
-        rows = self._conn.execute(sql, params).fetchall()
+        rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._rows_to_hits(rows)
 
     def query_sparse(
@@ -260,7 +306,7 @@ class PgVectorStore:
             params["vec"] = Vector(vec)
         if source:
             params["source"] = source
-        rows = self._conn.execute(sql, params).fetchall()
+        rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._rows_to_hits(rows)
 
     def replace_sources(
@@ -275,13 +321,15 @@ class PgVectorStore:
         if len(chunks) != len(embeddings):
             raise ValueError("chunks and embeddings length mismatch")
         self._supersession_cache = None
-        with self._conn.transaction():
-            if sources:
-                self._conn.execute(
-                    f"DELETE FROM {self._table} WHERE source = ANY(%s)", (sources,)
-                )
-            if chunks:
-                self.upsert(chunks, embeddings)  # nested transaction -> savepoint, same commit
+
+        def _op(conn):
+            with conn.transaction():
+                if sources:
+                    conn.execute(f"DELETE FROM {self._table} WHERE source = ANY(%s)", (sources,))
+                if chunks:
+                    self._upsert_in(conn, chunks, embeddings)  # savepoint, same commit
+
+        self._with_retry(_op)
         return len(chunks)
 
     def delete_sources(self, sources: list[str]) -> int:
@@ -292,8 +340,8 @@ class PgVectorStore:
         if not sources:
             return 0
         self._supersession_cache = None
-        cur = self._conn.execute(
-            f"DELETE FROM {self._table} WHERE source = ANY(%s)", (sources,)
+        cur = self._with_retry(
+            lambda conn: conn.execute(f"DELETE FROM {self._table} WHERE source = ANY(%s)", (sources,))
         )
         return cur.rowcount or 0
 
@@ -308,10 +356,12 @@ class PgVectorStore:
         """
         if not files:
             return 0
-        cur = self._conn.execute(
-            f"UPDATE {self._table} SET indexed_at = now() "
-            f"WHERE metadata->>'file' = ANY(%s)",
-            (files,),
+        cur = self._with_retry(
+            lambda conn: conn.execute(
+                f"UPDATE {self._table} SET indexed_at = now() "
+                f"WHERE metadata->>'file' = ANY(%s)",
+                (files,),
+            )
         )
         return cur.rowcount or 0
 
@@ -331,20 +381,26 @@ class PgVectorStore:
         until a new store is opened.
         """
         if self._supersession_cache is None:
-            rows = self._conn.execute(
-                f"""
-                SELECT DISTINCT metadata->>'file' AS file, metadata->>'supersedes' AS supersedes
-                FROM {self._table}
-                WHERE metadata ? 'file'
-                """
-            ).fetchall()
+            rows = self._with_retry(
+                lambda conn: conn.execute(
+                    f"""
+                    SELECT DISTINCT metadata->>'file' AS file, metadata->>'supersedes' AS supersedes
+                    FROM {self._table}
+                    WHERE metadata ? 'file'
+                    """
+                ).fetchall()
+            )
             self._supersession_cache = resolve_supersession(rows)
         return dict(self._supersession_cache)
 
     def newest_indexed_at(self) -> datetime | None:
-        row = self._conn.execute(f"SELECT max(indexed_at) FROM {self._table}").fetchone()
+        row = self._with_retry(
+            lambda conn: conn.execute(f"SELECT max(indexed_at) FROM {self._table}").fetchone()
+        )
         return row[0] if row else None
 
     def count(self) -> int:
-        row = self._conn.execute(f"SELECT count(*) FROM {self._table}").fetchone()
+        row = self._with_retry(
+            lambda conn: conn.execute(f"SELECT count(*) FROM {self._table}").fetchone()
+        )
         return int(row[0]) if row else 0

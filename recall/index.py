@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from recall.cache import EmbeddingCache, embed_with_cache
 from recall.embeddings import Embedder
 from recall.frontmatter import parse_frontmatter, validity_bounds
 from recall.store import PgVectorStore
@@ -113,11 +114,16 @@ class IndexStats:
 
 class Indexer:
     def __init__(
-        self, store: PgVectorStore, embedder: Embedder, chunker: Chunker = chunk_text
+        self,
+        store: PgVectorStore,
+        embedder: Embedder,
+        chunker: Chunker = chunk_text,
+        cache: EmbeddingCache | None = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
         self._chunker = chunker
+        self._cache = cache
 
     def index_path(self, path: str | Path, glob: str = "**/*.md") -> IndexStats:
         """Index a markdown file, or a directory of them, into the vector store.
@@ -151,7 +157,12 @@ class Indexer:
                         metadata={"file": rel[f], "ord": i, **meta},
                     )
                 )
-        # embed BEFORE touching the store: if embedding fails, the old rows stay intact
-        embeddings = self._embedder.embed([c.text for c in all_chunks]) if all_chunks else []
+        # embed BEFORE touching the store: if embedding fails, the old rows stay intact.
+        # With a cache, unchanged chunk text is served from cache and never re-embedded.
+        embeddings = (
+            embed_with_cache(self._embedder, [c.text for c in all_chunks], self._cache)
+            if all_chunks
+            else []
+        )
         self._store.replace_sources([str(f) for f in files], all_chunks, embeddings)
         return IndexStats(files=len(files), chunks=len(all_chunks))

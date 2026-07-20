@@ -47,3 +47,28 @@ jobs:
 
       - name: Test (pytest on real pgvector)
         run: pytest -q
+
+  # Dependency vulnerability scan against the committed uv.lock. Runs independently of the
+  # test job (no DB needed) so a CVE advisory never blocks the functional suite and vice versa.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      # Verify the lockfile is in sync with pyproject.toml — a drifted lock would audit stale
+      # versions. Then resolve the full dependency set (all extras) to a hashed requirements file
+      # and scan it with pip-audit.
+      - name: Check lockfile is current
+        run: uv lock --check
+
+      - name: Export locked dependencies
+        run: uv export --frozen --all-extras --no-emit-project --format requirements-txt -o requirements.lock.txt
+
+      # --no-deps: the exported file already pins the full transitive set, so audit exactly
+      # those versions instead of re-resolving. This is a real gate (a known CVE fails CI); if
+      # it proves too noisy, add `continue-on-error: true` to downgrade it to advisory.
+      - name: Audit dependencies (pip-audit)
+        run: uvx pip-audit --requirement requirements.lock.txt --no-deps

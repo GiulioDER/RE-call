@@ -14,6 +14,8 @@ Reproduce the local (key-free) rows with `make eval` — needs Docker + the loca
 | voyage:voyage-3 | hybrid | 0.200 | 1.000 | 1.000 | 1.000 | 1.00 | 0.00 |
 | voyage:voyage-3 | hybrid+rerank | 0.200 | 1.000 | 1.000 | 1.000 | 1.00 | 0.00 |
 
+**Reading P@5:** every eval query has exactly one relevant document, so P@5 is mechanically capped at 1/5 = **0.20** — a perfect retriever that places the single answer in the top 5 scores 0.20, not 1.0. Treat P@5 as a rescaled "answer present in the top 5" indicator; **R@5 / MRR / nDCG@10 are the informative ranking metrics.**
+
 ## Trust layer — superseded/expired memories vs plain search
 
 STR = superseded-trust rate: how often a stale memory was presented as the answer on the validity-sensitive queries (lower is better). The final two columns verify the trust layer does not change ordinary answerable retrieval.

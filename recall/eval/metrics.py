@@ -2,10 +2,18 @@
 from __future__ import annotations
 
 import math
+import random
 
 
 def precision_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> float:
-    """Fraction of the top-k retrieved that are relevant."""
+    """Fraction of the top-k retrieved that are relevant.
+
+    NOTE on this eval set: every query has exactly ONE relevant document, so P@5 is
+    mechanically capped at 1/5 = 0.20 — a "perfect" retriever that puts the single answer in the
+    top 5 scores 0.20, not 1.0. Read P@5 here as a rescaled "answer present in top 5" indicator,
+    not as classical precision. R@5 / MRR / nDCG are the informative ranking metrics; see
+    `bootstrap_ci` for uncertainty on the headline rates.
+    """
     if k <= 0:
         return 0.0
     rel = set(relevant_ids)
@@ -49,6 +57,40 @@ def fraction_true(flags: list[bool]) -> float:
     if not flags:
         return float("nan")
     return sum(1 for f in flags if f) / len(flags)
+
+
+def bootstrap_ci(
+    flags: list[bool],
+    *,
+    n: int = 1000,
+    confidence: float = 0.95,
+    seed: int = 12345,
+) -> tuple[float, float]:
+    """Bootstrapped confidence interval for the mean of boolean flags (a rate).
+
+    Resamples ``flags`` WITH replacement ``n`` times, takes the mean of each resample, and
+    returns the (lower, upper) percentiles for the given confidence level. This puts an honest
+    uncertainty band on the headline rates (answerable/unanswerable/trust accuracy) which, on a
+    ~25-query eval set, are otherwise reported as deceptively precise point estimates.
+
+    Returns ``(nan, nan)`` on empty input (no data -> no interval), matching `fraction_true`.
+    ``seed`` makes the interval reproducible run-to-run. Dependency-free (stdlib ``random``),
+    so it works in the offline test suite without numpy.
+    """
+    if not flags:
+        return (float("nan"), float("nan"))
+    rng = random.Random(seed)
+    m = len(flags)
+    means: list[float] = []
+    for _ in range(n):
+        sample = [flags[rng.randrange(m)] for _ in range(m)]
+        means.append(sum(1 for f in sample if f) / m)
+    means.sort()
+    lo_q = (1.0 - confidence) / 2.0
+    hi_q = 1.0 - lo_q
+    lo = means[min(len(means) - 1, int(lo_q * len(means)))]
+    hi = means[min(len(means) - 1, int(hi_q * len(means)))]
+    return (lo, hi)
 
 
 def superseded_trust_rate(stale_trusted_flags: list[bool]) -> float:

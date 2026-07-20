@@ -18,6 +18,7 @@ from recall.entailment import EntailmentJudge
 from recall.eval.calibrate import measure_top_cosines
 from recall.eval.metrics import (
     abstention_accuracy,
+    bootstrap_ci,
     false_abstain_rate,
     false_confident_rate,
     gap_false_confident_rate,
@@ -33,6 +34,7 @@ from recall.index import Indexer
 from recall.rerank import CrossEncoderReranker, Reranker
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
+from recall.timing import TimedEmbedder, TimedReranker, TimingStats, timed_call
 from recall.trust import trusted_search
 from recall.types import ScoredChunk, TrustedHit
 
@@ -50,6 +52,10 @@ class AblationResult:
     ndcg_at_10: float
     fcr_no_guard: float  # without the gap guard you always answer -> 1.0 on unanswerable
     fcr_with_guard: float
+    # Cost/latency metadata (mean wall time per call, ms). Additive; defaulted so existing
+    # constructors/tests are unaffected. rerank_ms_mean is 0.0 for configs without a reranker.
+    embed_ms_mean: float = 0.0
+    rerank_ms_mean: float = 0.0
 
 
 def _key(hit: ScoredChunk) -> str:
@@ -84,9 +90,13 @@ def _score_config(
     store: PgVectorStore, embedder: Embedder, queries: list[dict], fusion: str,
     reranker: Reranker | None,
 ) -> AblationResult:
+    timed_emb = TimedEmbedder(embedder)
+    timed_rr = (
+        TimedReranker(reranker) if (fusion == "hybrid+rerank" and reranker is not None) else None
+    )
     retr = HybridRetriever(
-        store, embedder,
-        reranker=reranker if fusion == "hybrid+rerank" else None,
+        store, timed_emb,
+        reranker=timed_rr,
         use_sparse=(fusion != "dense"),
     )
     ps, rs, ms, ns, unans_gaps = [], [], [], [], []
@@ -109,6 +119,8 @@ def _score_config(
         mrr=mean(ms) if ms else 0.0,
         ndcg_at_10=mean(ns) if ns else 0.0,
         fcr_no_guard=1.0, fcr_with_guard=false_confident_rate(unans_gaps),
+        embed_ms_mean=timed_emb.stats.mean_ms,
+        rerank_ms_mean=timed_rr.stats.mean_ms if timed_rr else 0.0,
     )
 
 
@@ -164,16 +176,20 @@ class NearMissEvalResult:
 
 
 class _TimedJudge:
-    """Wraps a judge to measure its wall time — the honest cost column of the results table."""
+    """Wraps a judge to measure its wall time — the honest cost column of the results table.
+
+    Built on the shared ``timing.timed_call`` utility (same primitive as ``TimedEmbedder`` /
+    ``TimedReranker``); ``samples_ms`` is kept so per-call latencies remain available to callers.
+    """
 
     def __init__(self, inner: EntailmentJudge) -> None:
         self._inner = inner
+        self._stats = TimingStats()
         self.samples_ms: list[float] = []
 
     def judge(self, query: str, texts: list[str]) -> list[bool]:
-        t0 = time.perf_counter()
-        out = self._inner.judge(query, texts)
-        self.samples_ms.append((time.perf_counter() - t0) * 1000.0)
+        out = timed_call(self._stats, lambda: self._inner.judge(query, texts))
+        self.samples_ms.append(self._stats.last_ms)
         return out
 
 
@@ -279,6 +295,12 @@ class TrustEvalResult:
     abstain_acc: float           # expect=abstain queries that actually abstained
     mrr_answerable_baseline: float
     mrr_answerable_trust: float  # must equal baseline: trust must not damage ordinary retrieval
+    # Bootstrapped 95% CIs (resample-with-replacement, N=1000) for the headline accuracy rates.
+    # The eval set is tiny (~25 queries), so a bare point estimate over-states precision; the
+    # interval is the honest read. (nan, nan) when the arm had no queries of that class.
+    successor_acc_ci: tuple[float, float] = (float("nan"), float("nan"))
+    abstain_acc_ci: tuple[float, float] = (float("nan"), float("nan"))
+    str_trust_ci: tuple[float, float] = (float("nan"), float("nan"))
 
 
 def _tkey(hit: TrustedHit) -> str:
@@ -367,6 +389,9 @@ def run_trust_eval(
                     abstain_acc=abstention_accuracy(abst_flags),
                     mrr_answerable_baseline=mean(base_mrrs) if base_mrrs else 0.0,
                     mrr_answerable_trust=mean(trust_mrrs) if trust_mrrs else 0.0,
+                    successor_acc_ci=bootstrap_ci(succ_flags),
+                    abstain_acc_ci=bootstrap_ci(abst_flags),
+                    str_trust_ci=bootstrap_ci(trust_flags),
                 )
             )
     return results
@@ -374,6 +399,13 @@ def run_trust_eval(
 
 def _fmt_rate(x: float, digits: int = 2) -> str:
     return "n/a" if math.isnan(x) else f"{x:.{digits}f}"
+
+
+def _fmt_ci(ci: tuple[float, float], digits: int = 2) -> str:
+    lo, hi = ci
+    if math.isnan(lo) or math.isnan(hi):
+        return "n/a"
+    return f"[{lo:.{digits}f}, {hi:.{digits}f}]"
 
 
 def trust_results_to_markdown(results: list[TrustEvalResult]) -> str:
@@ -388,6 +420,18 @@ def trust_results_to_markdown(results: list[TrustEvalResult]) -> str:
             f"{_fmt_rate(r.str_trust)} | "
             f"{_fmt_rate(r.successor_acc)} | {_fmt_rate(r.abstain_acc)} | "
             f"{_fmt_rate(r.mrr_answerable_baseline, 3)} | {_fmt_rate(r.mrr_answerable_trust, 3)} |"
+        )
+    # Point estimates above read as precise, but the eval set is tiny. Report a 95% bootstrap CI
+    # for the three headline accuracy rates so the interval — not the point — is what's compared.
+    lines.append("")
+    lines.append("95% bootstrap CIs (N=1000) for the headline rates:")
+    lines.append("")
+    lines.append("| embedder | STR trust | successor acc | abstain acc |")
+    lines.append("|---|---|---|---|")
+    for r in results:
+        lines.append(
+            f"| {r.embedder} | {_fmt_ci(r.str_trust_ci)} | {_fmt_ci(r.successor_acc_ci)} | "
+            f"{_fmt_ci(r.abstain_acc_ci)} |"
         )
     return "\n".join(lines)
 
@@ -467,6 +511,21 @@ def results_to_markdown(results: list[AblationResult]) -> str:
         lines.append(
             f"| {r.embedder} | {r.fusion} | {r.p_at_5:.3f} | {r.r_at_5:.3f} | {r.mrr:.3f} | "
             f"{r.ndcg_at_10:.3f} | {r.fcr_no_guard:.2f} | {r.fcr_with_guard:.2f} |"
+        )
+    lines.append("")
+    lines.append(
+        "_P@5 is mechanically capped at 0.20: each query has exactly one relevant doc, so the "
+        "best possible precision@5 is 1/5. Read it as \"answer found in the top 5\" (binary), not "
+        "as classical precision — R@5 / MRR / nDCG@10 are the informative ranking metrics._"
+    )
+    lines.append("")
+    lines.append("Cost/latency (mean wall time per call):")
+    lines.append("")
+    lines.append("| embedder | fusion | embed ms/query | rerank ms/query |")
+    lines.append("|---|---|---|---|")
+    for r in results:
+        lines.append(
+            f"| {r.embedder} | {r.fusion} | {r.embed_ms_mean:.1f} | {r.rerank_ms_mean:.1f} |"
         )
     return "\n".join(lines)
 
