@@ -73,6 +73,7 @@ def _bare_store() -> PgVectorStore:
     """A PgVectorStore instance WITHOUT running __init__ (no real DB connection)."""
     store = PgVectorStore.__new__(PgVectorStore)
     store._table = "chunks"
+    store._dim = 3
     store._supersession_cache = None
     return store
 
@@ -130,6 +131,42 @@ def test_with_retry_does_not_retry_non_connection_errors():
     with pytest.raises(psycopg.errors.UndefinedColumn):
         store._with_retry(bad_query)
     assert reconnects["n"] == 0  # a data/query error must NOT trigger a reconnect
+
+
+def test_ensure_schema_uses_reconnect_retry():
+    class _Cursor:
+        def fetchone(self):
+            return (3,)
+
+    class _Conn:
+        def __init__(self, *, fail_first: bool = False):
+            self.fail_first = fail_first
+            self.calls = 0
+
+        def execute(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.fail_first:
+                self.fail_first = False
+                raise psycopg.OperationalError("server closed the connection unexpectedly")
+            return _Cursor()
+
+    store = _bare_store()
+    first = _Conn(fail_first=True)
+    second = _Conn()
+    reconnects = {"n": 0}
+    store._conn = first
+
+    def fake_reconnect():
+        reconnects["n"] += 1
+        store._conn = second
+
+    store._reconnect = fake_reconnect  # type: ignore[method-assign]
+
+    store.ensure_schema()
+
+    assert first.calls == 1
+    assert second.calls == 5
+    assert reconnects["n"] == 1
 
 
 @requires_db

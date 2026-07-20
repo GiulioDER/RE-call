@@ -166,36 +166,40 @@ class PgVectorStore:
         self.close()
 
     def ensure_schema(self) -> None:
-        t = self._table
-        self._conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        self._conn.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {t} (
-                id TEXT PRIMARY KEY,
-                source TEXT NOT NULL,
-                text TEXT NOT NULL,
-                metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-                embedding vector({self._dim}),
-                indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
+        def _op(conn: "psycopg.Connection") -> None:
+            t = self._table
+            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {t} (
+                    id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    embedding vector({self._dim}),
+                    indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
+                )
+                """
             )
-            """
-        )
-        actual_dim = self._conn.execute(
-            "SELECT atttypmod FROM pg_attribute "
-            "WHERE attrelid = %s::regclass AND attname = 'embedding'",
-            (t,),
-        ).fetchone()[0]
-        if actual_dim > 0 and actual_dim != self._dim:
-            raise ValueError(
-                f"table {t!r} has a vector({actual_dim}) embedding column but this store is "
-                f"configured for dim {self._dim} — use a matching embedder or a different table "
-                f"(drop and re-index for a clean slate)."
+            actual_dim = conn.execute(
+                "SELECT atttypmod FROM pg_attribute "
+                "WHERE attrelid = %s::regclass AND attname = 'embedding'",
+                (t,),
+            ).fetchone()[0]
+            if actual_dim > 0 and actual_dim != self._dim:
+                raise ValueError(
+                    f"table {t!r} has a vector({actual_dim}) embedding column but this store is "
+                    f"configured for dim {self._dim} — use a matching embedder or a different "
+                    f"table (drop and re-index for a clean slate)."
+                )
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_tsv_idx ON {t} USING GIN (tsv)")
+            conn.execute(
+                f"CREATE INDEX IF NOT EXISTS {t}_emb_idx ON {t} "
+                f"USING hnsw (embedding vector_cosine_ops)"
             )
-        self._conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_tsv_idx ON {t} USING GIN (tsv)")
-        self._conn.execute(
-            f"CREATE INDEX IF NOT EXISTS {t}_emb_idx ON {t} USING hnsw (embedding vector_cosine_ops)"
-        )
+
+        self._with_retry(_op)
 
     def upsert(self, chunks: list[Chunk], embeddings: list[list[float]]) -> int:
         if len(chunks) != len(embeddings):
