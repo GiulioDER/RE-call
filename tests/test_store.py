@@ -39,9 +39,11 @@ def test_resolve_supersession_unique_nested_target_resolves():
     assert resolve_supersession(rows) == {"sub/old.md": "sub/new.md"}
 
 
-def test_resolve_supersession_dangling_target_skipped():
-    # supersedes points at a basename absent from the corpus -> no edge (chain breaks).
-    assert resolve_supersession([("a/new.md", "ghost.md")]) == {}
+def test_resolve_supersession_dangling_falls_back_to_raw_basename():
+    # supersedes points at a basename absent from the corpus (predecessor never indexed, or
+    # deleted). Not ambiguous -- nothing to disambiguate -- so it resolves via the raw basename
+    # rather than being silently dropped.
+    assert resolve_supersession([("a/new.md", "ghost.md")]) == {"ghost.md": "a/new.md"}
 
 
 # --- warn_if_insecure_dsn: pure, DB-free (the default-credentials footgun guard) ---------------
