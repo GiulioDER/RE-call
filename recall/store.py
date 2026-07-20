@@ -1,13 +1,71 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime
+from urllib.parse import urlsplit
 
 import psycopg
 from pgvector import Vector
 from pgvector.psycopg import register_vector
 
 from recall.types import Chunk, ScoredChunk
+
+#: The built-in dev credentials shipped in the default DSN — safe only against a local database.
+_DEFAULT_CREDS = ("recall", "recall")
+_LOCAL_HOSTS = ("", "localhost", "127.0.0.1", "::1")
+
+
+def warn_if_insecure_dsn(dsn: str) -> str | None:
+    """Warn (to stderr) when the built-in ``recall:recall`` credentials target a NON-local host.
+
+    A shared, well-known password is fine against localhost but a footgun the moment the DSN
+    points at a real remote database. This warns loudly and returns the message; it never blocks
+    execution (returns None when there is nothing to warn about).
+    """
+    try:
+        parts = urlsplit(dsn)
+    except ValueError:
+        return None
+    if (parts.username, parts.password) != _DEFAULT_CREDS:
+        return None
+    if (parts.hostname or "").lower() in _LOCAL_HOSTS:
+        return None
+    msg = (
+        f"recall: WARNING — using the default 'recall:recall' credentials against non-local host "
+        f"{parts.hostname!r}. Set a strong password via RECALL_DSN before using a remote database."
+    )
+    print(msg, file=sys.stderr)
+    return msg
+
+
+def _basename(file: str) -> str:
+    """Basename of a root-relative (posix) file identifier."""
+    return file.rsplit("/", 1)[-1]
+
+
+def resolve_supersession(rows: list[tuple[str | None, str | None]]) -> dict[str, str]:
+    """Build the superseded -> superseding map from ``(file, supersedes)`` rows.
+
+    ``file`` is a root-relative path; ``supersedes`` references its target by basename (the
+    authoring convention). Each reference is resolved to the UNIQUE file bearing that basename;
+    an ambiguous basename (shared by two files) or a dangling one (no such file) is skipped
+    rather than mis-mapped. Both keys and values in the result are root-relative paths.
+
+    Pure and DB-free so the resolution rule can be unit-tested without a database.
+    """
+    files = [f for f, _ in rows if f]
+    by_base: dict[str, list[str]] = {}
+    for f in files:
+        by_base.setdefault(_basename(f), []).append(f)
+    mapping: dict[str, str] = {}
+    for file, supersedes in rows:
+        if not file or not supersedes:
+            continue
+        candidates = by_base.get(_basename(supersedes), [])
+        if len(candidates) == 1:  # unambiguous: resolve; else skip (ambiguous/dangling)
+            mapping[candidates[0]] = file
+    return mapping
 
 
 class PgVectorStore:
@@ -242,23 +300,29 @@ class PgVectorStore:
         return cur.rowcount or 0
 
     def supersession_map(self) -> dict[str, str]:
-        """Map of superseded file -> superseding file, from `supersedes` chunk metadata.
+        """Map of superseded file -> superseding file (both root-relative), from `supersedes`
+        chunk metadata.
 
-        If several documents claim to supersede the same file, the last row wins (no defined
-        order) — declare a single successor per file for deterministic behavior. The result is
-        cached per store instance and invalidated by this instance's own writes (upsert /
-        delete_sources); a concurrent writer on another connection is not observed until a
-        new store is opened.
+        The ``supersedes:`` frontmatter references its target by basename (the authoring
+        convention), but files are identified by their root-relative path so same-named files in
+        different directories cannot collide. This resolves each basename reference to the unique
+        file that bears it: an AMBIGUOUS target (a basename shared by two files) is skipped
+        rather than mis-mapped — the same refusal `recall lint` makes when it flags
+        ``ambiguous-supersedes-target`` — so a stray sibling can never be silently marked
+        superseded. A dangling target (no such basename in the corpus) is skipped too. The
+        result is cached per store instance and invalidated by this instance's own writes
+        (upsert / delete_sources); a concurrent writer on another connection is not observed
+        until a new store is opened.
         """
         if self._supersession_cache is None:
             rows = self._conn.execute(
                 f"""
-                SELECT DISTINCT metadata->>'supersedes' AS old, metadata->>'file' AS new
+                SELECT DISTINCT metadata->>'file' AS file, metadata->>'supersedes' AS supersedes
                 FROM {self._table}
-                WHERE metadata ? 'supersedes'
+                WHERE metadata ? 'file'
                 """
             ).fetchall()
-            self._supersession_cache = {old: new for old, new in rows if old and new}
+            self._supersession_cache = resolve_supersession(rows)
         return dict(self._supersession_cache)
 
     def newest_indexed_at(self) -> datetime | None:
