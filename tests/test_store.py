@@ -2,6 +2,7 @@ import uuid
 from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
+import pytest
 
 from recall.store import PgVectorStore, resolve_supersession, warn_if_insecure_dsn
 from recall.types import Chunk
@@ -63,6 +64,72 @@ def test_warn_insecure_dsn_silent_on_localhost():
 
 def test_warn_insecure_dsn_silent_when_creds_are_not_default():
     assert warn_if_insecure_dsn("postgresql://recall:s3cret@db.prod.internal:5432/recall") is None
+
+
+# --- _with_retry: DB-free (broken-connection reconnect-and-retry-once) --------------------------
+
+
+def _bare_store() -> PgVectorStore:
+    """A PgVectorStore instance WITHOUT running __init__ (no real DB connection)."""
+    store = PgVectorStore.__new__(PgVectorStore)
+    store._table = "chunks"
+    store._supersession_cache = None
+    return store
+
+
+def test_with_retry_reconnects_once_on_broken_connection():
+    class _BrokenThenGood:
+        def __init__(self):
+            self.calls = 0
+
+        def op(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise psycopg.OperationalError("server closed the connection unexpectedly")
+            return "recovered"
+
+    store = _bare_store()
+    reconnects = {"n": 0}
+    fresh_conn = object()
+
+    def fake_reconnect():
+        reconnects["n"] += 1
+        store._conn = fresh_conn
+
+    store._conn = object()
+    store._reconnect = fake_reconnect  # type: ignore[method-assign]
+    target = _BrokenThenGood()
+
+    result = store._with_retry(lambda conn: target.op())
+    assert result == "recovered"
+    assert reconnects["n"] == 1  # reconnected exactly once
+    assert target.calls == 2  # original attempt + one retry
+
+
+def test_with_retry_propagates_second_failure():
+    store = _bare_store()
+    store._conn = object()
+    store._reconnect = lambda: setattr(store, "_conn", object())  # type: ignore[method-assign]
+
+    def always_broken(_conn):
+        raise psycopg.InterfaceError("connection already closed")
+
+    with pytest.raises(psycopg.InterfaceError):
+        store._with_retry(always_broken)
+
+
+def test_with_retry_does_not_retry_non_connection_errors():
+    store = _bare_store()
+    store._conn = object()
+    reconnects = {"n": 0}
+    store._reconnect = lambda: reconnects.__setitem__("n", reconnects["n"] + 1)  # type: ignore
+
+    def bad_query(_conn):
+        raise psycopg.errors.UndefinedColumn("no such column")
+
+    with pytest.raises(psycopg.errors.UndefinedColumn):
+        store._with_retry(bad_query)
+    assert reconnects["n"] == 0  # a data/query error must NOT trigger a reconnect
 
 
 @requires_db
