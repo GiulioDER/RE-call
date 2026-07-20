@@ -175,8 +175,10 @@ valid_until: 2026-12-31
 ...
 ```
 
-**Code, not just prose.** The engine is content-agnostic — point it at source and it chunks on
-`def` / `class` boundaries, so natural-language questions land the exact function:
+**Code, not just prose.** For Python source, the engine chunks on `def` / `class` boundaries
+instead of blindly splitting text, so natural-language questions land the exact function. Other
+languages currently fall back to generic text chunking (multi-language, tree-sitter-based code
+chunking is on the roadmap):
 
 ```text
 $ python -m recall.cli index ./src --glob "**/*.py"   # your codebase
