@@ -37,8 +37,12 @@ class SearchHit(BaseModel):
     )
     verdict: str = Field(
         description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence "
-        "| invalid_metadata. Only 'ok' hits should be relied on. (The library also defines "
-        "not_entailed for the opt-in entailment stage, which this server does not enable.)"
+        "| invalid_metadata | ambiguous_supersession. Only 'ok' hits should be relied on. "
+        "'ambiguous_supersession' means a supersession edge involving this memory cannot be "
+        "resolved because one of its endpoints names a basename shared by several documents — "
+        "disambiguate the corpus, do not trust either copy. (The library "
+        "also defines not_entailed for the opt-in entailment stage, which this server does not "
+        "enable.)"
     )
     superseded_by: str | None = Field(
         default=None, description="File of the memory that replaces this one, when superseded."

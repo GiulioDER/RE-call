@@ -88,7 +88,7 @@ encode — measure honestly, don't force a result.**
 ## 4. Validity beats similarity: the trust layer kills stale-memory false positives
 
 v0.2 adds a trust layer: every hit returns **confidence + provenance + validity** (verdict:
-`ok | superseded | expired | not_yet_valid | low_confidence | invalid_metadata`), and the result **abstains** when no
+`ok | superseded | expired | not_yet_valid | low_confidence | invalid_metadata | ambiguous_supersession`), and the result **abstains** when no
 valid hit clears the calibrated threshold. The motivating failure: a memory that is *semantically
 closest* to the query but **superseded** keeps winning plain vector search forever — the agent
 confidently builds on a decision that was reversed. Six validity-sensitive queries (worded

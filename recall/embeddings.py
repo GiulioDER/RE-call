@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import time
+from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 
@@ -79,6 +81,66 @@ class FastEmbedEmbedder:
         return [[float(x) for x in vec] for vec in self._model.embed(texts)]
 
 
+#: Texts per Voyage request. The API caps batch size (and total tokens) per call, so a corpus
+#: cannot be embedded in one shot — indexing a few hundred memos would simply error.
+VOYAGE_BATCH_SIZE = 128
+VOYAGE_MAX_RETRIES = 4
+
+#: Error kinds worth retrying. Matched on the exception's class name + message so the SDK's
+#: exception hierarchy does not have to be imported here (it is an optional extra), and so a
+#: permanent error — a bad API key, a malformed request — fails fast instead of sleeping
+#: through four pointless attempts.
+_RETRYABLE = ("ratelimit", "rate limit", "servererror", "server error", "timeout",
+              "connection", "temporarily", "503", "502", "429")
+
+
+def _is_retryable(exc: Exception) -> bool:
+    blob = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in blob for marker in _RETRYABLE)
+
+
+def _embed_batched(
+    client: object,
+    model: str,
+    texts: list[str],
+    batch_size: int = VOYAGE_BATCH_SIZE,
+    max_retries: int = VOYAGE_MAX_RETRIES,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[list[float]]:
+    """Embed `texts` through `client` in provider-sized batches, retrying transient failures.
+
+    Order is preserved: batches are concatenated in input order, which the Embedder protocol
+    requires (chunk i must line up with vector i). Backoff is exponential (1s, 2s, 4s, …);
+    a non-transient error is re-raised on the first attempt.
+    """
+    if max_retries < 1:
+        raise ValueError("max_retries must be >= 1 (it counts attempts, not extra tries)")
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
+    out: list[list[float]] = []
+    for start in range(0, len(texts), batch_size):
+        batch = texts[start : start + batch_size]
+        for attempt in range(max_retries):
+            try:
+                result = client.embed(batch, model=model)  # type: ignore[attr-defined]
+                break
+            except Exception as exc:
+                if attempt == max_retries - 1 or not _is_retryable(exc):
+                    raise
+                sleep(2.0**attempt)
+        vecs = list(result.embeddings)
+        if len(vecs) != len(batch):
+            # Positional pairing is the whole contract (chunk i ↔ vector i). A short batch
+            # would shift every later chunk onto its neighbour's vector — silently, since the
+            # only downstream check is the TOTAL count, which a compensating batch satisfies.
+            raise RuntimeError(
+                f"embedder returned {len(vecs)} embeddings for {len(batch)} texts — refusing "
+                f"to index misaligned vectors"
+            )
+        out.extend([float(x) for x in v] for v in vecs)
+    return out
+
+
 class VoyageEmbedder:
     """Voyage cloud embeddings. Requires `pip install recall[voyage]` and VOYAGE_API_KEY."""
 
@@ -104,5 +166,4 @@ class VoyageEmbedder:
         return self._name
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        result = self._client.embed(texts, model=self._model)
-        return [[float(x) for x in v] for v in result.embeddings]
+        return _embed_batched(self._client, self._model, texts)

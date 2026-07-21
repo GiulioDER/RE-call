@@ -75,6 +75,37 @@ def test_sparse_only_hit_carries_true_dense_cosine(make_store):
 
 
 @requires_db
+def test_reranker_can_rescue_a_candidate_below_the_top_k_cut(make_store):
+    """The cross-encoder must see more than the final top-k, so it can rescue a buried hit.
+
+    Otherwise a relevant doc sitting just below the k boundary can never be rescued — the
+    rerank stage would only reorder what fusion already chose. The pool it sees is bounded by
+    `rerank_k` (cross-encoder cost is one forward pass per candidate), not by the fused length.
+    """
+    store = make_store(3)
+    # 5 docs; "target" is the LAST one by fused rank, so a k=2 pre-cut would hide it
+    chunks, vecs = [], []
+    for i in range(4):
+        chunks.append(Chunk(f"d{i}", "f.md", f"filler document {i}"))
+        vecs.append([1.0, 0.0, 0.0])
+    chunks.append(Chunk("target", "f.md", "the buried answer"))
+    vecs.append([0.0, 1.0, 0.0])
+    store.upsert(chunks, vecs)
+
+    class TargetReranker:
+        """Ranks the buried answer first — what a real cross-encoder would do."""
+
+        def rerank(self, query, hits):
+            return sorted(hits, key=lambda h: h.chunk.id != "target")
+
+    emb = DictEmbedder({}, default=[1.0, 0.0, 0.0])  # query matches the filler, not the target
+    retr = HybridRetriever(store, emb, reranker=TargetReranker(), candidate_k=10)
+    result = retr.search("filler", k=2)
+    assert len(result.hits) == 2
+    assert result.hits[0].chunk.id == "target"
+
+
+@requires_db
 def test_search_rejects_nonpositive_k(make_store):
     import pytest
 
@@ -86,3 +117,25 @@ def test_search_rejects_nonpositive_k(make_store):
         retr.search("cats", k=0)
     with pytest.raises(ValueError):
         retr.search("cats", k=-3)
+
+
+@requires_db
+def test_reranker_depth_is_bounded_not_the_whole_fused_pool(make_store):
+    # a cross-encoder costs one forward pass per candidate; the pool it scores must be bounded
+    # by rerank_k, not by however many candidates retrieval happened to fan out to
+    store = make_store(3)
+    chunks = [Chunk(f"d{i}", "f.md", f"doc {i}") for i in range(30)]
+    store.upsert(chunks, [[1.0, 0.0, 0.0]] * 30)
+
+    seen = {}
+
+    class CountingReranker:
+        def rerank(self, query, hits):
+            seen["n"] = len(hits)
+            return hits
+
+    emb = DictEmbedder({}, default=[1.0, 0.0, 0.0])
+    HybridRetriever(
+        store, emb, reranker=CountingReranker(), candidate_k=30, rerank_k=8
+    ).search("doc", k=3)
+    assert seen["n"] == 8

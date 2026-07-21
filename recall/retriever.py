@@ -36,6 +36,8 @@ class HybridRetriever:
       gap_threshold: dense cosine below which the corpus is treated as lacking an answer.
       max_age:       index age beyond which results are flagged stale.
       candidate_k:   how many candidates each of dense/sparse contributes before fusion.
+      rerank_k:      how many fused candidates the reranker scores before truncation to k.
+                     Bounds cross-encoder cost, which is one forward pass per candidate.
       use_sparse:    include the sparse full-text leg in fusion; False = dense-only (ablations).
     """
 
@@ -48,6 +50,7 @@ class HybridRetriever:
         gap_threshold: float = DEFAULT_GAP_THRESHOLD,
         max_age: timedelta = timedelta(days=2),
         candidate_k: int = 20,
+        rerank_k: int = 20,
         use_sparse: bool = True,
     ) -> None:
         self._store = store
@@ -56,6 +59,7 @@ class HybridRetriever:
         self._gap_threshold = gap_threshold
         self._max_age = max_age
         self._candidate_k = candidate_k
+        self._rerank_k = rerank_k
         self._use_sparse = use_sparse
 
     def search(self, query: str, k: int = 5, source: str | None = None) -> RetrievalResult:
@@ -84,7 +88,7 @@ class HybridRetriever:
             by_id.setdefault(h.chunk.id, h)  # sparse hits carry their true cosine (vec=qvec)
         dense_score = {h.chunk.id: h.score for h in dense}
 
-        ranked_ids = sorted(fused, key=lambda cid: fused[cid], reverse=True)[:k]
+        ranked_ids = sorted(fused, key=lambda cid: fused[cid], reverse=True)
         hits = [
             ScoredChunk(
                 chunk=by_id[cid].chunk,
@@ -93,8 +97,16 @@ class HybridRetriever:
             )
             for cid in ranked_ids
         ]
+        # Rerank a POOL larger than k, then truncate. Cutting to k first would cap what
+        # reranking can do to reordering fusion's own choices — a relevant doc sitting just
+        # below the boundary could never be rescued, which is the main reason to rerank.
+        # The pool is bounded by `rerank_k` rather than by the fused length: a cross-encoder
+        # runs one forward pass per candidate and dominates search latency, so the cost must
+        # scale with the answer size, not with retrieval fan-out (`candidate_k`).
         if self._reranker is not None:
-            hits = self._reranker.rerank(query, hits)
+            depth = max(self._rerank_k, k)
+            hits = self._reranker.rerank(query, hits[:depth]) + hits[depth:]
+        hits = hits[:k]
 
         gap = gap_warning(list(dense_score.values()), self._gap_threshold)
         stale = staleness(self._store.newest_indexed_at(), datetime.now(timezone.utc), self._max_age)

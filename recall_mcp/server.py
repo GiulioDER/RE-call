@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from mcp.server.fastmcp import FastMCP
 
 from recall.calibration import load_for
+from recall.store import redacted_dsn
 from recall_mcp.service import index_memory, make_embedder, memory_stats, search_memory
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
@@ -24,7 +25,7 @@ async def _lifespan(_server: FastMCP):
         store = PgVectorStore(DEFAULT_DSN, dim=embedder.dim)
     except Exception:
         print(
-            f"recall_mcp: startup failed (RECALL_DSN={DEFAULT_DSN!r}, "
+            f"recall_mcp: startup failed (RECALL_DSN={redacted_dsn(DEFAULT_DSN)}, "
             f"RECALL_EMBEDDER={EMBEDDER_NAME!r}):\n{traceback.format_exc()}",
             file=sys.stderr,
         )

@@ -52,3 +52,37 @@ def test_cross_encoder_preserves_cosine_score_and_indexed_at():
     for h in reranked:
         assert h.score == 0.41          # dense cosine preserved
         assert h.indexed_at == ts       # provenance preserved
+
+
+def test_default_reranker_model_is_pinned_to_a_hub_revision(monkeypatch):
+    """An unpinned Hub reference is mutable — pin the reranker like the entailment judge does.
+
+    Same supply-chain reasoning as `recall.entailment.DEFAULT_QNLI_REVISION`: whoever controls
+    the repo can swap the weights and every consumer picks them up on the next cold cache.
+    """
+    import recall.rerank as rerank_mod
+
+    seen = {}
+
+    class FakeCrossEncoder:
+        def __init__(self, model, revision=None):
+            seen["model"], seen["revision"] = model, revision
+
+    monkeypatch.setattr(
+        rerank_mod, "_load_cross_encoder", lambda m, r: FakeCrossEncoder(m, revision=r)
+    )
+    CrossEncoderReranker()
+    assert seen["model"] == rerank_mod.DEFAULT_RERANK_MODEL
+    assert seen["revision"] == rerank_mod.DEFAULT_RERANK_REVISION
+    assert len(rerank_mod.DEFAULT_RERANK_REVISION) == 40  # a real commit sha, not a branch
+
+
+def test_custom_reranker_model_does_not_inherit_the_default_pin(monkeypatch):
+    import recall.rerank as rerank_mod
+
+    seen = {}
+    monkeypatch.setattr(
+        rerank_mod, "_load_cross_encoder", lambda m, r: seen.update(model=m, revision=r)
+    )
+    CrossEncoderReranker(model="some-org/other-reranker")
+    assert seen["revision"] is None  # the default pin belongs to the default model only

@@ -159,3 +159,35 @@ def test_naive_now_is_interpreted_as_utc():
         _result([_hit("x", "d.md", 0.9, valid_until="2026-07-16")]), {}, CAL, naive
     )
     assert res.hits[0].verdict == "expired"  # no TypeError on naive-vs-aware comparison
+
+
+def test_ambiguous_supersession_endpoint_is_not_served_as_ok():
+    # two files share the basename the edge names: which one is superseded is unknowable,
+    # so the hit must not be presented as trustworthy (fail closed, not silent mismap)
+    res = evaluate(
+        _result([_hit("x", "notes.md", 0.9)]), {}, CAL, NOW, unresolved=frozenset({"notes.md"})
+    )
+    assert res.hits[0].verdict == "ambiguous_supersession"
+    assert res.hits[0].validity.superseded_by is None
+    assert res.abstained is True
+    assert "basename" in res.reason
+
+
+def test_unresolved_does_not_touch_other_files():
+    res = evaluate(
+        _result([_hit("x", "other.md", 0.9)]), {}, CAL, NOW, unresolved=frozenset({"notes.md"})
+    )
+    assert res.hits[0].verdict == "ok"
+    assert res.abstained is False
+
+
+def test_ambiguity_outranks_a_declared_edge_for_the_same_file():
+    # if the store still carried an edge for an unresolved basename, ambiguity wins
+    res = evaluate(
+        _result([_hit("x", "notes.md", 0.9)]),
+        {"notes.md": "new.md"},
+        CAL,
+        NOW,
+        unresolved=frozenset({"notes.md"}),
+    )
+    assert res.hits[0].verdict == "ambiguous_supersession"

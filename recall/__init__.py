@@ -1,3 +1,3 @@
 """recall — Retrieval-Augmented Self-Recall for long-running agents."""
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"

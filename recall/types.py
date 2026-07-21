@@ -5,10 +5,14 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 #: Trust verdict for a retrieved hit. Only ``ok`` hits should be relied on.
+#: ``ambiguous_supersession``: a supersession edge involving this memory cannot be resolved,
+#: because one of its endpoints names a basename the corpus carries in more than one directory.
+#: Either "is this the superseded one?" or "which document supersedes it?" is unanswerable, so
+#: the hit fails closed rather than being served with a guessed successor.
 #: ``not_entailed`` (optional entailment stage): semantically close but does not answer the query.
 Verdict = Literal[
     "ok", "superseded", "expired", "not_yet_valid", "low_confidence", "invalid_metadata",
-    "not_entailed",
+    "ambiguous_supersession", "not_entailed",
 ]
 
 

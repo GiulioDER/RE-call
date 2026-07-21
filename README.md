@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-164%20·%20real%20pgvector-brightgreen" alt="164 tests">
+  <img src="https://img.shields.io/badge/tests-216%20·%20real%20pgvector-brightgreen" alt="216 tests">
 </p>
 
 <p align="center">
@@ -77,13 +77,20 @@ deliberately *closer to the stale memory*):
 > Plain similarity search returns the superseded/expired memory as the answer **83–100% of the time.**
 > With RE-call's trust layer that rate is **0.00 — on every embedder — with identical ranking quality.**
 
+**Read those percentages as a demonstration, not a benchmark.** They come from a small labelled
+set — 25 queries over ~22 corpus documents, of which **6** are the validity-sensitive ones behind
+the 83–100% figure. The effect is large and mechanical (a declared edge either fires or it
+doesn't), but the *n* is nowhere near enough for a confidence interval — and `P@5` is capped at
+0.20 by construction, since each query has one relevant document. Scaling the labelled set is an
+open item, not a solved one.
+
 An ablation harness scores every `embedder × fusion` config on a labelled query set (precision@k,
 recall@k, MRR, nDCG, and a guard-specific **false-confident rate**), and the findings include what
 *didn't* work — see [The findings](#the-findings) below.
 
 ## What makes it different
 
-- **Trust verdicts, not just scores** — every hit carries a verdict (`ok · superseded · expired · not_yet_valid · low_confidence`), a **calibrated confidence**, and provenance (source, chunk, `indexed_at`). A superseded or out-of-window memory loses to its successor — or to *"I don't know"* — even with the top cosine.
+- **Trust verdicts, not just scores** — every hit carries a verdict (`ok · superseded · expired · not_yet_valid · low_confidence · invalid_metadata · ambiguous_supersession`), a **calibrated confidence**, and provenance (source, chunk, `indexed_at`). A superseded or out-of-window memory loses to its successor — or to *"I don't know"* — even with the top cosine.
 - **It knows when it doesn't know** — when the best match is weak, RE-call returns a `gap_warning` instead of hallucinating; the abstention threshold is calibrated *per embedder* against a labelled set (`recall calibrate`), because that threshold **provably doesn't transfer** between models (see the findings).
 - **Catches the near-miss** *(opt-in)* — a QNLI entailment judge rejects a high-similarity memory that doesn't actually *answer* the query (which clears any cosine threshold by construction). A decision, not another score — nothing to recalibrate per embedder. OFF by default; cost measured.
 - **Write-time graph checks** — `recall lint` catches broken supersession edges (dangling / cyclic `supersedes:`, versioned siblings with no link, closures declared only in prose). No DB, exit 1 on errors, CI-ready. `--semantic` adds a retrieval-based **missing-edge** check — the write-time mirror of anti-re-litigation.
@@ -128,7 +135,7 @@ Six honest results from the ablation harness — the wins **and** the things tha
 - **Timestamps can't replace declared supersession — even steelmanned.** "Trust the newest relevant hit" still trusts the stale memory **83–100%** of the time (worse than plain ranking on bge-small). Supersession is a *relation between two documents*; a per-document timestamp can't see it.
 
 > Full methodology + per-embedder tables → **[results/FINDINGS.md](results/FINDINGS.md)**.
-> **164 tests**, the DB-touching ones against a real pgvector container (no mock DB), verified in CI.
+> **216 tests**, the DB-touching ones against a real pgvector container (no mock DB), verified in CI.
 
 ## Where this comes from
 
@@ -175,8 +182,10 @@ valid_until: 2026-12-31
 ...
 ```
 
-**Code, not just prose.** The engine is content-agnostic — point it at source and it chunks on
-`def` / `class` boundaries, so natural-language questions land the exact function:
+**Code, not just prose.** Point it at source and `chunk_code` splits on `def` / `class`
+boundaries, so natural-language questions land the exact function. Those boundaries are
+*Python's* — other languages index fine and are size-split on whitespace, but they are not
+parsed structurally (tree-sitter would be the fix):
 
 ```text
 $ python -m recall.cli index ./src --glob "**/*.py"   # your codebase
@@ -198,13 +207,40 @@ pip install -e ".[fastembed,mcp]"
 python -m recall_mcp.server        # stdio server
 ```
 
-The self-recall pattern: Claude calls `recall_search` **before** proposing an idea; if a closed
-decision surfaces (and it isn't a `gap_warning`), it backs off instead of re-litigating. Every hit
+The self-recall pattern: Claude calls `recall_search` **before** proposing an idea, and backs
+off instead of re-litigating — but only on a memory that is still TRUSTWORTHY (verdict `ok`). An
+abstention or a `gap_warning` means there is no valid prior record, so the proposal proceeds. Every hit
 carries `verdict` / `confidence` / `superseded_by` / `indexed_at`, and when `abstained` is true the
 advice says so explicitly: *say you don't know — do not answer from these hits.*
 
 **→ [Full guide: Claude Code + Desktop config, the three tools, and a real redacted loop](docs/USING_WITH_CLAUDE.md)**
 &nbsp;·&nbsp; example agent: [`examples/self_recall_agent.py`](examples/self_recall_agent.py)
+
+## Upgrading to 0.4.0
+
+Two changes act on an index built by an earlier version:
+
+- **Chunking changed** (oversized blocks are force-split, with overlap). Existing rows keep their
+  old chunking until re-indexed, so the index is mixed until you run
+  `python -m recall.cli index <root>` over the whole corpus.
+- **Supersession now fails closed on an ambiguous basename.** `supersedes:` names a basename, so
+  if a corpus carries that name in two directories the edge cannot be resolved: the hit comes back
+  `ambiguous_supersession` and the search abstains rather than guess. Run `recall lint <root>`
+  first — it reports the condition as an error (`ambiguous-supersedes-target` /
+  `ambiguous-supersedes-source`) so you can fix it before it surfaces as an abstention.
+
+`source` is now stored **resolved**, so re-indexing the same corpus by a different path spelling
+replaces its rows instead of duplicating them. Note the migration is not automatic: rows written
+before 0.4.0 under a *relative* path carry a different `source` value, and `replace_sources`
+deletes by exact match — so a re-index adds the resolved rows and leaves the old ones orphaned.
+Clear them explicitly (or start from an empty table):
+
+```sql
+DELETE FROM chunks WHERE source NOT LIKE '/%' AND source !~ '^[A-Za-z]:';  -- non-absolute leftovers
+```
+
+For the same reason, a scripted caller passing a relative path to `recall_search`'s `source=`
+filter must switch to the resolved path.
 
 ## Reproduce the evaluation
 

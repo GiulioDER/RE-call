@@ -4,8 +4,9 @@ Semantic similarity answers "which memory looks most like the query"; it cannot 
 this memory still be believed". This module adds that second judgment as a pure post-processing
 step over `HybridRetriever.search()`:
 
-- every hit gets a verdict — ``ok``, ``superseded``, ``expired``, ``not_yet_valid`` or
-  ``low_confidence`` — plus a calibrated confidence, provenance, and its validity window;
+- every hit gets a verdict — ``ok``, ``superseded``, ``expired``, ``not_yet_valid``,
+  ``low_confidence``, ``invalid_metadata`` or ``ambiguous_supersession`` — plus a calibrated
+  confidence, provenance, and its validity window;
 - a memory that is superseded or outside its validity window loses even with a top cosine:
   valid hits are ordered first (so a retrieved successor outranks the stale memory it replaced),
   and when NO valid hit remains the result is an explicit abstention with a reason;
@@ -62,7 +63,11 @@ def resolve_successor(file: str, supersession: dict[str, str]) -> str | None:
 
 
 def _verdict(
-    hit: ScoredChunk, supersession: dict[str, str], threshold: float, now: datetime
+    hit: ScoredChunk,
+    supersession: dict[str, str],
+    threshold: float,
+    now: datetime,
+    unresolved: frozenset[str] = frozenset(),
 ) -> tuple[Verdict, Validity]:
     meta = hit.chunk.metadata
     file = meta.get("file")
@@ -73,6 +78,15 @@ def _verdict(
         # Indexer's fail-fast). Fail CLOSED per hit: an unparseable window must not read as
         # trustworthy, and one bad row must not crash every search that retrieves it.
         return "invalid_metadata", Validity(valid_from=None, valid_until=None, superseded_by=None)
+    if file is not None and file in unresolved:
+        # A supersession edge involving this memory could not be resolved: one of its two
+        # endpoints names a basename carried by more than one document, so either "is this the
+        # superseded one?" or "which document is the successor?" is unanswerable. Serving it as
+        # ``ok`` would be the silent wrong-answer this whole layer exists to prevent.
+        return (
+            "ambiguous_supersession",
+            Validity(valid_from=start, valid_until=end, superseded_by=None),
+        )
     successor = resolve_successor(file, supersession) if file else None
     validity = Validity(valid_from=start, valid_until=end, superseded_by=successor)
     if successor is not None:
@@ -101,6 +115,12 @@ def abstain_reason(hits: list[TrustedHit]) -> str:
         return f"best candidate ({best.provenance.file}) is not yet valid"
     if best.verdict == "invalid_metadata":
         return f"best candidate ({best.provenance.file}) carries malformed validity metadata"
+    if best.verdict == "ambiguous_supersession":
+        return (
+            f"a supersession edge involving the best candidate ({best.provenance.file}) "
+            f"cannot be resolved: one of its endpoints names a basename carried by more than "
+            f"one document — disambiguate the corpus rather than trusting either copy"
+        )
     return "no hit above the calibrated confidence threshold (probable corpus gap)"
 
 
@@ -109,11 +129,17 @@ def evaluate(
     supersession: dict[str, str],
     calibration: Calibration | None,
     now: datetime,
+    unresolved: frozenset[str] = frozenset(),
 ) -> TrustedResult:
     """Pure trust evaluation of a retrieval result (no DB access, no clock reads).
 
-    Verdict precedence per hit: invalid_metadata > superseded > expired / not_yet_valid >
-    low_confidence > ok.
+    `unresolved` (from `PgVectorStore.supersession`) holds the superseded endpoint of every
+    edge that could not be resolved because one of its endpoints names a basename shared by
+    several documents; those hits fail closed as ``ambiguous_supersession`` instead of being
+    served with a guessed successor.
+
+    Verdict precedence per hit: invalid_metadata > ambiguous_supersession > superseded >
+    expired / not_yet_valid > low_confidence > ok.
     Successor promotion: when a superseded hit scored above the threshold (it would have been
     the confident answer), its retrieved successor is promoted from ``low_confidence`` to
     ``ok`` even if its own wording scores lower — the explicit supersession edge transfers the
@@ -126,7 +152,7 @@ def evaluate(
     cal = calibration or _UNCALIBRATED
     trusted: list[TrustedHit] = []
     for hit in result.hits:
-        verdict, validity = _verdict(hit, supersession, cal.threshold, now)
+        verdict, validity = _verdict(hit, supersession, cal.threshold, now, unresolved)
         meta = hit.chunk.metadata
         trusted.append(
             TrustedHit(
@@ -192,12 +218,13 @@ def trusted_search(
     cal = calibration or _UNCALIBRATED
     retriever = HybridRetriever(store, embedder, reranker=reranker, gap_threshold=cal.threshold)
     result = retriever.search(query, k=k, source=source)
-    supersession = store.supersession_map() if result.hits else {}
+    supersession, unresolved = store.supersession() if result.hits else ({}, frozenset())
     trusted = evaluate(
         result,
         supersession,
         calibration,
         now or datetime.now(timezone.utc),
+        unresolved,
     )
     if entailment is not None:
         from recall.entailment import apply_entailment

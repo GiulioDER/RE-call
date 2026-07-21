@@ -175,3 +175,33 @@ def test_cli_lint_exits_nonzero_on_errors_and_zero_on_clean(tmp_path, capsys):
     _write(clean, "a.md", "fine")
     main(["lint", str(clean)])  # returns without raising
     assert "0 errors" in capsys.readouterr().out
+
+
+def test_ambiguous_superseder_basename_is_reported(tmp_path):
+    """The runtime fails closed when the SUPERSEDING basename is duplicated too.
+
+    Without a lint rule for it the operator gets an abstention at query time and a clean
+    `recall lint` — an unfixable-looking failure.
+    """
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "old.md").write_text("the old note", encoding="utf-8")
+    (tmp_path / "a" / "dup.md").write_text(
+        "---\nsupersedes: old.md\n---\nthe new note", encoding="utf-8"
+    )
+    (tmp_path / "b" / "dup.md").write_text("an unrelated note", encoding="utf-8")
+    codes = {i.code for i in lint_corpus(tmp_path)}
+    assert "ambiguous-supersedes-source" in codes
+
+
+def test_ambiguous_supersedes_target_is_an_error_not_a_warning(tmp_path):
+    # read-time now REFUSES to answer from these documents, so lint must exit non-zero
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "notes.md").write_text("one", encoding="utf-8")
+    (tmp_path / "b" / "notes.md").write_text("two", encoding="utf-8")
+    (tmp_path / "new.md").write_text(
+        "---\nsupersedes: notes.md\n---\nthe replacement", encoding="utf-8"
+    )
+    issues = [i for i in lint_corpus(tmp_path) if i.code == "ambiguous-supersedes-target"]
+    assert issues and issues[0].level == "error"

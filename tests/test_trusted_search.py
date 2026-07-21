@@ -102,3 +102,35 @@ def test_entailment_judge_is_off_by_default_and_demotes_when_passed(tmp_path, ma
     assert judged.abstained is True
     assert judged.hits[0].verdict == "not_entailed"
     assert "entail" in judged.reason
+
+
+@requires_db
+def test_colliding_basenames_in_nested_dirs_fail_closed(tmp_path, make_store):
+    """A nested corpus with two same-named memos must not produce a guessed supersession.
+
+    `supersedes:` names a basename; with `a/notes.md` and `b/notes.md` both present, the edge
+    cannot say which is superseded. The runtime must refuse to serve either as `ok` rather
+    than silently mis-attributing the relation — the linter warns about this at write time,
+    and this test pins that the QUERY path is guarded too.
+    """
+    store = make_store(64)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "notes.md").write_text(
+        "Deploy notes: the rollout uses blue green switching.\n", encoding="utf-8"
+    )
+    (tmp_path / "b" / "notes.md").write_text(
+        "Deploy notes: the rollout uses canary switching.\n", encoding="utf-8"
+    )
+    (tmp_path / "current.md").write_text(
+        "---\nsupersedes: notes.md\n---\nThe rollout now uses canary switching only.\n",
+        encoding="utf-8",
+    )
+    Indexer(store, HashingEmbedder(dim=64)).index_path(tmp_path)
+
+    res = trusted_search(store, HashingEmbedder(dim=64), "deploy rollout switching", k=5)
+    notes = [h for h in res.hits if h.provenance.file == "notes.md"]
+    assert notes, "both colliding memos should still be retrievable"
+    for h in notes:
+        assert h.verdict == "ambiguous_supersession"
+        assert h.validity.superseded_by is None  # never a guessed successor
