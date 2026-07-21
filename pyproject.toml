@@ -22,7 +22,9 @@ rerank = ["sentence-transformers>=3.0"]
 entail = ["sentence-transformers>=3.0"]
 eval = ["matplotlib>=3.7"]
 finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
-dev = ["pytest>=8", "ruff>=0.5", "mcp>=1.7"]
+# pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
+# failing it — a hung CI job reads as "still running", not as a regression.
+dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.5", "mcp>=1.7"]
 
 [project.scripts]
 recall = "recall.cli:main"
