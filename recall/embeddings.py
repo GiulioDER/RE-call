@@ -86,13 +86,31 @@ def batched_embed(
             len(batch) >= batch_size
             or (max_batch_chars is not None and chars + len(t) > max_batch_chars)
         ):
-            out.extend(embed_batch(batch))
+            out.extend(_checked(embed_batch, batch))
             batch, chars = [], 0
         batch.append(t)
         chars += len(t)
     if batch:
-        out.extend(embed_batch(batch))
+        out.extend(_checked(embed_batch, batch))
     return out
+
+
+def _checked(
+    embed_batch: Callable[[list[str]], list[list[float]]], batch: list[str]
+) -> list[list[float]]:
+    """Embed one batch, refusing a response that does not line up with its input.
+
+    Positional pairing is the whole contract (chunk i <-> vector i). A short batch would shift
+    every later chunk onto its neighbour's vector — silently, because the only downstream check
+    is the TOTAL count, which a compensating batch satisfies.
+    """
+    vecs = embed_batch(batch)
+    if len(vecs) != len(batch):
+        raise RuntimeError(
+            f"embedder returned {len(vecs)} embeddings for {len(batch)} texts — refusing to "
+            f"index misaligned vectors"
+        )
+    return vecs
 
 
 @runtime_checkable

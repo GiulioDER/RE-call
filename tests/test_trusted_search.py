@@ -102,3 +102,34 @@ def test_entailment_judge_is_off_by_default_and_demotes_when_passed(tmp_path, ma
     assert judged.abstained is True
     assert judged.hits[0].verdict == "not_entailed"
     assert "entail" in judged.reason
+
+
+@requires_db
+def test_ambiguous_supersession_target_is_not_served_as_ok(tmp_path, make_store):
+    """An unresolvable supersession edge must not read as a healthy memory.
+
+    `supersedes:` names a basename; when two documents carry it the edge is correctly NOT
+    guessed — but silently dropping it leaves the (possibly superseded) memory looking `ok`,
+    which is the same wrong answer the trust layer exists to prevent. Say it is unresolvable.
+    """
+    store = make_store(64)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "notes.md").write_text(
+        "Deploy notes: the rollout uses blue green switching.\n", encoding="utf-8"
+    )
+    (tmp_path / "b" / "notes.md").write_text(
+        "Deploy notes: the rollout uses canary switching.\n", encoding="utf-8"
+    )
+    (tmp_path / "current.md").write_text(
+        "---\nsupersedes: notes.md\n---\nThe rollout now uses canary switching only.\n",
+        encoding="utf-8",
+    )
+    Indexer(store, HashingEmbedder(dim=64)).index_path(tmp_path)
+
+    res = trusted_search(store, HashingEmbedder(dim=64), "deploy rollout switching", k=5)
+    notes = [h for h in res.hits if h.provenance.file in ("a/notes.md", "b/notes.md")]
+    assert notes, "both colliding memos should still be retrievable"
+    for h in notes:
+        assert h.verdict == "ambiguous_supersession"
+        assert h.validity.superseded_by is None  # never a guessed successor

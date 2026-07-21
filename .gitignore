@@ -9,3 +9,4 @@ dist/
 .env
 finetune/model*/
 calibration.json
+.claude/
