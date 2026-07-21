@@ -45,9 +45,12 @@ async def _to_thread(fn: Callable[[], _T]) -> _T:
 @asynccontextmanager
 async def _lifespan(_server: FastMCP):
     """Open one PgVectorStore + embedder for the server's lifetime, reused by every tool."""
-    from recall.store import PgVectorStore, warn_if_insecure_dsn
+    from recall.store import PgVectorStore, require_secure_dsn
 
-    warn_if_insecure_dsn(DEFAULT_DSN)  # loud stderr note if default creds target a remote host
+    # FAIL CLOSED, unlike the CLI's warning: a server is unattended, so a stderr note about
+    # published default credentials pointed at a remote database lands in a journal nobody reads
+    # while the process comes up looking healthy. RECALL_ALLOW_INSECURE_DSN=1 opts out.
+    require_secure_dsn(DEFAULT_DSN)
     try:
         embedder = make_embedder(EMBEDDER_NAME)
         # Pooled + timed out: a server shares this store across concurrent tool calls, and one

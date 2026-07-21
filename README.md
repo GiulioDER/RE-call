@@ -169,7 +169,16 @@ python -m recall.cli lint ./path/to/markdown             # supersession-graph co
 python -m recall.cli lint ./docs --semantic              # + retrieval-based missing-edge check (DB, opt-in)
 ```
 
-Point `RECALL_DSN` at any Postgres. Declare validity in the memory itself — plain frontmatter, no
+Point `RECALL_DSN` at any Postgres.
+
+> **Two safety notes about that variable.** The test suite **DROPs tables**, so it reads a
+> separate `RECALL_TEST_DSN` (falling back to the local docker-compose database) and never
+> `RECALL_DSN` — exporting your real DSN and running `pytest` cannot touch it. And the MCP server
+> **refuses to start** if `RECALL_DSN` carries the built-in `recall:recall` credentials against a
+> non-local host, since that password is published right here; set a real one, or
+> `RECALL_ALLOW_INSECURE_DSN=1` to accept the risk deliberately. The CLI still only warns.
+
+Declare validity in the memory itself — plain frontmatter, no
 schema changes (validity is *authored, not verified*: index only content you trust, because a
 `supersedes:` claim is honored as written):
 

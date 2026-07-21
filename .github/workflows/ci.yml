@@ -26,7 +26,9 @@ jobs:
           --health-retries 30
 
     env:
-      RECALL_DSN: postgresql://recall:recall@localhost:5432/recall
+      # The suite DROPs tables, so it reads RECALL_TEST_DSN and never RECALL_DSN — see
+      # tests/conftest.py. RECALL_DSN is deliberately left unset here.
+      RECALL_TEST_DSN: postgresql://recall:recall@localhost:5432/recall
 
     steps:
       - uses: actions/checkout@v4
