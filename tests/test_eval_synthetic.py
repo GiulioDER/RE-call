@@ -161,3 +161,43 @@ def test_filler_never_answers_a_query(corpus):
     filler = " ".join(b for rel, (_, b) in docs.items() if rel.startswith("filler/")).lower()
     for q in corpus.queries:
         assert q["subject"].lower() not in filler
+
+
+def test_regeneration_does_not_inherit_the_previous_runs_files(tmp_path):
+    """Regression: a corpus is a glob, so leftovers are indexed as if they belonged to this run.
+
+    A run configured for 600 chunks silently indexed 20,600 because 100 filler files from an
+    earlier, larger run were still in the directory — while `n_chunks` still reported 600. Every
+    scale and latency figure was attributed to the wrong corpus size, and nothing failed.
+    """
+    root = tmp_path / "c"
+    big = generate(root, n_answerable=2, n_unanswerable=1, n_successor=1, n_abstain=1,
+                   n_filler_chunks=40, seed=3)
+    assert len(list((root / "filler").glob("*.md"))) > 0
+
+    small = generate(root, n_answerable=2, n_unanswerable=1, n_successor=1, n_abstain=1,
+                     n_filler_chunks=0, seed=3)
+    assert not (root / "filler").exists()
+    actual = sum(len(chunk_text(body)) for _, (_, body) in _bodies(root).items())
+    assert actual == small.n_chunks
+    assert small.n_chunks < big.n_chunks
+
+
+def test_generate_refuses_to_wipe_a_directory_it_did_not_create(tmp_path):
+    """The fix for the above must not be a delete-anything footgun: `--out ~/notes` must fail."""
+    victim = tmp_path / "notes"
+    victim.mkdir()
+    (victim / "important.md").write_text("do not delete me", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="Refusing to overwrite"):
+        generate(victim, n_answerable=1, n_unanswerable=1, n_successor=1, n_abstain=1,
+                 n_filler_chunks=0, seed=1)
+    assert (victim / "important.md").read_text(encoding="utf-8") == "do not delete me"
+
+
+def test_generate_accepts_an_empty_directory(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    c = generate(empty, n_answerable=1, n_unanswerable=1, n_successor=1, n_abstain=1,
+                 n_filler_chunks=0, seed=1)
+    assert c.n_chunks == 4
