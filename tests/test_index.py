@@ -206,6 +206,7 @@ def test_force_split_survives_overlap_larger_than_the_cap():
     assert sum(len(c) for c in chunks) < 2 * 2000
 
 
+@pytest.mark.timeout(10)
 def test_force_split_terminates_for_small_max_chars():
     for mc in range(1, 12):
         chunks = chunk_text("ab cdefghij klm", max_chars=mc)
