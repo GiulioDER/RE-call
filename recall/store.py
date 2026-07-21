@@ -139,7 +139,38 @@ class PgVectorStore:
     #: timeout) — as opposed to a query/data error. These trigger a reconnect-and-retry.
     _CONN_ERRORS = (psycopg.OperationalError, psycopg.InterfaceError)
 
-    def __init__(self, dsn: str, dim: int, table: str = "chunks") -> None:
+    #: Class-level default so `_pool` always exists, including on an instance built without
+    #: __init__ (the store tests do this to exercise the retry logic against a fake connection).
+    #: Single-connection mode is the default, so None is also the honest value.
+    _pool = None
+
+    def __init__(
+        self,
+        dsn: str,
+        dim: int,
+        table: str = "chunks",
+        *,
+        pool_size: int | None = None,
+        statement_timeout_ms: int | None = None,
+        connect_timeout_s: int | None = 10,
+    ) -> None:
+        """Open a store against `dsn`.
+
+        `pool_size` selects the CONNECTION MODE, and the default (None) is deliberate:
+
+        - **None — one long-lived connection.** Correct for a CLI or any single-threaded caller,
+          and the mode whose reconnect semantics the rest of this class is built around. Sharing
+          it across threads serialises them, and a reconnect swaps `self._conn` underneath a
+          thread that is using it.
+        - **an int — a connection pool.** What a server needs: each operation borrows its own
+          connection, so concurrent callers actually proceed concurrently. Opt-in rather than
+          default because a pool starts a background maintenance thread, which a one-shot CLI
+          invocation should not pay for or have to shut down.
+
+        `statement_timeout_ms` bounds every statement server-side. Without it a single runaway
+        query occupies a connection until the process dies, with nothing to cancel it; that is
+        the difference between a slow request and an exhausted pool.
+        """
         # `dim` and `table` are interpolated directly into SQL — as a type modifier and an
         # identifier respectively — because Postgres cannot bind those as parameters. They
         # are therefore strictly validated here: this is the SQL-injection guard. Every
@@ -148,27 +179,67 @@ class PgVectorStore:
             raise ValueError("dim must be a positive int")
         if not table.isidentifier():
             raise ValueError("table must be a valid SQL identifier")
+        if pool_size is not None and (not isinstance(pool_size, int) or pool_size < 1):
+            raise ValueError("pool_size must be a positive int or None")
         self._dsn = dsn
         self._dim = dim
         self._table = table
+        self._statement_timeout_ms = statement_timeout_ms
+        self._connect_timeout_s = connect_timeout_s
         self._supersession_cache: tuple[dict[str, str], frozenset[str]] | None = None
         self._closed = False
-        self._conn = self._connect()
+        self._pool = self._open_pool(pool_size) if pool_size else None
+        self._conn = None if self._pool is not None else self._connect()
+
+    def _connect_kwargs(self) -> dict:
+        kw: dict = {"autocommit": True}
+        if self._connect_timeout_s is not None:
+            # Without this a dead host hangs the caller on the TCP handshake indefinitely.
+            kw["connect_timeout"] = self._connect_timeout_s
+        return kw
+
+    def _open_pool(self, size: int):
+        try:
+            from psycopg_pool import ConnectionPool
+        except ImportError as exc:  # pragma: no cover - exercised only without the extra
+            raise ImportError(
+                "pool_size requires the pool extra: pip install recall[pool]"
+            ) from exc
+
+        # `configure` runs on every connection the pool creates, not just the first — the vector
+        # type registration is per-connection state, so a pool that skipped it would work until
+        # it opened its second connection and then fail on a Vector parameter.
+        pool = ConnectionPool(
+            self._dsn,
+            min_size=1,
+            max_size=size,
+            kwargs=self._connect_kwargs(),
+            configure=self._prepare,
+            open=False,
+        )
+        pool.open(wait=True, timeout=self._connect_timeout_s or 30)
+        return pool
+
+    def _prepare(self, conn: "psycopg.Connection") -> None:
+        """Per-connection setup: extension, vector type registration, statement timeout."""
+        # register_vector needs the `vector` type to already exist, so ensure the extension
+        # is installed first — this makes a brand-new database work out of the box (the
+        # README quickstart path). If this role lacks privilege to create it, fall through:
+        # register_vector still succeeds when an admin has pre-installed the extension, and
+        # fails with a clear "vector type not found" if it genuinely isn't there.
+        try:
+            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        except psycopg.Error:
+            pass
+        register_vector(conn)
+        if self._statement_timeout_ms is not None:
+            conn.execute(f"SET statement_timeout = {int(self._statement_timeout_ms)}")
 
     def _connect(self) -> "psycopg.Connection":
         """Open one autocommit connection and prepare it (extension + vector type registration)."""
-        conn = psycopg.connect(self._dsn, autocommit=True)
+        conn = psycopg.connect(self._dsn, **self._connect_kwargs())
         try:
-            # register_vector needs the `vector` type to already exist, so ensure the extension
-            # is installed first — this makes a brand-new database work out of the box (the
-            # README quickstart path). If this role lacks privilege to create it, fall through:
-            # register_vector still succeeds when an admin has pre-installed the extension, and
-            # fails with a clear "vector type not found" if it genuinely isn't there.
-            try:
-                conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            except psycopg.Error:
-                pass
-            register_vector(conn)
+            self._prepare(conn)  # same per-connection setup the pool applies via `configure`
         except Exception:
             conn.close()
             raise
@@ -203,6 +274,8 @@ class PgVectorStore:
         """
         if self._closed:
             raise RuntimeError("store is closed")
+        if self._pool is not None:
+            return self._with_retry_pooled(op)
         try:
             return op(self._conn)
         except self._CONN_ERRORS:
@@ -215,18 +288,60 @@ class PgVectorStore:
             self._reconnect()
             return op(self._conn)
 
+    def _with_retry_pooled(self, op: Callable[["psycopg.Connection"], _T]) -> _T:
+        """Pooled variant: borrow a connection per operation, retry once on a dead one.
+
+        The pool already replaces connections it knows are broken, but it can hand out one that
+        died while idle and has not been probed yet, so the first use still fails. Retrying
+        borrows a DIFFERENT connection — the pooled equivalent of reconnecting.
+
+        The same narrow predicate as the single-connection path applies, and for the same
+        reason: `QueryCanceled` from `statement_timeout` is an `OperationalError` raised on a
+        perfectly live connection, and retrying it on a fresh session would silently escape the
+        timeout that fired. So a retry additionally requires the connection to be observably
+        dead. Nothing here is a `nonlocal` on shared state: each borrow is thread-confined,
+        which is the whole point of the mode.
+        """
+        for attempt in (0, 1):
+            with self._pool.connection() as conn:
+                try:
+                    return op(conn)
+                except self._CONN_ERRORS:
+                    dead = conn.closed or getattr(conn, "broken", False)
+                    if not dead or attempt == 1:
+                        raise
+                    print(
+                        "recall: pooled database connection lost — retrying on another",
+                        file=sys.stderr,
+                    )
+        raise AssertionError("unreachable: the loop either returns or raises")  # pragma: no cover
+
     @property
     def table(self) -> str:
         return self._table
 
     def close(self) -> None:
-        """Close the connection for good.
+        """Close the connection (or pool) for good.
 
         Sticky by design: without the flag, any later call would hit `_with_retry`'s reconnect
         and silently resurrect a connection nobody owns — a leak on first accidental reuse.
         """
         self._closed = True
-        self._conn.close()
+        if self._pool is not None:
+            self._pool.close()  # also stops the pool's background maintenance thread
+        else:
+            self._conn.close()
+
+    def drop_table(self) -> None:
+        """Drop this store's table if it exists.
+
+        Exists so callers stop reaching into `store._conn` to do it (the eval harness, the
+        calibration runner, the semantic linter and the test fixtures all did). That reach-through
+        is not merely untidy: in pooled mode there IS no `_conn`, so every one of those call
+        sites would raise `AttributeError` on a store configured for a server.
+        """
+        self._supersession_cache = None
+        self._with_retry(lambda conn: conn.execute(f"DROP TABLE IF EXISTS {self._table}"))
 
     def __enter__(self) -> "PgVectorStore":
         return self
