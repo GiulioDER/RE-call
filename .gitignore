@@ -10,3 +10,5 @@ dist/
 finetune/model*/
 calibration.json
 .claude/
+results/scale*/corpus/
+results/scale*/.recall-synthetic
