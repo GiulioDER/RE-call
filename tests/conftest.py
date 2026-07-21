@@ -39,5 +39,11 @@ def make_store():
     yield _factory
 
     for store in created:
+        if store._closed:
+            # A test may close its store deliberately (close() is sticky). Still drop the
+            # table — skipping teardown entirely would leak a uuid-named table per run.
+            with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+                conn.execute(f"DROP TABLE IF EXISTS {store.table}")
+            continue
         store._conn.execute(f"DROP TABLE IF EXISTS {store.table}")
         store.close()

@@ -11,14 +11,16 @@ errors (break the trust layer's correctness):
 - ``self-supersedes``      — a document claims to supersede itself
 - ``supersession-cycle``   — following the chain revisits a document
 - ``invalid-date``         — malformed ``valid_from``/``valid_until`` (the Indexer would refuse it)
+- ``ambiguous-supersedes-target`` — the edge names a basename carried by MORE than one document,
+  so which one is superseded cannot be resolved. An error, not a smell: read-time acts on it —
+  `recall.trust` returns the ``ambiguous_supersession`` verdict and abstains rather than guess,
+  so a corpus that lints clean must be one the engine will actually answer from.
 
 warnings (smells that usually mean a missing or ambiguous edge):
 - ``version-sibling-unlinked``     — ``x_v1.md`` / ``x_v2.md`` naming with no edge into the older one
 - ``closure-marker-unlinked``      — body prose says superseded/replaced/deprecated but the
   frontmatter declares no relation and no validity window (the relation lives only in prose,
   where retrieval cannot act on it)
-- ``ambiguous-supersedes-target``  — the edge names a basename that exists in MORE than one
-  directory, so the reference cannot be resolved unambiguously
 """
 from __future__ import annotations
 
@@ -141,7 +143,7 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
         else:
             if name_count[target] > 1:
                 issues.append(
-                    LintIssue(rel[f], "warning", "ambiguous-supersedes-target",
+                    LintIssue(rel[f], "error", "ambiguous-supersedes-target",
                               f"supersedes {target!r}, but {name_count[target]} files share "
                               f"that basename — the reference cannot be resolved unambiguously")
                 )

@@ -38,6 +38,7 @@ class SearchHit(BaseModel):
     )
     verdict: str = Field(
         description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence "
+        "| ambiguous_supersession "
         "| invalid_metadata. Only 'ok' hits should be relied on. (The library also defines "
         "not_entailed for the opt-in entailment stage, which this server does not enable.)"
     )

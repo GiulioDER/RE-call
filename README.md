@@ -208,6 +208,26 @@ advice says so explicitly: *say you don't know — do not answer from these hits
 **→ [Full guide: Claude Code + Desktop config, the three tools, and a real redacted loop](docs/USING_WITH_CLAUDE.md)**
 &nbsp;·&nbsp; example agent: [`examples/self_recall_agent.py`](examples/self_recall_agent.py)
 
+## Upgrading to 0.4.0
+
+- **Chunking changed.** Oversized blocks are now force-split on whitespace (previously a
+  fixed-stride window that could cut through words). Existing rows keep their old chunking until
+  re-indexed, so run `python -m recall.cli index <root>` over the whole corpus.
+- **`source` is stored resolved**, so re-indexing the same corpus by a different path spelling
+  replaces its rows instead of duplicating them. The migration is not automatic: rows written
+  before 0.4.0 under a *relative* path carry a different `source`, and `replace_sources` deletes
+  by exact match, so a re-index leaves the old ones orphaned. Clear them explicitly:
+
+  ```sql
+  DELETE FROM chunks WHERE source NOT LIKE '/%' AND source !~ '^[A-Za-z]:';
+  ```
+
+- **An unresolvable supersession edge now fails closed.** When two documents share the basename a
+  `supersedes:` edge names, the edge was already (correctly) not guessed — but the memories were
+  still served as `ok`. They now come back `ambiguous_supersession` and the search abstains.
+  `recall lint` reports the condition as an **error**, so fix the corpus before it surfaces as an
+  abstention.
+
 ## Reproduce the evaluation
 
 ```bash

@@ -62,7 +62,11 @@ def resolve_successor(file: str, supersession: dict[str, str]) -> str | None:
 
 
 def _verdict(
-    hit: ScoredChunk, supersession: dict[str, str], threshold: float, now: datetime
+    hit: ScoredChunk,
+    supersession: dict[str, str],
+    threshold: float,
+    now: datetime,
+    unresolved: frozenset[str] = frozenset(),
 ) -> tuple[Verdict, Validity]:
     meta = hit.chunk.metadata
     file = meta.get("file")
@@ -73,6 +77,14 @@ def _verdict(
         # Indexer's fail-fast). Fail CLOSED per hit: an unparseable window must not read as
         # trustworthy, and one bad row must not crash every search that retrieves it.
         return "invalid_metadata", Validity(valid_from=None, valid_until=None, superseded_by=None)
+    if file is not None and file in unresolved:
+        # A supersession edge points at this memory's basename, but several documents carry it.
+        # Serving it as ``ok`` because the edge could not be resolved would be the silent
+        # wrong-answer this whole layer exists to prevent.
+        return (
+            "ambiguous_supersession",
+            Validity(valid_from=start, valid_until=end, superseded_by=None),
+        )
     successor = resolve_successor(file, supersession) if file else None
     validity = Validity(valid_from=start, valid_until=end, superseded_by=successor)
     if successor is not None:
@@ -101,6 +113,12 @@ def abstain_reason(hits: list[TrustedHit]) -> str:
         return f"best candidate ({best.provenance.file}) is not yet valid"
     if best.verdict == "invalid_metadata":
         return f"best candidate ({best.provenance.file}) carries malformed validity metadata"
+    if best.verdict == "ambiguous_supersession":
+        return (
+            f"a supersession edge points at the best candidate ({best.provenance.file}) by a "
+            f"basename that more than one document carries, so the edge cannot be resolved — "
+            f"disambiguate the corpus rather than trusting either copy"
+        )
     return "no hit above the calibrated confidence threshold (probable corpus gap)"
 
 
@@ -109,6 +127,7 @@ def evaluate(
     supersession: dict[str, str],
     calibration: Calibration | None,
     now: datetime,
+    unresolved: frozenset[str] = frozenset(),
 ) -> TrustedResult:
     """Pure trust evaluation of a retrieval result (no DB access, no clock reads).
 
@@ -126,7 +145,7 @@ def evaluate(
     cal = calibration or _UNCALIBRATED
     trusted: list[TrustedHit] = []
     for hit in result.hits:
-        verdict, validity = _verdict(hit, supersession, cal.threshold, now)
+        verdict, validity = _verdict(hit, supersession, cal.threshold, now, unresolved)
         meta = hit.chunk.metadata
         trusted.append(
             TrustedHit(
@@ -192,12 +211,13 @@ def trusted_search(
     cal = calibration or _UNCALIBRATED
     retriever = HybridRetriever(store, embedder, reranker=reranker, gap_threshold=cal.threshold)
     result = retriever.search(query, k=k, source=source)
-    supersession = store.supersession_map() if result.hits else {}
+    supersession, unresolved = store.supersession() if result.hits else ({}, frozenset())
     trusted = evaluate(
         result,
         supersession,
         calibration,
         now or datetime.now(timezone.utc),
+        unresolved,
     )
     if entailment is not None:
         from recall.entailment import apply_entailment
