@@ -3,8 +3,11 @@ from __future__ import annotations
 import os
 import sys
 import traceback
+from collections.abc import Callable
 from contextlib import asynccontextmanager
+from typing import TypeVar
 
+import anyio.to_thread
 from mcp.server.fastmcp import FastMCP
 
 from recall.calibration import load_for
@@ -13,6 +16,30 @@ from recall_mcp.service import index_memory, make_embedder, memory_stats, search
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 EMBEDDER_NAME = os.environ.get("RECALL_EMBEDDER", "fastembed")
+#: Connections the server keeps open. This bounds concurrent in-flight tool calls at the database,
+#: which is where the real limit is — more worker threads than connections just queue on the pool.
+POOL_SIZE = int(os.environ.get("RECALL_POOL_SIZE", "8"))
+#: Server-side cap on any single statement. A runaway query otherwise holds its connection until
+#: the process dies, and a few of those exhaust the pool while the server still looks healthy.
+STATEMENT_TIMEOUT_MS = int(os.environ.get("RECALL_STATEMENT_TIMEOUT_MS", "15000"))
+
+_T = TypeVar("_T")
+
+
+async def _to_thread(fn: Callable[[], _T]) -> _T:
+    """Run a blocking tool body off the event loop.
+
+    FastMCP awaits an async tool and calls a sync one INLINE (`func_metadata.py`:
+    ``return await fn(...)`` vs ``return fn(...)``) — there is no thread offload. A sync tool that
+    embeds a query, makes two database round trips and maybe runs a cross-encoder therefore blocks
+    the whole loop for its duration: one request at a time, with no response to anything else —
+    not even a ping — until it finishes. `recall_index` blocks it for an entire corpus index.
+
+    `anyio.to_thread` rather than `asyncio.to_thread` because FastMCP runs on AnyIO: this inherits
+    its worker-thread limiter and cancellation scope instead of starting a second, unmanaged pool
+    beside it.
+    """
+    return await anyio.to_thread.run_sync(fn)
 
 
 @asynccontextmanager
@@ -23,7 +50,14 @@ async def _lifespan(_server: FastMCP):
     warn_if_insecure_dsn(DEFAULT_DSN)  # loud stderr note if default creds target a remote host
     try:
         embedder = make_embedder(EMBEDDER_NAME)
-        store = PgVectorStore(DEFAULT_DSN, dim=embedder.dim)
+        # Pooled + timed out: a server shares this store across concurrent tool calls, and one
+        # connection would serialise them however many threads are available to run them.
+        store = PgVectorStore(
+            DEFAULT_DSN,
+            dim=embedder.dim,
+            pool_size=POOL_SIZE,
+            statement_timeout_ms=STATEMENT_TIMEOUT_MS,
+        )
     except Exception:
         print(
             f"recall_mcp: startup failed (RECALL_DSN={redacted_dsn(DEFAULT_DSN)}, "
@@ -68,7 +102,7 @@ def build_server() -> FastMCP:
         annotations={"title": "Search agent memory", "readOnlyHint": True,
                      "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
     )
-    def recall_search(query: str, source: str | None = None, k: int = 5) -> str:
+    async def recall_search(query: str, source: str | None = None, k: int = 5) -> str:
         """Search the agent's OWN memory before acting, and get actionable guidance.
 
         Call this before proposing an idea, forming a hypothesis, or repeating past work:
@@ -89,17 +123,19 @@ def build_server() -> FastMCP:
             indexed_at, text}]}.
         """
         state = _state()
-        return search_memory(
-            state["store"], state["embedder"], query, source=source, k=k,
-            calibration=state.get("calibration"),
-        ).model_dump_json(indent=2)
+        return await _to_thread(
+            lambda: search_memory(
+                state["store"], state["embedder"], query, source=source, k=k,
+                calibration=state.get("calibration"),
+            ).model_dump_json(indent=2)
+        )
 
     @mcp.tool(
         name="recall_index",
         annotations={"title": "Add to agent memory", "readOnlyHint": False,
                      "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
     )
-    def recall_index(path: str) -> str:
+    async def recall_index(path: str) -> str:
         """Index a markdown file or folder into the agent's memory so it can be recalled later.
 
         Re-indexing a file REPLACES its chunks completely (safe to re-run after edits; a shrunk
@@ -113,14 +149,18 @@ def build_server() -> FastMCP:
             JSON of {files, chunks, message}.
         """
         state = _state()
-        return index_memory(state["store"], state["embedder"], path).model_dump_json(indent=2)
+        return await _to_thread(
+            lambda: index_memory(
+                state["store"], state["embedder"], path
+            ).model_dump_json(indent=2)
+        )
 
     @mcp.tool(
         name="recall_stats",
         annotations={"title": "Memory freshness & size", "readOnlyHint": True,
                      "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
     )
-    def recall_stats() -> str:
+    async def recall_stats() -> str:
         """Report how much memory exists and whether it is stale (freshness check).
 
         `stale` is True when the newest indexed content is older than 2 days.
@@ -129,7 +169,9 @@ def build_server() -> FastMCP:
             JSON of {chunks, newest_indexed_at, stale}.
         """
         state = _state()
-        return memory_stats(state["store"]).model_dump_json(indent=2)
+        return await _to_thread(
+            lambda: memory_stats(state["store"]).model_dump_json(indent=2)
+        )
 
     return mcp
 

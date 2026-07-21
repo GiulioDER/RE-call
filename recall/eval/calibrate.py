@@ -119,7 +119,7 @@ def calibrate(
         ans, unans = measure_top_cosines(store, embedder, queries)
     finally:
         try:
-            store._conn.execute(f"DROP TABLE IF EXISTS {table}")
+            store.drop_table()
         except Exception:
             pass  # best-effort drop of the throwaway uuid table
         finally:
