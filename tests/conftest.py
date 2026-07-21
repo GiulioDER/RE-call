@@ -45,5 +45,5 @@ def make_store():
             with psycopg.connect(TEST_DSN, autocommit=True) as conn:
                 conn.execute(f"DROP TABLE IF EXISTS {store.table}")
             continue
-        store._conn.execute(f"DROP TABLE IF EXISTS {store.table}")
+        store.drop_table()
         store.close()

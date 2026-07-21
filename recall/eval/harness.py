@@ -84,7 +84,7 @@ def _throwaway_store(dsn: str, emb: Embedder, corpus_dir: Path, prefix: str):
         yield store
     finally:
         try:
-            store._conn.execute(f"DROP TABLE IF EXISTS {table}")
+            store.drop_table()
         except Exception:
             pass  # best-effort drop of the throwaway uuid table
         finally:
