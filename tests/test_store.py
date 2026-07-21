@@ -182,7 +182,9 @@ def test_ensure_schema_uses_reconnect_retry():
     store.ensure_schema()
 
     assert first.calls == 1
-    assert second.calls == 5
+    # every statement of ensure_schema re-runs on the fresh connection: CREATE EXTENSION,
+    # CREATE TABLE, the atttypmod check, and the 5 CREATE INDEXes
+    assert second.calls == 8
     assert reconnects["n"] == 1
 
 
@@ -442,3 +444,58 @@ def test_with_retry_does_not_retry_a_conn_error_on_a_live_connection():
     with pytest.raises(psycopg.errors.QueryCanceled):
         store._with_retry(cancelled)
     assert reconnects["n"] == 0
+
+
+@requires_db
+def test_ensure_schema_indexes_every_hot_access_path(make_store):
+    """The hot paths must be indexed, not just the vector and full-text ones.
+
+    `newest_indexed_at()` runs a max() on EVERY search, a source-filtered search cannot use
+    HNSW without an index on `source`, and the supersession map groups on metadata->>'file'.
+    Left unindexed each is a sequential scan that grows with the corpus.
+    """
+    store = make_store(3)
+    rows = store._with_retry(
+        lambda c: c.execute(
+            "SELECT indexdef FROM pg_indexes WHERE tablename = %s", (store.table,)
+        ).fetchall()
+    )
+    defs = " ".join(r[0] for r in rows)
+    assert "indexed_at" in defs, defs
+    assert "(source)" in defs, defs
+    assert "'file'" in defs, defs
+
+
+@requires_db
+def test_upsert_uses_one_round_trip_per_batch_not_per_row(make_store, monkeypatch):
+    # 6k chunks at one execute() each is ~1-3s of pure round-trip latency on every re-index
+    store = make_store(3)
+    calls = {"execute": 0, "executemany": 0}
+    real_cursor = store._conn.cursor
+
+    class CountingCursor:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *a):
+            return self._inner.__exit__(*a)
+
+        def execute(self, *a, **k):
+            calls["execute"] += 1
+            return self._inner.execute(*a, **k)
+
+        def executemany(self, *a, **k):
+            calls["executemany"] += 1
+            return self._inner.executemany(*a, **k)
+
+    monkeypatch.setattr(store._conn, "cursor", lambda *a, **k: CountingCursor(real_cursor()))
+    store.upsert(
+        [Chunk(f"c{i}", "f.md", f"text {i}") for i in range(50)],
+        [[1.0, 0.0, 0.0]] * 50,
+    )
+    assert calls["executemany"] == 1
+    assert calls["execute"] == 0

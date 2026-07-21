@@ -89,3 +89,31 @@ def test_batched_embed_rejects_a_short_batch_response():
 
     with pytest.raises(RuntimeError, match="2 embeddings for 3 texts"):
         batched_embed(["a", "b", "c"], short, batch_size=3)
+
+
+def test_backoff_is_jittered_so_clients_do_not_retry_in_lockstep():
+    """Deterministic backoff makes every client retry at the same instant.
+
+    A rate-limit or 5xx hits the whole fleet at once, so an un-jittered 1s/2s/4s schedule
+    reconverges the same thundering herd onto the provider at each step.
+    """
+    from recall.embeddings import retry_with_backoff
+
+    def failing():
+        raise RuntimeError("429 rate limit")
+
+    runs = []
+    for _ in range(12):
+        slept = []
+        try:
+            retry_with_backoff(failing, attempts=4, base_delay=1.0, sleep=slept.append)
+        except RuntimeError:
+            pass
+        runs.append(tuple(slept))
+
+    assert all(len(r) == 3 for r in runs)
+    assert len(set(runs)) > 1, f"every run slept identically: {runs[0]}"
+    # still bounded by the documented schedule
+    for r in runs:
+        for i, d in enumerate(r):
+            assert 0.0 <= d <= 1.0 * (2**i), (i, d)

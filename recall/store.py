@@ -267,6 +267,16 @@ class PgVectorStore:
                 f"CREATE INDEX IF NOT EXISTS {t}_emb_idx ON {t} "
                 f"USING hnsw (embedding vector_cosine_ops)"
             )
+            # The vector and full-text indexes cover the two retrieval legs; these cover the
+            # rest of the hot path, each of which was a sequential scan growing with the corpus:
+            #   indexed_at — `newest_indexed_at()` runs a max() on EVERY search; a DESC index
+            #                turns it into a one-row backward scan.
+            #   source     — a source-filtered search cannot use HNSW without it, and
+            #                replace_sources/delete_sources match `source = ANY(...)` per re-index.
+            #   file       — the supersession map groups on metadata->>'file'.
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_indexed_at_idx ON {t} (indexed_at DESC)")
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_source_idx ON {t} (source)")
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_file_idx ON {t} ((metadata->>'file'))")
 
         self._with_retry(_op)
 
@@ -284,21 +294,26 @@ class PgVectorStore:
         # instead of leaving earlier rows committed (the connection is autocommit). When called
         # from replace_sources' outer transaction this becomes a savepoint (same commit).
         t = self._table
+        # executemany, not a Python loop of execute(): psycopg3 pipelines it into one round
+        # trip per batch instead of one per row. A full re-index is thousands of rows, and at
+        # ~0.2-0.5ms of round-trip each that loop was seconds of pure latency.
         with conn.transaction(), conn.cursor() as cur:
-            for c, e in zip(chunks, embeddings):
-                cur.execute(
-                    f"""
-                    INSERT INTO {t} (id, source, text, metadata, embedding, indexed_at)
-                    VALUES (%s, %s, %s, %s, %s, now())
-                    ON CONFLICT (id) DO UPDATE SET
-                        source = EXCLUDED.source,
-                        text = EXCLUDED.text,
-                        metadata = EXCLUDED.metadata,
-                        embedding = EXCLUDED.embedding,
-                        indexed_at = now()
-                    """,
-                    (c.id, c.source, c.text, json.dumps(c.metadata), Vector(e)),
-                )
+            cur.executemany(
+                f"""
+                INSERT INTO {t} (id, source, text, metadata, embedding, indexed_at)
+                VALUES (%s, %s, %s, %s, %s, now())
+                ON CONFLICT (id) DO UPDATE SET
+                    source = EXCLUDED.source,
+                    text = EXCLUDED.text,
+                    metadata = EXCLUDED.metadata,
+                    embedding = EXCLUDED.embedding,
+                    indexed_at = now()
+                """,
+                [
+                    (c.id, c.source, c.text, json.dumps(c.metadata), Vector(e))
+                    for c, e in zip(chunks, embeddings)
+                ],
+            )
 
     def _rows_to_hits(self, rows: list[tuple]) -> list[ScoredChunk]:
         hits: list[ScoredChunk] = []

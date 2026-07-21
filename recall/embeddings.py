@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import random
 import time
 from collections.abc import Callable, Iterator
 from typing import Protocol, runtime_checkable
@@ -42,7 +43,12 @@ def retry_with_backoff(
 
     Re-raises immediately for a non-transient error, and re-raises the last error after
     ``attempts`` tries. ``sleep`` is injectable so tests can exercise the retry path without
-    real delays. Delay for retry i is ``min(max_delay, base_delay * 2**i)``.
+    real delays.
+
+    Delay for retry i is FULL JITTER over ``min(max_delay, base_delay * 2**i)`` — a uniform
+    draw in [0, cap], not the cap itself. A rate-limit or 5xx typically hits every client at
+    once, so a deterministic schedule marches the whole fleet back onto the provider in
+    lockstep at each step; jitter spreads the retries out instead of reconverging them.
     """
     last: Exception | None = None
     for i in range(attempts):
@@ -52,7 +58,7 @@ def retry_with_backoff(
             last = exc
             if i == attempts - 1 or not is_transient(exc):
                 raise
-            sleep(min(max_delay, base_delay * (2 ** i)))
+            sleep(random.uniform(0.0, min(max_delay, base_delay * (2 ** i))))
     assert last is not None  # unreachable: loop either returns or raises
     raise last
 
