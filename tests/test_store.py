@@ -15,11 +15,11 @@ from tests.conftest import TEST_DSN, requires_db
 
 def test_resolve_supersession_basic_basename():
     rows = [("v1.md", None), ("v2.md", "v1.md")]
-    assert resolve_supersession(rows) == {"v1.md": "v2.md"}
+    assert resolve_supersession(rows) == ({"v1.md": "v2.md"}, frozenset())
 
 
 def test_resolve_supersession_empty_when_no_supersedes():
-    assert resolve_supersession([("a.md", None), ("b.md", None)]) == {}
+    assert resolve_supersession([("a.md", None), ("b.md", None)]) == ({}, frozenset())
 
 
 def test_resolve_supersession_keys_on_relpath_no_basename_collision():
@@ -31,20 +31,22 @@ def test_resolve_supersession_keys_on_relpath_no_basename_collision():
         ("b/old.md", None),
         ("a/new.md", "old.md"),
     ]
-    assert resolve_supersession(rows) == {}
+    # ...and both candidates are NAMED, so the read path can fail closed instead of serving
+    # a possibly-superseded memo as healthy.
+    assert resolve_supersession(rows) == ({}, frozenset({"a/old.md", "b/old.md"}))
 
 
 def test_resolve_supersession_unique_nested_target_resolves():
     # Unambiguous basename in a nested layout resolves to its root-relative path.
     rows = [("sub/old.md", None), ("sub/new.md", "old.md")]
-    assert resolve_supersession(rows) == {"sub/old.md": "sub/new.md"}
+    assert resolve_supersession(rows) == ({"sub/old.md": "sub/new.md"}, frozenset())
 
 
 def test_resolve_supersession_dangling_falls_back_to_raw_basename():
     # supersedes points at a basename absent from the corpus (predecessor never indexed, or
     # deleted). Not ambiguous -- nothing to disambiguate -- so it resolves via the raw basename
     # rather than being silently dropped.
-    assert resolve_supersession([("a/new.md", "ghost.md")]) == {"ghost.md": "a/new.md"}
+    assert resolve_supersession([("a/new.md", "ghost.md")]) == ({"ghost.md": "a/new.md"}, frozenset())
 
 
 # --- warn_if_insecure_dsn: pure, DB-free (the default-credentials footgun guard) ---------------
@@ -69,12 +71,26 @@ def test_warn_insecure_dsn_silent_when_creds_are_not_default():
 # --- _with_retry: DB-free (broken-connection reconnect-and-retry-once) --------------------------
 
 
-def _bare_store() -> PgVectorStore:
+class _FakeConn:
+    """Stands in for a psycopg connection; models the liveness flags the retry consults.
+
+    `_with_retry` only reconnects when the connection is observably dead, so a fake must say
+    whether it is — a bare object would make every connection look alive.
+    """
+
+    def __init__(self, closed: bool = True, broken: bool = False) -> None:
+        self.closed = closed
+        self.broken = broken
+
+
+def _bare_store(conn: _FakeConn | None = None) -> PgVectorStore:
     """A PgVectorStore instance WITHOUT running __init__ (no real DB connection)."""
     store = PgVectorStore.__new__(PgVectorStore)
     store._table = "chunks"
     store._dim = 3
     store._supersession_cache = None
+    store._closed = False
+    store._conn = conn if conn is not None else _FakeConn()
     return store
 
 
@@ -89,15 +105,14 @@ def test_with_retry_reconnects_once_on_broken_connection():
                 raise psycopg.OperationalError("server closed the connection unexpectedly")
             return "recovered"
 
-    store = _bare_store()
+    store = _bare_store()  # conn reports closed -> a genuine drop
     reconnects = {"n": 0}
-    fresh_conn = object()
+    fresh_conn = _FakeConn(closed=False)
 
     def fake_reconnect():
         reconnects["n"] += 1
         store._conn = fresh_conn
 
-    store._conn = object()
     store._reconnect = fake_reconnect  # type: ignore[method-assign]
     target = _BrokenThenGood()
 
@@ -109,8 +124,7 @@ def test_with_retry_reconnects_once_on_broken_connection():
 
 def test_with_retry_propagates_second_failure():
     store = _bare_store()
-    store._conn = object()
-    store._reconnect = lambda: setattr(store, "_conn", object())  # type: ignore[method-assign]
+    store._reconnect = lambda: setattr(store, "_conn", _FakeConn())  # type: ignore[method-assign]
 
     def always_broken(_conn):
         raise psycopg.InterfaceError("connection already closed")
@@ -121,7 +135,6 @@ def test_with_retry_propagates_second_failure():
 
 def test_with_retry_does_not_retry_non_connection_errors():
     store = _bare_store()
-    store._conn = object()
     reconnects = {"n": 0}
     store._reconnect = lambda: reconnects.__setitem__("n", reconnects["n"] + 1)  # type: ignore
 
@@ -142,6 +155,10 @@ def test_ensure_schema_uses_reconnect_retry():
         def __init__(self, *, fail_first: bool = False):
             self.fail_first = fail_first
             self.calls = 0
+            # the retry only reconnects when the connection reports itself dead; a dropped
+            # socket is exactly that
+            self.closed = fail_first
+            self.broken = False
 
         def execute(self, *_args, **_kwargs):
             self.calls += 1
@@ -347,3 +364,81 @@ def test_supersession_map_cache_invalidated_by_writes(make_store):
     assert store.supersession_map() == {"v1.md": "v2.md"}  # upsert invalidated the cache
     store.delete_sources(["v2.md"])
     assert store.supersession_map() == {}  # delete invalidated it too
+
+
+@requires_db
+def test_reconnect_does_not_swallow_a_statement_timeout(make_store):
+    """QueryCanceled is an OperationalError raised on a LIVE connection.
+
+    Retrying it re-runs the statement on a fresh session that no longer carries the limit which
+    killed it — the guard is escaped rather than reported.
+    """
+    store = make_store(3)
+    store._with_retry(lambda c: c.execute("SET statement_timeout = '150ms'"))
+    with pytest.raises(psycopg.errors.QueryCanceled):
+        store._with_retry(lambda c: c.execute("SELECT pg_sleep(0.5)"))
+
+
+@requires_db
+def test_closed_store_stays_closed(make_store):
+    # close() must be final: reconnecting on use silently leaks a connection nobody owns
+    store = make_store(3)
+    store.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        store.count()
+
+
+@requires_db
+def test_reconnect_is_reported_to_stderr(make_store, capsys):
+    # a silent reconnect hides an outage: the unit stays 'active', NRestarts never moves
+    store = make_store(3)
+    store.upsert([Chunk("a", "f.md", "cats")], [[1.0, 0.0, 0.0]])
+    capsys.readouterr()
+    store._conn.close()
+    assert store.count() == 1
+    assert "reconnect" in capsys.readouterr().err.lower()
+
+
+def test_redacted_dsn_removes_the_password():
+    from recall.store import redacted_dsn
+
+    out = redacted_dsn("postgresql://recall:sup3rs3cret@db.example.com:5432/recall")
+    assert "sup3rs3cret" not in out and "db.example.com" in out
+
+
+def test_percent_encoded_default_password_is_still_detected():
+    from recall.store import warn_if_insecure_dsn
+
+    # urlsplit returns the RAW encoded form; "recal%6C" IS the password "recall"
+    assert warn_if_insecure_dsn("postgresql://recall:recal%6C@db.example.com/recall")
+
+
+def test_loopback_range_and_socket_dsns_are_treated_as_local():
+    from recall.store import warn_if_insecure_dsn
+
+    for dsn in (
+        "postgresql://recall:recall@127.0.0.2:5432/recall",
+        "postgresql://recall:recall@0.0.0.0:5432/recall",
+        "postgresql://recall:recall@host.docker.internal:5432/recall",
+        "postgresql://recall:recall@%2Fvar%2Frun%2Fpostgresql/recall",
+    ):
+        assert warn_if_insecure_dsn(dsn) is None, dsn
+
+
+def test_with_retry_does_not_retry_a_conn_error_on_a_live_connection():
+    """A connection-class error raised while the socket is FINE is not a dropped connection.
+
+    QueryCanceled (statement_timeout), DeadlockDetected and SerializationFailure all subclass
+    OperationalError. Reconnecting would re-run the statement on a fresh session without the
+    setting that killed it — escaping the guard instead of reporting it.
+    """
+    store = _bare_store(_FakeConn(closed=False))
+    reconnects = {"n": 0}
+    store._reconnect = lambda: reconnects.__setitem__("n", reconnects["n"] + 1)  # type: ignore
+
+    def cancelled(_conn):
+        raise psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+
+    with pytest.raises(psycopg.errors.QueryCanceled):
+        store._with_retry(cancelled)
+    assert reconnects["n"] == 0

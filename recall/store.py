@@ -5,7 +5,8 @@ import sys
 from collections.abc import Callable
 from datetime import datetime
 from typing import TypeVar
-from urllib.parse import urlsplit
+from ipaddress import ip_address
+from urllib.parse import unquote, urlsplit
 
 import psycopg
 from pgvector import Vector
@@ -15,7 +16,38 @@ from recall.types import Chunk, ScoredChunk
 
 #: The built-in dev credentials shipped in the default DSN — safe only against a local database.
 _DEFAULT_CREDS = ("recall", "recall")
-_LOCAL_HOSTS = ("", "localhost", "127.0.0.1", "::1")
+#: "" covers a hostless/unix-socket DSN. Bracketed IPv6 is absent on purpose: urlsplit strips
+#: the brackets. All of 127.0.0.0/8 is handled numerically by `_is_local_host`.
+_LOCAL_HOSTS = ("", "localhost", "::1", "0.0.0.0", "host.docker.internal")
+
+
+def _is_local_host(host: str) -> bool:
+    """True when `host` cannot reach a shared database (loopback, unix socket, or unset)."""
+    if host in _LOCAL_HOSTS or host.startswith(("/", "%2f")):  # %2f: percent-encoded socket dir
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def redacted_dsn(dsn: str) -> str:
+    """`dsn` with any password removed — safe to print to a log or a systemd journal.
+
+    A connection failure is exactly when an operator wants the DSN in the logs, and exactly when
+    printing it verbatim would write the password to disk.
+    """
+    try:
+        parts = urlsplit(dsn)
+        if not parts.hostname:
+            return "<dsn>"
+        userinfo = f"{parts.username}:***@" if parts.password else (
+            f"{parts.username}@" if parts.username else ""
+        )
+        port = f":{parts.port}" if parts.port else ""
+        return f"{parts.scheme}://{userinfo}{parts.hostname}{port}{parts.path}"
+    except ValueError:  # pragma: no cover - malformed URL
+        return "<dsn>"
 
 _T = TypeVar("_T")
 
@@ -31,9 +63,11 @@ def warn_if_insecure_dsn(dsn: str) -> str | None:
         parts = urlsplit(dsn)
     except ValueError:
         return None
-    if (parts.username, parts.password) != _DEFAULT_CREDS:
+    # unquote: urlsplit returns the RAW percent-encoded form, so "recal%6C" is the password
+    # "recall" and must not slip past the comparison
+    if (unquote(parts.username or ""), unquote(parts.password or "")) != _DEFAULT_CREDS:
         return None
-    if (parts.hostname or "").lower() in _LOCAL_HOSTS:
+    if _is_local_host((parts.hostname or "").lower()):
         return None
     msg = (
         f"recall: WARNING — using the default 'recall:recall' credentials against non-local host "
@@ -48,7 +82,9 @@ def _basename(file: str) -> str:
     return file.rsplit("/", 1)[-1]
 
 
-def resolve_supersession(rows: list[tuple[str | None, str | None]]) -> dict[str, str]:
+def resolve_supersession(
+    rows: list[tuple[str | None, str | None]],
+) -> tuple[dict[str, str], frozenset[str]]:
     """Build the superseded -> superseding map from ``(file, supersedes)`` rows.
 
     ``file`` is a root-relative path; ``supersedes`` references its target by basename (the
@@ -61,12 +97,14 @@ def resolve_supersession(rows: list[tuple[str | None, str | None]]) -> dict[str,
       or was deleted): fall back to the raw basename as the key. There is nothing to
       disambiguate, so this cannot mis-map; dropping it would just as silently discard a valid
       supersession claim (e.g. a memo intentionally superseding a doc that was since removed).
-    - **Ambiguous** (two or more indexed files share that basename): skip. A silent mis-map to
-      the wrong file is worse than a broken chain here, since we cannot tell which one the
-      author meant.
+    - **Ambiguous** (two or more indexed files share that basename): do not guess — a silent
+      mis-map to the wrong file is worse than a broken chain, since we cannot tell which one the
+      author meant. The candidates are returned in ``unresolved`` so the read path can fail
+      closed on them; dropping the edge and saying nothing would leave a possibly-superseded
+      memory looking perfectly healthy.
 
-    Both keys and values in the result are root-relative paths (or a bare basename for the
-    dangling case).
+    Both keys and values in the mapping are root-relative paths (or a bare basename for the
+    dangling case). ``unresolved`` holds root-relative paths.
 
     Pure and DB-free so the resolution rule can be unit-tested without a database.
     """
@@ -75,6 +113,7 @@ def resolve_supersession(rows: list[tuple[str | None, str | None]]) -> dict[str,
     for f in files:
         by_base.setdefault(_basename(f), []).append(f)
     mapping: dict[str, str] = {}
+    unresolved: set[str] = set()
     for file, supersedes in rows:
         if not file or not supersedes:
             continue
@@ -84,8 +123,13 @@ def resolve_supersession(rows: list[tuple[str | None, str | None]]) -> dict[str,
             mapping[candidates[0]] = file
         elif len(candidates) == 0:
             mapping[target_basename] = file
-        # len(candidates) > 1: ambiguous — skip, don't guess.
-    return mapping
+        else:
+            # Ambiguous: don't guess — but don't stay silent either. Dropping the edge alone
+            # would leave the (possibly superseded) memories looking perfectly `ok`, which is
+            # the same wrong answer the trust layer exists to prevent. Naming them lets the
+            # read path fail closed and tell the operator what to fix.
+            unresolved.update(candidates)
+    return mapping, frozenset(unresolved)
 
 
 class PgVectorStore:
@@ -107,7 +151,8 @@ class PgVectorStore:
         self._dsn = dsn
         self._dim = dim
         self._table = table
-        self._supersession_cache: dict[str, str] | None = None
+        self._supersession_cache: tuple[dict[str, str], frozenset[str]] | None = None
+        self._closed = False
         self._conn = self._connect()
 
     def _connect(self) -> "psycopg.Connection":
@@ -145,10 +190,28 @@ class PgVectorStore:
         reconnect and retry the operation exactly once — a second failure propagates. Safe because
         every ``op`` here is a single self-contained statement or an atomic transaction that rolls
         back cleanly, so re-running it on a fresh connection cannot double-apply.
+
+        The retry is deliberately narrow. ``OperationalError`` is NOT a synonym for "the
+        connection is gone" — ``QueryCanceled`` (statement_timeout), ``DeadlockDetected`` and
+        ``SerializationFailure`` are all subclasses raised on a perfectly LIVE connection.
+        Retrying those re-runs the statement on a fresh session that no longer carries the
+        setting which killed it, i.e. silently escapes the very guard that fired. So the retry
+        additionally requires the connection to be observably dead.
+
+        A reconnect is REPORTED to stderr: a silent one hides an outage behind a process that
+        still looks healthy, which is how a dead dependency goes unnoticed for days.
         """
+        if self._closed:
+            raise RuntimeError("store is closed")
         try:
             return op(self._conn)
         except self._CONN_ERRORS:
+            # getattr: `broken` only exists from psycopg 3.2 and the declared floor is 3.1 —
+            # without the default this except-block would raise AttributeError and mask the
+            # original database error on an older install.
+            if not (self._conn.closed or getattr(self._conn, "broken", False)):
+                raise
+            print("recall: database connection lost — reconnecting", file=sys.stderr)
             self._reconnect()
             return op(self._conn)
 
@@ -157,6 +220,12 @@ class PgVectorStore:
         return self._table
 
     def close(self) -> None:
+        """Close the connection for good.
+
+        Sticky by design: without the flag, any later call would hit `_with_retry`'s reconnect
+        and silently resurrect a connection nobody owns — a leak on first accidental reuse.
+        """
+        self._closed = True
         self._conn.close()
 
     def __enter__(self) -> "PgVectorStore":
@@ -365,9 +434,13 @@ class PgVectorStore:
         )
         return cur.rowcount or 0
 
-    def supersession_map(self) -> dict[str, str]:
-        """Map of superseded file -> superseding file (both root-relative), from `supersedes`
-        chunk metadata.
+    def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
+        """The supersession relation: ``(edges, unresolved)``.
+
+        `edges` maps superseded file -> superseding file (both root-relative). `unresolved`
+        names the files an edge pointed at but could not identify, so the read path can fail
+        closed on them rather than serve them as healthy.
+
 
         The ``supersedes:`` frontmatter references its target by basename (the authoring
         convention), but files are identified by their root-relative path so same-named files in
@@ -391,7 +464,12 @@ class PgVectorStore:
                 ).fetchall()
             )
             self._supersession_cache = resolve_supersession(rows)
-        return dict(self._supersession_cache)
+        edges, unresolved = self._supersession_cache
+        return dict(edges), unresolved
+
+    def supersession_map(self) -> dict[str, str]:
+        """Resolvable supersession edges only — convenience view of `supersession`."""
+        return self.supersession()[0]
 
     def newest_indexed_at(self) -> datetime | None:
         row = self._with_retry(

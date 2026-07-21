@@ -71,3 +71,21 @@ def test_retry_reraises_after_exhausting_attempts():
 
     with pytest.raises(RuntimeError):
         retry_with_backoff(always, attempts=3, base_delay=0.0, sleep=lambda _s: None)
+
+
+def test_batched_embed_rejects_a_short_batch_response():
+    """A provider returning fewer vectors than texts must fail loudly, not silently misalign.
+
+    The contract is positional: chunk i pairs with vector i. If one batch comes back short,
+    every later chunk is stored against its neighbour's vector — and the only downstream check
+    is the TOTAL count, which a compensating long batch would satisfy.
+    """
+    import pytest
+
+    from recall.embeddings import batched_embed
+
+    def short(batch):
+        return [[1.0]] * (len(batch) - 1)
+
+    with pytest.raises(RuntimeError, match="2 embeddings for 3 texts"):
+        batched_embed(["a", "b", "c"], short, batch_size=3)

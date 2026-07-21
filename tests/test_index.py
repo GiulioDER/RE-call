@@ -161,3 +161,83 @@ def test_failed_embedding_leaves_existing_rows_intact(tmp_path, make_store):
     assert store.count() == 1  # old row still present
     hits = store.query_sparse("original memory", k=1)
     assert hits and "original" in hits[0].chunk.text
+
+
+def _repeated_chars(chunks: list[str]) -> int:
+    """Characters duplicated across consecutive chunk boundaries."""
+    total = 0
+    for a, b in zip(chunks, chunks[1:]):
+        aw, bw = a.split(), b.split()
+        best = 0
+        for j in range(1, min(len(aw), len(bw)) + 1):
+            if aw[-j:] == bw[:j]:
+                best = j
+        total += len(" ".join(aw[-best:])) if best else 0
+    return total
+
+
+def test_force_split_breaks_on_whitespace_not_mid_word():
+    """A fixed-stride window cuts through words, corrupting the tokens the embedder sees.
+
+    'word18' becoming 'wor' + 'd18' indexes two tokens that mean nothing and loses the one
+    that did.
+    """
+    text = " ".join(f"word{i}" for i in range(400))
+    for c in chunk_text(text, max_chars=200):
+        for tok in c.split():
+            assert tok.startswith("word") and tok[4:].isdigit(), tok
+
+
+def test_force_split_does_not_inflate_the_corpus():
+    """Stride must stay proportional to the cap, whatever the overlap.
+
+    With a fixed stride of `max_chars - overlap`, an overlap at or above max_chars collapses
+    the stride to 1 and re-emits a near-identical window per character.
+    """
+    for mc in (800, 200, 100, 50):
+        chunks = chunk_text("x" * 5000, max_chars=mc)
+        emitted = sum(len(c) for c in chunks)
+        assert emitted < 2 * 5000, f"max_chars={mc}: {emitted / 5000:.1f}x inflation"
+
+
+def test_force_split_survives_overlap_larger_than_the_cap():
+    chunks = chunk_text("x" * 2000, max_chars=100, overlap=500)
+    assert all(len(c) <= 100 for c in chunks)
+    assert sum(len(c) for c in chunks) < 2 * 2000
+
+
+def test_force_split_terminates_for_small_max_chars():
+    for mc in range(1, 12):
+        chunks = chunk_text("ab cdefghij klm", max_chars=mc)
+        assert chunks and all(len(c) <= mc for c in chunks), (mc, chunks)
+
+
+def test_force_split_overlap_scales_with_its_own_value():
+    text = " ".join(f"word{i}" for i in range(400))
+    small = _repeated_chars(chunk_text(text, max_chars=200, overlap=20))
+    large = _repeated_chars(chunk_text(text, max_chars=200, overlap=160))
+    assert large > small
+
+
+@requires_db
+def test_reindexing_the_same_dir_under_a_different_spelling_does_not_duplicate(
+    tmp_path, make_store, monkeypatch
+):
+    """`source` is the row key `replace_sources` deletes by.
+
+    Left as typed, indexing one corpus as `corpus` and then `/abs/corpus` writes a SECOND copy
+    of every chunk instead of replacing it.
+    """
+    (tmp_path / "v1.md").write_text("old rate policy one hundred", encoding="utf-8")
+    (tmp_path / "v2.md").write_text(
+        "---\nsupersedes: v1.md\n---\nnew rate policy twenty", encoding="utf-8"
+    )
+    store = make_store(64)
+    emb = HashingEmbedder(dim=64)
+    Indexer(store, emb).index_path(tmp_path)
+    rows = store.count()
+
+    monkeypatch.chdir(tmp_path.parent)
+    Indexer(store, emb).index_path(tmp_path.name)  # SAME dir, relative spelling
+
+    assert store.count() == rows  # replaced, not duplicated
