@@ -10,3 +10,4 @@ dist/
 finetune/model*/
 calibration.json
 .claude/
+results/scale/corpus/
