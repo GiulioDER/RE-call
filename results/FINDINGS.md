@@ -185,3 +185,54 @@ wrongly rejected on both semantic embedders. §2's law, one layer up: **abstenti
 bounded by the judge.** Full tables + arms:
 [docs/ENTAILMENT_SUPERSESSION_STUDY.md](../docs/ENTAILMENT_SUPERSESSION_STUDY.md) and the
 near-miss table in `RESULTS.md`.
+
+## 5. At scale: the headline rate holds — and the coverage it costs becomes visible
+
+§4's superseded-trust rate rests on **6** queries, so its 95% Wilson interval is **[0.00, 0.39]** —
+consistent with a working trust layer and with a mediocre one. `recall.eval.synthetic` generates the
+same *shape* of corpus at arbitrary size, so both axes scale: queries for interval width, documents
+for index pressure. Two arms, because they answer different questions and have very different costs
+(bge-small embeds at ~11 chunks/s on the reference CPU, so the large-corpus arm uses the offline
+embedder).
+
+**Arm A — interval width** (`bge-small`, 600 chunks, 550 queries, [SCALE.md](scale/SCALE.md)):
+
+| metric | rate | 95% Wilson | n |
+|---|---|---|---|
+| STR trust | 0.00 | **[0.00, 0.02]** | 250 |
+| trust coverage | 0.43 | [0.37, 0.49] | 250 |
+| successor accuracy | 0.55 | [0.47, 0.63] | 150 |
+| abstention accuracy | 0.92 | [0.85, 0.96] | 100 |
+
+**The headline claim survives a 40× larger query set**: superseded-trust is 0.00 with the interval
+tightened from [0.00, 0.39] to [0.00, 0.02], against an STR baseline of 1.00 (plain search returns
+the stale memory *every time* on these adversarially-worded queries). That is the strongest
+evidence in this document, and it is now bounded rather than asserted.
+
+**But the coverage column changes the reading.** The trust layer returns no `ok` hit at all on
+**57%** of validity-sensitive queries, and when it does answer a supersession query it names the
+correct successor **55%** of the time. Demotion works; *promotion* is close to a coin flip. The
+0.00 is real and is partly bought with silence — precisely the trade the STR column alone cannot
+show, which is why coverage is now published beside it. Abstention accuracy (0.92) is genuinely
+good: when nothing valid exists, it does say so.
+
+**Arm B — index pressure** (`hashing-64`, 50,600 chunks, [SCALE.md](scale-pressure/SCALE.md)):
+
+| measurement | value |
+|---|---|
+| recall@5, unfiltered | 1.00 [0.98, 1.00] (n=200) |
+| recall@5, `source`-filtered | 1.00 [0.98, 1.00] (n=200) |
+| search latency p50 / p95 / p99 | 10.7 / 13.5 / 16.5 ms |
+| index throughput | 50,600 chunks in 126 s (~400 chunks/s) |
+
+**A predicted failure that did not reproduce.** A `source`-filtered query pairs a `WHERE` clause
+with an HNSW `ORDER BY`, and the graph walk cannot see the predicate — the textbook post-filtering
+recall collapse. At 50k chunks, filtering to the single source holding the answer still returned it
+every time. The likely reason is that the `source` btree index makes an exact scan cheap enough for
+the planner to prefer it over the ANN path at this selectivity, which protects recall at the cost of
+the ANN speed-up. Not disproven in general — one corpus size, one selectivity, one embedder — but
+not observed here, and reported as such.
+
+**What this still does not cover:** a real-language corpus (the generated text is templated, so
+absolute retrieval quality is optimistic), the cloud embedder at scale, and any corpus large enough
+to push HNSW past the point where an exact scan is competitive.
