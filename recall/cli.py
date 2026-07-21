@@ -61,6 +61,11 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="recall")
     parser.add_argument("--dsn", default=DEFAULT_DSN)
     parser.add_argument("--embedder", default="fastembed", choices=["fastembed", "hashing"])
+    parser.add_argument(
+        "--table", default="chunks",
+        help="table to read/write (default: chunks). Use a throwaway name to keep an "
+             "experiment out of your real memory index.",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_index = sub.add_parser("index", help="index a folder of markdown or code")
@@ -149,7 +154,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "index":
         chunker = chunk_code if args.glob.endswith(".py") else chunk_text
-        with PgVectorStore(args.dsn, dim=embedder.dim) as store:
+        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table) as store:
             store.ensure_schema()
             stats = Indexer(store, embedder, chunker=chunker).index_path(args.path, glob=args.glob)
             print(f"indexed {stats.chunks} chunks from {stats.files} files")
@@ -159,14 +164,14 @@ def main(argv: list[str] | None = None) -> None:
             from recall.entailment import QnliEntailmentJudge
 
             entail_judge = QnliEntailmentJudge()
-        with PgVectorStore(args.dsn, dim=embedder.dim) as store:
+        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table) as store:
             store.ensure_schema()
             _print_result(
                 trusted_search(store, embedder, args.query, k=args.k, calibration=calibration,
                                entailment=entail_judge)
             )
     elif args.cmd == "demo":
-        with PgVectorStore(args.dsn, dim=embedder.dim) as store:
+        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table) as store:
             store.ensure_schema()
             stats = Indexer(store, embedder).index_path("corpus")
             print(f"indexed {stats.chunks} chunks from {stats.files} files\n")

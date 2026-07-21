@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -142,6 +142,36 @@ def chunk_code(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
     return _pack(blocks, max_chars)
 
 
+def _confined_to(root: Path, paths: Iterable[Path]) -> list[Path]:
+    """Keep only the paths that REALLY live under `root` once symlinks are resolved.
+
+    A caller that confines a path argument to an allowed root (as the MCP server does with
+    ``RECALL_INDEX_ROOT``) has checked the argument, not the walk. The walk is a glob, and
+    ``pathlib`` only gained ``recurse_symlinks`` — defaulting to False — in **3.13**, while this
+    package supports **3.11+**. On 3.11 and 3.12 ``**`` follows directory symlinks, so a symlink
+    planted inside an otherwise-confined root yields files from anywhere on the filesystem: the
+    confinement check passes and the read happens anyway.
+
+    Filtering on the RESOLVED path fixes it on every supported version and needs no version
+    check, which is the point — a fix conditioned on the interpreter version is one refactor away
+    from being wrong on the version nobody tests. It also covers the plain file symlink, which
+    ``recurse_symlinks`` does not.
+
+    Escapes are dropped silently rather than raising: a symlink out of the tree is a corpus
+    layout choice, not an attack in progress, and a single stray link should not make the whole
+    corpus unindexable.
+    """
+    kept: list[Path] = []
+    for p in paths:
+        try:
+            resolved = p.resolve()
+        except OSError:  # pragma: no cover - broken symlink / permission
+            continue
+        if resolved.is_relative_to(root) and resolved.is_file():
+            kept.append(p)
+    return kept
+
+
 @dataclass(frozen=True)
 class IndexStats:
     files: int
@@ -173,7 +203,7 @@ class Indexer:
         # same file instead of replacing them. (Root-relative `file` keys are unaffected —
         # they are computed against this same root either way.)
         root = Path(path).resolve()
-        files = sorted(root.glob(glob)) if root.is_dir() else [root]
+        files = sorted(_confined_to(root, root.glob(glob))) if root.is_dir() else [root]
         # Identify each file by its ROOT-RELATIVE path, not its bare basename: two files with the
         # same basename in different directories (a/notes.md, b/notes.md) must not collide in the
         # supersession map or in provenance. Mirrors recall.lint's `rel` keying. A single-file
