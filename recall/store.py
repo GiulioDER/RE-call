@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -75,6 +76,34 @@ def warn_if_insecure_dsn(dsn: str) -> str | None:
     )
     print(msg, file=sys.stderr)
     return msg
+
+
+#: Opt-out for `require_secure_dsn`. Named so it cannot be set by accident, and so its presence
+#: in a deploy is a visible, greppable decision rather than an oversight.
+INSECURE_DSN_OPT_OUT = "RECALL_ALLOW_INSECURE_DSN"
+
+
+def require_secure_dsn(dsn: str) -> None:
+    """Raise unless `dsn` is safe to use unattended; the fail-closed form of the warning above.
+
+    `warn_if_insecure_dsn` detects the built-in `recall:recall` credentials against a remote host
+    and then RETURNS, so the process carries on talking to a shared database with a password
+    published in this repository's README. A warning on stderr is not a control: under systemd it
+    lands in a journal nobody reads, and the server comes up looking healthy.
+
+    A server should therefore call this instead. The escape hatch is an explicit environment
+    variable, because the legitimate case (a private network where the operator has genuinely
+    accepted the risk) must be expressible — just not by default and not silently.
+    """
+    if os.environ.get(INSECURE_DSN_OPT_OUT):
+        return
+    if warn_if_insecure_dsn(dsn) is None:
+        return
+    raise PermissionError(
+        f"refusing to start against {redacted_dsn(dsn)}: the default 'recall:recall' credentials "
+        f"are published in this project's README and this DSN points at a non-local host. Set a "
+        f"real password, or set {INSECURE_DSN_OPT_OUT}=1 to accept the risk deliberately."
+    )
 
 
 def _basename(file: str) -> str:
