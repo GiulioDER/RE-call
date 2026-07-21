@@ -56,6 +56,34 @@ embedding model against a small labeled answerable/unanswerable set; do not ship
 constant, and do not assume a strong embedder's cosines are centered where a weak one's are.**
 `recall.eval.calibrate.calibrate()` reproduces these numbers.
 
+### 2b. Correction: "FCR @calibrated" is an in-sample number, and the fit is one-sided
+
+Two defects in the table above, found by re-deriving it under a held-out protocol.
+
+**The calibrated column could not have been anything but 0.00.** `best_threshold` *minimises
+misclassification on the samples it is handed*, and `fcr_at_suggested` then scored it on those
+same 5 unanswerable samples. On separable data that is 0.00 by arithmetic, before any data is
+collected — it measures the optimiser's objective, not the threshold's ability to generalise.
+`calibrate()` now also reports `fcr_heldout` / `false_abstain_heldout`, cross-validated
+leave-one-out, and those are the publishable numbers. **The FCR @0.50 column is unaffected** —
+0.50 is a constant chosen before seeing the samples, so it was always a genuine measurement, and
+it carries the actual finding of this section.
+
+**The fit ignores the unanswerable class entirely.** A candidate below `min(answerable)` costs one
+unanswerable error for every sample above it and saves nothing; a candidate above it costs
+answerable errors. So the optimum always lands exactly on `min(answerable)`, wherever the
+unanswerable samples fall. Two consequences:
+
+- Holding out an unanswerable sample cannot move the threshold, so the cross-validated FCR equals
+  the in-sample one. That column was never at risk of memorisation — the reason it reads 0.00 is
+  the one above, not overfitting.
+- The threshold has **zero margin on the answerable side**. Hold out the lowest answerable sample
+  and the refit boundary rises above it, so it abstains: leave-one-out false-abstain is
+  `1/n_answerable` (0.07 here) even on perfectly separable data. At runtime this means *any*
+  genuine answer scoring below the weakest calibration sample is abstained on. A threshold placed
+  in the middle of the gap rather than on its floor would carry margin on both sides; that change
+  is not yet made.
+
 ## 3. Domain fine-tuning: an honest null result on this corpus
 
 `finetune/train.py` fine-tunes `all-MiniLM-L6-v2` with OnlineContrastiveLoss on `(query, gold-chunk)`

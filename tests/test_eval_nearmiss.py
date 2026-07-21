@@ -84,3 +84,69 @@ def test_reject_all_judge_abstains_on_everything():
     for arm in ("threshold+entail", "entail-only"):
         assert arms[arm].nearmiss_fcr == 0.0   # nothing near-miss survives
         assert arms[arm].false_abstain == 1.0  # ...at the cost of abstaining on every answerable
+
+
+def test_loo_calibrations_never_include_the_sample_they_will_score():
+    """Each fold's threshold must be fitted without the sample it is about to judge.
+
+    This is what makes `gap_fcr` / `false_abstain` out-of-sample. The check is behavioural, not
+    structural: fold i's threshold must equal a threshold fitted on the remaining samples, and
+    a fold whose held-out sample is an outlier must differ from the full-sample fit.
+    """
+    from recall.calibration import from_samples
+    from recall.eval.harness import _loo_calibrations
+
+    ans = [0.80, 0.82, 0.85, 0.88]
+    unans = [0.10, 0.20, 0.30, 0.65]
+    cals = _loo_calibrations("e", unans, ans, hold_out_unanswerable=True)
+
+    assert len(cals) == len(unans)
+    for i in range(len(unans)):
+        expected = from_samples("e", ans, unans[:i] + unans[i + 1:])
+        assert cals[i].threshold == expected.threshold
+
+
+def test_holding_out_an_unanswerable_sample_cannot_move_the_threshold():
+    """Documents WHY the unanswerable-side split leaves `gap_fcr` unchanged.
+
+    `best_threshold` scans candidates ascending and takes the first minimum-error one. A
+    candidate below min(answerable) costs one unanswerable error for every sample above it and
+    saves nothing; a candidate above it costs answerable errors. So the optimum sits exactly at
+    min(answerable) no matter where the unanswerable samples fall — the "answerable vs
+    unanswerable" fit is ONE-SIDED, and the unanswerable class does not inform the threshold at
+    all in the separable regime.
+
+    Consequence for the published numbers: leave-one-out is still the correct protocol, but it
+    cannot change `gap_fcr` — that column was never at risk of memorising its samples. The
+    answerable side is where the split bites (see tests/test_eval_calibrate_heldout.py::
+    test_loo_exposes_that_the_fitted_threshold_has_no_answerable_side_margin).
+    """
+    from recall.calibration import best_threshold
+
+    ans = [0.80, 0.82, 0.85, 0.88]
+    for unans in ([0.10, 0.20, 0.30, 0.65], [0.10, 0.20, 0.30, 0.90]):
+        folds = [best_threshold(ans, unans[:i] + unans[i + 1:]) for i in range(len(unans))]
+        assert folds == [min(ans)] * len(unans)
+
+
+def test_loo_calibrations_refuse_to_split_a_class_too_small_to_split():
+    """One sample cannot be held out — the fold would fit on an empty class. None, not a guess."""
+    from recall.eval.harness import _loo_calibrations
+
+    assert _loo_calibrations("e", [0.2], [0.8, 0.9], hold_out_unanswerable=True) == [None]
+    assert _loo_calibrations("e", [], [0.8], hold_out_unanswerable=False) == []
+
+
+def test_loo_calibrations_places_the_held_out_class_on_the_correct_side():
+    """`hold_out_unanswerable` decides which argument of from_samples the refit class fills.
+
+    Swapping them silently inverts the threshold, so pin it: holding out an ANSWERABLE sample
+    must leave the unanswerable samples intact as the lower class.
+    """
+    from recall.calibration import from_samples
+    from recall.eval.harness import _loo_calibrations
+
+    ans = [0.80, 0.82, 0.85]
+    unans = [0.10, 0.20]
+    cals = _loo_calibrations("e", ans, unans, hold_out_unanswerable=False)
+    assert cals[0].threshold == from_samples("e", ans[1:], unans).threshold
