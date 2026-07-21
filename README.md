@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-164%20·%20real%20pgvector-brightgreen" alt="164 tests">
+  <img src="https://img.shields.io/badge/tests-232%20·%20real%20pgvector-brightgreen" alt="232 tests">
 </p>
 
 <p align="center">
@@ -77,6 +77,13 @@ deliberately *closer to the stale memory*):
 > Plain similarity search returns the superseded/expired memory as the answer **83–100% of the time.**
 > With RE-call's trust layer that rate is **0.00 — on every embedder — with identical ranking quality.**
 
+**How much to trust that 0.00.** It is measured on **6** validity-sensitive queries, so its 95%
+Wilson interval is **[0.00, 0.39]**: the honest reading is "zero observed, and this sample cannot
+rule out anything up to ~39%." It is now published beside a **coverage** column, because a system
+that returns *nothing* also scores 0.00 — coverage is 1.00 for the offline embedder and 0.67 for
+bge-small. Scaling the query set past toy size is
+[issue #16](https://github.com/GiulioDER/RE-call/issues/16).
+
 An ablation harness scores every `embedder × fusion` config on a labelled query set (precision@k,
 recall@k, MRR, nDCG, and a guard-specific **false-confident rate**), and the findings include what
 *didn't* work — see [The findings](#the-findings) below.
@@ -120,15 +127,15 @@ Six honest results from the ablation harness — the wins **and** the things tha
   <img src="results/guard_effect.png" width="48%" alt="Guard effect: false-confident rate on unanswerable queries">
 </p>
 
-- **Similarity cannot see supersession — the trust layer can.** Plain search returns the stale memory **83–100%** of the time; the trust layer drives that to **0.00 on every embedder** with identical MRR. → [FINDINGS §4](results/FINDINGS.md)
-- **The gap threshold doesn't transfer across embedders.** The default `0.50` sits below FastEmbed's entire cosine distribution — false-confident rate **1.00** (the guard never fires). Calibrate per embedder to `~0.70` → **0.00**. Don't hard-code it.
+- **Similarity cannot see supersession — the trust layer can.** Plain search returns the stale memory **83–100%** of the time; the trust layer drives that to **0.00 on every embedder** (95% Wilson **[0.00, 0.39]**, n=6) with identical MRR. → [FINDINGS §4](results/FINDINGS.md)
+- **The gap threshold doesn't transfer across embedders.** The default `0.50` sits below FastEmbed's entire cosine distribution — false-confident rate **1.00** (the guard never fires). Calibrate per embedder to `~0.70`. Don't hard-code it. *(The "→ 0.00" this bullet used to claim was in-sample: the threshold was fitted to the same 5 samples it was scored on, so 0.00 was arithmetic, not measurement. The `1.00` is real — 0.50 is a fixed constant. → [FINDINGS §2b](results/FINDINGS.md))*
 - **Reranking rescues a weak embedder.** Hybrid + cross-encoder lifts MRR **0.63 → 1.00** on the offline embedder — real, but situational: a strong embedder already saturates this corpus.
 - **Fine-tuning pays off only for a vocabulary gap.** On a rich corpus the base saturates (Δ **+0.00**); on opaque jargon it can't decode, fine-tuning lifts held-out MRR **0.31 → 0.55 (+79%)**. Measure the gap first. → [study](docs/RAG_TRAINING_STUDY.md)
 - **Near-misses need a judge — and the judge needs the threshold.** The calibrated threshold is blind to high-similarity-but-wrong hits (FCR **0.40–1.00**); a QNLI entailment stage cuts it (**1.00→0.60, 0.80→0.50**) with the *identical judge on every embedder, zero recalibration* — but judge-alone *degrades* far-gap detection. Different failure classes: **stack them.** → [study](docs/ENTAILMENT_SUPERSESSION_STUDY.md)
 - **Timestamps can't replace declared supersession — even steelmanned.** "Trust the newest relevant hit" still trusts the stale memory **83–100%** of the time (worse than plain ranking on bge-small). Supersession is a *relation between two documents*; a per-document timestamp can't see it.
 
 > Full methodology + per-embedder tables → **[results/FINDINGS.md](results/FINDINGS.md)**.
-> **164 tests**, the DB-touching ones against a real pgvector container (no mock DB), verified in CI.
+> **232 tests**, the DB-touching ones against a real pgvector container (no mock DB), verified in CI.
 
 ## Where this comes from
 

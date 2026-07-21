@@ -18,9 +18,9 @@ from recall.entailment import EntailmentJudge
 from recall.eval.calibrate import measure_top_cosines
 from recall.eval.metrics import (
     abstention_accuracy,
-    bootstrap_ci,
     false_abstain_rate,
     false_confident_rate,
+    fraction_true,
     gap_false_confident_rate,
     mrr,
     near_miss_false_confident_rate,
@@ -29,6 +29,7 @@ from recall.eval.metrics import (
     recall_at_k,
     successor_accuracy,
     superseded_trust_rate,
+    wilson_ci,
 )
 from recall.index import Indexer
 from recall.rerank import CrossEncoderReranker, Reranker
@@ -50,7 +51,11 @@ class AblationResult:
     r_at_5: float
     mrr: float
     ndcg_at_10: float
-    fcr_no_guard: float  # without the gap guard you always answer -> 1.0 on unanswerable
+    #: ANALYTIC, not measured: with no gap guard the system never abstains, so every
+    #: unanswerable query is answered confidently and the rate is 1.0 by definition. Kept as the
+    #: comparison baseline for `fcr_with_guard`, and rendered with a "by construction" marker so
+    #: it is not read as an observation. Do not chart or cite it as a measurement.
+    fcr_no_guard: float
     fcr_with_guard: float
     # Cost/latency metadata (mean wall time per call, ms). Additive; defaulted so existing
     # constructors/tests are unaffected. rerank_ms_mean is 0.0 for configs without a reranker.
@@ -175,6 +180,31 @@ class NearMissEvalResult:
     query_latency_ms_mean: float   # full trusted_search (+judge) wall time, mean over ALL queries
 
 
+def _loo_calibrations(
+    name: str, held_out: list[float], other: list[float], *, hold_out_unanswerable: bool
+) -> list[Calibration | None]:
+    """One refitted calibration per sample in `held_out`, each fitted WITHOUT that sample.
+
+    Returns a list positionally aligned with `held_out`, so entry *i* is the calibration that
+    may legitimately score query *i*. `hold_out_unanswerable` says which side of `from_samples`
+    the held-out class belongs on.
+
+    An entry is ``None`` when the class has fewer than two samples: the fold would fit on an
+    empty class, and a threshold fitted to nothing is not a more honest number than the
+    in-sample one — it is a different fabrication. The caller falls back to the full-sample
+    calibration and the result stays in-sample, which is why the published table needs the
+    sample counts beside it.
+    """
+    if len(held_out) < 2:
+        return [None] * len(held_out)
+    out: list[Calibration | None] = []
+    for i in range(len(held_out)):
+        rest = held_out[:i] + held_out[i + 1:]
+        ans, unans = (other, rest) if hold_out_unanswerable else (rest, other)
+        out.append(from_samples(name, ans, unans))
+    return out
+
+
 class _TimedJudge:
     """Wraps a judge to measure its wall time — the honest cost column of the results table.
 
@@ -205,6 +235,13 @@ def run_nearmiss_eval(
     threshold it challenges. "Confident" for every arm means `trusted_search` did not abstain;
     the entailment arms share the SAME judge instance across embedders with no per-embedder
     adjustment — that transfer is the property under test.
+
+    The near-miss set being held out does NOT make the other two columns held out. `gap_fcr` and
+    `false_abstain` are measured on the very queries the threshold is fitted to, so a threshold
+    that merely memorised them would score perfectly. Both are therefore measured under
+    LEAVE-ONE-OUT: the calibration judging a query is refitted with that query's sample removed
+    (`_loo_calibrations`), so no query is ever scored by a threshold that saw it. The entail-only
+    arm is exempt — its threshold is a fixed -1.0 that is fitted to nothing.
     """
     corpus_dir = corpus_dir or (EVAL_DIR / "corpus")
     queries = json.loads(
@@ -220,13 +257,21 @@ def run_nearmiss_eval(
     results: list[NearMissEvalResult] = []
     for emb in embedders:
         with _throwaway_store(dsn, emb, corpus_dir, "nm_") as store:
-            cal = from_samples(emb.name, *measure_top_cosines(store, emb, plain))
+            # measure_top_cosines walks `plain` in order and splits by label, so ans_cos is
+            # positionally aligned with `answerable` and unans_cos with `gaps` — that alignment
+            # is what lets a held-out fold be matched back to the query it belongs to.
+            ans_cos, unans_cos = measure_top_cosines(store, emb, plain)
+            cal = from_samples(emb.name, ans_cos, unans_cos)
+            gap_cals = _loo_calibrations(emb.name, unans_cos, ans_cos, hold_out_unanswerable=True)
+            ans_cals = _loo_calibrations(emb.name, ans_cos, unans_cos, hold_out_unanswerable=False)
             # threshold -1 passes every cosine: isolates the judge in the entail-only arm
             permissive = Calibration(embedder=emb.name, threshold=-1.0, scale=cal.scale)
+            # third element: whether this arm's threshold was FITTED to the eval samples, and so
+            # must be swapped for the leave-one-out refit when scoring them.
             arm_setup = {
-                ARM_THRESHOLD: (cal, None),
-                ARM_STACKED: (cal, judge),
-                ARM_ENTAIL_ONLY: (permissive, judge),
+                ARM_THRESHOLD: (cal, None, True),
+                ARM_STACKED: (cal, judge, True),
+                ARM_ENTAIL_ONLY: (permissive, judge, False),
             }
             # Each arm re-runs retrieval end-to-end ON PURPOSE: query_latency_ms_mean must
             # measure real per-arm wall time, and the judge is deliberately un-memoized so
@@ -234,22 +279,30 @@ def run_nearmiss_eval(
             # results with arm B would save ~1/3 of the retrieval cost at the price of
             # fabricating the latency columns.
             for arm in ARMS:
-                arm_cal, arm_judge = arm_setup[arm]
+                arm_cal, arm_judge, arm_is_fitted = arm_setup[arm]
                 timed = _TimedJudge(arm_judge) if arm_judge is not None else None
                 q_times: list[float] = []
 
-                def _search(text: str):
+                def _search(text: str, loo_cal: Calibration | None = None):
+                    # loo_cal is the refit that never saw this query; fall back to the arm's own
+                    # calibration when the arm is unfitted, or when the class was too small to
+                    # hold a sample out (see _loo_calibrations).
+                    use = loo_cal if (arm_is_fitted and loo_cal is not None) else arm_cal
                     t0 = time.perf_counter()
-                    res = trusted_search(store, emb, text, k=k, calibration=arm_cal,
+                    res = trusted_search(store, emb, text, k=k, calibration=use,
                                          entailment=timed)
                     q_times.append((time.perf_counter() - t0) * 1000.0)
                     return res
 
+                # near-miss queries are already held out by construction — they never enter the
+                # calibration — so they are scored with the full-sample calibration.
                 nm_confident = [not _search(q["query"]).abstained for q in nearmiss]
-                gap_confident = [not _search(q["query"]).abstained for q in gaps]
+                gap_confident = [
+                    not _search(q["query"], gap_cals[i]).abstained for i, q in enumerate(gaps)
+                ]
                 abst_flags, mrrs = [], []
-                for q in answerable:
-                    res = _search(q["query"])
+                for i, q in enumerate(answerable):
+                    res = _search(q["query"], ans_cals[i])
                     abst_flags.append(res.abstained)
                     ok_keys = [_tkey(h) for h in res.hits if h.verdict == "ok"]
                     mrrs.append(mrr(ok_keys, q["relevant_ids"]))
@@ -295,12 +348,24 @@ class TrustEvalResult:
     abstain_acc: float           # expect=abstain queries that actually abstained
     mrr_answerable_baseline: float
     mrr_answerable_trust: float  # must equal baseline: trust must not damage ordinary retrieval
-    # Bootstrapped 95% CIs (resample-with-replacement, N=1000) for the headline accuracy rates.
-    # The eval set is tiny (~25 queries), so a bare point estimate over-states precision; the
-    # interval is the honest read. (nan, nan) when the arm had no queries of that class.
+    #: Fraction of trust-sensitive queries that returned ANY `ok` hit. Published beside
+    #: `str_trust` because that rate alone cannot tell a working trust layer from a broken one:
+    #: `str_trust` counts queries where a stale id was served as `ok`, so a system that returns
+    #: nothing at all scores a perfect 0.00. Read the pair — 0.00 STR at 1.00 coverage is the
+    #: claim; 0.00 STR at 0.00 coverage is a system that answered nothing.
+    trust_coverage: float = float("nan")
+    # 95% Wilson score intervals for the headline rates. NOT bootstrapped: the per-class samples
+    # here are tiny (n=2 for abstention, n=4 for successor accuracy) and usually degenerate, and
+    # a percentile bootstrap of an all-True sample returns [1.00, 1.00] — certainty from two
+    # observations. (nan, nan) when the arm had no queries of that class.
     successor_acc_ci: tuple[float, float] = (float("nan"), float("nan"))
     abstain_acc_ci: tuple[float, float] = (float("nan"), float("nan"))
     str_trust_ci: tuple[float, float] = (float("nan"), float("nan"))
+    trust_coverage_ci: tuple[float, float] = (float("nan"), float("nan"))
+    #: Sample count behind each rate — an interval is unreadable without its n.
+    n_trust_queries: int = 0
+    n_successor: int = 0
+    n_abstain: int = 0
 
 
 def _tkey(hit: TrustedHit) -> str:
@@ -346,6 +411,7 @@ def run_trust_eval(
 
             retr = HybridRetriever(store, emb)
             base_flags, rec_flags, trust_flags, succ_flags, abst_flags = [], [], [], [], []
+            cov_flags: list[bool] = []
             for q in trust_qs:
                 stale = set(q["stale_ids"])
                 succ = set(q.get("successor_ids", []))
@@ -365,6 +431,9 @@ def run_trust_eval(
                 tres = trusted_search(store, emb, q["query"], k=10, calibration=cal)
                 ok_keys = [_tkey(h) for h in tres.hits if h.verdict == "ok"]
                 trust_flags.append(any(k in stale for k in ok_keys))
+                # coverage guards str_trust against its degenerate reading: a query that
+                # returned no `ok` hit at all also contributes a "clean" 0 to trust_flags.
+                cov_flags.append(bool(ok_keys))
                 if q["expect"] == "successor":
                     succ_flags.append(bool(ok_keys) and ok_keys[0] in succ)
                 else:
@@ -389,9 +458,14 @@ def run_trust_eval(
                     abstain_acc=abstention_accuracy(abst_flags),
                     mrr_answerable_baseline=mean(base_mrrs) if base_mrrs else 0.0,
                     mrr_answerable_trust=mean(trust_mrrs) if trust_mrrs else 0.0,
-                    successor_acc_ci=bootstrap_ci(succ_flags),
-                    abstain_acc_ci=bootstrap_ci(abst_flags),
-                    str_trust_ci=bootstrap_ci(trust_flags),
+                    trust_coverage=fraction_true(cov_flags),
+                    successor_acc_ci=wilson_ci(succ_flags),
+                    abstain_acc_ci=wilson_ci(abst_flags),
+                    str_trust_ci=wilson_ci(trust_flags),
+                    trust_coverage_ci=wilson_ci(cov_flags),
+                    n_trust_queries=len(trust_flags),
+                    n_successor=len(succ_flags),
+                    n_abstain=len(abst_flags),
                 )
             )
     return results
@@ -410,28 +484,38 @@ def _fmt_ci(ci: tuple[float, float], digits: int = 2) -> str:
 
 def trust_results_to_markdown(results: list[TrustEvalResult]) -> str:
     lines = [
-        "| embedder | STR baseline | STR recency | STR trust | successor acc | abstain acc | "
-        "MRR ans (base) | MRR ans (trust) |",
-        "|---|---|---|---|---|---|---|---|",
+        "| embedder | STR baseline | STR recency | STR trust | trust coverage | successor acc | "
+        "abstain acc | MRR ans (base) | MRR ans (trust) |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         lines.append(
             f"| {r.embedder} | {_fmt_rate(r.str_baseline)} | {_fmt_rate(r.str_recency)} | "
-            f"{_fmt_rate(r.str_trust)} | "
+            f"{_fmt_rate(r.str_trust)} | {_fmt_rate(r.trust_coverage)} | "
             f"{_fmt_rate(r.successor_acc)} | {_fmt_rate(r.abstain_acc)} | "
             f"{_fmt_rate(r.mrr_answerable_baseline, 3)} | {_fmt_rate(r.mrr_answerable_trust, 3)} |"
         )
-    # Point estimates above read as precise, but the eval set is tiny. Report a 95% bootstrap CI
-    # for the three headline accuracy rates so the interval — not the point — is what's compared.
     lines.append("")
-    lines.append("95% bootstrap CIs (N=1000) for the headline rates:")
+    lines.append(
+        "**Read STR trust together with trust coverage.** STR counts queries where a stale "
+        "memory was served with verdict `ok`, so a system that returns nothing scores a perfect "
+        "0.00. The claim is 0.00 STR *at high coverage*; 0.00 STR at low coverage is a system "
+        "that abstained its way to a good number."
+    )
+    # Point estimates above read as precise, but the eval set is tiny. Report an interval for the
+    # headline rates so the interval — not the point — is what's compared. Wilson, not bootstrap:
+    # resampling an all-True sample of n=2 returns [1.00, 1.00], i.e. certainty from no evidence.
     lines.append("")
-    lines.append("| embedder | STR trust | successor acc | abstain acc |")
-    lines.append("|---|---|---|---|")
+    lines.append("95% Wilson score intervals for the headline rates (n in parentheses):")
+    lines.append("")
+    lines.append("| embedder | STR trust | trust coverage | successor acc | abstain acc |")
+    lines.append("|---|---|---|---|---|")
     for r in results:
         lines.append(
-            f"| {r.embedder} | {_fmt_ci(r.str_trust_ci)} | {_fmt_ci(r.successor_acc_ci)} | "
-            f"{_fmt_ci(r.abstain_acc_ci)} |"
+            f"| {r.embedder} | {_fmt_ci(r.str_trust_ci)} (n={r.n_trust_queries}) | "
+            f"{_fmt_ci(r.trust_coverage_ci)} (n={r.n_trust_queries}) | "
+            f"{_fmt_ci(r.successor_acc_ci)} (n={r.n_successor}) | "
+            f"{_fmt_ci(r.abstain_acc_ci)} (n={r.n_abstain}) |"
         )
     return "\n".join(lines)
 
@@ -510,8 +594,14 @@ def results_to_markdown(results: list[AblationResult]) -> str:
     for r in results:
         lines.append(
             f"| {r.embedder} | {r.fusion} | {r.p_at_5:.3f} | {r.r_at_5:.3f} | {r.mrr:.3f} | "
-            f"{r.ndcg_at_10:.3f} | {r.fcr_no_guard:.2f} | {r.fcr_with_guard:.2f} |"
+            f"{r.ndcg_at_10:.3f} | {r.fcr_no_guard:.2f}† | {_fmt_rate(r.fcr_with_guard)} |"
         )
+    lines.append("")
+    lines.append(
+        "_† FCR no-guard is ANALYTIC, not measured: with no gap guard the system never abstains, "
+        "so every unanswerable query is answered confidently and the rate is 1.00 by definition. "
+        "It is the reference point for FCR guard, not an observation._"
+    )
     lines.append("")
     lines.append(
         "_P@5 is mechanically capped at 0.20: each query has exactly one relevant doc, so the "
@@ -553,12 +643,21 @@ def save_charts(results: list[AblationResult], out_dir: Path) -> list[Path]:
     plt.close(fig)
     paths.append(p1)
 
-    embs = list(dict.fromkeys(r.embedder for r in results))
-    guard = [min(r.fcr_with_guard for r in results if r.embedder == e) for e in embs]
+    # Chart ONE NAMED config per embedder, not min() across fusions. Taking the minimum plots
+    # the best case each embedder achieved under any fusion — a number that appears in no row of
+    # the results table and cannot be reproduced from it. `hybrid` is the library's default, so
+    # it is the config a reader would actually get. Embedders missing it are skipped rather than
+    # silently backfilled from another fusion.
+    chart_fusion = "hybrid" if any(r.fusion == "hybrid" for r in results) else results[0].fusion
+    by_emb = {r.embedder: r for r in results if r.fusion == chart_fusion}
+    embs = [e for e in dict.fromkeys(r.embedder for r in results) if e in by_emb]
+    guard = [by_emb[e].fcr_with_guard for e in embs]
     fig, ax = plt.subplots(figsize=(max(5, len(embs) * 1.6), 4))
     x = range(len(embs))
-    ax.bar([i - 0.2 for i in x], [1.0] * len(embs), width=0.4, label="no guard", color="#c44e52")
-    ax.bar([i + 0.2 for i in x], guard, width=0.4, label="with gap guard", color="#55a868")
+    ax.bar([i - 0.2 for i in x], [1.0] * len(embs), width=0.4,
+           label="no guard (1.0 by construction)", color="#c44e52")
+    ax.bar([i + 0.2 for i in x], guard, width=0.4,
+           label=f"with gap guard ({chart_fusion})", color="#55a868")
     ax.set_xticks(list(x))
     ax.set_xticklabels(embs, rotation=20, ha="right")
     ax.set_ylabel("false-confident rate")
