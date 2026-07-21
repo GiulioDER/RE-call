@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import random
+from statistics import NormalDist
 
 
 def precision_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> float:
@@ -93,6 +94,32 @@ def bootstrap_ci(
     return (lo, hi)
 
 
+def wilson_ci(
+    flags: list[bool], *, confidence: float = 0.95
+) -> tuple[float, float]:
+    """Wilson score interval for the mean of boolean flags (a binomial proportion).
+
+    Preferred over `bootstrap_ci` for every rate this eval publishes, because the eval's
+    per-class samples are tiny (n=2 for abstention, n=4 for successor accuracy) and often
+    degenerate. A percentile bootstrap of an all-True sample resamples all-True every time and
+    returns ``[1.00, 1.00]`` — it reports CERTAINTY from two observations, which is the opposite
+    of what a confidence interval is for. Wilson is derived from the normal approximation to the
+    binomial rather than from resampling, so it stays bounded in [0, 1], never collapses at
+    p=0 or p=1, and widens as n shrinks.
+
+    Returns ``(nan, nan)`` on empty input (no data -> no interval), matching `fraction_true`.
+    """
+    if not flags:
+        return (float("nan"), float("nan"))
+    n = len(flags)
+    p = sum(1 for f in flags if f) / n
+    z = NormalDist().inv_cdf(1.0 - (1.0 - confidence) / 2.0)
+    denom = 1.0 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    half = (z / denom) * math.sqrt(p * (1.0 - p) / n + z * z / (4 * n * n))
+    return (max(0.0, center - half), min(1.0, center + half))
+
+
 def superseded_trust_rate(stale_trusted_flags: list[bool]) -> float:
     """Fraction of trust-sensitive queries where a superseded/expired memory was presented as a
     trustworthy answer (flag True = the system trusted a stale memory). Lower is better — this
@@ -141,7 +168,9 @@ def false_abstain_rate(abstained_flags: list[bool]) -> float:
 def false_confident_rate(gap_warnings: list[bool]) -> float:
     """Given the `gap_warning` flags for the UNANSWERABLE queries, the fraction where the system
     was (wrongly) confident — i.e. gap_warning was False. Lower is better; this is the guard's job.
+
+    NaN on empty, like every other rate here: a config with no unanswerable queries has not
+    earned a 0.00 "the guard never failed", and publishing one beside genuinely measured rates
+    is exactly the unearned-pass this module's NaN convention exists to prevent.
     """
-    if not gap_warnings:
-        return 0.0
-    return sum(1 for g in gap_warnings if not g) / len(gap_warnings)
+    return fraction_true([not g for g in gap_warnings])
