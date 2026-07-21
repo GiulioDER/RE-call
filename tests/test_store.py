@@ -146,32 +146,62 @@ def test_with_retry_does_not_retry_non_connection_errors():
     assert reconnects["n"] == 0  # a data/query error must NOT trigger a reconnect
 
 
+class _Cursor:
+    def fetchone(self):
+        return (3,)
+
+
+class _RecordingConn:
+    """Records the SQL it is asked to run; optionally dies on its first statement.
+
+    Records the statements themselves rather than a count, so the assertions below can say
+    "the same work replayed" instead of pinning a number that drifts every time
+    `ensure_schema` gains a statement.
+    """
+
+    def __init__(self, *, fail_first: bool = False):
+        self.fail_first = fail_first
+        self.sql: list[str] = []
+        # the retry only reconnects when the connection reports itself dead; a dropped socket
+        # is exactly that
+        self.closed = fail_first
+        self.broken = False
+
+    @property
+    def calls(self) -> int:
+        return len(self.sql)
+
+    def execute(self, sql="", *_args, **_kwargs):
+        self.sql.append(" ".join(str(sql).split()))
+        if self.fail_first:
+            self.fail_first = False
+            raise psycopg.OperationalError("server closed the connection unexpectedly")
+        return _Cursor()
+
+
+def _ensure_schema_statements() -> list[str]:
+    """The statements a CLEAN ensure_schema issues — the baseline to replay against.
+
+    Derived by running the real method, so it cannot drift from the implementation.
+    """
+    store = _bare_store(_RecordingConn())
+    store.ensure_schema()
+    return store._conn.sql
+
+
 def test_ensure_schema_uses_reconnect_retry():
-    class _Cursor:
-        def fetchone(self):
-            return (3,)
+    """A broken connection mid-ensure_schema replays the WHOLE operation on a fresh one.
 
-    class _Conn:
-        def __init__(self, *, fail_first: bool = False):
-            self.fail_first = fail_first
-            self.calls = 0
-            # the retry only reconnects when the connection reports itself dead; a dropped
-            # socket is exactly that
-            self.closed = fail_first
-            self.broken = False
+    Asserted against a baseline captured from the method itself, not a hard-coded count:
+    adding a statement to `ensure_schema` moves both sides together, so this test keeps
+    testing the invariant instead of needing to be re-numbered.
+    """
+    expected = _ensure_schema_statements()
 
-        def execute(self, *_args, **_kwargs):
-            self.calls += 1
-            if self.fail_first:
-                self.fail_first = False
-                raise psycopg.OperationalError("server closed the connection unexpectedly")
-            return _Cursor()
-
-    store = _bare_store()
-    first = _Conn(fail_first=True)
-    second = _Conn()
+    store = _bare_store(_RecordingConn(fail_first=True))
+    first = store._conn
+    second = _RecordingConn()
     reconnects = {"n": 0}
-    store._conn = first
 
     def fake_reconnect():
         reconnects["n"] += 1
@@ -181,11 +211,18 @@ def test_ensure_schema_uses_reconnect_retry():
 
     store.ensure_schema()
 
-    assert first.calls == 1
-    # every statement of ensure_schema re-runs on the fresh connection: CREATE EXTENSION,
-    # CREATE TABLE, the atttypmod check, and the 5 CREATE INDEXes
-    assert second.calls == 8
-    assert reconnects["n"] == 1
+    assert reconnects["n"] == 1                 # reconnected exactly once
+    assert first.sql == expected[:1]            # died on its first statement
+    assert second.sql == expected               # the whole operation replayed, in order
+
+
+def test_ensure_schema_replay_baseline_is_not_trivially_empty():
+    # guards the guard: an ensure_schema that issued nothing would make the assertion above
+    # vacuously true
+    stmts = _ensure_schema_statements()
+    assert len(stmts) > 3
+    assert any(s.startswith("CREATE TABLE") for s in stmts)
+    assert sum(s.startswith("CREATE INDEX") for s in stmts) >= 2
 
 
 @requires_db
