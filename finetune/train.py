@@ -32,9 +32,12 @@ OUT = ROOT / "model"
 def load_chunks(corpus_dir: Path) -> tuple[list[str], list[str]]:
     ids: list[str] = []
     texts: list[str] = []
-    for f in sorted(corpus_dir.glob("*.md")):
+    # rglob, not glob: a real corpus has subdirectories. On the reference 794-memo corpus a
+    # non-recursive glob silently skipped 53 files — training and evaluating against a corpus
+    # missing 7% of its documents, with nothing to indicate it.
+    for f in sorted(corpus_dir.rglob("*.md")):
         for i, c in enumerate(chunk_text(f.read_text(encoding="utf-8"))):
-            ids.append(f"{f.name}:{i}")
+            ids.append(f"{f.relative_to(corpus_dir).as_posix()}:{i}")
             texts.append(c)
     return ids, texts
 
