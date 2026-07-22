@@ -11,7 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from recall.calibration import load_for
 from recall.observability import METRICS, configure_logging, get_logger
 from recall.store import DEFAULT_TENANT, redacted_dsn
-from recall_mcp.service import index_memory, make_embedder, memory_stats, search_memory
+from recall_mcp.service import forget_memory, index_memory, make_embedder, memory_stats, search_memory
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 EMBEDDER_NAME = os.environ.get("RECALL_EMBEDDER", "fastembed")
@@ -98,7 +98,7 @@ async def _lifespan(_server: FastMCP):
 
 
 def build_server() -> FastMCP:
-    """Construct the recall_mcp FastMCP server with its three tools registered."""
+    """Construct the recall_mcp FastMCP server with its four tools registered."""
     mcp = FastMCP("recall_mcp", lifespan=_lifespan)
 
     def _state() -> dict:
@@ -168,6 +168,33 @@ def build_server() -> FastMCP:
                 lambda: index_memory(
                     state["store"], state["embedder"], path
                 ).model_dump_json(indent=2)
+            )
+
+    @mcp.tool(
+        name="recall_forget",
+        annotations={"title": "Forget agent memory", "readOnlyHint": False,
+                     "destructiveHint": True, "idempotentHint": True, "openWorldHint": False},
+    )
+    async def recall_forget(sources: list[str]) -> str:
+        """Permanently delete indexed memory for the given source(s). IRREVERSIBLE.
+
+        This is the right-to-erasure path: use it to make the agent forget a memory that should
+        no longer be recalled (e.g. it indexed something it should not have retained). Deletion
+        is scoped to this server's own tenant and cannot reach another tenant's memory. A source
+        that does not exist is reported in `sources_not_found` rather than silently counted as
+        "removed" — check that list before assuming a name was actually forgotten.
+
+        Args:
+            sources: one or more source values to forget, exactly as they appear in
+                `recall_search` hits (the `source` field).
+
+        Returns:
+            JSON of {chunks_removed, sources_removed, sources_not_found, message}.
+        """
+        state = _state()
+        with METRICS.timer("recall_tool_latency_ms", tool="forget"):
+            return await _to_thread(
+                lambda: forget_memory(state["store"], sources).model_dump_json(indent=2)
             )
 
     @mcp.tool(

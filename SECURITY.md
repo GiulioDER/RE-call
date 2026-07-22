@@ -104,11 +104,16 @@ on tree size, file count, or query length. A client that can reach the server ca
 arbitrary cloud-embedding spend if a paid embedder is configured. Combined with the gap above, treat
 network exposure plus a cloud embedder as a cost-exhaustion risk, not merely a confidentiality one.
 
-**There is no exposed deletion path.** `PgVectorStore.delete_sources()` exists
-(`recall/store.py:686`) but is wired into neither the CLI nor MCP, so there is currently **no
-supported way to make the system forget an indexed memory** short of operating on the database
-directly. If you index personal data, that is a retention and right-to-erasure gap you must handle
-at the database layer until `recall_forget` ships.
+**Deletion is exposed, but only per-source, and there is still no retention policy.**
+`PgVectorStore.delete_sources()` (`recall/store.py:686`) is now wired into `recall forget` (CLI,
+dry-run by default — pass `--yes` to actually delete) and into the `recall_forget` MCP tool
+(`recall_mcp/server.py`, delegating to `forget_memory` in `recall_mcp/service.py`), both
+tenant-scoped like every other write path. That closes the original gap — there is a supported
+way to make the system forget an indexed memory. Two things remain open: (1) deletion is
+per-**source** only — there is no way to delete an individual chunk within a source without
+re-indexing the whole file; and (2) there is no retention **policy** — nothing expires or purges
+memories on a schedule, on its own. If your corpus contains personal data, you are still
+responsible for deciding *when* to call `forget`; this only provides the mechanism.
 
 ## Reporting a vulnerability
 
