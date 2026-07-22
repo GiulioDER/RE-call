@@ -10,13 +10,36 @@ from recall.calibration import Calibration
 from recall.embeddings import Embedder, HashingEmbedder
 from recall.guards import staleness
 from recall.observability import METRICS
-from recall.index import Indexer
+from recall.index import Indexer, candidate_files
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.trust import trusted_search
 
 HASHING_DIM = 64  # offline HashingEmbedder width; matches the eval/test default
 MAX_SEARCH_K = 50  # upper bound on hits per search — clamps untrusted client input
+
+# Indexing budget caps (SECURITY.md "Indexing is client-callable and unbounded").
+# `recall_index` is client-callable and, once past the RECALL_INDEX_ROOT confinement check below,
+# had no ceiling on how much of that root it would walk, read and send to the embedder — with a
+# paid embedder configured that is uncapped cloud spend per call. These two limits are enforced by
+# `index_memory` BEFORE `Indexer.index_path` touches a single file: the candidate set is walked and
+# measured first (`candidate_files` + `Path.stat`, no reads), and the whole request is refused if
+# it exceeds either one. A cap that trips mid-walk, after some files are already embedded, is not a
+# budget cap — it just makes the overspend partial instead of total.
+#
+# Defaults were chosen from this project's own real workloads, measured directly rather than
+# guessed, so a legitimate `recall_index` call on any of them clears both limits with headroom:
+#   - `make demo` indexes `corpus/`: 5 files, ~1.6 KB total.
+#   - `recall code` indexes RE-call's own package (`recall/`): 30 files, ~242 KB total.
+#   - The real eval corpus this project measures retrieval against (docs/CASE_STUDY.md,
+#     re-measured for this change): 796 markdown memos, ~4.1 MB of content (5.6 MB on disk
+#     including directory overhead).
+# 2000 files / 20 MB give the largest of those (the 796-file, ~4-6 MB real corpus) roughly 2.5x
+# headroom on file count and 3.5-5x headroom on bytes, while still refusing a client that points
+# `recall_index` at something categorically bigger than a memory corpus — a vendored dependency
+# tree, a build output directory, a whole home directory.
+DEFAULT_MAX_INDEX_FILES = 2000
+DEFAULT_MAX_INDEX_BYTES = 20_000_000  # 20 MB
 
 
 def make_embedder(name: str) -> Embedder:
@@ -185,6 +208,11 @@ def index_memory(store: PgVectorStore, embedder: Embedder, path: str) -> IndexRe
     `path` is confined to RECALL_INDEX_ROOT (default: the current working directory) so a client
     cannot read arbitrary files off the server's filesystem. Re-indexing REPLACES each file's
     chunks completely, so a shrunk file leaves no stale chunks behind.
+
+    Before anything is read or embedded, the candidate file set is walked and measured against two
+    budget caps — RECALL_INDEX_MAX_FILES and RECALL_INDEX_MAX_BYTES (defaults
+    DEFAULT_MAX_INDEX_FILES / DEFAULT_MAX_INDEX_BYTES above) — and the whole request is refused if
+    either is exceeded. See SECURITY.md's "Indexing is client-callable" gap for why this exists.
     """
     root = Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve()
     target = Path(path).resolve()
@@ -195,6 +223,24 @@ def index_memory(store: PgVectorStore, embedder: Embedder, path: str) -> IndexRe
         )
     if not target.exists():
         raise ValueError(f"path not found: {path!r}")
+
+    max_files = int(os.environ.get("RECALL_INDEX_MAX_FILES", str(DEFAULT_MAX_INDEX_FILES)))
+    max_bytes = int(os.environ.get("RECALL_INDEX_MAX_BYTES", str(DEFAULT_MAX_INDEX_BYTES)))
+    # Same walk `index_path` will do (same root, same default markdown glob) — measured, not
+    # estimated, so the check can never pass on a set smaller than what actually gets indexed.
+    files = candidate_files(target)
+    if len(files) > max_files:
+        raise ValueError(
+            f"index request for {path!r} exceeds the file-count budget: {len(files)} candidate "
+            f"file(s) > limit {max_files}; set RECALL_INDEX_MAX_FILES to raise it."
+        )
+    total_bytes = sum(f.stat().st_size for f in files)
+    if total_bytes > max_bytes:
+        raise ValueError(
+            f"index request for {path!r} exceeds the byte budget: {total_bytes} candidate "
+            f"byte(s) > limit {max_bytes}; set RECALL_INDEX_MAX_BYTES to raise it."
+        )
+
     stats = Indexer(store, embedder).index_path(target)
     return IndexResult(
         files=stats.files,
