@@ -175,3 +175,28 @@ def test_cli_lint_exits_nonzero_on_errors_and_zero_on_clean(tmp_path, capsys):
     _write(clean, "a.md", "fine")
     main(["lint", str(clean)])  # returns without raising
     assert "0 errors" in capsys.readouterr().out
+
+
+def test_lint_accepts_the_supersedes_forms_people_actually_write(tmp_path):
+    """On a real 792-memo corpus BOTH declared edges were reported as dangling — one written
+    with wikilink brackets, one without the `.md`. Both targets existed. The convention has to
+    accept what its own users write, or the linter's headline error is simply wrong."""
+    (tmp_path / "old.md").write_text("# old decision\n\nbody", encoding="utf-8")
+    for i, written in enumerate(("old.md", "old", "[old]", "[[old]]")):
+        d = tmp_path / f"c{i}"
+        d.mkdir()
+        (d / "old.md").write_text("# old decision\n\nbody", encoding="utf-8")
+        (d / "new.md").write_text(
+            f"---\nsupersedes: {written}\n---\n# new decision\n\nbody", encoding="utf-8"
+        )
+        codes = [i.code for i in lint_corpus(d)]
+        assert "dangling-supersedes" not in codes, f"{written!r} reported as dangling"
+
+
+def test_lint_echoes_the_authored_form_in_a_dangling_error(tmp_path):
+    """The diagnostic must quote what the user typed, not a normalised form they never wrote."""
+    (tmp_path / "new.md").write_text(
+        "---\nsupersedes: [[ghost]]\n---\n# new\n\nbody", encoding="utf-8"
+    )
+    dangling = [i for i in lint_corpus(tmp_path) if i.code == "dangling-supersedes"]
+    assert dangling and "[[ghost]]" in dangling[0].message

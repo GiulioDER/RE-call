@@ -42,11 +42,21 @@ def test_resolve_supersession_unique_nested_target_resolves():
     assert resolve_supersession(rows) == ({"sub/old.md": "sub/new.md"}, frozenset())
 
 
-def test_resolve_supersession_dangling_falls_back_to_raw_basename():
-    # supersedes points at a basename absent from the corpus (predecessor never indexed, or
-    # deleted). Not ambiguous -- nothing to disambiguate -- so it resolves via the raw basename
-    # rather than being silently dropped.
+def test_resolve_supersession_dangling_falls_back_to_the_normalised_key():
+    # supersedes points at a name absent from the corpus (predecessor never indexed, or deleted).
+    # Not ambiguous -- nothing to disambiguate -- so it resolves via the normalised key rather
+    # than being silently dropped.
     assert resolve_supersession([("a/new.md", "ghost.md")]) == ({"ghost.md": "a/new.md"}, frozenset())
+
+
+def test_resolve_supersession_accepts_the_forms_people_actually_write():
+    """Every declared edge in a real 792-memo corpus failed to resolve on FORMAT, not because
+    the target was missing: one used wikilink brackets, the other omitted the extension. Both
+    targets existed. Matching on the stem makes all four spellings mean the same document."""
+    for written in ("old.md", "old", "[old]", "[[old]]"):
+        assert resolve_supersession([("old.md", None), ("new.md", written)]) == (
+            {"old.md": "new.md"}, frozenset()
+        ), f"failed to resolve {written!r}"
 
 
 # --- warn_if_insecure_dsn: pure, DB-free (the default-credentials footgun guard) ---------------
