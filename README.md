@@ -145,8 +145,31 @@ The three eliminations are what make the fourth result a diagnosis rather than a
 abstention layer was never the bottleneck: 89% of unanswerable questions correctly refused, 4–7%
 of answerable ones wrongly refused, on every arm.
 
-→ [FINDINGS §7](results/FINDINGS.md) for the misses, the labelling errors found by inspecting them,
-and the one experiment still untested.
+### Replicated on a public corpus — and it narrows the conclusion
+
+The above is one corpus, and a private one. Repeated on the **732 Python PEPs** with 110
+hand-labelled questions that **ship in this repo** — a corpus anyone can fetch and check:
+
+| hit@5 | bge-small (local) | voyage-3 (cloud) | Δ |
+|---|---|---|---|
+| private memory corpus, 794 docs | 0.348 [0.23, 0.49] | **0.630** [0.49, 0.76] | **+0.282** |
+| **PEPs, 746 docs (public)** | **0.705** [0.56, 0.82] | 0.727 [0.58, 0.84] | **+0.022** |
+
+**The pipeline was never the cap** — on ordinary technical prose the *free local* embedder reaches
+0.705. And **the cloud embedder's win is corpus-specific**: +0.28 where the vocabulary is
+idiosyncratic, +0.02 on the PEPs, the latter inside the noise for ~5× latency, an API dependency
+and data egress. So the rule is conditional, not "buy the better embedder".
+
+Abstention accuracy is **1.00** on the PEPs for both embedders — the trust layer was never the
+bottleneck on either corpus.
+
+```bash
+git clone --depth 1 https://github.com/python/peps
+python -m recall.eval.labelled --corpus peps/peps     --questions recall/eval/peps_questions.json --glob '**/*.rst'
+```
+
+→ [FINDINGS §7–§8](results/FINDINGS.md) for the misses, the labelling errors found by inspecting
+them, and the one experiment still untested.
 
 ## How it works
 

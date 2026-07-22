@@ -81,7 +81,7 @@ def _rate(flags: list[bool]) -> dict:
 
 
 def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder, k: int = 5,
-             rerank: bool = False) -> dict:
+             rerank: bool = False, glob: str = "**/*.md") -> dict:
     answerable = [q for q in questions if q.get("answerable")]
     unanswerable = [q for q in questions if not q.get("answerable")]
 
@@ -90,7 +90,7 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder, k: int = 5
     try:
         store.ensure_schema()
         t0 = time.perf_counter()
-        stats = Indexer(store, embedder).index_path(corpus)
+        stats = Indexer(store, embedder).index_path(corpus, glob=glob)
         index_s = time.perf_counter() - t0
 
         # Calibrate on THIS corpus: a threshold from another corpus's cosine regime does not
@@ -178,6 +178,8 @@ def main() -> None:
     ap.add_argument("--embedder", default="fastembed",
                     help="fastembed | hashing | voyage | st:<model-or-path>")
     ap.add_argument("-k", type=int, default=5)
+    ap.add_argument("--glob", default="**/*.md",
+                    help="corpus file glob — e.g. '**/*.rst' for a PEP checkout")
     ap.add_argument("--rerank", action="store_true",
                     help="also score a cross-encoder arm from the SAME index")
     ap.add_argument("--dsn", default=DEFAULT_DSN)
@@ -190,7 +192,7 @@ def main() -> None:
         raise SystemExit(f"answerable questions without relevant_files: {missing}")
 
     report = evaluate(args.dsn, Path(args.corpus), questions, _make_embedder(args.embedder),
-                      k=args.k, rerank=args.rerank)
+                      k=args.k, rerank=args.rerank, glob=args.glob)
     print(json.dumps(report, indent=2))
 
 
