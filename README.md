@@ -95,6 +95,10 @@ A previous version of this file published each of these. They did not survive re
   answerable query plus a nonsense suffix, so nothing could separate them. Rebuilt as genuinely
   off-topic questions; the *document*-level degeneracy remains and is stated as unmeasured.
 - **"6× faster incremental re-index"** — understated. Measured on a Linux server it is **33×**.
+- **Real-corpus recall@5 of 0.945** — that used document *headings* as queries, which is known-item
+  retrieval. Against 110 hand-labelled questions phrased the way a person actually asks, hit@5 is
+  **0.33**. The caveat was always printed; now it has a number, and it is the weakest measured part
+  of the system. → [FINDINGS §7](results/FINDINGS.md)
 
 ## Production posture
 
@@ -111,7 +115,8 @@ on a laptop.
 | **Observability** | ✅ `logging` (text/JSON), counters and latency percentiles for abstention, verdicts, reconnects; surfaced through the MCP `recall_stats` tool | The library never attaches handlers — that is the host's job |
 | **Incremental indexing** | ✅ content-hash skip, bounded-memory batched writes, prunes files deleted from disk | 5,100 chunks / 1,120 files: full **7.4 s**, unchanged re-index **0.22 s** |
 | **Scale characteristics** | ✅ measured at **50,600 chunks**: recall@5 1.00 filtered and unfiltered, search p50/p95/p99 | Templated text; absolute retrieval quality is optimistic |
-| **Real-corpus operation** | ✅ 792 hand-written memos → 6,469 chunks, recall@5 **0.945**, p50 **33 ms** | Known-item retrieval (headings as queries) — optimistic vs real questions |
+| **Real-corpus operation** | ✅ 794 hand-written memos → 6,491 chunks, p50 **78 ms** | Works at this size; see the retrieval row for how well |
+| **Retrieval quality, real questions** | ⚠️ **hit@5 0.33** [0.21, 0.47], n=46, on 110 hand-labelled questions | Headings-as-queries scored 0.945 — the proxy hid two thirds of the failures. Measured without a reranker |
 | **Authentication** | ❌ **not implemented** — stdio MCP carries no transport identity | [#9](https://github.com/GiulioDER/RE-call/issues/9) |
 | **Schema migrations** | ❌ runtime `CREATE TABLE IF NOT EXISTS`, no versioned upgrade path | Pre-tenancy tables *are* migrated in place, with a test |
 | **HA / replication** | ❌ out of scope — this is a library over your Postgres | — |
