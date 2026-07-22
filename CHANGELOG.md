@@ -8,6 +8,14 @@ dates — this project does not currently tag releases.
 ## [Unreleased]
 
 ### Added
+- **Indexing budget caps**: `recall_index` / `index_memory()` (`recall_mcp/service.py`) now
+  measure the candidate file set — count and total bytes, via the new `recall.index.candidate_files`
+  helper — BEFORE any file is read or embedded, and refuse the whole request if it exceeds
+  `RECALL_INDEX_MAX_FILES` (default 2000) or `RECALL_INDEX_MAX_BYTES` (default 20 MB). Both are
+  configurable environment variables; defaults were sized against this project's own real
+  workloads (the 796-memo / ~4-6 MB eval corpus, `recall code`'s ~240 KB self-index, `make demo`'s
+  5-file corpus) with headroom. Closes the cost-exhaustion half of the "indexing is client-callable
+  and unbounded" gap in `SECURITY.md` and issue #9's third checkbox.
 - **Right-to-erasure deletion path**: `PgVectorStore.delete_sources()` is now exposed via a
   `recall forget <source>...` CLI subcommand (dry-run by default; `--yes` to actually delete) and
   a `recall_forget` MCP tool, both tenant-scoped. `forget_memory()` / `ForgetResult`
