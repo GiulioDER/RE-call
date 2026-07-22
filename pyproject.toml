@@ -9,7 +9,7 @@ description = "Retrieval-Augmented Self-Recall for long-running agents (pgvector
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "psycopg[binary]>=3.1",
+    "psycopg[binary]>=3.3.4",
     "pgvector>=0.3",
 ]
 
