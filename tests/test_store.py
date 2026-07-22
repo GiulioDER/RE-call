@@ -311,9 +311,22 @@ def test_fresh_database_bootstraps_vector_extension():
     Regression guard: register_vector needs the `vector` type, so PgVectorStore.__init__ must
     install the extension itself — otherwise the README quickstart crashes on a fresh DB.
     """
+    # Needs CREATEDB. A correctly-configured deployment role does not have it, and skipping
+    # loudly is the honest outcome — the alternative is a check that silently only ever runs for
+    # whoever happens to connect as a superuser.
+    with psycopg.connect(TEST_DSN, autocommit=True) as probe:
+        may_create = probe.execute(
+            "SELECT rolcreatedb OR rolsuper FROM pg_roles WHERE rolname = current_user"
+        ).fetchone()
+    if not (may_create and may_create[0]):
+        pytest.skip("connected role lacks CREATEDB, so a fresh database cannot be provisioned")
+
     parts = urlsplit(TEST_DSN)
     fresh_name = "recall_fresh_" + uuid.uuid4().hex[:8]
-    admin = urlunsplit(parts._replace(path="/recall"))  # manage from the default db
+    # Manage from the DSN's OWN database, not a hardcoded "recall": that name is the local
+    # docker-compose default and does not exist on a real deployment, where this test then fails
+    # with "database recall does not exist" — an environment assumption masquerading as a test.
+    admin = urlunsplit(parts)
     fresh = urlunsplit(parts._replace(path="/" + fresh_name))
     conn = psycopg.connect(admin, autocommit=True)
     try:

@@ -16,6 +16,7 @@ connect as it. Without that, this file would be theatre.
 from __future__ import annotations
 
 import uuid
+from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
 import pytest
@@ -147,15 +148,21 @@ def test_default_tenant_keeps_an_existing_single_tenant_install_working(tenant_t
     from recall.store import DEFAULT_TENANT
 
     s = PgVectorStore(TEST_DSN, dim=4, table=tenant_table)
+    other = PgVectorStore(TEST_DSN, dim=4, table=tenant_table, tenant="somebody-else")
     try:
         s.ensure_schema()
         s.upsert([Chunk("x", "a.md", "pre-existing note")], [_vec(0)])
-        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-            row = conn.execute(f"SELECT tenant_id FROM {tenant_table}").fetchone()
-        assert row[0] == DEFAULT_TENANT
+        # Asserted through two differently-tenanted stores rather than a raw connection. A raw
+        # connection does not set the tenant GUC, so under REAL row-level security (an
+        # unprivileged role) the policy hides every row and the read returns None — which the
+        # previous version mistook for "the row is missing". It only worked because the local
+        # dev role is a superuser that bypasses RLS.
+        assert s._tenant == DEFAULT_TENANT
         assert s.count() == 1
+        assert other.count() == 0
     finally:
         s.close()
+        other.close()
 
 
 @requires_db
@@ -193,14 +200,44 @@ def test_migrating_a_pre_tenancy_table_preserves_its_rows(tenant_table):
 # --------------------------------------------------------------------------------------------
 
 
+def _role_can_bypass_rls(dsn: str) -> bool:
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"
+        ).fetchone()
+    return bool(row and row[0])
+
+
 @pytest.fixture
 def unprivileged_dsn(tenant_table):
-    """A role with no superuser and no BYPASSRLS, so the policy actually applies to it."""
+    """A DSN whose role cannot bypass RLS, so the policy actually applies.
+
+    Three cases, in order, because the previous version handled only the middle one and therefore
+    could ONLY run as a superuser — the single configuration in which RLS does not apply. The
+    security property was verifiable exactly where it did not matter.
+
+    1. The configured role already cannot bypass RLS (a correctly-configured deployment). Use it
+       directly: no new role, no CREATEROLE needed.
+    2. It can bypass, but we may create roles — make a throwaway one, as before.
+    3. It can bypass and we cannot create roles — SKIP, loudly. Silently passing here would
+       report the policy as verified when nothing was tested.
+    """
+    if not _role_can_bypass_rls(TEST_DSN):
+        yield "current_user", TEST_DSN
+        return
+
     role = "rls_" + uuid.uuid4().hex[:8]
-    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-        conn.execute(f"CREATE ROLE {role} LOGIN PASSWORD 'pw' NOSUPERUSER NOBYPASSRLS")
-        conn.execute(f"GRANT ALL ON SCHEMA public TO {role}")
-    dsn = TEST_DSN.replace("//recall:recall@", f"//{role}:pw@")
+    try:
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(f"CREATE ROLE {role} LOGIN PASSWORD 'pw' NOSUPERUSER NOBYPASSRLS")
+            conn.execute(f"GRANT ALL ON SCHEMA public TO {role}")
+    except psycopg.errors.InsufficientPrivilege:
+        pytest.skip(
+            "cannot verify RLS: the configured role bypasses it and lacks CREATEROLE to make "
+            "one that does not"
+        )
+    parts = urlsplit(TEST_DSN)
+    dsn = urlunsplit(parts._replace(netloc=f"{role}:pw@{parts.hostname}:{parts.port or 5432}"))
     yield role, dsn
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute(f"DROP TABLE IF EXISTS {tenant_table}")
@@ -209,11 +246,18 @@ def unprivileged_dsn(tenant_table):
 
 
 @requires_db
-def test_check_rls_effective_reports_the_superuser_bypass():
-    """The dev role IS a superuser, so RLS does not constrain it. Say so out loud."""
+def test_check_rls_effective_agrees_with_the_roles_actual_privileges():
+    """It must report what the CONNECTED ROLE really is, in any environment.
+
+    The previous version asserted `is False` — i.e. it asserted that the local dev role is a
+    superuser. That is a property of docker-compose.yml, not of this code, and it failed on a
+    correctly-configured deployment where the role is unprivileged. A test that encodes the
+    developer's environment fails exactly where the software is meant to run.
+    """
+    expected = not _role_can_bypass_rls(TEST_DSN)
     s = PgVectorStore(TEST_DSN, dim=4, table="chunks")
     try:
-        assert s.check_rls_effective() is False
+        assert s.check_rls_effective() is expected
     finally:
         s.close()
 
