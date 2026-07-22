@@ -81,6 +81,22 @@ class IndexResult(BaseModel):
     message: str = Field(description="Human-readable summary of what was indexed.")
 
 
+class ForgetResult(BaseModel):
+    chunks_removed: int = Field(
+        description="Number of chunks permanently deleted, across every matched source."
+    )
+    sources_removed: list[str] = Field(
+        description="Requested sources that had at least one chunk and were deleted."
+    )
+    sources_not_found: list[str] = Field(
+        default_factory=list,
+        description="Requested sources that matched no chunk for this tenant — a typo, or a "
+        "source that was already forgotten. Reported separately from sources_removed so a "
+        "caller can never mistake 'matched nothing' for 'successfully forgotten'.",
+    )
+    message: str = Field(description="Human-readable summary of what was forgotten.")
+
+
 class MemoryStatsResult(BaseModel):
     chunks: int = Field(description="Total chunks currently in memory.")
     newest_indexed_at: str | None = Field(
@@ -184,6 +200,39 @@ def index_memory(store: PgVectorStore, embedder: Embedder, path: str) -> IndexRe
         files=stats.files,
         chunks=stats.chunks,
         message=f"Indexed {stats.chunks} chunk(s) from {stats.files} file(s) into memory.",
+    )
+
+
+def forget_memory(store: PgVectorStore, sources: list[str]) -> ForgetResult:
+    """Permanently delete every indexed chunk for the given sources; return what actually went away.
+
+    This is the right-to-erasure path: irreversible and tenant-scoped (only ever touches the
+    calling store's own tenant — see `PgVectorStore.delete_sources`). A source that does not
+    exist for this tenant is reported in `sources_not_found`, never silently folded into a "0
+    removed, success" result — a typo'd source name must be visibly distinguishable from one
+    that was actually forgotten.
+    """
+    if not sources:
+        raise ValueError("sources must be a non-empty list")
+    requested = list(dict.fromkeys(sources))  # de-dup, preserve order
+    existing = store.source_content_hashes()  # {source: content_hash}, this tenant only
+    found = [s for s in requested if s in existing]
+    not_found = [s for s in requested if s not in existing]
+    chunks_removed = store.delete_sources(found) if found else 0
+    if found and not_found:
+        message = (
+            f"Forgot {chunks_removed} chunk(s) from {len(found)} source(s); "
+            f"{len(not_found)} source(s) not found: {', '.join(not_found)}."
+        )
+    elif found:
+        message = f"Forgot {chunks_removed} chunk(s) from {len(found)} source(s)."
+    else:
+        message = f"No matching source(s) found — nothing deleted: {', '.join(not_found)}."
+    return ForgetResult(
+        chunks_removed=chunks_removed,
+        sources_removed=found,
+        sources_not_found=not_found,
+        message=message,
     )
 
 
