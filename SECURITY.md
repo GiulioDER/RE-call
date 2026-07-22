@@ -87,6 +87,29 @@ and the local embedder (`FastEmbedEmbedder`) both load models via `sentence-tran
 cached. That is a network fetch of model artifacts, not of your corpus — but it does mean the first
 run of `make eval` (or any code path that constructs those classes) is not fully offline.
 
+## Known gaps, tracked and open
+
+These are documented weaknesses, not undiscovered ones. They are recorded in
+[issue #9](https://github.com/GiulioDER/RE-call/issues/9) and are stated here because a security
+policy that lists only the limits it has already solved is misleading.
+
+**No authentication on the MCP transport.** Tenancy shipped (`tenant_id` on every row, enforced at
+the store), but the transport itself is unauthenticated. On a non-stdio transport, any client that
+can reach the server can act as any tenant. Do not expose the MCP server on an untrusted network.
+For now, stdio on a trusted host is the supported deployment.
+
+**Indexing is client-callable and unbounded.** The `recall_index` MCP tool
+(`recall_mcp/server.py:152`, delegating to `index_memory` in `recall_mcp/service.py:166`) has no cap
+on tree size, file count, or query length. A client that can reach the server can therefore direct
+arbitrary cloud-embedding spend if a paid embedder is configured. Combined with the gap above, treat
+network exposure plus a cloud embedder as a cost-exhaustion risk, not merely a confidentiality one.
+
+**There is no exposed deletion path.** `PgVectorStore.delete_sources()` exists
+(`recall/store.py:686`) but is wired into neither the CLI nor MCP, so there is currently **no
+supported way to make the system forget an indexed memory** short of operating on the database
+directly. If you index personal data, that is a retention and right-to-erasure gap you must handle
+at the database layer until `recall_forget` ships.
+
 ## Reporting a vulnerability
 
 Please report privately via **[GitHub Security Advisories](https://github.com/GiulioDER/RE-call/security/advisories/new)**
