@@ -186,16 +186,14 @@ def test_two_tenants_from_one_registry_cannot_see_each_others_memory(tenant_tabl
         acme, globex = reg.get("acme"), reg.get("globex")
         assert acme is not globex, "each tenant must get its own store and its own pool"
 
-        acme.upsert(
-            [Chunk(id="c1", source="acme.md", text="acme quarterly revenue", metadata={})],
-            [[1.0, 0.0, 0.0, 0.0]],
-        )
+        acme.upsert([Chunk("c1", "acme.md", "acme quarterly revenue")], [[1.0, 0.0, 0.0, 0.0]])
 
-        assert [h.chunk.source for h in acme.search([1.0, 0.0, 0.0, 0.0], k=5)] == ["acme.md"]
-        assert globex.search([1.0, 0.0, 0.0, 0.0], k=5) == []
-        # Sparse too: the dense path and the full-text path filter separately, so proving one
-        # says nothing about the other.
-        assert globex.sparse_search("acme quarterly revenue", k=5) == []
+        assert [h.chunk.source for h in acme.query_dense([1.0, 0.0, 0.0, 0.0], k=5)] == ["acme.md"]
+        assert globex.query_dense([1.0, 0.0, 0.0, 0.0], k=5) == []
+        # Sparse too: the dense leg and the full-text leg are separate SQL statements and
+        # separate chances to forget the predicate, so proving one says nothing about the other.
+        assert globex.query_sparse("acme quarterly revenue", k=5) == []
+        assert acme.count() == 1 and globex.count() == 0
     finally:
         reg.close()
 
