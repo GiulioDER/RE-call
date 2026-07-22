@@ -99,6 +99,15 @@ def main(argv: list[str] | None = None) -> None:
              "prior closed decision they don't reference (needs the DB + embedder; opt-in)",
     )
     p_lint.add_argument(
+        "--fix", action="store_true",
+        help="propose the frontmatter `supersedes:` edge for each closure marker whose target "
+             "is provable. DRY RUN by default — prints the plan and changes nothing.",
+    )
+    p_lint.add_argument(
+        "--apply", action="store_true",
+        help="with --fix, actually write the proposed edges to the memo files",
+    )
+    p_lint.add_argument(
         "--threshold", type=float, default=None,
         help="cosine threshold for --semantic (default: the calibrated abstention threshold "
              "for this embedder; must be calibrated per embedder — see FINDINGS section 2)",
@@ -127,6 +136,27 @@ def main(argv: list[str] | None = None) -> None:
             print(f"{i.level:<8} {i.code:<26} {i.file}: {i.message}")
         errors = sum(1 for i in issues if i.level == "error")
         warnings = len(issues) - errors
+
+        if args.fix:
+            from recall.fix import apply_proposal, propose_fixes
+
+            proposals, unfixable = propose_fixes(args.path, glob=args.glob)
+            print()
+            for p in proposals:
+                print(f"  {p.edit_file}: + supersedes: {p.target}")
+                print(f"      because {p.evidence_file} says {p.evidence!r}")
+            for u in unfixable:
+                print(f"  SKIP {u.file}: {u.reason}")
+            print(f"\n{len(proposals)} edge(s) proposable, {len(unfixable)} need a human")
+            if not args.apply:
+                # Dry run by DEFAULT: this edits the user's own documents, and a tool that
+                # rewrites your memory the first time you try it has earned distrust.
+                print("dry run — nothing written. Re-run with --apply to write these edges.")
+            else:
+                root = Path(args.path)
+                for p in proposals:
+                    apply_proposal(root, p)
+                print(f"wrote {len(proposals)} edge(s).")
 
         chains = []
         if args.semantic:  # opt-in retrieval-based missing-edge check (needs DB + embedder)
