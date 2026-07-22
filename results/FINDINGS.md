@@ -359,7 +359,49 @@ before fusion, a stronger embedder, or the chunking (800-character windows over 
 heavy memos may be splitting the answer away from the words the question uses). Each is testable
 with this same harness; none has been run, and none should be claimed until it has.
 
-### The most likely lever, as first predicted (superseded by the run above)
+### Candidate pool and chunking: also not the lever
+
+With ranking ruled out, the two remaining candidate-recall knobs were swept — `candidate_k` (the
+pool each leg contributes before fusion) and the chunk size — each chunk size costing its own
+index pass. Same 46 held-out questions throughout, `candidate_k=100`:
+
+| chunk chars | chunks | hit@5 | hit@10 | hit@20 | hit@50 | MRR |
+|---|---|---|---|---|---|---|
+| 400 | 13,262 | 0.326 | 0.370 | 0.413 | 0.478 | 0.245 |
+| **800 (shipped)** | 6,491 | **0.348** | **0.435** | 0.457 | 0.500 | **0.311** |
+| 1600 | 3,239 | 0.348 | 0.413 | 0.478 | 0.500 | 0.271 |
+
+Three readings, and none of them is a lever:
+
+1. **Chunk size does not move hit@5.** 0.326 / 0.348 / 0.348 sit inside each other's intervals.
+   The shipped 800 is the best of the three on MRR, so the default was already right.
+2. **A bigger candidate pool buys nothing at the top.** Raising `candidate_k` from 20 to 100 leaves
+   hit@5 and hit@10 unchanged and adds only ~0.04 at hit@20 — it surfaces documents that then rank
+   low anyway.
+3. **hit@50 plateaus at ~0.48–0.50 in every configuration.** For half the questions the right
+   document is nowhere in the top *fifty*, whatever the chunking or the pool.
+
+That last line is the finding. It is a **hard recall ceiling**, and it explains why the two things
+tried before it did so little: a reranker can only reorder what was retrieved, and a bigger pool
+can only add what the index can match. Both were working on the half of the problem that was
+already solvable.
+
+### What is left, and why the repo's own §3 predicts it
+
+Ranking, pool size and chunking are eliminated. What remains is the **representation**: `bge-small`
+cannot connect a paraphrased question to these documents, because the vocabulary that identifies
+them — project codenames, venue and bot names, internal shorthand — appears nowhere in its
+pretraining.
+
+That is precisely the condition §3 measured. On a rich corpus, fine-tuning bought **+0.00**; on an
+opaque-codename corpus where the concept↔name mapping exists nowhere in pretraining, the same
+pipeline lifted held-out MRR **0.31 → 0.55**. This corpus is the second kind, and its measured MRR
+of **0.31** is, to the decimal, where that study started.
+
+So the next experiment is domain fine-tuning with `finetune/train.py`, or a stronger/domain-adapted
+embedder — not another retrieval knob. Predicted, not claimed: it has not been run.
+
+### The most likely lever, as first predicted (superseded by the runs above)
 
 This run used dense + sparse fusion with **no cross-encoder**. §1 of this document measures
 reranking lifting MRR from 0.63 to 1.00 on a weak embedder and finding it redundant on an easy
