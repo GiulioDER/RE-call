@@ -46,6 +46,16 @@ def _make_embedder(name: str):
         from recall.embeddings import HashingEmbedder
 
         return HashingEmbedder(dim=64)
+    if name == "voyage":
+        from recall.embeddings import VoyageEmbedder
+
+        return VoyageEmbedder()
+    if name.startswith("st:"):
+        # Any sentence-transformers model, including one this repo fine-tuned:
+        #   --embedder st:finetune/model
+        from recall.embeddings import SentenceTransformerEmbedder
+
+        return SentenceTransformerEmbedder(name[3:])
     from recall.embeddings import FastEmbedEmbedder
 
     return FastEmbedEmbedder()
@@ -165,7 +175,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(prog="recall.eval.labelled")
     ap.add_argument("--corpus", required=True)
     ap.add_argument("--questions", required=True)
-    ap.add_argument("--embedder", default="fastembed", choices=["fastembed", "hashing"])
+    ap.add_argument("--embedder", default="fastembed",
+                    help="fastembed | hashing | voyage | st:<model-or-path>")
     ap.add_argument("-k", type=int, default=5)
     ap.add_argument("--rerank", action="store_true",
                     help="also score a cross-encoder arm from the SAME index")
