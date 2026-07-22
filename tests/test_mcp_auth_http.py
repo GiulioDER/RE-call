@@ -29,7 +29,20 @@ from tests.conftest import TEST_DSN, requires_db
 
 httpx = pytest.importorskip("httpx")
 
-BODY = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+#: A real `initialize` handshake, used for EVERY request below so the credential is the only
+#: variable between the rejection cases and the control. `tools/list` would not do: without a
+#: prior handshake the transport answers 400 "Missing session ID", so an authenticated call would
+#: fail for a protocol reason and tell us nothing about whether the token was accepted.
+BODY = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "auth-test", "version": "1.0"},
+    },
+}
 HEADERS = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
 
 
@@ -104,7 +117,12 @@ def post(url, token=None):
 
 @requires_db
 def test_a_request_with_no_credentials_is_rejected(live_server):
-    """The single most important assertion in the suite."""
+    """The single most important assertion in the suite.
+
+    401 specifically, not merely "an error": the 400 the transport returns for a missing session
+    id would also be a non-2xx, and treating that as proof of authentication would be exactly the
+    kind of green-looking nothing this file exists to rule out.
+    """
     url, _, _ = live_server
     assert post(url).status_code == 401
 
@@ -126,12 +144,18 @@ def test_a_request_with_a_malformed_authorization_header_is_rejected(live_server
 
 
 @requires_db
-def test_the_valid_token_is_accepted(live_server):
-    """The control. Without it, a server rejecting EVERYTHING would pass the tests above."""
+def test_the_valid_token_completes_a_handshake(live_server):
+    """The control. Without it, a server rejecting EVERYTHING would pass the tests above.
+
+    Asserting on the session header rather than just the status code: a 200 carrying a JSON-RPC
+    error body would still read as success to `status_code < 400`, and an issued session id is
+    positive evidence the request reached the protocol layer as an authenticated caller.
+    """
     url, token, _ = live_server
     resp = post(url, token)
-    assert resp.status_code != 401, resp.text
-    assert resp.status_code < 400, resp.text
+    assert resp.status_code == 200, resp.text
+    assert resp.headers.get("mcp-session-id"), resp.text
+    assert "error" not in resp.text
 
 
 @requires_db
