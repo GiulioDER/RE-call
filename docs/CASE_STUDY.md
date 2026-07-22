@@ -28,8 +28,13 @@ memory/
 └── incident_*.md     (~22)      # what broke, and why
 ```
 
-**Scale (all aggregate — no content):** ≈**660 typed memos**, ~**5 MB** of markdown, spanning months
-of operation. Chunked, embedded, and stored in Postgres; **re-indexed daily** by a session-end hook.
+**Scale (all aggregate — no content):** **792 typed memos**, **5.6 MB** of markdown → **6,469 chunks**,
+spanning months of operation. Chunked, embedded, and stored in Postgres; **re-indexed daily** by a
+session-end hook.
+
+Measured directly rather than estimated: indexing that corpus with `bge-small` took **698 s**, giving
+recall@5 **0.945** on known-item queries and search p50 **33 ms**. Earlier revisions of this file said
+"≈660 memos / ~5 MB" — an estimate, now replaced by the measurement.
 
 Each memo is *one fact* with typed frontmatter, so retrieval relevance rides on a curated
 one-line description:
