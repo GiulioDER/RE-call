@@ -238,6 +238,53 @@ def test_ensure_schema_replay_baseline_is_not_trivially_empty():
     assert sum(s.startswith("CREATE INDEX") for s in stmts) >= 2
 
 
+def test_ensure_schema_indexes_are_concurrent():
+    """Issue #11's fourth checkbox: `CREATE INDEX` must not lock writes on a live table.
+
+    Every secondary index `ensure_schema` creates should use `CONCURRENTLY` — plain `CREATE INDEX`
+    takes a lock for the whole build, and `ensure_schema` runs on every store open, not just at
+    bootstrap (see the comment above these statements in `store.py` for why that is safe here:
+    the connection is autocommit and this method is never wrapped in an explicit transaction).
+    """
+    stmts = _ensure_schema_statements()
+    create_index_stmts = [s for s in stmts if s.startswith("CREATE INDEX")]
+    assert len(create_index_stmts) >= 2  # guards the guard, same as the test above
+    for s in create_index_stmts:
+        assert s.startswith("CREATE INDEX CONCURRENTLY"), s
+
+
+# --- _hnsw_filtered_tuning: HNSW ef_search/iterative_scan config for a filtered query_dense ----
+# (issue #11's third checkbox — pure/DB-free: only reads os.environ + validates, never connects)
+
+
+def test_hnsw_filtered_tuning_defaults():
+    store = _bare_store(_RecordingConn())
+    assert store._hnsw_filtered_tuning() == (200, "relaxed_order")
+
+
+def test_hnsw_filtered_tuning_reads_env(monkeypatch):
+    store = _bare_store(_RecordingConn())
+    monkeypatch.setenv("RECALL_HNSW_EF_SEARCH_FILTERED", "500")
+    monkeypatch.setenv("RECALL_HNSW_ITERATIVE_SCAN_FILTERED", "strict_order")
+    assert store._hnsw_filtered_tuning() == (500, "strict_order")
+
+
+def test_hnsw_filtered_tuning_rejects_invalid_iterative_scan(monkeypatch):
+    # Interpolated into `SET LOCAL` rather than bound (Postgres does not accept a parameter for a
+    # GUC value), so an unvalidated value would be a SQL-injection vector, not just a bad setting.
+    store = _bare_store(_RecordingConn())
+    monkeypatch.setenv("RECALL_HNSW_ITERATIVE_SCAN_FILTERED", "off; DROP TABLE chunks; --")
+    with pytest.raises(ValueError, match="RECALL_HNSW_ITERATIVE_SCAN_FILTERED"):
+        store._hnsw_filtered_tuning()
+
+
+def test_hnsw_filtered_tuning_rejects_non_int_ef_search(monkeypatch):
+    store = _bare_store(_RecordingConn())
+    monkeypatch.setenv("RECALL_HNSW_EF_SEARCH_FILTERED", "200; DROP TABLE chunks; --")
+    with pytest.raises(ValueError):
+        store._hnsw_filtered_tuning()
+
+
 @requires_db
 def test_upsert_and_dense_query_ranks_by_cosine(make_store):
     store = make_store(3)
