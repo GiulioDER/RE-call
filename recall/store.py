@@ -78,6 +78,13 @@ def warn_if_insecure_dsn(dsn: str) -> str | None:
     return msg
 
 
+#: Tenant assigned to rows written before tenancy existed, and the default for a
+#: single-tenant deployment — so an upgrade changes nothing for an existing install.
+DEFAULT_TENANT = "default"
+#: Postgres session variable the row-level-security policy reads. A custom GUC (it must contain
+#: a dot) set per connection, so the policy compares against the connection's own tenant.
+TENANT_GUC = "recall.tenant_id"
+
 #: Opt-out for `require_secure_dsn`. Named so it cannot be set by accident, and so its presence
 #: in a deploy is a visible, greppable decision rather than an oversight.
 INSECURE_DSN_OPT_OUT = "RECALL_ALLOW_INSECURE_DSN"
@@ -179,6 +186,7 @@ class PgVectorStore:
         dim: int,
         table: str = "chunks",
         *,
+        tenant: str = DEFAULT_TENANT,
         pool_size: int | None = None,
         statement_timeout_ms: int | None = None,
         connect_timeout_s: int | None = 10,
@@ -210,9 +218,12 @@ class PgVectorStore:
             raise ValueError("table must be a valid SQL identifier")
         if pool_size is not None and (not isinstance(pool_size, int) or pool_size < 1):
             raise ValueError("pool_size must be a positive int or None")
+        if not isinstance(tenant, str) or not tenant:
+            raise ValueError("tenant must be a non-empty str")
         self._dsn = dsn
         self._dim = dim
         self._table = table
+        self._tenant = tenant
         self._statement_timeout_ms = statement_timeout_ms
         self._connect_timeout_s = connect_timeout_s
         self._supersession_cache: tuple[dict[str, str], frozenset[str]] | None = None
@@ -261,6 +272,10 @@ class PgVectorStore:
         except psycopg.Error:
             pass
         register_vector(conn)
+        # Per-connection tenant for the RLS policy. Safe to set once at connection setup because
+        # a store is bound to ONE tenant: the pool belongs to the store, so no connection is ever
+        # shared between tenants. A server handling many tenants opens a store per tenant.
+        conn.execute(f"SELECT set_config('{TENANT_GUC}', %s, false)", (self._tenant,))
         if self._statement_timeout_ms is not None:
             conn.execute(f"SET statement_timeout = {int(self._statement_timeout_ms)}")
 
@@ -385,16 +400,19 @@ class PgVectorStore:
             conn.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {t} (
-                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL DEFAULT '{DEFAULT_TENANT}',
+                    id TEXT NOT NULL,
                     source TEXT NOT NULL,
                     text TEXT NOT NULL,
                     metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                     embedding vector({self._dim}),
                     indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
+                    tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
+                    PRIMARY KEY (tenant_id, id)
                 )
                 """
             )
+            self._migrate_to_tenanted(conn)
             actual_dim = conn.execute(
                 "SELECT atttypmod FROM pg_attribute "
                 "WHERE attrelid = %s::regclass AND attname = 'embedding'",
@@ -421,8 +439,84 @@ class PgVectorStore:
             conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_indexed_at_idx ON {t} (indexed_at DESC)")
             conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_source_idx ON {t} (source)")
             conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_file_idx ON {t} ((metadata->>'file'))")
+            # Every hot-path predicate leads with tenant_id, so it leads the index too.
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_tenant_idx ON {t} (tenant_id)")
+            self._enable_rls(conn)
 
         self._with_retry(_op)
+
+    def _migrate_to_tenanted(self, conn: "psycopg.Connection") -> None:
+        """Add `tenant_id` to a table created before tenancy existed, idempotently.
+
+        An existing deployment has `id` as the sole primary key. Chunk ids are derived from the
+        file path, so two tenants indexing the same path produce the SAME id — with a single-column
+        key, one tenant's re-index would overwrite the other's row. The key therefore has to become
+        `(tenant_id, id)`, which means dropping the old constraint.
+
+        Existing rows are assigned to `DEFAULT_TENANT`, so an upgrade is invisible to a
+        single-tenant deployment: the store's default tenant is the same value.
+        """
+        t = self._table
+        has_tenant = conn.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = %s AND column_name = 'tenant_id'",
+            (t,),
+        ).fetchone()
+        if has_tenant:
+            return
+        conn.execute(
+            f"ALTER TABLE {t} ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '{DEFAULT_TENANT}'"
+        )
+        pkey = conn.execute(
+            "SELECT conname FROM pg_constraint "
+            "WHERE conrelid = %s::regclass AND contype = 'p'",
+            (t,),
+        ).fetchone()
+        if pkey:
+            conn.execute(f'ALTER TABLE {t} DROP CONSTRAINT "{pkey[0]}"')
+        conn.execute(f"ALTER TABLE {t} ADD PRIMARY KEY (tenant_id, id)")
+
+    def _enable_rls(self, conn: "psycopg.Connection") -> None:
+        """Enforce tenant isolation in the DATABASE, not only in this class's WHERE clauses.
+
+        Every query here already filters on `tenant_id`. That is the correctness mechanism and it
+        works for any role. This is the CONTROL: a policy means a forgotten predicate — in future
+        code, in a migration script, in someone's psql session — returns nothing instead of
+        another tenant's memories.
+
+        `FORCE` matters: without it the policy does not apply to the table's OWNER, which is
+        usually the very role the application connects as.
+
+        ⚠️ **A superuser bypasses RLS entirely, and so does a role with BYPASSRLS.** If the
+        application connects as one (the default `docker-compose.yml` role IS a superuser), this
+        policy is decoration and only the WHERE clauses are protecting you. See
+        `check_rls_effective()`.
+        """
+        t = self._table
+        conn.execute(f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY")
+        conn.execute(f"ALTER TABLE {t} FORCE ROW LEVEL SECURITY")
+        # CREATE POLICY has no IF NOT EXISTS before PG 15's ... it still doesn't; drop first.
+        conn.execute(f"DROP POLICY IF EXISTS {t}_tenant_isolation ON {t}")
+        conn.execute(
+            f"CREATE POLICY {t}_tenant_isolation ON {t} "
+            f"USING (tenant_id = current_setting('{TENANT_GUC}', true)) "
+            f"WITH CHECK (tenant_id = current_setting('{TENANT_GUC}', true))"
+        )
+
+    def check_rls_effective(self) -> bool:
+        """True when row-level security actually constrains THIS connection's role.
+
+        Returns False for a superuser or a `BYPASSRLS` role — for whom the policy created above
+        is inert. Exposed rather than merely documented because "we enabled RLS" is the kind of
+        claim that gets believed without being true, and the difference is invisible until a
+        tenant reads another tenant's memory.
+        """
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"
+            ).fetchone()
+        )
+        return not (row and row[0])
 
     def upsert(self, chunks: list[Chunk], embeddings: list[list[float]]) -> int:
         if len(chunks) != len(embeddings):
@@ -444,9 +538,10 @@ class PgVectorStore:
         with conn.transaction(), conn.cursor() as cur:
             cur.executemany(
                 f"""
-                INSERT INTO {t} (id, source, text, metadata, embedding, indexed_at)
-                VALUES (%s, %s, %s, %s, %s, now())
-                ON CONFLICT (id) DO UPDATE SET
+                INSERT INTO {t}
+                    (tenant_id, id, source, text, metadata, embedding, indexed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (tenant_id, id) DO UPDATE SET
                     source = EXCLUDED.source,
                     text = EXCLUDED.text,
                     metadata = EXCLUDED.metadata,
@@ -454,7 +549,7 @@ class PgVectorStore:
                     indexed_at = now()
                 """,
                 [
-                    (c.id, c.source, c.text, json.dumps(c.metadata), Vector(e))
+                    (self._tenant, c.id, c.source, c.text, json.dumps(c.metadata), Vector(e))
                     for c, e in zip(chunks, embeddings)
                 ],
             )
@@ -478,15 +573,15 @@ class PgVectorStore:
         if k <= 0:
             raise ValueError("k must be a positive int")
         t = self._table
-        where = "WHERE source = %(source)s" if source else ""
+        where = "AND source = %(source)s" if source else ""
         sql = f"""
             SELECT id, source, text, metadata, indexed_at, 1 - (embedding <=> %(vec)s) AS score
             FROM {t}
-            {where}
+            WHERE tenant_id = %(tenant)s {where}
             ORDER BY embedding <=> %(vec)s
             LIMIT %(k)s
         """
-        params: dict = {"vec": Vector(vector), "k": k}
+        params: dict = {"vec": Vector(vector), "k": k, "tenant": self._tenant}
         if source:
             params["source"] = source
         rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
@@ -512,7 +607,8 @@ class PgVectorStore:
                     SELECT id, source, text, metadata, indexed_at, embedding,
                            ts_rank(tsv, websearch_to_tsquery('english', %(q)s)) AS rank
                     FROM {t}
-                    WHERE tsv @@ websearch_to_tsquery('english', %(q)s)
+                    WHERE tenant_id = %(tenant)s
+                      AND tsv @@ websearch_to_tsquery('english', %(q)s)
                     {where}
                     ORDER BY rank DESC
                     LIMIT %(k)s
@@ -524,12 +620,13 @@ class PgVectorStore:
                 SELECT id, source, text, metadata, indexed_at,
                        ts_rank(tsv, websearch_to_tsquery('english', %(q)s)) AS score
                 FROM {t}
-                WHERE tsv @@ websearch_to_tsquery('english', %(q)s)
+                WHERE tenant_id = %(tenant)s
+                  AND tsv @@ websearch_to_tsquery('english', %(q)s)
                 {where}
                 ORDER BY score DESC
                 LIMIT %(k)s
             """
-        params: dict = {"q": text, "k": k}
+        params: dict = {"q": text, "k": k, "tenant": self._tenant}
         if vec is not None:
             params["vec"] = Vector(vec)
         if source:
@@ -553,7 +650,11 @@ class PgVectorStore:
         def _op(conn):
             with conn.transaction():
                 if sources:
-                    conn.execute(f"DELETE FROM {self._table} WHERE source = ANY(%s)", (sources,))
+                    conn.execute(
+                        f"DELETE FROM {self._table} "
+                        f"WHERE tenant_id = %s AND source = ANY(%s)",
+                        (self._tenant, sources),
+                    )
                 if chunks:
                     self._upsert_in(conn, chunks, embeddings)  # savepoint, same commit
 
@@ -569,7 +670,10 @@ class PgVectorStore:
             return 0
         self._supersession_cache = None
         cur = self._with_retry(
-            lambda conn: conn.execute(f"DELETE FROM {self._table} WHERE source = ANY(%s)", (sources,))
+            lambda conn: conn.execute(
+                f"DELETE FROM {self._table} WHERE tenant_id = %s AND source = ANY(%s)",
+                (self._tenant, sources),
+            )
         )
         return cur.rowcount or 0
 
@@ -587,8 +691,8 @@ class PgVectorStore:
         cur = self._with_retry(
             lambda conn: conn.execute(
                 f"UPDATE {self._table} SET indexed_at = now() "
-                f"WHERE metadata->>'file' = ANY(%s)",
-                (files,),
+                f"WHERE tenant_id = %s AND metadata->>'file' = ANY(%s)",
+                (self._tenant, files),
             )
         )
         return cur.rowcount or 0
@@ -618,8 +722,9 @@ class PgVectorStore:
                     f"""
                     SELECT DISTINCT metadata->>'file' AS file, metadata->>'supersedes' AS supersedes
                     FROM {self._table}
-                    WHERE metadata ? 'file'
-                    """
+                    WHERE tenant_id = %s AND metadata ? 'file'
+                    """,
+                    (self._tenant,),
                 ).fetchall()
             )
             self._supersession_cache = resolve_supersession(rows)
@@ -632,12 +737,18 @@ class PgVectorStore:
 
     def newest_indexed_at(self) -> datetime | None:
         row = self._with_retry(
-            lambda conn: conn.execute(f"SELECT max(indexed_at) FROM {self._table}").fetchone()
+            lambda conn: conn.execute(
+                f"SELECT max(indexed_at) FROM {self._table} WHERE tenant_id = %s",
+                (self._tenant,),
+            ).fetchone()
         )
         return row[0] if row else None
 
     def count(self) -> int:
         row = self._with_retry(
-            lambda conn: conn.execute(f"SELECT count(*) FROM {self._table}").fetchone()
+            lambda conn: conn.execute(
+                f"SELECT count(*) FROM {self._table} WHERE tenant_id = %s",
+                (self._tenant,),
+            ).fetchone()
         )
         return int(row[0]) if row else 0
