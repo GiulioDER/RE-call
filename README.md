@@ -171,7 +171,15 @@ python -m recall.cli lint ./docs --semantic              # + retrieval-based mis
 
 Point `RECALL_DSN` at any Postgres.
 
-> **Two safety notes about that variable.** The test suite **DROPs tables**, so it reads a
+> **Multi-tenancy.** Rows carry a `tenant_id` and every query filters on it; set `RECALL_TENANT`
+> (or `PgVectorStore(tenant=...)`). A row-level-security policy enforces the same boundary in the
+> database, so a forgotten `WHERE` returns nothing instead of another tenant's memories.
+> ⚠️ **RLS is bypassed by a superuser or a `BYPASSRLS` role** — including the role in this repo's
+> `docker-compose.yml`. Connect as an unprivileged role or that second layer is decoration;
+> `store.check_rls_effective()` tells you which you have, and the MCP server warns at startup.
+> A store is bound to one tenant, so serve many tenants with a store (or server) per tenant.
+
+> **Two safety notes about `RECALL_DSN`.** The test suite **DROPs tables**, so it reads a
 > separate `RECALL_TEST_DSN` (falling back to the local docker-compose database) and never
 > `RECALL_DSN` — exporting your real DSN and running `pytest` cannot touch it. And the MCP server
 > **refuses to start** if `RECALL_DSN` carries the built-in `recall:recall` credentials against a

@@ -11,7 +11,7 @@ import anyio.to_thread
 from mcp.server.fastmcp import FastMCP
 
 from recall.calibration import load_for
-from recall.store import redacted_dsn
+from recall.store import DEFAULT_TENANT, redacted_dsn
 from recall_mcp.service import index_memory, make_embedder, memory_stats, search_memory
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
@@ -19,6 +19,10 @@ EMBEDDER_NAME = os.environ.get("RECALL_EMBEDDER", "fastembed")
 #: Connections the server keeps open. This bounds concurrent in-flight tool calls at the database,
 #: which is where the real limit is — more worker threads than connections just queue on the pool.
 POOL_SIZE = int(os.environ.get("RECALL_POOL_SIZE", "8"))
+#: Tenant this server instance serves. One store is bound to one tenant, so a
+#: multi-tenant deployment runs a server (or a store) per tenant rather than switching
+#: tenants on a shared connection — see PgVectorStore._prepare.
+TENANT = os.environ.get("RECALL_TENANT", DEFAULT_TENANT)
 #: Server-side cap on any single statement. A runaway query otherwise holds its connection until
 #: the process dies, and a few of those exhaust the pool while the server still looks healthy.
 STATEMENT_TIMEOUT_MS = int(os.environ.get("RECALL_STATEMENT_TIMEOUT_MS", "15000"))
@@ -58,6 +62,7 @@ async def _lifespan(_server: FastMCP):
         store = PgVectorStore(
             DEFAULT_DSN,
             dim=embedder.dim,
+            tenant=TENANT,
             pool_size=POOL_SIZE,
             statement_timeout_ms=STATEMENT_TIMEOUT_MS,
         )
@@ -79,6 +84,13 @@ async def _lifespan(_server: FastMCP):
         print(
             f"recall_mcp: no calibration for embedder {embedder.name!r} — using the default "
             "threshold (results will say calibrated=false). Run `recall calibrate` to fix.",
+            file=sys.stderr,
+        )
+    if not store.check_rls_effective():
+        print(
+            "recall_mcp: WARNING — this database role bypasses row-level security "
+            "(superuser or BYPASSRLS), so tenant isolation rests on query predicates "
+            "alone. Connect as an unprivileged role for defence in depth.",
             file=sys.stderr,
         )
     try:
