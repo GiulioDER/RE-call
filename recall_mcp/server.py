@@ -24,8 +24,14 @@ from recall_mcp.auth import (
     authorize,
     token_registry_from_env,
 )
+from recall_mcp.limits import limiter_from_env
 from recall_mcp.service import forget_memory, index_memory, make_embedder, memory_stats, search_memory
 from recall_mcp.stores import StoreRegistry
+
+#: Which call budget each scope draws on. Keyed by scope rather than by tool name so a new tool
+#: is metered the moment it declares a scope — there is no separate table to remember to update,
+#: and an unmetered tool would be one that also skipped authorisation.
+_SCOPE_BUDGETS = {SCOPE_READ: "read", SCOPE_WRITE: "write", SCOPE_FORGET: "forget"}
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 #: Transport to serve. `stdio` is a private pipe between one client and this process — there is no
@@ -240,12 +246,24 @@ def _make_lifespan(token_registry: TokenRegistry | None):
                 "tenant isolation rests on query predicates alone. Connect as an unprivileged "
                 "role for defence in depth."
             )
+        # Built only for the authenticated shape: buckets are keyed by tenant, and stdio has no
+        # principal to attribute a call to. Reported at startup so the effective budget is visible
+        # in the journal rather than inferred from which requests started failing.
+        limiter = limiter_from_env() if registry is not None else None
+        if limiter is not None:
+            _log.info(
+                "per-tenant budgets: %s",
+                ", ".join(f"{k}={v.capacity:,.0f}" for k, v in sorted(limiter.limits().items()))
+                or "(all disabled)",
+            )
+
         try:
             yield {
                 "store": store,
                 "stores": registry,
                 "embedder": embedder,
                 "calibration": calibration,
+                "limiter": limiter,
             }
         finally:
             if store is not None:
@@ -268,6 +286,19 @@ def build_server() -> FastMCP:
         port=HTTP_PORT,
     )
 
+    def _current_tenant(state: dict) -> str | None:
+        """The authenticated caller's tenant, or None when running unauthenticated (stdio).
+
+        Read from the access token rather than threaded down from `_require`, so it cannot go
+        stale or be passed the wrong value by a future caller.
+        """
+        if state.get("stores") is None:
+            return None
+        token = get_access_token()
+        if token is None:  # pragma: no cover - `_require` has already rejected this
+            return None
+        return (token.claims or {}).get("tenant")
+
     def _state() -> dict:
         ctx = mcp.get_context().request_context.lifespan_context
         if not isinstance(ctx, dict) or "embedder" not in ctx:
@@ -283,11 +314,17 @@ def build_server() -> FastMCP:
         Every tool body goes through here. The store it hands back is the only one that tool can
         reach, so a missing scope check cannot leak data across tenants — at worst it lets a
         principal do the wrong thing inside its own namespace.
+
+        This is also where the per-tenant call budget is debited, for the same reason: one choke
+        point that a new tool cannot forget to call, because it cannot get a store without it.
         """
         state = _state()
         registry: StoreRegistry | None = state.get("stores")
         if registry is None:
-            return state["store"]  # unauthenticated stdio: one caller, one tenant
+            # Unauthenticated stdio: one caller, one tenant, a private pipe. There is no principal
+            # to charge and no one to protect the local user from but themselves, so the budget
+            # does not apply — matching how auth itself is scoped.
+            return state["store"]
 
         token = get_access_token()
         if token is None:
@@ -302,6 +339,11 @@ def build_server() -> FastMCP:
             principal = (token.claims or {}).get("principal", token.client_id)
             _log.warning("principal %r denied for scope %s", principal, scope)
             raise
+        # After authorisation, so an unauthorised caller cannot burn the tenant's budget by
+        # hammering a scope it does not hold.
+        limiter = state.get("limiter")
+        if limiter is not None:
+            limiter.check(tenant, _SCOPE_BUDGETS[scope])
         return registry.get(tenant)
 
     @mcp.tool(
@@ -361,10 +403,23 @@ def build_server() -> FastMCP:
         """
         state = _state()
         store = _require(SCOPE_WRITE)
+        limiter = state.get("limiter")
+        tenant = _current_tenant(state)
+
+        def _debit(_files: int, total_bytes: int) -> None:
+            """Charge the tenant for what is about to be embedded, before it is embedded.
+
+            The call budget alone cannot bound spend: one request may carry 20 MB and the next
+            200 bytes, so counting requests prices them identically. This meters the thing that
+            actually costs money, and it runs pre-flight — a refusal here has spent nothing.
+            """
+            if limiter is not None and tenant is not None:
+                limiter.check(tenant, "index_bytes", float(total_bytes))
+
         with METRICS.timer("recall_tool_latency_ms", tool="index"):
             return await _to_thread(
                 lambda: index_memory(
-                    store, state["embedder"], path
+                    store, state["embedder"], path, on_measured=_debit
                 ).model_dump_json(indent=2)
             )
 

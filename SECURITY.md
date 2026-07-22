@@ -104,22 +104,37 @@ What remains open is lifecycle, not enforcement: the token file is read at start
 There is no proof-of-possession — terminate TLS in front of the server. `stdio` remains
 unauthenticated by design: it is a private pipe to one client, not a listener.
 
-**Indexing has file-count and byte budgets; there is still no rate limiting or per-tenant quota.**
-The `recall_index` MCP tool (`recall_mcp/server.py`, delegating to `index_memory` in
-`recall_mcp/service.py`) now measures the candidate file set — count and total bytes — BEFORE
-reading or embedding anything, and refuses the whole request if it exceeds `RECALL_INDEX_MAX_FILES`
-(default 2000) or `RECALL_INDEX_MAX_BYTES` (default 20 MB); both are configurable environment
-variables, and the refusal happens pre-flight, not after partial spend. That closes the
-tree-size/file-count half of this gap.
+**Requests are bounded individually and in aggregate; the limiter is per process.**
+Each `recall_index` request is measured — candidate file count and total bytes — BEFORE anything
+is read or embedded, and refused whole if it exceeds `RECALL_INDEX_MAX_FILES` (default 2000) or
+`RECALL_INDEX_MAX_BYTES` (default 20 MB).
 
-What is still open: there is no limit on how many times a client can *call* `recall_index` (no rate
-limiting) and no per-tenant budget (one tenant's calls are not capped separately from another's) —
-a client within the per-call budget can still call repeatedly. This used to be blocked on there
-being nobody to charge: rate limiting needs a principal, and a stdio-only server has none. **That
-blocker is gone** — the authenticated HTTP transports now map each token to a principal with a
-tenant and scopes, so a per-tenant budget is implementable and simply is not implemented yet.
-Query length is unrelated to this paragraph — `recall_search`'s `k` is already clamped
-server-side (`MAX_SEARCH_K` in `recall_mcp/service.py`).
+Aggregate spend is bounded by per-tenant budgets (`recall_mcp/limits.py`), debited at the same
+choke point that authorises a call, so a tool cannot be metered-by-omission:
+
+| budget | default | environment variable |
+|---|---|---|
+| read calls | 120 / min | `RECALL_RATE_READ_PER_MIN` |
+| write calls | 20 / min | `RECALL_RATE_WRITE_PER_MIN` |
+| forget calls | 10 / min | `RECALL_RATE_FORGET_PER_MIN` |
+| indexed source text | 200 MB / hour | `RECALL_INDEX_BYTES_PER_HOUR` |
+
+The byte budget is the one that bounds **cost**: request count prices a 20 MB index and a
+200-byte one identically, so a caller staying under the per-request cap could previously call it
+in a loop. Bytes are charged pre-flight against the set about to be embedded, so a refusal has
+spent nothing. Budgets are keyed by **tenant**, not by principal — two tokens on one tenant are
+one bill, and letting a tenant mint another token to double its quota would make it advisory.
+
+Set any of these to `off` to disable it. A malformed or non-positive value falls back to the
+default rather than being read as "unlimited": `0` means "no limit" to one reader and "nothing
+allowed" to another, and guessing wrong in a spend control removes the cap.
+
+Two limits worth knowing. **Buckets live in the process**, so N server workers admit roughly N
+times these rates — honest for the single-process-behind-TLS deployment this targets, and the
+first thing to revisit before running a fleet. And **`stdio` is not metered**: it is a private
+pipe to one local client with no principal to charge, matching how authentication is scoped.
+Query length is unrelated — `recall_search`'s `k` is already clamped server-side
+(`MAX_SEARCH_K` in `recall_mcp/service.py`).
 
 **Deletion is exposed; retention is mechanism, not schedule.**
 `PgVectorStore.delete_sources()` (`recall/store.py:686`) is now wired into `recall forget` (CLI,

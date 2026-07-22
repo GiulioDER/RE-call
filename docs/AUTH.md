@@ -141,8 +141,10 @@ Stated plainly, because the alternative is discovering them in production:
   digest-provisioned token is accepted however weak the plaintext was. Generate tokens with
   `secrets.token_urlsafe(32)` and the point is moot; the trade is that plaintext never touches
   disk.
-- **No rate limiting or per-tenant quota.** `recall_index` has hard file-count and byte caps
-  (`recall_mcp/service.py`), but there is no limit on call *frequency*.
+- **Rate limits are per process.** Per-tenant call budgets and an indexing byte quota do ship
+  (`recall_mcp/limits.py`, tuned with `RECALL_RATE_*_PER_MIN` and `RECALL_INDEX_BYTES_PER_HOUR`;
+  see [SECURITY.md](../SECURITY.md)), but the buckets are in-memory and unshared, so N worker
+  processes admit roughly N times each rate. A fleet needs a shared limiter.
 
 If you need any of those, put a real identity provider in front and supply the MCP SDK's
 `auth_server_provider` in place of the static verifier. This module is intended for the case it
