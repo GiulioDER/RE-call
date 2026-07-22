@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from recall.frontmatter import parse_frontmatter, validity_bounds
+from recall.frontmatter import parse_frontmatter, supersedes_key, validity_bounds
 
 #: Prose that usually accompanies a closure/replacement decision. Deliberately short and
 #: high-precision: a chatty list would drown real omissions in noise.
@@ -103,7 +103,8 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
     rel = {f: (f.relative_to(root).as_posix() if root.is_dir() else f.name) for f in files}
     name_count: dict[str, int] = {}
     for f in files:
-        name_count[f.name] = name_count.get(f.name, 0) + 1
+        key = supersedes_key(f.name)
+        name_count[key] = name_count.get(key, 0) + 1
     names = set(name_count)
     # superseded basename -> ALL files claiming to supersede it (a single-valued map would
     # drop edges on fan-in and could hide a declared cycle behind a third superseder)
@@ -129,7 +130,13 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
         target = meta.get("supersedes")
         if not target:
             continue
-        if target == f.name:
+        # Normalise before MATCHING, but keep what the author wrote for the MESSAGE: a
+        # diagnostic that echoes a normalised form the user never typed is harder to act on.
+        # The real corpus writes wikilink brackets and omits the extension, and comparing
+        # verbatim reported every one of its edges as dangling.
+        written = target
+        target = supersedes_key(target)
+        if target == supersedes_key(f.name):
             issues.append(
                 LintIssue(rel[f], "error", "self-supersedes",
                           "a document cannot supersede itself")
@@ -137,17 +144,17 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
         elif target not in names:
             issues.append(
                 LintIssue(rel[f], "error", "dangling-supersedes",
-                          f"supersedes {target!r}, which does not exist in the corpus — "
+                          f"supersedes {written!r}, which does not exist in the corpus — "
                           f"the chain breaks here")
             )
         else:
             if name_count[target] > 1:
                 issues.append(
                     LintIssue(rel[f], "error", "ambiguous-supersedes-target",
-                              f"supersedes {target!r}, but {name_count[target]} files share "
+                              f"supersedes {written!r}, but {name_count[target]} files share "
                               f"that basename — the reference cannot be resolved unambiguously")
                 )
-            superseders.setdefault(target, []).append(f.name)
+            superseders.setdefault(target, []).append(supersedes_key(f.name))
 
     for members in _find_cycles(superseders):
         issues.append(
@@ -166,7 +173,7 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
     for versions in by_stem.values():
         versions.sort(key=lambda t: t[0])
         for (_, older), (_, newer) in zip(versions, versions[1:]):
-            if older.name not in superseded_targets:
+            if supersedes_key(older.name) not in superseded_targets:
                 issues.append(
                     LintIssue(newer.name, "warning", "version-sibling-unlinked",
                               f"{newer.name} looks like the successor of {older.name} but no "
@@ -177,7 +184,8 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
     for f in readable:
         meta = metas[rel[f]]
         declares_relation = (
-            "supersedes" in meta or "valid_until" in meta or f.name in superseded_targets
+            "supersedes" in meta or "valid_until" in meta
+            or supersedes_key(f.name) in superseded_targets
         )
         if declares_relation:
             continue

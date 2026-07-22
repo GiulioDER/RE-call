@@ -12,6 +12,7 @@ import psycopg
 from pgvector import Vector
 from pgvector.psycopg import register_vector
 
+from recall.frontmatter import supersedes_key
 from recall.observability import METRICS, get_logger
 from recall.types import Chunk, ScoredChunk
 
@@ -116,8 +117,10 @@ def require_secure_dsn(dsn: str) -> None:
 
 
 def _basename(file: str) -> str:
-    """Basename of a root-relative (posix) file identifier."""
-    return file.rsplit("/", 1)[-1]
+    """Stem of a root-relative (posix) file identifier — the key a `supersedes:` target resolves
+    to. A stem rather than a full basename so `name`, `name.md`, `[name]` and `[[name]]` all
+    designate the same document; see `supersedes_key`."""
+    return supersedes_key(file)
 
 
 def resolve_supersession(
@@ -160,7 +163,10 @@ def resolve_supersession(
         if len(candidates) == 1:
             mapping[candidates[0]] = file
         elif len(candidates) == 0:
-            mapping[target_basename] = file
+            # Dangling: key on the raw basename as written. Normalisation exists to make MATCHING
+            # tolerant of how humans spell a reference; this key matches no real file either way,
+            # so it keeps the author's form rather than inventing a normalised one.
+            mapping[supersedes.rsplit("/", 1)[-1]] = file
         else:
             # Ambiguous: don't guess — but don't stay silent either. Dropping the edge alone
             # would leave the (possibly superseded) memories looking perfectly `ok`, which is
