@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
-import traceback
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from typing import TypeVar
@@ -11,6 +9,7 @@ import anyio.to_thread
 from mcp.server.fastmcp import FastMCP
 
 from recall.calibration import load_for
+from recall.observability import METRICS, configure_logging, get_logger
 from recall.store import DEFAULT_TENANT, redacted_dsn
 from recall_mcp.service import index_memory, make_embedder, memory_stats, search_memory
 
@@ -28,6 +27,8 @@ TENANT = os.environ.get("RECALL_TENANT", DEFAULT_TENANT)
 STATEMENT_TIMEOUT_MS = int(os.environ.get("RECALL_STATEMENT_TIMEOUT_MS", "15000"))
 
 _T = TypeVar("_T")
+
+_log = get_logger("mcp")
 
 
 async def _to_thread(fn: Callable[[], _T]) -> _T:
@@ -67,31 +68,28 @@ async def _lifespan(_server: FastMCP):
             statement_timeout_ms=STATEMENT_TIMEOUT_MS,
         )
     except Exception:
-        print(
-            f"recall_mcp: startup failed (RECALL_DSN={redacted_dsn(DEFAULT_DSN)}, "
-            f"RECALL_EMBEDDER={EMBEDDER_NAME!r}):\n{traceback.format_exc()}",
-            file=sys.stderr,
+        _log.error(
+            "startup failed (dsn=%s, embedder=%r)",
+            redacted_dsn(DEFAULT_DSN), EMBEDDER_NAME, exc_info=True,
         )
         raise
     try:
         store.ensure_schema()
     except Exception:
         store.close()
-        print(f"recall_mcp: schema check failed:\n{traceback.format_exc()}", file=sys.stderr)
+        _log.error("schema check failed", exc_info=True)
         raise
     calibration = load_for(embedder.name)  # None -> uncalibrated fallback, flagged in results
     if calibration is None:
-        print(
-            f"recall_mcp: no calibration for embedder {embedder.name!r} — using the default "
-            "threshold (results will say calibrated=false). Run `recall calibrate` to fix.",
-            file=sys.stderr,
+        _log.warning(
+            "no calibration for embedder %r — using the default threshold (results will "
+            "say calibrated=false). Run `recall calibrate` to fix.", embedder.name,
         )
     if not store.check_rls_effective():
-        print(
-            "recall_mcp: WARNING — this database role bypasses row-level security "
-            "(superuser or BYPASSRLS), so tenant isolation rests on query predicates "
-            "alone. Connect as an unprivileged role for defence in depth.",
-            file=sys.stderr,
+        _log.warning(
+            "this database role bypasses row-level security (superuser or BYPASSRLS), so "
+            "tenant isolation rests on query predicates alone. Connect as an unprivileged "
+            "role for defence in depth."
         )
     try:
         yield {"store": store, "embedder": embedder, "calibration": calibration}
@@ -138,12 +136,13 @@ def build_server() -> FastMCP:
             indexed_at, text}]}.
         """
         state = _state()
-        return await _to_thread(
-            lambda: search_memory(
-                state["store"], state["embedder"], query, source=source, k=k,
-                calibration=state.get("calibration"),
-            ).model_dump_json(indent=2)
-        )
+        with METRICS.timer("recall_tool_latency_ms", tool="search"):
+            return await _to_thread(
+                lambda: search_memory(
+                    state["store"], state["embedder"], query, source=source, k=k,
+                    calibration=state.get("calibration"),
+                ).model_dump_json(indent=2)
+            )
 
     @mcp.tool(
         name="recall_index",
@@ -164,11 +163,12 @@ def build_server() -> FastMCP:
             JSON of {files, chunks, message}.
         """
         state = _state()
-        return await _to_thread(
-            lambda: index_memory(
-                state["store"], state["embedder"], path
-            ).model_dump_json(indent=2)
-        )
+        with METRICS.timer("recall_tool_latency_ms", tool="index"):
+            return await _to_thread(
+                lambda: index_memory(
+                    state["store"], state["embedder"], path
+                ).model_dump_json(indent=2)
+            )
 
     @mcp.tool(
         name="recall_stats",
@@ -195,7 +195,10 @@ mcp = build_server()
 
 
 def main() -> None:
-    print("recall_mcp: starting stdio server", file=sys.stderr)  # stderr only — stdout is JSON-RPC
+    # stderr only, and propagate=False — stdout carries JSON-RPC, so a stray log line there
+    # would corrupt the protocol.
+    configure_logging()
+    _log.info("starting stdio server", extra={"tenant": TENANT, "embedder": EMBEDDER_NAME})
     mcp.run()
 
 

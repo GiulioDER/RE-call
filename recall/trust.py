@@ -15,6 +15,8 @@ step over `HybridRetriever.search()`:
 from __future__ import annotations
 
 from dataclasses import replace
+
+from recall.observability import METRICS
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -176,6 +178,17 @@ def evaluate(
     ok = [h for h in trusted if h.verdict == "ok"]
     rest = [h for h in trusted if h.verdict != "ok"]
     abstained = not ok
+    # The operational questions this library exists to answer — how often does it abstain, and
+    # what is it demoting — are answerable only if they are counted where the decision is made.
+    METRICS.increment("recall_searches_total")
+    if abstained:
+        METRICS.increment("recall_abstentions_total")
+    if result.gap_warning:
+        METRICS.increment("recall_gap_warnings_total")
+    if result.staleness.stale:
+        METRICS.increment("recall_stale_results_total")
+    for hit in trusted:
+        METRICS.increment("recall_verdicts_total", verdict=hit.verdict)
     return TrustedResult(
         query=result.query,
         hits=ok + rest,

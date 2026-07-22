@@ -14,14 +14,17 @@ from __future__ import annotations
 import json
 import math
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import quantiles
 
+from recall.observability import get_logger
+
 DEFAULT_SCALE = 0.05
 DEFAULT_PATH = "calibration.json"
 ENV_VAR = "RECALL_CALIBRATION"
+
+_log = get_logger("calibration")
 
 
 def best_threshold(answerable: list[float], unanswerable: list[float]) -> float:
@@ -105,13 +108,13 @@ def load_for(embedder: str, path: str | Path | None = None) -> Calibration | Non
         threshold = float(data["threshold"])
         scale = float(data["scale"])
     except (OSError, json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
-        print(f"recall: ignoring unreadable calibration file {p} (uncalibrated fallback)",
-              file=sys.stderr)
+        _log.warning("ignoring unreadable calibration file %s (uncalibrated fallback)", p)
         return None
     if not (math.isfinite(threshold) and -1.0 <= threshold <= 1.0
             and math.isfinite(scale) and scale > 0.0):
-        print(f"recall: ignoring out-of-range calibration in {p} "
-              f"(threshold={threshold!r}, scale={scale!r}) — uncalibrated fallback",
-              file=sys.stderr)
+        _log.warning(
+            "ignoring out-of-range calibration in %s (threshold=%r, scale=%r) — "
+            "uncalibrated fallback", p, threshold, scale,
+        )
         return None
     return Calibration(embedder=embedder, threshold=threshold, scale=scale)

@@ -179,6 +179,14 @@ Point `RECALL_DSN` at any Postgres.
 > `store.check_rls_effective()` tells you which you have, and the MCP server warns at startup.
 > A store is bound to one tenant, so serve many tenants with a store (or server) per tenant.
 
+> **Operating it.** Diagnostics go to the standard `logging` module under the `recall`
+> namespace — the library never attaches handlers itself, so it cannot hijack your application's
+> logging. Entry points call `configure_logging()`, honouring `RECALL_LOG_LEVEL` and
+> `RECALL_LOG_FORMAT=json` for log shipping. Counters and latency percentiles (searches,
+> abstentions, gap warnings, verdicts by kind, database reconnects) are collected in-process and
+> returned by the `recall_stats` MCP tool, so you can read them without standing up a scrape
+> endpoint.
+
 > **Two safety notes about `RECALL_DSN`.** The test suite **DROPs tables**, so it reads a
 > separate `RECALL_TEST_DSN` (falling back to the local docker-compose database) and never
 > `RECALL_DSN` — exporting your real DSN and running `pytest` cannot touch it. And the MCP server

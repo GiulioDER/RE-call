@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from recall.calibration import Calibration
 from recall.embeddings import Embedder, HashingEmbedder
 from recall.guards import staleness
+from recall.observability import METRICS
 from recall.index import Indexer
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
@@ -86,6 +87,12 @@ class MemoryStatsResult(BaseModel):
         description="ISO-8601 timestamp of the newest chunk, or null if memory is empty."
     )
     stale: bool = Field(description="True when the newest chunk is older than the freshness window.")
+    metrics: dict = Field(
+        default_factory=dict,
+        description="Process metrics since start: counters (searches, abstentions, gap warnings, "
+        "verdicts by kind, database reconnects) and latency percentiles. Surfaced here so an "
+        "operator can read them without a scrape endpoint.",
+    )
 
 
 def search_memory(
@@ -190,4 +197,5 @@ def memory_stats(
         chunks=store.count(),
         newest_indexed_at=newest.isoformat() if newest else None,
         stale=stale,
+        metrics=METRICS.snapshot(),
     )
