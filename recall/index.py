@@ -200,6 +200,18 @@ def _confined_to(root: Path, paths: Iterable[Path]) -> list[Path]:
     return kept
 
 
+def candidate_files(path: str | Path, glob: str = "**/*.md") -> list[Path]:
+    """Return the confined, sorted file list that `index_path(path, glob)` would index.
+
+    A pure filesystem walk: it only `stat`s and `resolve`s paths — no file is opened, no chunker
+    runs, no embedding is requested. This is what lets a caller MEASURE a tree (file count, total
+    bytes) and refuse to index it before spending anything, using the exact same walk `index_path`
+    uses, so the measurement can never diverge from what would actually be indexed.
+    """
+    root = Path(path).resolve()
+    return sorted(_confined_to(root, root.glob(glob))) if root.is_dir() else [root]
+
+
 @dataclass(frozen=True)
 class IndexStats:
     files: int    # files actually (re)indexed
@@ -237,7 +249,7 @@ class Indexer:
         # same file instead of replacing them. (Root-relative `file` keys are unaffected —
         # they are computed against this same root either way.)
         root = Path(path).resolve()
-        files = sorted(_confined_to(root, root.glob(glob))) if root.is_dir() else [root]
+        files = candidate_files(root, glob)
         # Identify each file by its ROOT-RELATIVE path, not its bare basename: two files with the
         # same basename in different directories (a/notes.md, b/notes.md) must not collide in the
         # supersession map or in provenance. Mirrors recall.lint's `rel` keying. A single-file

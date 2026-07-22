@@ -98,11 +98,21 @@ the store), but the transport itself is unauthenticated. On a non-stdio transpor
 can reach the server can act as any tenant. Do not expose the MCP server on an untrusted network.
 For now, stdio on a trusted host is the supported deployment.
 
-**Indexing is client-callable and unbounded.** The `recall_index` MCP tool
-(`recall_mcp/server.py:152`, delegating to `index_memory` in `recall_mcp/service.py:166`) has no cap
-on tree size, file count, or query length. A client that can reach the server can therefore direct
-arbitrary cloud-embedding spend if a paid embedder is configured. Combined with the gap above, treat
-network exposure plus a cloud embedder as a cost-exhaustion risk, not merely a confidentiality one.
+**Indexing has file-count and byte budgets; there is still no rate limiting or per-tenant quota.**
+The `recall_index` MCP tool (`recall_mcp/server.py`, delegating to `index_memory` in
+`recall_mcp/service.py`) now measures the candidate file set — count and total bytes — BEFORE
+reading or embedding anything, and refuses the whole request if it exceeds `RECALL_INDEX_MAX_FILES`
+(default 2000) or `RECALL_INDEX_MAX_BYTES` (default 20 MB); both are configurable environment
+variables, and the refusal happens pre-flight, not after partial spend. That closes the
+tree-size/file-count half of this gap.
+
+What is still open: there is no limit on how many times a client can *call* `recall_index` (no rate
+limiting) and no per-tenant budget (one tenant's calls are not capped separately from another's) —
+a client within the per-call budget can still call repeatedly. Both need a transport and a
+principal to enforce meaningfully, which a stdio-only server does not have; see the "no
+authentication on the MCP transport" gap above, which this inherits. Query length is unrelated to
+this paragraph — `recall_search`'s `k` is already clamped server-side (`MAX_SEARCH_K` in
+`recall_mcp/service.py`).
 
 **Deletion is exposed, but only per-source, and there is still no retention policy.**
 `PgVectorStore.delete_sources()` (`recall/store.py:686`) is now wired into `recall forget` (CLI,

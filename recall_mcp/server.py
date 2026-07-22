@@ -154,7 +154,9 @@ def build_server() -> FastMCP:
 
         Re-indexing a file REPLACES its chunks completely (safe to re-run after edits; a shrunk
         file leaves no stale chunks behind).
-        `path` is confined to RECALL_INDEX_ROOT (default: the server's working directory).
+        `path` is confined to RECALL_INDEX_ROOT (default: the server's working directory), and the
+        request is refused before anything is embedded if it exceeds RECALL_INDEX_MAX_FILES or
+        RECALL_INDEX_MAX_BYTES (see `recall_mcp/service.py`).
 
         Args:
             path: a file or directory path (``**/*.md`` is indexed for directories).
