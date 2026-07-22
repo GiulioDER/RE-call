@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,8 +26,52 @@ MIN_PIECE_DIVISOR = 8
 #: roughly one batch of chunks plus their vectors, instead of the whole corpus, and
 #: makes progress visible in the database while a long index is still running.
 DEFAULT_BATCH_CHUNKS = 512
+#: Refuse to prune when a single run would delete at least this fraction of the sources already
+#: indexed under the root. Re-indexing deletes rows for files that are gone from disk, which is
+#: correct when a memo was really deleted and catastrophic when the corpus merely wasn't there:
+#: an unmounted volume, a half-finished sync, a path that still resolves. Those cases are
+#: indistinguishable from "the author deleted everything" at the filesystem level, so the only
+#: safe reading of a mass disappearance is that something is wrong. Overridable per-run.
+DEFAULT_MAX_PRUNE_FRACTION = 0.5
+#: ...but only once the corpus is big enough for a fraction to mean anything. Deleting one of two
+#: memos is 50% and entirely routine; the guard must not make small corpora unusable. Below this
+#: many known sources, pruning proceeds unguarded — the blast radius is a handful of files that a
+#: re-index restores.
+PRUNE_GUARD_MIN_SOURCES = 5
 
 _log = get_logger("index")
+
+
+def _prune_fraction_from_env() -> float:
+    """`RECALL_MAX_PRUNE_FRACTION`, bounded to (0, 1]; anything malformed falls back to default.
+
+    Read per-Indexer rather than at import so a test (or a long-lived process) can change it
+    without reloading the module. Values outside the range are ignored rather than clamped: a
+    caller who wrote `50` meant 50 percent, and silently treating it as "never guard" would
+    disable the protection at exactly the moment someone was trying to configure it.
+    """
+    raw = os.environ.get("RECALL_MAX_PRUNE_FRACTION")
+    if raw is None:
+        return DEFAULT_MAX_PRUNE_FRACTION
+    try:
+        value = float(raw)
+    except ValueError:
+        _log.warning("ignoring malformed RECALL_MAX_PRUNE_FRACTION=%r", raw)
+        return DEFAULT_MAX_PRUNE_FRACTION
+    if not (0.0 < value <= 1.0) or value != value:  # NaN fails the range test too, explicitly
+        _log.warning(
+            "ignoring out-of-range RECALL_MAX_PRUNE_FRACTION=%r (expected 0 < f <= 1)", raw
+        )
+        return DEFAULT_MAX_PRUNE_FRACTION
+    return value
+
+
+class PruneGuardTripped(RuntimeError):
+    """A re-index would have deleted most of the corpus, so nothing was deleted.
+
+    Deliberately NOT a ValueError: the caller passed a perfectly valid path. What is wrong is the
+    state of the filesystem it points at, and the two deserve different handling.
+    """
 
 # A chunker turns one document's text into a list of chunk strings.
 Chunker = Callable[[str], list[str]]
@@ -228,6 +273,7 @@ class Indexer:
         chunker: Chunker = chunk_text,
         cache: EmbeddingCache | None = None,
         batch_chunks: int = DEFAULT_BATCH_CHUNKS,
+        allow_prune: bool = False,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -236,6 +282,11 @@ class Indexer:
         if batch_chunks < 1:
             raise ValueError("batch_chunks must be >= 1")
         self._batch_chunks = batch_chunks
+        #: Set by a caller who has confirmed the files really are gone. Bypasses the guard for
+        #: this Indexer only — there is no global off switch, because the run that needs one is
+        #: always the run you are not watching.
+        self._allow_prune = allow_prune
+        self._max_prune_fraction = _prune_fraction_from_env()
 
     def index_path(self, path: str | Path, glob: str = "**/*.md") -> IndexStats:
         """Index a markdown file, or a directory of them, into the vector store.
@@ -324,18 +375,37 @@ class Indexer:
         indexed in several roots; pruning everything absent from THIS glob would delete the
         others' rows on every run.
         """
-        present = {str(f) for f in files}
-        vanished = []
-        for source in known:
-            if source in present:
-                continue
+        def under_root(source: str) -> bool:
             try:
-                if Path(source).is_relative_to(root):
-                    vanished.append(source)
+                return Path(source).is_relative_to(root)
             except (OSError, ValueError):  # pragma: no cover - unparsable stored path
-                continue
+                return False
+
+        present = {str(f) for f in files}
+        # One pass, one definition of "under this root". The guard below divides by this set, so
+        # computing it a second way is how the numerator and denominator drift apart.
+        indexed_here = [s for s in known if under_root(s)]
+        vanished = [s for s in indexed_here if s not in present]
         if not vanished:
             return 0
+
+        # Guard BEFORE the delete, against the set scoped to this root — not the whole table, or a
+        # second corpus indexed elsewhere would dilute the fraction and mask a total wipe of this
+        # one.
+        if len(indexed_here) >= PRUNE_GUARD_MIN_SOURCES and not self._allow_prune:
+            fraction = len(vanished) / len(indexed_here)
+            if fraction >= self._max_prune_fraction:
+                raise PruneGuardTripped(
+                    f"refusing to prune {len(vanished)} of {len(indexed_here)} indexed source(s) "
+                    f"({fraction:.0%}) under {str(root)!r} — nothing was deleted. Files that are "
+                    f"gone from disk are normally removed from the index, but a disappearance "
+                    f"this large usually means the corpus is missing rather than deleted "
+                    f"(unmounted volume, interrupted sync, wrong path). Confirm the files are "
+                    f"really gone, then re-run with allow_prune=True (CLI: --allow-prune). "
+                    f"RECALL_MAX_PRUNE_FRACTION (currently {self._max_prune_fraction:g}) tunes "
+                    f"how large a disappearance is tolerated, but cannot disable the guard."
+                )
+
         _log.info("pruning %d file(s) no longer on disk under %s", len(vanished), root)
         self._store.delete_sources(vanished)
         return len(vanished)

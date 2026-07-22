@@ -7,7 +7,7 @@ from pathlib import Path
 
 from recall.calibration import Calibration, from_samples, load_for, save
 from recall.embeddings import HashingEmbedder
-from recall.index import Indexer, chunk_code, chunk_text
+from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
 from recall.lint import DEFAULT_GLOB
 from recall.store import PgVectorStore, warn_if_insecure_dsn
 from recall.trust import trusted_search
@@ -73,6 +73,13 @@ def main(argv: list[str] | None = None) -> None:
     p_index.add_argument(
         "--glob", default=DEFAULT_GLOB,
         help="file glob to index — e.g. '**/*.py' for code (auto-uses code chunking). Default: markdown.",
+    )
+    p_index.add_argument(
+        "--allow-prune", action="store_true",
+        help="permit this run to drop most of the indexed corpus. Re-indexing removes files that "
+             "are gone from disk; when most of them vanish at once that is refused, because it "
+             "usually means the corpus is missing rather than deleted. Pass this once you have "
+             "confirmed the files really are gone.",
     )
 
     p_forget = sub.add_parser(
@@ -239,7 +246,12 @@ def main(argv: list[str] | None = None) -> None:
         chunker = chunk_code if args.glob.endswith(".py") else chunk_text
         with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table) as store:
             store.ensure_schema()
-            stats = Indexer(store, embedder, chunker=chunker).index_path(args.path, glob=args.glob)
+            indexer = Indexer(store, embedder, chunker=chunker, allow_prune=args.allow_prune)
+            try:
+                stats = indexer.index_path(args.path, glob=args.glob)
+            except PruneGuardTripped as exc:
+                # The message carries the recovery instructions; a traceback would bury them.
+                raise SystemExit(str(exc)) from exc
             print(f"indexed {stats.chunks} chunks from {stats.files} files")
     elif args.cmd == "forget":
         with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table) as store:
