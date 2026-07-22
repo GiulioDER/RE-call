@@ -1,0 +1,171 @@
+"""Turn prose closure markers into declared `supersedes:` edges.
+
+`recall lint` finds memos whose body says *"superseded by X"* / *"replaces X"* while the
+frontmatter declares nothing — 60 of them in a real 792-memo corpus, against 2 declared edges.
+The relation is being written; it is just written where retrieval cannot act on it.
+
+Detection already worked. This adds the write-back, under a rule that refuses far more often
+than it acts:
+
+**A fix is proposed only when the target is PROVABLE.** The body must name a document — as a
+`[[wikilink]]`, a bare `name.md`, or a bare stem — in the same sentence as the marker, and that
+name must resolve to exactly one file in the corpus. A bare `DEPRECATED` with no target is
+reported as needing a human, never guessed at.
+
+**Direction follows the marker's voice**, and it decides WHICH FILE is edited:
+
+- *"this supersedes X"* → `supersedes: X` goes on **this** memo.
+- *"this is superseded by X"* → the edge belongs on **X**, because the schema has no
+  `superseded_by`. Getting this backwards would declare the live memo stale and demote it
+  beneath the one it replaced — the exact failure the trust layer exists to prevent, caused by
+  the tool meant to fix it.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+from recall.frontmatter import parse_frontmatter, supersedes_key
+from recall.lint import DEFAULT_GLOB
+from recall.observability import get_logger
+
+_log = get_logger("fix")
+
+#: Markers where the SUBJECT of the sentence supersedes the named target.
+_ACTIVE = r"(?:supersedes|replaces|supercedes)"
+#: Markers where the subject IS superseded by the named target — the edge goes on the target.
+_PASSIVE = r"(?:superseded\s+by|superceded\s+by|replaced\s+by)"
+
+#: A document reference: [[wikilink]], [link], `name.md`, or a bare token that looks like a
+#: memo name. Deliberately narrow — a loose pattern would "resolve" ordinary prose to a file.
+_REF = r"\[\[([^\]]+)\]\]|\[([^\]]+)\]|`([^`]+)`|([A-Za-z0-9][\w.\-]{7,}\.md)|([a-z0-9]+(?:[_\-][a-z0-9]+){2,})"
+
+_PASSIVE_RE = re.compile(rf"{_PASSIVE}[^\n.;]{{0,40}}?(?:{_REF})", re.IGNORECASE)
+_ACTIVE_RE = re.compile(rf"\b{_ACTIVE}[^\n.;]{{0,40}}?(?:{_REF})", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class Proposal:
+    """One edge to declare. `edit_file` is the memo that gains `supersedes: <target>`."""
+
+    edit_file: str      # root-relative path of the file to modify
+    target: str         # value to write for `supersedes:`
+    evidence_file: str  # the memo whose prose stated the relation
+    evidence: str       # the matched phrase, so a human can judge it
+
+
+@dataclass(frozen=True)
+class Unfixable:
+    """A closure marker whose target could not be proved. Reported, never guessed."""
+
+    file: str
+    reason: str
+
+
+def _first_ref(match: re.Match) -> str | None:
+    for group in match.groups():
+        if group:
+            return group.strip()
+    return None
+
+
+def extract_edges(body: str) -> tuple[list[str], list[str]]:
+    """``(actively_supersedes, superseded_by)`` document references named in `body`.
+
+    Pure and file-free so the direction rule — the part that would silently invert the
+    supersession graph if wrong — is testable on strings alone.
+    """
+    active = [r for m in _ACTIVE_RE.finditer(body) if (r := _first_ref(m))]
+    passive = [r for m in _PASSIVE_RE.finditer(body) if (r := _first_ref(m))]
+    # "superseded by X" also matches the active pattern's bare "supersede" stem in some
+    # phrasings; passive wins, since its voice is the more specific reading.
+    passive_keys = {supersedes_key(p) for p in passive}
+    active = [a for a in active if supersedes_key(a) not in passive_keys]
+    return active, passive
+
+
+def propose_fixes(
+    path: str | Path, glob: str = DEFAULT_GLOB
+) -> tuple[list[Proposal], list[Unfixable]]:
+    """Scan a corpus and return the edges that can be declared, plus what needs a human."""
+    root = Path(path)
+    files = sorted(root.glob(glob)) if root.is_dir() else [root]
+    rel = {f: (f.relative_to(root).as_posix() if root.is_dir() else f.name) for f in files}
+
+    by_key: dict[str, list[str]] = {}
+    for f in files:
+        by_key.setdefault(supersedes_key(f.name), []).append(rel[f])
+
+    existing: dict[str, str] = {}
+    bodies: dict[str, str] = {}
+    for f in files:
+        try:
+            meta, body = parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+        except (UnicodeDecodeError, OSError):
+            continue
+        bodies[rel[f]] = body
+        if meta.get("supersedes"):
+            existing[rel[f]] = meta["supersedes"]
+
+    proposals: list[Proposal] = []
+    unfixable: list[Unfixable] = []
+    seen: set[tuple[str, str]] = set()
+
+    for name, body in bodies.items():
+        active, passive = extract_edges(body)
+        if not active and not passive:
+            continue
+        for ref, edit_file, target_name in (
+            [(r, name, r) for r in active] + [(r, None, r) for r in passive]
+        ):
+            key = supersedes_key(ref)
+            candidates = by_key.get(key, [])
+            if len(candidates) != 1:
+                unfixable.append(Unfixable(
+                    name,
+                    f"names {ref!r}, which matches {len(candidates)} files in the corpus"
+                    if candidates else f"names {ref!r}, which is not a file in the corpus",
+                ))
+                continue
+            resolved = candidates[0]
+            if resolved == name:
+                continue  # self-reference: lint reports it separately
+            # passive voice: the OTHER file is the one that supersedes this memo
+            writer = edit_file if edit_file is not None else resolved
+            value = target_name if edit_file is not None else name
+            if writer in existing:
+                unfixable.append(Unfixable(
+                    writer,
+                    f"already declares supersedes: {existing[writer]!r} — refusing to overwrite",
+                ))
+                continue
+            pair = (writer, supersedes_key(value))
+            if pair in seen:
+                continue
+            seen.add(pair)
+            proposals.append(Proposal(writer, value, name, ref))
+    return proposals, unfixable
+
+
+def apply_proposal(root: Path, p: Proposal) -> None:
+    """Insert `supersedes: <target>` into `p.edit_file`'s frontmatter, preserving everything else.
+
+    Rewrites only the frontmatter block: a file without one gains a minimal block above its
+    existing content, and a file with one keeps its other keys, order and body byte-for-byte.
+    """
+    f = root / p.edit_file if root.is_dir() else root
+    text = f.read_text(encoding="utf-8-sig")
+    line = f"supersedes: {p.target}"
+    lines = text.split("\n")
+    if lines and lines[0].lstrip("﻿").strip() == "---":
+        for i, ln in enumerate(lines[1:], start=1):
+            if ln.strip() == "---":
+                lines.insert(i, line)
+                break
+        else:  # unclosed block — treat as no frontmatter rather than corrupt it further
+            lines = ["---", line, "---", *lines]
+    else:
+        lines = ["---", line, "---", *lines]
+    f.write_text("\n".join(lines), encoding="utf-8")
+    _log.info("declared %s in %s", line, p.edit_file)
