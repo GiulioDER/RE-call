@@ -70,7 +70,8 @@ def _rate(flags: list[bool]) -> dict:
     }
 
 
-def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder, k: int = 5) -> dict:
+def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder, k: int = 5,
+             rerank: bool = False) -> dict:
     answerable = [q for q in questions if q.get("answerable")]
     unanswerable = [q for q in questions if not q.get("answerable")]
 
@@ -98,24 +99,44 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder, k: int = 5
             [top_cos(q["query"]) for q in fit if not q.get("answerable")],
         )
 
-        hit_at_k, reciprocal, latency = [], [], []
-        misses = []
-        for q in [x for x in held if x.get("answerable")]:
-            t = time.perf_counter()
-            res = retr.search(q["query"], k=k)
-            latency.append((time.perf_counter() - t) * 1000)
-            files = _files_of(res)
-            want = set(q["relevant_files"])
-            hit_at_k.append(any(f in want for f in files[:k]))
-            rank = next((i for i, f in enumerate(files) if f in want), None)
-            reciprocal.append(1.0 / (rank + 1) if rank is not None else 0.0)
-            if rank is None:
-                # A miss is either a retrieval failure or a LABELLING one — on a corpus with many
-                # related memos, several documents may legitimately answer a question while the
-                # label names one. Reporting what came back instead lets the labeller tell those
-                # apart, which a bare rate cannot.
-                misses.append({"id": q["id"], "query": q["query"],
-                               "expected": sorted(want), "got": files[:k]})
+        answerable_held = [x for x in held if x.get("answerable")]
+
+        def score_arm(retriever) -> dict:
+            hits, reciprocal, latency, misses = [], [], [], []
+            for q in answerable_held:
+                t = time.perf_counter()
+                res = retriever.search(q["query"], k=k)
+                latency.append((time.perf_counter() - t) * 1000)
+                files = _files_of(res)
+                want = set(q["relevant_files"])
+                hits.append(any(f in want for f in files[:k]))
+                rank = next((i for i, f in enumerate(files) if f in want), None)
+                reciprocal.append(1.0 / (rank + 1) if rank is not None else 0.0)
+                if rank is None:
+                    # A miss is either a retrieval failure or a LABELLING one — on a corpus with
+                    # many related memos, several documents may legitimately answer a question
+                    # while the label names one. Reporting what came back lets the labeller tell
+                    # those apart, which a bare rate cannot.
+                    misses.append({"id": q["id"], "query": q["query"],
+                                   "expected": sorted(want), "got": files[:k]})
+            lat = sorted(latency)
+            return {
+                f"hit_at_{k}": _rate(hits),
+                "mrr": round(statistics.mean(reciprocal), 4) if reciprocal else float("nan"),
+                "latency_ms": {"p50": round(lat[len(lat) // 2], 1),
+                               "p95": round(lat[int(0.95 * len(lat))], 1)} if lat else {},
+                "misses": misses,
+            }
+
+        arms = {"hybrid": score_arm(retr)}
+        if rerank:
+            # Same index, same questions, same calibration — only the ranking stage differs, so
+            # any delta is the reranker's and nothing else's.
+            from recall.rerank import CrossEncoderReranker
+
+            arms["hybrid+rerank"] = score_arm(
+                HybridRetriever(store, embedder, reranker=CrossEncoderReranker())
+            )
 
         abstained, false_abstain = [], []
         for q in [x for x in held if not x.get("answerable")]:
@@ -125,20 +146,15 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder, k: int = 5
             false_abstain.append(trusted_search(store, embedder, q["query"], k=k,
                                                 calibration=cal).abstained)
 
-        lat = sorted(latency)
         return {
             "corpus": {"files": stats.files, "chunks": store.count(),
                        "index_seconds": round(index_s, 1)},
             "questions": {"total": len(questions), "answerable": len(answerable),
                           "unanswerable": len(unanswerable), "held_out": len(held)},
             "threshold": cal.threshold,
-            f"hit_at_{k}": _rate(hit_at_k),
-            "mrr": round(statistics.mean(reciprocal), 4) if reciprocal else float("nan"),
+            "arms": arms,
             "abstention_accuracy": _rate(abstained),
             "false_abstain": _rate(false_abstain),
-            "latency_ms": {"p50": round(lat[len(lat) // 2], 1),
-                           "p95": round(lat[int(0.95 * len(lat))], 1)} if lat else {},
-            "misses": misses,
         }
     finally:
         store.drop_table()
@@ -151,6 +167,8 @@ def main() -> None:
     ap.add_argument("--questions", required=True)
     ap.add_argument("--embedder", default="fastembed", choices=["fastembed", "hashing"])
     ap.add_argument("-k", type=int, default=5)
+    ap.add_argument("--rerank", action="store_true",
+                    help="also score a cross-encoder arm from the SAME index")
     ap.add_argument("--dsn", default=DEFAULT_DSN)
     args = ap.parse_args()
 
@@ -161,7 +179,7 @@ def main() -> None:
         raise SystemExit(f"answerable questions without relevant_files: {missing}")
 
     report = evaluate(args.dsn, Path(args.corpus), questions, _make_embedder(args.embedder),
-                      k=args.k)
+                      k=args.k, rerank=args.rerank)
     print(json.dumps(report, indent=2))
 
 

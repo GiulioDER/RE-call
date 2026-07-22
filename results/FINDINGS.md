@@ -334,7 +334,32 @@ So 0.33 is a mild under-estimate — call it ~0.35–0.40 once labels are widene
 It held up where retrieval did not: **89%** of genuinely unanswerable questions were abstained on,
 while only **4%** of answerable ones were wrongly refused. The trust layer is not the bottleneck.
 
-### The most likely lever, untested
+### The most likely lever, tested — and it is not the answer
+
+Re-run with `--rerank`, scoring both arms from the **same index pass** so nothing but the ranking
+stage differs (indexing this corpus costs ~800 s, and issue #26 showed an HNSW rebuild is not a
+fixed quantity, so two separate runs would have compared two different indexes):
+
+| arm | hit@5 | 95% Wilson | MRR | misses | p50 latency |
+|---|---|---|---|---|---|
+| hybrid | 0.326 | [0.21, 0.47] | 0.294 | 31 / 46 | **45 ms** |
+| hybrid + cross-encoder | 0.391 | [0.26, 0.54] | 0.312 | 28 / 46 | **2,568 ms** |
+
+**Three questions out of 46 changed from miss to hit, for a 57× latency increase.** The intervals
+overlap almost entirely; this run cannot distinguish that gain from noise. §1's result — reranking
+rescuing a weak embedder — did not transfer here.
+
+And the shape of the failure is the useful part. **A reranker can only reorder what fusion already
+retrieved.** If it converts 3 of 31 misses, then for roughly 28 of them the right document was never
+in the candidate window at all. So the bottleneck is **candidate recall, not ranking**: the
+retrieval stage is not returning the right memo to be re-ranked.
+
+That redirects the next experiment away from ranking and toward the pool itself — a larger `k`
+before fusion, a stronger embedder, or the chunking (800-character windows over dense, reference-
+heavy memos may be splitting the answer away from the words the question uses). Each is testable
+with this same harness; none has been run, and none should be claimed until it has.
+
+### The most likely lever, as first predicted (superseded by the run above)
 
 This run used dense + sparse fusion with **no cross-encoder**. §1 of this document measures
 reranking lifting MRR from 0.63 to 1.00 on a weak embedder and finding it redundant on an easy
