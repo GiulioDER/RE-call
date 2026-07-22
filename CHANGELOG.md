@@ -22,6 +22,39 @@ dates — this project does not currently tag releases.
   (`recall_mcp/service.py`) report chunks removed and sources removed separately from sources not
   found, so a typo'd source is never mistaken for a successful deletion. Closes the gap tracked in
   `SECURITY.md` and issue #9.
+- **HNSW recall fix for `source`-filtered dense queries**: `query_dense()` (`recall/store.py`)
+  applies `WHERE source = ...` alongside the HNSW `ORDER BY embedding <=> ...`, and the index walk
+  is filter-blind — it finds the globally nearest neighbours and only then discards the ones that
+  fail the filter. Measured on 20,000 rows / dim 64 / a filter matching 10% of rows / 40 queries
+  (`tests/test_hnsw_filtered_recall.py`'s exact corpus shape): recall@10 **0.38** with pgvector's
+  own defaults (`ef_search=40`, `iterative_scan=off`), and **40/40** queries returning fewer than
+  the requested `k`. Neither `hnsw.ef_search` nor `hnsw.iterative_scan` alone is enough (the first
+  restores recall but a filtered scan can still exhaust it before reaching `k`; the second stops
+  the truncation but not the recall loss) — `query_dense` now sets **both**,
+  `hnsw.ef_search=200` + `hnsw.iterative_scan=relaxed_order`, via `SET LOCAL` inside an explicit
+  transaction (the one precondition `SET LOCAL` has), scoped to ONLY the `source`-filtered branch
+  — an unfiltered query already measures recall 1.000 and pays no extra cost. Recovers to
+  recall@10 **~0.90** with **0/40** truncated on the same corpus. Both HNSW knobs are configurable
+  via `RECALL_HNSW_EF_SEARCH_FILTERED` / `RECALL_HNSW_ITERATIVE_SCAN_FILTERED`, following the same
+  `os.environ.get(..., str(DEFAULT))` convention as `RECALL_INDEX_MAX_FILES`/`_BYTES`. Measured
+  cost of the fix on this corpus: filtered-query p50 latency moves from ~6ms to ~8.6ms (the extra
+  `SET LOCAL` round trips + the wider search); the unfiltered arm is untouched by construction
+  (~2ms p50 either way). Note: pgvector's own HNSW build carries internal randomness this project
+  does not control, so the untuned recall/latency figures move some from build to build (observed
+  range across several builds: 0.33-0.41 recall, always 40/40 truncated) — the regression test
+  retries the corpus build when an unusually well-connected graph fails to reproduce the pathology,
+  rather than loosen the assertion. Closes issue #11's third checkbox.
+- **`CREATE INDEX CONCURRENTLY` in `ensure_schema()`**: every secondary index it creates
+  (`tsv`, `embedding`/HNSW, `indexed_at`, `source`, `metadata->>'file'`, `tenant_id`) now builds
+  `CONCURRENTLY`. `ensure_schema()` runs on every store open, not only at first bootstrap — a
+  plain `CREATE INDEX` against an already-populated, live table blocks writers for as long as the
+  build takes (minutes for HNSW on a real corpus). Safe here because `ensure_schema`'s connection
+  is autocommit and, unlike `replace_sources`/`upsert`, is never wrapped in an explicit
+  `conn.transaction()` — every statement is already its own implicit transaction, the one
+  precondition `CONCURRENTLY` has (verified directly against the container). Trade-off accepted,
+  not hidden: an interrupted build can leave an `INVALID` index that `IF NOT EXISTS` will not
+  retry automatically (a plain `CREATE INDEX` cannot fail this way, since it is one transaction);
+  documented in `recall/store.py` alongside the change. Closes issue #11's fourth checkbox.
 
 ## [0.5.0] — 2026-07-22
 
