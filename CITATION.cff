@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "RE-call: Retrieval-Augmented Self-Recall"
+version: 0.5.0
+abstract: >-
+  RE-call is a retrieval engine for an AI agent's own memory that returns confidence, provenance,
+  and validity with every hit — instead of the closest vector match alone — and prefers an explicit
+  abstention over confident noise. It runs on PostgreSQL with pgvector, fusing dense and sparse
+  retrieval via Reciprocal Rank Fusion before a calibrated trust layer judges supersession, validity
+  windows, and confidence for each result.
+authors:
+  - alias: "GiulioDER"
+repository-code: "https://github.com/GiulioDER/RE-call"
+license: MIT
