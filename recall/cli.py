@@ -113,6 +113,22 @@ def main(argv: list[str] | None = None) -> None:
              "for this embedder; must be calibrated per embedder — see FINDINGS section 2)",
     )
 
+    p_check = sub.add_parser(
+        "check",
+        help="write-time gate: for the memo(s) you are committing, ask for the supersession "
+             "edge while you still know the answer (no DB needed)",
+    )
+    p_check.add_argument("paths", nargs="+", help="the memo file(s) being written")
+    p_check.add_argument(
+        "--corpus", default=None,
+        help="corpus dir used to filter candidates to real documents (default: each file's own "
+             "directory)",
+    )
+    p_check.add_argument(
+        "--strict", action="store_true",
+        help="exit 1 when a memo needs an edge — use this in a pre-commit hook",
+    )
+
     p_cal = sub.add_parser(
         "calibrate",
         help="calibrate the abstention threshold for this embedder against labeled queries",
@@ -177,6 +193,26 @@ def main(argv: list[str] | None = None) -> None:
         print(f"{errors} errors, {warnings} warnings")
         if errors:
             raise SystemExit(1)
+        return
+
+    if args.cmd == "check":  # pure filesystem check — no embedder, no DB
+        from recall.check import check_file, corpus_names, format_prompt
+
+        needs = 0
+        for raw in args.paths:
+            f = Path(raw)
+            if not f.exists():
+                print(f"recall check: no such file: {raw}", file=sys.stderr)
+                raise SystemExit(2)
+            names = corpus_names(args.corpus or f.parent)
+            result = check_file(f, names)
+            if result.needs_attention:
+                needs += 1
+                print(format_prompt(result))
+        if needs:
+            print(f"\n{needs} memo(s) state a closure in prose only.")
+            if args.strict:
+                raise SystemExit(1)
         return
 
     embedder = _make_embedder(args.embedder)
