@@ -192,6 +192,49 @@ class FastEmbedEmbedder:
         return [[float(x) for x in vec] for vec in self._model.embed(texts)]
 
 
+class SentenceTransformerEmbedder:
+    """Any `sentence-transformers` model by name or local path — including one fine-tuned here.
+
+    `finetune/train.py` writes a model to disk; without a way to LOAD it back into the retrieval
+    stack, a fine-tuning result can only ever be measured by the trainer's own evaluator, on its
+    own split. Pointing the real harness at the saved directory is what makes the lift comparable
+    to every other embedder measured in this repo:
+
+        python -m recall.eval.labelled --embedder st:finetune/model ...
+
+    Requires `pip install recall[rerank]` (or `[entail]`) — both pull sentence-transformers.
+    """
+
+    def __init__(self, model: str, batch_size: int = 64) -> None:
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:  # pragma: no cover - exercised only without the extra
+            raise ImportError(
+                "SentenceTransformerEmbedder requires: pip install recall[rerank]"
+            ) from exc
+        self._model = SentenceTransformer(model)
+        self._name = f"st:{model}"
+        self._batch_size = batch_size
+        self._dim = int(self._model.get_sentence_embedding_dimension())
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        # normalize_embeddings: the store scores with cosine distance, and an unnormalised
+        # vector would make those scores incomparable with every other embedder here.
+        vecs = self._model.encode(
+            texts, batch_size=self._batch_size, normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        return [[float(x) for x in v] for v in vecs]
+
+
 class VoyageEmbedder:
     """Voyage cloud embeddings. Requires `pip install recall[voyage]` and VOYAGE_API_KEY."""
 

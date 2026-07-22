@@ -116,7 +116,7 @@ on a laptop.
 | **Incremental indexing** | ✅ content-hash skip, bounded-memory batched writes, prunes files deleted from disk | 5,100 chunks / 1,120 files: full **7.4 s**, unchanged re-index **0.22 s** |
 | **Scale characteristics** | ✅ measured at **50,600 chunks**: recall@5 1.00 filtered and unfiltered, search p50/p95/p99 | Templated text; absolute retrieval quality is optimistic |
 | **Real-corpus operation** | ✅ 794 hand-written memos → 6,491 chunks, p50 **78 ms** | Works at this size; see the retrieval row for how well |
-| **Retrieval quality, real questions** | ⚠️ **hit@5 0.33** [0.21, 0.47], n=46, on 110 hand-labelled questions | Headings-as-queries scored 0.945 — the proxy hid two thirds of the failures. Reranking, candidate-pool size and chunk size were each tested and each moved it ~0.00–0.06. hit@50 plateaus at **0.50** in every configuration — a hard recall ceiling, pointing at the embedder, not the pipeline |
+| **Retrieval quality, real questions** | ⚠️ **hit@5 0.33** [0.21, 0.47], n=46, on 110 hand-labelled questions | Headings-as-queries scored 0.945 — the proxy hid two thirds of the failures. Reranking, candidate-pool size and chunk size each moved it ~0.00–0.06. Swapping the embedder for **voyage-3 gives hit@5 0.63** [0.49, 0.76] — the ceiling was the representation, not the pipeline |
 | **Authentication** | ❌ **not implemented** — stdio MCP carries no transport identity | [#9](https://github.com/GiulioDER/RE-call/issues/9) |
 | **Schema migrations** | ❌ runtime `CREATE TABLE IF NOT EXISTS`, no versioned upgrade path | Pre-tenancy tables *are* migrated in place, with a test |
 | **HA / replication** | ❌ out of scope — this is a library over your Postgres | — |

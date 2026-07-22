@@ -386,6 +386,39 @@ tried before it did so little: a reranker can only reorder what was retrieved, a
 can only add what the index can match. Both were working on the half of the problem that was
 already solvable.
 
+### Confirmed: it was the embedder
+
+The prediction was tested by swapping only the embedder — same corpus, same 46 held-out
+questions, same pipeline:
+
+| embedder | hit@5 | 95% Wilson | MRR | index | search p50 |
+|---|---|---|---|---|---|
+| bge-small (local, 384d) | 0.348 | [0.23, 0.49] | 0.311 | 696 s | 45 ms |
+| **voyage-3 (cloud)** | **0.630** | **[0.49, 0.76]** | **0.503** | 224 s | 246 ms |
+
+**hit@5 nearly doubles and MRR rises 62%.** The intervals barely touch — bge-small's upper bound
+(0.49) is voyage-3's lower bound — so unlike every previous attempt this is a difference the
+sample can actually resolve.
+
+Set against the three eliminated levers, on the same questions:
+
+| change | Δ hit@5 |
+|---|---|
+| cross-encoder rerank | +0.065 (within noise, 57× latency) |
+| candidate pool 20 → 100 | +0.000 |
+| chunk size 400 / 800 / 1600 | +0.000 |
+| **embedder → voyage-3** | **+0.282** |
+
+The pipeline was never the problem. Three knobs were turned first and none of them mattered,
+which is the useful part of the result: it is evidence that this corpus was hitting a
+representation ceiling, not a tuning one, and that no amount of retrieval engineering was going
+to move it.
+
+**Cost of the fix:** search latency 45 ms → 246 ms (a network round trip per query), an API
+dependency, and the corpus leaving your infrastructure to be embedded. Indexing is *faster*
+(224 s vs 696 s) because a batched API beats local CPU. Abstention is unaffected — accuracy 0.89
+either way, false-abstain 0.065 vs 0.043.
+
 ### What is left, and why the repo's own §3 predicts it
 
 Ranking, pool size and chunking are eliminated. What remains is the **representation**: `bge-small`
