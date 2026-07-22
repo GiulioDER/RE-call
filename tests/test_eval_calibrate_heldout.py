@@ -7,7 +7,6 @@ the published number an out-of-sample one.
 """
 import math
 
-import pytest
 
 from recall.eval.calibrate import loo_threshold_rates
 
@@ -29,18 +28,21 @@ def test_loo_confirms_the_guard_side_on_separable_data():
     assert fcr == 0.0
 
 
-def test_loo_exposes_that_the_fitted_threshold_has_no_answerable_side_margin():
-    """A real defect the in-sample number cannot show, on PERFECTLY separable data.
+def test_the_threshold_now_has_margin_on_the_answerable_side():
+    """Regression guard for the defect this rule replaced.
 
-    `best_threshold` minimises misclassification, and the cheapest way to keep every answerable
-    sample above the boundary is to put the boundary exactly ON the lowest one. That leaves zero
-    margin: hold out the minimum answerable sample and the refit boundary rises above it, so it
-    is abstained on. In-sample false-abstain is 0.00; leave-one-out is 1/n_answerable — and at
-    runtime it means any genuine answer scoring below the weakest calibration sample abstains.
+    The old `best_threshold` minimised misclassification, and the cheapest way to keep every
+    answerable sample above the boundary is to put the boundary exactly ON the lowest one. That
+    left zero margin: holding out the minimum answerable sample raised the refit boundary above
+    it, so leave-one-out false-abstain was `1/n_answerable` even on PERFECTLY separable data —
+    and at runtime any real answer below the weakest calibration sample abstained.
+
+    Bisecting the gap leaves room on both sides, so no fold misclassifies its held-out sample.
     """
     ans = [0.80, 0.82, 0.85, 0.88]
-    _, false_abstain = loo_threshold_rates(ans, [0.20, 0.22, 0.25, 0.28])
-    assert false_abstain == pytest.approx(1 / len(ans))
+    fcr, false_abstain = loo_threshold_rates(ans, [0.20, 0.22, 0.25, 0.28])
+    assert false_abstain == 0.0
+    assert fcr == 0.0
 
 
 def test_loo_exposes_a_threshold_that_does_not_generalise():

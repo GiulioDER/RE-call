@@ -27,18 +27,63 @@ ENV_VAR = "RECALL_CALIBRATION"
 _log = get_logger("calibration")
 
 
+#: Quantiles bounding the gap: the answerable floor and the unanswerable ceiling. Both are
+#: deliberately not the extremes — one outlier on either side must not define the boundary.
+ANSWERABLE_FLOOR_Q = 0.05
+UNANSWERABLE_CEILING_Q = 0.95
+
+
+def _quantile(sorted_values: list[float], q: float) -> float:
+    return sorted_values[min(len(sorted_values) - 1, int(q * len(sorted_values)))]
+
+
 def best_threshold(answerable: list[float], unanswerable: list[float]) -> float:
-    """Threshold minimising misclassification: answerable should score >= it, unanswerable below."""
-    candidates = sorted(set(answerable + unanswerable))
-    best_thr, best_err = 0.5, len(answerable) + len(unanswerable) + 1
-    for c in candidates:
-        err = sum(1 for a in answerable if a < c) + sum(1 for u in unanswerable if u >= c)
-        if err < best_err:
-            best_err, best_thr = err, c
-    # Round DOWN: the optimizer guarantees answerable samples score >= the chosen candidate;
-    # nearest-rounding could lift the threshold above the candidate and flip a boundary
-    # answerable case to low_confidence at runtime.
-    return math.floor(best_thr * 1000) / 1000
+    """Threshold placed in the MIDDLE of the observed gap between the two distributions.
+
+    Specifically the midpoint of ``q05(answerable)`` and ``q95(unanswerable)``.
+
+    The previous rule minimised misclassification on the samples given to it, which sounds
+    principled and is not: the cheapest way to keep every answerable sample above the boundary is
+    to put the boundary exactly ON the lowest one. That has three measured consequences.
+
+    - **No margin on the answerable side.** Any real answer scoring below the weakest calibration
+      sample abstains. Leave-one-out false-abstain was ``1/n`` even on perfectly separable data.
+    - **One sample decides everything.** The answerable distribution has a long lower tail
+      (measured with bge-small: min 0.601, p25 0.913), so the boundary sat at the bottom of that
+      tail and let **20.5%** of genuinely unanswerable queries through.
+    - **It inherited ANN noise.** HNSW index builds are nondeterministic, so the identity of the
+      worst sample changed on every rebuild and the whole operating point moved with it
+      (coverage swung 0.40–0.84 on one host — issue #26).
+
+    Measured on the same data, fitted on half the queries and scored on the other half over four
+    index rebuilds, this rule cuts the false-confident rate from **0.205 to 0.045** and costs
+    **1%** of answerable queries. Going further is a bad trade: a q20 floor drives false-abstain
+    to 0.31 to buy the last few points of FCR.
+
+    ⚠️ **Outlier robustness needs samples.** The floor is a 5th percentile, and a 5% tail is not
+    identifiable from a handful of points, so below roughly 20 answerable samples it collapses
+    onto the minimum and one bad retrieval moves the boundary again. Bisecting the gap still adds
+    margin at any size — that part always holds — but a small calibration set buys margin, not
+    stability. Calibrate against a few hundred labelled queries if the threshold matters.
+
+    Degenerate inputs fall back rather than invent a boundary: with no unanswerable samples there
+    is no gap to bisect, so the answerable floor is used; with neither class, the module default.
+    """
+    if not answerable and not unanswerable:
+        return 0.5
+    a = sorted(answerable)
+    u = sorted(unanswerable)
+    if not a:  # only negatives: sit just above their ceiling
+        return math.floor(_quantile(u, UNANSWERABLE_CEILING_Q) * 1000) / 1000
+    floor = _quantile(a, ANSWERABLE_FLOOR_Q)
+    if not u:
+        return math.floor(floor * 1000) / 1000
+    ceiling = _quantile(u, UNANSWERABLE_CEILING_Q)
+    # Overlapping distributions still bisect: the midpoint splits the overlap instead of
+    # collapsing onto one class, which is the least-bad boundary when no clean gap exists.
+    # Round DOWN so rounding can only ever make the guard more permissive, never silently
+    # abstain on a calibration sample that sat exactly on the boundary.
+    return math.floor((floor + ceiling) / 2 * 1000) / 1000
 
 
 @dataclass(frozen=True)
