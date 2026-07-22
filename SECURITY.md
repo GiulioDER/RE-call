@@ -114,13 +114,14 @@ tree-size/file-count half of this gap.
 
 What is still open: there is no limit on how many times a client can *call* `recall_index` (no rate
 limiting) and no per-tenant budget (one tenant's calls are not capped separately from another's) —
-a client within the per-call budget can still call repeatedly. Both need a transport and a
-principal to enforce meaningfully, which a stdio-only server does not have; see the "no
-authentication shipped" gap above. Query length is unrelated to
-this paragraph — `recall_search`'s `k` is already clamped server-side (`MAX_SEARCH_K` in
-`recall_mcp/service.py`).
+a client within the per-call budget can still call repeatedly. This used to be blocked on there
+being nobody to charge: rate limiting needs a principal, and a stdio-only server has none. **That
+blocker is gone** — the authenticated HTTP transports now map each token to a principal with a
+tenant and scopes, so a per-tenant budget is implementable and simply is not implemented yet.
+Query length is unrelated to this paragraph — `recall_search`'s `k` is already clamped
+server-side (`MAX_SEARCH_K` in `recall_mcp/service.py`).
 
-**Deletion is exposed, but only per-source, and there is still no retention policy.**
+**Deletion is exposed; retention is mechanism, not schedule.**
 `PgVectorStore.delete_sources()` (`recall/store.py:686`) is now wired into `recall forget` (CLI,
 dry-run by default — pass `--yes` to actually delete) and into the `recall_forget` MCP tool
 (`recall_mcp/server.py`, delegating to `forget_memory` in `recall_mcp/service.py`), both
