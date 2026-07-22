@@ -292,3 +292,58 @@ The synthetic corpus was fixed in one respect and remains broken in another.
   judgement.
 
 Treat the successor/abstain columns from generated corpora as not-yet-measured.
+
+## 7. The real number: paraphrased questions cut retrieval to a third
+
+Every retrieval figure above this section was measured either on a corpus this repo ships, one it
+generates, or — for the real corpus — with document **headings** as queries. That last one is
+*known-item retrieval*: finding a document you can already name. It scored **recall@5 0.945** and
+the README always flagged it as optimistic. This measures by how much.
+
+**110 hand-labelled questions** against the reference corpus (794 memos → 6,491 chunks,
+`bge-small`, hybrid dense + sparse, no reranker), phrased the way a person actually asks rather
+than in the document's own words. Half fit the threshold, half scored:
+
+| metric | value | 95% Wilson | n |
+|---|---|---|---|
+| **hit@5** | **0.33** | [0.21, 0.47] | 46 |
+| MRR | 0.29 | — | 46 |
+| abstention accuracy | 0.89 | [0.57, 0.98] | 9 |
+| false-abstain | 0.04 | [0.01, 0.15] | 46 |
+| search latency p50 / p95 | 78 / 124 ms | — | — |
+
+**Headings 0.945 → real questions 0.33.** The proxy was hiding roughly two thirds of the
+retrieval failures.
+
+### The misses were inspected, not assumed
+
+The runner reports what came back for every miss, because on a corpus of many closely-related
+memos a miss can be a *labelling* failure rather than a retrieval one. Of eight sampled:
+
+- **one was mislabelled** — for "what did the risk guard do when it could not read the market
+  stress inputs?", the top hit was the market-stress fix and the second was the *fail-closed*
+  counterpart of the labelled memo. Both answer it; the label named one file.
+- **seven were genuine**, several landing in the right topic family but the wrong document
+  (a database-outage question returning a different incident on the same host).
+
+So 0.33 is a mild under-estimate — call it ~0.35–0.40 once labels are widened — and nowhere near
+0.945.
+
+### What the abstention layer did
+
+It held up where retrieval did not: **89%** of genuinely unanswerable questions were abstained on,
+while only **4%** of answerable ones were wrongly refused. The trust layer is not the bottleneck.
+
+### The most likely lever, untested
+
+This run used dense + sparse fusion with **no cross-encoder**. §1 of this document measures
+reranking lifting MRR from 0.63 to 1.00 on a weak embedder and finding it redundant on an easy
+corpus — and this corpus is not easy: hundreds of memos share a vocabulary, which is precisely the
+regime where fusion ranks the right document into the window but not to the top. Re-running this
+harness with `CrossEncoderReranker`, and with a stronger embedder, is the obvious next experiment.
+Until it is run, the honest statement is that **retrieval on a real jargon-dense corpus is the
+weakest measured part of this system**, and that it was invisible until the questions stopped
+being headings.
+
+The labelled set is the corpus owner's private data and is not published; only these aggregates
+and the runner (`python -m recall.eval.labelled`) are.
