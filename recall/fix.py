@@ -5,7 +5,16 @@ frontmatter declares nothing — 60 of them in a real 792-memo corpus, against 2
 The relation is being written; it is just written where retrieval cannot act on it.
 
 Detection already worked. This adds the write-back, under a rule that refuses far more often
-than it acts:
+than it acts.
+
+⚠️ **Measured on that corpus, it proposes ZERO edges.** Four survived the mechanical rules and
+all four were wrong on review: one was reported speech, two superseded a *claim* or *scope*
+inside their target rather than the target, and the last was hedged (`"Supersedes/augments"`) —
+its author, asked directly, said *augments*. Each became a refusal. So this is a **reviewing
+aid, not an automation**: it narrows 60 prose markers to the handful worth a human's attention
+and declines to guess at the rest. Treat a non-empty proposal list as a question, not an answer.
+
+The refusal rules:
 
 **A fix is proposed only when the target is PROVABLE.** The body must name a document — as a
 `[[wikilink]]`, a bare `name.md`, or a bare stem — in the same sentence as the marker, and that
@@ -132,6 +141,29 @@ def _is_reported_speech(body: str, marker_start: int) -> bool:
     return bool(_OTHER_DOC.search(head[cut + 1:]))
 
 
+#: Qualifiers that weaken the claim from "replaces" to "relates to".
+_HEDGE_BEFORE = re.compile(
+    r"\b(?:partially|partly|largely|mostly|arguably|effectively|broadly|possibly)\s+$",
+    re.IGNORECASE,
+)
+#: "supersedes/augments X", "supersedes or augments X" — the author declined to commit.
+_HEDGE_AFTER = re.compile(r"^\s*(?:/|\bor\b)\s*\w+", re.IGNORECASE)
+
+
+def _is_hedged(body: str, marker_start: int, after: str) -> bool:
+    """True when the author qualified the claim rather than making it.
+
+    From the real corpus: `"Supersedes/augments [[feedback_ci_green_constraints_2026-06-22]]"`.
+    Asked directly, the author's answer was **augments** — the slash was doing real work. An
+    augmenting memo does not replace its predecessor, and declaring the edge would demote a memo
+    that is still current.
+
+    A hedge is the author saying they are not sure. Resolving it for them is exactly the kind of
+    confident wrong answer this project exists to avoid.
+    """
+    return bool(_HEDGE_BEFORE.search(body[:marker_start]) or _HEDGE_AFTER.match(after))
+
+
 def _is_partial_scope(between: str) -> bool:
     """True for "supersedes the <noun> in X" — X's *claim* or *scope*, not X itself.
 
@@ -151,7 +183,8 @@ def _accept(body: str, m: re.Match) -> str | None:
         return None
     marker_end = m.end("marker")
     ref_start = min(m.start(g) for g in range(2, (m.lastindex or 1) + 1) if m.group(g))
-    if _is_partial_scope(body[marker_end:ref_start]):
+    between = body[marker_end:ref_start]
+    if _is_hedged(body, m.start(), between) or _is_partial_scope(between):
         return None
     return ref
 

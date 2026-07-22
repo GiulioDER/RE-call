@@ -237,15 +237,50 @@ def test_superseding_the_scope_of_a_document_is_refused():
     assert extract_edges(body) == ([], [])
 
 
-def test_the_one_genuine_edge_still_survives_the_refusals():
-    """Verbatim from project_ci_pipeline_optimization_2026-07-05.md — the only one of the four
-    that was actually right. Refusals that also killed this would have made the feature useless.
+def test_the_last_surviving_proposal_was_also_wrong():
+    """This test previously asserted the OPPOSITE, and that assertion was mine, not the author's.
+
+    Verbatim from project_ci_pipeline_optimization_2026-07-05.md. I judged it the one genuine
+    edge of four and wrote a test pinning that it must survive the refusals. Asked directly, the
+    author said it **augments** — the hedge in "Supersedes/augments" was the answer all along.
+    A test encoding a reviewer's guess is worth less than one question to whoever wrote the memo.
+
+    Final tally on the real corpus: 60 prose closure markers, **zero** safely auto-declarable.
     """
     body = "Supersedes/augments [[feedback_ci_green_constraints_2026-06-22]]."
-    assert extract_edges(body) == (["feedback_ci_green_constraints_2026-06-22"], [])
+    assert extract_edges(body) == ([], [])
 
 
 def test_an_ordinary_subject_is_not_mistaken_for_reported_speech():
     """"This decision supersedes X" is the memo's own claim — the refusal must not overreach."""
     assert extract_edges("This decision supersedes [[old_plan_2026-01-01]].")[0] == \
         ["old_plan_2026-01-01"]
+
+
+def test_a_hedged_marker_is_refused():
+    """Verbatim from project_ci_pipeline_optimization_2026-07-05.md — the last surviving
+    proposal, and the author's answer when asked was **augments**.
+
+    The slash was doing real work. An augmenting memo does not replace its predecessor, and
+    declaring the edge would demote a memo that is still current. A hedge is the author saying
+    they are not sure; resolving it for them is the confident wrong answer this project exists
+    to avoid.
+    """
+    body = "Supersedes/augments [[feedback_ci_green_constraints_2026-06-22]]."
+    assert extract_edges(body) == ([], [])
+
+
+def test_other_hedges_are_refused_too():
+    for body in (
+        "This partially supersedes [[old_plan_2026-01-01]].",
+        "Largely supersedes [[old_plan_2026-01-01]].",
+        "Supersedes or augments [[old_plan_2026-01-01]].",
+    ):
+        assert extract_edges(body) == ([], []), body
+
+
+def test_an_unhedged_claim_is_still_accepted():
+    """The refusals must not swallow a plain, committed statement."""
+    assert extract_edges("This decision supersedes [[old_plan_2026-01-01]].")[0] == \
+        ["old_plan_2026-01-01"]
+    assert extract_edges("Superseded by [[new_plan_2026-02-02]].")[1] == ["new_plan_2026-02-02"]
