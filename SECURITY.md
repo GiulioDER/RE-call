@@ -119,11 +119,31 @@ this paragraph — `recall_search`'s `k` is already clamped server-side (`MAX_SE
 dry-run by default — pass `--yes` to actually delete) and into the `recall_forget` MCP tool
 (`recall_mcp/server.py`, delegating to `forget_memory` in `recall_mcp/service.py`), both
 tenant-scoped like every other write path. That closes the original gap — there is a supported
-way to make the system forget an indexed memory. Two things remain open: (1) deletion is
-per-**source** only — there is no way to delete an individual chunk within a source without
-re-indexing the whole file; and (2) there is no retention **policy** — nothing expires or purges
-memories on a schedule, on its own. If your corpus contains personal data, you are still
-responsible for deciding *when* to call `forget`; this only provides the mechanism.
+way to make the system forget an indexed memory.
+
+Erasure has a second, automatic path: re-indexing removes rows for files that are **gone from
+disk**, so deleting a memo and re-syncing erases it without a separate `forget` call. The same
+mechanism handles the per-chunk case — a source's rows are replaced wholesale on re-index, so
+editing a paragraph out of a file and re-indexing removes exactly that chunk. Deleting a single
+chunk while leaving the file untouched is still not possible, and is not planned: the file is the
+record, and an index that disagreed with it would be the more dangerous state.
+
+**That automatic path is destructive, and is now guarded.** `recall index` does not look like a
+delete command, but a corpus directory that is present-but-empty — an unmounted volume, an
+interrupted sync, a path that still resolves — is indistinguishable from "the author deleted
+everything", and the whole corpus was silently removed with exit code 0. A run that would drop at
+least `RECALL_MAX_PRUNE_FRACTION` (default 0.5) of the sources indexed under that root is now
+refused with nothing deleted, once the corpus is above a small floor where a fraction is
+meaningful. `--allow-prune` proceeds deliberately.
+
+**There is still no time-based retention policy, and that is a decision rather than a gap.**
+`indexed_at` records when a file last *changed*, not when it was last seen — an unchanged file is
+skipped on re-index and its timestamp does not move (measured, not assumed). A policy that purged
+"memories older than N days" would therefore delete the memos that have been stable longest,
+which in a memory corpus are the settled, load-bearing ones. Authored expiry (`valid_until`) is
+honoured at read time by **demoting** an expired memory, not deleting it, so the trust layer can
+tell you a memory is stale and show it to you anyway. If your corpus contains personal data, you
+are responsible for deciding *when* to erase; this provides the mechanisms, not the schedule.
 
 ## Reporting a vulnerability
 
