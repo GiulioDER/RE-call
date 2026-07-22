@@ -1,12 +1,23 @@
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  # `uv`, not `pip`. This project is uv-managed and CI runs `uv lock --check`, so a bump that
+  # edits pyproject.toml without regenerating uv.lock fails the audit job and can never merge —
+  # which is exactly what the first `pip` batch did (#44-#48: all red on lockfile drift, while
+  # their test jobs passed). The `uv` ecosystem updates the lockfile alongside the manifest.
+  #
+  # If a Dependabot run ever reports this ecosystem as unsupported, delete this block rather than
+  # reverting to `pip`: no dependency PRs is better than a permanent queue of unmergeable ones,
+  # and the `audit` job already runs pip-audit over the resolved dependency set, so vulnerability
+  # scanning does not depend on this file.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
     labels:
       - "dependencies"
 
+  # This half is proven: the first batch (#41-#43) bumped checkout, setup-python and setup-uv,
+  # and merged green.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
