@@ -93,10 +93,16 @@ These are documented weaknesses, not undiscovered ones. They are recorded in
 [issue #9](https://github.com/GiulioDER/RE-call/issues/9) and are stated here because a security
 policy that lists only the limits it has already solved is misleading.
 
-**No authentication on the MCP transport.** Tenancy shipped (`tenant_id` on every row, enforced at
-the store), but the transport itself is unauthenticated. On a non-stdio transport, any client that
-can reach the server can act as any tenant. Do not expose the MCP server on an untrusted network.
-For now, stdio on a trusted host is the supported deployment.
+**Authentication shipped; token lifecycle is still manual.** The HTTP transports
+(`streamable-http`, `sse`) now require bearer tokens and **refuse to start without them** — an
+unauthenticated listener cannot be created by accident. Each token maps to a principal with a
+tenant and scopes, and the tenant selects its own connection pool, so a principal cannot reach
+another tenant's rows (`recall_mcp/auth.py`, `recall_mcp/stores.py`; see docs/AUTH.md).
+
+What remains open is lifecycle, not enforcement: the token file is read at startup, so there is
+**no revocation or rotation without a restart**, and a leaked token is valid until it is removed.
+There is no proof-of-possession — terminate TLS in front of the server. `stdio` remains
+unauthenticated by design: it is a private pipe to one client, not a listener.
 
 **Indexing has file-count and byte budgets; there is still no rate limiting or per-tenant quota.**
 The `recall_index` MCP tool (`recall_mcp/server.py`, delegating to `index_memory` in
@@ -110,7 +116,7 @@ What is still open: there is no limit on how many times a client can *call* `rec
 limiting) and no per-tenant budget (one tenant's calls are not capped separately from another's) —
 a client within the per-call budget can still call repeatedly. Both need a transport and a
 principal to enforce meaningfully, which a stdio-only server does not have; see the "no
-authentication on the MCP transport" gap above, which this inherits. Query length is unrelated to
+authentication shipped" gap above. Query length is unrelated to
 this paragraph — `recall_search`'s `k` is already clamped server-side (`MAX_SEARCH_K` in
 `recall_mcp/service.py`).
 
@@ -139,10 +145,9 @@ one.
 
 - **"The cloud embedder sends chunk text to Voyage."** Documented above; it is what you asked for
   when you selected `VoyageEmbedder`. Not a vulnerability.
-- **Missing authentication on the MCP server.** Already tracked and stated plainly in the README's
-  "What this does not do" section and [#9](https://github.com/GiulioDER/RE-call/issues/9) — stdio
-  MCP carries no transport identity. If you have a concrete exploit path beyond what's already
-  documented there, please do report it; the general gap is known.
+- **Token revocation requiring a restart.** Known and documented in
+  [docs/AUTH.md](docs/AUTH.md) — the token file is read at startup. A concrete exploit path
+  beyond that is very much in scope; the lifecycle limitation itself is known.
 - **Retrieval quality issues** (a query returning the wrong chunk, a low `hit@5`) are correctness
   bugs, not security issues — file those as regular GitHub issues, ideally with the `bug_report`
   template's confidence/verdict fields filled in.
