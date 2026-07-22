@@ -106,27 +106,21 @@ def test_loo_calibrations_never_include_the_sample_they_will_score():
         assert cals[i].threshold == expected.threshold
 
 
-def test_holding_out_an_unanswerable_sample_cannot_move_the_threshold():
-    """Documents WHY the unanswerable-side split leaves `gap_fcr` unchanged.
+def test_the_unanswerable_class_now_informs_the_threshold():
+    """The fit is TWO-SIDED, which is why holding a gap query out is a real held-out measurement.
 
-    `best_threshold` scans candidates ascending and takes the first minimum-error one. A
-    candidate below min(answerable) costs one unanswerable error for every sample above it and
-    saves nothing; a candidate above it costs answerable errors. So the optimum sits exactly at
-    min(answerable) no matter where the unanswerable samples fall — the "answerable vs
-    unanswerable" fit is ONE-SIDED, and the unanswerable class does not inform the threshold at
-    all in the separable regime.
-
-    Consequence for the published numbers: leave-one-out is still the correct protocol, but it
-    cannot change `gap_fcr` — that column was never at risk of memorising its samples. The
-    answerable side is where the split bites (see tests/test_eval_calibrate_heldout.py::
-    test_loo_exposes_that_the_fitted_threshold_has_no_answerable_side_margin).
+    The old rule was one-sided: it always landed on min(answerable) regardless of where the
+    unanswerable samples fell, so the unanswerable class did not inform the boundary at all and
+    the leave-one-out split could not change `gap_fcr`. Bisecting the gap uses both classes, so
+    moving the unanswerable ceiling moves the boundary — and the split now measures something.
     """
     from recall.calibration import best_threshold
 
     ans = [0.80, 0.82, 0.85, 0.88]
-    for unans in ([0.10, 0.20, 0.30, 0.65], [0.10, 0.20, 0.30, 0.90]):
-        folds = [best_threshold(ans, unans[:i] + unans[i + 1:]) for i in range(len(unans))]
-        assert folds == [min(ans)] * len(unans)
+    low = best_threshold(ans, [0.10, 0.12, 0.14, 0.16])
+    high = best_threshold(ans, [0.60, 0.62, 0.64, 0.66])
+    assert high > low, "the unanswerable distribution does not affect the threshold"
+    assert low < min(ans) and high < min(ans), "margin must survive in both cases"
 
 
 def test_loo_calibrations_refuse_to_split_a_class_too_small_to_split():

@@ -63,6 +63,32 @@ _ASPECTS = [
     ("compaction interval", "minutes"),
 ]
 
+#: Subjects for the UNANSWERABLE queries. Deliberately from a domain the corpus never mentions —
+#: no overlap with the subject adjectives/nouns, the aspect names, or the filler vocabulary.
+#:
+#: The earlier design built a gap query by suffixing a nonsense token onto an answerable one
+#: ("...retry budget for ivory-kiln-0000-absent"), so every other word was shared. Measured with
+#: bge-small, that set was NOT separable at all: its median top cosine was 0.830 against
+#: answerable 0.923, and 0% of it fell below the weakest answerable query — the absent-id queries
+#: scored HIGHER than the hardest real one. Any abstention measured on it was meaningless.
+#: Genuinely off-topic questions (how the shipped 14-doc corpus writes them) sit at median 0.570
+#: with 78% below the answerable floor.
+_OFFTOPIC_SUBJECTS = [
+    "penguins in antarctic winters", "sourdough fermentation", "tidal locking of moons",
+    "baroque counterpoint", "sprinting biomechanics", "volcanic ash dispersal",
+    "medieval cathedral acoustics", "honeybee waggle dances", "typography kerning",
+    "deep sea bioluminescence", "alpine glacier retreat", "espresso extraction pressure",
+    "origami crease patterns", "coral spawning cycles", "steam locomotive boilers",
+    "wildfire smoke chemistry", "harpsichord tuning", "monsoon onset timing",
+    "lichen growth rates", "cuneiform tablet translation", "tidewater glacier calving",
+    "saffron harvesting by hand", "gamelan tuning systems", "auroral substorm onset",
+    "papyrus conservation methods",
+]
+_OFFTOPIC_TEMPLATES = [
+    "what explains {s}", "how does {s} actually work", "why is {s} difficult to predict",
+    "what is the leading theory about {s}", "who first described {s}",
+]
+
 _INCIDENTS = [
     "the checkout timeout incident", "the stale-quote incident", "the failover drill",
     "the capacity review", "the load-shedding postmortem",
@@ -167,14 +193,20 @@ def generate(
             "subject": subj,
         })
 
-    # --- unanswerable: the subject is never written ------------------------------------------
-    for i, subj in enumerate(_subjects(rng, n_unanswerable, _NOUNS)):
-        aspect, _ = _ASPECTS[i % len(_ASPECTS)]
-        # suffix keeps these tokens out of the answerable namespace even on a collision
-        subj = f"{subj}-absent"
+    # --- unanswerable: a subject from a domain the corpus never touches ------------------------
+    capacity = len(_OFFTOPIC_SUBJECTS) * len(_OFFTOPIC_TEMPLATES)
+    if n_unanswerable > capacity:
+        raise ValueError(
+            f"n_unanswerable={n_unanswerable} exceeds the {capacity} distinct off-topic queries "
+            f"available; add subjects to _OFFTOPIC_SUBJECTS rather than reusing one, since "
+            f"duplicate gap queries would understate the variance of any rate measured on them"
+        )
+    for i in range(n_unanswerable):
+        subj = _OFFTOPIC_SUBJECTS[i % len(_OFFTOPIC_SUBJECTS)]
+        template = _OFFTOPIC_TEMPLATES[(i // len(_OFFTOPIC_SUBJECTS)) % len(_OFFTOPIC_TEMPLATES)]
         queries.append({
             "id": f"u{i:04d}",
-            "query": f"what is the {aspect} for {subj}",
+            "query": template.format(s=subj),
             "relevant_ids": [],
             "answerable": False,
             "subject": subj,

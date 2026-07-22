@@ -81,8 +81,10 @@ unanswerable samples fall. Two consequences:
   and the refit boundary rises above it, so it abstains: leave-one-out false-abstain is
   `1/n_answerable` (0.07 here) even on perfectly separable data. At runtime this means *any*
   genuine answer scoring below the weakest calibration sample is abstained on. A threshold placed
-  in the middle of the gap rather than on its floor would carry margin on both sides; that change
-  is not yet made.
+  in the middle of the gap rather than on its floor would carry margin on both sides.
+
+> **Both defects are now fixed.** The threshold bisects the gap instead of sitting on the lowest
+> answerable sample — see §6 for the measurements that drove the change and what it cost.
 
 ## 3. Domain fine-tuning: an honest null result on this corpus
 
@@ -236,3 +238,57 @@ not observed here, and reported as such.
 **What this still does not cover:** a real-language corpus (the generated text is templated, so
 absolute retrieval quality is optimistic), the cloud embedder at scale, and any corpus large enough
 to push HNSW past the point where an exact scan is competitive.
+
+## 6. The abstention threshold: measured, and rebuilt
+
+§2b reported that `best_threshold` sat exactly on `min(answerable)` — a one-sided fit with zero
+margin. Measuring it on a real host turned that from a fragility into a defect with a number
+attached, and the rule has been replaced.
+
+**What the old rule did, measured** (`bge-small`, 5,450 chunks, 4 fresh HNSW builds, fitted on
+half the queries and scored on the other half):
+
+| rule | threshold (mean ± sd) | false-abstain | gap FCR | bal. err |
+|---|---|---|---|---|
+| `min(answerable)` *(old)* | 0.599 ± 0.008 | 0.003 | **0.205** | 0.104 |
+| q05 | 0.678 ± 0.085 | 0.005 | 0.065 | 0.035 |
+| **midgap q05/q95** *(new)* | 0.656 ± 0.044 | 0.010 | 0.045 | 0.028 |
+| Youden J | 0.690 ± 0.061 | 0.013 | 0.015 | 0.014 |
+| q20 | 0.899 ± 0.032 | **0.310** | 0.000 | 0.155 |
+
+The old rule let **20.5%** of genuinely unanswerable queries through, because the answerable
+distribution has a long lower tail (min 0.601 against p25 0.913) and the boundary sat at the
+bottom of it. It also inherited ANN nondeterminism: HNSW builds are not reproducible, so the
+identity of the worst sample — and with it the whole operating point — changed on every re-index
+(coverage swung 0.40–0.84 on one host; issue #26).
+
+**The shipped rule, verified end to end** on the same host after the change:
+threshold **0.728 ± 0.042**, false-abstain **0.015**, gap FCR **0.000**, balanced error
+**0.007** — against 0.104 for the rule it replaces.
+
+**How conservative is enough:** only slightly. Moving off the minimum to the middle of the gap
+buys the whole improvement for ~1.5% of answerable queries. Pushing further is a bad trade —
+a q20 floor drives false-abstain to 0.31 to buy the last points of FCR.
+
+⚠️ **Outlier robustness needs samples.** The floor is a 5th percentile, which cannot exclude
+anything below ~20 answerable samples; on the 14-document corpus it still collapses onto the
+minimum. Bisecting the gap adds margin at any size, but stability requires a real calibration set.
+
+### What this evaluation still cannot measure
+
+The synthetic corpus was fixed in one respect and remains broken in another.
+
+- **Fixed:** its unanswerable queries were an answerable query plus a nonsense suffix
+  (`"...retry budget for ivory-kiln-0000-absent"`), so every other word was shared. Measured with
+  bge-small they were **not separable at all** — median top cosine 0.830 against answerable 0.923,
+  with **0%** below the weakest answerable query. They are now genuinely off-topic questions
+  (median 0.570, 78% below the answerable floor), matching how the 14-document corpus writes them.
+- **Still broken:** every generated *document* is the same sentence with a different opaque token
+  (`"The cache TTL for granite-harbor-0001 is 669 seconds"`). Hundreds of near-identical documents
+  differ only by a string no embedder can interpret, so **successor accuracy and abstention
+  accuracy on this corpus measure token discrimination, not the trust layer** — which is why they
+  read 0.14 and 0.00 in the latest scale run regardless of threshold. STR, latency and index-scale
+  figures are unaffected, because supersession is a declared relation rather than a similarity
+  judgement.
+
+Treat the successor/abstain columns from generated corpora as not-yet-measured.
