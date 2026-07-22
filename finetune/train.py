@@ -7,7 +7,12 @@ Trains on the --queries JSON ["train"] split over the --corpus folder, and evalu
 the HELD-OUT ["test"] split (differently-phrased queries), so the measured lift is generalization,
 not memorization. Two-corpus study: docs/RAG_TRAINING_STUDY.md.
 
-CPU is fine for this tiny model/dataset.
+CPU is fine for this tiny model/dataset — but CAP THE THREADS on a shared machine. torch sizes
+its pool to the core count regardless of `nice`, which lowers priority without limiting how many
+cores are grabbed: on a 12-core host this took 629% CPU across 63 threads and drove load to ~20,
+next to unrelated production processes. It also got *slower* as it thrashed. Prefer:
+
+    OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 python finetune/train.py ...
     python finetune/train.py                                       # null (rich corpus) -> delta ~ +0.00
     python finetune/train.py --corpus finetune/confusable_corpus \
         --queries finetune/confusable_queries.json --epochs 10     # positive (opaque-jargon corpus)
