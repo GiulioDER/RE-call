@@ -21,10 +21,10 @@ pool = ["psycopg-pool>=3.2"]
 mcp = ["mcp>=1.7", "psycopg-pool>=3.2"]
 voyage = ["voyageai>=0.2"]
 # NB: rerank / entail / finetune pin the same sentence-transformers floor — bump all three together.
-rerank = ["sentence-transformers>=3.0"]
-entail = ["sentence-transformers>=3.0"]
+rerank = ["sentence-transformers>=5.6.0"]
+entail = ["sentence-transformers>=5.6.0"]
 eval = ["matplotlib>=3.7"]
-finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
+finetune = ["sentence-transformers>=5.6.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
 # pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
 # failing it — a hung CI job reads as "still running", not as a regression.
 dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.5", "mcp>=1.7", "psycopg-pool>=3.2"]
