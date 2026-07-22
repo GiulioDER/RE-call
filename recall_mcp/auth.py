@@ -233,6 +233,10 @@ def _digest_for_entry(entry: dict, *, who: str) -> str:
     if (plaintext is None) == (digest is None):
         raise AuthConfigError(f"{who}: provide exactly one of 'token' or 'token_sha256'")
     if digest is not None:
+        # NOTE: a precomputed digest necessarily BYPASSES the MIN_TOKEN_LENGTH floor — length is
+        # not recoverable from a hash, so an operator can provision a weak token this way. That is
+        # inherent to accepting digests at all, not an oversight; the trade is that the plaintext
+        # never has to touch disk. Documented in docs/AUTH.md rather than left implicit.
         if not isinstance(digest, str) or len(digest) != 64:
             raise AuthConfigError(f"{who}: 'token_sha256' must be a 64-char hex SHA-256 digest")
         try:
