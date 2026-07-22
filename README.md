@@ -11,22 +11,20 @@
   <a href="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml"><img src="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/PostgreSQL-pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-232%20·%20real%20pgvector-brightgreen" alt="232 tests">
+  <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
+  <img src="https://img.shields.io/badge/tests-349%20·%20real%20pgvector-brightgreen" alt="349 tests">
 </p>
 
 <p align="center">
   <a href="#see-it-in-one-screen">See it</a>
   &nbsp;·&nbsp;
+  <a href="#what-is-actually-verified">What's verified</a>
+  &nbsp;·&nbsp;
+  <a href="#production-posture">Production posture</a>
+  &nbsp;·&nbsp;
   <a href="#quickstart--2-minutes-no-api-key">Quickstart</a>
   &nbsp;·&nbsp;
-  <a href="#the-proof">Proof</a>
-  &nbsp;·&nbsp;
-  <a href="docs/CASE_STUDY.md">Case study</a>
-  &nbsp;·&nbsp;
-  <a href="docs/USING_WITH_CLAUDE.md">Use with Claude</a>
-  &nbsp;·&nbsp;
-  <a href="docs/WRITEUP.md">Writeup</a>
+  <a href="#what-this-does-not-do">Limits</a>
 </p>
 
 ---
@@ -63,39 +61,60 @@ $ python -m recall.cli demo
 ```
 </details>
 
-Look at the cosines. The **stale** rate-limit memory scores **higher (0.806)** than the current one —
-plain vector search would return it, and the agent would build on a limit that no longer exists.
-RE-call flags it `superseded`, points at its successor, and puts the *current* memory on top. And when
-the memory genuinely has no answer, it says so — an explicit `ABSTAIN`, not the least-irrelevant chunk
-dressed up as an answer. **That ordering decision is the whole thesis.**
+Look at the cosines. The **stale** memory scores **higher (0.806)** than the current one — plain vector
+search returns it, and the agent builds on a limit that no longer exists. RE-call flags it
+`superseded`, points at its successor, and puts the *current* memory on top. When the memory genuinely
+has no answer, it says so. **That ordering decision is the whole thesis.**
 
-## The proof
+## What is actually verified
 
-This isn't a claim, it's a measured, reproducible result. On validity-sensitive queries (worded
-deliberately *closer to the stale memory*):
+Every headline number below was measured, and every one carries its limit. Where a claim could not be
+supported, it was withdrawn rather than softened — the withdrawals are listed too, because a claims
+table without them is marketing.
 
-> Plain similarity search returns the superseded/expired memory as the answer **83–100% of the time.**
-> With RE-call's trust layer that rate is **0.00 — on every embedder — with identical ranking quality.**
+| Claim | Measurement | Limit |
+|---|---|---|
+| **Supersession beats similarity** | Superseded-trust rate **0.00**, 95% Wilson **[0.00, 0.02]**, n=250, against a baseline of **1.00** — plain search returns the stale memory *every time* on adversarially-worded queries | Generated corpus; the successor/abstain columns on it are **not** meaningful (below) |
+| **Abstention is calibrated, not guessed** | On the real corpus: threshold **0.728 ± 0.042** over 4 index rebuilds, false-abstain **0.015**, gap false-confidence **0.000** | Needs ≥ ~20 labelled samples; below that the rule loses its outlier robustness |
+| **Timestamps cannot replace declared supersession** | "Trust the newest relevant hit", steelmanned, still trusts the stale memory **83–100%** of the time | — |
+| **Reranking rescues a weak embedder** | Hybrid + cross-encoder lifts MRR **0.63 → 1.00** offline | Situational: a strong embedder already saturates this corpus |
+| **Fine-tuning pays only for a vocabulary gap** | **+0.00** on a rich corpus; **0.31 → 0.55** held-out MRR on opaque jargon → [study](docs/RAG_TRAINING_STUDY.md) | Measure your gap first |
+| **Near-misses need a judge, not a threshold** | QNLI stage cuts near-miss false-confidence **1.00 → 0.60**, **0.80 → 0.50**, same judge across embedders → [study](docs/ENTAILMENT_SUPERSESSION_STUDY.md) | Judge-alone *degrades* far-gap detection — the two stack, neither replaces the other |
 
-**How much to trust that 0.00.** It is measured on **6** validity-sensitive queries, so its 95%
-Wilson interval is **[0.00, 0.39]**: the honest reading is "zero observed, and this sample cannot
-rule out anything up to ~39%." It is now published beside a **coverage** column, because a system
-that returns *nothing* also scores 0.00 — coverage is 1.00 for the offline embedder and 0.67 for
-bge-small. Scaling the query set past toy size is
-[issue #16](https://github.com/GiulioDER/RE-call/issues/16).
+Full methodology, per-embedder tables and the negative results → **[results/FINDINGS.md](results/FINDINGS.md)**.
+Design rationale and the reasoning behind each guard → **[docs/WRITEUP.md](docs/WRITEUP.md)**.
 
-An ablation harness scores every `embedder × fusion` config on a labelled query set (precision@k,
-recall@k, MRR, nDCG, and a guard-specific **false-confident rate**), and the findings include what
-*didn't* work — see [The findings](#the-findings) below.
+### Claims that were withdrawn
 
-## What makes it different
+A previous version of this file published each of these. They did not survive re-measurement:
 
-- **Trust verdicts, not just scores** — every hit carries a verdict (`ok · superseded · expired · not_yet_valid · low_confidence`), a **calibrated confidence**, and provenance (source, chunk, `indexed_at`). A superseded or out-of-window memory loses to its successor — or to *"I don't know"* — even with the top cosine.
-- **It knows when it doesn't know** — when the best match is weak, RE-call returns a `gap_warning` instead of hallucinating; the abstention threshold is calibrated *per embedder* against a labelled set (`recall calibrate`), because that threshold **provably doesn't transfer** between models (see the findings).
-- **Catches the near-miss** *(opt-in)* — a QNLI entailment judge rejects a high-similarity memory that doesn't actually *answer* the query (which clears any cosine threshold by construction). A decision, not another score — nothing to recalibrate per embedder. OFF by default; cost measured.
-- **Write-time graph checks** — `recall lint` catches broken supersession edges (dangling / cyclic `supersedes:`, versioned siblings with no link, closures declared only in prose). No DB, exit 1 on errors, CI-ready. `--semantic` adds a retrieval-based **missing-edge** check — the write-time mirror of anti-re-litigation.
-- **Freshness-aware** — every result reports how stale the index is, so a rotting memory warns instead of silently serving old facts.
-- **Production-shaped** — PostgreSQL + pgvector, hybrid dense + full-text retrieval fused with **RRF**, cross-encoder reranking, and an **MCP server** for Claude. Integration-tested against a real database — no mock DB.
+- **"FCR @calibrated 0.00"** — the threshold was fitted and scored on the same samples. On separable
+  data that is 0.00 by arithmetic. Now cross-validated, and the fitting rule was
+  [replaced outright](results/FINDINGS.md) after it proved to let **20.5%** of unanswerable queries through.
+- **Coverage and abstention accuracy on generated corpora** — the "unanswerable" queries were an
+  answerable query plus a nonsense suffix, so nothing could separate them. Rebuilt as genuinely
+  off-topic questions; the *document*-level degeneracy remains and is stated as unmeasured.
+- **"6× faster incremental re-index"** — understated. Measured on a Linux server it is **33×**.
+
+## Production posture
+
+"Enterprise-grade" is not a single property, so here is the itemised version — verified on a real
+host (PostgreSQL 17, pgvector 0.8.2, Python 3.12, connecting as an **unprivileged** role), not only
+on a laptop.
+
+| Property | Status | Evidence |
+|---|---|---|
+| **Multi-tenancy** | ✅ `tenant_id` on every row and every query, plus a row-level-security policy (`ENABLE` + `FORCE`) | Verified as a `NOSUPERUSER NOBYPASSRLS` role — a superuser bypasses RLS, so testing it as one would have passed vacuously |
+| **Concurrency** | ✅ async MCP tools + `psycopg_pool`; the server previously served exactly **one** request at a time | FastMCP awaits async tools and calls sync ones *inline* — there is no thread offload |
+| **Timeouts / resilience** | ✅ `statement_timeout`, `connect_timeout`, narrow reconnect-and-retry | The retry refuses to re-run a `QueryCanceled`, which would escape the very timeout that fired |
+| **Security posture** | ✅ fail-closed on published default credentials; index-root confinement that survives symlinks on 3.11/3.12 | `pathlib` only gained `recurse_symlinks` in 3.13 |
+| **Observability** | ✅ `logging` (text/JSON), counters and latency percentiles for abstention, verdicts, reconnects; surfaced through the MCP `recall_stats` tool | The library never attaches handlers — that is the host's job |
+| **Incremental indexing** | ✅ content-hash skip, bounded-memory batched writes, prunes files deleted from disk | 5,100 chunks / 1,120 files: full **7.4 s**, unchanged re-index **0.22 s** |
+| **Scale characteristics** | ✅ measured at **50,600 chunks**: recall@5 1.00 filtered and unfiltered, search p50/p95/p99 | Templated text; absolute retrieval quality is optimistic |
+| **Real-corpus operation** | ✅ 792 hand-written memos → 6,469 chunks, recall@5 **0.945**, p50 **33 ms** | Known-item retrieval (headings as queries) — optimistic vs real questions |
+| **Authentication** | ❌ **not implemented** — stdio MCP carries no transport identity | [#9](https://github.com/GiulioDER/RE-call/issues/9) |
+| **Schema migrations** | ❌ runtime `CREATE TABLE IF NOT EXISTS`, no versioned upgrade path | Pre-tenancy tables *are* migrated in place, with a test |
+| **HA / replication** | ❌ out of scope — this is a library over your Postgres | — |
 
 ## How it works
 
@@ -113,169 +132,158 @@ flowchart LR
 
 Dense semantic search and sparse keyword search each retrieve candidates; **Reciprocal Rank Fusion**
 merges them, a cross-encoder reranks, and the **trust layer** judges every hit — supersession,
-validity window, calibrated confidence — before it ever reaches the agent. Validity is plain
-frontmatter in the memory itself (`supersedes: old_doc.md`, `valid_until: 2026-06-30`) — *authored,
-not inferred*.
-
-## The findings
-
-Six honest results from the ablation harness — the wins **and** the things that didn't pan out:
-
-<p align="center">
-  <img src="results/trust_effect.png" width="48%" alt="Superseded-trust rate: plain search vs trust layer">
-  &nbsp;
-  <img src="results/guard_effect.png" width="48%" alt="Guard effect: false-confident rate on unanswerable queries">
-</p>
-
-- **Similarity cannot see supersession — the trust layer can.** Plain search returns the stale memory **83–100%** of the time; the trust layer drives that to **0.00 on every embedder** (95% Wilson **[0.00, 0.39]**, n=6) with identical MRR. → [FINDINGS §4](results/FINDINGS.md)
-- **The gap threshold doesn't transfer across embedders.** The default `0.50` sits below FastEmbed's entire cosine distribution — false-confident rate **1.00** (the guard never fires). Calibrate per embedder to `~0.70`. Don't hard-code it. *(The "→ 0.00" this bullet used to claim was in-sample: the threshold was fitted to the same 5 samples it was scored on, so 0.00 was arithmetic, not measurement. The `1.00` is real — 0.50 is a fixed constant. → [FINDINGS §2b](results/FINDINGS.md))*
-- **Reranking rescues a weak embedder.** Hybrid + cross-encoder lifts MRR **0.63 → 1.00** on the offline embedder — real, but situational: a strong embedder already saturates this corpus.
-- **Fine-tuning pays off only for a vocabulary gap.** On a rich corpus the base saturates (Δ **+0.00**); on opaque jargon it can't decode, fine-tuning lifts held-out MRR **0.31 → 0.55 (+79%)**. Measure the gap first. → [study](docs/RAG_TRAINING_STUDY.md)
-- **Near-misses need a judge — and the judge needs the threshold.** The calibrated threshold is blind to high-similarity-but-wrong hits (FCR **0.40–1.00**); a QNLI entailment stage cuts it (**1.00→0.60, 0.80→0.50**) with the *identical judge on every embedder, zero recalibration* — but judge-alone *degrades* far-gap detection. Different failure classes: **stack them.** → [study](docs/ENTAILMENT_SUPERSESSION_STUDY.md)
-- **Timestamps can't replace declared supersession — even steelmanned.** "Trust the newest relevant hit" still trusts the stale memory **83–100%** of the time (worse than plain ranking on bge-small). Supersession is a *relation between two documents*; a per-document timestamp can't see it.
-
-> Full methodology + per-embedder tables → **[results/FINDINGS.md](results/FINDINGS.md)**.
-> **232 tests**, the DB-touching ones against a real pgvector container (no mock DB), verified in CI.
+validity window, calibrated confidence — before it reaches the agent. Validity is plain frontmatter
+in the memory itself (`supersedes: old_doc.md`, `valid_until: 2026-06-30`) — *authored, not inferred*,
+because a claim honoured as written is safe and a claim guessed at is not.
 
 ## Where this comes from
 
-RE-call isn't a toy. It's extracted from the memory system behind a **production trading-research
-agent** whose memory outgrew its context window — **≈660 typed markdown memos (~5 MB), re-indexed
-daily.** Every guard here is a scar from a real failure: re-litigating a falsified experiment, trusting
-a weak hit on an unanswerable question, serving a stale fact.
+RE-call is extracted from the memory system behind a production trading-research agent whose memory
+outgrew its context window. That corpus is the one the numbers above were measured against:
+**792 hand-written markdown memos → 6,469 chunks**, re-indexed daily.
 
-**→ [Read the redacted case study](docs/CASE_STUDY.md)** — the real structure, the guards in action, and exactly what's public vs private.
+Every guard here is a scar from a real failure — re-litigating a falsified experiment, trusting a
+weak hit on an unanswerable question, building on a fact that had been reversed. Running the library
+back against that corpus is also what exposed the defects listed under [Engineering](#engineering):
+real files carry stray bytes, real authors write `[[wikilinks]]` where the parser expected filenames,
+and real closure notes hedge.
+
+**→ [Redacted case study](docs/CASE_STUDY.md)** — the real structure, the guards in action, and
+exactly what is public versus private.
 
 ## Quickstart · 2 minutes, no API key
 
 ```bash
-git clone https://github.com/GiulioDER/RE-call && cd RE-call
-docker compose up -d --wait                     # Postgres + pgvector (waits until healthy)
-python -m venv .venv && . .venv/bin/activate    # Windows: .\.venv\Scripts\activate
-pip install -e ".[fastembed,dev]"
-python -m recall.cli demo
+docker compose up -d --wait          # PostgreSQL + pgvector
+pip install -e ".[fastembed]"        # local embeddings, no API key
+python -m recall.cli demo            # index corpus/ and run the sample queries
 ```
-
-Default embedder is local **FastEmbed** (no key); `--embedder hashing` is a fully-offline fallback.
 
 ## Use it
 
 ```bash
-python -m recall.cli index ./path/to/markdown            # index your own docs
-python -m recall.cli search "your question"              # → verdicts + confidence + gap/freshness flags
-python -m recall.cli search "..." --entail               # + QNLI near-miss judge (recall[entail], opt-in)
-python -m recall.cli calibrate recall/eval/queries.json  # per-embedder abstention threshold → calibration.json
-python -m recall.cli lint ./path/to/markdown             # supersession-graph completeness (no DB)
-python -m recall.cli lint ./docs --semantic              # + retrieval-based missing-edge check (DB, opt-in)
+python -m recall.cli index ./notes                       # index a folder of markdown
+python -m recall.cli search "what did we decide about caching?"
+python -m recall.cli lint ./notes                        # supersession-graph health (no DB)
+python -m recall.cli lint ./notes --fix                   # propose missing edges (dry run)
+python -m recall.cli check ./notes/new-memo.md --strict    # write-time gate, for a pre-commit hook
+```
+
+```python
+from recall.store import PgVectorStore
+from recall.embeddings import FastEmbedEmbedder
+from recall.trust import trusted_search
+
+emb = FastEmbedEmbedder()
+with PgVectorStore(DSN, dim=emb.dim, tenant="acme", pool_size=8) as store:
+    store.ensure_schema()
+    result = trusted_search(store, emb, "what is the rate limit?")
+    if result.abstained:
+        ...  # say you don't know — do not answer from these hits
+    for hit in result.hits:
+        hit.verdict      # ok | superseded | expired | not_yet_valid | low_confidence | …
+        hit.confidence   # calibrated; 0.5 sits exactly on the abstention boundary
+        hit.validity.superseded_by
 ```
 
 Point `RECALL_DSN` at any Postgres.
 
-> **Multi-tenancy.** Rows carry a `tenant_id` and every query filters on it; set `RECALL_TENANT`
-> (or `PgVectorStore(tenant=...)`). A row-level-security policy enforces the same boundary in the
-> database, so a forgotten `WHERE` returns nothing instead of another tenant's memories.
-> ⚠️ **RLS is bypassed by a superuser or a `BYPASSRLS` role** — including the role in this repo's
-> `docker-compose.yml`. Connect as an unprivileged role or that second layer is decoration;
-> `store.check_rls_effective()` tells you which you have, and the MCP server warns at startup.
-> A store is bound to one tenant, so serve many tenants with a store (or server) per tenant.
+> **Two operational notes.** The test suite **DROPs tables**, so it reads a separate
+> `RECALL_TEST_DSN` and never `RECALL_DSN` — exporting your real DSN and running `pytest` cannot
+> touch it. And the MCP server **refuses to start** if `RECALL_DSN` carries the built-in
+> `recall:recall` credentials against a non-local host; set a real password, or
+> `RECALL_ALLOW_INSECURE_DSN=1` to accept the risk deliberately.
 
-> **Operating it.** Diagnostics go to the standard `logging` module under the `recall`
-> namespace — the library never attaches handlers itself, so it cannot hijack your application's
-> logging. Entry points call `configure_logging()`, honouring `RECALL_LOG_LEVEL` and
-> `RECALL_LOG_FORMAT=json` for log shipping. Counters and latency percentiles (searches,
-> abstentions, gap warnings, verdicts by kind, database reconnects) are collected in-process and
-> returned by the `recall_stats` MCP tool, so you can read them without standing up a scrape
-> endpoint.
-
-> **Two safety notes about `RECALL_DSN`.** The test suite **DROPs tables**, so it reads a
-> separate `RECALL_TEST_DSN` (falling back to the local docker-compose database) and never
-> `RECALL_DSN` — exporting your real DSN and running `pytest` cannot touch it. And the MCP server
-> **refuses to start** if `RECALL_DSN` carries the built-in `recall:recall` credentials against a
-> non-local host, since that password is published right here; set a real one, or
-> `RECALL_ALLOW_INSECURE_DSN=1` to accept the risk deliberately. The CLI still only warns.
-
-Declare validity in the memory itself — plain frontmatter, no
-schema changes (validity is *authored, not verified*: index only content you trust, because a
-`supersedes:` claim is honored as written):
-
-```markdown
----
-supersedes: rate_limits_v1.md
-valid_until: 2026-12-31
----
-# API rate limits (revised)
-...
-```
-
-**Code, not just prose.** For Python source, the engine chunks on `def` / `class` boundaries
-instead of blindly splitting text, so natural-language questions land the exact function. Other
-languages currently fall back to generic text chunking (multi-language, tree-sitter-based code
-chunking is on the roadmap):
-
-```text
-$ python -m recall.cli index ./src --glob "**/*.py"   # your codebase
-$ python -m recall.cli code                            # demo: search RE-call's OWN source
-
-[ok] query='where is reciprocal rank fusion implemented?'
-  ok           conf=1.00  cos=0.805  retriever.py  'def _rrf(rankings: list[list[str]], k: int = 60) -> '
-[ok] query='how are embeddings stored in postgres?'
-  ok           conf=1.00  cos=0.788  store.py      'class PgVectorStore:  """The single, production-g'
-```
+> **Multi-tenancy.** Set `RECALL_TENANT` or `PgVectorStore(tenant=...)`. RLS enforces the same
+> boundary in the database, so a forgotten `WHERE` returns nothing rather than another tenant's
+> memories. ⚠️ **RLS is bypassed by a superuser or a `BYPASSRLS` role** — including the one in this
+> repo's `docker-compose.yml`. Connect as an unprivileged role, or that second layer is decoration;
+> `store.check_rls_effective()` tells you which you have, and the server warns at startup.
 
 ## Use it with Claude (MCP)
 
-Expose memory to **Claude Code** or **Claude Desktop** as three tools — `recall_search`,
-`recall_index`, `recall_stats` — so the agent queries its memory *before* it acts:
-
-```bash
-pip install -e ".[fastembed,mcp]"
-python -m recall_mcp.server        # stdio server
+```json
+{ "mcpServers": { "recall": {
+    "command": "python", "args": ["-m", "recall_mcp.server"],
+    "env": { "RECALL_DSN": "postgresql://...", "RECALL_TENANT": "acme" } } } }
 ```
 
-The self-recall pattern: Claude calls `recall_search` **before** proposing an idea; if a closed
-decision surfaces (and it isn't a `gap_warning`), it backs off instead of re-litigating. Every hit
-carries `verdict` / `confidence` / `superseded_by` / `indexed_at`, and when `abstained` is true the
-advice says so explicitly: *say you don't know — do not answer from these hits.*
+Three tools: `recall_search` (verdict + confidence + provenance, or an explicit abstention),
+`recall_index`, `recall_stats` (size, freshness, and the process metrics). Full guide →
+[docs/USING_WITH_CLAUDE.md](docs/USING_WITH_CLAUDE.md).
 
-**→ [Full guide: Claude Code + Desktop config, the three tools, and a real redacted loop](docs/USING_WITH_CLAUDE.md)**
-&nbsp;·&nbsp; example agent: [`examples/self_recall_agent.py`](examples/self_recall_agent.py)
+## What this does not do
 
-## Upgrading to 0.4.0
+Stated plainly, because the failure mode this library exists to prevent is confident overreach.
 
-- **Chunking changed.** Oversized blocks are now force-split on whitespace (previously a
-  fixed-stride window that could cut through words). Existing rows keep their old chunking until
-  re-indexed, so run `python -m recall.cli index <root>` over the whole corpus.
-- **`source` is stored resolved**, so re-indexing the same corpus by a different path spelling
-  replaces its rows instead of duplicating them. The migration is not automatic: rows written
-  before 0.4.0 under a *relative* path carry a different `source`, and `replace_sources` deletes
-  by exact match, so a re-index leaves the old ones orphaned. Clear them explicitly:
+- **No authentication.** Any client that can reach the MCP server gets that tenant's memory.
+  Tenancy is enforced; identity is not established. → [#9](https://github.com/GiulioDER/RE-call/issues/9)
+- **Validity is authored, not inferred.** On a real 792-memo corpus, **2** memos declared
+  `supersedes:` while **60** described a closure only in prose. `recall lint --fix` was built to
+  close that gap and, after review, could safely declare **zero** of them: narrating vs declaring,
+  part vs whole, augmenting vs replacing are invisible to a pattern and obvious to the author. It
+  ships as a **reviewing aid**, with `recall check` moving the question to write time. →
+  [#29](https://github.com/GiulioDER/RE-call/issues/29)
+- **Successor and abstention accuracy are unmeasured on generated corpora.** Every synthetic
+  document is the same sentence with a different opaque token, so those columns measure token
+  discrimination, not the trust layer. STR, latency and scale figures are unaffected.
+- **Gap detection is bounded by the embedder.** With a weak one, no threshold separates answerable
+  from unanswerable — measured, not assumed.
+- **ANN recall is untuned.** `hnsw.ef_search` is left at its default and HNSW build
+  nondeterminism measurably moves calibration. → [#11](https://github.com/GiulioDER/RE-call/issues/11)
 
-  ```sql
-  DELETE FROM chunks WHERE source NOT LIKE '/%' AND source !~ '^[A-Za-z]:';
-  ```
+## Engineering
 
-- **An unresolvable supersession edge now fails closed.** When two documents share the basename a
-  `supersedes:` edge names, the edge was already (correctly) not guessed — but the memories were
-  still served as `ok`. They now come back `ambiguous_supersession` and the search abstains.
-  `recall lint` reports the condition as an **error**, so fix the corpus before it surfaces as an
-  abstention.
+**349 tests, 3 skipped.** The database-touching ones run against a real pgvector container — no mock
+DB. CI runs `ruff`, the suite against PostgreSQL, and `pip-audit` over a checked-in `uv.lock`, as a
+gate rather than a report.
 
-## Reproduce the evaluation
+Tests are written to fail for the right reason. A representative sample:
+
+- the RLS tests connect as a role that **cannot bypass RLS**, because as a superuser they would pass
+  while testing nothing;
+- the cross-tenant test asserts the other tenant's row **exists** before checking it is invisible,
+  so a silently failed write cannot make it green;
+- the supersession-cache test counts real table scans, so a "fix" that quietly became *rescan every
+  search* would be caught;
+- the metrics test asserts the counters move on the **real retrieval path** — instrumentation that
+  is never wired up reports zero forever and reads as "nothing is going wrong".
+
+Several defects were found only by running the library against a real corpus and a real server, and
+each has a regression test quoting the input that caused it: a single NUL byte in one file aborting a
+792-file index; every declared supersession edge failing on reference *formatting*; five tests that
+encoded the developer's own environment and failed on a correctly-configured host.
+
+## Upgrading to 0.5.0
+
+**The chunks table gains a `tenant_id` column and its primary key becomes `(tenant_id, id)`.**
+`ensure_schema()` performs that migration in place on an existing table and assigns existing rows to
+the `default` tenant, which is also the default `tenant=` — so a single-tenant deployment upgrades
+without noticing. There is a test that builds an old-shape table, inserts a row, opens it with this
+version, and asserts the row survives and is still retrievable.
+
+The key had to change: chunk ids derive from the file path, so two tenants indexing the same layout
+produced the *same id*, and under the old single-column key one tenant's re-index silently
+overwrote the other's row.
+
+Two behavioural changes worth knowing before you upgrade:
+
+- **The abstention threshold is fitted differently** (mid-gap rather than on the lowest answerable
+  sample). It abstains *more*, and on measured data far more accurately — false-confidence on
+  unanswerable queries drops from 0.205 to 0.000 for 1.5% of answerable queries. Re-run
+  `recall calibrate` and re-check any threshold you have pinned.
+- **`supersedes:` matching is more tolerant.** `name`, `name.md`, `[name]` and `[[name]]` now all
+  resolve to the same document, so edges that were silently dangling may start applying. That is the
+  intent — on the reference corpus it took working edges from 0 to 2 — but it does mean memories
+  that were served as `ok` can now correctly come back `superseded`.
+
+## Reproduce
 
 ```bash
-pip install -e ".[fastembed,rerank,entail,eval]"
-make eval        # → results/RESULTS.md + the charts above
-```
-
-The Voyage cloud row appears when `VOYAGE_API_KEY` is set (shell env, or a gitignored `.env`).
-
-## Tests
-
-```bash
-docker compose up -d --wait
-pytest -v      # integration tests hit the real pgvector container — no mock DB
+make eval                                        # ablations + trust + near-miss → results/
+python -m recall.eval.scale --embedder hashing --filler 50000    # scale + latency
 ```
 
 ## License
 
-[MIT](LICENSE).
+MIT — see [LICENSE](LICENSE).
