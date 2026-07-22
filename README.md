@@ -213,8 +213,9 @@ Point `RECALL_DSN` at any Postgres.
     "env": { "RECALL_DSN": "postgresql://...", "RECALL_TENANT": "acme" } } } }
 ```
 
-Three tools: `recall_search` (verdict + confidence + provenance, or an explicit abstention),
-`recall_index`, `recall_stats` (size, freshness, and the process metrics). Full guide →
+Four tools: `recall_search` (verdict + confidence + provenance, or an explicit abstention),
+`recall_index`, `recall_forget` (permanently delete a source's chunks — irreversible,
+tenant-scoped), `recall_stats` (size, freshness, and the process metrics). Full guide →
 [docs/USING_WITH_CLAUDE.md](docs/USING_WITH_CLAUDE.md).
 
 ## What this does not do

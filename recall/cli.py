@@ -75,6 +75,23 @@ def main(argv: list[str] | None = None) -> None:
         help="file glob to index — e.g. '**/*.py' for code (auto-uses code chunking). Default: markdown.",
     )
 
+    p_forget = sub.add_parser(
+        "forget",
+        help="permanently delete indexed memory for the given source(s) — irreversible",
+    )
+    p_forget.add_argument(
+        "sources", nargs="+",
+        help="source value(s) to forget, exactly as stored (see the `source` field in "
+             "`recall search` output)",
+    )
+    p_forget.add_argument(
+        "--yes", action="store_true",
+        help="actually delete. Without this flag, forget only PREVIEWS what would be removed "
+             "and changes nothing — this command is the right-to-erasure path, it is "
+             "irreversible, and it is also invoked from scripts, so a typo or an unattended "
+             "run must not silently wipe a corpus. Re-run with --yes once the preview looks right.",
+    )
+
     p_search = sub.add_parser("search", help="search the index")
     p_search.add_argument("query")
     p_search.add_argument("-k", type=int, default=5)
@@ -224,6 +241,24 @@ def main(argv: list[str] | None = None) -> None:
             store.ensure_schema()
             stats = Indexer(store, embedder, chunker=chunker).index_path(args.path, glob=args.glob)
             print(f"indexed {stats.chunks} chunks from {stats.files} files")
+    elif args.cmd == "forget":
+        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table) as store:
+            store.ensure_schema()
+            requested = list(dict.fromkeys(args.sources))
+            existing = store.source_content_hashes()
+            found = [s for s in requested if s in existing]
+            not_found = [s for s in requested if s not in existing]
+            if not args.yes:
+                print(f"DRY RUN: would forget {len(found)} source(s): "
+                      f"{', '.join(found) if found else '(none)'}")
+                if not_found:
+                    print(f"not found (check for typos): {', '.join(not_found)}")
+                print("nothing deleted — re-run with --yes to actually delete.")
+            else:
+                removed = store.delete_sources(found)
+                print(f"forgot {removed} chunk(s) from {len(found)} source(s)")
+                if not_found:
+                    print(f"not found (check for typos): {', '.join(not_found)}")
     elif args.cmd == "search":
         entail_judge = None
         if args.entail:

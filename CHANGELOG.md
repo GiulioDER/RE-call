@@ -5,6 +5,16 @@ All notable changes to this project are documented here. Format follows
 a minor bump may still break schema or API. Dates are commit dates from `git log`, not release-tag
 dates — this project does not currently tag releases.
 
+## [Unreleased]
+
+### Added
+- **Right-to-erasure deletion path**: `PgVectorStore.delete_sources()` is now exposed via a
+  `recall forget <source>...` CLI subcommand (dry-run by default; `--yes` to actually delete) and
+  a `recall_forget` MCP tool, both tenant-scoped. `forget_memory()` / `ForgetResult`
+  (`recall_mcp/service.py`) report chunks removed and sources removed separately from sources not
+  found, so a typo'd source is never mistaken for a successful deletion. Closes the gap tracked in
+  `SECURITY.md` and issue #9.
+
 ## [0.5.0] — 2026-07-22
 
 ### Added
