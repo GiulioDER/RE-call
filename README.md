@@ -277,9 +277,10 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 
 - **No token revocation without a restart.** Authentication shipped — bearer tokens, scopes and
   one tenant per principal ([docs/AUTH.md](docs/AUTH.md)) — but the token file is read at startup,
-  so removing access takes effect on reload, not on save. There is no rate limiting or per-tenant
-  quota either. For revocation, rotation or per-request identity, front this with a real identity
-  provider and supply the MCP SDK's `auth_server_provider`.
+  so removing access takes effect on reload, not on save. (Per-tenant rate limits and an indexing
+  byte quota *do* ship — see [SECURITY.md](SECURITY.md) — but their buckets are per process, so N
+  workers admit roughly N times the rate.) For revocation, rotation or per-request identity, front
+  this with a real identity provider and supply the MCP SDK's `auth_server_provider`.
 - **Validity is authored, not inferred.** On a real 794-memo corpus, **2** memos declared
   `supersedes:` while **60** described a closure only in prose. `recall lint --fix` was built to
   close that gap and, after review, could safely declare **zero** of them: narrating vs declaring,
