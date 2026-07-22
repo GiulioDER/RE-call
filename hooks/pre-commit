@@ -1,0 +1,16 @@
+#!/bin/sh
+# recall write-time gate.
+#
+# Asks for the supersession edge while the author still knows the answer. `recall lint --fix`
+# measured 60 prose closure markers in a real corpus and could safely declare ZERO of them after
+# the fact — narrating vs declaring, part vs whole, augmenting vs replacing are invisible to a
+# pattern and obvious to the person writing. This is the moment that person is still here.
+#
+# Install:  ln -s ../../hooks/pre-commit .git/hooks/pre-commit
+# Bypass:   git commit --no-verify   (an augmenting memo is not a successor)
+
+staged=$(git diff --cached --name-only --diff-filter=ACM | grep '\.md$')
+[ -z "$staged" ] && exit 0
+
+# shellcheck disable=SC2086
+python -m recall.cli check --strict $staged
