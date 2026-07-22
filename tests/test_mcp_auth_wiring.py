@@ -10,18 +10,34 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import uuid
+
+import psycopg
 
 import pytest
 
 from recall_mcp.auth import SCOPE_FORGET, SCOPE_READ, SCOPE_WRITE, AuthConfigError
 from recall_mcp.server import HTTP_TRANSPORTS, RecallTokenVerifier, build_auth
-from tests.test_tenancy import tenant_table  # noqa: F401  (fixture)
 from recall_mcp.stores import StoreRegistry
 from recall.types import Chunk
 
 from tests.conftest import TEST_DSN, requires_db
 
 TOKEN = "t" * 40
+
+
+@pytest.fixture
+def tenant_table():
+    """A throwaway table shared by the differently-tenanted stores a registry hands out.
+
+    Defined locally rather than imported from `test_tenancy`: importing a fixture across test
+    modules shadows the parameter name at every use site (ruff F811) and couples two files that
+    have no reason to move together.
+    """
+    name = "mcpauth_" + uuid.uuid4().hex[:8]
+    yield name
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute(f"DROP TABLE IF EXISTS {name}")
 
 
 def tokens_file(tmp_path, *, tenant="team-a", scopes=None, name="tokens.json") -> str:

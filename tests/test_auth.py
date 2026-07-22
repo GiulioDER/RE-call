@@ -22,7 +22,6 @@ from recall_mcp.auth import (
     SCOPE_READ,
     SCOPE_WRITE,
     AuthConfigError,
-    Principal,
     TokenRegistry,
     _sha256_hex,
     authorize,
