@@ -122,7 +122,7 @@ on a laptop.
 | **Retrieval quality, real questions** | ✅ **hit@5 0.705** [0.56, 0.82] on a public 746-doc corpus with the free local embedder · ⚠️ **0.348** on an idiosyncratic private one — see [the tables below](#retrieval-on-a-real-corpus-what-actually-moved-it) | Measured on 110 hand-labelled questions per corpus, not on headings. Corpus vocabulary dominates: a cloud embedder is worth +0.28 on the hard corpus and +0.02 on the ordinary one |
 | **Data erasure** | ✅ `recall forget` / `recall_forget` permanently delete a source's chunks; previews by default, `--yes` to act | The right-to-erasure path — irreversible, so it refuses to act unattended without the flag |
 | **Abuse bounds** | ✅ `recall_index` refuses before embedding anything if a request exceeds `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` | A client-callable indexer with no cap is an unbounded spend on a cloud embedder |
-| **Authentication** | ❌ **not implemented** — stdio MCP carries no transport identity | [#9](https://github.com/GiulioDER/RE-call/issues/9) |
+| **Authentication** | ✅ bearer tokens on the HTTP transports, three scopes, one tenant per principal — see [docs/AUTH.md](docs/AUTH.md) | Starting an HTTP transport without tokens **refuses to boot** rather than warning. stdio stays unauthenticated by design: it is a private pipe, not a listener |
 | **Schema migrations** | ❌ runtime `CREATE TABLE IF NOT EXISTS`, no versioned upgrade path | Pre-tenancy tables *are* migrated in place, with a test |
 | **HA / replication** | ❌ out of scope — this is a library over your Postgres | — |
 
@@ -275,8 +275,11 @@ tenant-scoped), `recall_stats` (size, freshness, and the process metrics). Full 
 
 Stated plainly, because the failure mode this library exists to prevent is confident overreach.
 
-- **No authentication.** Any client that can reach the MCP server gets that tenant's memory.
-  Tenancy is enforced; identity is not established. → [#9](https://github.com/GiulioDER/RE-call/issues/9)
+- **No token revocation without a restart.** Authentication shipped — bearer tokens, scopes and
+  one tenant per principal ([docs/AUTH.md](docs/AUTH.md)) — but the token file is read at startup,
+  so removing access takes effect on reload, not on save. There is no rate limiting or per-tenant
+  quota either. For revocation, rotation or per-request identity, front this with a real identity
+  provider and supply the MCP SDK's `auth_server_provider`.
 - **Validity is authored, not inferred.** On a real 794-memo corpus, **2** memos declared
   `supersedes:` while **60** described a closure only in prose. `recall lint --fix` was built to
   close that gap and, after review, could safely declare **zero** of them: narrating vs declaring,

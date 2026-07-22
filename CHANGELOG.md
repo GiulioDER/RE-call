@@ -8,6 +8,27 @@ dates — this project does not currently tag releases.
 ## [Unreleased]
 
 ### Added
+- **Authentication on the MCP HTTP transports** (`recall_mcp/auth.py`, `recall_mcp/stores.py`,
+  [docs/AUTH.md](docs/AUTH.md)). Static bearer tokens map to a principal with a **tenant** and
+  **scopes**; the tenant selects its own `PgVectorStore` and connection pool, so a principal
+  cannot reach another tenant's rows. Closes the second checkbox of issue #9.
+  - **Fails closed**: starting `streamable-http` or `sse` without `RECALL_AUTH_TOKENS_FILE`
+    raises `AuthConfigError` and refuses to boot, rather than warning into a journal while
+    serving every memory to anything that can reach the port. `stdio` is unchanged and stays
+    unauthenticated by design — it is a private pipe to one client, not a listener.
+  - **Tokens come from a file, never an environment variable.** There is deliberately no
+    `RECALL_AUTH_TOKENS=<secret>`: env vars leak via `/proc/<pid>/environ`, `ps e`, container
+    inspection and every child process. Tokens are held only as SHA-256 digests, and
+    `token_sha256` lets an operator provision access without writing plaintext to disk.
+  - **Three scopes** mirroring each tool's real risk — `recall:read` (search, stats),
+    `recall:write` (indexing burns embedding spend), `recall:forget` (irreversible). Entries
+    default to `recall:read` alone.
+  - New `RECALL_TRANSPORT`, `RECALL_HOST` (defaults to loopback, not `0.0.0.0`), `RECALL_PORT`,
+    `RECALL_AUTH_TOKENS_FILE`, `RECALL_AUTH_ISSUER_URL`, `RECALL_AUTH_RESOURCE_URL`.
+  - Verified end-to-end against a live server on real PostgreSQL: an unauthenticated request, an
+    unknown token and a malformed header each get **401**, while a valid token completes an
+    `initialize` handshake — the rejection path is exercised, not only the green one.
+
 - **Indexing budget caps**: `recall_index` / `index_memory()` (`recall_mcp/service.py`) now
   measure the candidate file set — count and total bytes, via the new `recall.index.candidate_files`
   helper — BEFORE any file is read or embedded, and refuse the whole request if it exceeds
