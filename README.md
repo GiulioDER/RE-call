@@ -97,8 +97,11 @@ A previous version of this file published each of these. They did not survive re
 - **"6× faster incremental re-index"** — understated. Measured on a Linux server it is **33×**.
 - **Real-corpus recall@5 of 0.945** — that used document *headings* as queries, which is known-item
   retrieval. Against 110 hand-labelled questions phrased the way a person actually asks, hit@5 is
-  **0.33**. The caveat was always printed; now it has a number, and it is the weakest measured part
-  of the system. → [FINDINGS §7](results/FINDINGS.md)
+  **0.33** on that corpus. → [FINDINGS §7](results/FINDINGS.md)
+- **"Retrieval is the weakest part of this system"** — the sentence this file carried after that
+  measurement. A replication on a public corpus scored **0.705** with the same local embedder, so
+  0.33 was a property of *that corpus*, not of this software. Corrected rather than quietly
+  deleted, because the claim was published. → [FINDINGS §8](results/FINDINGS.md)
 
 ## Production posture
 
@@ -116,7 +119,7 @@ on a laptop.
 | **Incremental indexing** | ✅ content-hash skip, bounded-memory batched writes, prunes files deleted from disk | 5,100 chunks / 1,120 files: full **7.4 s**, unchanged re-index **0.22 s** |
 | **Scale characteristics** | ✅ measured at **50,600 chunks**: recall@5 1.00 filtered and unfiltered, search p50/p95/p99 | Templated text; absolute retrieval quality is optimistic |
 | **Real-corpus operation** | ✅ 794 hand-written memos → 6,491 chunks, p50 **78 ms** | Works at this size; see the retrieval row for how well |
-| **Retrieval quality, real questions** | ⚠️ measured, and it is the weak part — see [the table below](#retrieval-on-a-real-corpus-what-actually-moved-it) | Headings-as-queries scored 0.945; real questions score 0.33 with the local embedder |
+| **Retrieval quality, real questions** | ✅ **hit@5 0.705** [0.56, 0.82] on a public 746-doc corpus with the free local embedder · ⚠️ **0.348** on an idiosyncratic private one — see [the tables below](#retrieval-on-a-real-corpus-what-actually-moved-it) | Measured on 110 hand-labelled questions per corpus, not on headings. Corpus vocabulary dominates: a cloud embedder is worth +0.28 on the hard corpus and +0.02 on the ordinary one |
 | **Data erasure** | ✅ `recall forget` / `recall_forget` permanently delete a source's chunks; previews by default, `--yes` to act | The right-to-erasure path — irreversible, so it refuses to act unattended without the flag |
 | **Abuse bounds** | ✅ `recall_index` refuses before embedding anything if a request exceeds `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` | A client-callable indexer with no cap is an unbounded spend on a cloud embedder |
 | **Authentication** | ❌ **not implemented** — stdio MCP carries no transport identity | [#9](https://github.com/GiulioDER/RE-call/issues/9) |
