@@ -763,6 +763,23 @@ class PgVectorStore:
         edges, unresolved = self._with_retry(_op)
         return dict(edges), unresolved
 
+    def source_content_hashes(self) -> dict[str, str]:
+        """`{source: content_hash}` for this tenant — what the indexer compares against.
+
+        One row per source: the hash is a property of the file, so every chunk of it carries the
+        same value and `DISTINCT` collapses them. A source indexed before content hashing existed
+        has no hash and is reported as `""`, which can never equal a real sha256 — so it is
+        re-indexed once and then skipped like everything else.
+        """
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT DISTINCT source, coalesce(metadata->>'content_hash', '') "
+                f"FROM {self._table} WHERE tenant_id = %s",
+                (self._tenant,),
+            ).fetchall()
+        )
+        return {source: content_hash for source, content_hash in rows}
+
     def supersession_map(self) -> dict[str, str]:
         """Resolvable supersession edges only — convenience view of `supersession`."""
         return self.supersession()[0]

@@ -23,13 +23,25 @@ class _NullEmbedder:
 
 
 class _RecordingStore:
-    """Captures what an Indexer would write, without a database."""
+    """Captures what an Indexer would write, without a database.
+
+    Implements the whole collaborator interface the Indexer uses: it also reads existing content
+    hashes (to skip unchanged files) and deletes vanished ones.
+    """
 
     def __init__(self):
         self.chunks = []
+        self.deleted = []
+
+    def source_content_hashes(self):
+        return {}  # nothing indexed yet, so every file is new
+
+    def delete_sources(self, sources):
+        self.deleted.extend(sources)
+        return len(sources)
 
     def replace_sources(self, sources, chunks, embeddings):
-        self.chunks = list(chunks)
+        self.chunks.extend(chunks)
         return len(chunks)
 
 
