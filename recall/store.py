@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from collections.abc import Callable
 from datetime import datetime
 from typing import TypeVar
@@ -13,6 +12,7 @@ import psycopg
 from pgvector import Vector
 from pgvector.psycopg import register_vector
 
+from recall.observability import METRICS, get_logger
 from recall.types import Chunk, ScoredChunk
 
 #: The built-in dev credentials shipped in the default DSN — safe only against a local database.
@@ -52,6 +52,8 @@ def redacted_dsn(dsn: str) -> str:
 
 _T = TypeVar("_T")
 
+_log = get_logger("store")
+
 
 def warn_if_insecure_dsn(dsn: str) -> str | None:
     """Warn (to stderr) when the built-in ``recall:recall`` credentials target a NON-local host.
@@ -74,7 +76,7 @@ def warn_if_insecure_dsn(dsn: str) -> str | None:
         f"recall: WARNING — using the default 'recall:recall' credentials against non-local host "
         f"{parts.hostname!r}. Set a strong password via RECALL_DSN before using a remote database."
     )
-    print(msg, file=sys.stderr)
+    _log.warning(msg)
     return msg
 
 
@@ -328,7 +330,8 @@ class PgVectorStore:
             # original database error on an older install.
             if not (self._conn.closed or getattr(self._conn, "broken", False)):
                 raise
-            print("recall: database connection lost — reconnecting", file=sys.stderr)
+            _log.warning("database connection lost — reconnecting")
+            METRICS.increment("recall_db_reconnects_total")
             self._reconnect()
             return op(self._conn)
 
@@ -354,10 +357,8 @@ class PgVectorStore:
                     dead = conn.closed or getattr(conn, "broken", False)
                     if not dead or attempt == 1:
                         raise
-                    print(
-                        "recall: pooled database connection lost — retrying on another",
-                        file=sys.stderr,
-                    )
+                    _log.warning("pooled database connection lost — retrying on another")
+                    METRICS.increment("recall_db_reconnects_total", pooled="true")
         raise AssertionError("unreachable: the loop either returns or raises")  # pragma: no cover
 
     @property

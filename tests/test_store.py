@@ -52,11 +52,14 @@ def test_resolve_supersession_dangling_falls_back_to_raw_basename():
 # --- warn_if_insecure_dsn: pure, DB-free (the default-credentials footgun guard) ---------------
 
 
-def test_warn_insecure_dsn_flags_default_creds_on_remote_host(capsys):
-    msg = warn_if_insecure_dsn("postgresql://recall:recall@db.prod.internal:5432/recall")
+def test_warn_insecure_dsn_flags_default_creds_on_remote_host(caplog):
+    # Asserted through the logger, not stderr: the destination is the application's to choose,
+    # but the warning being EMITTED at WARNING level is the contract.
+    with caplog.at_level("WARNING", logger="recall.store"):
+        msg = warn_if_insecure_dsn("postgresql://recall:recall@db.prod.internal:5432/recall")
     assert msg is not None
-    err = capsys.readouterr().err
-    assert "WARNING" in err and "db.prod.internal" in err
+    assert any("db.prod.internal" in r.getMessage() for r in caplog.records)
+    assert any(r.levelname == "WARNING" for r in caplog.records)
 
 
 def test_warn_insecure_dsn_silent_on_localhost():
@@ -428,14 +431,21 @@ def test_closed_store_stays_closed(make_store):
 
 
 @requires_db
-def test_reconnect_is_reported_to_stderr(make_store, capsys):
+def test_reconnect_is_reported_and_counted(make_store, caplog):
     # a silent reconnect hides an outage: the unit stays 'active', NRestarts never moves
+    from recall.observability import METRICS
+
     store = make_store(3)
     store.upsert([Chunk("a", "f.md", "cats")], [[1.0, 0.0, 0.0]])
-    capsys.readouterr()
+    before = METRICS.snapshot()["counters"].get("recall_db_reconnects_total", 0)
     store._conn.close()
-    assert store.count() == 1
-    assert "reconnect" in capsys.readouterr().err.lower()
+    with caplog.at_level("WARNING", logger="recall.store"):
+        assert store.count() == 1
+    assert any("reconnect" in r.getMessage().lower() for r in caplog.records)
+    # counted as well as logged: a log line answers "did it happen", a counter answers
+    # "how often", which is the one that reveals a flapping database.
+    after = METRICS.snapshot()["counters"].get("recall_db_reconnects_total", 0)
+    assert after == before + 1
 
 
 def test_redacted_dsn_removes_the_password():
