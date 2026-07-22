@@ -431,8 +431,17 @@ opaque-codename corpus where the concept↔name mapping exists nowhere in pretra
 pipeline lifted held-out MRR **0.31 → 0.55**. This corpus is the second kind, and its measured MRR
 of **0.31** is, to the decimal, where that study started.
 
-So the next experiment is domain fine-tuning with `finetune/train.py`, or a stronger/domain-adapted
-embedder — not another retrieval knob. Predicted, not claimed: it has not been run.
+Two ways to act on that: a stronger embedder, or domain fine-tuning. **The stronger embedder was
+run and settled it** (above). Fine-tuning `bge-small` on the same 46 training queries was started
+and then **abandoned unfinished** — not because it failed, but on operational grounds: on the
+reference host it consumed 629% CPU across 63 threads beside live systems, and was stopped at
+44/96 steps. `nice` lowers scheduling priority but does not cap thread count.
+
+So the honest status is: **fine-tuning remains untested here.** It would answer a narrower question
+than the one already answered — whether a *local* model can close the gap that voyage-3 closes —
+and that is worth knowing, but it is not what was blocking the result. The only datum recovered
+from the attempt is the trainer's own baseline, `test MRR 0.292`, which independently corroborates
+the 0.311 this harness measured file-level on the same embedder.
 
 ### The most likely lever, as first predicted (superseded by the runs above)
 
