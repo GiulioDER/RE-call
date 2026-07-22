@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "psycopg[binary]>=3.1",
-    "pgvector>=0.3",
+    "pgvector>=0.5.0",
 ]
 
 [project.optional-dependencies]
