@@ -102,8 +102,13 @@ def test_statement_timeout_fails_closed_and_is_not_retried():
         with pytest.raises(psycopg.errors.QueryCanceled):
             store._with_retry(lambda conn: conn.execute("SELECT pg_sleep(3)").fetchone())
     finally:
-        store.drop_table()
         store.close()
+        # Clean up on a SEPARATE connection: this store's 100 ms timeout applies to its own
+        # teardown too, and DROP TABLE is not reliably under 100 ms on slower disks — the test
+        # failed in CI for that reason while passing locally. The timeout is the subject of the
+        # assertion, not something the cleanup should have to survive.
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
 
 
 @requires_db
