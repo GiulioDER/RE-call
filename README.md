@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-352%20·%20real%20pgvector-brightgreen" alt="352 tests">
+  <img src="https://img.shields.io/badge/tests-366%20·%20real%20pgvector-brightgreen" alt="366 tests">
 </p>
 
 <p align="center">
@@ -116,10 +116,37 @@ on a laptop.
 | **Incremental indexing** | ✅ content-hash skip, bounded-memory batched writes, prunes files deleted from disk | 5,100 chunks / 1,120 files: full **7.4 s**, unchanged re-index **0.22 s** |
 | **Scale characteristics** | ✅ measured at **50,600 chunks**: recall@5 1.00 filtered and unfiltered, search p50/p95/p99 | Templated text; absolute retrieval quality is optimistic |
 | **Real-corpus operation** | ✅ 794 hand-written memos → 6,491 chunks, p50 **78 ms** | Works at this size; see the retrieval row for how well |
-| **Retrieval quality, real questions** | ⚠️ **hit@5 0.33** [0.21, 0.47], n=46, on 110 hand-labelled questions | Headings-as-queries scored 0.945 — the proxy hid two thirds of the failures. Reranking, candidate-pool size and chunk size each moved it ~0.00–0.06. Swapping the embedder for **voyage-3 gives hit@5 0.63** [0.49, 0.76] — the ceiling was the representation, not the pipeline |
+| **Retrieval quality, real questions** | ⚠️ measured, and it is the weak part — see [the table below](#retrieval-on-a-real-corpus-what-actually-moved-it) | Headings-as-queries scored 0.945; real questions score 0.33 with the local embedder |
+| **Data erasure** | ✅ `recall forget` / `recall_forget` permanently delete a source's chunks; previews by default, `--yes` to act | The right-to-erasure path — irreversible, so it refuses to act unattended without the flag |
+| **Abuse bounds** | ✅ `recall_index` refuses before embedding anything if a request exceeds `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` | A client-callable indexer with no cap is an unbounded spend on a cloud embedder |
 | **Authentication** | ❌ **not implemented** — stdio MCP carries no transport identity | [#9](https://github.com/GiulioDER/RE-call/issues/9) |
 | **Schema migrations** | ❌ runtime `CREATE TABLE IF NOT EXISTS`, no versioned upgrade path | Pre-tenancy tables *are* migrated in place, with a test |
 | **HA / replication** | ❌ out of scope — this is a library over your Postgres | — |
+
+## Retrieval on a real corpus: what actually moved it
+
+110 hand-labelled questions against 794 real memos (6,491 chunks), phrased the way a person asks
+rather than as document headings. Four hypotheses, tested one at a time on the **same** 46 held-out
+questions — three eliminated, one confirmed:
+
+| change | hit@5 | Δ | cost |
+|---|---|---|---|
+| baseline — bge-small, hybrid dense+sparse | 0.348 [0.23, 0.49] | — | 45 ms |
+| + cross-encoder rerank | 0.391 [0.26, 0.54] | +0.043 *(within noise)* | **57× latency** |
+| candidate pool 20 → 100 | 0.348 | **+0.000** | — |
+| chunk size 400 / 800 / 1600 | 0.326 / 0.348 / 0.348 | **+0.000** | a re-index each |
+| **embedder → voyage-3** | **0.630 [0.49, 0.76]** | **+0.282** | 246 ms, API dependency, data egress |
+
+`hit@50` plateaus at ~0.50 in every local configuration: for half the questions the right document
+was nowhere in the top *fifty*, which is why reordering and bigger pools could not help — a
+reranker only reorders what was retrieved. **The ceiling was the representation, not the pipeline.**
+
+The three eliminations are what make the fourth result a diagnosis rather than a lucky guess. The
+abstention layer was never the bottleneck: 89% of unanswerable questions correctly refused, 4–7%
+of answerable ones wrongly refused, on every arm.
+
+→ [FINDINGS §7](results/FINDINGS.md) for the misses, the labelling errors found by inspecting them,
+and the one experiment still untested.
 
 ## How it works
 
@@ -224,7 +251,7 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 
 - **No authentication.** Any client that can reach the MCP server gets that tenant's memory.
   Tenancy is enforced; identity is not established. → [#9](https://github.com/GiulioDER/RE-call/issues/9)
-- **Validity is authored, not inferred.** On a real 792-memo corpus, **2** memos declared
+- **Validity is authored, not inferred.** On a real 794-memo corpus, **2** memos declared
   `supersedes:` while **60** described a closure only in prose. `recall lint --fix` was built to
   close that gap and, after review, could safely declare **zero** of them: narrating vs declaring,
   part vs whole, augmenting vs replacing are invisible to a pattern and obvious to the author. It
@@ -240,7 +267,7 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 
 ## Engineering
 
-**352 tests, 3 skipped.** The database-touching ones run against a real pgvector container — no mock
+**366 tests, 2 skipped.** The database-touching ones run against a real pgvector container — no mock
 DB. CI runs `ruff`, the suite against PostgreSQL, and `pip-audit` over a checked-in `uv.lock`, as a
 gate rather than a report.
 
