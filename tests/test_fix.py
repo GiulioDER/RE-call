@@ -185,3 +185,16 @@ def test_a_bare_stem_needs_a_year_to_count():
     assert extract_edges("This supersedes the old_rate_policy entirely.")[0] == []
     assert extract_edges("This supersedes old_rate_policy_2026-03-01.")[0] == \
         ["old_rate_policy_2026-03-01"]
+
+
+def test_an_index_file_never_proposes_an_edge(tmp_path):
+    """An index ENUMERATES closed decisions; it does not supersede them.
+
+    On the real corpus, `closed_hypotheses_index.md` listing an archived memo was read as
+    "the archive supersedes the index" — syntactically valid, semantically backwards.
+    """
+    _write(tmp_path, "old_thing_2026-01-01.md", "# old\n\nbody")
+    _write(tmp_path, "closed_hypotheses_index.md",
+           "# closed\n\n- replaces old_thing_2026-01-01")
+    proposals, _ = propose_fixes(tmp_path)
+    assert proposals == []

@@ -77,6 +77,17 @@ class Unfixable:
     reason: str
 
 
+#: Filenames that catalogue other memos rather than making a claim of their own.
+_INDEX_NAMES = ("index", "memory", "readme", "gates_table", "toc")
+
+
+def _is_index(rel: str) -> bool:
+    """True for a catalogue file — one that lists memos instead of superseding one."""
+    stem = supersedes_key(rel).lower()
+    return any(stem == n or stem.endswith(f"_{n}") or stem.startswith(f"{n}_")
+               for n in _INDEX_NAMES)
+
+
 def _first_ref(match: re.Match) -> str | None:
     for group in match.groups():
         if group:
@@ -127,6 +138,11 @@ def propose_fixes(
     seen: set[tuple[str, str]] = set()
 
     for name, body in bodies.items():
+        if _is_index(name):
+            # An index ENUMERATES closed decisions; it does not supersede them. On the real
+            # corpus `closed_hypotheses_index.md` listing an archived memo was read as
+            # "the archive supersedes the index" — syntactically valid, semantically backwards.
+            continue
         active, passive = extract_edges(body)
         if not active and not passive:
             continue
