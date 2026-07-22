@@ -19,7 +19,7 @@ fastembed = ["fastembed>=0.3"]
 # process. A CLI runs single-connection and should not pay for a pool maintenance thread.
 pool = ["psycopg-pool>=3.2"]
 mcp = ["mcp>=1.7", "psycopg-pool>=3.2"]
-voyage = ["voyageai>=0.2"]
+voyage = ["voyageai>=0.5.0"]
 # NB: rerank / entail / finetune pin the same sentence-transformers floor — bump all three together.
 rerank = ["sentence-transformers>=3.0"]
 entail = ["sentence-transformers>=3.0"]
