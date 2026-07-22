@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -202,7 +203,12 @@ def search_memory(
     )
 
 
-def index_memory(store: PgVectorStore, embedder: Embedder, path: str) -> IndexResult:
+def index_memory(
+    store: PgVectorStore,
+    embedder: Embedder,
+    path: str,
+    on_measured: Callable[[int, int], None] | None = None,
+) -> IndexResult:
     """Index a markdown file or folder into memory; return counts + a human message.
 
     `path` is confined to RECALL_INDEX_ROOT (default: the current working directory) so a client
@@ -213,6 +219,13 @@ def index_memory(store: PgVectorStore, embedder: Embedder, path: str) -> IndexRe
     budget caps — RECALL_INDEX_MAX_FILES and RECALL_INDEX_MAX_BYTES (defaults
     DEFAULT_MAX_INDEX_FILES / DEFAULT_MAX_INDEX_BYTES above) — and the whole request is refused if
     either is exceeded. See SECURITY.md's "Indexing is client-callable" gap for why this exists.
+
+    `on_measured(files, bytes)` is invoked once those per-request caps pass and BEFORE anything is
+    embedded, so a caller can meter aggregate spend against the set actually about to be indexed
+    (the server debits the tenant's byte quota here). Raising from it aborts the request having
+    spent nothing — which is the only reason the hook exists rather than the caller measuring the
+    tree itself: a second walk is a second answer, and the one that bills must be the one that
+    runs.
     """
     root = Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve()
     target = Path(path).resolve()
@@ -240,6 +253,8 @@ def index_memory(store: PgVectorStore, embedder: Embedder, path: str) -> IndexRe
             f"index request for {path!r} exceeds the byte budget: {total_bytes} candidate "
             f"byte(s) > limit {max_bytes}; set RECALL_INDEX_MAX_BYTES to raise it."
         )
+    if on_measured is not None:
+        on_measured(len(files), total_bytes)
 
     stats = Indexer(store, embedder).index_path(target)
     return IndexResult(
