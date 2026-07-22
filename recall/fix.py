@@ -55,8 +55,12 @@ _REF = (
     r"|([a-z][a-z0-9]*(?:[_\-][a-z0-9]+)*[_\-]20\d\d(?:[_\-]\d\d){0,2})"
 )
 
-_PASSIVE_RE = re.compile(rf"{_PASSIVE}[^\n.;]{{0,40}}?(?:{_REF})", re.IGNORECASE)
-_ACTIVE_RE = re.compile(rf"\b{_ACTIVE}[^\n.;]{{0,40}}?(?:{_REF})", re.IGNORECASE)
+_PASSIVE_RE = re.compile(
+    rf"(?P<marker>{_PASSIVE})[^\n.;]{{0,40}}?(?:{_REF})", re.IGNORECASE
+)
+_ACTIVE_RE = re.compile(
+    rf"\b(?P<marker>{_ACTIVE})[^\n.;]{{0,40}}?(?:{_REF})", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -89,10 +93,67 @@ def _is_index(rel: str) -> bool:
 
 
 def _first_ref(match: re.Match) -> str | None:
-    for group in match.groups():
+    """The document reference in a marker match.
+
+    Skips group 1, which is the named `marker` group — the verb phrase itself is never the
+    reference, and returning it would propose an edge onto a file called "Supersedes".
+    """
+    for group in match.groups()[1:]:
         if group:
             return group.strip()
     return None
+
+
+#: Words that mean the SUBJECT of the marker is some other document, so the sentence is
+#: reporting a relation rather than declaring this memo's own.
+_OTHER_DOC = re.compile(
+    r"\[\[[^\]\n]+\]\]|\b[\w\-]{6,}\.md\b|\b(?:memo|doc|document|note|entry|file|index)s?\b",
+    re.IGNORECASE,
+)
+#: "supersedes the <noun> in X" — a part of X, not X.
+_PARTIAL_SCOPE = re.compile(r"\bthe\b.+\bin\b", re.IGNORECASE | re.DOTALL)
+#: Clause boundaries; the subject of a marker lives after the nearest one.
+_CLAUSE_END = (".", ";", ":", "\n", "—", "-")
+
+
+def _is_reported_speech(body: str, marker_start: int) -> bool:
+    """True when the marker's subject is ANOTHER document, not the memo being read.
+
+    Real corpus, `project-docs-rag-trust-layer-deployed-2026-07-17.md`:
+
+        First annotations: LRP closure memo supersedes `project_lrp_maker_2026-06-24`
+
+    The subject of "supersedes" is *the LRP closure memo*. Attributing the claim to the document
+    that merely NARRATES it invented a second, false claimant for an edge another memo already
+    declares correctly — the worst kind of false positive, because it looks authoritative.
+    """
+    head = body[:marker_start]
+    cut = max((head.rfind(c) for c in _CLAUSE_END), default=-1)
+    return bool(_OTHER_DOC.search(head[cut + 1:]))
+
+
+def _is_partial_scope(between: str) -> bool:
+    """True for "supersedes the <noun> in X" — X's *claim* or *scope*, not X itself.
+
+    Real corpus: "Supersedes the *inferred* "maker" claim in [[...]]" and "Supersedes the scope
+    in [[...]]". Declaring `supersedes:` there would demote the WHOLE predecessor and lose
+    everything else it holds, when only one part of it was replaced.
+    """
+    return bool(_PARTIAL_SCOPE.search(between))
+
+
+def _accept(body: str, m: re.Match) -> str | None:
+    """The reference this match declares, or None when the sentence does not declare one."""
+    ref = _first_ref(m)
+    if not ref:
+        return None
+    if _is_reported_speech(body, m.start()):
+        return None
+    marker_end = m.end("marker")
+    ref_start = min(m.start(g) for g in range(2, (m.lastindex or 1) + 1) if m.group(g))
+    if _is_partial_scope(body[marker_end:ref_start]):
+        return None
+    return ref
 
 
 def extract_edges(body: str) -> tuple[list[str], list[str]]:
@@ -101,8 +162,8 @@ def extract_edges(body: str) -> tuple[list[str], list[str]]:
     Pure and file-free so the direction rule — the part that would silently invert the
     supersession graph if wrong — is testable on strings alone.
     """
-    active = [r for m in _ACTIVE_RE.finditer(body) if (r := _first_ref(m))]
-    passive = [r for m in _PASSIVE_RE.finditer(body) if (r := _first_ref(m))]
+    active = [r for m in _ACTIVE_RE.finditer(body) if (r := _accept(body, m))]
+    passive = [r for m in _PASSIVE_RE.finditer(body) if (r := _accept(body, m))]
     # "superseded by X" also matches the active pattern's bare "supersede" stem in some
     # phrasings; passive wins, since its voice is the more specific reading.
     passive_keys = {supersedes_key(p) for p in passive}

@@ -198,3 +198,54 @@ def test_an_index_file_never_proposes_an_edge(tmp_path):
            "# closed\n\n- replaces old_thing_2026-01-01")
     proposals, _ = propose_fixes(tmp_path)
     assert proposals == []
+
+
+# --- refusals learned from reviewing real proposals --------------------------------------------
+#
+# Reviewing 4 proposals against the real corpus: 1 correct, 2 partial, 1 flat wrong. Each
+# sentence below is quoted verbatim from the memo that produced the bad proposal.
+
+
+def test_reported_speech_is_refused():
+    """The subject of "supersedes" is ANOTHER document, so the sentence reports a relation
+    rather than declaring this memo's own.
+
+    Verbatim from project-docs-rag-trust-layer-deployed-2026-07-17.md. Attributing this to the
+    narrating memo invented a second, false claimant for an edge that another memo already
+    declares correctly — the worst kind of false positive, because it looks authoritative.
+    """
+    body = ("First annotations: LRP closure memo supersedes "
+            "`project_lrp_maker_2026-06-24`; queue-position falsified")
+    assert extract_edges(body) == ([], [])
+
+
+def test_superseding_a_claim_inside_a_document_is_refused():
+    """Verbatim from project_gabigol_maker_onchain_proof_btc_pivot_2026-06-09.md.
+
+    It supersedes one CLAIM in the predecessor, not the predecessor. Declaring `supersedes:`
+    would demote the whole document and lose everything else it holds.
+    """
+    body = ('Live HOLD, gate #1387 (06-13). Supersedes the *inferred* "maker" claim in '
+            "[[project_gabigol_vs_us_btc_execution_2026-06-08]] with **direct on-chain proof**.")
+    assert extract_edges(body) == ([], [])
+
+
+def test_superseding_the_scope_of_a_document_is_refused():
+    """Verbatim from project_vps3_drift_reconcile_5files_2026-06-16.md — the same shape."""
+    body = ("md5 census on 2026-06-16 shows most flagged files now MATCH master. "
+            "Supersedes the scope in [[project_vps3_manual_drift_live_subsystems_2026-06-15]].")
+    assert extract_edges(body) == ([], [])
+
+
+def test_the_one_genuine_edge_still_survives_the_refusals():
+    """Verbatim from project_ci_pipeline_optimization_2026-07-05.md — the only one of the four
+    that was actually right. Refusals that also killed this would have made the feature useless.
+    """
+    body = "Supersedes/augments [[feedback_ci_green_constraints_2026-06-22]]."
+    assert extract_edges(body) == (["feedback_ci_green_constraints_2026-06-22"], [])
+
+
+def test_an_ordinary_subject_is_not_mistaken_for_reported_speech():
+    """"This decision supersedes X" is the memo's own claim — the refusal must not overreach."""
+    assert extract_edges("This decision supersedes [[old_plan_2026-01-01]].")[0] == \
+        ["old_plan_2026-01-01"]
