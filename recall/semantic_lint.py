@@ -28,11 +28,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from recall.embeddings import Embedder
-from recall.frontmatter import parse_frontmatter
+from recall.frontmatter import parse_frontmatter, supersedes_key
 from recall.index import Indexer, chunk_text
 from recall.lint import CLOSURE_MARKERS, DEFAULT_GLOB
 from recall.retriever import HybridRetriever
-from recall.store import PgVectorStore, _basename
+from recall.store import PgVectorStore
 
 #: A memo reads as a settled decision (something a new related memo should reference) when its
 #: body carries a decision-status marker. An OPEN investigation is deliberately excluded — a
@@ -75,11 +75,15 @@ def find_unlinked_chains(
     A candidate is flagged when it is a closed decision, scores at/above the threshold, is not
     the memo itself, and is not already referenced by the memo. Highest similarity first.
     """
+    # Compare in the normalised space: a memo that writes `supersedes: [[prior]]` or omits the
+    # `.md` IS linked, and flagging it as an unlinked chain would be a false positive. Every
+    # declared edge in a real 792-memo corpus was written in one of those forms.
+    linked = {supersedes_key(s) for s in supersedes}
     out = [
         UnlinkedChain(new_memo, c.name, c.cosine)
         for c in candidates
         if c.name != new_memo
-        and c.name not in supersedes
+        and supersedes_key(c.name) not in linked
         and c.is_closed_decision
         and c.cosine >= threshold
     ]
@@ -146,7 +150,7 @@ def semantic_lint(
             for h in res.hits:
                 relfile = h.chunk.metadata.get("file")
                 # reduce the root-relative id back to the basename this check keys on
-                cname = _basename(relfile) if relfile else None
+                cname = relfile.rsplit("/", 1)[-1] if relfile else None
                 if not cname or cname == name or cname in ambiguous:
                     continue
                 # skip pairs already linked either way — the chain is complete

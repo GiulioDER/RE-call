@@ -58,3 +58,29 @@ def validity_bounds(meta: dict) -> tuple[datetime | None, datetime | None]:
     if v := meta.get("valid_until"):
         end = datetime.combine(_parse_date(str(v), "valid_until").date(), time.max, timezone.utc)
     return start, end
+
+
+def supersedes_key(value: str) -> str:
+    """Normalise a ``supersedes:`` target to the key both the linter and the store match on.
+
+    The reference is authored by a human, and on a real 792-memo corpus **every** declared edge
+    failed to resolve because of how it was written — not because the target was missing:
+
+    - ``supersedes: [project_lrp_maker_2026-06-24]`` — wikilink brackets, kept verbatim
+    - ``supersedes: project-recall-abstention-...-2026-07-18`` — no ``.md``, while the corpus
+      matched on full basenames
+
+    Both targets existed. `recall lint` reported "does not exist in the corpus", which was
+    actively misleading. A convention that the corpus's own author cannot follow is a defect in
+    the convention: strip the wrapping and compare on the STEM, so `name`, `name.md`, `[name]`
+    and `[[name]]` all mean the same document.
+
+    Ambiguity handling is unchanged — two files sharing a stem are still refused rather than
+    guessed at.
+    """
+    v = value.strip()
+    while len(v) >= 2 and v[0] == "[" and v[-1] == "]":
+        v = v[1:-1].strip()  # handles both [name] and [[name]]
+    if v.lower().endswith(".md"):
+        v = v[:-3]
+    return v.rsplit("/", 1)[-1].strip()
