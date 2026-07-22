@@ -33,6 +33,13 @@ DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost
 #: transports open a socket, and `build_auth` refuses to start them without tokens.
 TRANSPORT = os.environ.get("RECALL_TRANSPORT", "stdio")
 HTTP_TRANSPORTS = frozenset({"streamable-http", "sse"})
+#: Bind address for the HTTP transports. Exposed as RECALL_* because the SDK's own FASTMCP_HOST /
+#: FASTMCP_PORT are read when the FastMCP object is constructed at import time, which makes them
+#: unreliable to set from a wrapper — and every other knob in this server is RECALL_*.
+#: Default is loopback, NOT 0.0.0.0: binding every interface should be a decision someone makes,
+#: not something they inherit.
+HTTP_HOST = os.environ.get("RECALL_HOST", "127.0.0.1")
+HTTP_PORT = int(os.environ.get("RECALL_PORT", "8000"))
 EMBEDDER_NAME = os.environ.get("RECALL_EMBEDDER", "fastembed")
 #: Connections the server keeps open. This bounds concurrent in-flight tool calls at the database,
 #: which is where the real limit is — more worker threads than connections just queue on the pool.
@@ -257,6 +264,8 @@ def build_server() -> FastMCP:
         lifespan=_make_lifespan(token_registry),
         token_verifier=verifier,
         auth=auth_settings,
+        host=HTTP_HOST,
+        port=HTTP_PORT,
     )
 
     def _state() -> dict:

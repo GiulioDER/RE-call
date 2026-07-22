@@ -89,6 +89,8 @@ export RECALL_TRANSPORT=streamable-http
 export RECALL_AUTH_TOKENS_FILE=/etc/recall/tokens.json
 export RECALL_AUTH_ISSUER_URL=https://recall.example.com
 export RECALL_AUTH_RESOURCE_URL=https://recall.example.com
+export RECALL_HOST=127.0.0.1        # default; set 0.0.0.0 deliberately, never by inheritance
+export RECALL_PORT=8000
 python -m recall_mcp.server
 ```
 
