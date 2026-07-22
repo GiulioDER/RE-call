@@ -149,6 +149,27 @@ def chunk_code(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
     return _pack(blocks, max_chars)
 
 
+def _strip_nul(text: str, source: Path) -> str:
+    """Remove NUL bytes, which PostgreSQL text columns cannot store at all.
+
+    Found by indexing a real corpus: **one** file out of 792 carried two stray NUL bytes, and
+    psycopg aborted the whole run with `PostgreSQL text fields cannot contain NUL (0x00) bytes` —
+    an error that names neither the file nor the chunk. 0.13% of the corpus took down 100% of the
+    indexing, and with batching it also discards every batch after the bad one.
+
+    Stripping is right here because a NUL in a markdown memo is corruption rather than content;
+    nothing is silently lost that a reader would have seen. But it is LOGGED with the file and the
+    count, because quietly rewriting a user's document is its own kind of wrong.
+    """
+    if "\x00" not in text:
+        return text
+    _log.warning(
+        "stripped %d NUL byte(s) from %s — PostgreSQL text columns cannot store them",
+        text.count("\x00"), source,
+    )
+    return text.replace("\x00", "")
+
+
 def _confined_to(root: Path, paths: Iterable[Path]) -> list[Path]:
     """Keep only the paths that REALLY live under `root` once symlinks are resolved.
 
@@ -232,6 +253,7 @@ class Indexer:
 
         for f in files:
             raw = f.read_text(encoding="utf-8-sig")  # BOM must not disable frontmatter parsing
+            raw = _strip_nul(raw, f)
             content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
             if known.get(str(f)) == content_hash:
                 skipped += 1

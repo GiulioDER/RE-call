@@ -534,6 +534,16 @@ class PgVectorStore:
     def _upsert_in(
         self, conn: "psycopg.Connection", chunks: list[Chunk], embeddings: list[list[float]]
     ) -> None:
+        # NUL bytes cannot be stored in a PostgreSQL text column, and psycopg's own error names
+        # neither the row nor the source — indexing a real 792-file corpus failed on TWO bytes in
+        # ONE file with no indication of which. Fail here instead, pointing at the chunk. The
+        # Indexer strips them before this (with a warning); this catches the direct-API caller.
+        for c in chunks:
+            if "\x00" in c.text or "\x00" in c.id or "\x00" in c.source:
+                raise ValueError(
+                    f"chunk {c.id!r} from source {c.source!r} contains a NUL (0x00) byte, which "
+                    f"PostgreSQL text columns cannot store — strip it before upserting"
+                )
         # One transaction for the whole batch: a mid-loop failure rolls the batch back
         # instead of leaving earlier rows committed (the connection is autocommit). When called
         # from replace_sources' outer transaction this becomes a savepoint (same commit).

@@ -249,3 +249,33 @@ def test_a_file_whose_content_reverts_is_recognised(tmp_path, store):
 
     assert emb.embedded == ["memory number 0"]
     assert stats.skipped == 0  # content differs from what is stored, so it is re-indexed
+
+
+@requires_db
+def test_a_nul_byte_in_one_file_does_not_abort_the_whole_corpus(tmp_path, store, caplog):
+    """Found by indexing a real 792-file memory corpus: ONE file carried two stray NUL bytes and
+    psycopg aborted the entire run with an error naming neither the file nor the chunk.
+
+    0.13% of the corpus took down 100% of the indexing — and with batching it discards every
+    batch after the bad one too. Stripping is correct (a NUL in markdown is corruption, not
+    content) but must be logged, since quietly rewriting a user's document is its own problem.
+    """
+    root = _corpus(tmp_path, 3)
+    (root / "note1.md").write_text("a memory with a \x00 stray byte", encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="recall.index"):
+        stats = Indexer(store, HashingEmbedder(dim=DIM)).index_path(root)
+
+    assert stats.files == 3, "the whole corpus must still index"
+    assert store.count() == 3
+    assert any("NUL" in r.getMessage() for r in caplog.records), "stripping must not be silent"
+    assert any("note1.md" in r.getMessage() for r in caplog.records), "must name the file"
+
+
+@requires_db
+def test_upserting_a_nul_byte_directly_fails_with_an_actionable_message(store):
+    """The direct-API path cannot strip silently, but it can say which chunk is at fault."""
+    from recall.types import Chunk
+
+    with pytest.raises(ValueError, match="NUL"):
+        store.upsert([Chunk("bad", "s.md", "text with \x00 inside")], [[0.0] * DIM])
