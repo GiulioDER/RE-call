@@ -34,7 +34,7 @@ def _tools(server):
 def test_every_tool_is_async():
     """A sync tool is awaited inline by FastMCP — the whole point of the change."""
     tools = _tools(build_server())
-    assert set(tools) == {"recall_search", "recall_index", "recall_stats"}
+    assert set(tools) == {"recall_search", "recall_index", "recall_forget", "recall_stats"}
     for name, tool in tools.items():
         assert tool.is_async, f"{name} is sync and would block the event loop"
         assert inspect.iscoroutinefunction(tool.fn), name
@@ -84,7 +84,7 @@ def test_concurrent_tool_bodies_overlap():
     assert elapsed < 0.6, f"tool bodies serialised: {elapsed:.2f}s for 4x200ms"
 
 
-@pytest.mark.parametrize("name", ["recall_search", "recall_index", "recall_stats"])
+@pytest.mark.parametrize("name", ["recall_search", "recall_index", "recall_forget", "recall_stats"])
 def test_tools_still_declare_their_schema(name):
     """Async-ifying must not change the wire contract clients depend on."""
     tool = _tools(build_server())[name]

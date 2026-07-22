@@ -22,6 +22,43 @@ def test_cli_index_then_search(tmp_path, capsys, cli_table):
 
 
 @requires_db
+def test_cli_forget_without_yes_is_a_dry_run_that_deletes_nothing(tmp_path, capsys, cli_table):
+    (tmp_path / "note.md").write_text("the caching layer decision was adopted", encoding="utf-8")
+    main(["--embedder", "hashing", "--dsn", TEST_DSN, "--table", cli_table,
+          "index", str(tmp_path)])
+    capsys.readouterr()
+
+    main(["--embedder", "hashing", "--dsn", TEST_DSN, "--table", cli_table,
+          "forget", str((tmp_path / "note.md").resolve())])
+    out = capsys.readouterr().out
+    assert "DRY RUN" in out
+    assert "nothing deleted" in out
+
+    main(["--embedder", "hashing", "--dsn", TEST_DSN, "--table", cli_table, "search", "caching"])
+    out = capsys.readouterr().out
+    assert "caching" in out.lower()  # the dry run must not have removed it
+
+
+@requires_db
+def test_cli_forget_with_yes_deletes_and_reports_not_found_separately(tmp_path, capsys, cli_table):
+    (tmp_path / "note.md").write_text("the caching layer decision was adopted", encoding="utf-8")
+    main(["--embedder", "hashing", "--dsn", TEST_DSN, "--table", cli_table,
+          "index", str(tmp_path)])
+    capsys.readouterr()
+
+    main(["--embedder", "hashing", "--dsn", TEST_DSN, "--table", cli_table,
+          "forget", str((tmp_path / "note.md").resolve()), "typo-source", "--yes"])
+    out = capsys.readouterr().out
+    assert "forgot 1 chunk(s) from 1 source(s)" in out
+    assert "not found" in out and "typo-source" in out
+
+    main(["--embedder", "hashing", "--dsn", TEST_DSN, "--table", cli_table,
+          "search", "caching", "-k", "5"])
+    out = capsys.readouterr().out
+    assert "ABSTAIN" in out  # actually gone this time — no hit survives, not even the query echo
+
+
+@requires_db
 def test_cli_demo_shows_supersession_redirect(capsys, cli_table):
     main(["--embedder", "hashing", "--dsn", TEST_DSN, "--table", cli_table, "demo"])
     out = capsys.readouterr().out
