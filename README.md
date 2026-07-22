@@ -116,7 +116,7 @@ on a laptop.
 | **Incremental indexing** | ✅ content-hash skip, bounded-memory batched writes, prunes files deleted from disk | 5,100 chunks / 1,120 files: full **7.4 s**, unchanged re-index **0.22 s** |
 | **Scale characteristics** | ✅ measured at **50,600 chunks**: recall@5 1.00 filtered and unfiltered, search p50/p95/p99 | Templated text; absolute retrieval quality is optimistic |
 | **Real-corpus operation** | ✅ 794 hand-written memos → 6,491 chunks, p50 **78 ms** | Works at this size; see the retrieval row for how well |
-| **Retrieval quality, real questions** | ⚠️ **hit@5 0.33** [0.21, 0.47], n=46, on 110 hand-labelled questions | Headings-as-queries scored 0.945 — the proxy hid two thirds of the failures. Measured without a reranker |
+| **Retrieval quality, real questions** | ⚠️ **hit@5 0.33** [0.21, 0.47], n=46, on 110 hand-labelled questions | Headings-as-queries scored 0.945 — the proxy hid two thirds of the failures. A cross-encoder moves it to 0.39 [0.26, 0.54] for **57× the latency**: within noise, and it shows the bottleneck is candidate recall, not ranking |
 | **Authentication** | ❌ **not implemented** — stdio MCP carries no transport identity | [#9](https://github.com/GiulioDER/RE-call/issues/9) |
 | **Schema migrations** | ❌ runtime `CREATE TABLE IF NOT EXISTS`, no versioned upgrade path | Pre-tenancy tables *are* migrated in place, with a test |
 | **HA / replication** | ❌ out of scope — this is a library over your Postgres | — |
