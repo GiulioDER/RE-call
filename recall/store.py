@@ -92,6 +92,36 @@ TENANT_GUC = "recall.tenant_id"
 #: in a deploy is a visible, greppable decision rather than an oversight.
 INSECURE_DSN_OPT_OUT = "RECALL_ALLOW_INSECURE_DSN"
 
+#: HNSW tuning applied ONLY to a `source`-filtered `query_dense` call (see issue #11's third
+#: checkbox). An HNSW index walk is filter-blind: it finds the globally nearest neighbours, THEN
+#: discards the ones that fail `WHERE source = ...`, so a selective filter can silently return
+#: fewer than `k` rows, or fewer true neighbours than exist. Measured on 20,000 rows / dim 64 /
+#: a filter matching 10% of rows / 40 queries, recall@10 against an exact scan:
+#:
+#:   default (ef_search=40, iterative_scan=off) ..................... 0.385 recall, 40/40 truncated
+#:   ef_search=200 alone ............................................. 0.942 recall,  1/40 truncated
+#:   iterative_scan=relaxed_order alone .............................. 0.825 recall,  0/40 truncated
+#:   iterative_scan=strict_order alone ................................0.568 recall,  0/40 truncated
+#:   iterative_scan=relaxed_order + ef_search=200 (the defaults below) 0.947 recall,  0/40 truncated
+#:
+#: Neither knob alone is enough: `ef_search` widens the candidate list (fixes recall) but a
+#: filtered scan can still exhaust it before reaching k matches (truncation); `iterative_scan`
+#: re-widens the scan on exhaustion (fixes truncation) but not recall by itself. Both are needed
+#: together. Deliberately NOT applied to an unfiltered query — that arm already measures recall
+#: 1.000 at ef_search's default, so paying the wider search there would only add latency for no
+#: recall gain (see the PR's latency measurement).
+#:
+#: Both are read at CALL time (not import time) via `os.environ`, matching how
+#: `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` are read in `recall_mcp/service.py`, so a
+#: test can `monkeypatch.setenv` per-case and a long-lived process can pick up a changed value
+#: without restarting.
+DEFAULT_HNSW_EF_SEARCH_FILTERED = 200
+DEFAULT_HNSW_ITERATIVE_SCAN_FILTERED = "relaxed_order"
+#: pgvector's only valid values for this GUC, checked by `_hnsw_filtered_tuning()` below — the
+#: configured value is interpolated into `SET LOCAL` (Postgres does not accept a bound parameter
+#: there), so it is validated against this allowlist rather than trusted as-is.
+_HNSW_ITERATIVE_SCAN_VALUES = frozenset({"off", "relaxed_order", "strict_order"})
+
 
 def require_secure_dsn(dsn: str) -> None:
     """Raise unless `dsn` is safe to use unattended; the fail-closed form of the warning above.
@@ -436,9 +466,31 @@ class PgVectorStore:
                     f"configured for dim {self._dim} — use a matching embedder or a different "
                     f"table (drop and re-index for a clean slate)."
                 )
-            conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_tsv_idx ON {t} USING GIN (tsv)")
+            # CONCURRENTLY: `ensure_schema` is not just a bootstrap step — it runs every time a
+            # store is opened, including against a table that already exists and is taking live
+            # writes (e.g. a server restart). A plain `CREATE INDEX` takes a lock that blocks
+            # writers for as long as the build takes, which for the HNSW index on a real corpus is
+            # minutes, not milliseconds. `CONCURRENTLY` builds the index without that lock (a small
+            # number of exclusive locks at the very start/end only). This is safe here because
+            # `_op` runs on an autocommit connection (see `_connect_kwargs`) and, unlike
+            # `replace_sources`/`upsert`, is never wrapped in `conn.transaction()` — every
+            # statement in this method is already its own implicit transaction, which is the one
+            # precondition `CREATE INDEX CONCURRENTLY` has (Postgres refuses it inside an explicit
+            # transaction block). Verified directly against the container: back-to-back
+            # `CREATE INDEX CONCURRENTLY IF NOT EXISTS` calls on this same autocommit-connection
+            # shape all complete and land `indisvalid = true`.
+            #
+            # Trade-off accepted, not hidden: if the process is killed mid-build, Postgres can
+            # leave an INVALID index behind, and `IF NOT EXISTS` treats that name as "already
+            # there" on the next `ensure_schema()` — it will not retry the build. A plain
+            # `CREATE INDEX` cannot fail this way (it is one transaction: abort undoes it), so this
+            # trades a low-probability manual-cleanup case (`DROP INDEX <name>` then re-run) for
+            # not blocking writers on every restart. `check_rls_effective`-style tooling could
+            # detect an invalid index the same way; not added here to keep this change scoped to
+            # issue #11's checkbox.
+            conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_tsv_idx ON {t} USING GIN (tsv)")
             conn.execute(
-                f"CREATE INDEX IF NOT EXISTS {t}_emb_idx ON {t} "
+                f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_emb_idx ON {t} "
                 f"USING hnsw (embedding vector_cosine_ops)"
             )
             # The vector and full-text indexes cover the two retrieval legs; these cover the
@@ -448,11 +500,15 @@ class PgVectorStore:
             #   source     — a source-filtered search cannot use HNSW without it, and
             #                replace_sources/delete_sources match `source = ANY(...)` per re-index.
             #   file       — the supersession map groups on metadata->>'file'.
-            conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_indexed_at_idx ON {t} (indexed_at DESC)")
-            conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_source_idx ON {t} (source)")
-            conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_file_idx ON {t} ((metadata->>'file'))")
+            conn.execute(
+                f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_indexed_at_idx ON {t} (indexed_at DESC)"
+            )
+            conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_source_idx ON {t} (source)")
+            conn.execute(
+                f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_file_idx ON {t} ((metadata->>'file'))"
+            )
             # Every hot-path predicate leads with tenant_id, so it leads the index too.
-            conn.execute(f"CREATE INDEX IF NOT EXISTS {t}_tenant_idx ON {t} (tenant_id)")
+            conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_tenant_idx ON {t} (tenant_id)")
             self._enable_rls(conn)
 
         self._with_retry(_op)
@@ -589,6 +645,26 @@ class PgVectorStore:
             )
         return hits
 
+    def _hnsw_filtered_tuning(self) -> tuple[int, str]:
+        """`(ef_search, iterative_scan)` for a filtered dense query, from env or the defaults.
+
+        Read fresh on every call (not cached at import/construction time) so a test can
+        `monkeypatch.setenv` per-case and a long-lived process can pick up a changed value without
+        restarting — the same convention `index_memory()` uses for `RECALL_INDEX_MAX_FILES`.
+        """
+        ef_search = int(
+            os.environ.get("RECALL_HNSW_EF_SEARCH_FILTERED", str(DEFAULT_HNSW_EF_SEARCH_FILTERED))
+        )
+        iterative_scan = os.environ.get(
+            "RECALL_HNSW_ITERATIVE_SCAN_FILTERED", DEFAULT_HNSW_ITERATIVE_SCAN_FILTERED
+        )
+        if iterative_scan not in _HNSW_ITERATIVE_SCAN_VALUES:
+            raise ValueError(
+                f"RECALL_HNSW_ITERATIVE_SCAN_FILTERED={iterative_scan!r} is not one of "
+                f"{sorted(_HNSW_ITERATIVE_SCAN_VALUES)}"
+            )
+        return ef_search, iterative_scan
+
     def query_dense(
         self, vector: list[float], k: int, source: str | None = None
     ) -> list[ScoredChunk]:
@@ -606,7 +682,25 @@ class PgVectorStore:
         params: dict = {"vec": Vector(vector), "k": k, "tenant": self._tenant}
         if source:
             params["source"] = source
-        rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
+
+        if source:
+            # Filtered arm only — see `DEFAULT_HNSW_EF_SEARCH_FILTERED` above for why the
+            # unfiltered arm skips this. `SET LOCAL` only takes effect inside a transaction block;
+            # on the autocommit connections this store uses, that means explicitly opening one
+            # here, tuning the GUCs, then running the query, all before the transaction closes and
+            # the tuning reverts. Values are validated/int-cast above, never taken as a bound
+            # parameter — Postgres' `SET` does not accept one for the value.
+            ef_search, iterative_scan = self._hnsw_filtered_tuning()
+
+            def _op(conn: "psycopg.Connection") -> list[tuple]:
+                with conn.transaction():
+                    conn.execute(f"SET LOCAL hnsw.ef_search = {ef_search}")
+                    conn.execute(f"SET LOCAL hnsw.iterative_scan = {iterative_scan}")
+                    return conn.execute(sql, params).fetchall()
+
+            rows = self._with_retry(_op)
+        else:
+            rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._rows_to_hits(rows)
 
     def query_sparse(
