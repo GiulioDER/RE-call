@@ -156,3 +156,32 @@ def test_applying_makes_the_edge_real_end_to_end(tmp_path):
     edges, unresolved = resolve_supersession(rows)
     assert edges == {"old.md": "new_decision_2026.md"}
     assert unresolved == frozenset()
+
+
+# --- rejecting what real memos are actually full of --------------------------------------------
+
+
+def test_markdown_checkboxes_are_not_document_references():
+    """`[x]` and `[ ]` are everywhere in real notes; a single-bracket pattern matched them."""
+    assert extract_edges("- [x] superseded by the new plan\n- [ ] replaces nothing")[0] == []
+    assert extract_edges("- [x] superseded by the new plan")[1] == []
+
+
+def test_inline_code_is_not_a_document_reference():
+    """Backticks mean code in these memos. One real match captured
+    `curate_wallets.wallet_weight = clamp(...)` as a filename."""
+    body = "This supersedes `curate_wallets.wallet_weight = clamp(shrunk_EV/REF_EV)` behaviour."
+    assert extract_edges(body) == ([], [])
+
+
+def test_a_long_prose_aside_is_not_a_document_reference():
+    """A real bracket match ran 600 characters into the next paragraph."""
+    body = "superseded by [a long editorial aside that rambles on " + "and on " * 40 + "]"
+    assert extract_edges(body)[1] == []
+
+
+def test_a_bare_stem_needs_a_year_to_count():
+    """Without a date a bare token is indistinguishable from ordinary prose."""
+    assert extract_edges("This supersedes the old_rate_policy entirely.")[0] == []
+    assert extract_edges("This supersedes old_rate_policy_2026-03-01.")[0] == \
+        ["old_rate_policy_2026-03-01"]

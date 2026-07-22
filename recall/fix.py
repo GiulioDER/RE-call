@@ -37,9 +37,23 @@ _ACTIVE = r"(?:supersedes|replaces|supercedes)"
 #: Markers where the subject IS superseded by the named target — the edge goes on the target.
 _PASSIVE = r"(?:superseded\s+by|superceded\s+by|replaced\s+by)"
 
-#: A document reference: [[wikilink]], [link], `name.md`, or a bare token that looks like a
-#: memo name. Deliberately narrow — a loose pattern would "resolve" ordinary prose to a file.
-_REF = r"\[\[([^\]]+)\]\]|\[([^\]]+)\]|`([^`]+)`|([A-Za-z0-9][\w.\-]{7,}\.md)|([a-z0-9]+(?:[_\-][a-z0-9]+){2,})"
+#: A document reference. Three forms only, and each is deliberately hard to match by accident:
+#:
+#:   [[wikilink]]            the corpus convention
+#:   some_memo_name.md       an explicit filename
+#:   some_memo_2026-07-14    a bare stem, but ONLY when it carries a 20xx year
+#:
+#: Everything looser was tried against the real corpus and produced garbage. Single brackets
+#: match markdown checkboxes (`[x]`, `[ ]`) and ordinary prose asides; backticks match inline
+#: code, which these memos are full of — one match captured a 600-character paragraph, another
+#: `curate_wallets.wallet_weight = clamp(...)`. None of it could ever resolve to a file, so
+#: nothing unsafe was written, but the SKIP list became noise no human could act on. A proposal
+#: tool whose output must itself be filtered has not saved anyone any work.
+_REF = (
+    r"\[\[([^\]\n]{1,120})\]\]"
+    r"|([A-Za-z0-9][\w\-]{5,}\.md)"
+    r"|([a-z][a-z0-9]*(?:[_\-][a-z0-9]+)*[_\-]20\d\d(?:[_\-]\d\d){0,2})"
+)
 
 _PASSIVE_RE = re.compile(rf"{_PASSIVE}[^\n.;]{{0,40}}?(?:{_REF})", re.IGNORECASE)
 _ACTIVE_RE = re.compile(rf"\b{_ACTIVE}[^\n.;]{{0,40}}?(?:{_REF})", re.IGNORECASE)
