@@ -1,0 +1,109 @@
+name: Bug report
+description: Something in RE-call is broken or behaving incorrectly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. This project runs against a real PostgreSQL + pgvector database
+        and several swappable embedder backends, so the fields below cut straight to the questions
+        that would otherwise take a round-trip to ask.
+
+  - type: input
+    id: recall-version
+    attributes:
+      label: recall version
+      description: "`pip show recall` or the commit SHA if installed from source."
+      placeholder: "0.5.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "3.12.4"
+    validations:
+      required: true
+
+  - type: input
+    id: pg-version
+    attributes:
+      label: PostgreSQL version
+      description: "`SELECT version();` — or the tag from your `pgvector/pgvector:pgNN` image."
+      placeholder: "PostgreSQL 16 (pgvector/pgvector:pg16), or PostgreSQL 17 if a bare-metal install"
+    validations:
+      required: true
+
+  - type: input
+    id: pgvector-version
+    attributes:
+      label: pgvector extension version
+      description: "`SELECT extversion FROM pg_extension WHERE extname = 'vector';`"
+      placeholder: "0.8.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: embedder
+    attributes:
+      label: Embedder backend
+      description: Which `Embedder` implementation is in use.
+      options:
+        - fastembed (local, default)
+        - voyage (cloud)
+        - hashing (offline/deterministic)
+        - other / custom Embedder implementation
+    validations:
+      required: true
+
+  - type: input
+    id: corpus-size
+    attributes:
+      label: Corpus size
+      description: Roughly how many files/chunks are indexed. Retrieval behavior differs a lot
+        between a handful of docs and tens of thousands of chunks.
+      placeholder: "e.g. ~800 files / ~6,500 chunks"
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: retrieval-detail
+    attributes:
+      label: If this is a retrieval/trust-layer issue — the query and the returned verdict
+      description: >-
+        For "the wrong chunk came back" or "it abstained when it shouldn't have" (or vice versa):
+        the exact query text, and the JSON your search call actually returned (or at minimum each
+        hit's `verdict`, `confidence`/`score`, and whether `abstained` was true). Redact anything
+        sensitive from your corpus — paraphrase the shape of the memory rather than pasting it
+        verbatim if it's private.
+      render: text
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: Smallest command/script that reproduces it. A snippet using `HashingEmbedder`
+        against a couple of throwaway markdown files reproduces most retrieval bugs without needing
+        your real corpus or an API key.
+      render: shell
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / traceback
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I ran this against a real pgvector database (not a mock) — this project has no mock DB path.
+        - label: I checked this isn't already covered in `README.md`'s "What this does not do" section or `results/FINDINGS.md`.

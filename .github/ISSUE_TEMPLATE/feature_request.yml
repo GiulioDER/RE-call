@@ -1,0 +1,68 @@
+name: Feature request
+description: Propose new behavior, a new guard, or a new evaluation for RE-call.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project's rule for a new claim is: measure it, and publish the negative result if it
+        doesn't hold up (see `results/FINDINGS.md`'s "Claims that were withdrawn"). The same bar
+        applies to feature requests — a proposal that includes how it would be measured gets
+        triaged faster.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: What's missing today, and what failure or friction it causes.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What you'd want RE-call to do instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Retrieval (dense/sparse/RRF fusion)
+        - Trust layer (verdicts, supersession, validity, calibration)
+        - Embedders (fastembed / voyage / hashing / new backend)
+        - MCP server (recall_search / recall_index / recall_stats)
+        - CLI (index / search / demo / lint / check / calibrate)
+        - Evaluation harness (recall/eval)
+        - Multi-tenancy / RLS
+        - Observability (logging, metrics)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: embedder-context
+    attributes:
+      label: Embedder(s) this affects, if relevant
+      description: Some behavior (e.g. calibration thresholds) does not transfer across embedders —
+        say which backend(s) you're thinking about.
+      placeholder: "e.g. fastembed only, or all embedders"
+
+  - type: textarea
+    id: measurement
+    attributes:
+      label: How would this be measured
+      description: >-
+        If this is a retrieval or trust-layer change: what metric would move (hit@5, superseded-
+        trust rate, false-confident rate, latency), and against which corpus (the 14-doc demo
+        corpus, the real 792-memo corpus, or a generated corpus at scale)? If it's not measurable in
+        that sense (e.g. a CLI ergonomics change), say so — that's a legitimate answer too.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Anything you already tried or ruled out, and why.

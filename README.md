@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-349%20·%20real%20pgvector-brightgreen" alt="349 tests">
+  <img src="https://img.shields.io/badge/tests-352%20·%20real%20pgvector-brightgreen" alt="352 tests">
 </p>
 
 <p align="center">
@@ -239,7 +239,7 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 
 ## Engineering
 
-**349 tests, 3 skipped.** The database-touching ones run against a real pgvector container — no mock
+**352 tests, 3 skipped.** The database-touching ones run against a real pgvector container — no mock
 DB. CI runs `ruff`, the suite against PostgreSQL, and `pip-audit` over a checked-in `uv.lock`, as a
 gate rather than a report.
 
