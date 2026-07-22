@@ -456,3 +456,43 @@ being headings.
 
 The labelled set is the corpus owner's private data and is not published; only these aggregates
 and the runner (`python -m recall.eval.labelled`) are.
+
+
+## 8. Replication on a second corpus: the cloud embedder's win is corpus-specific
+
+§7 measured voyage-3 nearly doubling hit@5 over bge-small and concluded the ceiling was the
+representation. That rested on **one** corpus, and a private one. This replicates it on an
+independent, fully public corpus — the **732 Python PEPs**: dense technical jargon, many authors,
+decades of drift, and heavy near-neighbour pressure (seven "Python X.Y Release Schedule"
+documents, multiple steering-council elections, whole families of typing and packaging proposals).
+110 hand-labelled questions ship in this repo, phrased away from every title.
+
+| hit@5 | bge-small (local) | voyage-3 (cloud) | Δ |
+|---|---|---|---|
+| private memory corpus, 794 docs | 0.348 [0.23, 0.49] | **0.630** [0.49, 0.76] | **+0.282** |
+| **PEPs, 746 docs (public)** | **0.705** [0.56, 0.82] | 0.727 [0.58, 0.84] | **+0.022** |
+
+MRR: 0.311 → 0.503 on the memory corpus; 0.483 → 0.629 on the PEPs.
+
+**The single-corpus conclusion was too broad.** Three things the replication shows that one corpus
+could not:
+
+1. **The pipeline is not the problem.** On ordinary technical prose the *free local* embedder
+   reaches hit@5 0.705. Nothing about hybrid retrieval, chunking or the trust layer caps
+   performance at 0.35 — §7's number was a property of that corpus, not of this software.
+2. **The cloud embedder's advantage is corpus-dependent, not general.** It is worth **+0.28** on the
+   idiosyncratic corpus and **+0.02** on the PEPs — the latter comfortably inside the noise, for
+   ~5× the query latency, an API dependency and sending your documents to a third party.
+3. **The right rule is therefore conditional**: pay for a cloud embedder when your corpus
+   vocabulary is *unusual* — internal codenames, project shorthand, identifiers absent from any
+   pretraining set. On ordinary technical English, don't; it buys nothing measurable here.
+
+The trust layer holds on both: abstention accuracy **1.00** (11/11) on the PEPs for both embedders,
+false-abstain 0.02–0.05. It was never the bottleneck on either corpus.
+
+Reproduce this one end to end — corpus, questions and ground truth are all public:
+
+```bash
+git clone --depth 1 https://github.com/python/peps
+python -m recall.eval.labelled --corpus peps/peps     --questions recall/eval/peps_questions.json --glob '**/*.rst'
+```
