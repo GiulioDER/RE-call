@@ -8,6 +8,7 @@ from pathlib import Path
 from recall.cache import EmbeddingCache, embed_with_cache
 from recall.embeddings import Embedder
 from recall.frontmatter import parse_frontmatter, validity_bounds
+from recall.observability import get_logger
 from recall.store import PgVectorStore
 from recall.types import Chunk
 
@@ -20,6 +21,12 @@ MAX_OVERLAP_DIVISOR = 4
 #: it would emit a sliver whose embedding row carries almost no content. The same bound floors
 #: how far the overlap step-back may rewind, so the walk always makes real progress.
 MIN_PIECE_DIVISOR = 8
+#: Chunks accumulated before a batch is embedded and written. Bounds peak memory to
+#: roughly one batch of chunks plus their vectors, instead of the whole corpus, and
+#: makes progress visible in the database while a long index is still running.
+DEFAULT_BATCH_CHUNKS = 512
+
+_log = get_logger("index")
 
 # A chunker turns one document's text into a list of chunk strings.
 Chunker = Callable[[str], list[str]]
@@ -174,8 +181,10 @@ def _confined_to(root: Path, paths: Iterable[Path]) -> list[Path]:
 
 @dataclass(frozen=True)
 class IndexStats:
-    files: int
-    chunks: int
+    files: int    # files actually (re)indexed
+    chunks: int   # chunks written
+    skipped: int = 0   # files unchanged since last index, so not re-read or re-embedded
+    deleted: int = 0   # files gone from disk whose rows were pruned
 
 
 class Indexer:
@@ -185,11 +194,15 @@ class Indexer:
         embedder: Embedder,
         chunker: Chunker = chunk_text,
         cache: EmbeddingCache | None = None,
+        batch_chunks: int = DEFAULT_BATCH_CHUNKS,
     ) -> None:
         self._store = store
         self._embedder = embedder
         self._chunker = chunker
         self._cache = cache
+        if batch_chunks < 1:
+            raise ValueError("batch_chunks must be >= 1")
+        self._batch_chunks = batch_chunks
 
     def index_path(self, path: str | Path, glob: str = "**/*.md") -> IndexStats:
         """Index a markdown file, or a directory of them, into the vector store.
@@ -209,30 +222,86 @@ class Indexer:
         # supersession map or in provenance. Mirrors recall.lint's `rel` keying. A single-file
         # index has no root to relativize against, so it falls back to the basename.
         rel = {f: (f.relative_to(root).as_posix() if root.is_dir() else f.name) for f in files}
-        all_chunks: list[Chunk] = []
+
+        known = self._store.source_content_hashes()
+        deleted = self._prune_vanished(root, files, known) if root.is_dir() else 0
+
+        pending_sources: list[str] = []
+        pending_chunks: list[Chunk] = []
+        indexed = skipped = written = 0
+
         for f in files:
-            # utf-8-sig: a BOM must not silently disable frontmatter parsing
-            meta, body = parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+            raw = f.read_text(encoding="utf-8-sig")  # BOM must not disable frontmatter parsing
+            content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+            if known.get(str(f)) == content_hash:
+                skipped += 1
+                continue
+            meta, body = parse_frontmatter(raw)
             try:
                 validity_bounds(meta)  # fail fast on malformed dates, before anything is embedded
             except ValueError as exc:
                 raise ValueError(f"{f}: {exc}") from exc
+            pending_sources.append(str(f))
+            indexed += 1
             for i, ct in enumerate(self._chunker(body)):
                 cid = hashlib.md5(f"{f}:{i}".encode("utf-8")).hexdigest()
-                all_chunks.append(
+                pending_chunks.append(
                     Chunk(
                         id=cid,
                         source=str(f),
                         text=ct,
-                        metadata={"file": rel[f], "ord": i, **meta},
+                        metadata={
+                            "file": rel[f], "ord": i, "content_hash": content_hash, **meta
+                        },
                     )
                 )
-        # embed BEFORE touching the store: if embedding fails, the old rows stay intact.
-        # With a cache, unchanged chunk text is served from cache and never re-embedded.
+            # Flush on a whole-file boundary once the batch is big enough. A file's chunks are
+            # never split across batches: `replace_sources` deletes the file's rows before
+            # inserting, so a half-written file would land as a partial replace.
+            if len(pending_chunks) >= self._batch_chunks:
+                written += self._flush(pending_sources, pending_chunks)
+                pending_sources, pending_chunks = [], []
+
+        written += self._flush(pending_sources, pending_chunks)
+        return IndexStats(files=indexed, chunks=written, skipped=skipped, deleted=deleted)
+
+    def _flush(self, sources: list[str], chunks: list[Chunk]) -> int:
+        """Embed and write one batch. Returns chunks written."""
+        if not sources:
+            return 0
+        # Embed BEFORE touching the store: if embedding fails, this batch's old rows stay
+        # intact. With a cache, unchanged chunk text is served from cache and never re-embedded.
         embeddings = (
-            embed_with_cache(self._embedder, [c.text for c in all_chunks], self._cache)
-            if all_chunks
+            embed_with_cache(self._embedder, [c.text for c in chunks], self._cache)
+            if chunks
             else []
         )
-        self._store.replace_sources([str(f) for f in files], all_chunks, embeddings)
-        return IndexStats(files=len(files), chunks=len(all_chunks))
+        self._store.replace_sources(sources, chunks, embeddings)
+        return len(chunks)
+
+    def _prune_vanished(self, root: Path, files: list[Path], known: dict[str, str]) -> int:
+        """Delete rows for files that are gone from disk, scoped to `root`.
+
+        The glob only lists files that still EXIST, so a deleted file was never replaced and
+        never removed: its chunks stayed indexed forever. That is not a performance bug — the
+        trust layer went on serving a deleted memory with verdict `ok`.
+
+        Scoped to the indexed root, because `source` is an absolute path and a corpus may be
+        indexed in several roots; pruning everything absent from THIS glob would delete the
+        others' rows on every run.
+        """
+        present = {str(f) for f in files}
+        vanished = []
+        for source in known:
+            if source in present:
+                continue
+            try:
+                if Path(source).is_relative_to(root):
+                    vanished.append(source)
+            except (OSError, ValueError):  # pragma: no cover - unparsable stored path
+                continue
+        if not vanished:
+            return 0
+        _log.info("pruning %d file(s) no longer on disk under %s", len(vanished), root)
+        self._store.delete_sources(vanished)
+        return len(vanished)
