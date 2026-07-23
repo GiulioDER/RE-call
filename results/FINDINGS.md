@@ -188,7 +188,7 @@ bounded by the judge.** Full tables + arms:
 [docs/ENTAILMENT_SUPERSESSION_STUDY.md](../docs/ENTAILMENT_SUPERSESSION_STUDY.md) and the
 near-miss table in `RESULTS.md`.
 
-## 5b. At scale: the headline rate holds — and the coverage it costs becomes visible
+## 5b. At scale: the headline rate holds, at full coverage — and the abstain arm does not
 
 §4's superseded-trust rate rests on **6** queries, so its 95% Wilson interval is **[0.00, 0.39]** —
 consistent with a working trust layer and with a mediocre one. `recall.eval.synthetic` generates the
@@ -211,17 +211,30 @@ tightened from [0.00, 0.39] to [0.00, 0.02], against an STR baseline of 1.00 (pl
 the stale memory *every time* on these adversarially-worded queries). That is the strongest
 evidence in this document, and it is now bounded rather than asserted.
 
-**And it is not bought with silence.** Coverage is 1.00 — the trust layer answers every
-validity-sensitive query and still serves no stale memory as `ok`. Coverage is published beside
-STR precisely because a system that abstained its way to a perfect STR would be indistinguishable
-in the STR column alone. This one did not.
+**It is not bought with silence — but coverage and abstention are one measurement, not two.**
+Coverage is 1.00: the trust layer answered every validity-sensitive query and still served no
+stale memory as `ok`. That rules out the degenerate reading of STR, where a system abstains its
+way to a perfect score. It is worth publishing for that reason alone.
 
-**The successor and abstention columns measure the corpus, not the trust layer.** They read 0.14
-and 0.00, and on this corpus that is the expected reading rather than a regression — §6 explains
-why: every generated document is the same sentence with a different opaque token, so choosing
-between them tests whether an embedder can discriminate meaningless strings. Treat both as *not
-measured here*. STR, coverage, latency and index scale are unaffected, because supersession is a
-declared relation rather than a similarity judgement.
+What it cannot also do is stand as independent evidence, because `coverage` is the exact
+complement of `abstained`: the harness sets the coverage flag to `bool(ok_keys)` and
+`trusted_search` sets `abstained = not ok` from the same list. Coverage 1.00 over n=250
+therefore *means* the layer abstained zero times, which is the same fact the abstention row
+reports as 0.00 over the 100 queries where abstaining was the correct answer. One number read
+twice, once favourably.
+
+So the abstain arm did not go unmeasured — **it was measured and it failed**, on all 100
+queries. The honest split is by expectation: on the 150 successor queries answering is correct
+and coverage 1.00 is good news; on the 100 abstain queries answering *is* the failure, and the
+same 1.00 is the whole of it.
+
+**Why this corpus is a poor test of both, all the same.** Successor accuracy (0.14) and
+abstention accuracy (0.00) are dominated by the generator, as §6 explains: every document is the
+same sentence with a different opaque token, so choosing between them asks an embedder to
+discriminate meaningless strings. That explains the numbers; it does not convert a measured
+failure into an absent measurement, and these two columns should not be cited from this arm as
+evidence in either direction. STR, coverage, latency and index scale are unaffected, because
+supersession is a declared relation rather than a similarity judgement.
 
 **Arm B — index pressure** (`hashing-64`, 50,600 chunks, [SCALE.md](scale-pressure/SCALE.md)):
 
@@ -301,9 +314,19 @@ identity of the worst sample — and with it the whole operating point — chang
 threshold **0.728 ± 0.042**, false-abstain **0.015**, gap FCR **0.000**, balanced error
 **0.007** — against 0.104 for the rule it replaces.
 
-**How conservative is enough:** only slightly. Moving off the minimum to the middle of the gap
-buys the whole improvement for ~1.5% of answerable queries. Pushing further is a bad trade —
-a q20 floor drives false-abstain to 0.31 to buy the last points of FCR.
+**How conservative is enough:** only slightly. Within the sweep above, moving off the minimum to
+the middle of the gap takes gap FCR **0.205 → 0.045** and costs an additional **0.7%** of
+answerable queries (false-abstain 0.003 → 0.010). Pushing further is a bad trade — a q20 floor
+drives false-abstain to 0.31 to buy the last points of FCR.
+
+Two figures in this section are **not** comparable, and mixing them is the error this section
+previously made. The 0.7% above is a within-sweep delta, fitted and scored on split halves. The
+shipped rule's **0.015** false-abstain is an end-to-end measurement on a different protocol
+(whole query set, fresh builds, after the change) — it is not the price of moving the threshold,
+and subtracting it from anything here is meaningless. Likewise "the whole improvement" would be
+wrong: midgap reaches 0.045 gap FCR, while Youden J reaches 0.015 and q20 reaches 0.000 in the
+same table. Midgap buys most of the available FCR at a small fraction of the false-abstain cost,
+which is the actual claim.
 
 ⚠️ **Outlier robustness needs samples.** The floor is a 5th percentile, which cannot exclude
 anything below ~20 answerable samples; on the 14-document corpus it still collapses onto the

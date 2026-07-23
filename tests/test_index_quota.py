@@ -143,3 +143,46 @@ def test_the_billed_set_is_the_set_that_gets_indexed(tmp_path, store, monkeypatc
     assert result.files == 1, (
         f"billed 1 file but indexed {result.files} — the walk that bills is not the walk that runs"
     )
+
+
+@requires_db
+def test_a_file_that_vanishes_before_the_stat_does_not_abort_the_request(
+    tmp_path, store, monkeypatch
+):
+    """The mirror of the test above: pinning the set also pins its staleness.
+
+    Handing `index_path` the measured list closed the under-billing race, but it opened the
+    opposite one — the measuring pass now stats a list that may already be out of date. A file
+    removed between the walk and the stat used to raise a raw `FileNotFoundError` out of
+    `index_memory` before `on_measured` ever ran, killing a request the rest of which was
+    perfectly serviceable. A corpus synced on a timer, the deployment this is built for, removes
+    files as routinely as it adds them.
+
+    Note the billed FILE COUNT still includes the vanished entry while its BYTES do not: the
+    count is taken before the stat pass. That over-counts the cheap dimension and never
+    under-counts the expensive one, which is the safe direction for a spend control.
+    """
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(tmp_path))
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "keep.md").write_text("x" * 1000, encoding="utf-8")
+    (corpus / "doomed.md").write_text("y" * 500, encoding="utf-8")
+
+    import recall_mcp.service as svc
+
+    real_candidate_files = svc.candidate_files
+
+    def walk_then_lose(path, *args, **kwargs):
+        files = real_candidate_files(path, *args, **kwargs)
+        (corpus / "doomed.md").unlink()  # gone between the walk and the stat pass
+        return files
+
+    monkeypatch.setattr(svc, "candidate_files", walk_then_lose)
+
+    billed: list[tuple[int, int]] = []
+    result = index_memory(
+        store, _E(), str(corpus), on_measured=lambda n, b: billed.append((n, b))
+    )
+
+    assert billed == [(2, 1000)], f"{billed} — the vanished file's bytes were billed"
+    assert result.files == 1, "the surviving file was not indexed"

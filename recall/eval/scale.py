@@ -7,8 +7,10 @@ queries. This answers the two questions that one cannot:
    the interval is driven by query count. At n=6 a rate of 0.00 carries a 95% Wilson interval of
    [0.00, 0.39]; at n=150 the same 0.00 carries roughly [0.00, 0.02].
 2. **Does retrieval hold up under index pressure?** HNSW behaves differently at 100k vectors than
-   at 20, and a `source`-filtered query walks a filter-blind graph — the recall-collapse case
-   that cannot appear in a corpus small enough to scan exhaustively.
+   at 20. Note that the `source`-filtered arm reported here does NOT isolate that: it measures
+   the hybrid retriever, whose exact-match leg pins filtered recall at 1.00 regardless of what
+   the ANN graph does. See `measure_retrieval` for the full caveat, and
+   `tests/test_hnsw_filtered_recall.py` for the measurement that does isolate the index walk.
 
 Reported alongside every rate: its Wilson interval, its n, and end-to-end search latency
 percentiles (p50/p95/p99 — a mean hides exactly the tail an operator is paged for).
@@ -64,11 +66,16 @@ def measure_retrieval(
 ) -> tuple[dict, dict, dict]:
     """Recall@k unfiltered, recall@k under a `source` filter, and latency percentiles.
 
-    The filtered arm is the point of interest. `query_dense` applies `WHERE source = ...`
-    alongside an HNSW `ORDER BY embedding <=> ...`; the index walk cannot see the predicate, so
-    a selective filter can return fewer (or no) in-filter neighbours than exist. Filtering to
-    the one source that DOES hold the answer makes that visible: recall should be 1.00, and
-    anything less is the graph failing to surface a row it certainly contains.
+    Both arms measure the HYBRID retriever end to end — `HybridRetriever.search`, not
+    `query_dense`. That matters for how the filtered arm may be read, and the report this
+    function emits says so: the exact `tsv @@ websearch_to_tsquery` leg, over a corpus built
+    with one chunk per answerable document, pins the filtered arm at 1.00 whatever the ANN
+    graph does. So a filtered recall of 1.00 here is NOT evidence that HNSW surfaces rows under
+    a selective predicate — it is the only result this arm can produce.
+
+    An earlier version of this docstring — and of this module's own docstring — claimed the
+    opposite, attributing the arm to `query_dense` and reading 1.00 as a verdict on the index
+    walk. For the ANN-isolating measurement, see `tests/test_hnsw_filtered_recall.py`.
     """
     retr = HybridRetriever(store, embedder)
     answerable = [q for q in queries if not q.get("trust") and q["answerable"]]

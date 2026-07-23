@@ -20,6 +20,22 @@ dates — this project does not currently tag releases.
   - "Gone from disk" is now checked against the disk. It was inferred from absence from the
     current run's glob, so re-indexing one root with a different `--glob` deleted the other glob's
     rows — and the fraction guard missed it whenever they were a minority of the corpus.
+  - **"Gone" now means ENOENT, not "could not be stat'd".** The check used `Path.exists()`, which
+    swallows *every* `OSError` and answers `False` — so an unreadable parent directory, a dropped
+    network mount or a symlink loop was read as a deletion and the rows were removed, under the
+    fraction guard and with exit 0. It now calls `os.stat` and classifies by errno: only ENOENT
+    and ENOTDIR are deletions; everything else means unreachable, and unreachable is never
+    pruned. (`Path.exists()` delegates to a C accelerator that swallows the error before any
+    `except OSError` in Python could observe it, which is why the guard that was there did
+    nothing.)
+  - **A file that vanishes mid-run no longer aborts the run**, and a corpus that vanishes
+    entirely no longer reports success: individual disappearances are skipped and logged, but
+    when *every* candidate is gone `index` raises `FileNotFoundError` rather than reporting
+    "indexed 0 files". Read failures that are not disappearances (permissions, I/O) still abort
+    immediately, as before.
+  - **`Indexer.index_path` now rejects `glob=` and `files=` together** with `ValueError`, instead
+    of silently ignoring the glob, and re-confines a supplied `files=` list to the root rather
+    than trusting the caller to have done it.
   - `recall index` reports unchanged and pruned counts, and the MCP `IndexResult` carries
     `skipped` / `deleted`. Both were computed and then discarded, so a prune happened in silence.
 - **Authentication on the MCP HTTP transports** (`recall_mcp/auth.py`, `recall_mcp/stores.py`,
@@ -95,6 +111,31 @@ dates — this project does not currently tag releases.
   not hidden: an interrupted build can leave an `INVALID` index that `IF NOT EXISTS` will not
   retry automatically (a plain `CREATE INDEX` cannot fail this way, since it is one transaction);
   documented in `recall/store.py` alongside the change. Closes issue #11's fourth checkbox.
+
+### Changed
+
+- **Schema DDL now waits a bounded time for its LOCK** (`RECALL_SCHEMA_LOCK_TIMEOUT_MS`, default
+  `5000`; `0` restores the old unbounded wait). `ensure_schema()` lifts `statement_timeout` so an
+  HNSW build is not cancelled — but `statement_timeout` also counted lock-wait time, so lifting it
+  removed the only bound on *queueing*. `CREATE INDEX CONCURRENTLY` waits for every concurrent
+  transaction on the table and the tenancy ALTERs take ACCESS EXCLUSIVE, so a single
+  `idle in transaction` session elsewhere could park schema setup indefinitely, with every later
+  query queued behind it and no error explaining why. Work stays unbounded; waiting does not.
+  **`recall index` / `recall search` can now fail after 5s of lock contention** where they
+  previously waited — the DDL is idempotent and retried on the next store open.
+- **`RECALL_ALLOW_INSECURE_DSN` now takes an explicit allowlist**, not any non-empty string. Only
+  `1`, `true`, `yes` or `on` (case-insensitive) disable the guard; **every other value, including
+  `0` and `false`, keeps it ON**. Previously `RECALL_ALLOW_INSECURE_DSN=0` *disabled* the check —
+  the opposite of what anyone writing it meant. **This can fail a deployment that currently
+  starts**: if you set it to a falsey-looking value and use the built-in `recall:recall`
+  credentials against a non-local host, `require_secure_dsn` will now raise at startup. That is
+  the intended reading; change the credentials, or set the variable to `1` deliberately.
+- **The `mcp` extra now requires `mcp>=1.27.2`** (was `>=1.10`, and `>=1.7` before that). The
+  1.10 floor was necessary but not sufficient: the tenant is carried in `AccessToken.claims`,
+  which only exists from **1.27.2**. On 1.10–1.27.1 the package installed cleanly and then failed
+  on every authenticated call, because pydantic dropped the unknown `claims` field at
+  construction. Below 1.10 the server fails loudly at import instead. Upgrade with
+  `pip install -U "recall[mcp]"`.
 
 ## [0.5.0] — 2026-07-22
 

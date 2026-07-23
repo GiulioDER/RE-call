@@ -9,6 +9,7 @@ from pathlib import Path
 from recall.cache import EmbeddingCache, embed_with_cache
 from recall.embeddings import Embedder
 from recall.frontmatter import parse_frontmatter, validity_bounds
+from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
 from recall.store import PgVectorStore
 from recall.types import Chunk
@@ -245,7 +246,7 @@ def _confined_to(root: Path, paths: Iterable[Path]) -> list[Path]:
     return kept
 
 
-def candidate_files(path: str | Path, glob: str = "**/*.md") -> list[Path]:
+def candidate_files(path: str | Path, glob: str = DEFAULT_GLOB) -> list[Path]:
     """Return the confined, sorted file list that `index_path(path, glob)` would index.
 
     A pure filesystem walk: it only `stat`s and `resolve`s paths — no file is opened, no chunker
@@ -289,7 +290,7 @@ class Indexer:
         self._max_prune_fraction = _prune_fraction_from_env()
 
     def index_path(
-        self, path: str | Path, glob: str = "**/*.md", files: list[Path] | None = None
+        self, path: str | Path, glob: str | None = None, files: list[Path] | None = None
     ) -> IndexStats:
         """Index a markdown file, or a directory of them, into the vector store.
 
@@ -302,14 +303,50 @@ class Indexer:
         instead is asking the filesystem the same question twice and getting two answers: the
         window between them is a full directory walk wide, and anything appearing in it is
         indexed without having been counted — which matters when the count was a budget check or
-        a bill. Must already be confined to `path` (i.e. come from `candidate_files`).
+        a bill.
+
+        `files` is re-confined to `path` here rather than trusted. A precondition stated only in
+        a docstring is not enforced, and this one guards the root confinement: for a directory
+        root an escape happens to raise from `relative_to` below, but for a single-file root the
+        `rel` fallback is the bare basename, so an out-of-root path would be read and embedded
+        with nothing to stop it. Re-filtering costs one stat per file and cannot reintroduce the
+        double-walk this parameter exists to remove — `_confined_to` opens nothing and walks
+        nothing, it only checks the paths it is handed.
+
+        `glob` and `files` are mutually exclusive: passing both is a caller bug, because the set
+        that gets indexed would silently be the one the glob did not describe. `glob` defaults to
+        None rather than to `DEFAULT_GLOB` so that check tests whether the argument was PASSED,
+        not whether its value happens to differ from the default — otherwise the guard would go
+        quiet the day someone changes `DEFAULT_GLOB` to match.
         """
+        if files is not None and glob is not None:
+            raise ValueError(
+                "pass either `glob` or `files`, not both: `files` is used verbatim, so the "
+                f"glob {glob!r} would be silently ignored"
+            )
+        glob = DEFAULT_GLOB if glob is None else glob
         # resolve() FIRST: `source` is the row key `replace_sources` deletes by, so a corpus
         # indexed once as `corpus/` and once as `/abs/corpus/` would write two row sets for the
         # same file instead of replacing them. (Root-relative `file` keys are unaffected —
         # they are computed against this same root either way.)
         root = Path(path).resolve()
-        files = candidate_files(root, glob) if files is None else files
+        if files is None:
+            files = candidate_files(root, glob)
+            dropped = 0
+        else:
+            # `_confined_to` filters on `is_file()` as well as on the root, so it silently eats a
+            # file that vanished between the caller's walk and this call. That count has to be
+            # carried forward: without it the total-failure check below cannot fire on this path
+            # — every candidate would be gone, and the loop would simply never see one — so a
+            # corpus that disappeared would return "indexed 0 files" instead of raising.
+            requested = len(files)
+            files = _confined_to(root, files)
+            dropped = requested - len(files)
+            if dropped:
+                _log.warning(
+                    "%d of %d supplied file(s) are outside %s, or no longer readable; skipping",
+                    dropped, requested, root,
+                )
         # Identify each file by its ROOT-RELATIVE path, not its bare basename: two files with the
         # same basename in different directories (a/notes.md, b/notes.md) must not collide in the
         # supersession map or in provenance. Mirrors recall.lint's `rel` keying. A single-file
@@ -321,10 +358,24 @@ class Indexer:
 
         pending_sources: list[str] = []
         pending_chunks: list[Chunk] = []
-        indexed = skipped = written = 0
+        indexed = skipped = written = vanished_before_read = 0
 
         for f in files:
-            raw = f.read_text(encoding="utf-8-sig")  # BOM must not disable frontmatter parsing
+            try:
+                raw = f.read_text(encoding="utf-8-sig")  # BOM must not disable frontmatter parsing
+            except (FileNotFoundError, NotADirectoryError) as exc:
+                # A file that DISAPPEARED between the walk and this read must not take the rest
+                # of the run down with it: the caller may already have debited a byte budget for
+                # the whole measured set, and earlier batches may already be committed, so
+                # aborting here leaves a partial index AND a spent quota.
+                #
+                # Only ENOENT/ENOTDIR are absorbed — the same classification `gone_from_disk`
+                # uses below, and for the same reason. A permission or I/O error is NOT a file
+                # that went away; swallowing those would turn "I could not read your corpus"
+                # into "indexed 0 files", exit 0. Logged, because the file WAS paid for.
+                _log.warning("skipping %s: it vanished before it could be read (%s)", f, exc)
+                vanished_before_read += 1
+                continue
             raw = _strip_nul(raw, f)
             content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
             if known.get(str(f)) == content_hash:
@@ -357,6 +408,20 @@ class Indexer:
                 pending_sources, pending_chunks = [], []
 
         written += self._flush(pending_sources, pending_chunks)
+        # Tolerating individual disappearances must not turn a TOTAL failure into a success.
+        # If every candidate is gone, the corpus was not there — a wrong path, an unmounted
+        # volume, a sync that removed everything — and reporting "indexed 0 files" with exit 0
+        # is the same silence the prune guard exists to break.
+        #
+        # Counted against what was ASKED FOR, not against what survived confinement: on the
+        # `files=` path the disappearances are absorbed above, so `len(files)` is already 0 and
+        # comparing against it would make this check unfireable exactly where it is needed.
+        candidates = len(files) + dropped
+        if candidates and (vanished_before_read + dropped) == candidates:
+            raise FileNotFoundError(
+                f"none of the {candidates} candidate file(s) under {root} could be read: "
+                f"every one of them vanished between the scan and the read"
+            )
         return IndexStats(files=indexed, chunks=written, skipped=skipped, deleted=deleted)
 
     def _flush(self, sources: list[str], chunks: list[Chunk]) -> int:
@@ -399,10 +464,22 @@ class Indexer:
                 return False
 
         def gone_from_disk(source: str) -> bool:
+            # `os.stat` directly, classified by errno — NOT `Path.exists()`. On Python >= 3.12
+            # `Path.exists()` delegates to `os.path.exists`, which swallows every OSError and
+            # ValueError and returns False, so "I could not stat this" and "this file is gone"
+            # become the same answer and an `except OSError` around it can never fire. That
+            # collapses the distinction this function exists to draw: an unreadable parent
+            # directory (EACCES), a dropped network mount (EIO/ESTALE) or a symlink loop
+            # (ELOOP) would be read as a deletion and the rows would go. Only ENOENT and
+            # ENOTDIR mean the file is actually gone; every other error means unreachable,
+            # which is not a deletion.
             try:
-                return not Path(source).exists()
-            except OSError:  # pragma: no cover - unstattable path: treat as present, never delete
+                os.stat(source)
+            except (FileNotFoundError, NotADirectoryError):
+                return True
+            except (OSError, ValueError):
                 return False
+            return False
 
         present = {str(f) for f in files}
         # One pass, one definition of "under this root". The guard below divides by this set, so
