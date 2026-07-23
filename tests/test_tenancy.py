@@ -195,6 +195,51 @@ def test_migrating_a_pre_tenancy_table_preserves_its_rows(tenant_table):
         s.close()
 
 
+@requires_db
+def test_a_half_migrated_table_is_repaired_not_reported_done(tenant_table):
+    """An interrupted migration must be finished on the next open, not treated as complete.
+
+    The migration is three ALTERs. Interrupted after the DROP CONSTRAINT — crash, restart,
+    cancelled statement — the table has `tenant_id` but NO primary key. A completion check that
+    only looks for the column reports "already migrated" forever, and every subsequent upsert
+    dies on `ON CONFLICT (tenant_id, id)` with no matching constraint. Reproduced here by
+    building that exact half-migrated state directly.
+    """
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        conn.execute(
+            f"""CREATE TABLE {tenant_table} (
+                id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                text TEXT NOT NULL,
+                metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                embedding vector(4),
+                indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
+                tenant_id TEXT NOT NULL DEFAULT 'default'
+            )"""
+        )  # column added, primary key never re-added: the interrupted state
+
+    s = PgVectorStore(TEST_DSN, dim=4, table=tenant_table)
+    try:
+        s.ensure_schema()
+
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            pkey = conn.execute(
+                "SELECT array_length(conkey, 1) FROM pg_constraint "
+                "WHERE conrelid = %s::regclass AND contype = 'p'",
+                (tenant_table,),
+            ).fetchone()
+        assert pkey is not None, "half-migrated table was left without a primary key"
+        assert pkey[0] == 2, "primary key was not repaired to the composite (tenant_id, id)"
+
+        # The consequence the missing key actually causes: an upsert must work.
+        s.upsert([Chunk(id="c1", source="a.md", text="hello", metadata={})], [_vec(0)])
+        assert s.count() == 1
+    finally:
+        s.close()
+
+
 # --------------------------------------------------------------------------------------------
 # Layer 2: row-level security, verified as a role that cannot bypass it
 # --------------------------------------------------------------------------------------------
@@ -315,3 +360,41 @@ def test_rls_blocks_writing_a_row_for_another_tenant(unprivileged_dsn, tenant_ta
             )
     finally:
         a.close()
+
+
+@requires_db
+def test_a_tampered_policy_predicate_is_repaired_on_the_next_open(tenant_table):
+    """The isolation policy must converge on its DEFINITION, not merely on its name.
+
+    `ensure_schema` runs on every store open, which is what makes it a repair mechanism. If it
+    only asked "does a policy with this name exist?", a policy whose predicate had been altered —
+    by hand, by a migration, by an older version of this code — would be left in place because
+    the name matched. A changed predicate here is a changed isolation boundary, so `USING (true)`
+    is the whole control silently switched off while the table still reports RLS as enabled.
+    """
+    s = PgVectorStore(TEST_DSN, dim=4, table=tenant_table)
+    try:
+        s.ensure_schema()
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(
+                f"ALTER POLICY {tenant_table}_tenant_isolation ON {tenant_table} "
+                f"USING (true) WITH CHECK (true)"
+            )
+            tampered = conn.execute(
+                "SELECT pg_get_expr(polqual, polrelid) FROM pg_policy WHERE polname = %s",
+                (f"{tenant_table}_tenant_isolation",),
+            ).fetchone()[0]
+        assert tampered == "true", "fixture failed to tamper with the policy"
+
+        s.ensure_schema()  # the repair
+
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            repaired = conn.execute(
+                "SELECT pg_get_expr(polqual, polrelid) FROM pg_policy WHERE polname = %s",
+                (f"{tenant_table}_tenant_isolation",),
+            ).fetchone()[0]
+        assert "tenant_id" in repaired and "current_setting" in repaired, (
+            f"tampered policy was not repaired: {repaired!r}"
+        )
+    finally:
+        s.close()

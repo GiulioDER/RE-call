@@ -100,8 +100,22 @@ class SearchResult(BaseModel):
 
 
 class IndexResult(BaseModel):
-    files: int = Field(description="Number of files indexed.")
+    files: int = Field(
+        description="Number of files (re)indexed by this call. Unchanged files are counted in "
+        "`skipped`, not here, so a no-op re-index reports 0 — that does not mean the index is empty."
+    )
     chunks: int = Field(description="Number of chunks written to memory.")
+    skipped: int = Field(
+        default=0,
+        description="Files whose content was unchanged since the last index, so they were not "
+        "re-embedded.",
+    )
+    deleted: int = Field(
+        default=0,
+        description="Sources permanently removed because their files are gone from disk. "
+        "Re-indexing is destructive in this one respect; reported so a caller can see it rather "
+        "than discovering it later as missing memory.",
+    )
     message: str = Field(description="Human-readable summary of what was indexed.")
 
 
@@ -257,10 +271,17 @@ def index_memory(
         on_measured(len(files), total_bytes)
 
     stats = Indexer(store, embedder).index_path(target)
+    message = f"Indexed {stats.chunks} chunk(s) from {stats.files} file(s) into memory."
+    if stats.skipped:
+        message += f" {stats.skipped} file(s) were unchanged and not re-embedded."
+    if stats.deleted:
+        message += f" Pruned {stats.deleted} source(s) whose files are gone from disk."
     return IndexResult(
         files=stats.files,
         chunks=stats.chunks,
-        message=f"Indexed {stats.chunks} chunk(s) from {stats.files} file(s) into memory.",
+        skipped=stats.skipped,
+        deleted=stats.deleted,
+        message=message,
     )
 
 

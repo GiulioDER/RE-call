@@ -1,10 +1,16 @@
+import contextlib
 import uuid
 from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
 import pytest
 
-from recall.store import PgVectorStore, resolve_supersession, warn_if_insecure_dsn
+from recall.store import (
+    TENANT_GUC,
+    PgVectorStore,
+    resolve_supersession,
+    warn_if_insecure_dsn,
+)
 from recall.types import Chunk
 
 from tests.conftest import TEST_DSN, requires_db
@@ -103,6 +109,9 @@ def _bare_store(conn: _FakeConn | None = None) -> PgVectorStore:
     store._dim = 3
     store._supersession_cache = None
     store._closed = False
+    # A real store always has this (set in __init__); the default is "no timeout configured",
+    # which is what the CLI constructs. Tests that care set it explicitly.
+    store._statement_timeout_ms = None
     store._conn = conn if conn is not None else _FakeConn()
     return store
 
@@ -159,9 +168,38 @@ def test_with_retry_does_not_retry_non_connection_errors():
     assert reconnects["n"] == 0  # a data/query error must NOT trigger a reconnect
 
 
+#: The policy predicate `_enable_rls` converges on, as Postgres renders it back via
+#: `pg_get_expr` — i.e. what a correctly-configured table reports. Derived from TENANT_GUC so it
+#: cannot drift from the implementation.
+POLICY_EXPR = f"(tenant_id = current_setting('{TENANT_GUC}'::text, true))"
+
+
 class _Cursor:
+    def __init__(self, row=(3,)):
+        self._row = row
+
     def fetchone(self):
-        return (3,)
+        return self._row
+
+
+def _canned_row(sql: str, *, migrated: bool = True, rls_ok: bool = True):
+    """The row a DB-free connection returns for each probe `ensure_schema` makes.
+
+    Dispatched on the query rather than answering every probe with one canned tuple: the probes
+    have different shapes (1 to 4 columns) and different meanings, so a single row had to be
+    widened every time one changed, and each widening risked making an assertion vacuous by
+    steering an unrelated branch. Keyed on the query, each probe gets an answer that means
+    something, and `migrated`/`rls_ok` let a test choose which branch to exercise.
+    """
+    if "atttypmod" in sql:
+        return (3,)  # embedding vector(3), matching _bare_store's dim: dimension check passes
+    if "pg_attribute" in sql and "tenant_id" in sql:
+        return (1,) if migrated else None
+    if "pg_constraint" in sql:
+        return ("chunks_pkey", 2 if migrated else 1)
+    if "relrowsecurity" in sql:
+        return (True, True, POLICY_EXPR, POLICY_EXPR) if rls_ok else (False, False, None, None)
+    return (3,)
 
 
 class _RecordingConn:
@@ -172,8 +210,10 @@ class _RecordingConn:
     `ensure_schema` gains a statement.
     """
 
-    def __init__(self, *, fail_first: bool = False):
+    def __init__(self, *, fail_first: bool = False, migrated: bool = True, rls_ok: bool = True):
         self.fail_first = fail_first
+        self.migrated = migrated
+        self.rls_ok = rls_ok
         self.sql: list[str] = []
         # the retry only reconnects when the connection reports itself dead; a dropped socket
         # is exactly that
@@ -184,12 +224,18 @@ class _RecordingConn:
     def calls(self) -> int:
         return len(self.sql)
 
+    def transaction(self):
+        """`conn.transaction()` as a no-op context manager — the statements inside it are still
+        recorded, which is all these tests inspect."""
+        return contextlib.nullcontext()
+
     def execute(self, sql="", *_args, **_kwargs):
-        self.sql.append(" ".join(str(sql).split()))
+        text = " ".join(str(sql).split())
+        self.sql.append(text)
         if self.fail_first:
             self.fail_first = False
             raise psycopg.OperationalError("server closed the connection unexpectedly")
-        return _Cursor()
+        return _Cursor(_canned_row(text, migrated=self.migrated, rls_ok=self.rls_ok))
 
 
 def _ensure_schema_statements() -> list[str]:
@@ -251,6 +297,129 @@ def test_ensure_schema_indexes_are_concurrent():
     assert len(create_index_stmts) >= 2  # guards the guard, same as the test above
     for s in create_index_stmts:
         assert s.startswith("CREATE INDEX CONCURRENTLY"), s
+
+
+def test_ensure_schema_lifts_the_statement_timeout_for_its_ddl():
+    """Schema DDL must not run under the per-connection `statement_timeout`.
+
+    `_prepare` sets `statement_timeout` on EVERY connection (it is the pool's `configure` hook,
+    and `_connect` calls it too), and the MCP server defaults it to 15s. `ensure_schema` then
+    builds an HNSW index on that same connection — a build the code's own comment describes as
+    "minutes, not milliseconds" on a real corpus. Under the timeout that build is cancelled, so
+    an upgrade against a populated database cannot start; worse, a cancelled CONCURRENTLY build
+    leaves an INVALID index that `IF NOT EXISTS` then treats as present forever.
+
+    Asserted on the statement stream rather than by timing a real build: the invariant is "the
+    timeout is lifted before the DDL and restored after", checkable without waiting minutes.
+    """
+    store = _bare_store(_RecordingConn())
+    store._statement_timeout_ms = 15000
+    store.ensure_schema()
+    stmts = store._conn.sql
+
+    def norm(s: str) -> str:
+        return s.lower().replace(" ", "")
+
+    lifted = [i for i, s in enumerate(stmts) if norm(s) == "setstatement_timeout=0"]
+    assert lifted, "ensure_schema never lifted statement_timeout before its DDL"
+    first_ddl = next(
+        i for i, s in enumerate(stmts) if s.startswith(("CREATE TABLE", "CREATE INDEX"))
+    )
+    assert lifted[0] < first_ddl, "statement_timeout lifted only after the DDL had already run"
+
+    restored = [i for i, s in enumerate(stmts) if norm(s) == "setstatement_timeout=15000"]
+    last_ddl = max(
+        i for i, s in enumerate(stmts) if s.startswith(("CREATE TABLE", "CREATE INDEX"))
+    )
+    assert restored and restored[-1] > last_ddl, "statement_timeout never restored after the DDL"
+
+
+def test_ensure_schema_installs_rls_when_the_table_has_none():
+    """The mutating half of `_enable_rls`, which the steady-state tests never reach.
+
+    `_enable_rls` skips work that is already done, so the DB-free tests above (which report a
+    correctly-configured table) record none of these statements. Without this case the security
+    control's install path would have no DB-free coverage at all — the exact shape of gap where
+    a conditional silently stops issuing the statement it exists to issue.
+    """
+    store = _bare_store(_RecordingConn(rls_ok=False))
+    store.ensure_schema()
+    stmts = store._conn.sql
+
+    assert any("ENABLE ROW LEVEL SECURITY" in s for s in stmts)
+    assert any("FORCE ROW LEVEL SECURITY" in s for s in stmts)
+    create = [s for s in stmts if s.startswith("CREATE POLICY")]
+    assert len(create) == 1, stmts
+    assert "current_setting" in create[0] and "tenant_id" in create[0]
+
+
+def test_a_tampered_policy_is_dropped_and_recreated_together():
+    """A drifted predicate must be repaired, and the repair must not open a gap.
+
+    `rls_ok=False` reports a policy whose definition does not match, so this also pins that the
+    DROP and CREATE are issued as a pair — separately committed they would leave a window with
+    RLS forced and no policy, during which concurrent queries return zero rows.
+    """
+    store = _bare_store(_RecordingConn(rls_ok=False))
+    store.ensure_schema()
+    stmts = store._conn.sql
+
+    drops = [i for i, s in enumerate(stmts) if s.startswith("DROP POLICY")]
+    creates = [i for i, s in enumerate(stmts) if s.startswith("CREATE POLICY")]
+    assert drops and creates, stmts
+    assert creates[0] == drops[0] + 1, "DROP and CREATE POLICY must be adjacent (one transaction)"
+
+
+def test_ensure_schema_leaves_a_correct_policy_alone():
+    """The other direction: a steady-state open must issue no policy DDL at all.
+
+    These are ALTER-TABLE-class statements taking ACCESS EXCLUSIVE, and `ensure_schema` runs on
+    every store open — including once per tenant in the server — so an unconditional version
+    serialises the whole table against every concurrent reader on a routine open.
+    """
+    store = _bare_store(_RecordingConn())  # already correct
+    store.ensure_schema()
+    stmts = store._conn.sql
+
+    assert not [s for s in stmts if s.startswith(("DROP POLICY", "CREATE POLICY"))]
+    assert not [s for s in stmts if "ROW LEVEL SECURITY" in s]
+
+
+def test_ensure_schema_emits_no_timeout_statements_when_none_is_configured():
+    """No timeout configured means no timeout statements at all — not `SET statement_timeout = 0`.
+
+    The CLI constructs stores without a timeout; emitting the lift/restore pair there would be
+    two pointless round-trips on every command.
+    """
+    store = _bare_store(_RecordingConn())
+    store._statement_timeout_ms = None
+    store.ensure_schema()
+    assert not [s for s in store._conn.sql if "statement_timeout" in s.lower()]
+
+
+@requires_db
+def test_ensure_schema_completes_under_a_tiny_statement_timeout():
+    """End-to-end: a 1ms timeout must not stop the schema from being created.
+
+    1ms is well under even an empty-table index build, so this fails on the pre-fix code for the
+    same reason a 15s timeout fails on a real corpus — the difference is only corpus size.
+    """
+    name = "pg_" + uuid.uuid4().hex[:8]
+    store = PgVectorStore(TEST_DSN, dim=4, table=name, statement_timeout_ms=1)
+    try:
+        store.ensure_schema()  # must not raise QueryCanceled
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            invalid = conn.execute(
+                "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+                "JOIN pg_class t ON t.oid = i.indrelid "
+                "WHERE t.relname = %s AND NOT i.indisvalid",
+                (name,),
+            ).fetchall()
+        assert invalid == [], f"a cancelled build left invalid index(es): {invalid}"
+    finally:
+        store.close()
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(f"DROP TABLE IF EXISTS {name}")
 
 
 # --- _hnsw_filtered_tuning: HNSW ef_search/iterative_scan config for a filtered query_dense ----

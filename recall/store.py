@@ -121,6 +121,15 @@ DEFAULT_HNSW_ITERATIVE_SCAN_FILTERED = "relaxed_order"
 #: configured value is interpolated into `SET LOCAL` (Postgres does not accept a bound parameter
 #: there), so it is validated against this allowlist rather than trusted as-is.
 _HNSW_ITERATIVE_SCAN_VALUES = frozenset({"off", "relaxed_order", "strict_order"})
+#: Values that count as "yes" for an opt-OUT of a safety guard. Deliberately an allowlist rather
+#: than a truthiness test: `0`/`false`/`no` must read as "keep the guard", and anything
+#: unrecognised must too, because a typo in a security switch may not grant permission.
+_ENV_TRUE = frozenset({"1", "true", "yes", "on"})
+
+
+def _env_opt_out(name: str) -> bool:
+    """True only when `name` is set to an explicit affirmative (see `_ENV_TRUE`)."""
+    return os.environ.get(name, "").strip().lower() in _ENV_TRUE
 
 
 def require_secure_dsn(dsn: str) -> None:
@@ -135,7 +144,12 @@ def require_secure_dsn(dsn: str) -> None:
     variable, because the legitimate case (a private network where the operator has genuinely
     accepted the risk) must be expressible — just not by default and not silently.
     """
-    if os.environ.get(INSECURE_DSN_OPT_OUT):
+    # Parsed, not merely truthy. A bare `os.environ.get(...)` reads ANY non-empty string as
+    # "opt out", so `RECALL_ALLOW_INSECURE_DSN=0` — which an operator writes meaning "keep the
+    # guard on" — silently switched the guard OFF, the exact inverse of the intent. Anything
+    # unrecognised keeps the guard: this is a security control, so an ambiguous value must not
+    # be read as permission.
+    if _env_opt_out(INSECURE_DSN_OPT_OUT):
         return
     if warn_if_insecure_dsn(dsn) is None:
         return
@@ -437,81 +451,99 @@ class PgVectorStore:
 
     def ensure_schema(self) -> None:
         def _op(conn: "psycopg.Connection") -> None:
-            t = self._table
-            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            conn.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {t} (
-                    tenant_id TEXT NOT NULL DEFAULT '{DEFAULT_TENANT}',
-                    id TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-                    embedding vector({self._dim}),
-                    indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
-                    PRIMARY KEY (tenant_id, id)
-                )
-                """
-            )
-            self._migrate_to_tenanted(conn)
-            actual_dim = conn.execute(
-                "SELECT atttypmod FROM pg_attribute "
-                "WHERE attrelid = %s::regclass AND attname = 'embedding'",
-                (t,),
-            ).fetchone()[0]
-            if actual_dim > 0 and actual_dim != self._dim:
-                raise ValueError(
-                    f"table {t!r} has a vector({actual_dim}) embedding column but this store is "
-                    f"configured for dim {self._dim} — use a matching embedder or a different "
-                    f"table (drop and re-index for a clean slate)."
-                )
-            # CONCURRENTLY: `ensure_schema` is not just a bootstrap step — it runs every time a
-            # store is opened, including against a table that already exists and is taking live
-            # writes (e.g. a server restart). A plain `CREATE INDEX` takes a lock that blocks
-            # writers for as long as the build takes, which for the HNSW index on a real corpus is
-            # minutes, not milliseconds. `CONCURRENTLY` builds the index without that lock (a small
-            # number of exclusive locks at the very start/end only). This is safe here because
-            # `_op` runs on an autocommit connection (see `_connect_kwargs`) and, unlike
-            # `replace_sources`/`upsert`, is never wrapped in `conn.transaction()` — every
-            # statement in this method is already its own implicit transaction, which is the one
-            # precondition `CREATE INDEX CONCURRENTLY` has (Postgres refuses it inside an explicit
-            # transaction block). Verified directly against the container: back-to-back
-            # `CREATE INDEX CONCURRENTLY IF NOT EXISTS` calls on this same autocommit-connection
-            # shape all complete and land `indisvalid = true`.
-            #
-            # Trade-off accepted, not hidden: if the process is killed mid-build, Postgres can
-            # leave an INVALID index behind, and `IF NOT EXISTS` treats that name as "already
-            # there" on the next `ensure_schema()` — it will not retry the build. A plain
-            # `CREATE INDEX` cannot fail this way (it is one transaction: abort undoes it), so this
-            # trades a low-probability manual-cleanup case (`DROP INDEX <name>` then re-run) for
-            # not blocking writers on every restart. `check_rls_effective`-style tooling could
-            # detect an invalid index the same way; not added here to keep this change scoped to
-            # issue #11's checkbox.
-            conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_tsv_idx ON {t} USING GIN (tsv)")
-            conn.execute(
-                f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_emb_idx ON {t} "
-                f"USING hnsw (embedding vector_cosine_ops)"
-            )
-            # The vector and full-text indexes cover the two retrieval legs; these cover the
-            # rest of the hot path, each of which was a sequential scan growing with the corpus:
-            #   indexed_at — `newest_indexed_at()` runs a max() on EVERY search; a DESC index
-            #                turns it into a one-row backward scan.
-            #   source     — a source-filtered search cannot use HNSW without it, and
-            #                replace_sources/delete_sources match `source = ANY(...)` per re-index.
-            #   file       — the supersession map groups on metadata->>'file'.
-            conn.execute(
-                f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_indexed_at_idx ON {t} (indexed_at DESC)"
-            )
-            conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_source_idx ON {t} (source)")
-            conn.execute(
-                f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_file_idx ON {t} ((metadata->>'file'))"
-            )
-            # Every hot-path predicate leads with tenant_id, so it leads the index too.
-            conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_tenant_idx ON {t} (tenant_id)")
-            self._enable_rls(conn)
+            # Schema DDL runs WITHOUT the per-connection statement_timeout. `_prepare` sets that
+            # timeout on every connection (it is the pool's `configure` hook, and `_connect` calls
+            # it too) to bound runaway QUERIES — but the HNSW build below is not a runaway query,
+            # and on a real corpus it takes minutes, far past the MCP server's 15s default. Left
+            # in place the timeout cancels the build, which fails startup against any populated
+            # database and leaves an INVALID index that the `IF NOT EXISTS` below then treats as
+            # present forever (see the CONCURRENTLY comment further down). Restored in `finally`
+            # so a pooled connection is never handed back with the guard still lifted.
+            timeout_lifted = self._statement_timeout_ms is not None
+            if timeout_lifted:
+                conn.execute("SET statement_timeout = 0")
+            try:
+                self._ensure_schema_ddl(conn)
+            finally:
+                if timeout_lifted:
+                    conn.execute(f"SET statement_timeout = {int(self._statement_timeout_ms)}")
 
         self._with_retry(_op)
+
+    def _ensure_schema_ddl(self, conn: "psycopg.Connection") -> None:
+        t = self._table
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {t} (
+                tenant_id TEXT NOT NULL DEFAULT '{DEFAULT_TENANT}',
+                id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                text TEXT NOT NULL,
+                metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                embedding vector({self._dim}),
+                indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
+                PRIMARY KEY (tenant_id, id)
+            )
+            """
+        )
+        self._migrate_to_tenanted(conn)
+        actual_dim = conn.execute(
+            "SELECT atttypmod FROM pg_attribute "
+            "WHERE attrelid = %s::regclass AND attname = 'embedding'",
+            (t,),
+        ).fetchone()[0]
+        if actual_dim > 0 and actual_dim != self._dim:
+            raise ValueError(
+                f"table {t!r} has a vector({actual_dim}) embedding column but this store is "
+                f"configured for dim {self._dim} — use a matching embedder or a different "
+                f"table (drop and re-index for a clean slate)."
+            )
+        # CONCURRENTLY: `ensure_schema` is not just a bootstrap step — it runs every time a
+        # store is opened, including against a table that already exists and is taking live
+        # writes (e.g. a server restart). A plain `CREATE INDEX` takes a lock that blocks
+        # writers for as long as the build takes, which for the HNSW index on a real corpus is
+        # minutes, not milliseconds. `CONCURRENTLY` builds the index without that lock (a small
+        # number of exclusive locks at the very start/end only). This is safe here because
+        # `_op` runs on an autocommit connection (see `_connect_kwargs`) and, unlike
+        # `replace_sources`/`upsert`, is never wrapped in `conn.transaction()` — every
+        # statement in this method is already its own implicit transaction, which is the one
+        # precondition `CREATE INDEX CONCURRENTLY` has (Postgres refuses it inside an explicit
+        # transaction block). Verified directly against the container: back-to-back
+        # `CREATE INDEX CONCURRENTLY IF NOT EXISTS` calls on this same autocommit-connection
+        # shape all complete and land `indisvalid = true`.
+        #
+        # Trade-off accepted, not hidden: if the process is killed mid-build, Postgres can
+        # leave an INVALID index behind, and `IF NOT EXISTS` treats that name as "already
+        # there" on the next `ensure_schema()` — it will not retry the build. A plain
+        # `CREATE INDEX` cannot fail this way (it is one transaction: abort undoes it), so this
+        # trades a low-probability manual-cleanup case (`DROP INDEX <name>` then re-run) for
+        # not blocking writers on every restart. `check_rls_effective`-style tooling could
+        # detect an invalid index the same way; not added here to keep this change scoped to
+        # issue #11's checkbox.
+        conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_tsv_idx ON {t} USING GIN (tsv)")
+        conn.execute(
+            f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_emb_idx ON {t} "
+            f"USING hnsw (embedding vector_cosine_ops)"
+        )
+        # The vector and full-text indexes cover the two retrieval legs; these cover the
+        # rest of the hot path, each of which was a sequential scan growing with the corpus:
+        #   indexed_at — `newest_indexed_at()` runs a max() on EVERY search; a DESC index
+        #                turns it into a one-row backward scan.
+        #   source     — a source-filtered search cannot use HNSW without it, and
+        #                replace_sources/delete_sources match `source = ANY(...)` per re-index.
+        #   file       — the supersession map groups on metadata->>'file'.
+        conn.execute(
+            f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_indexed_at_idx ON {t} (indexed_at DESC)"
+        )
+        conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_source_idx ON {t} (source)")
+        conn.execute(
+            f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_file_idx ON {t} ((metadata->>'file'))"
+        )
+        # Every hot-path predicate leads with tenant_id, so it leads the index too.
+        conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_tenant_idx ON {t} (tenant_id)")
+        self._enable_rls(conn)
 
     def _migrate_to_tenanted(self, conn: "psycopg.Connection") -> None:
         """Add `tenant_id` to a table created before tenancy existed, idempotently.
@@ -523,26 +555,44 @@ class PgVectorStore:
 
         Existing rows are assigned to `DEFAULT_TENANT`, so an upgrade is invisible to a
         single-tenant deployment: the store's default tenant is the same value.
+
+        Runs as ONE transaction, and its "already done?" check is the KEY, not the column. Both
+        matter for the same reason: the migration is three ALTERs, and on an autocommit connection
+        each commits separately. Interrupted after the DROP CONSTRAINT — a crash, a restart, a
+        cancelled statement — the table is left with `tenant_id` but no primary key, and a check
+        that only looked for the column would report the migration complete forever after. Every
+        later `upsert` then fails on `ON CONFLICT (tenant_id, id)` with no matching constraint.
+        DDL is transactional in Postgres (unlike the CONCURRENTLY builds in the caller), so the
+        whole migration can simply be atomic.
         """
         t = self._table
+        # Resolve through `search_path` (`%s::regclass`) rather than matching a bare table_name
+        # across every visible schema: with a same-named table in another schema, an
+        # information_schema lookup answers about the WRONG relation and skips the migration on
+        # the real one. Every ALTER below resolves via search_path, so the check must too.
         has_tenant = conn.execute(
-            "SELECT 1 FROM information_schema.columns "
-            "WHERE table_name = %s AND column_name = 'tenant_id'",
+            "SELECT 1 FROM pg_attribute "
+            "WHERE attrelid = %s::regclass AND attname = 'tenant_id' AND NOT attisdropped",
             (t,),
         ).fetchone()
-        if has_tenant:
-            return
-        conn.execute(
-            f"ALTER TABLE {t} ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '{DEFAULT_TENANT}'"
-        )
         pkey = conn.execute(
-            "SELECT conname FROM pg_constraint "
+            "SELECT conname, array_length(conkey, 1) FROM pg_constraint "
             "WHERE conrelid = %s::regclass AND contype = 'p'",
             (t,),
         ).fetchone()
-        if pkey:
-            conn.execute(f'ALTER TABLE {t} DROP CONSTRAINT "{pkey[0]}"')
-        conn.execute(f"ALTER TABLE {t} ADD PRIMARY KEY (tenant_id, id)")
+        # Done only when BOTH halves landed: the column exists AND the key is the composite one.
+        if has_tenant and pkey and pkey[1] == 2:
+            return
+
+        with conn.transaction():
+            if not has_tenant:
+                conn.execute(
+                    f"ALTER TABLE {t} ADD COLUMN tenant_id TEXT NOT NULL "
+                    f"DEFAULT '{DEFAULT_TENANT}'"
+                )
+            if pkey:
+                conn.execute(f'ALTER TABLE {t} DROP CONSTRAINT "{pkey[0]}"')
+            conn.execute(f"ALTER TABLE {t} ADD PRIMARY KEY (tenant_id, id)")
 
     def _enable_rls(self, conn: "psycopg.Connection") -> None:
         """Enforce tenant isolation in the DATABASE, not only in this class's WHERE clauses.
@@ -561,15 +611,52 @@ class PgVectorStore:
         `check_rls_effective()`.
         """
         t = self._table
-        conn.execute(f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY")
-        conn.execute(f"ALTER TABLE {t} FORCE ROW LEVEL SECURITY")
-        # CREATE POLICY has no IF NOT EXISTS before PG 15's ... it still doesn't; drop first.
-        conn.execute(f"DROP POLICY IF EXISTS {t}_tenant_isolation ON {t}")
-        conn.execute(
-            f"CREATE POLICY {t}_tenant_isolation ON {t} "
-            f"USING (tenant_id = current_setting('{TENANT_GUC}', true)) "
-            f"WITH CHECK (tenant_id = current_setting('{TENANT_GUC}', true))"
-        )
+        policy = f"{t}_tenant_isolation"
+        # Check before altering. `ensure_schema` runs on EVERY store open — including once per
+        # tenant in the MCP server's registry — and these are ALTER-TABLE-class statements that
+        # take ACCESS EXCLUSIVE whether or not the state is already correct, so an unconditional
+        # version serialises the whole table against every concurrent reader on a routine open.
+        # The DROP/CREATE pair is worse than slow: `CREATE POLICY` still has no `IF NOT EXISTS`,
+        # so the old code dropped first — and on an autocommit connection those are two separate
+        # commits, leaving a window in which the table has RLS FORCEd with NO policy. A query
+        # from another tenant landing in that window matches nothing and returns zero rows, which
+        # the trust layer reports as an ordinary "no memories found" rather than an error.
+        state = conn.execute(
+            "SELECT c.relrowsecurity, c.relforcerowsecurity, "
+            "       (SELECT pg_get_expr(p.polqual, p.polrelid) FROM pg_policy p "
+            "        WHERE p.polrelid = c.oid AND p.polname = %s), "
+            "       (SELECT pg_get_expr(p.polwithcheck, p.polrelid) FROM pg_policy p "
+            "        WHERE p.polrelid = c.oid AND p.polname = %s) "
+            "FROM pg_class c WHERE c.oid = %s::regclass",
+            (policy, policy, t),
+        ).fetchone()
+        using_expr, check_expr = (state[2], state[3]) if state else (None, None)
+        rls_on, rls_forced = (state[0], state[1]) if state else (False, False)
+
+        if not rls_on:
+            conn.execute(f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY")
+        if not rls_forced:
+            conn.execute(f"ALTER TABLE {t} FORCE ROW LEVEL SECURITY")
+
+        # Compare the policy's DEFINITION, not merely its name. Checking only for existence
+        # would make this stop being self-healing: a policy whose predicate had been altered —
+        # by hand, by a migration, by an older version of this code — would be left in place
+        # because something with the right name was there, and a changed predicate here is a
+        # changed isolation boundary. `pg_get_expr` renders both sides in Postgres' own
+        # normalised form, so the comparison is against what the server actually stores.
+        want = f"(tenant_id = current_setting('{TENANT_GUC}'::text, true))"
+        if using_expr != want or check_expr != want:
+            # DROP + CREATE in ONE transaction. Separately committed (this connection is
+            # autocommit) they leave a window in which the table has RLS FORCEd and no policy,
+            # during which every concurrent query returns zero rows — which the trust layer
+            # reports as an ordinary "no memories found" rather than an error.
+            with conn.transaction():
+                conn.execute(f"DROP POLICY IF EXISTS {policy} ON {t}")
+                conn.execute(
+                    f"CREATE POLICY {policy} ON {t} "
+                    f"USING (tenant_id = current_setting('{TENANT_GUC}', true)) "
+                    f"WITH CHECK (tenant_id = current_setting('{TENANT_GUC}', true))"
+                )
 
     def check_rls_effective(self) -> bool:
         """True when row-level security actually constrains THIS connection's role.
@@ -785,13 +872,16 @@ class PgVectorStore:
         if not sources:
             return 0
         self._supersession_cache = None
-        cur = self._with_retry(
+        # Read `rowcount` INSIDE the borrow, not from an escaped cursor: in pooled mode
+        # `_with_retry` returns from within `with self._pool.connection()`, so a returned cursor
+        # outlives its lease and belongs to a connection another thread may already hold.
+        return self._with_retry(
             lambda conn: conn.execute(
                 f"DELETE FROM {self._table} WHERE tenant_id = %s AND source = ANY(%s)",
                 (self._tenant, sources),
-            )
+            ).rowcount
+            or 0
         )
-        return cur.rowcount or 0
 
     def touch_files(self, files: list[str]) -> int:
         """Reset ``indexed_at`` to now() for every chunk whose metadata file name matches.
@@ -804,14 +894,15 @@ class PgVectorStore:
         """
         if not files:
             return 0
-        cur = self._with_retry(
+        # rowcount read inside the borrow — see `delete_sources` for why.
+        return self._with_retry(
             lambda conn: conn.execute(
                 f"UPDATE {self._table} SET indexed_at = now() "
                 f"WHERE tenant_id = %s AND metadata->>'file' = ANY(%s)",
                 (self._tenant, files),
-            )
+            ).rowcount
+            or 0
         )
-        return cur.rowcount or 0
 
     def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
         """The supersession relation: ``(edges, unresolved)``.

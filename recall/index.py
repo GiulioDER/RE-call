@@ -367,13 +367,21 @@ class Indexer:
     def _prune_vanished(self, root: Path, files: list[Path], known: dict[str, str]) -> int:
         """Delete rows for files that are gone from disk, scoped to `root`.
 
-        The glob only lists files that still EXIST, so a deleted file was never replaced and
-        never removed: its chunks stayed indexed forever. That is not a performance bug — the
-        trust layer went on serving a deleted memory with verdict `ok`.
+        A deleted file is never replaced and never removed: its chunks stay indexed forever. That
+        is not a performance bug — the trust layer goes on serving a deleted memory with verdict
+        `ok`.
 
         Scoped to the indexed root, because `source` is an absolute path and a corpus may be
         indexed in several roots; pruning everything absent from THIS glob would delete the
         others' rows on every run.
+
+        "Gone from disk" is checked against the disk, not inferred from absence from `files`.
+        Those are different questions: `files` is what THIS run's glob matched, and the glob
+        varies between runs on one root (`--glob '**/*.py'` for code, the default for markdown,
+        sharing a table because `--table` defaults to the same name). Inferring deletion from a
+        set difference deletes the other glob's rows, and the fraction guard below does not catch
+        it whenever those rows are a minority of the corpus. A file the scan merely could not
+        reach — an unreadable directory, a symlink outside the root — is likewise not a deletion.
         """
         def under_root(source: str) -> bool:
             try:
@@ -381,11 +389,17 @@ class Indexer:
             except (OSError, ValueError):  # pragma: no cover - unparsable stored path
                 return False
 
+        def gone_from_disk(source: str) -> bool:
+            try:
+                return not Path(source).exists()
+            except OSError:  # pragma: no cover - unstattable path: treat as present, never delete
+                return False
+
         present = {str(f) for f in files}
         # One pass, one definition of "under this root". The guard below divides by this set, so
         # computing it a second way is how the numerator and denominator drift apart.
         indexed_here = [s for s in known if under_root(s)]
-        vanished = [s for s in indexed_here if s not in present]
+        vanished = [s for s in indexed_here if s not in present and gone_from_disk(s)]
         if not vanished:
             return 0
 

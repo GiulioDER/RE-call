@@ -9,7 +9,8 @@ from recall.calibration import Calibration, from_samples, load_for, save
 from recall.embeddings import HashingEmbedder
 from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
 from recall.lint import DEFAULT_GLOB
-from recall.store import PgVectorStore, warn_if_insecure_dsn
+from recall.observability import configure_logging
+from recall.store import DEFAULT_TENANT, PgVectorStore, warn_if_insecure_dsn
 from recall.trust import trusted_search
 from recall.types import TrustedResult
 
@@ -58,6 +59,9 @@ def _run_queries(
 def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):  # clean UTF-8 output on Windows consoles
         sys.stdout.reconfigure(encoding="utf-8")
+    # Without this the library's loggers have no handler, so every _log.info is discarded — which
+    # is how `index` came to prune rows while printing nothing about it.
+    configure_logging()
     parser = argparse.ArgumentParser(prog="recall")
     parser.add_argument("--dsn", default=DEFAULT_DSN)
     parser.add_argument("--embedder", default="fastembed", choices=["fastembed", "hashing"])
@@ -65,6 +69,12 @@ def main(argv: list[str] | None = None) -> None:
         "--table", default="chunks",
         help="table to read/write (default: chunks). Use a throwaway name to keep an "
              "experiment out of your real memory index.",
+    )
+    parser.add_argument(
+        "--tenant", default=DEFAULT_TENANT,
+        help=f"tenant namespace to operate on (default: {DEFAULT_TENANT}). Every command is "
+             f"scoped to one tenant; `forget` in particular deletes nothing outside it, so an "
+             f"erasure request against another tenant needs this flag.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -244,7 +254,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "index":
         chunker = chunk_code if args.glob.endswith(".py") else chunk_text
-        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table) as store:
+        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
             store.ensure_schema()
             indexer = Indexer(store, embedder, chunker=chunker, allow_prune=args.allow_prune)
             try:
@@ -252,9 +262,18 @@ def main(argv: list[str] | None = None) -> None:
             except PruneGuardTripped as exc:
                 # The message carries the recovery instructions; a traceback would bury them.
                 raise SystemExit(str(exc)) from exc
-            print(f"indexed {stats.chunks} chunks from {stats.files} files")
+            # `files` counts what was RE-indexed, not what is in the index, so an unchanged
+            # re-run reports 0/0 — which reads as "the index is empty" unless `skipped` is shown
+            # beside it. `deleted` matters more: pruning is the destructive half of `index`, and
+            # reporting it only through a log record meant a deletion could happen in silence.
+            summary = f"indexed {stats.chunks} chunks from {stats.files} files"
+            if stats.skipped:
+                summary += f", {stats.skipped} unchanged"
+            if stats.deleted:
+                summary += f", pruned {stats.deleted} source(s) no longer on disk"
+            print(summary)
     elif args.cmd == "forget":
-        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table) as store:
+        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
             store.ensure_schema()
             requested = list(dict.fromkeys(args.sources))
             existing = store.source_content_hashes()
@@ -277,14 +296,14 @@ def main(argv: list[str] | None = None) -> None:
             from recall.entailment import QnliEntailmentJudge
 
             entail_judge = QnliEntailmentJudge()
-        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table) as store:
+        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
             store.ensure_schema()
             _print_result(
                 trusted_search(store, embedder, args.query, k=args.k, calibration=calibration,
                                entailment=entail_judge)
             )
     elif args.cmd == "demo":
-        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table) as store:
+        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
             store.ensure_schema()
             stats = Indexer(store, embedder).index_path("corpus")
             print(f"indexed {stats.chunks} chunks from {stats.files} files\n")
@@ -297,7 +316,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "code":
         # index recall's own package source (content-agnostic engine, code-aware chunking)
         src = Path(__file__).resolve().parent
-        with PgVectorStore(args.dsn, dim=embedder.dim, table="recall_code") as store:
+        with PgVectorStore(args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant) as store:
             store.ensure_schema()
             stats = Indexer(store, embedder, chunker=chunk_code).index_path(src, glob="**/*.py")
             print(f"indexed {stats.chunks} code chunks from {stats.files} files\n")

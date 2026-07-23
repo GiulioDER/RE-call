@@ -151,6 +151,68 @@ def test_another_corpus_under_a_different_root_cannot_dilute_the_fraction(tmp_pa
 
 
 # --------------------------------------------------------------------------------------------
+# "Gone from disk" must mean gone from disk
+# --------------------------------------------------------------------------------------------
+
+
+@requires_db
+def test_a_file_excluded_by_this_run_s_glob_is_not_treated_as_deleted(tmp_path, store):
+    """A narrower glob must not delete what a wider one indexed.
+
+    The prune asked "is this source in the set the current glob matched?" and read "no" as
+    "deleted from disk". Those are different questions the moment `--glob` varies between runs on
+    one root — an advertised workflow (`--glob`'s own help offers `'**/*.py'` for code), and the
+    two globs share a table because `--table` defaults to the same name for every invocation.
+
+    The guard does not catch this: the .py sources are a minority of the corpus, so the fraction
+    stays under the threshold and the deletion is silent, exit code 0.
+    """
+    d = tmp_path / "mixed"
+    d.mkdir()
+    for i in range(PRUNE_GUARD_MIN_SOURCES + 15):
+        (d / f"memo{i}.md").write_text(f"memory number {i}\n", encoding="utf-8")
+    for i in range(PRUNE_GUARD_MIN_SOURCES + 1):
+        (d / f"mod{i}.py").write_text(f"# module {i}\n", encoding="utf-8")
+
+    Indexer(store, _E()).index_path(d, glob="**/*")
+    before = store.count()
+    py_sources = {s for s in store.source_content_hashes() if s.endswith(".py")}
+    assert py_sources, "fixture failed to index the .py files"
+
+    # Re-index the same root with the default markdown glob. Every .py file is still on disk.
+    stats = Indexer(store, _E()).index_path(d)
+
+    assert stats.deleted == 0, "pruned files that are still on disk"
+    assert store.count() == before
+    assert {s for s in store.source_content_hashes() if s.endswith(".py")} == py_sources
+
+
+@requires_db
+def test_a_genuinely_deleted_file_is_still_pruned_under_a_narrower_glob(tmp_path, store):
+    """The control for the test above: don't fix the false positive by pruning nothing.
+
+    Same shape — a wide glob then a narrow one — except one .py file is really unlinked. It must
+    still go, or the fix has simply disabled the feature for mixed corpora.
+    """
+    d = tmp_path / "mixed"
+    d.mkdir()
+    for i in range(PRUNE_GUARD_MIN_SOURCES + 15):
+        (d / f"memo{i}.md").write_text(f"memory number {i}\n", encoding="utf-8")
+    for i in range(PRUNE_GUARD_MIN_SOURCES + 1):
+        (d / f"mod{i}.py").write_text(f"# module {i}\n", encoding="utf-8")
+
+    Indexer(store, _E()).index_path(d, glob="**/*")
+    before = store.count()
+
+    (d / "mod0.py").unlink()
+    stats = Indexer(store, _E()).index_path(d)
+
+    assert stats.deleted == 1
+    assert store.count() < before
+    assert not any(s.endswith("mod0.py") for s in store.source_content_hashes())
+
+
+# --------------------------------------------------------------------------------------------
 # The env override — no database needed
 # --------------------------------------------------------------------------------------------
 
