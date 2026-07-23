@@ -3,11 +3,46 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "recall"
+# DISTRIBUTION name `recall-rag`; IMPORT name stays `recall`. They differ because `recall` on PyPI
+# is taken — by an unrelated Python-2-era RPC framework whose only release is from 2014
+# (https://pypi.org/project/recall/). It is not coming back, but the name is not reclaimable.
+#
+# `re-call` was the intended name and cannot be registered either: PyPI's typosquat-similarity
+# guard collapses separators, so `re-call` normalises to `recall` and is rejected as "too similar
+# to an existing project" — a stricter check than the exact-name availability that the `/simple/`
+# index reports. `recall-rag` adds a distinguishing token (it collapses to `recallrag`, not
+# `recall`), which clears the guard while keeping the `recall` identity in the name.
+#
+# ⚠️ The consequence of sharing the IMPORT name, stated because it bites at import time rather than
+# at install time: the squatting `recall` distribution ALSO provides a top-level `recall` module,
+# so installing both into one environment gives two distributions writing the same import path, and
+# whichever installed last wins. Nothing detects it. Install `recall-rag`, never `recall`.
+name = "recall-rag"
 version = "0.5.0"
-description = "Retrieval-Augmented Self-Recall for long-running agents (pgvector)"
+description = "Trustworthy retrieval for an AI agent's own memory — verdict, confidence and provenance per hit, or an explicit abstention"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Giulio D'Erme" }]
+keywords = [
+    "rag", "retrieval-augmented-generation", "agent-memory", "pgvector", "postgresql",
+    "hybrid-search", "vector-search", "reranking", "mcp", "model-context-protocol",
+    "abstention", "calibration", "llm-agents",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Database",
+    "Topic :: Text Processing :: Indexing",
+    "Typing :: Typed",
+]
+
 dependencies = [
     "psycopg[binary]>=3.3.4",
     # >=0.4, not >=0.3: `from pgvector import Vector` (recall/store.py) is a top-level export that
@@ -40,7 +75,21 @@ eval = ["matplotlib>=3.7"]
 finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
 # pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
 # failing it — a hung CI job reads as "still running", not as a regression.
-dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.5", "mcp>=1.27.2", "psycopg-pool>=3.2"]
+dev = [
+    "pytest>=8", "pytest-timeout>=2.3", "pytest-cov>=5", "ruff>=0.5",
+    "mcp>=1.27.2", "psycopg-pool>=3.2",
+]
+
+# Declared LAST among the `[project]` sub-tables: every bare key above (`dependencies`,
+# `classifiers`, …) belongs to `[project]`, and opening a sub-table earlier would silently
+# reparent whatever followed it.
+[project.urls]
+Homepage = "https://github.com/GiulioDER/RE-call"
+Source = "https://github.com/GiulioDER/RE-call"
+Issues = "https://github.com/GiulioDER/RE-call/issues"
+Changelog = "https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md"
+"Evaluation findings" = "https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md"
+"Security policy" = "https://github.com/GiulioDER/RE-call/blob/master/SECURITY.md"
 
 [project.scripts]
 recall = "recall.cli:main"
@@ -65,3 +114,44 @@ timeout_method = "thread"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+# Static typing. 81% of this package's functions already carried a return annotation before this
+# section existed, and nothing checked any of them — which is the state where the annotations are
+# documentation rather than a constraint, and where documentation drifts. Turning the checker on
+# found one real defect (`RECALL_TRANSPORT` was an unvalidated env string flowing into a
+# `Literal`-typed SDK parameter) and one latent crash (`ensure_schema` indexed a `None` row when
+# pointed at an existing non-recall table).
+#
+# `disallow_untyped_defs` rather than a permissive baseline: a partially-checked package silently
+# stops checking wherever an annotation is missing, so the gate would pass while shrinking.
+# No `python_version` pin. Setting it to the 3.11 floor makes mypy parse every installed stub at
+# 3.11 too, and numpy's stubs use 3.12 `type` syntax — a hard parse error that no per-module
+# override suppresses, so the gate would fail on a dependency's stub rather than on this code.
+# The floor is checked where it is actually meaningful: the `floor` CI job RUNS the suite on
+# 3.11 with the declared minimum of every direct dependency.
+[tool.mypy]
+files = ["recall", "recall_mcp"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+
+# Optional extras, absent from the type-check job by design: their absence is what proves the
+# import guards work, and installing torch to type-check a 40-line reranker is not a trade worth
+# making. `follow_imports = skip` rather than plain `ignore_missing_imports` so the result does
+# NOT depend on whether the extra happens to be installed — a local run with `[fastembed]` and a
+# CI run without it must agree, or the gate is advisory.
+[[tool.mypy.overrides]]
+module = [
+    "fastembed.*",
+    "voyageai.*",
+    "sentence_transformers.*",
+    "matplotlib.*",
+    "datasets.*",
+    # Transitive of the extras above and of pgvector; never imported by this package directly.
+    "numpy.*",
+]
+ignore_missing_imports = true
+follow_imports = "skip"

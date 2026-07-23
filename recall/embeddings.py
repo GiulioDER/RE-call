@@ -6,7 +6,11 @@ import os
 import random
 import time
 from collections.abc import Callable, Iterator
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypeVar, runtime_checkable
+
+#: Return type of the callable `retry_with_backoff` wraps — it hands back whatever `fn` returns,
+#: so the retry is transparent to the caller's type rather than widening it to `object`.
+_R = TypeVar("_R")
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -31,14 +35,14 @@ def _is_transient(exc: Exception) -> bool:
 
 
 def retry_with_backoff(
-    fn: Callable[[], object],
+    fn: Callable[[], _R],
     *,
     attempts: int = 3,
     base_delay: float = 0.5,
     max_delay: float = 8.0,
     is_transient: Callable[[Exception], bool] = _is_transient,
     sleep: Callable[[float], None] = time.sleep,
-):
+) -> _R:
     """Call ``fn()`` with exponential backoff, retrying only transient failures.
 
     Re-raises immediately for a non-transient error, and re-raises the last error after

@@ -29,7 +29,7 @@ from __future__ import annotations
 import threading
 
 from recall.observability import get_logger
-from recall.store import PgVectorStore
+from recall.store import DEFAULT_TABLE, PgVectorStore
 
 _log = get_logger("mcp.stores")
 
@@ -91,14 +91,16 @@ class StoreRegistry:
             store = self._stores.get(tenant)
             if store is None:
                 _log.info("opening store for tenant %r", tenant)
-                kwargs = {"table": self._table} if self._table else {}
+                # `table=` passed explicitly rather than splatted from a conditional dict: a
+                # `**kwargs` here is opaque to a type checker, so a wrong name or type in it
+                # would only surface as a TypeError at the first tenant open.
                 store = PgVectorStore(
                     self._dsn,
                     dim=self._dim,
+                    table=self._table or DEFAULT_TABLE,
                     tenant=tenant,
                     pool_size=self._pool_size,
                     statement_timeout_ms=self._statement_timeout_ms,
-                    **kwargs,
                 )
                 try:
                     store.ensure_schema()

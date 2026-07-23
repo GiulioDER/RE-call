@@ -32,16 +32,19 @@ import uuid
 from pathlib import Path
 
 from recall.calibration import from_samples
+from recall.embeddings import Embedder
+from recall.eval.bm25 import BM25Retriever
 from recall.eval.metrics import wilson_ci
 from recall.index import Indexer
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
+from recall.types import RetrievalResult, TrustedResult
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 
 
-def _make_embedder(name: str):
+def _make_embedder(name: str) -> Embedder:
     if name == "hashing":
         from recall.embeddings import HashingEmbedder
 
@@ -61,7 +64,7 @@ def _make_embedder(name: str):
     return FastEmbedEmbedder()
 
 
-def _files_of(result) -> list[str]:
+def _files_of(result: RetrievalResult | TrustedResult) -> list[str]:
     """Distinct source files behind a result's hits, best rank first."""
     out: list[str] = []
     for h in result.hits:
@@ -80,7 +83,7 @@ def _rate(flags: list[bool]) -> dict:
     }
 
 
-def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder, k: int = 5,
+def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, k: int = 5,
              rerank: bool = False, glob: str = "**/*.md") -> dict:
     answerable = [q for q in questions if q.get("answerable")]
     unanswerable = [q for q in questions if not q.get("answerable")]
@@ -111,7 +114,7 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder, k: int = 5
 
         answerable_held = [x for x in held if x.get("answerable")]
 
-        def score_arm(retriever) -> dict:
+        def score_arm(retriever: BM25Retriever | HybridRetriever) -> dict:
             hits, reciprocal, latency, misses = [], [], [], []
             for q in answerable_held:
                 t = time.perf_counter()
@@ -138,7 +141,19 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder, k: int = 5
                 "misses": misses,
             }
 
-        arms = {"hybrid": score_arm(retr)}
+        # Every arm runs against the SAME index, the same held-out questions and the same
+        # calibration — only the ranking stage differs, so a delta is attributable.
+        #
+        # The three baselines are not decoration. `hybrid` on its own is a number with nothing
+        # to compare it to; a reader cannot tell whether the embedding stack earned it or
+        # whether keyword matching alone would have. BM25 is the thirty-year-old anchor, and
+        # dense-only / sparse-only say which leg of the hybrid is carrying it.
+        arms = {
+            "bm25": score_arm(BM25Retriever(store)),
+            "dense": score_arm(HybridRetriever(store, embedder, use_sparse=False)),
+            "sparse": score_arm(HybridRetriever(store, embedder, use_dense=False)),
+            "hybrid": score_arm(retr),
+        }
         if rerank:
             # Same index, same questions, same calibration — only the ranking stage differs, so
             # any delta is the reranker's and nothing else's.

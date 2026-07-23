@@ -23,6 +23,8 @@ ring of recent samples so a long-running process cannot grow without limit.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from typing import TextIO
 import logging
 import math
 import os
@@ -70,7 +72,9 @@ _DEFAULT_LEVEL = "INFO"
 _LOG_FORMATS = frozenset({"text", "json"})
 
 
-def configure_logging(level: str | None = None, fmt: str | None = None, stream=None) -> None:
+def configure_logging(
+    level: str | None = None, fmt: str | None = None, stream: "TextIO | None" = None
+) -> None:
     """Attach ONE handler to the `recall` logger. Opt-in, for entry points only.
 
     Reads `RECALL_LOG_LEVEL` (default INFO) and `RECALL_LOG_FORMAT` (`text` or `json`).
@@ -145,7 +149,7 @@ class Metrics:
             samples.append(value)
 
     @contextmanager
-    def timer(self, name: str, **labels: str):
+    def timer(self, name: str, **labels: str) -> "Iterator[None]":
         """Record wall time in ms, INCLUDING when the body raises.
 
         A timer that only records on success hides exactly the slow path worth finding: the one

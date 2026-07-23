@@ -37,6 +37,15 @@ class HybridRetriever:
       max_age:       index age beyond which results are flagged stale.
       candidate_k:   how many candidates each of dense/sparse contributes before fusion.
       use_sparse:    include the sparse full-text leg in fusion; False = dense-only (ablations).
+      use_dense:     include the dense vector leg in fusion; False = sparse-only (ablations).
+
+    ``use_dense=False`` is an ABLATION SWITCH, not a serving mode. The query is still embedded
+    (the sparse leg reports each hit's true cosine), but `gap_warning` is computed from the
+    DENSE candidate scores, and with no dense leg there are none — so it fires on every query,
+    because `gap_warning` treats an empty candidate set as a gap. That is the fail-closed
+    direction and it is deliberate, but it makes the flag uninformative on this arm: it means
+    "no dense evidence was gathered", not "the corpus lacks an answer". Ablation results should
+    read the hits, not the warning.
     """
 
     def __init__(
@@ -49,7 +58,10 @@ class HybridRetriever:
         max_age: timedelta = timedelta(days=2),
         candidate_k: int = 20,
         use_sparse: bool = True,
+        use_dense: bool = True,
     ) -> None:
+        if not (use_dense or use_sparse):
+            raise ValueError("at least one of use_dense / use_sparse must be True")
         self._store = store
         self._embedder = embedder
         self._reranker = reranker
@@ -57,6 +69,7 @@ class HybridRetriever:
         self._max_age = max_age
         self._candidate_k = candidate_k
         self._use_sparse = use_sparse
+        self._use_dense = use_dense
 
     def search(self, query: str, k: int = 5, source: str | None = None) -> RetrievalResult:
         """Retrieve the top-`k` chunks for `query` (optionally filtered to one `source`).
@@ -71,7 +84,11 @@ class HybridRetriever:
         if k < 1:
             raise ValueError("k must be >= 1")
         qvec = self._embedder.embed([query])[0]
-        dense = self._store.query_dense(qvec, k=self._candidate_k, source=source)
+        dense = (
+            self._store.query_dense(qvec, k=self._candidate_k, source=source)
+            if self._use_dense
+            else []
+        )
         sparse = (
             self._store.query_sparse(query, k=self._candidate_k, source=source, vec=qvec)
             if self._use_sparse

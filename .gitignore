@@ -2,13 +2,20 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
 *.egg-info/
 build/
 dist/
 .venv/
+.venv-ci/
 .env
 finetune/model*/
 calibration.json
 .claude/
 results/scale*/corpus/
 results/scale*/.recall-synthetic
+
+# LOCOMO benchmark data — fetched on demand, not vendored (see recall/eval/locomo.py)
+locomo10.json
