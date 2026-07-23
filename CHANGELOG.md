@@ -8,6 +8,20 @@ dates — this project does not currently tag releases.
 ## [Unreleased]
 
 ### Added
+- **A prune guard on re-index** (`recall/index.py`). Re-indexing removes rows for files gone from
+  disk; that made `recall index` quietly destructive when a corpus was *missing* rather than
+  deleted — an unmounted volume, an interrupted sync, a path that still resolves. It now raises
+  `PruneGuardTripped` and deletes nothing when a re-index would remove **50% or more** of the
+  sources under that root (`RECALL_MAX_PRUNE_FRACTION`, default `0.5`), above a floor of 5 indexed
+  sources where a fraction starts to mean anything. Confirm the files really are gone, then re-run
+  with `--allow-prune` (`Indexer(allow_prune=True)`).
+  - **`recall index` can now fail where it previously succeeded.** That is the point, but it is a
+    behaviour change for any scripted re-index.
+  - "Gone from disk" is now checked against the disk. It was inferred from absence from the
+    current run's glob, so re-indexing one root with a different `--glob` deleted the other glob's
+    rows — and the fraction guard missed it whenever they were a minority of the corpus.
+  - `recall index` reports unchanged and pruned counts, and the MCP `IndexResult` carries
+    `skipped` / `deleted`. Both were computed and then discarded, so a prune happened in silence.
 - **Authentication on the MCP HTTP transports** (`recall_mcp/auth.py`, `recall_mcp/stores.py`,
   [docs/AUTH.md](docs/AUTH.md)). Static bearer tokens map to a principal with a **tenant** and
   **scopes**; the tenant selects its own `PgVectorStore` and connection pool, so a principal
@@ -90,8 +104,10 @@ dates — this project does not currently tag releases.
   `ensure_schema()` migrates an existing table in place and assigns existing rows to the `default`
   tenant, so a single-tenant deployment upgrades without noticing.
 - Abstention threshold is fitted differently (mid-gap rather than the lowest answerable sample) —
-  abstains more, and more accurately: false-confidence on unanswerable queries drops from 0.205 to
-  0.000 for 1.5% of answerable queries.
+  abstains more, and more accurately: on the held-out sweep, false-confidence on unanswerable
+  queries drops from 0.205 to 0.045, costing an extra 0.7% of answerable queries (false-abstain
+  0.003 → 0.010). The shipped rule separately measured 0.000 gap FCR end to end, on a different
+  protocol — see FINDINGS §6 for both.
 - `supersedes:` matching is more tolerant — `name`, `name.md`, `[name]`, `[[name]]` now all resolve
   to the same document.
 - README rewritten for a technical reader, structured around what was actually measured.

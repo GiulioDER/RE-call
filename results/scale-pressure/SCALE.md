@@ -14,7 +14,7 @@ Generated corpus (`recall.eval.synthetic`), not the 14-document demo corpus. Rep
 | recall@5, `source`-filtered | 1.0000 [0.9812, 1.0000] (n=200) |
 | search latency p50 / p95 / p99 (ms) | 67.2 / 196.6 / 353.9 |
 
-The filtered arm restricts the query to the one source that holds the answer, so recall of 1.00 is the only correct result. A shortfall is HNSW post-filtering: the graph walk cannot see the `WHERE` clause, so it can fail to surface a row the table certainly contains.
+The filtered arm restricts the query to the one source that holds the answer, so recall of 1.00 is the only correct result. **It is also the only result this arm can produce, so do not read it as evidence about HNSW.** It scores the hybrid retriever, whose sparse leg is an exact `tsv @@ websearch_to_tsquery` scan — filter-aware and independent of the vector index — and every generated answerable document is a single chunk, so `source = ...` selects exactly one row. Degrading the ANN path arbitrarily leaves this number at 1.0000. HNSW recall under a `source` filter is measured directly against `query_dense` in `tests/test_hnsw_filtered_recall.py`, where it does collapse without tuning.
 
 ## Trust layer
 

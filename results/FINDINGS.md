@@ -188,7 +188,7 @@ bounded by the judge.** Full tables + arms:
 [docs/ENTAILMENT_SUPERSESSION_STUDY.md](../docs/ENTAILMENT_SUPERSESSION_STUDY.md) and the
 near-miss table in `RESULTS.md`.
 
-## 5. At scale: the headline rate holds — and the coverage it costs becomes visible
+## 5b. At scale: the headline rate holds — and the coverage it costs becomes visible
 
 §4's superseded-trust rate rests on **6** queries, so its 95% Wilson interval is **[0.00, 0.39]** —
 consistent with a working trust layer and with a mediocre one. `recall.eval.synthetic` generates the
@@ -202,42 +202,59 @@ embedder).
 | metric | rate | 95% Wilson | n |
 |---|---|---|---|
 | STR trust | 0.00 | **[0.00, 0.02]** | 250 |
-| trust coverage | 0.43 | [0.37, 0.49] | 250 |
-| successor accuracy | 0.55 | [0.47, 0.63] | 150 |
-| abstention accuracy | 0.92 | [0.85, 0.96] | 100 |
+| trust coverage | 1.00 | [0.98, 1.00] | 250 |
+| successor accuracy | 0.14 | [0.09, 0.20] | 150 |
+| abstention accuracy | 0.00 | [0.00, 0.04] | 100 |
 
 **The headline claim survives a 40× larger query set**: superseded-trust is 0.00 with the interval
 tightened from [0.00, 0.39] to [0.00, 0.02], against an STR baseline of 1.00 (plain search returns
 the stale memory *every time* on these adversarially-worded queries). That is the strongest
 evidence in this document, and it is now bounded rather than asserted.
 
-**But the coverage column changes the reading.** The trust layer returns no `ok` hit at all on
-**57%** of validity-sensitive queries, and when it does answer a supersession query it names the
-correct successor **55%** of the time. Demotion works; *promotion* is close to a coin flip. The
-0.00 is real and is partly bought with silence — precisely the trade the STR column alone cannot
-show, which is why coverage is now published beside it. Abstention accuracy (0.92) is genuinely
-good: when nothing valid exists, it does say so.
+**And it is not bought with silence.** Coverage is 1.00 — the trust layer answers every
+validity-sensitive query and still serves no stale memory as `ok`. Coverage is published beside
+STR precisely because a system that abstained its way to a perfect STR would be indistinguishable
+in the STR column alone. This one did not.
+
+**The successor and abstention columns measure the corpus, not the trust layer.** They read 0.14
+and 0.00, and on this corpus that is the expected reading rather than a regression — §6 explains
+why: every generated document is the same sentence with a different opaque token, so choosing
+between them tests whether an embedder can discriminate meaningless strings. Treat both as *not
+measured here*. STR, coverage, latency and index scale are unaffected, because supersession is a
+declared relation rather than a similarity judgement.
 
 **Arm B — index pressure** (`hashing-64`, 50,600 chunks, [SCALE.md](scale-pressure/SCALE.md)):
 
 | measurement | value |
 |---|---|
 | recall@5, unfiltered | 1.00 [0.98, 1.00] (n=200) |
-| recall@5, `source`-filtered | 1.00 [0.98, 1.00] (n=200) |
-| search latency p50 / p95 / p99 | 10.7 / 13.5 / 16.5 ms |
-| index throughput | 50,600 chunks in 126 s (~400 chunks/s) |
+| recall@5, `source`-filtered | 1.00 [0.98, 1.00] (n=200) — but see below |
+| search latency p50 / p95 / p99 | 67.2 / 196.6 / 353.9 ms |
+| index throughput | 50,600 chunks in 221.5 s (~228 chunks/s) |
 
-**A predicted failure that did not reproduce.** A `source`-filtered query pairs a `WHERE` clause
-with an HNSW `ORDER BY`, and the graph walk cannot see the predicate — the textbook post-filtering
-recall collapse. At 50k chunks, filtering to the single source holding the answer still returned it
-every time. The likely reason is that the `source` btree index makes an exact scan cheap enough for
-the planner to prefer it over the ANN path at this selectivity, which protects recall at the cost of
-the ANN speed-up. Not disproven in general — one corpus size, one selectivity, one embedder — but
-not observed here, and reported as such.
+**The predicted failure is real, and this arm cannot see it.** A `source`-filtered query pairs a
+`WHERE` clause with an HNSW `ORDER BY`, and the graph walk cannot see the predicate — the textbook
+post-filtering recall collapse. An earlier version of this section reported that it "did not
+reproduce" and offered a planner explanation. That conclusion was wrong twice over.
+
+It was wrong on the facts: measured directly against `query_dense` on 20,000 rows with a filter
+matching 10% of them, pgvector's defaults give **recall@10 0.38 with 40/40 queries truncated**
+below the requested `k`. It is now fixed — `hnsw.ef_search=200` + `hnsw.iterative_scan=relaxed_order`
+on the filtered path take it to ~0.90 with 0/40 truncated — and pinned by
+`tests/test_hnsw_filtered_recall.py`.
+
+And it was wrong on the method, which is the part worth keeping: **the 1.00 above is pinned by
+construction and could not have fallen.** This arm scores the filtered query through the *hybrid*
+retriever, whose sparse leg is an exact `tsv @@ websearch_to_tsquery` scan — filter-aware and
+index-independent — and every generated answerable document is a single chunk, so `source = ...`
+selects exactly one row. Degrade the ANN path arbitrarily and this number stays 1.0000. It measures
+that the row is findable, not that HNSW found it. A metric that cannot fail is not evidence, and
+reading it as evidence is what produced the retracted paragraph.
 
 **What this still does not cover:** a real-language corpus (the generated text is templated, so
-absolute retrieval quality is optimistic), the cloud embedder at scale, and any corpus large enough
-to push HNSW past the point where an exact scan is competitive.
+absolute retrieval quality is optimistic), the cloud embedder at scale, and a filtered-recall arm
+that actually isolates the ANN path — the fix above is verified by a dedicated unit test rather
+than by this end-to-end number.
 
 ## 6. The abstention threshold: measured, and rebuilt
 
@@ -381,6 +398,15 @@ Three readings, and none of them is a lever:
 3. **hit@50 plateaus at ~0.48–0.50 in every configuration.** For half the questions the right
    document is nowhere in the top *fifty*, whatever the chunking or the pool.
 
+> **Two caveats on this table, both about the pool.** The `candidate_k=100` sweep was run with an
+> ad-hoc script: the shipped runner (`python -m recall.eval.labelled`) constructs `HybridRetriever`
+> at its default `candidate_k=20` and exposes no flag for it, so re-running it reproduces the
+> 800-char row's hit@5 and hit@10 but not the sweep. And at that default each leg contributes 20
+> candidates, so the fused pool holds **at most 40** — a `hit@50` measured with the shipped runner
+> is arithmetically `hit@40`. Neither caveat disturbs reading 3 (the ceiling is already reached by
+> hit@20, and the pool sweep is precisely the thing that moved nothing), but the hit@50 column
+> should be read as "top ~40–50" rather than as a clean top-fifty.
+
 That last line is the finding. It is a **hard recall ceiling**, and it explains why the two things
 tried before it did so little: a reranker can only reorder what was retrieved, and a bigger pool
 can only add what the index can match. Both were working on the half of the problem that was
@@ -462,7 +488,9 @@ and the runner (`python -m recall.eval.labelled`) are.
 
 §7 measured voyage-3 nearly doubling hit@5 over bge-small and concluded the ceiling was the
 representation. That rested on **one** corpus, and a private one. This replicates it on an
-independent, fully public corpus — the **732 Python PEPs**: dense technical jargon, many authors,
+independent, fully public corpus — the **public Python PEP corpus** (746 files matched by
+`**/*.rst`, which is what the runner counts and what the table below reports): dense technical
+jargon, many authors,
 decades of drift, and heavy near-neighbour pressure (seven "Python X.Y Release Schedule"
 documents, multiple steering-council elections, whole families of typing and packaging proposals).
 110 hand-labelled questions ship in this repo, phrased away from every title.
