@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-572%20·%20real%20pgvector-brightgreen" alt="572 tests">
+  <img src="https://img.shields.io/badge/tests-584%20·%20real%20pgvector-brightgreen" alt="584 tests">
 </p>
 
 <p align="center">
@@ -175,6 +175,29 @@ and data egress. So the rule is conditional, not "buy the better embedder".
 Abstention accuracy is **1.00** on the PEPs for both embedders — the trust layer was never the
 bottleneck on either corpus.
 
+#### Against a baseline — because 0.705 means nothing on its own
+
+A hit@5 is only a result next to what a boring baseline scores on the *same* corpus, chunks and
+questions. So the runner now reports four arms, not one. On the PEPs, bge-small, 44 held-out
+answerable questions:
+
+| arm | hit@5 | MRR | p50 | reading |
+|---|---|---|---|---|
+| **BM25** (Okapi, untuned) | 0.455 [0.32, 0.60] | 0.313 | 150 ms | the thirty-year-old anchor |
+| sparse only (Postgres FTS) | 0.023 [0.00, 0.12] | 0.023 | 24 ms | near-useless alone on this corpus |
+| dense only (pgvector) | 0.682 [0.53, 0.80] | 0.483 | 31 ms | carries almost all of the result |
+| **hybrid** (dense + sparse + RRF) | **0.705** [0.56, 0.82] | 0.494 | 26 ms | the published number |
+
+Two things this makes honest that the single number could not. **The pipeline beats BM25 by
++0.25** (0.705 vs 0.455) — a real margin, not a rounding artifact, so the embedding stack is
+earning its keep. And **dense is doing the work**: hybrid's +0.023 over dense-alone is inside the
+interval, and the sparse leg scores 0.023 by itself, so on ordinary prose like the PEPs the
+fusion is barely moving the top-5 — its value is on the rare identifiers and error codes that a
+memory corpus has and this one does not. Stated as a margin over a baseline, "hybrid reaches
+0.705" becomes a measurement instead of an assertion. (The BM25 tokeniser has no stemming while
+the FTS leg does, so BM25 is mildly handicapped on morphology — noted in `recall/eval/bm25.py`;
+it does not move the +0.25 conclusion.)
+
 ```bash
 git clone --depth 1 https://github.com/python/peps
 python -m recall.eval.labelled --corpus peps/peps     --questions recall/eval/peps_questions.json --glob '**/*.rst'
@@ -203,6 +226,47 @@ validity window, calibrated confidence — before it reaches the agent. Validity
 in the memory itself (`supersedes: old_doc.md`, `valid_until: 2026-06-30`) — *authored, not inferred*,
 because a claim honoured as written is safe and a claim guessed at is not.
 
+## Prior art — and where this genuinely differs
+
+Agent memory is a crowded field. Everything below is Apache-2.0 and further along than this
+project; a claim to novelty has to survive them, so here is the comparison rather than an
+implication that the corner is empty.
+
+| | what it is | how it handles a fact that stopped being true | what it needs |
+|---|---|---|---|
+| **[Graphiti](https://github.com/getzep/graphiti)** (powers [Zep](https://github.com/getzep/zep)) | temporal knowledge-graph engine | bi-temporal validity windows; contradicted facts are **invalidated, not deleted** — **inferred by an LLM at ingestion** | a graph DB (Neo4j / FalkorDB / Neptune) + an LLM call per episode |
+| **[Mem0](https://github.com/mem0ai/mem0)** | memory layer (lib · self-host · cloud) | as of its 2026 redesign, **ADD-only** — no update or delete; memories accumulate and temporal reasoning happens at *retrieval* | an LLM for extraction; hybrid semantic + BM25 + entity linking |
+| **[Letta](https://github.com/letta-ai/letta)** (ex-MemGPT) | stateful-agent **runtime** | memory blocks + context management, at the agent layer | an agent runtime — a different layer entirely, not a retrieval library |
+| **[LangMem](https://langchain-ai.github.io/langmem/)** | memory-management toolkit | not addressed in its docs | pairs with LangGraph, though not required |
+| **RE-call** | retrieval library over Postgres | validity **declared by the author** in frontmatter (`supersedes:`, `valid_until:`), enforced as a post-processing layer | PostgreSQL + pgvector. No LLM in the retrieval path, no graph DB |
+
+**The one real difference is who decides that a memory is stale.** Graphiti infers it; RE-call
+requires the author to have written it down. That is not obviously the better choice, and this
+repo has the measurement that shows the cost: on the reference corpus, **2 of 792** memos declared
+`supersedes:` while **60** closed a decision only in prose. Authored edges are trustworthy and
+have terrible coverage.
+
+It also has the measurement that argues for it. `recall lint --fix` was built to close that gap by
+inference and, after review, could safely declare **zero** of those 60
+([#29](https://github.com/GiulioDER/RE-call/issues/29)) — narrating vs declaring, part vs whole,
+augmenting vs replacing are invisible to a pattern and obvious to the author. An LLM will do
+better than a regex there. It will not do *reliably* better, and this library's whole thesis is
+that a confidently wrong supersession is worse than a missing one. So the honest statement is a
+trade, not a win: **RE-call buys precision on the edges it has, and pays for it in coverage.**
+
+Two further differences, and one deficit:
+
+- **Abstention is a returned value, not an error path.** `trusted_search` answers "should you
+  trust any of this at all" with a calibrated threshold and a reason. The neighbours return
+  memories; the caller decides.
+- **No LLM and no graph database anywhere in the path.** Retrieval is pgvector plus Postgres
+  full-text over a table you already know how to back up. That is cheaper and auditable; it is
+  also why there is no entity reasoning here at all.
+- **No standard-benchmark number.** Mem0 publishes LoCoMo and LongMemEval scores. This repo has
+  never run either — every number here is on its own corpora, plus the public PEP replication.
+  Until that changes, nothing in this README is comparable to a published memory-benchmark
+  result, and it should not be read as if it were.
+
 ## Where this comes from
 
 RE-call is extracted from the memory system behind a production trading-research agent whose memory
@@ -222,9 +286,16 @@ exactly what is public versus private.
 
 ```bash
 docker compose up -d --wait          # PostgreSQL + pgvector
-pip install -e ".[fastembed]"        # local embeddings, no API key
+pip install "recall-rag[fastembed]"  # local embeddings, no API key
 python -m recall.cli demo            # index corpus/ and run the sample queries
 ```
+
+> **The distribution is `recall-rag`; the import is `recall`.** `pip install recall` gets you an
+> unrelated RPC framework last released in 2014 — that name was taken and is not reclaimable, and
+> `re-call` is rejected by PyPI as too similar to it. Both `recall` and this package provide a
+> top-level `recall` module, so do not install `recall` and `recall-rag` into one environment.
+>
+> Working from a clone instead? `pip install -e ".[fastembed]"`.
 
 ## Use it
 
@@ -320,9 +391,20 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 
 ## Engineering
 
-**572 tests, 7 skipped.** The database-touching ones run against a real pgvector container — no mock
-DB. CI runs `ruff`, the suite against PostgreSQL, and `pip-audit` over a checked-in `uv.lock`, as a
-gate rather than a report.
+**584 tests, 7 skipped.** The database-touching ones run against a real pgvector container — no mock
+DB. CI runs `ruff`, `mypy`, the suite against PostgreSQL under coverage, the suite *again* at the
+declared dependency floor, and `pip-audit` over a checked-in `uv.lock` — each as a gate rather than
+a report.
+
+Type checking arrived late and is worth being specific about, because "we added mypy" is usually a
+non-event. 81% of functions here already carried a return annotation and **nothing verified any of
+them**. Running the checker over that found two things a green test suite had not:
+`RECALL_TRANSPORT` was an unvalidated environment string flowing into a `Literal`-typed SDK
+parameter — a typo reached `mcp.run()` as an arbitrary value after startup had already opened a
+store and read the token file — and `ensure_schema` indexed a `None` row when pointed at an
+existing table that was not a recall table. Both now fail early and by name. The gate is
+`disallow_untyped_defs`, not a permissive baseline: a partially-checked package stops checking
+wherever an annotation is missing, so a lenient gate passes while its coverage shrinks.
 
 Tests are written to fail for the right reason. A representative sample:
 
@@ -377,7 +459,7 @@ that currently succeeds start failing. Full detail in [CHANGELOG.md](CHANGELOG.m
   because `0` previously did the opposite of what it reads as.
 - **The `mcp` extra requires `mcp>=1.27.2`** (was `>=1.10`). Versions 1.10–1.27.1 installed
   cleanly and then failed on every authenticated call, so this now fails at install time instead.
-  Upgrade with `pip install -U "recall[mcp]"`.
+  Upgrade with `pip install -U "recall-rag[mcp]"`.
 
 - **`recall index` refuses a mass prune.** A re-index that would delete 50% or more of the
   sources under a root (`RECALL_MAX_PRUNE_FRACTION`, default `0.5`, above a floor of 5 indexed

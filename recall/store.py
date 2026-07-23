@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
+from uuid import uuid4
 from ipaddress import ip_address
 from urllib.parse import unquote, urlsplit
 
@@ -15,6 +17,9 @@ from pgvector.psycopg import register_vector
 from recall.frontmatter import supersedes_key
 from recall.observability import METRICS, get_logger
 from recall.types import Chunk, ScoredChunk
+
+if TYPE_CHECKING:  # the pool extra is optional; the annotation must not require it at runtime
+    from psycopg_pool import ConnectionPool
 
 #: The built-in dev credentials shipped in the default DSN — safe only against a local database.
 _DEFAULT_CREDS = ("recall", "recall")
@@ -123,6 +128,9 @@ def warn_if_insecure_dsn(dsn: str) -> str | None:
 #: Tenant assigned to rows written before tenancy existed, and the default for a
 #: single-tenant deployment — so an upgrade changes nothing for an existing install.
 DEFAULT_TENANT = "default"
+#: Default table name. Named rather than repeated as a literal so a caller that needs to pass it
+#: explicitly (see `recall_mcp.stores`) cannot drift from the constructor's default.
+DEFAULT_TABLE = "chunks"
 #: Postgres session variable the row-level-security policy reads. A custom GUC (it must contain
 #: a dot) set per connection, so the policy compares against the connection's own tenant.
 TENANT_GUC = "recall.tenant_id"
@@ -275,7 +283,7 @@ class PgVectorStore:
         self,
         dsn: str,
         dim: int,
-        table: str = "chunks",
+        table: str = DEFAULT_TABLE,
         *,
         tenant: str = DEFAULT_TENANT,
         pool_size: int | None = None,
@@ -338,7 +346,7 @@ class PgVectorStore:
             kw["connect_timeout"] = self._connect_timeout_s
         return kw
 
-    def _open_pool(self, size: int):
+    def _open_pool(self, size: int) -> "ConnectionPool":
         try:
             from psycopg_pool import ConnectionPool
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
@@ -389,10 +397,23 @@ class PgVectorStore:
             raise
         return conn
 
+    @property
+    def _direct(self) -> "psycopg.Connection":
+        """The single long-lived connection, for the non-pooled mode only.
+
+        `__init__` establishes the invariant "`_conn` is not None exactly when `_pool` is None",
+        and every caller below is already on the non-pooled branch — but that is a correlation
+        between two attributes, which no type checker can follow. This accessor states it once
+        and turns a violation into a named error instead of `AttributeError: 'NoneType'`.
+        """
+        if self._conn is None:  # pragma: no cover - unreachable while the invariant holds
+            raise RuntimeError("no direct connection: this store is in pooled mode")
+        return self._conn
+
     def _reconnect(self) -> None:
         """Discard the (broken) connection and open a fresh, prepared one."""
         try:
-            self._conn.close()
+            self._direct.close()
         except Exception:
             pass
         self._conn = self._connect()
@@ -421,17 +442,17 @@ class PgVectorStore:
         if self._pool is not None:
             return self._with_retry_pooled(op)
         try:
-            return op(self._conn)
+            return op(self._direct)
         except self._CONN_ERRORS:
             # getattr: `broken` only exists from psycopg 3.2 and the declared floor is 3.1 —
             # without the default this except-block would raise AttributeError and mask the
             # original database error on an older install.
-            if not (self._conn.closed or getattr(self._conn, "broken", False)):
+            if not (self._direct.closed or getattr(self._direct, "broken", False)):
                 raise
             _log.warning("database connection lost — reconnecting")
             METRICS.increment("recall_db_reconnects_total")
             self._reconnect()
-            return op(self._conn)
+            return op(self._direct)
 
     def _with_retry_pooled(self, op: Callable[["psycopg.Connection"], _T]) -> _T:
         """Pooled variant: borrow a connection per operation, retry once on a dead one.
@@ -447,8 +468,10 @@ class PgVectorStore:
         dead. Nothing here is a `nonlocal` on shared state: each borrow is thread-confined,
         which is the whole point of the mode.
         """
+        pool = self._pool
+        assert pool is not None  # caller checked; restates the mode invariant for the checker
         for attempt in (0, 1):
-            with self._pool.connection() as conn:
+            with pool.connection() as conn:
                 try:
                     return op(conn)
                 except self._CONN_ERRORS:
@@ -473,7 +496,7 @@ class PgVectorStore:
         if self._pool is not None:
             self._pool.close()  # also stops the pool's background maintenance thread
         else:
-            self._conn.close()
+            self._direct.close()
 
     def drop_table(self) -> None:
         """Drop this store's table if it exists.
@@ -513,8 +536,13 @@ class PgVectorStore:
             # `lock_timeout` restores that bound where it belongs: unbounded work, bounded
             # waiting. A build that cannot get its lock fails fast and is retried on next open,
             # which is idempotent.
-            timeout_lifted = self._statement_timeout_ms is not None
-            prior_lock_timeout = conn.execute("SHOW lock_timeout").fetchone()[0]
+            statement_timeout_ms = self._statement_timeout_ms
+            timeout_lifted = statement_timeout_ms is not None
+            # `SHOW` always returns exactly one row, so `row` is None only if the connection died
+            # between the two statements. Default to Postgres' own default rather than indexing
+            # None: the restore below is best-effort and must not raise over the real failure.
+            row = conn.execute("SHOW lock_timeout").fetchone()
+            prior_lock_timeout = row[0] if row else "0"
             # BOTH `SET`s go inside the `try`. Outside it, a failure of the second would skip the
             # `finally` entirely and hand a connection back to the pool with statement_timeout
             # still lifted — the one thing the paragraph above promises cannot happen.
@@ -529,11 +557,11 @@ class PgVectorStore:
                 # shown the restore failure instead of the cause. The connection is discarded
                 # either way, so a failed restore costs nothing. Each restore is guarded
                 # independently — sharing one `try` would let the first failure skip the second.
-                if timeout_lifted:
+                if statement_timeout_ms is not None:
                     # Plain `SET`: this value is an int this object owns, so there is nothing to
                     # bind and nothing to quote.
                     self._safe_execute(
-                        conn, f"SET statement_timeout = {int(self._statement_timeout_ms)}"
+                        conn, f"SET statement_timeout = {int(statement_timeout_ms)}"
                     )
                 # `set_config` here, because `SHOW` hands the prior value back as a FORMATTED
                 # string ('0', '5s', '1min') and `SET` does not take a bind parameter.
@@ -578,11 +606,21 @@ class PgVectorStore:
             """
         )
         self._migrate_to_tenanted(conn)
-        actual_dim = conn.execute(
+        dim_row = conn.execute(
             "SELECT atttypmod FROM pg_attribute "
             "WHERE attrelid = %s::regclass AND attname = 'embedding'",
             (t,),
-        ).fetchone()[0]
+        ).fetchone()
+        if dim_row is None:
+            # `CREATE TABLE IF NOT EXISTS` above is a no-op against a table that already exists
+            # under this name with a different shape, so an unrelated `chunks` table reaches here
+            # with no `embedding` column at all. Indexing `None` gave a bare TypeError that named
+            # neither the table nor the cause.
+            raise ValueError(
+                f"table {t!r} exists but has no 'embedding' column — it is not a recall table. "
+                f"Point this store at a different table name."
+            )
+        actual_dim = dim_row[0]
         if actual_dim > 0 and actual_dim != self._dim:
             raise ValueError(
                 f"table {t!r} has a vector({actual_dim}) embedding column but this store is "
@@ -955,7 +993,7 @@ class PgVectorStore:
             raise ValueError("chunks and embeddings length mismatch")
         self._supersession_cache = None
 
-        def _op(conn):
+        def _op(conn: "psycopg.Connection") -> int:
             with conn.transaction():
                 if sources:
                     conn.execute(
@@ -965,6 +1003,7 @@ class PgVectorStore:
                     )
                 if chunks:
                     self._upsert_in(conn, chunks, embeddings)  # savepoint, same commit
+            return len(chunks)
 
         self._with_retry(_op)
         return len(chunks)
@@ -1044,7 +1083,7 @@ class PgVectorStore:
         cache a result under a fingerprint that never described it.
         """
 
-        def _op(conn: "psycopg.Connection"):
+        def _op(conn: "psycopg.Connection") -> tuple[dict[str, str], frozenset[str]]:
             fingerprint = conn.execute(
                 f"SELECT max(indexed_at), count(*) FROM {self._table} WHERE tenant_id = %s",
                 (self._tenant,),
@@ -1107,3 +1146,56 @@ class PgVectorStore:
             ).fetchone()
         )
         return int(row[0]) if row else 0
+
+    @contextmanager
+    def _borrowed(self) -> "Iterator[psycopg.Connection]":
+        """Hold ONE connection for the whole of a streaming read.
+
+        `_with_retry` borrows per operation, which is right for a single statement and wrong for
+        a server-side cursor: the cursor lives in the session that declared it, so returning the
+        connection to the pool between `FETCH`es would invalidate it.
+        """
+        if self._closed:
+            raise RuntimeError("store is closed")
+        if self._pool is not None:
+            with self._pool.connection() as conn:
+                yield conn
+        else:
+            yield self._direct
+
+    def iter_chunks(self, batch_size: int = 1000) -> "Iterator[Chunk]":
+        """Yield every chunk for this tenant, text and metadata but NOT the embedding.
+
+        Streams through a server-side cursor so a corpus larger than memory does not have to be
+        materialised client-side — the same reason `Indexer` writes in batches.
+
+        Embeddings are deliberately excluded: the callers are text-side (the lexical baseline in
+        `recall.eval.bm25`, corpus export, audit), the vector column is the overwhelming majority
+        of each row's bytes, and returning it would make the bounded-memory cursor pointless.
+
+        Snapshot-consistent for the life of the iterator: rows written after it opened are not
+        seen. Nothing here mutates, so a concurrent index run is safe — merely not fully visible.
+
+        `batch_size` must be >= 1; it is the FETCH size, so 0 would ask the server for nothing
+        and hang the iteration rather than raising.
+        """
+        if not isinstance(batch_size, int) or batch_size < 1:
+            raise ValueError("batch_size must be a positive int")
+        # Deliberately NOT wrapped in `_with_retry`. A reconnect halfway through a cursor scan
+        # would restart it from the top on the new session and yield the earlier rows a second
+        # time; a caller building an index over the result would silently double-count. A lost
+        # connection raises here instead, which is the honest outcome.
+        with self._borrowed() as conn:
+            # An explicit transaction even though the connection is autocommit: a server-side
+            # cursor is transaction-scoped, and under autocommit each FETCH would otherwise land
+            # in its own transaction, where the cursor no longer exists.
+            with conn.transaction():
+                with conn.cursor(name=f"recall_iter_{uuid4().hex[:12]}") as cur:
+                    cur.itersize = batch_size
+                    cur.execute(
+                        f"SELECT id, source, text, metadata FROM {self._table} "
+                        "WHERE tenant_id = %s ORDER BY id",
+                        (self._tenant,),
+                    )
+                    for cid, source, text, metadata in cur:
+                        yield Chunk(id=cid, source=source, text=text, metadata=metadata or {})
