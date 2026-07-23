@@ -198,7 +198,12 @@ def _canned_row(sql: str, *, migrated: bool = True, rls_ok: bool = True):
     if "pg_constraint" in sql:
         return ("chunks_pkey", 2 if migrated else 1)
     if "relrowsecurity" in sql:
-        return (True, True, POLICY_EXPR, POLICY_EXPR) if rls_ok else (False, False, None, None)
+        # (relrowsecurity, relforcerowsecurity, has_policy, USING, WITH CHECK, roles==PUBLIC, cmd)
+        return (
+            (True, True, True, POLICY_EXPR, POLICY_EXPR, True, "*")
+            if rls_ok
+            else (False, False, False, None, None, False, None)
+        )
     return (3,)
 
 
@@ -224,10 +229,19 @@ class _RecordingConn:
     def calls(self) -> int:
         return len(self.sql)
 
+    @contextlib.contextmanager
     def transaction(self):
-        """`conn.transaction()` as a no-op context manager — the statements inside it are still
-        recorded, which is all these tests inspect."""
-        return contextlib.nullcontext()
+        """`conn.transaction()`, recording its boundaries into the same statement stream.
+
+        A `nullcontext` would be simpler and would make every assertion below still pass — which
+        is the problem. Statements inside a transaction are adjacent in the stream whether or not
+        anything wrapped them, so a test asserting adjacency cannot tell an atomic pair from two
+        separately-committed statements. Recording BEGIN/COMMIT lets a test assert the property
+        it actually cares about.
+        """
+        self.sql.append("BEGIN")
+        yield
+        self.sql.append("COMMIT")
 
     def execute(self, sql="", *_args, **_kwargs):
         text = " ".join(str(sql).split())
@@ -353,21 +367,30 @@ def test_ensure_schema_installs_rls_when_the_table_has_none():
     assert "current_setting" in create[0] and "tenant_id" in create[0]
 
 
-def test_a_tampered_policy_is_dropped_and_recreated_together():
+def test_a_tampered_policy_is_dropped_and_recreated_in_one_transaction():
     """A drifted predicate must be repaired, and the repair must not open a gap.
 
-    `rls_ok=False` reports a policy whose definition does not match, so this also pins that the
-    DROP and CREATE are issued as a pair — separately committed they would leave a window with
-    RLS forced and no policy, during which concurrent queries return zero rows.
+    Asserted on the transaction BOUNDARIES, not on adjacency. The two statements are adjacent in
+    the stream either way, so an adjacency check passes just as happily on two separately
+    committed statements — and separately committed is precisely the defect: between the DROP and
+    the CREATE the table has RLS FORCEd with no policy, and every concurrent query returns zero
+    rows, which the trust layer reports as an ordinary "no memories found" rather than an error.
     """
     store = _bare_store(_RecordingConn(rls_ok=False))
     store.ensure_schema()
     stmts = store._conn.sql
 
-    drops = [i for i, s in enumerate(stmts) if s.startswith("DROP POLICY")]
-    creates = [i for i, s in enumerate(stmts) if s.startswith("CREATE POLICY")]
-    assert drops and creates, stmts
-    assert creates[0] == drops[0] + 1, "DROP and CREATE POLICY must be adjacent (one transaction)"
+    drop = next(i for i, s in enumerate(stmts) if s.startswith("DROP POLICY"))
+    create = next(i for i, s in enumerate(stmts) if s.startswith("CREATE POLICY"))
+    begins = [i for i, s in enumerate(stmts) if s == "BEGIN"]
+    commits = [i for i, s in enumerate(stmts) if s == "COMMIT"]
+
+    enclosing = [b for b in begins if b < drop and any(c > create for c in commits if c > b)]
+    assert enclosing, (
+        "DROP/CREATE POLICY are not inside a transaction — separately committed they leave the "
+        f"table with RLS forced and no policy: {stmts}"
+    )
+    assert drop < create, stmts
 
 
 def test_ensure_schema_leaves_a_correct_policy_alone():

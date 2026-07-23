@@ -621,17 +621,26 @@ class PgVectorStore:
         # commits, leaving a window in which the table has RLS FORCEd with NO policy. A query
         # from another tenant landing in that window matches nothing and returns zero rows, which
         # the trust layer reports as an ordinary "no memories found" rather than an error.
+        # `polroles = {0}` is PUBLIC and `polcmd = '*'` is ALL — the two the CREATE below implies.
+        # They are compared for the same reason the expressions are: `ALTER POLICY ... TO <role>`
+        # narrows who the policy applies to, and a policy that applies to nobody relevant is an
+        # isolation boundary switched off while still reporting as present.
         state = conn.execute(
             "SELECT c.relrowsecurity, c.relforcerowsecurity, "
-            "       (SELECT pg_get_expr(p.polqual, p.polrelid) FROM pg_policy p "
-            "        WHERE p.polrelid = c.oid AND p.polname = %s), "
-            "       (SELECT pg_get_expr(p.polwithcheck, p.polrelid) FROM pg_policy p "
-            "        WHERE p.polrelid = c.oid AND p.polname = %s) "
-            "FROM pg_class c WHERE c.oid = %s::regclass",
-            (policy, policy, t),
+            "       p.polname IS NOT NULL, "
+            "       pg_get_expr(p.polqual, p.polrelid), "
+            "       pg_get_expr(p.polwithcheck, p.polrelid), "
+            "       p.polroles = '{0}'::oid[], p.polcmd "
+            "FROM pg_class c "
+            "LEFT JOIN pg_policy p ON p.polrelid = c.oid AND p.polname = %s "
+            "WHERE c.oid = %s::regclass",
+            (policy, t),
         ).fetchone()
-        using_expr, check_expr = (state[2], state[3]) if state else (None, None)
-        rls_on, rls_forced = (state[0], state[1]) if state else (False, False)
+        if state:
+            rls_on, rls_forced, has_policy, using_expr, check_expr, all_roles, cmd = state
+        else:  # pragma: no cover - the table was just created above, so it exists
+            rls_on = rls_forced = has_policy = all_roles = False
+            using_expr = check_expr = cmd = None
 
         if not rls_on:
             conn.execute(f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY")
@@ -645,7 +654,14 @@ class PgVectorStore:
         # changed isolation boundary. `pg_get_expr` renders both sides in Postgres' own
         # normalised form, so the comparison is against what the server actually stores.
         want = f"(tenant_id = current_setting('{TENANT_GUC}'::text, true))"
-        if using_expr != want or check_expr != want:
+        correct = (
+            has_policy
+            and using_expr == want
+            and check_expr == want
+            and all_roles          # applies to PUBLIC, not a narrowed role set
+            and cmd == "*"         # applies to ALL commands, not just SELECT
+        )
+        if not correct:
             # DROP + CREATE in ONE transaction. Separately committed (this connection is
             # autocommit) they leave a window in which the table has RLS FORCEd and no policy,
             # during which every concurrent query returns zero rows — which the trust layer

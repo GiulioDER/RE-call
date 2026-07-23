@@ -398,3 +398,76 @@ def test_a_tampered_policy_predicate_is_repaired_on_the_next_open(tenant_table):
         )
     finally:
         s.close()
+
+
+@requires_db
+def test_reopening_a_correct_table_does_not_recreate_the_policy(tenant_table):
+    """`ensure_schema` must recognise its OWN policy as already correct.
+
+    It compares the stored predicate against a literal built in `_enable_rls`, so that literal
+    has to match how Postgres deparses the policy it just created — down to the `::text` cast it
+    inserts. If it ever stops matching, nothing fails: the comparison simply never succeeds and
+    every store open silently DROPs and re-CREATEs the policy, taking an ACCESS EXCLUSIVE lock on
+    a live table each time, once per tenant. The unit tests cannot see this — they compare the
+    literal against another copy of itself — so it is pinned here against a real server, on the
+    policy's OID, which changes if and only if the policy was actually recreated.
+
+    This is also the regression test for a future PostgreSQL upgrade that renders the expression
+    differently.
+    """
+    def policy_oid() -> int | None:
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            row = conn.execute(
+                "SELECT oid FROM pg_policy WHERE polname = %s",
+                (f"{tenant_table}_tenant_isolation",),
+            ).fetchone()
+        return row[0] if row else None
+
+    s = PgVectorStore(TEST_DSN, dim=4, table=tenant_table)
+    try:
+        s.ensure_schema()
+        first = policy_oid()
+        assert first is not None, "no policy was created"
+
+        s.ensure_schema()
+        s.ensure_schema()
+        assert policy_oid() == first, (
+            "the policy was recreated on a steady-state open — the expected predicate no longer "
+            "matches what Postgres stores, so every open now churns it under an exclusive lock"
+        )
+    finally:
+        s.close()
+
+
+@requires_db
+def test_a_policy_narrowed_to_a_role_is_repaired(tenant_table):
+    """`ALTER POLICY ... TO <role>` must not survive a re-open.
+
+    The policy is created for PUBLIC and ALL commands. Narrowing its role set leaves the name,
+    the predicate and `relrowsecurity` all reporting healthy while the policy no longer applies
+    to the role the application actually connects as — an isolation boundary switched off in a
+    way that a name-or-predicate check cannot see.
+    """
+    s = PgVectorStore(TEST_DSN, dim=4, table=tenant_table)
+    try:
+        s.ensure_schema()
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(
+                f"ALTER POLICY {tenant_table}_tenant_isolation ON {tenant_table} TO recall"
+            )
+            narrowed = conn.execute(
+                "SELECT polroles = '{0}'::oid[] FROM pg_policy WHERE polname = %s",
+                (f"{tenant_table}_tenant_isolation",),
+            ).fetchone()[0]
+        assert narrowed is False, "fixture failed to narrow the policy's role set"
+
+        s.ensure_schema()  # the repair
+
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            restored = conn.execute(
+                "SELECT polroles = '{0}'::oid[] FROM pg_policy WHERE polname = %s",
+                (f"{tenant_table}_tenant_isolation",),
+            ).fetchone()[0]
+        assert restored is True, "a policy narrowed to one role was left in place"
+    finally:
+        s.close()
