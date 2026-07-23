@@ -102,6 +102,14 @@ A previous version of this file published each of these. They did not survive re
   measurement. A replication on a public corpus scored **0.705** with the same local embedder, so
   0.33 was a property of *that corpus*, not of this software. Corrected rather than quietly
   deleted, because the claim was published. → [FINDINGS §8](results/FINDINGS.md)
+- **"ANN recall is tuned on the filtered path"** — the heading this file gave the HNSW fix, which
+  reads as a recall improvement. Two measurements were taken and only the flattering one reached
+  the docs: the 0.38 → ~0.90 lift comes from a fixture corpus the test *retries until it
+  reproduces the pathology*, while an independent A/B on a normally-built corpus moved recall the
+  other way (0.523 → 0.483). What was actually fixed is **truncation** — filtered search returning
+  fewer results than requested — and the PR that shipped it said so at the time. Reworded above,
+  and corrected in FINDINGS §5b and the changelog, rather than deleted.
+  → [#57](https://github.com/GiulioDER/RE-call/pull/57)
 
 ## Production posture
 
@@ -282,23 +290,33 @@ Stated plainly, because the failure mode this library exists to prevent is confi
   byte quota *do* ship — see [SECURITY.md](SECURITY.md) — but their buckets are per process, so N
   workers admit roughly N times the rate.) For revocation, rotation or per-request identity, front
   this with a real identity provider and supply the MCP SDK's `auth_server_provider`.
-- **Validity is authored, not inferred.** On a real 794-memo corpus, **2** memos declared
-  `supersedes:` while **60** described a closure only in prose. `recall lint --fix` was built to
-  close that gap and, after review, could safely declare **zero** of them: narrating vs declaring,
-  part vs whole, augmenting vs replacing are invisible to a pattern and obvious to the author. It
-  ships as a **reviewing aid**, with `recall check` moving the question to write time. →
-  [#29](https://github.com/GiulioDER/RE-call/issues/29)
+- **Validity is authored, not inferred.** On the reference corpus — 792 memos at the time this was
+  measured — **2** declared `supersedes:` while **60** described a closure only in prose. `recall
+  lint --fix` was built to close that gap and, after review, could safely declare **zero** of them:
+  narrating vs declaring, part vs whole, augmenting vs replacing are invisible to a pattern and
+  obvious to the author. It ships as a **reviewing aid**, with `recall check` moving the question
+  to write time. → investigated and settled in
+  [#29](https://github.com/GiulioDER/RE-call/issues/29), now closed; the limitation stands
 - **Successor and abstention accuracy are unmeasured on generated corpora.** Every synthetic
   document is the same sentence with a different opaque token, so those columns measure token
   discrimination, not the trust layer. STR, latency and scale figures are unaffected.
 - **Gap detection is bounded by the embedder.** With a weak one, no threshold separates answerable
   from unanswerable — measured, not assumed.
-- **ANN recall is tuned on the filtered path only.** A `source`-filtered query sets
-  `hnsw.ef_search=200` + `hnsw.iterative_scan=relaxed_order`, because at pgvector's defaults that
-  path measured recall@10 **0.38** with 40/40 queries truncated. The unfiltered path still runs at
-  the defaults, where it measured 1.000 — but every query now also carries a `tenant_id` predicate,
-  and that combination has not been measured on a multi-tenant table. HNSW build nondeterminism
-  also measurably moves calibration. → [#11](https://github.com/GiulioDER/RE-call/issues/11)
+- **Filtered ANN search stopped truncating — which is not the same as better recall.** An HNSW
+  walk is filter-blind, so a `source`-filtered query exhausted its candidate list before finding
+  `k` matches: at pgvector's defaults, **40/40** queries silently returned fewer results than
+  asked for. `hnsw.ef_search=200` + `hnsw.iterative_scan=relaxed_order` on the filtered path fix
+  that, unambiguously, in both measurements taken (**0/40** and **0/30**). The two **disagree on
+  recall**, so both are published: on the test fixture's corpus — which the test deliberately
+  rebuilds until it reproduces a strong pathology — recall@10 moves 0.38 → ~0.90, while on a
+  corpus built the way a real multi-file index run builds one it moves **0.523 → 0.483**.
+  `relaxed_order` fills to `k` with approximate matches, so this trades truncation for
+  approximation rather than buying recall. The unfiltered path still runs at the defaults, where
+  it measured 1.000 — but every query now also carries a `tenant_id` predicate, and that
+  combination has not been measured on a multi-tenant table. HNSW build nondeterminism also
+  measurably moves calibration. → measured in
+  [#57](https://github.com/GiulioDER/RE-call/pull/57); issue
+  [#11](https://github.com/GiulioDER/RE-call/issues/11), now closed
 
 ## Engineering
 

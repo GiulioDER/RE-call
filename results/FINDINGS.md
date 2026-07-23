@@ -239,9 +239,27 @@ reproduce" and offered a planner explanation. That conclusion was wrong twice ov
 
 It was wrong on the facts: measured directly against `query_dense` on 20,000 rows with a filter
 matching 10% of them, pgvector's defaults give **recall@10 0.38 with 40/40 queries truncated**
-below the requested `k`. It is now fixed — `hnsw.ef_search=200` + `hnsw.iterative_scan=relaxed_order`
-on the filtered path take it to ~0.90 with 0/40 truncated — and pinned by
+below the requested `k`. **The truncation is fixed** — `hnsw.ef_search=200` +
+`hnsw.iterative_scan=relaxed_order` on the filtered path take it to **0/40**, pinned by
 `tests/test_hnsw_filtered_recall.py`.
+
+**Correction — this paragraph previously published only the flattering half.** It reported recall
+as going "to ~0.90" without saying on which corpus that held. Two measurements were run in
+[#57](https://github.com/GiulioDER/RE-call/pull/57), and they agree on truncation while
+disagreeing on recall:
+
+| corpus | recall@10 untuned → tuned | truncated untuned → tuned |
+|---|---|---|
+| the fixture's — which the test rebuilds until it reproduces a strong pathology | 0.38 → ~0.90 | 40/40 → 0/40 |
+| built the way a real multi-file index run builds one (10 batched upserts, 30 queries) | **0.523 → 0.483** | 29/30 → 0/30 |
+
+Untuned returns *few but accurate* hits; `relaxed_order` fills to `k` with approximate ones — which
+is what "relaxed order" means. The fix trades truncation for approximation; it does not buy recall.
+The 0.38 baseline is also not a stable quantity: pgvector's HNSW build carries randomness this
+project does not control, and untuned recall on that fixture has been observed across 0.33–0.52.
+
+**So the supportable claim is the narrow one: filtered dense search now returns `k` results when
+`k` exist.** That is a correctness fix, not a quality one.
 
 And it was wrong on the method, which is the part worth keeping: **the 1.00 above is pinned by
 construction and could not have fallen.** This arm scores the filtered query through the *hybrid*
