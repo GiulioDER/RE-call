@@ -75,8 +75,17 @@ eval = ["matplotlib>=3.7"]
 finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
 # pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
 # failing it — a hung CI job reads as "still running", not as a regression.
+#
+# ruff is UPPER-capped, and that is the point of the pin. A linter is the one dependency where
+# resolving "newest" makes CI non-reproducible: ruff stabilises new rules in a minor release, so
+# an unpinned `ruff check .` starts failing on unchanged code the day a release lands — which is
+# exactly what 0.16.0 did to this repo (UP017 `datetime.UTC`, stricter import sorting; 131 hits
+# across the existing suite, none from any code change). The floor stays open; only the ceiling
+# is fixed, below the release that changed the ruleset. Adopting 0.16's rules is a deliberate
+# repo-wide sweep — bump the cap and fix the findings in its own PR, not as a side effect of an
+# unrelated one.
 dev = [
-    "pytest>=8", "pytest-timeout>=2.3", "pytest-cov>=5", "ruff>=0.5",
+    "pytest>=8", "pytest-timeout>=2.3", "pytest-cov>=5", "ruff>=0.5,<0.16",
     "mcp>=1.27.2", "psycopg-pool>=3.2",
 ]
 
