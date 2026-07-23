@@ -288,19 +288,28 @@ class Indexer:
         self._allow_prune = allow_prune
         self._max_prune_fraction = _prune_fraction_from_env()
 
-    def index_path(self, path: str | Path, glob: str = "**/*.md") -> IndexStats:
+    def index_path(
+        self, path: str | Path, glob: str = "**/*.md", files: list[Path] | None = None
+    ) -> IndexStats:
         """Index a markdown file, or a directory of them, into the vector store.
 
         Re-indexing REPLACES each file's rows completely (delete then insert), so a file that
         shrinks — or withdraws a frontmatter claim like ``supersedes`` — leaves no stale
         chunks behind to poison retrieval or the supersession map.
+
+        `files` accepts an already-walked candidate list, and exists so a caller that had to
+        measure the tree first can hand over the SAME set it measured. A caller that re-walks
+        instead is asking the filesystem the same question twice and getting two answers: the
+        window between them is a full directory walk wide, and anything appearing in it is
+        indexed without having been counted — which matters when the count was a budget check or
+        a bill. Must already be confined to `path` (i.e. come from `candidate_files`).
         """
         # resolve() FIRST: `source` is the row key `replace_sources` deletes by, so a corpus
         # indexed once as `corpus/` and once as `/abs/corpus/` would write two row sets for the
         # same file instead of replacing them. (Root-relative `file` keys are unaffected —
         # they are computed against this same root either way.)
         root = Path(path).resolve()
-        files = candidate_files(root, glob)
+        files = candidate_files(root, glob) if files is None else files
         # Identify each file by its ROOT-RELATIVE path, not its bare basename: two files with the
         # same basename in different directories (a/notes.md, b/notes.md) must not collide in the
         # supersession map or in provenance. Mirrors recall.lint's `rel` keying. A single-file

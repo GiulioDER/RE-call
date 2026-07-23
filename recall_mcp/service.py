@@ -253,8 +253,11 @@ def index_memory(
 
     max_files = int(os.environ.get("RECALL_INDEX_MAX_FILES", str(DEFAULT_MAX_INDEX_FILES)))
     max_bytes = int(os.environ.get("RECALL_INDEX_MAX_BYTES", str(DEFAULT_MAX_INDEX_BYTES)))
-    # Same walk `index_path` will do (same root, same default markdown glob) — measured, not
-    # estimated, so the check can never pass on a set smaller than what actually gets indexed.
+    # Walked ONCE, here, and handed to `index_path` below — measured, not estimated, and the set
+    # that is measured is the set that is indexed. Walking again inside `index_path` would ask
+    # the filesystem the same question twice: anything landing under the root between the two
+    # walks would be embedded without being counted, escaping both the budget check and the
+    # tenant's byte quota, and a sync landing there is exactly the deployment shape this serves.
     files = candidate_files(target)
     if len(files) > max_files:
         raise ValueError(
@@ -270,7 +273,7 @@ def index_memory(
     if on_measured is not None:
         on_measured(len(files), total_bytes)
 
-    stats = Indexer(store, embedder).index_path(target)
+    stats = Indexer(store, embedder).index_path(target, files=files)
     message = f"Indexed {stats.chunks} chunk(s) from {stats.files} file(s) into memory."
     if stats.skipped:
         message += f" {stats.skipped} file(s) were unchanged and not re-embedded."

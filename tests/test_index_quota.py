@@ -110,3 +110,36 @@ def test_the_quota_stops_a_loop_that_stays_under_the_per_request_cap(store, corp
             break
 
     assert accepted == 2, f"quota admitted {accepted} requests of 4000 bytes against 10000"
+
+
+@requires_db
+def test_the_billed_set_is_the_set_that_gets_indexed(tmp_path, store, monkeypatch):
+    """One walk, not two — the bill and the work must describe the same files.
+
+    `index_memory` measured the tree, billed that number, and then let `index_path` walk again
+    to decide what to index. Anything appearing under the root between those two walks was
+    embedded without having been counted, so it escaped both the per-request byte cap and the
+    tenant's hourly quota. The window is a full directory walk wide, and a corpus synced into
+    the index root on a timer — the deployment this is built for — lands inside it routinely.
+
+    Simulated by making a file appear during the measurement, which is the same interleaving.
+    """
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(tmp_path))
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.md").write_text("x" * 1000, encoding="utf-8")
+
+    billed: list[tuple[int, int]] = []
+
+    def measure(n_files: int, n_bytes: int) -> None:
+        billed.append((n_files, n_bytes))
+        # A writer lands new files after the measurement but before the indexing walk.
+        for i in range(5):
+            (corpus / f"late{i}.md").write_text("y" * 1000, encoding="utf-8")
+
+    result = index_memory(store, _E(), str(corpus), on_measured=measure)
+
+    assert billed == [(1, 1000)], billed
+    assert result.files == 1, (
+        f"billed 1 file but indexed {result.files} — the walk that bills is not the walk that runs"
+    )

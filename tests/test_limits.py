@@ -16,6 +16,7 @@ from recall_mcp.limits import (
     Rate,
     RateLimited,
     RateLimiter,
+    _Bucket,
     _rate_from_env,
     limiter_from_env,
 )
@@ -151,6 +152,35 @@ def test_a_clock_that_goes_backwards_does_not_grant_free_refills():
     with pytest.raises(RateLimited):
         lim.check("acme", "read")
 
+    # ...and it must still be refused on the NEXT call. Clamping only the elapsed delta refuses
+    # the payout on the backwards reading itself and then moves the reference point back with it,
+    # so the following call measures from the rewound timestamp and mints the whole rewound
+    # interval — the free refill deferred by one call rather than denied. Stopping at the
+    # assertion above is what let that through.
+    clock.now += 3  # three real seconds: worth 3 tokens, not 503
+    with pytest.raises(RateLimited):
+        lim.check("acme", "read")
+
+
+def test_an_out_of_order_clock_reading_cannot_rewind_the_bucket():
+    """The same rewind, reachable WITHOUT a clock jump.
+
+    `check` reads the clock and then takes the lock, so two threads can acquire in the opposite
+    order to their readings and the later-acquiring thread presents the older `now`. Driven here
+    directly against the bucket, which is what that interleaving produces: a stale reading must
+    not move the reference point backwards, or the next honest reading pays out the difference.
+    """
+    b = _Bucket(Rate(capacity=10.0, per_second=1.0), now=0.0)
+    assert b.take(10.0, 20.0) == 0.0     # drained at t=20; reference point is now 20
+    assert b.take(1.0, 10.0) > 0.0       # stale reading arriving late: credits nothing, refused
+
+    # Three real seconds after the drain is worth three tokens. Had the stale reading moved the
+    # reference point back to t=10, the same call would measure thirteen seconds and pay out the
+    # bucket's full capacity instead.
+    assert b.take(5.0, 23.0) > 0.0, (
+        "a stale reading rewound the bucket: three real seconds paid out five or more tokens"
+    )
+
 
 def test_concurrent_callers_cannot_overspend_the_budget():
     """The lock is load-bearing: tool bodies run in worker threads, so this race is real.
@@ -211,13 +241,21 @@ def test_off_disables_exactly_one_limit(monkeypatch):
     assert "write" in limits and "index_bytes" in limits
 
 
-@pytest.mark.parametrize("raw", ["", "lots", "0", "-5", "nan"])
+@pytest.mark.parametrize(
+    "raw",
+    ["", "lots", "0", "-5", "nan", "inf", "Infinity", "+inf", "-inf", "1e400", "2" + "0" * 400],
+)
 def test_a_malformed_or_non_positive_limit_falls_back_to_the_default(monkeypatch, raw):
     """Never read as "unlimited".
 
     `0` is the dangerous one: it reads as "no limit" to one person and "nothing allowed" to
     another. Guessing wrong in a spend control silently removes the cap, so it is refused and the
     documented way to disable a limit is the word `off`.
+
+    The infinities are the same mistake wearing a different hat, and they are the ones that
+    actually reach production: `float()` parses `inf` happily and, worse, OVERFLOWS a long
+    numeric literal to it — so an operator typing a generous budget with too many zeros gets an
+    unlimited bucket. Unlike `off`, which announces itself in the log, that removal is silent.
     """
     monkeypatch.setenv("RECALL_RATE_WRITE_PER_MIN", raw)
     limits = limiter_from_env().limits()
