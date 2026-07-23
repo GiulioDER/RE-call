@@ -174,9 +174,13 @@ def main() -> None:
         f"{lat['p99']:.1f} |",
         "",
         "The filtered arm restricts the query to the one source that holds the answer, so recall "
-        "of 1.00 is the only correct result. A shortfall is HNSW post-filtering: the graph walk "
-        "cannot see the `WHERE` clause, so it can fail to surface a row the table certainly "
-        "contains.",
+        "of 1.00 is the only correct result. **It is also the only result this arm can produce, "
+        "so do not read it as evidence about HNSW.** It scores the hybrid retriever, whose sparse "
+        "leg is an exact `tsv @@ websearch_to_tsquery` scan — filter-aware and independent of the "
+        "vector index — and every generated answerable document is a single chunk, so `source = "
+        "...` selects exactly one row. Degrading the ANN path arbitrarily leaves this number at "
+        "1.0000. HNSW recall under a `source` filter is measured directly against `query_dense` "
+        "in `tests/test_hnsw_filtered_recall.py`, where it does collapse without tuning.",
         "",
         "## Trust layer",
         "",

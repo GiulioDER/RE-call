@@ -27,6 +27,7 @@ writing `off`; anything malformed falls back to the default rather than being re
 """
 from __future__ import annotations
 
+import math
 import os
 import threading
 import time
@@ -94,7 +95,13 @@ class _Bucket:
         # backwards, but a bucket that credited itself on a negative delta would be a free
         # refill, so the arithmetic refuses rather than trusts.
         elapsed = max(0.0, now - self._updated)
-        self._updated = now
+        # `max` on the WRITE too, not just on the delta. Clamping only `elapsed` refuses the free
+        # refill on the backwards reading itself but then moves the reference point back, so the
+        # NEXT call measures from the rewound timestamp and mints the whole rewound interval —
+        # deferring the free refill by one call rather than denying it. This is reachable without
+        # any clock jump: `check` reads the clock outside the lock, so two threads can enter in
+        # the opposite order to their readings.
+        self._updated = max(self._updated, now)
         self._tokens = min(self._rate.capacity, self._tokens + elapsed * self._rate.per_second)
 
         if cost > self._rate.capacity:
@@ -146,8 +153,13 @@ class RateLimiter:
         if cost <= 0:
             return  # nothing to meter; an empty index request should not consume a token
 
-        now = self._clock()
+        # Clock read INSIDE the lock: read outside it, two threads can acquire in the opposite
+        # order to their readings, so the later-acquiring thread presents an older `now` and
+        # rewinds the bucket's reference point. A monotonic read is nanoseconds and the lock
+        # already spans a dict lookup, so making the read and the read-modify-write one critical
+        # section costs nothing measurable.
         with self._lock:
+            now = self._clock()
             bucket = self._buckets.get((tenant, key))
             if bucket is None:
                 # Bounded by the token file's tenant set, which is fixed at startup, so this
@@ -184,9 +196,17 @@ def _rate_from_env(name: str, default: float, window_seconds: float) -> Rate | N
             # Rejected rather than clamped, and NOT read as "unlimited": a 0 or negative here is
             # someone reaching for the off switch with a number, and guessing which way they
             # meant it is the one mistake a spend control must not make.
-            if value <= 0 or value != value:
+            #
+            # `isfinite` covers NaN and, more importantly, the INFINITIES. `float()` parses
+            # "inf" happily, and it also OVERFLOWS any sufficiently long numeric literal to it
+            # WITHOUT raising — so an operator typing a generous budget with one zero too many
+            # gets an unlimited bucket. That is precisely the failure this module exists to
+            # prevent, arriving by the most ordinary route available, and it is silent: `off`
+            # announces itself in the log, an accidental infinity would not.
+            if not math.isfinite(value) or value <= 0:
                 _log.warning(
-                    "ignoring non-positive %s=%r (use %r to disable); using default %s",
+                    "ignoring %s=%r — not a finite positive number (use %r to disable); "
+                    "using default %s",
                     name, raw, OFF, default,
                 )
                 value = default

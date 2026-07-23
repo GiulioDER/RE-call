@@ -18,7 +18,12 @@ fastembed = ["fastembed>=0.3"]
 # Connection pooling — required only for PgVectorStore(pool_size=...), i.e. any server
 # process. A CLI runs single-connection and should not pay for a pool maintenance thread.
 pool = ["psycopg-pool>=3.2"]
-mcp = ["mcp>=1.7", "psycopg-pool>=3.2"]
+# NB: the mcp floor is 1.10, not 1.7 — `recall_mcp/auth.py` needs the resource-server auth split
+# (`AuthSettings.resource_server_url` + FastMCP's `token_verifier=`), both added in 1.10.0. On an
+# older SDK FastMCP absorbs `token_verifier` through `Settings(extra="ignore")` and the argument
+# is silently dropped, i.e. the HTTP server comes up with its authentication quietly missing.
+# Keep this in step with the `dev` extra below.
+mcp = ["mcp>=1.10", "psycopg-pool>=3.2"]
 voyage = ["voyageai>=0.2"]
 # NB: rerank / entail / finetune pin the same sentence-transformers floor — bump all three together.
 rerank = ["sentence-transformers>=3.0"]
@@ -27,7 +32,7 @@ eval = ["matplotlib>=3.7"]
 finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
 # pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
 # failing it — a hung CI job reads as "still running", not as a regression.
-dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.5", "mcp>=1.7", "psycopg-pool>=3.2"]
+dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.5", "mcp>=1.10", "psycopg-pool>=3.2"]
 
 [project.scripts]
 recall = "recall.cli:main"

@@ -65,6 +65,27 @@ def test_require_secure_dsn_allows_an_explicit_opt_out(monkeypatch):
     require_secure_dsn(REMOTE_DEFAULT)  # must not raise
 
 
+@pytest.mark.parametrize("raw", ["0", "false", "False", "no", "off", "", "  ", "maybe", "01"])
+def test_a_negative_or_unrecognised_opt_out_keeps_the_guard(monkeypatch, raw):
+    """`RECALL_ALLOW_INSECURE_DSN=0` must not DISABLE the guard.
+
+    A bare truthiness test reads every non-empty string as consent, so an operator writing `=0`
+    to mean "keep the guard on" switched it off — inverting a security control through the very
+    value they chose to express caution. Unrecognised values keep the guard for the same reason:
+    a typo in a security switch is not permission.
+    """
+    monkeypatch.setenv("RECALL_ALLOW_INSECURE_DSN", raw)
+    with pytest.raises(PermissionError, match="default 'recall:recall' credentials"):
+        require_secure_dsn(REMOTE_DEFAULT)
+
+
+@pytest.mark.parametrize("raw", ["1", "true", "TRUE", "yes", "on", " 1 "])
+def test_an_affirmative_opt_out_is_honoured(monkeypatch, raw):
+    """The escape hatch has to stay usable, or it gets worked around in worse ways."""
+    monkeypatch.setenv("RECALL_ALLOW_INSECURE_DSN", raw)
+    require_secure_dsn(REMOTE_DEFAULT)  # must not raise
+
+
 def test_require_secure_dsn_allows_local_and_non_default_credentials():
     require_secure_dsn("postgresql://recall:recall@localhost:5432/recall")
     require_secure_dsn("postgresql://recall:a-real-password@db.example.com:5432/recall")

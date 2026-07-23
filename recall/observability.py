@@ -63,6 +63,12 @@ class _JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
+#: Fallback when `RECALL_LOG_LEVEL` is unset or unrecognised.
+_DEFAULT_LEVEL = "INFO"
+#: The formats `configure_logging` understands; anything else warns and renders as text.
+_LOG_FORMATS = frozenset({"text", "json"})
+
+
 def configure_logging(level: str | None = None, fmt: str | None = None, stream=None) -> None:
     """Attach ONE handler to the `recall` logger. Opt-in, for entry points only.
 
@@ -77,7 +83,6 @@ def configure_logging(level: str | None = None, fmt: str | None = None, stream=N
     logger = get_logger()
     level = (level or os.environ.get("RECALL_LOG_LEVEL") or "INFO").upper()
     fmt = (fmt or os.environ.get("RECALL_LOG_FORMAT") or "text").lower()
-    logger.setLevel(level)
     for handler in list(logger.handlers):  # idempotent: re-configuring must not double-log
         logger.removeHandler(handler)
     handler = logging.StreamHandler(stream if stream is not None else sys.stderr)
@@ -87,6 +92,22 @@ def configure_logging(level: str | None = None, fmt: str | None = None, stream=N
     )
     logger.addHandler(handler)
     logger.propagate = False
+
+    # Validate AFTER the handler is attached, and never let a bad value be fatal. `setLevel`
+    # raises on an unknown name, and this is the first call an entry point makes — so a typo in
+    # RECALL_LOG_LEVEL took down the whole process at the one moment nothing could report why.
+    # Warning about an unrecognised format for the same reason: silently falling back to text on
+    # a host whose collector expects JSON turns a typo into unparseable logs.
+    if level not in logging.getLevelNamesMapping():
+        logger.setLevel(_DEFAULT_LEVEL)
+        logger.warning(
+            "RECALL_LOG_LEVEL=%r is not a known level; falling back to %s", level, _DEFAULT_LEVEL
+        )
+    else:
+        logger.setLevel(level)
+    if fmt not in _LOG_FORMATS:
+        logger.warning("RECALL_LOG_FORMAT=%r is not one of %s; using text",
+                       fmt, sorted(_LOG_FORMATS))
 
 
 class Metrics:

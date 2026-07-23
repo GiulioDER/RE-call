@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-366%20·%20real%20pgvector-brightgreen" alt="366 tests">
+  <img src="https://img.shields.io/badge/tests-527%20·%20real%20pgvector-brightgreen" alt="527 tests">
 </p>
 
 <p align="center">
@@ -150,7 +150,8 @@ of answerable ones wrongly refused, on every arm.
 
 ### Replicated on a public corpus — and it narrows the conclusion
 
-The above is one corpus, and a private one. Repeated on the **732 Python PEPs** with 110
+The above is one corpus, and a private one. Repeated on the **public Python PEP corpus** — 746
+files matched by `**/*.rst`, the figure the runner reports and the one used in the table — with 110
 hand-labelled questions that **ship in this repo** — a corpus anyone can fetch and check:
 
 | hit@5 | bge-small (local) | voyage-3 (cloud) | Δ |
@@ -198,7 +199,7 @@ because a claim honoured as written is safe and a claim guessed at is not.
 
 RE-call is extracted from the memory system behind a production trading-research agent whose memory
 outgrew its context window. That corpus is the one the numbers above were measured against:
-**792 hand-written markdown memos → 6,469 chunks**, re-indexed daily.
+**794 hand-written markdown memos → 6,491 chunks**, re-indexed daily.
 
 Every guard here is a scar from a real failure — re-litigating a falsified experiment, trusting a
 weak hit on an unanswerable question, building on a fact that had been reversed. Running the library
@@ -292,12 +293,16 @@ Stated plainly, because the failure mode this library exists to prevent is confi
   discrimination, not the trust layer. STR, latency and scale figures are unaffected.
 - **Gap detection is bounded by the embedder.** With a weak one, no threshold separates answerable
   from unanswerable — measured, not assumed.
-- **ANN recall is untuned.** `hnsw.ef_search` is left at its default and HNSW build
-  nondeterminism measurably moves calibration. → [#11](https://github.com/GiulioDER/RE-call/issues/11)
+- **ANN recall is tuned on the filtered path only.** A `source`-filtered query sets
+  `hnsw.ef_search=200` + `hnsw.iterative_scan=relaxed_order`, because at pgvector's defaults that
+  path measured recall@10 **0.38** with 40/40 queries truncated. The unfiltered path still runs at
+  the defaults, where it measured 1.000 — but every query now also carries a `tenant_id` predicate,
+  and that combination has not been measured on a multi-tenant table. HNSW build nondeterminism
+  also measurably moves calibration. → [#11](https://github.com/GiulioDER/RE-call/issues/11)
 
 ## Engineering
 
-**366 tests, 2 skipped.** The database-touching ones run against a real pgvector container — no mock
+**527 tests, 7 skipped.** The database-touching ones run against a real pgvector container — no mock
 DB. CI runs `ruff`, the suite against PostgreSQL, and `pip-audit` over a checked-in `uv.lock`, as a
 gate rather than a report.
 
@@ -332,8 +337,11 @@ overwrote the other's row.
 Two behavioural changes worth knowing before you upgrade:
 
 - **The abstention threshold is fitted differently** (mid-gap rather than on the lowest answerable
-  sample). It abstains *more*, and on measured data far more accurately — false-confidence on
-  unanswerable queries drops from 0.205 to 0.000 for 1.5% of answerable queries. Re-run
+  sample). It abstains *more*, and on measured data far more accurately — on the held-out sweep,
+  false-confidence on unanswerable queries drops from **0.205 to 0.045**, for an additional
+  **0.7%** of answerable queries wrongly abstained on (false-abstain 0.003 → 0.010). A separate
+  end-to-end run of the shipped rule on the same host measured gap FCR **0.000** at false-abstain
+  0.015; that number is not comparable to the 0.205, which comes from the sweep. Re-run
   `recall calibrate` and re-check any threshold you have pinned.
 - **`supersedes:` matching is more tolerant.** `name`, `name.md`, `[name]` and `[[name]]` now all
   resolve to the same document, so edges that were silently dangling may start applying. That is the

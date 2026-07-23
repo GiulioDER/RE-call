@@ -195,6 +195,51 @@ def test_migrating_a_pre_tenancy_table_preserves_its_rows(tenant_table):
         s.close()
 
 
+@requires_db
+def test_a_half_migrated_table_is_repaired_not_reported_done(tenant_table):
+    """An interrupted migration must be finished on the next open, not treated as complete.
+
+    The migration is three ALTERs. Interrupted after the DROP CONSTRAINT — crash, restart,
+    cancelled statement — the table has `tenant_id` but NO primary key. A completion check that
+    only looks for the column reports "already migrated" forever, and every subsequent upsert
+    dies on `ON CONFLICT (tenant_id, id)` with no matching constraint. Reproduced here by
+    building that exact half-migrated state directly.
+    """
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        conn.execute(
+            f"""CREATE TABLE {tenant_table} (
+                id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                text TEXT NOT NULL,
+                metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                embedding vector(4),
+                indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
+                tenant_id TEXT NOT NULL DEFAULT 'default'
+            )"""
+        )  # column added, primary key never re-added: the interrupted state
+
+    s = PgVectorStore(TEST_DSN, dim=4, table=tenant_table)
+    try:
+        s.ensure_schema()
+
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            pkey = conn.execute(
+                "SELECT array_length(conkey, 1) FROM pg_constraint "
+                "WHERE conrelid = %s::regclass AND contype = 'p'",
+                (tenant_table,),
+            ).fetchone()
+        assert pkey is not None, "half-migrated table was left without a primary key"
+        assert pkey[0] == 2, "primary key was not repaired to the composite (tenant_id, id)"
+
+        # The consequence the missing key actually causes: an upsert must work.
+        s.upsert([Chunk(id="c1", source="a.md", text="hello", metadata={})], [_vec(0)])
+        assert s.count() == 1
+    finally:
+        s.close()
+
+
 # --------------------------------------------------------------------------------------------
 # Layer 2: row-level security, verified as a role that cannot bypass it
 # --------------------------------------------------------------------------------------------
@@ -315,3 +360,114 @@ def test_rls_blocks_writing_a_row_for_another_tenant(unprivileged_dsn, tenant_ta
             )
     finally:
         a.close()
+
+
+@requires_db
+def test_a_tampered_policy_predicate_is_repaired_on_the_next_open(tenant_table):
+    """The isolation policy must converge on its DEFINITION, not merely on its name.
+
+    `ensure_schema` runs on every store open, which is what makes it a repair mechanism. If it
+    only asked "does a policy with this name exist?", a policy whose predicate had been altered —
+    by hand, by a migration, by an older version of this code — would be left in place because
+    the name matched. A changed predicate here is a changed isolation boundary, so `USING (true)`
+    is the whole control silently switched off while the table still reports RLS as enabled.
+    """
+    s = PgVectorStore(TEST_DSN, dim=4, table=tenant_table)
+    try:
+        s.ensure_schema()
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(
+                f"ALTER POLICY {tenant_table}_tenant_isolation ON {tenant_table} "
+                f"USING (true) WITH CHECK (true)"
+            )
+            tampered = conn.execute(
+                "SELECT pg_get_expr(polqual, polrelid) FROM pg_policy WHERE polname = %s",
+                (f"{tenant_table}_tenant_isolation",),
+            ).fetchone()[0]
+        assert tampered == "true", "fixture failed to tamper with the policy"
+
+        s.ensure_schema()  # the repair
+
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            repaired = conn.execute(
+                "SELECT pg_get_expr(polqual, polrelid) FROM pg_policy WHERE polname = %s",
+                (f"{tenant_table}_tenant_isolation",),
+            ).fetchone()[0]
+        assert "tenant_id" in repaired and "current_setting" in repaired, (
+            f"tampered policy was not repaired: {repaired!r}"
+        )
+    finally:
+        s.close()
+
+
+@requires_db
+def test_reopening_a_correct_table_does_not_recreate_the_policy(tenant_table):
+    """`ensure_schema` must recognise its OWN policy as already correct.
+
+    It compares the stored predicate against a literal built in `_enable_rls`, so that literal
+    has to match how Postgres deparses the policy it just created — down to the `::text` cast it
+    inserts. If it ever stops matching, nothing fails: the comparison simply never succeeds and
+    every store open silently DROPs and re-CREATEs the policy, taking an ACCESS EXCLUSIVE lock on
+    a live table each time, once per tenant. The unit tests cannot see this — they compare the
+    literal against another copy of itself — so it is pinned here against a real server, on the
+    policy's OID, which changes if and only if the policy was actually recreated.
+
+    This is also the regression test for a future PostgreSQL upgrade that renders the expression
+    differently.
+    """
+    def policy_oid() -> int | None:
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            row = conn.execute(
+                "SELECT oid FROM pg_policy WHERE polname = %s",
+                (f"{tenant_table}_tenant_isolation",),
+            ).fetchone()
+        return row[0] if row else None
+
+    s = PgVectorStore(TEST_DSN, dim=4, table=tenant_table)
+    try:
+        s.ensure_schema()
+        first = policy_oid()
+        assert first is not None, "no policy was created"
+
+        s.ensure_schema()
+        s.ensure_schema()
+        assert policy_oid() == first, (
+            "the policy was recreated on a steady-state open — the expected predicate no longer "
+            "matches what Postgres stores, so every open now churns it under an exclusive lock"
+        )
+    finally:
+        s.close()
+
+
+@requires_db
+def test_a_policy_narrowed_to_a_role_is_repaired(tenant_table):
+    """`ALTER POLICY ... TO <role>` must not survive a re-open.
+
+    The policy is created for PUBLIC and ALL commands. Narrowing its role set leaves the name,
+    the predicate and `relrowsecurity` all reporting healthy while the policy no longer applies
+    to the role the application actually connects as — an isolation boundary switched off in a
+    way that a name-or-predicate check cannot see.
+    """
+    s = PgVectorStore(TEST_DSN, dim=4, table=tenant_table)
+    try:
+        s.ensure_schema()
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(
+                f"ALTER POLICY {tenant_table}_tenant_isolation ON {tenant_table} TO recall"
+            )
+            narrowed = conn.execute(
+                "SELECT polroles = '{0}'::oid[] FROM pg_policy WHERE polname = %s",
+                (f"{tenant_table}_tenant_isolation",),
+            ).fetchone()[0]
+        assert narrowed is False, "fixture failed to narrow the policy's role set"
+
+        s.ensure_schema()  # the repair
+
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            restored = conn.execute(
+                "SELECT polroles = '{0}'::oid[] FROM pg_policy WHERE polname = %s",
+                (f"{tenant_table}_tenant_isolation",),
+            ).fetchone()[0]
+        assert restored is True, "a policy narrowed to one role was left in place"
+    finally:
+        s.close()
