@@ -7,6 +7,17 @@ dates — this project does not currently tag releases.
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-07-23
+
+### Fixed
+- **Unresolved merge-conflict markers in the README, published to PyPI.** 0.5.1 shipped with raw
+  `<<<<<<< Updated upstream` / `=======` / `>>>>>>> Stashed changes` markers around the
+  standard-benchmark bullet — an artifact of a `git stash` reconcile committed unresolved, so both
+  the GitHub landing page and the PyPI 0.5.1 project description rendered the markers to every
+  visitor. Resolved in favour of the current claim (LOCOMO runs against the library; hit@5 0.615;
+  the 446-adversarial abstention boundary), dropping the stale "this repo has never run either"
+  side. PyPI freezes a version's description at upload, so this needs a release.
+
 ## [0.5.1] — 2026-07-23
 
 ### Fixed
