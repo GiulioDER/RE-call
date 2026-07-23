@@ -242,8 +242,31 @@ supersession is a declared relation rather than a similarity judgement.
 |---|---|
 | recall@5, unfiltered | 1.00 [0.98, 1.00] (n=200) |
 | recall@5, `source`-filtered | 1.00 [0.98, 1.00] (n=200) — but see below |
-| search latency p50 / p95 / p99 | 67.2 / 196.6 / 353.9 ms |
-| index throughput | 50,600 chunks in 221.5 s (~228 chunks/s) |
+| search latency p50 / p95 / p99 | 18.3 / 25.0 / 29.7 ms — one build; see the range below |
+| index throughput | 50,600 chunks in 130.7 s (~387 chunks/s) — likewise |
+
+**These two rows are not stable, and previous versions of this table published them as if they
+were.** Re-running this arm at the *same seed* — so the same corpus, the same 550 queries, the
+same embedder — three times gives:
+
+| run | STR baseline | STR trust | trust coverage | abstain acc | p50 / p95 / p99 (ms) | index |
+|---|---|---|---|---|---|---|
+| previously published | 0.92 | **0.00** | 0.01 | 0.99 | 67.2 / 196.6 / 353.9 | 221.5 s |
+| re-run 1 | 0.46 | **0.00** | 0.14 | 0.86 | 5.5 / 9.7 / 10.8 | 172.6 s |
+| re-run 2 | 0.82 | **0.00** | 0.14 | 0.86 | 18.3 / 25.0 / 29.7 | 130.7 s |
+
+The seed fixes everything this project controls; what it does not fix is the HNSW build, whose
+randomness pgvector owns — the same non-determinism §6 blames for the old calibration rule
+swinging on every re-index. On `hashing-64` that matters far more than elsewhere: a 64-dimension
+hashing embedder puts almost no signal in the vector, so the graph's shape decides what comes
+back, and the STR *baseline* swings across **0.46–0.92** on identical inputs. The latency and
+throughput figures additionally share a contended developer machine with everything else running
+on it, so they bound nothing and should be read as order-of-magnitude only.
+
+**What survives it is the number the section is about: STR trust is 0.00 in all three runs.** The
+instability sits in the baseline and the coverage, not in the claim — but a point estimate for a
+quantity that moves by 2× between identical runs was reporting noise, and it should not have been
+tabulated without its spread.
 
 **The predicted failure is real, and this arm cannot see it.** A `source`-filtered query pairs a
 `WHERE` clause with an HNSW `ORDER BY`, and the graph walk cannot see the predicate — the textbook

@@ -112,6 +112,27 @@ dates — this project does not currently tag releases.
   retry automatically (a plain `CREATE INDEX` cannot fail this way, since it is one transaction);
   documented in `recall/store.py` alongside the change. Closes issue #11's fourth checkbox.
 
+### Fixed
+
+- **p50/p95/p99 were reported one rank too high** (`recall/observability.py`,
+  `recall/eval/scale.py`). `int(q * n)` was used as a 0-based index, but that expression *is* the
+  1-based nearest rank, so every percentile returned the next sample up. On 100 samples p99
+  returned the maximum, making "1% of requests are slow" indistinguishable from "one request was
+  slow" — the exact discrimination a p99 exists to provide. The index is now `ceil(q*n) - 1`.
+  Two copies of the formula existed and both carried the defect; they now share one
+  implementation, because fixing one while publishing from the other is how the wrong number
+  reached `results/` in the first place. (`_percentile` remains as an alias of the now-public
+  `percentile`.)
+  - Scope, stated precisely so the fix does not take credit it is not owed: this lowers a
+    reported percentile by exactly one rank when `q*n` is an integer, and changes nothing
+    otherwise. It does **not** explain the larger movements in the republished
+    `results/*/SCALE.md` figures — those are run-to-run variance.
+- **`results/*/SCALE.md` regenerated, and FINDINGS §5b now reports the spread rather than a point
+  estimate.** Re-running the index-pressure arm at the *same seed* three times moved the STR
+  baseline across **0.46–0.92** and p50 latency across **5.5–67.2 ms**, because the seed does not
+  fix pgvector's HNSW build and `hashing-64` puts almost no signal in the vector. STR *trust* —
+  the number that arm is about — was **0.00** in all three.
+
 ### Changed
 
 - **Schema DDL now waits a bounded time for its LOCK** (`RECALL_SCHEMA_LOCK_TIMEOUT_MS`, default

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -180,11 +181,24 @@ class Metrics:
             self._histograms.clear()
 
 
-def _percentile(sorted_samples: list[float], q: float) -> float:
+def percentile(sorted_samples: list[float], q: float) -> float:
+    """Nearest-rank percentile: the smallest sample with at least `q` of the data at or below it.
+
+    The index is `ceil(q*n) - 1`, NOT `int(q*n)`. `int(q*n)` IS the 1-based nearest rank, so
+    using it as a 0-based index reports the next sample up — one whole rank too high, every
+    time. On 100 samples that returns the maximum for p99 and the 96th value for p95, which
+    reads as a worse tail than the data contains and makes p99 indistinguishable from max.
+    """
     if not sorted_samples:
         return float("nan")
-    idx = min(len(sorted_samples) - 1, int(q * len(sorted_samples)))
+    n = len(sorted_samples)
+    idx = min(n - 1, max(0, math.ceil(q * n) - 1))
     return round(sorted_samples[idx], 3)
+
+
+#: Was private until the off-by-one fix made it worth sharing with `recall.eval.scale`, which
+#: carried a second copy of the same formula and therefore the same defect.
+_percentile = percentile
 
 
 #: Process-wide registry. A module-level singleton because the alternative — threading a registry

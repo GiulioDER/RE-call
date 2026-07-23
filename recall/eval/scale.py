@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import statistics
 import time
 from pathlib import Path
 
@@ -30,6 +29,7 @@ from recall.eval.harness import (
     trust_results_to_markdown,
 )
 from recall.eval.metrics import recall_at_k, wilson_ci
+from recall.observability import percentile
 from recall.eval.synthetic import generate
 from recall.retriever import HybridRetriever
 
@@ -50,15 +50,19 @@ def _make_embedder(name: str) -> Embedder:
 
 def _percentiles(samples_ms: list[float]) -> dict[str, float]:
     """p50/p95/p99 of a latency sample. A mean is not a latency report: one 3-second query in a
-    thousand is invisible in the mean and is the entire user complaint."""
+    thousand is invisible in the mean and is the entire user complaint.
+
+    Delegates to `recall.observability.percentile` rather than carrying its own copy. It did
+    carry one, with the same `int(q*n)`-as-a-0-based-index defect, so both reported a tail one
+    rank worse than the data — and fixing one copy would have left the other publishing the old
+    number. All three now use the same nearest-rank convention; p50 was `statistics.median`,
+    which interpolates between the two middle samples on an even n, so it can differ slightly
+    from the nearest-rank p50 reported here.
+    """
     if not samples_ms:
         return {"p50": float("nan"), "p95": float("nan"), "p99": float("nan")}
     s = sorted(samples_ms)
-    return {
-        "p50": statistics.median(s),
-        "p95": s[min(len(s) - 1, int(0.95 * len(s)))],
-        "p99": s[min(len(s) - 1, int(0.99 * len(s)))],
-    }
+    return {"p50": percentile(s, 0.50), "p95": percentile(s, 0.95), "p99": percentile(s, 0.99)}
 
 
 def measure_retrieval(
