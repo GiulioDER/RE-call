@@ -9,6 +9,22 @@ dates — this project does not currently tag releases.
 
 ## [0.5.2] — 2026-07-23
 
+### Added
+- **The LOCOMO benchmark** (`recall/eval/locomo.py`, `locomo_abstention.py`,
+  `locomo_entailment_sweep.py`) — the standard long-term-memory benchmark Mem0 and Zep report, run
+  against the retrieval layer with **no LLM judge**: retrieval is scored by exact string-match
+  against LOCOMO's gold evidence turns, not by an LLM-as-judge. It is deliberately **not** a J
+  score — RE-call ships no generator, so nothing here sits beside Mem0's 66.9 or Zep's 66.0.
+  - **Retrieval**: evidence-turn **hit@5 0.615** [0.59, 0.64] with the free local embedder.
+  - **Abstention**: the **446 adversarial questions** (22.5% of LOCOMO) that, per an independent
+    audit, no published result scores. Default abstention is **0.00**; the shipped levers
+    (calibration, an entailment judge) raise it to 0.37–0.77 only by refusing 26–56% of
+    *legitimate* questions. A judge sweep shows a stronger QNLI cross-encoder lifts best separation
+    0.197 → 0.240 but still refuses 44% of legitimate questions — the residual is the
+    entity-attribution reasoning the library omits by design.
+  - Full write-up in `results/FINDINGS.md` §9; 24 unit tests over the pure logic. The benchmark
+    itself is a local eval (needs pgvector + a cross-encoder download), not a CI gate.
+
 ### Fixed
 - **Unresolved merge-conflict markers in the README, published to PyPI.** 0.5.1 shipped with raw
   `<<<<<<< Updated upstream` / `=======` / `>>>>>>> Stashed changes` markers around the
