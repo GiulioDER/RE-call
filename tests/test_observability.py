@@ -171,3 +171,37 @@ def test_trusted_search_counts_searches_verdicts_and_abstentions(make_store):
     assert delta("recall_abstentions_total") >= 1  # the unanswerable one
     assert sum(v - before.get(k, 0) for k, v in after.items()
                if k.startswith("recall_verdicts_total")) >= 1
+
+
+# --- a malformed log config must not be fatal ------------------------------------------------
+
+
+def test_an_unknown_log_level_falls_back_to_info_instead_of_crashing(monkeypatch):
+    """`configure_logging()` is the FIRST thing an entry point calls.
+
+    `Logger.setLevel` raises on an unrecognised name, so a typo in RECALL_LOG_LEVEL took the whole
+    process down at the one moment there was no logging configured to explain why. A bad log level
+    is never worth refusing to start over — warn and carry on at the default.
+    """
+    monkeypatch.setenv("RECALL_LOG_LEVEL", "verbose")
+    buf = io.StringIO()
+    configure_logging(stream=buf)  # must not raise
+    assert get_logger().level == logging.INFO
+    # the offending value is echoed (normalised to upper case) so the typo is findable
+    assert "VERBOSE" in buf.getvalue()
+
+
+def test_an_unknown_log_format_warns_rather_than_silently_using_text(monkeypatch):
+    """The opposite failure mode of the level: silent. A host whose collector expects JSON gets
+    unparseable logs from a typo, with nothing saying so."""
+    monkeypatch.setenv("RECALL_LOG_FORMAT", "jsno")
+    buf = io.StringIO()
+    configure_logging(stream=buf)
+    assert "jsno" in buf.getvalue()
+
+
+def test_a_valid_level_is_still_honoured(monkeypatch):
+    """Control: the fallback must not swallow correct configuration."""
+    monkeypatch.setenv("RECALL_LOG_LEVEL", "warning")
+    configure_logging(stream=io.StringIO())
+    assert get_logger().level == logging.WARNING

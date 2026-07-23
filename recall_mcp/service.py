@@ -100,8 +100,22 @@ class SearchResult(BaseModel):
 
 
 class IndexResult(BaseModel):
-    files: int = Field(description="Number of files indexed.")
+    files: int = Field(
+        description="Number of files (re)indexed by this call. Unchanged files are counted in "
+        "`skipped`, not here, so a no-op re-index reports 0 — that does not mean the index is empty."
+    )
     chunks: int = Field(description="Number of chunks written to memory.")
+    skipped: int = Field(
+        default=0,
+        description="Files whose content was unchanged since the last index, so they were not "
+        "re-embedded.",
+    )
+    deleted: int = Field(
+        default=0,
+        description="Sources permanently removed because their files are gone from disk. "
+        "Re-indexing is destructive in this one respect; reported so a caller can see it rather "
+        "than discovering it later as missing memory.",
+    )
     message: str = Field(description="Human-readable summary of what was indexed.")
 
 
@@ -239,8 +253,11 @@ def index_memory(
 
     max_files = int(os.environ.get("RECALL_INDEX_MAX_FILES", str(DEFAULT_MAX_INDEX_FILES)))
     max_bytes = int(os.environ.get("RECALL_INDEX_MAX_BYTES", str(DEFAULT_MAX_INDEX_BYTES)))
-    # Same walk `index_path` will do (same root, same default markdown glob) — measured, not
-    # estimated, so the check can never pass on a set smaller than what actually gets indexed.
+    # Walked ONCE, here, and handed to `index_path` below — measured, not estimated, and the set
+    # that is measured is the set that is indexed. Walking again inside `index_path` would ask
+    # the filesystem the same question twice: anything landing under the root between the two
+    # walks would be embedded without being counted, escaping both the budget check and the
+    # tenant's byte quota, and a sync landing there is exactly the deployment shape this serves.
     files = candidate_files(target)
     if len(files) > max_files:
         raise ValueError(
@@ -256,11 +273,18 @@ def index_memory(
     if on_measured is not None:
         on_measured(len(files), total_bytes)
 
-    stats = Indexer(store, embedder).index_path(target)
+    stats = Indexer(store, embedder).index_path(target, files=files)
+    message = f"Indexed {stats.chunks} chunk(s) from {stats.files} file(s) into memory."
+    if stats.skipped:
+        message += f" {stats.skipped} file(s) were unchanged and not re-embedded."
+    if stats.deleted:
+        message += f" Pruned {stats.deleted} source(s) whose files are gone from disk."
     return IndexResult(
         files=stats.files,
         chunks=stats.chunks,
-        message=f"Indexed {stats.chunks} chunk(s) from {stats.files} file(s) into memory.",
+        skipped=stats.skipped,
+        deleted=stats.deleted,
+        message=message,
     )
 
 

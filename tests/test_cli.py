@@ -91,3 +91,76 @@ def test_cli_calibrate_writes_calibration_file(tmp_path, capsys):
     assert "threshold" in data and "scale" in data
     printed = capsys.readouterr().out
     assert "threshold" in printed
+
+
+@requires_db
+def test_cli_tenant_flag_scopes_forget_to_that_tenant(tmp_path, capsys, cli_table):
+    """`forget` is the right-to-erasure path; without `--tenant` it could only reach `default`.
+
+    An erasure request against any other tenant reported "not found (check for typos)" and
+    deleted nothing — a silent no-op that reads exactly like success, while the data stayed
+    indexed and retrievable.
+    """
+    (tmp_path / "note.md").write_text("the caching layer decision was adopted", encoding="utf-8")
+    base = ["--embedder", "hashing", "--dsn", TEST_DSN, "--table", cli_table]
+    main([*base, "--tenant", "acme", "index", str(tmp_path)])
+    capsys.readouterr()
+
+    source = str(tmp_path / "note.md")
+
+    # Without the flag the store looks at `default`, where that source does not exist.
+    main([*base, "forget", source, "--yes"])
+    assert "not found" in capsys.readouterr().out
+
+    # ...and the memory is still there under its own tenant.
+    main([*base, "--tenant", "acme", "search", "caching"])
+    assert "caching" in capsys.readouterr().out.lower()
+
+    # With the flag it is actually erased.
+    main([*base, "--tenant", "acme", "forget", source, "--yes"])
+    out = capsys.readouterr().out
+    assert "forgot" in out and "not found" not in out
+
+
+@requires_db
+def test_cli_index_reports_unchanged_and_pruned_counts(tmp_path, capsys, cli_table):
+    """A silent destructive step is the thing to avoid here.
+
+    `files` counts what was RE-indexed, so an unchanged re-run printed "indexed 0 chunks from 0
+    files" — indistinguishable from an empty index. And pruning, the destructive half of
+    `index`, was reported only through a log record the CLI never configured a handler for, so a
+    deletion could happen with no output at all.
+    """
+    (tmp_path / "a.md").write_text("the caching layer decision", encoding="utf-8")
+    (tmp_path / "b.md").write_text("the retry policy decision", encoding="utf-8")
+    base = ["--embedder", "hashing", "--dsn", TEST_DSN, "--table", cli_table]
+    main([*base, "index", str(tmp_path)])
+    capsys.readouterr()
+
+    main([*base, "index", str(tmp_path)])  # nothing changed
+    assert "2 unchanged" in capsys.readouterr().out
+
+    (tmp_path / "b.md").unlink()
+    main([*base, "index", str(tmp_path)])
+    assert "pruned 1 source" in capsys.readouterr().out
+
+
+@requires_db
+def test_cli_logging_goes_to_stderr_not_stdout(tmp_path, capsys, cli_table):
+    """`main()` now configures logging, and stdout must stay clean.
+
+    The CLI prints results on stdout and callers pipe them; the MCP server has the sharper
+    version of the same constraint (stdout carries JSON-RPC). Log records belong on stderr.
+    """
+    (tmp_path / "a.md").write_text("the caching layer decision", encoding="utf-8")
+    base = ["--embedder", "hashing", "--dsn", TEST_DSN, "--table", cli_table]
+    main([*base, "index", str(tmp_path)])
+    capsys.readouterr()
+
+    (tmp_path / "a.md").unlink()
+    main([*base, "index", str(tmp_path)])
+    captured = capsys.readouterr()
+    # Both halves matter. Asserting only the absence would pass vacuously against the old code,
+    # where no handler was configured at all and the record went nowhere — which WAS the bug.
+    assert "pruning" in captured.err, "the prune log record was emitted nowhere"
+    assert "pruning" not in captured.out, "a log record leaked onto stdout"
