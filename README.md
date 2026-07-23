@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.svg" alt="RE-call — Retrieval-Augmented Self-Recall" width="900">
+  <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/banner.png" alt="RE-call — Retrieval-Augmented Self-Recall" width="900">
 </p>
 
 <p align="center">
@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml"><img src="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
   <img src="https://img.shields.io/badge/tests-584%20·%20real%20pgvector-brightgreen" alt="584 tests">
@@ -43,7 +43,7 @@ were superseded or expired, and prefers an explicit **abstention** over confiden
 ## See it in one screen
 
 <p align="center">
-  <img src="docs/superseded-catch.svg" width="740" alt="recall demo: the stale rate-limit memory has the highest cosine (0.806) but is flagged superseded and demoted below the current memory; an unanswerable query returns an explicit ABSTAIN.">
+  <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/superseded-catch.png" width="740" alt="recall demo: the stale rate-limit memory has the highest cosine (0.806) but is flagged superseded and demoted below the current memory; an unanswerable query returns an explicit ABSTAIN.">
 </p>
 
 <details>
@@ -78,11 +78,11 @@ table without them is marketing.
 | **Abstention is calibrated, not guessed** | On the real corpus: threshold **0.728 ± 0.042** over 4 index rebuilds, false-abstain **0.015**, gap false-confidence **0.000** | Needs ≥ ~20 labelled samples; below that the rule loses its outlier robustness |
 | **Timestamps cannot replace declared supersession** | "Trust the newest relevant hit", steelmanned, still trusts the stale memory **83–100%** of the time | — |
 | **Reranking rescues a weak embedder** | Hybrid + cross-encoder lifts MRR **0.63 → 1.00** offline | Situational: a strong embedder already saturates this corpus |
-| **Fine-tuning pays only for a vocabulary gap** | **+0.00** on a rich corpus; **0.31 → 0.55** held-out MRR on opaque jargon → [study](docs/RAG_TRAINING_STUDY.md) | Measure your gap first |
-| **Near-misses need a judge, not a threshold** | QNLI stage cuts near-miss false-confidence **1.00 → 0.60**, **0.80 → 0.50**, same judge across embedders → [study](docs/ENTAILMENT_SUPERSESSION_STUDY.md) | Judge-alone *degrades* far-gap detection — the two stack, neither replaces the other |
+| **Fine-tuning pays only for a vocabulary gap** | **+0.00** on a rich corpus; **0.31 → 0.55** held-out MRR on opaque jargon → [study](https://github.com/GiulioDER/RE-call/blob/master/docs/RAG_TRAINING_STUDY.md) | Measure your gap first |
+| **Near-misses need a judge, not a threshold** | QNLI stage cuts near-miss false-confidence **1.00 → 0.60**, **0.80 → 0.50**, same judge across embedders → [study](https://github.com/GiulioDER/RE-call/blob/master/docs/ENTAILMENT_SUPERSESSION_STUDY.md) | Judge-alone *degrades* far-gap detection — the two stack, neither replaces the other |
 
-Full methodology, per-embedder tables and the negative results → **[results/FINDINGS.md](results/FINDINGS.md)**.
-Design rationale and the reasoning behind each guard → **[docs/WRITEUP.md](docs/WRITEUP.md)**.
+Full methodology, per-embedder tables and the negative results → **[results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)**.
+Design rationale and the reasoning behind each guard → **[docs/WRITEUP.md](https://github.com/GiulioDER/RE-call/blob/master/docs/WRITEUP.md)**.
 
 ### Claims that were withdrawn
 
@@ -90,18 +90,18 @@ A previous version of this file published each of these. They did not survive re
 
 - **"FCR @calibrated 0.00"** — the threshold was fitted and scored on the same samples. On separable
   data that is 0.00 by arithmetic. Now cross-validated, and the fitting rule was
-  [replaced outright](results/FINDINGS.md) after it proved to let **20.5%** of unanswerable queries through.
+  [replaced outright](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) after it proved to let **20.5%** of unanswerable queries through.
 - **Coverage and abstention accuracy on generated corpora** — the "unanswerable" queries were an
   answerable query plus a nonsense suffix, so nothing could separate them. Rebuilt as genuinely
   off-topic questions; the *document*-level degeneracy remains and is stated as unmeasured.
 - **"6× faster incremental re-index"** — understated. Measured on a Linux server it is **33×**.
 - **Real-corpus recall@5 of 0.945** — that used document *headings* as queries, which is known-item
   retrieval. Against 110 hand-labelled questions phrased the way a person actually asks, hit@5 is
-  **0.33** on that corpus. → [FINDINGS §7](results/FINDINGS.md)
+  **0.33** on that corpus. → [FINDINGS §7](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)
 - **"Retrieval is the weakest part of this system"** — the sentence this file carried after that
   measurement. A replication on a public corpus scored **0.705** with the same local embedder, so
   0.33 was a property of *that corpus*, not of this software. Corrected rather than quietly
-  deleted, because the claim was published. → [FINDINGS §8](results/FINDINGS.md)
+  deleted, because the claim was published. → [FINDINGS §8](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)
 - **"ANN recall is tuned on the filtered path"** — the heading this file gave the HNSW fix, which
   reads as a recall improvement. Two measurements were taken and only the flattering one reached
   the docs: the 0.38 → ~0.90 lift comes from a fixture corpus the test *retries until it
@@ -130,7 +130,7 @@ on a laptop.
 | **Retrieval quality, real questions** | ✅ **hit@5 0.705** [0.56, 0.82] on a public 746-doc corpus with the free local embedder · ⚠️ **0.348** on an idiosyncratic private one — see [the tables below](#retrieval-on-a-real-corpus-what-actually-moved-it) | Measured on 110 hand-labelled questions per corpus, not on headings. Corpus vocabulary dominates: a cloud embedder is worth +0.28 on the hard corpus and +0.02 on the ordinary one |
 | **Data erasure** | ✅ `recall forget` / `recall_forget` permanently delete a source's chunks; previews by default, `--yes` to act | The right-to-erasure path — irreversible, so it refuses to act unattended without the flag |
 | **Abuse bounds** | ✅ `recall_index` refuses before embedding anything if a request exceeds `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` | A client-callable indexer with no cap is an unbounded spend on a cloud embedder |
-| **Authentication** | ✅ bearer tokens on the HTTP transports, three scopes, one tenant per principal — see [docs/AUTH.md](docs/AUTH.md) | Starting an HTTP transport without tokens **refuses to boot** rather than warning. stdio stays unauthenticated by design: it is a private pipe, not a listener |
+| **Authentication** | ✅ bearer tokens on the HTTP transports, three scopes, one tenant per principal — see [docs/AUTH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/AUTH.md) | Starting an HTTP transport without tokens **refuses to boot** rather than warning. stdio stays unauthenticated by design: it is a private pipe, not a listener |
 | **Schema migrations** | ❌ runtime `CREATE TABLE IF NOT EXISTS`, no versioned upgrade path | Pre-tenancy tables *are* migrated in place, with a test |
 | **HA / replication** | ❌ out of scope — this is a library over your Postgres | — |
 
@@ -203,7 +203,7 @@ git clone --depth 1 https://github.com/python/peps
 python -m recall.eval.labelled --corpus peps/peps     --questions recall/eval/peps_questions.json --glob '**/*.rst'
 ```
 
-→ [FINDINGS §7–§8](results/FINDINGS.md) for the misses, the labelling errors found by inspecting
+→ [FINDINGS §7–§8](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) for the misses, the labelling errors found by inspecting
 them, and the one experiment still untested.
 
 ## How it works
@@ -262,10 +262,24 @@ Two further differences, and one deficit:
 - **No LLM and no graph database anywhere in the path.** Retrieval is pgvector plus Postgres
   full-text over a table you already know how to back up. That is cheaper and auditable; it is
   also why there is no entity reasoning here at all.
+<<<<<<< Updated upstream
 - **No standard-benchmark number.** Mem0 publishes LoCoMo and LongMemEval scores. This repo has
   never run either — every number here is on its own corpora, plus the public PEP replication.
   Until that changes, nothing in this README is comparable to a published memory-benchmark
   result, and it should not be read as if it were.
+=======
+- **A standard-benchmark number — with a hard boundary on what it compares to.** LOCOMO now runs
+  against this library ([FINDINGS §9](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)), but **not** the metric Mem0 and Zep
+  report: their **J** score (LLM-as-a-Judge ≈66) grades a *generator* this library does not ship,
+  so no number here belongs beside it. What is measured is the retrieval substrate underneath such
+  a system — evidence-turn **hit@5 0.615** [0.59, 0.64] with the free local embedder — and the one
+  axis no published LOCOMO result scores at all: the **446 adversarial questions** (22.5% of the
+  set) that test whether a system knows what it doesn't know. There, out of the box, RE-call
+  abstains on **zero** — the on-topic-wrong-attribution case is the §4 stale-hit geometry under
+  load — and its shipped levers (calibration, an entailment judge) raise that to 0.37–0.77 only by
+  refusing a quarter to half of *legitimate* questions. The residual is the entity reasoning the
+  bullet above says this library deliberately omits. A measured boundary, not a leaderboard win.
+>>>>>>> Stashed changes
 
 ## Where this comes from
 
@@ -279,7 +293,7 @@ back against that corpus is also what exposed the defects listed under [Engineer
 real files carry stray bytes, real authors write `[[wikilinks]]` where the parser expected filenames,
 and real closure notes hedge.
 
-**→ [Redacted case study](docs/CASE_STUDY.md)** — the real structure, the guards in action, and
+**→ [Redacted case study](https://github.com/GiulioDER/RE-call/blob/master/docs/CASE_STUDY.md)** — the real structure, the guards in action, and
 exactly what is public versus private.
 
 ## Quickstart · 2 minutes, no API key
@@ -349,16 +363,16 @@ Point `RECALL_DSN` at any Postgres.
 Four tools: `recall_search` (verdict + confidence + provenance, or an explicit abstention),
 `recall_index`, `recall_forget` (permanently delete a source's chunks — irreversible,
 tenant-scoped), `recall_stats` (size, freshness, and the process metrics). Full guide →
-[docs/USING_WITH_CLAUDE.md](docs/USING_WITH_CLAUDE.md).
+[docs/USING_WITH_CLAUDE.md](https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md).
 
 ## What this does not do
 
 Stated plainly, because the failure mode this library exists to prevent is confident overreach.
 
 - **No token revocation without a restart.** Authentication shipped — bearer tokens, scopes and
-  one tenant per principal ([docs/AUTH.md](docs/AUTH.md)) — but the token file is read at startup,
+  one tenant per principal ([docs/AUTH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/AUTH.md)) — but the token file is read at startup,
   so removing access takes effect on reload, not on save. (Per-tenant rate limits and an indexing
-  byte quota *do* ship — see [SECURITY.md](SECURITY.md) — but their buckets are per process, so N
+  byte quota *do* ship — see [SECURITY.md](https://github.com/GiulioDER/RE-call/blob/master/SECURITY.md) — but their buckets are per process, so N
   workers admit roughly N times the rate.) For revocation, rotation or per-request identity, front
   this with a real identity provider and supply the MCP SDK's `auth_server_provider`.
 - **Validity is authored, not inferred.** On the reference corpus — 792 memos at the time this was
@@ -451,7 +465,7 @@ Two behavioural changes worth knowing before you upgrade:
 ## Upgrading to the next release (unreleased)
 
 Five changes on `main` that are not in 0.5.0 yet, listed here because each can make something
-that currently succeeds start failing. Full detail in [CHANGELOG.md](CHANGELOG.md).
+that currently succeeds start failing. Full detail in [CHANGELOG.md](https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md).
 
 - **`RECALL_ALLOW_INSECURE_DSN` is now an explicit allowlist** — only `1|true|yes|on` disable the
   guard, and **every other value, including `0` and `false`, keeps it ON**. A deployment relying
@@ -483,4 +497,4 @@ python -m recall.eval.scale --embedder hashing --filler 50000    # scale + laten
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/GiulioDER/RE-call/blob/master/LICENSE).

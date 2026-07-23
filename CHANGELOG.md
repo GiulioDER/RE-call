@@ -7,6 +7,21 @@ dates — this project does not currently tag releases.
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-07-23
+
+### Fixed
+- **The README now renders on PyPI.** The project page for 0.5.0 showed a broken banner and no
+  demo image, for two independent reasons — both fixed here, and both needing a release because
+  PyPI freezes a version's description at upload:
+  - **Relative paths don't resolve on PyPI.** `docs/banner.svg` and every `docs/…`/`results/…`
+    link were repo-relative — fine on GitHub, 404 on PyPI, which has no repo to resolve them
+    against. All image `src`s and doc links are now absolute (`raw.githubusercontent.com` for
+    images, `github.com/.../blob/master` for docs), so they work on both.
+  - **PyPI strips SVG images entirely** (its description sanitiser drops `<svg>` and SVG `<img>`
+    for security). The banner now points at the existing `docs/banner.png`, and the demo has a
+    new rasterised `docs/superseded-catch.png` (rendered from the SVG at 2×, reduced-motion end
+    state so every row is present). The animated SVG stays in the repo for GitHub.
+
 ### Changed
 - **The distribution is now published as `recall-rag`** (the import stays `recall`). `recall` on
   PyPI belongs to an unrelated Python-2-era RPC framework whose last release was in 2014; the name
