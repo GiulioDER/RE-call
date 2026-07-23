@@ -254,17 +254,32 @@ def index_memory(
     max_files = int(os.environ.get("RECALL_INDEX_MAX_FILES", str(DEFAULT_MAX_INDEX_FILES)))
     max_bytes = int(os.environ.get("RECALL_INDEX_MAX_BYTES", str(DEFAULT_MAX_INDEX_BYTES)))
     # Walked ONCE, here, and handed to `index_path` below — measured, not estimated, and the set
-    # that is measured is the set that is indexed. Walking again inside `index_path` would ask
-    # the filesystem the same question twice: anything landing under the root between the two
-    # walks would be embedded without being counted, escaping both the budget check and the
-    # tenant's byte quota, and a sync landing there is exactly the deployment shape this serves.
+    # of FILES that is measured is the set that is indexed. Walking again inside `index_path`
+    # would ask the filesystem the same question twice: anything landing under the root between
+    # the two walks would be embedded without being counted, escaping both the budget check and
+    # the tenant's byte quota, and a sync landing there is exactly the deployment shape this
+    # serves.
+    #
+    # The guarantee is at the SET level, not the BYTE level, and the difference is billable:
+    # `total_bytes` below sums every candidate on disk, while `index_path` skips files whose
+    # content hash is unchanged and never sends them to the embedder. So a no-op re-index is
+    # charged for bytes it does not spend. That is the conservative direction — it over-counts,
+    # never under-counts — but it means the byte quota bounds bytes OFFERED, not bytes embedded.
     files = candidate_files(target)
     if len(files) > max_files:
         raise ValueError(
             f"index request for {path!r} exceeds the file-count budget: {len(files)} candidate "
             f"file(s) > limit {max_files}; set RECALL_INDEX_MAX_FILES to raise it."
         )
-    total_bytes = sum(f.stat().st_size for f in files)
+    # A file that vanishes between the walk and this stat is not billed and not indexed — the
+    # same tolerance `index_path` applies at the read, for the same reason: one disappearance
+    # must not abort a request the rest of which is perfectly serviceable.
+    total_bytes = 0
+    for f in files:
+        try:
+            total_bytes += f.stat().st_size
+        except (FileNotFoundError, NotADirectoryError):
+            continue
     if total_bytes > max_bytes:
         raise ValueError(
             f"index request for {path!r} exceeds the byte budget: {total_bytes} candidate "

@@ -53,6 +53,45 @@ def redacted_dsn(dsn: str) -> str:
 
 _T = TypeVar("_T")
 
+#: How long schema DDL may WAIT FOR A LOCK before giving up (ms). Not a bound on the work — the
+#: HNSW build is deliberately unbounded, see `ensure_schema` — only on queueing. Short on purpose:
+#: waiting on a lock is never progress, the DDL is idempotent and retried on the next open, and a
+#: fast failure is diagnosable where an indefinite stall is not. Overridable because it can refuse
+#: where the previous code waited: `0` restores the old unbounded wait.
+DEFAULT_SCHEMA_LOCK_TIMEOUT_MS = 5000
+#: PostgreSQL stores `lock_timeout` as a signed 32-bit int; anything larger is a parameter error.
+_PG_MAX_INT = 2147483647
+
+
+def _schema_lock_timeout_ms() -> int:
+    """`RECALL_SCHEMA_LOCK_TIMEOUT_MS`, non-negative; anything malformed falls back to default.
+
+    Read per call rather than at import so a long-lived process can be retuned without a reload —
+    the same convention `RECALL_MAX_PRUNE_FRACTION` and `RECALL_INDEX_MAX_FILES` follow.
+    """
+    raw = os.environ.get("RECALL_SCHEMA_LOCK_TIMEOUT_MS")
+    if raw is None:
+        return DEFAULT_SCHEMA_LOCK_TIMEOUT_MS
+    try:
+        value = int(raw)
+    except ValueError:
+        _log.warning("ignoring malformed RECALL_SCHEMA_LOCK_TIMEOUT_MS=%r", raw)
+        return DEFAULT_SCHEMA_LOCK_TIMEOUT_MS
+    if value < 0:
+        _log.warning("ignoring negative RECALL_SCHEMA_LOCK_TIMEOUT_MS=%r", raw)
+        return DEFAULT_SCHEMA_LOCK_TIMEOUT_MS
+    if value > _PG_MAX_INT:
+        # Above PostgreSQL's integer range `SET lock_timeout` raises InvalidParameterValue, which
+        # would make ensure_schema fail outright — a knob for loosening a bound must not be able
+        # to break the thing it loosens. Clamped, not rejected: the intent ("effectively never")
+        # is unambiguous, and 24.8 days of lock wait is indistinguishable from it.
+        _log.warning(
+            "clamping RECALL_SCHEMA_LOCK_TIMEOUT_MS=%r to %d (PostgreSQL integer range)",
+            raw, _PG_MAX_INT,
+        )
+        return _PG_MAX_INT
+    return value
+
 _log = get_logger("store")
 
 
@@ -259,6 +298,10 @@ class PgVectorStore:
         `statement_timeout_ms` bounds every statement server-side. Without it a single runaway
         query occupies a connection until the process dies, with nothing to cancel it; that is
         the difference between a slow request and an exhausted pool.
+
+        One documented exception: `ensure_schema()` lifts it for the duration of its DDL, because
+        an HNSW build legitimately outlasts any sane query bound, and restores it before the
+        connection is reused. A `lock_timeout` bounds that window instead — see `ensure_schema`.
         """
         # `dim` and `table` are interpolated directly into SQL — as a type modifier and an
         # identifier respectively — because Postgres cannot bind those as parameters. They
@@ -459,16 +502,62 @@ class PgVectorStore:
             # database and leaves an INVALID index that the `IF NOT EXISTS` below then treats as
             # present forever (see the CONCURRENTLY comment further down). Restored in `finally`
             # so a pooled connection is never handed back with the guard still lifted.
+            #
+            # Lifting statement_timeout removes the bound on how long the DDL may WORK, which is
+            # intended. It also removes the only bound on how long it may QUEUE, which is not:
+            # statement_timeout counts lock-wait time, so it was previously what broke a wait on
+            # a lock that never came. `CREATE INDEX CONCURRENTLY` waits for every concurrent
+            # transaction on the table, and the ALTERs below take ACCESS EXCLUSIVE — so one
+            # `idle in transaction` session elsewhere is enough to park schema setup forever,
+            # with every query arriving afterwards queued behind it and no error to say why.
+            # `lock_timeout` restores that bound where it belongs: unbounded work, bounded
+            # waiting. A build that cannot get its lock fails fast and is retried on next open,
+            # which is idempotent.
             timeout_lifted = self._statement_timeout_ms is not None
-            if timeout_lifted:
-                conn.execute("SET statement_timeout = 0")
+            prior_lock_timeout = conn.execute("SHOW lock_timeout").fetchone()[0]
+            # BOTH `SET`s go inside the `try`. Outside it, a failure of the second would skip the
+            # `finally` entirely and hand a connection back to the pool with statement_timeout
+            # still lifted — the one thing the paragraph above promises cannot happen.
             try:
+                if timeout_lifted:
+                    conn.execute("SET statement_timeout = 0")
+                conn.execute(f"SET lock_timeout = {_schema_lock_timeout_ms()}")
                 self._ensure_schema_ddl(conn)
             finally:
+                # Never let a restore displace the exception already in flight: if the DDL failed
+                # because the connection died, these SETs raise too, and the operator would be
+                # shown the restore failure instead of the cause. The connection is discarded
+                # either way, so a failed restore costs nothing. Each restore is guarded
+                # independently — sharing one `try` would let the first failure skip the second.
                 if timeout_lifted:
-                    conn.execute(f"SET statement_timeout = {int(self._statement_timeout_ms)}")
+                    # Plain `SET`: this value is an int this object owns, so there is nothing to
+                    # bind and nothing to quote.
+                    self._safe_execute(
+                        conn, f"SET statement_timeout = {int(self._statement_timeout_ms)}"
+                    )
+                # `set_config` here, because `SHOW` hands the prior value back as a FORMATTED
+                # string ('0', '5s', '1min') and `SET` does not take a bind parameter.
+                self._safe_execute(
+                    conn, "SELECT set_config('lock_timeout', %s, false)", (prior_lock_timeout,)
+                )
 
         self._with_retry(_op)
+
+    @staticmethod
+    def _safe_execute(
+        conn: "psycopg.Connection", sql: str, params: tuple | None = None
+    ) -> None:
+        """Run a session-restore statement that must never mask an exception already in flight.
+
+        Called only from `finally` blocks. If the DDL failed because the connection died, the
+        restore raises too and would REPLACE the real error with itself; the connection is being
+        discarded either way, so swallowing the restore failure loses nothing and keeps the
+        diagnosis.
+        """
+        try:
+            conn.execute(sql, params) if params else conn.execute(sql)
+        except psycopg.Error as exc:  # pragma: no cover - requires a broken connection
+            _log.warning("could not restore session setting after schema DDL: %s", exc)
 
     def _ensure_schema_ddl(self, conn: "psycopg.Connection") -> None:
         t = self._table

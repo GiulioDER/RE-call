@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 
@@ -63,6 +64,33 @@ requires_db = pytest.mark.skipif(
     not _db_available(),
     reason="pgvector DB not reachable (run `docker compose up -d`)",
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_recall_logger():
+    """Restore the `recall` logger around every test.
+
+    `configure_logging()` is an entry-point function: it attaches a handler and sets
+    `propagate = False`, deliberately, so that a record cannot reach a root handler and be
+    re-emitted onto stdout — which on the MCP stdio transport would corrupt JSON-RPC. That is
+    right in a process and wrong in a test session, because it is global and never undone: the
+    moment one test calls it, `caplog` stops seeing records from `recall.*` for every test that
+    follows, since caplog captures by propagation to the root.
+
+    The symptom is an order-dependent failure — each affected test passes alone and fails in the
+    suite — which is why it went unnoticed: the pytest version in use happened to order or handle
+    capture in a way that hid it, while the DECLARED floor (`pytest>=8`) did not. Snapshotting
+    here fixes the isolation itself rather than pinning a version that happens to mask it.
+    """
+    logger = logging.getLogger("recall")
+    saved = (list(logger.handlers), logger.level, logger.propagate, logger.disabled)
+    try:
+        yield
+    finally:
+        logger.handlers[:] = saved[0]
+        logger.setLevel(saved[1])
+        logger.propagate = saved[2]
+        logger.disabled = saved[3]
 
 
 @pytest.fixture

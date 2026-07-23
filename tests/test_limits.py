@@ -243,10 +243,20 @@ def test_off_disables_exactly_one_limit(monkeypatch):
 
 @pytest.mark.parametrize(
     "raw",
-    ["", "lots", "0", "-5", "nan", "inf", "Infinity", "+inf", "-inf", "1e400", "2" + "0" * 400],
+    [
+        "", "lots", "0", "-5", "nan", "inf", "Infinity", "+inf", "-inf", "1e400", "2" + "0" * 400,
+        # The underflow end of the same range: the smallest positive double. It is finite and
+        # positive, so every check above passes it — but `value / window_seconds` is exactly
+        # 0.0, which `Rate` rejects. Unhandled, that ValueError comes out of
+        # `limiter_from_env()` and the server never starts: a fall-back-to-default contract
+        # that instead kills the process. (Merely *tiny* values like 1e-320 are not this bug —
+        # their quotient is still a nonzero subnormal, so they build a valid, useless Rate.
+        # Refusing those would be a new policy about minimum sane rates, not a fix.)
+        "5e-324",
+    ],
 )
 def test_a_malformed_or_non_positive_limit_falls_back_to_the_default(monkeypatch, raw):
-    """Never read as "unlimited".
+    """Never read as "unlimited" — and never fatal either.
 
     `0` is the dangerous one: it reads as "no limit" to one person and "nothing allowed" to
     another. Guessing wrong in a spend control silently removes the cap, so it is refused and the
@@ -256,6 +266,11 @@ def test_a_malformed_or_non_positive_limit_falls_back_to_the_default(monkeypatch
     actually reach production: `float()` parses `inf` happily and, worse, OVERFLOWS a long
     numeric literal to it — so an operator typing a generous budget with too many zeros gets an
     unlimited bucket. Unlike `off`, which announces itself in the log, that removal is silent.
+
+    The subnormals are that overflow reflected: a value small enough that the derived per-second
+    rate underflows to zero. Validating only the parsed number catches one end of the range and
+    not the other, and the miss is the worse of the two — it raises out of startup rather than
+    being logged and defaulted.
     """
     monkeypatch.setenv("RECALL_RATE_WRITE_PER_MIN", raw)
     limits = limiter_from_env().limits()
