@@ -157,6 +157,25 @@ dates — this project does not currently tag releases.
   on every authenticated call, because pydantic dropped the unknown `claims` field at
   construction. Below 1.10 the server fails loudly at import instead. Upgrade with
   `pip install -U "recall[mcp]"`.
+- **`pgvector>=0.4`** (was `>=0.3`). `recall/store.py` does `from pgvector import Vector`, and
+  that top-level export only exists from 0.4.0 — on 0.3.x the package installs and then
+  `import recall.store` raises `ImportError`. Same defect as the `mcp` floor above, found the
+  same way: by installing the declared minimum instead of assuming it.
+- **CI now installs the declared minimums** (new `floor` job). `pip install -e ".[dev]"` resolves
+  the newest of everything, so every `>=` bound in `pyproject.toml` was untested — which is the
+  only reason both wrong floors above shipped. The job resolves the lowest direct dependencies
+  on the lowest supported Python (3.11) and runs the full suite. Verified in both directions:
+  green at the corrected floors, red against the previous `mcp>=1.10`.
+- **`pytest-timeout` is now configured** (`timeout = 120`, `timeout_method = "thread"`). It was a
+  declared dependency with nothing setting a timeout, so it did nothing — while the comment
+  beside it explained that a hung test "reads as 'still running', not as a regression", which was
+  precisely the state CI was in.
+- **Test isolation: the `recall` logger is snapshotted around every test.** `configure_logging()`
+  sets `propagate = False` — correct in a process, because a propagated record could reach stdout
+  and corrupt MCP JSON-RPC — but it is global and was never undone, so once one test called it
+  `caplog` stopped seeing `recall.*` records for the rest of the session. The result was
+  order-dependent failures that passed in isolation; the pytest version in use masked it and the
+  declared floor did not. Found by the `floor` job above before it was even committed.
 
 ## [0.5.0] — 2026-07-22
 

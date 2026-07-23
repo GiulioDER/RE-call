@@ -10,7 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "psycopg[binary]>=3.3.4",
-    "pgvector>=0.3",
+    # >=0.4, not >=0.3: `from pgvector import Vector` (recall/store.py) is a top-level export that
+    # only exists from 0.4.0. On 0.3.x the package imports but that name does not resolve, so the
+    # floor was declaring support for versions where `import recall.store` raises ImportError.
+    "pgvector>=0.4",
 ]
 
 [project.optional-dependencies]
@@ -44,6 +47,20 @@ recall = "recall.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["recall", "recall_mcp"]
+
+[tool.pytest.ini_options]
+# `pytest-timeout` was a declared dependency with nothing configuring it, which made it inert:
+# the comment beside it in `[project.optional-dependencies].dev` explains that a test which
+# fails to terminate "reads as 'still running', not as a regression", and that was exactly the
+# state the suite was in. CI runs bare `pytest -q`, so a hang burned the job's full timeout
+# instead of failing. 120s is far above the slowest test here (the whole suite runs in ~3
+# minutes) and far below anything anyone would wait for; a test with a legitimate reason to
+# take longer can raise its own with `@pytest.mark.timeout(n)`.
+#
+# `thread` rather than `signal`: signal-based timeouts do not work on Windows, and this suite is
+# developed there and run on Linux in CI.
+timeout = 120
+timeout_method = "thread"
 
 [tool.ruff]
 line-length = 100
