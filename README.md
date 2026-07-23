@@ -262,10 +262,17 @@ Two further differences, and one deficit:
 - **No LLM and no graph database anywhere in the path.** Retrieval is pgvector plus Postgres
   full-text over a table you already know how to back up. That is cheaper and auditable; it is
   also why there is no entity reasoning here at all.
-- **No standard-benchmark number.** Mem0 publishes LoCoMo and LongMemEval scores. This repo has
-  never run either — every number here is on its own corpora, plus the public PEP replication.
-  Until that changes, nothing in this README is comparable to a published memory-benchmark
-  result, and it should not be read as if it were.
+- **A standard-benchmark number — with a hard boundary on what it compares to.** LOCOMO now runs
+  against this library ([FINDINGS §9](results/FINDINGS.md)), but **not** the metric Mem0 and Zep
+  report: their **J** score (LLM-as-a-Judge ≈66) grades a *generator* this library does not ship,
+  so no number here belongs beside it. What is measured is the retrieval substrate underneath such
+  a system — evidence-turn **hit@5 0.615** [0.59, 0.64] with the free local embedder — and the one
+  axis no published LOCOMO result scores at all: the **446 adversarial questions** (22.5% of the
+  set) that test whether a system knows what it doesn't know. There, out of the box, RE-call
+  abstains on **zero** — the on-topic-wrong-attribution case is the §4 stale-hit geometry under
+  load — and its shipped levers (calibration, an entailment judge) raise that to 0.37–0.77 only by
+  refusing a quarter to half of *legitimate* questions. The residual is the entity reasoning the
+  bullet above says this library deliberately omits. A measured boundary, not a leaderboard win.
 
 ## Where this comes from
 

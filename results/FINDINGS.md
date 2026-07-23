@@ -588,3 +588,101 @@ Reproduce this one end to end — corpus, questions and ground truth are all pub
 git clone --depth 1 https://github.com/python/peps
 python -m recall.eval.labelled --corpus peps/peps     --questions recall/eval/peps_questions.json --glob '**/*.rst'
 ```
+
+## 9. LOCOMO: the standard benchmark, and the one axis nobody else scores
+
+Every number above is measured on this repo's own corpora, plus the public PEP replication. That was
+the standing caveat the README carried: *nothing here is comparable to a published memory-benchmark
+result.* This section closes that gap by running **LOCOMO** — the long-term-conversational-memory
+benchmark Mem0 and Zep report — against this library.
+
+**What is measured, and what is deliberately not.** LOCOMO's headline metric is LLM-as-a-Judge (J):
+a model reads the retrieved context, writes an answer, a judge grades it (Mem0 J≈66.9, Zep J≈66.0;
+arXiv:2504.19413 Table 2). **This repo does not produce a J score and none of the numbers below
+belong in a column beside one** — RE-call has no generator in its path; it is the retrieval
+substrate *under* a system like that. What it can measure exactly is the part it owns, and it
+measures it with no judge and therefore no judge variance:
+
+- **Retrieval (categories 1–4).** LOCOMO annotates every answerable question with the dialog turns
+  that contain the answer (`evidence: ["D1:3"]`) and every turn carries that id, so "was the
+  evidence turn retrieved" is string equality. `hit@k` here is a *ceiling* on any downstream J: a
+  turn never retrieved cannot be answered from.
+- **Abstention (category 5).** LOCOMO's adversarial split — 446 questions (22.5% of the set) that
+  look answerable and are not, typically an event mis-attributed to the wrong speaker. An
+  independent audit (github.com/dial481/locomo-audit) finds **no published LOCOMO result evaluates
+  this category at all** — the original harness has a broken formatter for 444 of the 446, so
+  vendors drop it. The one axis this library exists for is unmeasured by the entire field, inside
+  the field's own benchmark.
+
+### 9a. Retrieval: hit@5 0.615 with the free local embedder
+
+| Category | hit@5 | 95% CI | n |
+|---|---|---|---|
+| cat1 | 0.592 | [0.53, 0.65] | 282 |
+| cat2 (temporal) | 0.667 | [0.61, 0.72] | 321 |
+| cat3 | 0.370 | [0.28, 0.47] | 92 |
+| cat4 | 0.630 | [0.60, 0.66] | 841 |
+| **overall** | **0.615** | **[0.59, 0.64]** | 1,536 |
+
+bge-small, hybrid dense+sparse, no rerank. A comparable retrieval anchor at last — measured on the
+standard benchmark, not on this repo's own corpus. Consistent with §8: on ordinary prose the local
+embedder is not the bottleneck.
+
+### 9b. Abstention: 0.00 out of the box, and why the shipped levers only half-fix it
+
+The default configuration — bge-small, uncalibrated threshold, no judge — abstained on **0 of 446**
+adversarial questions ([0.00, 0.009]). That is not a bug; it is §2/§4's lesson under maximum load.
+The adversarial turn is *on-topic* — the right event, the wrong person — so it scores a high cosine
+and sails past a gap-based threshold. The stale-memory geometry of §4 (the wrong hit outscoring the
+right one on similarity) resurfaces here as wrong-attribution.
+
+So the two levers this library ships to raise abstention were tested, each measured **against its
+cost to answerable questions** — a mode that abstains on everything scores 1.00 on adversarials and
+is useless. Calibration was fit **in-sample**, on the very answerable-vs-adversarial cosines it was
+then scored on: not a realistic operating point but calibration's *upper bound*, so any failure to
+separate is a property of the data, not the fit.
+
+| Mode | Adversarial abstain ↑ | Answerable false-abstain ↓ |
+|---|---|---|
+| default | 0.000 [0.00, 0.01] | 0.000 [0.00, 0.01] |
+| calibrated (in-sample) | 0.527 [0.48, 0.57] | 0.370 [0.32, 0.42] |
+| entailment judge | 0.374 [0.33, 0.42] | 0.263 [0.22, 0.31] |
+| both | 0.765 [0.72, 0.80] | 0.557 [0.51, 0.61] |
+
+n=446 adversarial, n=400 answerable (40/conversation, seed 0); QNLI cross-encoder, threshold 0.5.
+
+Three findings, one of them a correction of this repo's own first guess:
+
+1. **Calibration moves it — the initial "wrong failure mode, won't help" call was wrong.** Fit on
+   the actual distributions it lifts adversarial abstention from 0 to 0.527. The distributions
+   overlap, as expected for an on-topic adversarial, but *not completely*, and calibration exploits
+   the partial gap. Stated because the prediction was published internally before it was measured.
+2. **No mode is a clean win, and the best absolute catch is the worst trade.** `both` refuses 76.5%
+   of adversarials but also **55.7% of answerable questions** — unusable. Even the mildest useful
+   mode gives up a quarter of legitimate answers.
+3. **Entailment is the better-founded lever, even though its absolute catch is lower.** Its
+   0.374 / 0.263 is not in-sample-biased — the judge is pretrained, nothing is fit to the test set —
+   whereas calibration's 0.527 is an optimistic ceiling a held-out fit would not reach. Best honest
+   ratio: entailment. Best honest *conclusion*: neither closes the gap.
+
+**The residual is architectural, not a tuning failure.** Separating "what did Caroline realize" from
+"what did Melanie realize" when both turns are in the corpus and both score high is entity-level
+reasoning — and this library states plainly that it does none: no LLM, no graph, no entity linking
+in the retrieval path (README, "Prior art"). LOCOMO cat5 stresses exactly the axis the architecture
+excludes by design. The honest one line:
+
+> Out of the box RE-call cannot abstain on LOCOMO's adversarials (0.00). Its shipped levers raise
+> that to 0.37–0.77, but none without refusing a quarter to half of legitimate questions — the
+> residual is the entity-attribution reasoning the library intentionally omits. Entailment is the
+> better-founded lever; calibration's apparent edge is partly in-sample optimism.
+
+That is a stronger result than a clean number would have been: a measured boundary of the design,
+carried with the evidence that draws it, on a category no competitor reports.
+
+Reproduce it — the dataset is public and the harness ships here:
+
+```bash
+curl -sLO https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json
+python -m recall.eval.locomo             --data locomo10.json                 # retrieval + default abstention
+python -m recall.eval.locomo_abstention  --data locomo10.json --answerable-sample 40  # the ablation
+```
