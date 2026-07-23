@@ -68,8 +68,13 @@ dates — this project does not currently tag releases.
   the truncation but not the recall loss) — `query_dense` now sets **both**,
   `hnsw.ef_search=200` + `hnsw.iterative_scan=relaxed_order`, via `SET LOCAL` inside an explicit
   transaction (the one precondition `SET LOCAL` has), scoped to ONLY the `source`-filtered branch
-  — an unfiltered query already measures recall 1.000 and pays no extra cost. Recovers to
-  recall@10 **~0.90** with **0/40** truncated on the same corpus. Both HNSW knobs are configurable
+  — an unfiltered query already measures recall 1.000 and pays no extra cost. Takes truncation to
+  **0/40** on that corpus, and to **0/30** on an independent A/B built the way a real multi-file
+  index run builds one. **Recall is a different story and both measurements are published rather
+  than the flattering one:** 0.38 → ~0.90 on the fixture corpus above, but **0.523 → 0.483** on the
+  normally-built one, because `relaxed_order` fills to `k` with approximate matches. The claim here
+  is the narrow one — filtered dense search returns `k` results when `k` exist — not a recall
+  improvement. Both HNSW knobs are configurable
   via `RECALL_HNSW_EF_SEARCH_FILTERED` / `RECALL_HNSW_ITERATIVE_SCAN_FILTERED`, following the same
   `os.environ.get(..., str(DEFAULT))` convention as `RECALL_INDEX_MAX_FILES`/`_BYTES`. Measured
   cost of the fix on this corpus: filtered-query p50 latency moves from ~6ms to ~8.6ms (the extra
