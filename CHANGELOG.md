@@ -7,7 +7,55 @@ dates — this project does not currently tag releases.
 
 ## [Unreleased]
 
+### Changed
+- **The distribution is now published as `recall-rag`** (the import stays `recall`). `recall` on
+  PyPI belongs to an unrelated Python-2-era RPC framework whose last release was in 2014; the name
+  is occupied and not reclaimable, and `re-call` is rejected by PyPI's similarity guard as too
+  close to it. Install with `pip install "recall-rag[fastembed]"`. ⚠️ That other `recall` package
+  also provides a top-level `recall` module, so `recall` and `recall-rag` must not share an
+  environment — whichever installs last wins the import path, and nothing detects it.
+
 ### Added
+- **BM25 and single-leg baselines in the labelled evaluation** (`recall/eval/bm25.py`). Every
+  retrieval number this project published was previously unanchored: `hit@5 = 0.705` cannot be
+  read as good or bad without knowing what plain keyword matching scores on the same corpus, the
+  same chunks and the same questions. `python -m recall.eval.labelled` now reports four arms —
+  `bm25`, `dense`, `sparse`, `hybrid` — instead of one. On the public PEP corpus (bge-small, 44
+  held-out answerable): BM25 **0.455**, sparse-only **0.023**, dense-only **0.682**, hybrid
+  **0.705** — so the pipeline beats the baseline by **+0.25**, and dense carries it (hybrid's
+  +0.023 over dense-alone is within the interval on this corpus).
+  - The BM25 implementation is dependency-free (Okapi, `k1=1.5`, `b=0.75`, untuned) rather than
+    `rank_bm25`, so the anchor for every published number cannot change under a dependency bump.
+  - `PgVectorStore.iter_chunks()` streams the tenant's chunks through a server-side cursor, which
+    is how the baseline indexes *exactly* the chunks the other arms search. Deliberately outside
+    `_with_retry`: a mid-scan reconnect would restart the cursor and yield rows twice.
+  - `HybridRetriever(use_dense=False)` completes the ablation switch that `use_sparse=False`
+    started. It is an ablation, not a serving mode — with no dense leg there are no cosines, so
+    `gap_warning` reports False for every query and must not be read as "no gap".
+- **A prior-art section in the README.** Zep/Graphiti, Mem0, Letta and LangMem, what each does
+  about a fact that stopped being true, and the one real difference here: validity is *authored*,
+  not inferred. Stated as a trade — precision on the edges that exist, paid for in coverage
+  (2 of 792 memos declared `supersedes:`) — rather than as a win.
+- **`mypy` as a CI gate** (`[tool.mypy]`, `typecheck` job), with `disallow_untyped_defs`. It found
+  two defects the test suite did not; both are in Fixed below.
+- **Coverage measurement** on the test job (`pytest-cov`, over `recall` and `recall_mcp` only).
+- **A release workflow** (`.github/workflows/release.yml`) publishing on a `v*` tag via PyPI
+  Trusted Publishing — no API token in repository secrets. It builds once, installs the built
+  *wheel* into a clean environment on 3.11 and 3.13 and imports it there, and only then publishes;
+  `uv build` succeeding proves the metadata parses, not that the wheel's contents work.
+
+### Fixed
+- **`RECALL_TRANSPORT` was never validated.** An unrecognised value (`stdo`, `http`) was passed
+  straight to `mcp.run(transport=...)` at the very end of startup, after a store had been opened
+  and the token file read. It is now checked at import against the three transports the SDK
+  accepts, and names both the bad value and the valid set.
+- **`ensure_schema()` crashed with a bare `TypeError` against a foreign table.** `CREATE TABLE IF
+  NOT EXISTS` is a no-op when a table of that name already exists, so pointing a store at an
+  unrelated `chunks` table reached the dimension check with no `embedding` column and indexed
+  `None`. It now raises a `ValueError` naming the table.
+- MCP tool annotations are constructed as `ToolAnnotations` rather than passed as a bare dict, and
+  `StoreRegistry` passes `table=` explicitly instead of splatting a conditional `**kwargs` — both
+  were shapes a type checker could not see through.
 - **A prune guard on re-index** (`recall/index.py`). Re-indexing removes rows for files gone from
   disk; that made `recall index` quietly destructive when a corpus was *missing* rather than
   deleted — an unmounted volume, an interrupted sync, a path that still resolves. It now raises

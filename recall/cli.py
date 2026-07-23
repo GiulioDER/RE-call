@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from recall.calibration import Calibration, from_samples, load_for, save
-from recall.embeddings import HashingEmbedder
+from recall.embeddings import Embedder, HashingEmbedder
 from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
@@ -17,7 +17,7 @@ from recall.types import TrustedResult
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 
 
-def _make_embedder(name: str):
+def _make_embedder(name: str) -> Embedder:
     if name == "hashing":
         return HashingEmbedder(dim=64)
     if name == "fastembed":
@@ -49,7 +49,8 @@ def _print_result(result: TrustedResult) -> None:
 
 
 def _run_queries(
-    store: PgVectorStore, embedder, queries: list[str], calibration: Calibration | None
+    store: PgVectorStore, embedder: Embedder, queries: list[str],
+    calibration: Calibration | None,
 ) -> None:
     for q in queries:
         _print_result(trusted_search(store, embedder, q, calibration=calibration))

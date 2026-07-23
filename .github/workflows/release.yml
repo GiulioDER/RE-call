@@ -1,0 +1,103 @@
+name: Release
+
+# Publishes to PyPI when a tag is pushed, and to TestPyPI on demand.
+#
+# Authentication is **Trusted Publishing** (OIDC), so there is no API token in this repository's
+# secrets — nothing to leak, nothing to rotate, and a stolen `contents: write` cannot publish. It
+# does require one-time setup on PyPI before the first run:
+#
+#   PyPI -> the `recall-rag` project (or "pending publisher" if it does not exist yet)
+#     -> Publishing -> Add a new publisher -> GitHub
+#        owner: GiulioDER   repository: RE-call   workflow: release.yml   environment: pypi
+#
+# Without that, the `publish` job fails on authentication — it never publishes to the wrong place.
+# The `environment:` is what lets a required reviewer sit between a pushed tag and a release that
+# can never be un-published: a version number on PyPI is permanent, even after a yank.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+permissions:
+  contents: read
+
+jobs:
+  # Build ONCE and hand the same artifacts to every downstream job. Rebuilding per job would mean
+  # the thing that was verified is not bit-for-bit the thing that was published.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      # Metadata errors (an unreadable README, a bad classifier) are rejected by PyPI at UPLOAD
+      # time, which is the worst moment to discover them: on a tag push, the tag already exists.
+      - name: Check metadata
+        run: uvx twine check dist/*
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: dist
+          path: dist/
+
+  # Install the built wheel into a clean environment and exercise it. `uv build` succeeding only
+  # proves the metadata parses — it says nothing about whether the wheel's contents import, or
+  # whether a module was left out of `[tool.hatch.build.targets.wheel].packages`.
+  smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]  # the declared floor and the newest supported
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: dist
+          path: dist/
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+
+      # From the wheel, NOT from the checkout — `pip install -e .` would import the source tree
+      # and pass even if the wheel shipped an empty package.
+      - name: Install the built wheel
+        run: pip install dist/*.whl
+
+      - name: Import and run the console script
+        run: |
+          cd "$(mktemp -d)"   # away from the source tree, so nothing resolves by accident
+          python -c "import recall, recall_mcp; from recall.trust import trusted_search; print(recall.__name__, 'ok')"
+          recall --help > /dev/null
+          echo "console script ok"
+
+  publish:
+    needs: [build, smoke]
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'push' && 'pypi' || inputs.target }}
+    permissions:
+      id-token: write  # the OIDC token Trusted Publishing exchanges for an upload credential
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # A tag push always goes to PyPI. A manual run goes wherever it was asked to.
+          repository-url: ${{ (github.event_name == 'push' || inputs.target == 'pypi') && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}

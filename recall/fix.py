@@ -109,7 +109,7 @@ def _first_ref(match: re.Match) -> str | None:
     """
     for group in match.groups()[1:]:
         if group:
-            return group.strip()
+            return str(group).strip()
     return None
 
 
