@@ -203,10 +203,18 @@ def _rate_from_env(name: str, default: float, window_seconds: float) -> Rate | N
             # gets an unlimited bucket. That is precisely the failure this module exists to
             # prevent, arriving by the most ordinary route available, and it is silent: `off`
             # announces itself in the log, an accidental infinity would not.
-            if not math.isfinite(value) or value <= 0:
+            #
+            # The DERIVED rate is validated too, not just the parsed capacity. A value can be
+            # finite and positive and still divide to exactly 0.0 — any subnormal smaller than
+            # `window_seconds * sys.float_info.min` underflows — and `Rate.__post_init__` then
+            # raises ValueError straight out of `limiter_from_env()`, killing the server at
+            # startup. That breaks this module's contract in the one direction it promises never
+            # to break it: a bad value falls back to the default, it does not take the process
+            # down. Overflow was closed above; this is the same hole at the other end.
+            if not math.isfinite(value) or value <= 0 or value / window_seconds <= 0:
                 _log.warning(
-                    "ignoring %s=%r — not a finite positive number (use %r to disable); "
-                    "using default %s",
+                    "ignoring %s=%r — not a finite positive number, or too small to yield a "
+                    "non-zero rate (use %r to disable); using default %s",
                     name, raw, OFF, default,
                 )
                 value = default

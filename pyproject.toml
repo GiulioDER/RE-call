@@ -10,7 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "psycopg[binary]>=3.3.4",
-    "pgvector>=0.3",
+    # >=0.4, not >=0.3: `from pgvector import Vector` (recall/store.py) is a top-level export that
+    # only exists from 0.4.0. On 0.3.x the package imports but that name does not resolve, so the
+    # floor was declaring support for versions where `import recall.store` raises ImportError.
+    "pgvector>=0.4",
 ]
 
 [project.optional-dependencies]
@@ -18,12 +21,17 @@ fastembed = ["fastembed>=0.3"]
 # Connection pooling — required only for PgVectorStore(pool_size=...), i.e. any server
 # process. A CLI runs single-connection and should not pay for a pool maintenance thread.
 pool = ["psycopg-pool>=3.2"]
-# NB: the mcp floor is 1.10, not 1.7 — `recall_mcp/auth.py` needs the resource-server auth split
-# (`AuthSettings.resource_server_url` + FastMCP's `token_verifier=`), both added in 1.10.0. On an
-# older SDK FastMCP absorbs `token_verifier` through `Settings(extra="ignore")` and the argument
-# is silently dropped, i.e. the HTTP server comes up with its authentication quietly missing.
+# NB: the mcp floor is 1.27.2. Two separate requirements sit behind it, and the LATER one binds:
+#   - 1.10.0 added the resource-server auth split (`AuthSettings.resource_server_url` + FastMCP's
+#     `token_verifier=`), which `recall_mcp/auth.py` needs. Below it FastMCP raises on the
+#     `auth=`/`auth_server_provider=` XOR, so the server fails loudly at import — not silently.
+#   - 1.27.2 added `AccessToken.subject` / `.claims`, which is how `server.py` carries the tenant
+#     (`AccessToken(..., claims={"tenant": ...})`, read back in `_current_tenant`). On 1.10-1.27.1
+#     pydantic's `extra="ignore"` DROPS the claim at construction and every authenticated call
+#     then dies on `token.claims` with AttributeError. That whole range installs cleanly and is
+#     broken at request time, so 1.10 was not a sufficient floor.
 # Keep this in step with the `dev` extra below.
-mcp = ["mcp>=1.10", "psycopg-pool>=3.2"]
+mcp = ["mcp>=1.27.2", "psycopg-pool>=3.2"]
 voyage = ["voyageai>=0.2"]
 # NB: rerank / entail / finetune pin the same sentence-transformers floor — bump all three together.
 rerank = ["sentence-transformers>=3.0"]
@@ -32,13 +40,27 @@ eval = ["matplotlib>=3.7"]
 finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
 # pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
 # failing it — a hung CI job reads as "still running", not as a regression.
-dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.5", "mcp>=1.10", "psycopg-pool>=3.2"]
+dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.5", "mcp>=1.27.2", "psycopg-pool>=3.2"]
 
 [project.scripts]
 recall = "recall.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["recall", "recall_mcp"]
+
+[tool.pytest.ini_options]
+# `pytest-timeout` was a declared dependency with nothing configuring it, which made it inert:
+# the comment beside it in `[project.optional-dependencies].dev` explains that a test which
+# fails to terminate "reads as 'still running', not as a regression", and that was exactly the
+# state the suite was in. CI runs bare `pytest -q`, so a hang burned the job's full timeout
+# instead of failing. 120s is far above the slowest test here (the whole suite runs in ~3
+# minutes) and far below anything anyone would wait for; a test with a legitimate reason to
+# take longer can raise its own with `@pytest.mark.timeout(n)`.
+#
+# `thread` rather than `signal`: signal-based timeouts do not work on Windows, and this suite is
+# developed there and run on Linux in CI.
+timeout = 120
+timeout_method = "thread"
 
 [tool.ruff]
 line-length = 100

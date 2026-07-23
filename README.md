@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-527%20·%20real%20pgvector-brightgreen" alt="527 tests">
+  <img src="https://img.shields.io/badge/tests-572%20·%20real%20pgvector-brightgreen" alt="572 tests">
 </p>
 
 <p align="center">
@@ -320,7 +320,7 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 
 ## Engineering
 
-**527 tests, 7 skipped.** The database-touching ones run against a real pgvector container — no mock
+**572 tests, 7 skipped.** The database-touching ones run against a real pgvector container — no mock
 DB. CI runs `ruff`, the suite against PostgreSQL, and `pip-audit` over a checked-in `uv.lock`, as a
 gate rather than a report.
 
@@ -365,6 +365,32 @@ Two behavioural changes worth knowing before you upgrade:
   resolve to the same document, so edges that were silently dangling may start applying. That is the
   intent — on the reference corpus it took working edges from 0 to 2 — but it does mean memories
   that were served as `ok` can now correctly come back `superseded`.
+
+## Upgrading to the next release (unreleased)
+
+Five changes on `main` that are not in 0.5.0 yet, listed here because each can make something
+that currently succeeds start failing. Full detail in [CHANGELOG.md](CHANGELOG.md).
+
+- **`RECALL_ALLOW_INSECURE_DSN` is now an explicit allowlist** — only `1|true|yes|on` disable the
+  guard, and **every other value, including `0` and `false`, keeps it ON**. A deployment relying
+  on `=0` to switch the check off will now refuse to start. The most likely of these to bite,
+  because `0` previously did the opposite of what it reads as.
+- **The `mcp` extra requires `mcp>=1.27.2`** (was `>=1.10`). Versions 1.10–1.27.1 installed
+  cleanly and then failed on every authenticated call, so this now fails at install time instead.
+  Upgrade with `pip install -U "recall[mcp]"`.
+
+- **`recall index` refuses a mass prune.** A re-index that would delete 50% or more of the
+  sources under a root (`RECALL_MAX_PRUNE_FRACTION`, default `0.5`, above a floor of 5 indexed
+  sources) raises `PruneGuardTripped` and deletes nothing — that is how a *missing* corpus stops
+  being indistinguishable from a *deleted* one. It is a behaviour change for any scripted
+  re-index: confirm the files really are gone, then re-run with `--allow-prune`.
+- **The MCP HTTP transports require authentication and meter per tenant.** Starting
+  `streamable-http` or `sse` without `RECALL_AUTH_TOKENS_FILE` refuses to boot. Per-tenant rate
+  limits and an hourly indexing byte budget are on **by default** there
+  (`RECALL_RATE_*_PER_MIN`, `RECALL_INDEX_BYTES_PER_HOUR`; `off` disables one). `stdio` is
+  unchanged — unauthenticated by design, and not metered.
+- **Schema DDL gives up after 5s of lock contention** (`RECALL_SCHEMA_LOCK_TIMEOUT_MS`; `0`
+  restores the old unbounded wait). The DDL is idempotent and retried on the next store open.
 
 ## Reproduce
 

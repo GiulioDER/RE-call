@@ -50,6 +50,63 @@ jobs:
       - name: Test (pytest on real pgvector)
         run: pytest -q
 
+  # The declared floors, actually installed and actually run.
+  #
+  # Every other job resolves the NEWEST of everything, so the `>=` bounds in pyproject.toml were
+  # never exercised: `mcp>=1.7`, `>=1.10` and `>=1.27.2` are indistinguishable to a green build,
+  # and two of those three were wrong — 1.10-1.27.1 installs cleanly and then fails on every
+  # authenticated call, because `AccessToken.claims` only exists from 1.27.2. `pgvector>=0.3` was
+  # wrong the same way: `from pgvector import Vector` is a 0.4.0 export, so the declared floor
+  # named versions where `import recall.store` raises ImportError. A floor nothing resolves at is
+  # documentation, not a constraint, and it is documentation that was false.
+  #
+  # Lowest supported Python as well as lowest dependencies: this is the whole floor, not half of
+  # it. Verified green at py3.11.15 + mcp 1.27.2 + pgvector 0.4.0 + psycopg 3.3.4 + pytest 8.0.0,
+  # and verified RED against the previous `mcp>=1.10` (auth wiring fails at collection).
+  floor:
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: recall
+          POSTGRES_PASSWORD: recall
+          POSTGRES_DB: recall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recall"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    env:
+      RECALL_TEST_DSN: postgresql://recall:recall@localhost:5432/recall
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The `requires-python` floor, not the version the other job happens to use.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      # `--resolution lowest-direct`: oldest version of each DIRECT dependency, transitives
+      # resolved normally. `lowest` would also pin every transitive to its floor, which tests
+      # other projects' constraint hygiene rather than ours.
+      - name: Install the declared minimums
+        run: uv pip install --system --resolution lowest-direct -e ".[dev,mcp]"
+
+      - name: Show what actually resolved
+        run: uv pip list --system
+
+      - name: Test (pytest on real pgvector)
+        run: pytest -q
+
   # Dependency vulnerability scan against the committed uv.lock. Runs independently of the
   # test job (no DB needed) so a CVE advisory never blocks the functional suite and vice versa.
   audit:
