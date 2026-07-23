@@ -77,6 +77,12 @@ finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "n
 # (recall/integrations/langchain.py) needs BaseRetriever + Document, nothing else. Floor 0.3 is the
 # first pydantic-v2 line and the oldest the adapter is tested against. Keep this in step with `dev`.
 langchain = ["langchain-core>=0.3"]
+# llama-index-core only (not the `llama-index` meta-package): the retriever adapter
+# (recall/integrations/llamaindex.py) needs BaseRetriever + TextNode/NodeWithScore, nothing else.
+# It is a heavier tree than langchain-core (aiohttp, sqlalchemy, nltk, pillow, tiktoken); it is in
+# `dev` anyway so the adapter is CI-tested and type-checked, not validated only on a laptop. Floor
+# 0.11 is the oldest the adapter is tested against. Keep this in step with `dev`.
+llamaindex = ["llama-index-core>=0.11"]
 # pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
 # failing it — a hung CI job reads as "still running", not as a regression.
 #
@@ -94,6 +100,9 @@ dev = [
     # langchain-core: the `test` and `typecheck` jobs install `.[dev]` only, so the LangChain
     # adapter's test and its mypy pass need it here too. Mirrors the `langchain` extra above.
     "langchain-core>=0.3",
+    # llama-index-core: same reason — the LlamaIndex adapter's test and mypy pass need it in the
+    # `.[dev]` jobs. Mirrors the `llamaindex` extra above. Heavier tree; accepted for full CI cover.
+    "llama-index-core>=0.11",
 ]
 
 # Declared LAST among the `[project]` sub-tables: every bare key above (`dependencies`,
