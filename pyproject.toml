@@ -73,6 +73,10 @@ rerank = ["sentence-transformers>=3.0"]
 entail = ["sentence-transformers>=3.0"]
 eval = ["matplotlib>=3.7"]
 finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
+# langchain_core only (not the langchain meta-package): the retriever adapter
+# (recall/integrations/langchain.py) needs BaseRetriever + Document, nothing else. Floor 0.3 is the
+# first pydantic-v2 line and the oldest the adapter is tested against. Keep this in step with `dev`.
+langchain = ["langchain-core>=0.3"]
 # pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
 # failing it — a hung CI job reads as "still running", not as a regression.
 #
@@ -87,6 +91,9 @@ finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "n
 dev = [
     "pytest>=8", "pytest-timeout>=2.3", "pytest-cov>=5", "ruff>=0.5,<0.16",
     "mcp>=1.27.2", "psycopg-pool>=3.2",
+    # langchain-core: the `test` and `typecheck` jobs install `.[dev]` only, so the LangChain
+    # adapter's test and its mypy pass need it here too. Mirrors the `langchain` extra above.
+    "langchain-core>=0.3",
 ]
 
 # Declared LAST among the `[project]` sub-tables: every bare key above (`dependencies`,

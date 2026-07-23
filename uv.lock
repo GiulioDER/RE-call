@@ -3034,6 +3034,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "langchain-core" },
     { name = "mcp" },
     { name = "psycopg-pool" },
     { name = "pytest" },
@@ -3057,6 +3058,9 @@ finetune = [
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "sentence-transformers" },
 ]
+langchain = [
+    { name = "langchain-core" },
+]
 mcp = [
     { name = "mcp" },
     { name = "psycopg-pool" },
@@ -3076,6 +3080,8 @@ requires-dist = [
     { name = "accelerate", marker = "extra == 'finetune'", specifier = ">=1.1" },
     { name = "datasets", marker = "extra == 'finetune'", specifier = ">=2.0" },
     { name = "fastembed", marker = "extra == 'fastembed'", specifier = ">=0.3" },
+    { name = "langchain-core", marker = "extra == 'dev'", specifier = ">=0.3" },
+    { name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=0.3" },
     { name = "matplotlib", marker = "extra == 'eval'", specifier = ">=3.7" },
     { name = "mcp", marker = "extra == 'dev'", specifier = ">=1.27.2" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.27.2" },
@@ -3094,7 +3100,7 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'rerank'", specifier = ">=3.0" },
     { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.2" },
 ]
-provides-extras = ["fastembed", "pool", "mcp", "voyage", "rerank", "entail", "eval", "finetune", "dev"]
+provides-extras = ["fastembed", "pool", "mcp", "voyage", "rerank", "entail", "eval", "finetune", "langchain", "dev"]
 
 [[package]]
 name = "referencing"
