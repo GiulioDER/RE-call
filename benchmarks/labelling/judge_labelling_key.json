@@ -1,0 +1,1196 @@
+{
+ "1": {
+  "arm": "recall",
+  "question_id": "conv-47:23",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "2": {
+  "arm": "recall",
+  "question_id": "conv-48:52",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "3": {
+  "arm": "recall",
+  "question_id": "conv-26:102",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "4": {
+  "arm": "mem0",
+  "question_id": "conv-42:134",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "5": {
+  "arm": "recall",
+  "question_id": "conv-47:136",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "6": {
+  "arm": "mem0",
+  "question_id": "conv-41:13",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "7": {
+  "arm": "recall",
+  "question_id": "conv-50:90",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "8": {
+  "arm": "recall",
+  "question_id": "conv-50:79",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "9": {
+  "arm": "recall",
+  "question_id": "conv-41:3",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "10": {
+  "arm": "recall",
+  "question_id": "conv-48:185",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "11": {
+  "arm": "recall",
+  "question_id": "conv-26:95",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "12": {
+  "arm": "recall",
+  "question_id": "conv-43:54",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "13": {
+  "arm": "recall",
+  "question_id": "conv-43:176",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "14": {
+  "arm": "mem0",
+  "question_id": "conv-26:64",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "15": {
+  "arm": "mem0",
+  "question_id": "conv-48:185",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "16": {
+  "arm": "mem0",
+  "question_id": "conv-48:1",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "17": {
+  "arm": "mem0",
+  "question_id": "conv-41:87",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "18": {
+  "arm": "mem0",
+  "question_id": "conv-41:80",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "19": {
+  "arm": "mem0",
+  "question_id": "conv-47:84",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "20": {
+  "arm": "mem0",
+  "question_id": "conv-49:62",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "21": {
+  "arm": "recall",
+  "question_id": "conv-30:10",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "22": {
+  "arm": "mem0",
+  "question_id": "conv-42:50",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "23": {
+  "arm": "recall",
+  "question_id": "conv-47:43",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "24": {
+  "arm": "mem0",
+  "question_id": "conv-50:92",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "25": {
+  "arm": "recall",
+  "question_id": "conv-41:129",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "26": {
+  "arm": "recall",
+  "question_id": "conv-30:50",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "27": {
+  "arm": "recall",
+  "question_id": "conv-49:38",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "28": {
+  "arm": "mem0",
+  "question_id": "conv-49:74",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "29": {
+  "arm": "recall",
+  "question_id": "conv-48:139",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "30": {
+  "arm": "recall",
+  "question_id": "conv-49:42",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "31": {
+  "arm": "recall",
+  "question_id": "conv-48:71",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "32": {
+  "arm": "recall",
+  "question_id": "conv-30:66",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "33": {
+  "arm": "recall",
+  "question_id": "conv-43:37",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "34": {
+  "arm": "recall",
+  "question_id": "conv-43:168",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "35": {
+  "arm": "recall",
+  "question_id": "conv-44:38",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "36": {
+  "arm": "mem0",
+  "question_id": "conv-47:10",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "37": {
+  "arm": "recall",
+  "question_id": "conv-50:133",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "38": {
+  "arm": "mem0",
+  "question_id": "conv-50:63",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "39": {
+  "arm": "recall",
+  "question_id": "conv-30:35",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "40": {
+  "arm": "recall",
+  "question_id": "conv-50:9",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "41": {
+  "arm": "mem0",
+  "question_id": "conv-26:105",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "42": {
+  "arm": "recall",
+  "question_id": "conv-44:1",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "43": {
+  "arm": "mem0",
+  "question_id": "conv-50:33",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "44": {
+  "arm": "mem0",
+  "question_id": "conv-43:9",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "45": {
+  "arm": "mem0",
+  "question_id": "conv-49:13",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "46": {
+  "arm": "mem0",
+  "question_id": "conv-48:71",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "47": {
+  "arm": "mem0",
+  "question_id": "conv-42:40",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "48": {
+  "arm": "mem0",
+  "question_id": "conv-30:34",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "49": {
+  "arm": "mem0",
+  "question_id": "conv-50:127",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "50": {
+  "arm": "recall",
+  "question_id": "conv-41:79",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "51": {
+  "arm": "mem0",
+  "question_id": "conv-26:119",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "52": {
+  "arm": "mem0",
+  "question_id": "conv-50:12",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "53": {
+  "arm": "recall",
+  "question_id": "conv-49:150",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "54": {
+  "arm": "mem0",
+  "question_id": "conv-48:111",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "55": {
+  "arm": "mem0",
+  "question_id": "conv-47:134",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "56": {
+  "arm": "mem0",
+  "question_id": "conv-43:0",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "57": {
+  "arm": "recall",
+  "question_id": "conv-43:132",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "58": {
+  "arm": "mem0",
+  "question_id": "conv-26:12",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "59": {
+  "arm": "recall",
+  "question_id": "conv-43:88",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "60": {
+  "arm": "recall",
+  "question_id": "conv-26:8",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "61": {
+  "arm": "recall",
+  "question_id": "conv-41:118",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "62": {
+  "arm": "recall",
+  "question_id": "conv-44:25",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "63": {
+  "arm": "mem0",
+  "question_id": "conv-42:102",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "64": {
+  "arm": "recall",
+  "question_id": "conv-50:21",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "65": {
+  "arm": "mem0",
+  "question_id": "conv-48:169",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "66": {
+  "arm": "recall",
+  "question_id": "conv-43:69",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "67": {
+  "arm": "mem0",
+  "question_id": "conv-42:171",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "68": {
+  "arm": "recall",
+  "question_id": "conv-49:40",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "69": {
+  "arm": "mem0",
+  "question_id": "conv-26:102",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "70": {
+  "arm": "recall",
+  "question_id": "conv-43:23",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "71": {
+  "arm": "mem0",
+  "question_id": "conv-43:78",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "72": {
+  "arm": "recall",
+  "question_id": "conv-50:95",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "73": {
+  "arm": "mem0",
+  "question_id": "conv-26:150",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "74": {
+  "arm": "recall",
+  "question_id": "conv-44:9",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "75": {
+  "arm": "mem0",
+  "question_id": "conv-26:124",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "76": {
+  "arm": "mem0",
+  "question_id": "conv-43:107",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "77": {
+  "arm": "recall",
+  "question_id": "conv-41:130",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "78": {
+  "arm": "recall",
+  "question_id": "conv-26:17",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "79": {
+  "arm": "recall",
+  "question_id": "conv-43:44",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "80": {
+  "arm": "recall",
+  "question_id": "conv-42:24",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "81": {
+  "arm": "mem0",
+  "question_id": "conv-26:17",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "82": {
+  "arm": "recall",
+  "question_id": "conv-42:166",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "83": {
+  "arm": "recall",
+  "question_id": "conv-50:6",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "84": {
+  "arm": "recall",
+  "question_id": "conv-47:28",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "85": {
+  "arm": "recall",
+  "question_id": "conv-42:114",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "86": {
+  "arm": "recall",
+  "question_id": "conv-42:35",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "87": {
+  "arm": "recall",
+  "question_id": "conv-30:71",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "88": {
+  "arm": "mem0",
+  "question_id": "conv-42:45",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "89": {
+  "arm": "recall",
+  "question_id": "conv-42:171",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "90": {
+  "arm": "recall",
+  "question_id": "conv-43:98",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "91": {
+  "arm": "mem0",
+  "question_id": "conv-44:72",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "92": {
+  "arm": "mem0",
+  "question_id": "conv-49:63",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "93": {
+  "arm": "mem0",
+  "question_id": "conv-41:43",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "94": {
+  "arm": "recall",
+  "question_id": "conv-26:150",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "95": {
+  "arm": "mem0",
+  "question_id": "conv-50:23",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "96": {
+  "arm": "mem0",
+  "question_id": "conv-41:61",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "97": {
+  "arm": "mem0",
+  "question_id": "conv-43:47",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "98": {
+  "arm": "recall",
+  "question_id": "conv-41:22",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "99": {
+  "arm": "mem0",
+  "question_id": "conv-26:141",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "100": {
+  "arm": "recall",
+  "question_id": "conv-41:47",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "101": {
+  "arm": "recall",
+  "question_id": "conv-42:148",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "102": {
+  "arm": "mem0",
+  "question_id": "conv-48:124",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "103": {
+  "arm": "recall",
+  "question_id": "conv-30:34",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "104": {
+  "arm": "mem0",
+  "question_id": "conv-42:96",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "105": {
+  "arm": "recall",
+  "question_id": "conv-43:63",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "106": {
+  "arm": "mem0",
+  "question_id": "conv-43:156",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "107": {
+  "arm": "mem0",
+  "question_id": "conv-43:35",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "108": {
+  "arm": "recall",
+  "question_id": "conv-26:124",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "109": {
+  "arm": "mem0",
+  "question_id": "conv-30:66",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "110": {
+  "arm": "recall",
+  "question_id": "conv-47:137",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "111": {
+  "arm": "mem0",
+  "question_id": "conv-49:40",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "112": {
+  "arm": "recall",
+  "question_id": "conv-49:35",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "113": {
+  "arm": "recall",
+  "question_id": "conv-48:68",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "114": {
+  "arm": "mem0",
+  "question_id": "conv-49:35",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "115": {
+  "arm": "recall",
+  "question_id": "conv-42:33",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "116": {
+  "arm": "recall",
+  "question_id": "conv-49:79",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "117": {
+  "arm": "recall",
+  "question_id": "conv-50:52",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "118": {
+  "arm": "recall",
+  "question_id": "conv-43:47",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "119": {
+  "arm": "recall",
+  "question_id": "conv-30:49",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "120": {
+  "arm": "mem0",
+  "question_id": "conv-47:138",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "121": {
+  "arm": "mem0",
+  "question_id": "conv-30:25",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "122": {
+  "arm": "recall",
+  "question_id": "conv-43:99",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "123": {
+  "arm": "recall",
+  "question_id": "conv-26:6",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "124": {
+  "arm": "mem0",
+  "question_id": "conv-42:173",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "125": {
+  "arm": "recall",
+  "question_id": "conv-42:135",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "126": {
+  "arm": "mem0",
+  "question_id": "conv-26:36",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "127": {
+  "arm": "recall",
+  "question_id": "conv-48:131",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "128": {
+  "arm": "mem0",
+  "question_id": "conv-49:154",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "129": {
+  "arm": "mem0",
+  "question_id": "conv-41:100",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "130": {
+  "arm": "mem0",
+  "question_id": "conv-41:144",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "131": {
+  "arm": "mem0",
+  "question_id": "conv-26:122",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "132": {
+  "arm": "recall",
+  "question_id": "conv-30:32",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "133": {
+  "arm": "mem0",
+  "question_id": "conv-48:182",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "134": {
+  "arm": "recall",
+  "question_id": "conv-41:100",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "135": {
+  "arm": "recall",
+  "question_id": "conv-42:102",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "136": {
+  "arm": "mem0",
+  "question_id": "conv-44:93",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "137": {
+  "arm": "mem0",
+  "question_id": "conv-47:23",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "138": {
+  "arm": "recall",
+  "question_id": "conv-41:108",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "139": {
+  "arm": "recall",
+  "question_id": "conv-48:124",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "140": {
+  "arm": "recall",
+  "question_id": "conv-26:21",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "141": {
+  "arm": "mem0",
+  "question_id": "conv-41:121",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "142": {
+  "arm": "recall",
+  "question_id": "conv-30:76",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "143": {
+  "arm": "recall",
+  "question_id": "conv-49:62",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "144": {
+  "arm": "recall",
+  "question_id": "conv-50:140",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "145": {
+  "arm": "recall",
+  "question_id": "conv-44:65",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "146": {
+  "arm": "recall",
+  "question_id": "conv-26:9",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "147": {
+  "arm": "mem0",
+  "question_id": "conv-47:49",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "148": {
+  "arm": "mem0",
+  "question_id": "conv-41:47",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "149": {
+  "arm": "recall",
+  "question_id": "conv-41:24",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "150": {
+  "arm": "mem0",
+  "question_id": "conv-48:27",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "151": {
+  "arm": "mem0",
+  "question_id": "conv-42:174",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "152": {
+  "arm": "recall",
+  "question_id": "conv-43:87",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "153": {
+  "arm": "mem0",
+  "question_id": "conv-44:41",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "154": {
+  "arm": "recall",
+  "question_id": "conv-41:51",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "155": {
+  "arm": "recall",
+  "question_id": "conv-41:46",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "156": {
+  "arm": "mem0",
+  "question_id": "conv-42:101",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "157": {
+  "arm": "recall",
+  "question_id": "conv-50:16",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "158": {
+  "arm": "mem0",
+  "question_id": "conv-30:76",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "159": {
+  "arm": "recall",
+  "question_id": "conv-49:58",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "160": {
+  "arm": "recall",
+  "question_id": "conv-30:54",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "161": {
+  "arm": "recall",
+  "question_id": "conv-30:28",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "162": {
+  "arm": "recall",
+  "question_id": "conv-50:35",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "163": {
+  "arm": "mem0",
+  "question_id": "conv-26:51",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "164": {
+  "arm": "recall",
+  "question_id": "conv-47:142",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "165": {
+  "arm": "recall",
+  "question_id": "conv-44:30",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "166": {
+  "arm": "recall",
+  "question_id": "conv-30:6",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "167": {
+  "arm": "mem0",
+  "question_id": "conv-30:78",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "168": {
+  "arm": "recall",
+  "question_id": "conv-41:13",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "169": {
+  "arm": "mem0",
+  "question_id": "conv-48:85",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "170": {
+  "arm": "mem0",
+  "question_id": "conv-44:27",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "171": {
+  "arm": "recall",
+  "question_id": "conv-48:32",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "172": {
+  "arm": "recall",
+  "question_id": "conv-42:96",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "173": {
+  "arm": "mem0",
+  "question_id": "conv-41:126",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "174": {
+  "arm": "recall",
+  "question_id": "conv-47:10",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "175": {
+  "arm": "recall",
+  "question_id": "conv-50:118",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "176": {
+  "arm": "mem0",
+  "question_id": "conv-49:73",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "177": {
+  "arm": "recall",
+  "question_id": "conv-42:138",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "178": {
+  "arm": "mem0",
+  "question_id": "conv-44:13",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "179": {
+  "arm": "recall",
+  "question_id": "conv-49:63",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "180": {
+  "arm": "mem0",
+  "question_id": "conv-48:166",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "181": {
+  "arm": "recall",
+  "question_id": "conv-43:33",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "182": {
+  "arm": "recall",
+  "question_id": "conv-48:162",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "183": {
+  "arm": "recall",
+  "question_id": "conv-49:34",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "184": {
+  "arm": "mem0",
+  "question_id": "conv-49:34",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "185": {
+  "arm": "mem0",
+  "question_id": "conv-43:98",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "186": {
+  "arm": "recall",
+  "question_id": "conv-43:58",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "187": {
+  "arm": "recall",
+  "question_id": "conv-26:88",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "188": {
+  "arm": "recall",
+  "question_id": "conv-48:27",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "189": {
+  "arm": "mem0",
+  "question_id": "conv-42:9",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "190": {
+  "arm": "recall",
+  "question_id": "conv-43:85",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "191": {
+  "arm": "mem0",
+  "question_id": "conv-26:99",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "192": {
+  "arm": "mem0",
+  "question_id": "conv-49:123",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "193": {
+  "arm": "recall",
+  "question_id": "conv-42:179",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "194": {
+  "arm": "mem0",
+  "question_id": "conv-26:4",
+  "gpt4o_mini_said": true,
+  "gpt4o_said": false
+ },
+ "195": {
+  "arm": "recall",
+  "question_id": "conv-49:74",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "196": {
+  "arm": "mem0",
+  "question_id": "conv-47:117",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "197": {
+  "arm": "recall",
+  "question_id": "conv-26:57",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "198": {
+  "arm": "mem0",
+  "question_id": "conv-41:146",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ },
+ "199": {
+  "arm": "mem0",
+  "question_id": "conv-26:95",
+  "gpt4o_mini_said": false,
+  "gpt4o_said": true
+ }
+}
