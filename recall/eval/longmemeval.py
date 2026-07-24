@@ -179,6 +179,10 @@ def convert(instances: list[dict], out_dir: Path) -> ConversionReport:
             # does not know, so this costs nothing and is the only way to read the
             # knowledge-update and abstention categories out of a run.
             "question_type": inst.get("question_type", "unknown"),
+            # The sessions THIS question was given. `recall.eval.labelled` ignores the key; the
+            # per-question runner needs it, because the benchmark's own protocol retrieves
+            # against one question's haystack rather than against every session at once.
+            "haystack_files": [f"{s}.md" for s in ids],
         }
         if qid.endswith(_ABSTENTION_SUFFIX):
             question["answerable"] = False

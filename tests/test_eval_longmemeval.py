@@ -87,6 +87,29 @@ def test_an_abstention_instance_becomes_an_unanswerable_question(tmp_path):
     assert "relevant_files" not in q
 
 
+def test_each_question_records_the_haystack_it_was_written_against(tmp_path):
+    # Per-question scoring — the protocol the benchmark actually publishes — retrieves against
+    # ONLY this question's sessions. Without the membership list the merged corpus is the only
+    # thing that can be scored, and that is a strictly harder, non-comparable task.
+    convert([_instance(haystack_session_ids=["s1", "s2"],
+                       haystack_dates=["d1", "d2"],
+                       haystack_sessions=[[{"role": "user", "content": "a"}],
+                                          [{"role": "user", "content": "b"}]],
+                       answer_session_ids=["s2"])], tmp_path)
+
+    q = json.loads((tmp_path / "questions.json").read_text(encoding="utf-8"))[0]
+    assert q["haystack_files"] == ["s1.md", "s2.md"]
+
+
+def test_an_abstention_question_also_records_its_haystack(tmp_path):
+    # It has no gold, but it still has a haystack, and abstention is only meaningful when
+    # scored against the sessions the question was actually given.
+    convert([_instance(question_id="q1_abs", answer_session_ids=[])], tmp_path)
+
+    q = json.loads((tmp_path / "questions.json").read_text(encoding="utf-8"))[0]
+    assert q["haystack_files"] == ["s1.md"]
+
+
 def test_the_question_type_is_preserved_for_per_category_analysis(tmp_path):
     convert([_instance(question_type="knowledge-update")], tmp_path)
 
