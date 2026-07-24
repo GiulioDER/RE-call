@@ -1,9 +1,14 @@
+from typing import Any
+
 from benchmarks.pipeline import (
     GEN_SYSTEM_PROMPT,
     NO_ANSWER,
+    Outcome,
+    aggregate,
     generate_answer,
     is_abstention,
     judge_correct,
+    run_question,
 )
 
 
@@ -96,3 +101,72 @@ def test_judge_correct_parses_yes_no() -> None:
     assert judge_correct(no_completer, "q", "500", "42") is False
     # judge must be robust to a verbose reply
     assert judge_correct(verbose_yes_completer, "q", "500", "500 rps") is True
+
+
+def _q(
+    qid: str, cat: str, adversarial: bool, question: str = "q", answer: str = "500"
+) -> dict[str, Any]:
+    return {
+        "question_id": qid,
+        "category": cat,
+        "adversarial": adversarial,
+        "question": question,
+        "answer": answer,
+    }
+
+
+def test_run_question_answerable_correct() -> None:
+    def retrieve(_q: str) -> str:
+        return "rate limit is 500 rps"
+
+    def completer(system: str, user: str) -> str:
+        return "YES" if "Correct?" in user else "500 rps"
+
+    out = run_question(retrieve, completer, _q("1", "cat1", False))
+    assert out.is_adversarial is False
+    assert out.abstained is False
+    assert out.correct is True
+
+
+def test_run_question_adversarial_abstains() -> None:
+    def retrieve(_q: str) -> str:
+        return ""  # RE-call abstained: empty context
+
+    def completer(system: str, user: str) -> str:
+        return "NO_ANSWER"  # generator abstains
+
+    out = run_question(retrieve, completer, _q("2", "cat5", True))
+    assert out.is_adversarial is True
+    assert out.abstained is True
+    assert out.correct is None  # correctness is undefined for adversarials
+
+
+def test_run_question_answerable_abstain_is_incorrect_without_judging() -> None:
+    def retrieve(_q: str) -> str:
+        return "rate limit is 500 rps"
+
+    def completer(system: str, user: str) -> str:
+        if "Correct?" in user:
+            raise AssertionError("judge must not be called when the answerable question abstained")
+        return "NO_ANSWER"
+
+    out = run_question(retrieve, completer, _q("3", "cat1", False))
+    assert out.abstained is True
+    assert out.correct is False
+
+
+def test_aggregate_reports_both_columns() -> None:
+    outs = [
+        Outcome("1", "cat1", False, "c", "a", abstained=False, correct=True),
+        Outcome("2", "cat1", False, "c", "a", abstained=False, correct=False),
+        Outcome("3", "cat5", True, "", "NO_ANSWER", abstained=True, correct=None),
+        Outcome("4", "cat5", True, "c", "wrong", abstained=False, correct=None),
+    ]
+    agg = aggregate(outs)
+    assert agg["answerable_accuracy"]["n"] == 2
+    assert agg["answerable_accuracy"]["rate"] == 0.5
+    assert agg["adversarial_abstention"]["n"] == 2
+    assert agg["adversarial_abstention"]["rate"] == 0.5
+    assert agg["answerable_false_abstain"]["n"] == 2
+    assert agg["answerable_false_abstain"]["rate"] == 0.0
+    assert set(agg["by_category"]) == {"cat1", "cat5"}
