@@ -182,6 +182,33 @@ def write_conversation_corpus(conversation: dict[str, Any], out_dir: Path) -> in
     return written
 
 
+def index_conversation(
+    store: PgVectorStore,
+    embedder: Embedder,
+    conversation: dict[str, Any],
+    *,
+    corpus_dir: Path | None = None,
+) -> int:
+    """Materialise one LOCOMO conversation's turns and index them into `store`.
+
+    Extracted from `run_conversation` so callers outside this module (the head-to-head benchmark's
+    `RecallSystem` adapter) reuse the exact same indexing path — per-turn markdown documents routed
+    through `Indexer.index_path`, never a bespoke in-memory shortcut. `corpus_dir` lets a caller
+    that already manages a workspace (like `run_conversation`, via `--keep-corpus`) supply its own
+    directory; when omitted, a temp dir is created and cleaned up here. Returns the turn count.
+    """
+    cleanup = corpus_dir is None
+    workspace = corpus_dir if corpus_dir is not None else Path(tempfile.mkdtemp(prefix="locomo-"))
+    try:
+        n_turns = write_conversation_corpus(conversation, workspace)
+        store.ensure_schema()
+        Indexer(store, embedder).index_path(workspace)
+        return n_turns
+    finally:
+        if cleanup:
+            shutil.rmtree(workspace, ignore_errors=True)
+
+
 def _retrieved_dia_ids(hits: list) -> list[str]:
     """Distinct dialog ids behind a result's hits, best rank first."""
     out: list[str] = []
@@ -215,9 +242,7 @@ def run_conversation(
     corpus_dir: Path,
 ) -> dict[str, Any]:
     """Index one conversation and score every question against it."""
-    n_turns = write_conversation_corpus(conversation, corpus_dir)
-    store.ensure_schema()
-    Indexer(store, embedder).index_path(corpus_dir)
+    n_turns = index_conversation(store, embedder, conversation, corpus_dir=corpus_dir)
 
     retriever = HybridRetriever(store, embedder)
     hits_by_cat: dict[int, list[bool]] = {c: [] for c in ANSWERABLE_CATEGORIES}
