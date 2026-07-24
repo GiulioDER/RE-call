@@ -74,14 +74,14 @@ table without them is marketing.
 
 | Claim | Measurement | Limit |
 |---|---|---|
-| **Supersession beats similarity** | Superseded-trust rate **0.00**, 95% Wilson **[0.00, 0.02]**, n=250, against a baseline of **1.00** — plain search returns the stale memory *every time* on adversarially-worded queries | Generated corpus; the successor/abstain columns on it are **not** meaningful (below) |
+| **Supersession beats similarity — where the edge was authored** | Superseded-trust rate **0.00**, 95% Wilson **[0.00, 0.02]**, n=250, against a baseline of **1.00** — plain search returns the stale memory *every time* on adversarially-worded queries | Generated corpus; the successor/abstain columns on it are **not** meaningful (below). **And the mechanism is only as good as its coverage: 2 of 792 real memos declared `supersedes:` while 60 closed a decision in prose** — the enforcement is exact, the corpus is sparse, and both halves are load-bearing ([below](#prior-art--and-where-this-genuinely-differs)) |
 | **Abstention is calibrated, not guessed** | On the real corpus: threshold **0.728 ± 0.042** over 4 index rebuilds, false-abstain **0.015**, gap false-confidence **0.000** | Needs ≥ ~20 labelled samples; below that the rule loses its outlier robustness |
 | **Timestamps cannot replace declared supersession** | "Trust the newest relevant hit", steelmanned, still trusts the stale memory **83–100%** of the time | — |
 | **Reranking rescues a weak embedder** | Hybrid + cross-encoder lifts MRR **0.63 → 1.00** offline | Situational: a strong embedder already saturates this corpus |
 | **Fine-tuning pays only for a vocabulary gap** | **+0.00** on a rich corpus; **0.31 → 0.55** held-out MRR on opaque jargon → [study](https://github.com/GiulioDER/RE-call/blob/master/docs/RAG_TRAINING_STUDY.md) | Measure your gap first |
 | **Near-misses need a judge, not a threshold** | QNLI stage cuts near-miss false-confidence **1.00 → 0.60**, **0.80 → 0.50**, same judge across embedders → [study](https://github.com/GiulioDER/RE-call/blob/master/docs/ENTAILMENT_SUPERSESSION_STUDY.md) | Judge-alone *degrades* far-gap detection — the two stack, neither replaces the other |
-| **Retrieval, on a second public benchmark** | **hit@5 0.970** [0.94, 0.99] on LongMemEval per-question haystacks with the *free local* embedder; **knowledge-update 1.000** (36/36) — the category this library exists for, and the most robust one under haystack pressure → [FINDINGS §10](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | A *retrieval* figure — evidence session in the top 5 — **not** the benchmark's LLM-judged answer accuracy. It does not belong in a column with one |
-| **Abstention has a bounded domain** | Far gaps: accuracy **1.00** (PEPs), **0.89** (real corpus). Near-misses: **it fails** — false-abstain **0.481** on LongMemEval, and **six** candidate signals all score AUC ≤ 0.753. Independently corroborated on LOCOMO, where no judge configuration crosses into usable territory either → [FINDINGS §9–§10](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | Nothing was retuned, because every alternative measured *worse*. `recall calibrate` now reports separability and refuses to certify instead |
+| **Retrieval, on a second public benchmark** | **knowledge-update 1.000** (36/36) — the category this library exists for, and the most robust one under haystack pressure (retains 74% of hit@5 across a 20× larger corpus where the overall figure retains 51%). Overall **hit@5 0.970** [0.94, 0.99] on LongMemEval's own per-question haystacks with the *free local* embedder → [FINDINGS §10](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | A *retrieval* figure — evidence session in the top 5 — **not** the benchmark's LLM-judged answer accuracy. It does not belong in a column with one. **And 0.970 is the benchmark's ~49-session haystack, not a memory store: on one merged 19,195-session index the same questions score 0.366.** Both arms are published because the second is the one that looks like production |
+| **Abstention has a bounded domain** | Far gaps: accuracy **1.00** (PEPs), **0.89** (real corpus). Near-misses: **it fails** — false-abstain **0.481** on LongMemEval, and **six** candidate signals all score AUC ≤ 0.753 — the best one's 95% interval tops out at **0.826**, below the ~0.90 a usable gate needs, so the bar is *excluded* rather than merely unproven. Independently corroborated on LOCOMO, where no judge configuration crosses into usable territory either → [FINDINGS §9–§10](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | Nothing was retuned, because every alternative measured *worse*. `recall calibrate` reports separability **with its interval**, certifies on the interval's lower bound, and exits non-zero rather than certify a threshold the data cannot support |
 
 Full methodology, per-embedder tables and the negative results → **[results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)**.
 Design rationale and the reasoning behind each guard → **[docs/WRITEUP.md](https://github.com/GiulioDER/RE-call/blob/master/docs/WRITEUP.md)**.
@@ -422,11 +422,14 @@ Stated plainly, because the failure mode this library exists to prevent is confi
   it does not: on LongMemEval it wrongly refused **48%** of questions retrieval had answered
   correctly. Six candidate signals were measured on the same 500 questions and **all** of them
   failed: dense cosine **0.753** AUC, cross-encoder rerank 0.742, RRF fusion 0.739, the shipped QNLI
-  judge **0.648**, and two distributional statistics at 0.58 and 0.55. Relevance signals cannot
-  answer an answerability question, and the best of the six does not beat what already ships.
-  Nothing was retuned; instead `recall calibrate` now reports the **separability** of your
-  calibration set and **exits non-zero rather than certify a threshold the data cannot support** —
-  so this failure is visible on *your* corpus before you trust it. **Independently corroborated on
+  judge **0.648**, and two distributional statistics at 0.58 and 0.55. The best of the six carries a
+  95% interval of **[0.680, 0.826]** — the ~0.90 bar sits *outside* it, so this is a measured
+  exclusion, not a small-sample shrug. Relevance signals cannot answer an answerability question,
+  and none of the six beats what already ships. Nothing was retuned; instead `recall calibrate`
+  reports the **separability** of your calibration set with its interval, judges the bar against
+  that interval's **lower bound** — a point estimate of 0.95 on 20 samples a side reaches down to
+  0.879 and has not established 0.90 — and **exits non-zero rather than certify a threshold the
+  data cannot support**, so this failure is visible on *your* corpus before you trust it. **Independently corroborated on
   LOCOMO**, where the adversarial split reaches the same wall from the other side: no judge or
   threshold configuration crosses into usable territory, and a *stronger* judge shifts the curve
   without crossing it. Two benchmarks, two harnesses, one conclusion. →

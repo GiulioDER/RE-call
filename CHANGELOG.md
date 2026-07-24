@@ -7,6 +7,41 @@ dates — this project does not currently tag releases.
 
 ## [Unreleased]
 
+### Changed
+- **Abstention certification now judges the *interval* on separability, not the point estimate**
+  (`recall/calibration.py`). `separability_interval()` returns the Hanley & McNeil (1982) 95%
+  confidence interval on the AUC, `Calibration.separability_ci` exposes it, the saved artifact
+  records it, and `certified` requires the interval's **lower bound** to clear `MIN_SEPARABILITY`.
+
+  This closes a small-sample fail-open. At the 20-per-class minimum the module accepts, a
+  calibration set can measure AUC **0.95** — comfortably past the 0.90 bar — while its lower bound
+  sits at **0.879**, meaning the data never established the bar it appeared to clear. The old rule
+  certified that set, which is the same defect as fitting and scoring on the same samples
+  (FINDINGS §2b) arriving by a different route. The new rule cannot certify anything the old one
+  refused, so it only ever tightens; perfectly separable calibrations (AUC 1.00, zero width) still
+  certify. The refusal message distinguishes *overlapping classes* (needs a different signal) from
+  *too few labels to tell* (needs more labels) — same verdict, opposite remedy.
+
+  The estimator needs only `(auc, n, n)`, so a calibration **loaded from disk** is judged by the
+  same rule as a fresh one; a bootstrap could only judge one built in the same process, and a check
+  that silently stops applying after a round-trip is the failure class this module exists to remove.
+
+  Still a diagnosis: `threshold`, `scale` and `confidence()` are untouched, and a test pins that.
+
+### Fixed
+- **FINDINGS §10b published the wrong standard error on AUC** — `~0.08`, which is
+  `sqrt(A(1-A)/n_min)` and ignores the 470-sample answerable class. The correct estimator gives
+  **0.037**. The published figure was 2.1× too wide, wide enough to leave 0.90 inside the interval
+  and downgrade a measured exclusion to "unproven": the six-signal table now carries intervals, and
+  the best signal's **[0.680, 0.826]** puts the bar outside it. Corrected in place with a dated note
+  rather than silently, because the number was published.
+- **README's LongMemEval claim led with the easy arm.** `hit@5 0.970` is the benchmark's own
+  ~49-session per-question haystack; the merged 19,195-session arm — the one shaped like a real
+  memory store — scores **0.366**, and was reachable only through FINDINGS. Both arms are now in
+  the claims table, and the row leads with `knowledge-update 1.000` (36/36), which is the
+  differentiated result rather than the largest number. The supersession row likewise carries its
+  coverage limit (**2 of 792** memos declared `supersedes:`) beside the enforcement result.
+
 ## [0.5.3] — 2026-07-24
 
 ### Added
