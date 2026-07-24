@@ -32,6 +32,47 @@ _log = get_logger("calibration")
 ANSWERABLE_FLOOR_Q = 0.05
 UNANSWERABLE_CEILING_Q = 0.95
 
+#: Minimum samples per class before a percentile boundary means anything. FINDINGS §6: the q05
+#: floor "cannot exclude anything below ~20 answerable samples", so it collapses onto the minimum
+#: and one bad retrieval moves the operating point. The q95 ceiling has the same problem from the
+#: other side, so the bar applies to both classes.
+MIN_CALIBRATION_SAMPLES = 20
+
+#: Separability (AUC) below which a threshold is NOT certified.
+#:
+#: A judgement anchored on two measured points, not a fitted constant — §2 of FINDINGS is the
+#: standing warning against shipping a constant that merely looks principled:
+#:
+#: - LongMemEval per-question haystacks measured AUC **0.753**. The threshold fitted there had a
+#:   best *in-sample* balanced error of 0.285 and a deployed false-abstain of **0.443** — it
+#:   refused nearly half the questions retrieval had just answered correctly. Unusable.
+#: - On the corpora where abstention works (PEPs abstention accuracy 1.00; the 14-document
+#:   corpus) the classes are cleanly disjoint — bge-small answerable 0.70–0.90 against
+#:   unanswerable 0.51–0.64 — i.e. AUC 1.00.
+#:
+#: 0.90 sits between them, nearer the working end, because certifying an unusable threshold means
+#: silently refusing real answers. Override it if your own labelled set says otherwise — that is
+#: the point of measuring instead of asserting.
+MIN_SEPARABILITY = 0.90
+
+
+def separability(answerable: list[float], unanswerable: list[float]) -> float | None:
+    """Probability a random answerable sample outscores a random unanswerable one (AUC).
+
+    Threshold-free on purpose. Every other quality figure in this module depends on where the
+    boundary was put, which makes it partly a statement about the fitting rule; this is a property
+    of the two distributions alone. It therefore cannot be inflated by fitting and scoring on the
+    same samples — the defect FINDINGS §2b retracted a published number for.
+
+    1.0 is perfect ordering, 0.5 is no signal at all, ties score half a win. Returns None when
+    either class is empty, because "cannot judge" is not the same as "judged and found wanting".
+    """
+    if not answerable or not unanswerable:
+        return None
+    wins = sum(1 for a in answerable for u in unanswerable if a > u)
+    ties = sum(1 for a in answerable for u in unanswerable if a == u)
+    return (wins + 0.5 * ties) / (len(answerable) * len(unanswerable))
+
 
 def _quantile(sorted_values: list[float], q: float) -> float:
     return sorted_values[min(len(sorted_values) - 1, int(q * len(sorted_values)))]
@@ -91,6 +132,65 @@ class Calibration:
     embedder: str
     threshold: float
     scale: float = DEFAULT_SCALE
+    #: Diagnosis of the calibration set this threshold came from. All three default to None so a
+    #: calibration built or loaded WITHOUT a diagnosis reports "unknown" rather than "fine" —
+    #: treating a missing diagnosis as a pass would let the silent failure survive an upgrade.
+    separability: float | None = None
+    n_answerable: int | None = None
+    n_unanswerable: int | None = None
+
+    @property
+    def certified(self) -> bool | None:
+        """Is this threshold supportable by the data it was fitted on?
+
+        Tri-state on purpose. ``True`` passed both checks; ``False`` failed one; ``None`` means
+        there was nothing to judge (one-class samples, or an artifact written before this check
+        existed). ``None`` must never be read as ``True``.
+
+        **This is a diagnosis and changes nothing at runtime.** `threshold`, `scale` and
+        `confidence()` are identical whether or not it certifies. A gate that also silently moved
+        the boundary would replace one invisible failure with another, and an upgrade would change
+        retrieval behaviour without anyone asking for it.
+        """
+        if self.separability is None:
+            return None
+        if self.n_answerable is None or self.n_unanswerable is None:
+            return None
+        if min(self.n_answerable, self.n_unanswerable) < MIN_CALIBRATION_SAMPLES:
+            return False
+        return self.separability >= MIN_SEPARABILITY
+
+    @property
+    def certification_reason(self) -> str:
+        """Why `certified` came out the way it did, in one line fit for a log or a CLI."""
+        if self.certified is None:
+            return (
+                "not judged: the calibration set had only one class, or this artifact predates "
+                "the separability check"
+            )
+        thin = [
+            f"{name}={n}"
+            for name, n in (("answerable", self.n_answerable),
+                            ("unanswerable", self.n_unanswerable))
+            if n is not None and n < MIN_CALIBRATION_SAMPLES
+        ]
+        if thin:
+            return (
+                f"too few samples ({', '.join(thin)}; need >= {MIN_CALIBRATION_SAMPLES} of each): "
+                "a q05/q95 boundary is not identifiable from a handful of points and collapses "
+                "onto the extremes"
+            )
+        if self.separability < MIN_SEPARABILITY:
+            return (
+                f"separability {self.separability:.3f} < {MIN_SEPARABILITY}: answerable and "
+                "unanswerable scores overlap, so NO threshold separates them — this one will "
+                "refuse real answers, reject unanswerable queries, or both, and moving it only "
+                "trades one error for the other"
+            )
+        return (
+            f"separability {self.separability:.3f} over {self.n_answerable}/"
+            f"{self.n_unanswerable} samples"
+        )
 
     def confidence(self, cosine: float) -> float:
         """Monotone cosine -> [0, 1] mapping; exactly 0.5 at the calibrated threshold."""
@@ -115,7 +215,23 @@ def from_samples(embedder: str, answerable: list[float], unanswerable: list[floa
         scale = max((q25_ans - q75_unans) / 4, 0.01)
     else:
         scale = DEFAULT_SCALE
-    return Calibration(embedder=embedder, threshold=thr, scale=round(scale, 4))
+    cal = Calibration(
+        embedder=embedder,
+        threshold=thr,
+        scale=round(scale, 4),
+        separability=separability(answerable, unanswerable),
+        n_answerable=len(answerable),
+        n_unanswerable=len(unanswerable),
+    )
+    # Warned here, not only in the CLI: most callers build a calibration through the library and
+    # never run `recall calibrate`, and a diagnosis only the CLI prints is one a server deployment
+    # never receives.
+    if cal.certified is False:
+        _log.warning(
+            "abstention threshold %.3f for %s is NOT certified — %s",
+            cal.threshold, embedder, cal.certification_reason,
+        )
+    return cal
 
 
 def _resolve_path(path: str | Path | None) -> Path:
@@ -125,12 +241,20 @@ def _resolve_path(path: str | Path | None) -> Path:
 def save(cal: Calibration, path: str | Path | None = None) -> Path:
     """Write the calibration JSON; returns the path written."""
     p = _resolve_path(path)
-    p.write_text(
-        json.dumps(
-            {"embedder": cal.embedder, "threshold": cal.threshold, "scale": cal.scale}, indent=2
-        ),
-        encoding="utf-8",
-    )
+    # The diagnosis travels WITH the threshold. A calibration.json that records "separability
+    # 0.75, not certified" explains itself to whoever finds it months later; one carrying only a
+    # number cannot be told apart from a working one.
+    payload = {"embedder": cal.embedder, "threshold": cal.threshold, "scale": cal.scale}
+    if cal.separability is not None:
+        payload["separability"] = round(cal.separability, 4)
+    if cal.n_answerable is not None:
+        payload["n_answerable"] = cal.n_answerable
+    if cal.n_unanswerable is not None:
+        payload["n_unanswerable"] = cal.n_unanswerable
+    if cal.certified is not None:
+        payload["certified"] = cal.certified
+        payload["certification_reason"] = cal.certification_reason
+    p.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return p
 
 
@@ -162,4 +286,26 @@ def load_for(embedder: str, path: str | Path | None = None) -> Calibration | Non
             "uncalibrated fallback", p, threshold, scale,
         )
         return None
-    return Calibration(embedder=embedder, threshold=threshold, scale=scale)
+    # A malformed or absent diagnosis degrades to None ("not judged"), never to a pass. The
+    # counts are read back too: `certified` needs them, so dropping them would silently turn a
+    # refusal into "unknown" on every reload.
+    sep = data.get("separability")
+    try:
+        sep = float(sep) if sep is not None else None
+        if sep is not None and not (math.isfinite(sep) and 0.0 <= sep <= 1.0):
+            sep = None
+    except (TypeError, ValueError):
+        sep = None
+
+    def _count(key: str) -> int | None:
+        v = data.get(key)
+        return v if isinstance(v, int) and v >= 0 else None
+
+    cal = Calibration(embedder=embedder, threshold=threshold, scale=scale, separability=sep,
+                      n_answerable=_count("n_answerable"),
+                      n_unanswerable=_count("n_unanswerable"))
+    if cal.certified is False:
+        _log.warning(
+            "loaded calibration %s is NOT certified — %s", p, cal.certification_reason
+        )
+    return cal
