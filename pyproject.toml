@@ -83,6 +83,9 @@ langchain = ["langchain-core>=0.3"]
 # `dev` anyway so the adapter is CI-tested and type-checked, not validated only on a laptop. Floor
 # 0.11 is the oldest the adapter is tested against. Keep this in step with `dev`.
 llamaindex = ["llama-index-core>=0.11"]
+# Local competitive benchmark only (benchmarks/). NEVER added to `dev` or installed in CI — it is a
+# heavy tree (mem0ai) and the benchmark is run deliberately, by hand, not on every push.
+bench = ["mem0ai", "openai>=1.0"]
 # pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
 # failing it — a hung CI job reads as "still running", not as a regression.
 #
@@ -155,7 +158,7 @@ target-version = "py311"
 # The floor is checked where it is actually meaningful: the `floor` CI job RUNS the suite on
 # 3.11 with the declared minimum of every direct dependency.
 [tool.mypy]
-files = ["recall", "recall_mcp"]
+files = ["recall", "recall_mcp", "benchmarks"]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 warn_return_any = true
