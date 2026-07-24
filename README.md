@@ -268,7 +268,11 @@ Two further differences, and one deficit:
   against this library ([FINDINGS §9](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)), but **not** the metric Mem0 and Zep
   report: their **J** score (LLM-as-a-Judge ≈66) grades a *generator* this library does not ship,
   so no number here belongs beside it. What is measured is the retrieval substrate underneath such
-  a system — evidence-turn **hit@5 0.615** [0.59, 0.64] with the free local embedder — and the one
+  a system — evidence-turn **hit@5 0.615** [0.59, 0.64] with the free local embedder, rising to
+  **hit@20 0.798** [0.78, 0.82] across the measured depth curve ([FINDINGS §9a](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)).
+  Both depths are quoted deliberately: `hit@k` is a *ceiling* on any downstream J, and a ceiling
+  published at one depth reads as a ceiling at every depth — it is not. Depth is not free either,
+  since k=20 spends four times the generator's context to buy it — and the one
   axis no published LOCOMO result scores at all: the **446 adversarial questions** (22.5% of the
   set) that test whether a system knows what it doesn't know. There, out of the box, RE-call
   abstains on **zero** — the on-topic-wrong-attribution case is the §4 stale-hit geometry under

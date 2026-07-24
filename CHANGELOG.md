@@ -7,6 +7,25 @@ dates — this project does not currently tag releases.
 
 ## [Unreleased]
 
+### Added
+- **`python -m recall.eval.locomo --k-curve 1,3,5,10,20`** — scores hit@k at several retrieval
+  depths from **one** retrieval per question, plus `--candidate-k` to raise the fusion pool.
+
+  Exact rather than approximate: `candidate_k` fixes the candidate pool independently of `k`, so
+  `search(k=n)` returns the first `n` of the ranking `search(k=N>n)` returns. `run()` asserts that
+  the curve's row at the headline `k` equals a scoring issued directly at that `k` — if the
+  prefix property ever stops holding, the run fails instead of quietly reporting a different
+  metric under the same name.
+
+  The subtle part is that truncation applies to the **chunk hits**, not to the dialog ids derived
+  from them. Several chunks map to one turn, so slicing the id list would reach further down the
+  ranking than the depth asked for, inflating every k below the maximum — and inflating most on
+  densely-chunked corpora, which is exactly where it would be believed. Pinned by test.
+
+  Motivation: `hit@k` is documented in §9 as a **ceiling** on any downstream J score, and a
+  ceiling quoted at a single depth invites the reading that the system cannot exceed it at any
+  depth. The curve answers that with a measurement instead of an argument.
+
 ### Changed
 - **Abstention certification now judges the *interval* on separability, not the point estimate**
   (`recall/calibration.py`). `separability_interval()` returns the Hanley & McNeil (1982) 95%
@@ -35,6 +54,14 @@ dates — this project does not currently tag releases.
   and downgrade a measured exclusion to "unproven": the six-signal table now carries intervals, and
   the best signal's **[0.680, 0.826]** puts the bar outside it. Corrected in place with a dated note
   rather than silently, because the number was published.
+- **FINDINGS §9a quoted LOCOMO retrieval at a single depth, and §9 calls `hit@k` a ceiling.**
+  Together those read as "0.615 bounds any system built on this library", which the data never
+  said — it bounds k=5. The measured curve reaches **0.717 at k=10** and **0.798 at k=20**
+  (n=1,536). §9a now publishes the curve, states that depth costs generator context rather than
+  being free, and notes that cat3 remains the floor at every depth. Also records that this run's
+  k=5 reads **0.624** against the published **0.615** — same configuration, different HNSW build,
+  0.009 apart and inside both intervals. Both are left standing rather than the older one
+  silently replaced; the headline carries roughly ±0.01 of index-build noise that one figure hides.
 - **README's LongMemEval claim led with the easy arm.** `hit@5 0.970` is the benchmark's own
   ~49-session per-question haystack; the merged 19,195-session arm — the one shaped like a real
   memory store — scores **0.366**, and was reachable only through FINDINGS. Both arms are now in

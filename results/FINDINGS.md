@@ -614,7 +614,7 @@ measures it with no judge and therefore no judge variance:
   vendors drop it. The one axis this library exists for is unmeasured by the entire field, inside
   the field's own benchmark.
 
-### 9a. Retrieval: hit@5 0.615 with the free local embedder
+### 9a. Retrieval: 0.615 at k=5 — and 0.798 at k=20
 
 | Category | hit@5 | 95% CI | n |
 |---|---|---|---|
@@ -627,6 +627,57 @@ measures it with no judge and therefore no judge variance:
 bge-small, hybrid dense+sparse, no rerank. A comparable retrieval anchor at last — measured on the
 standard benchmark, not on this repo's own corpus. Consistent with §8: on ordinary prose the local
 embedder is not the bottleneck.
+
+#### The depth curve — and why quoting one depth was a mistake
+
+The table above reports a single depth, and this document calls `hit@k` a **ceiling** on any
+downstream J. Those two statements together invite a reading the data never supported: that 0.615
+bounds what a system built on this library can reach. It bounds what it reaches *at k=5*. So the
+curve was measured — every depth scored from **one** retrieval per question, which is exact rather
+than approximate because the candidate pool does not depend on `k`, so top-k is a prefix of
+top-max(k) (`--k-curve`, asserted in the harness):
+
+| k | overall hit@k | 95% CI | cat1 | cat2 (temporal) | cat3 | cat4 |
+|---|---|---|---|---|---|---|
+| 1 | 0.365 | [0.342, 0.390] | 0.266 | 0.505 | 0.163 | 0.367 |
+| 3 | 0.545 | [0.520, 0.570] | 0.482 | 0.629 | 0.315 | 0.559 |
+| **5** | **0.624** | [0.600, 0.648] | 0.606 | 0.670 | 0.391 | 0.639 |
+| 10 | 0.717 | [0.694, 0.739] | 0.723 | 0.757 | 0.511 | 0.722 |
+| **20** | **0.798** | [0.777, 0.818] | 0.816 | 0.807 | 0.620 | 0.809 |
+
+n=1,536 answerable, bge-small, hybrid, no rerank, candidate pool 20 per leg. 806 s.
+
+**The evidence turn is reachable far more often than the headline says.** At k=20 the ceiling is
+**0.798**, not 0.615 — and it passes 0.717 at k=10. Anyone reading 0.615 as "this retrieval
+substrate caps a generator below the ~66 that LOCOMO's published J scores report" was reading a
+property of the *depth this document chose to quote*, not a property of the library. That reading
+was available because §9 stated the ceiling and never stated the curve, so the correction belongs
+here rather than in a rebuttal.
+
+Two things the curve does **not** license:
+
+- **Depth is not free.** k=20 hands a generator four times the context of k=5, with four times the
+  distractors, and the whole thesis of this repo is that a confidently wrong retrieved memory is
+  worse than a missing one. 0.798 is a ceiling at a larger context budget, not a better system.
+  Comparing it to a published J obtained at a different budget would be the same category error
+  this section is correcting.
+- **cat3 is still the floor**, 0.620 at k=20 against 0.816 for cat1. Depth lifts it (0.163 → 0.620,
+  the steepest climb of any category) but does not close the gap, so §9's reading that cat3 is
+  hard for this pipeline survives the curve.
+
+⚠️ **This run's k=5 reads 0.624; the table above it, published from an earlier run, reads 0.615.**
+Same configuration, same data, same code path — a different HNSW index build. The gap is 0.009,
+well inside either interval, and it is the build nondeterminism this repo already documents for
+calibration (README, "ANN recall"; issue #26). Both numbers are left standing rather than the older
+one quietly overwritten: the honest summary is that the headline carries roughly ±0.01 of
+index-build noise that a single quoted figure hides, and two runs is enough to show that it exists,
+not enough to size it.
+
+Reproduce:
+
+```bash
+python -m recall.eval.locomo --data locomo10.json --k-curve 1,3,5,10,20
+```
 
 ### 9b. Abstention: 0.00 out of the box, and why the shipped levers only half-fix it
 

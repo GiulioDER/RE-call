@@ -11,6 +11,7 @@ from recall.eval.locomo import (
     ADVERSARIAL_CATEGORY,
     _dia_id_to_filename,
     _filename_to_dia_id,
+    _hit_by_depth,
     _rate,
     _turn_document,
     write_conversation_corpus,
@@ -118,3 +119,60 @@ def test_adversarial_category_is_five() -> None:
     # A guard against a silent renumbering: category 5 is the adversarial split the abstention
     # arm scores. If this constant drifts, abstention would be measured on answerable questions.
     assert ADVERSARIAL_CATEGORY == 5
+
+
+# --- the depth curve: one retrieval, scored at every k ---------------------------------------
+
+def test_depth_curve_finds_evidence_that_arrives_below_the_shallow_cutoff() -> None:
+    # The whole point of the curve: an evidence turn ranked 8th is a miss at k=5 and a hit at
+    # k=10. If this collapsed to one value the curve would be reporting a constant.
+    hits = [_FakeHit(_dia_id_to_filename(f"D1:{i}")) for i in range(1, 11)]
+
+    by_k = _hit_by_depth(hits, ["D1:8"], [1, 5, 10])
+
+    assert by_k == {1: False, 5: False, 10: True}
+
+
+def test_depth_truncates_chunks_not_the_dialog_ids_derived_from_them() -> None:
+    # THE inflation trap. Six chunks occupy the top of the ranking but map to only two turns, so
+    # the evidence turn is the THIRD distinct id while sitting at chunk rank 7. Slicing the id
+    # list to 5 would include it and score a hit at k=5 that a k=5 retrieval never returned.
+    # Densely-chunked corpora would inflate most, which is exactly where it would be believed.
+    hits = [_FakeHit(_dia_id_to_filename("D1:1")) for _ in range(3)]
+    hits += [_FakeHit(_dia_id_to_filename("D1:2")) for _ in range(3)]
+    hits += [_FakeHit(_dia_id_to_filename("D1:9"))]
+
+    by_k = _hit_by_depth(hits, ["D1:9"], [5, 7])
+
+    assert by_k[5] is False, "sliced the projection instead of the ranking"
+    assert by_k[7] is True
+
+
+def test_depth_curve_is_monotone_in_k() -> None:
+    # A deeper retrieval is a superset of a shallower one, so hit@k can never fall as k rises.
+    # A non-monotone curve means the truncation is wrong, not that the corpus is unusual.
+    hits = [_FakeHit(_dia_id_to_filename(f"D1:{i}")) for i in range(1, 21)]
+
+    rates = [_hit_by_depth(hits, ["D1:15"], [d])[d] for d in (1, 3, 5, 10, 20)]
+
+    assert rates == sorted(rates), "hit@k fell as k rose"
+
+
+def test_depth_curve_agrees_with_a_single_depth_scoring() -> None:
+    # The curve's k row must equal what a run issued at that k alone would score — the coherence
+    # check `run()` asserts on the real data, pinned here on data that cannot drift.
+    hits = [_FakeHit(_dia_id_to_filename(f"D1:{i}")) for i in range(1, 11)]
+
+    curve = _hit_by_depth(hits, ["D1:4"], [1, 4, 10])
+    alone = _hit_by_depth(hits, ["D1:4"], [4])
+
+    assert curve[4] == alone[4]
+
+
+def test_any_of_several_evidence_turns_counts_as_a_hit() -> None:
+    # LOCOMO annotates multi-turn questions with several evidence ids and the metric is "was the
+    # evidence retrieved", not "were all of them" — scoring it as all-of would report a stricter
+    # metric than the label supports.
+    hits = [_FakeHit(_dia_id_to_filename("D1:2"))]
+
+    assert _hit_by_depth(hits, ["D1:7", "D1:2"], [1])[1] is True
