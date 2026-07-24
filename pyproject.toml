@@ -180,8 +180,10 @@ module = [
     "datasets.*",
     # Transitive of the extras above and of pgvector; never imported by this package directly.
     "numpy.*",
-    # bench extra (benchmarks/llm.py) — lazily imported so the module type-checks without it.
+    # bench extra (benchmarks/llm.py, benchmarks/systems.py) — lazily imported so the module
+    # type-checks without it.
     "openai.*",
+    "mem0.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
