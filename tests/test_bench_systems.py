@@ -136,56 +136,195 @@ def test_mem0_config_default_arm_uses_openai_embeddings() -> None:
     assert cfg["embedder"]["config"]["api_key"] == "sk-emb"
 
 
-def test_conversation_to_messages_mirrors_recall_turn_walk(tmp_path: Path) -> None:
-    """Mem0's turn walk must match RecallSystem's exactly, or the benchmark is invalid.
+_IMAGE_MARKER = "\n\n[shared an image: "
+
+PARITY_CONVERSATION: dict[str, Any] = {
+    "speaker_a": "Alice",
+    "speaker_b": "Bob",
+    "session_2_date_time": "2 January 2024",
+    "session_2": [
+        {"speaker": "Bob", "dia_id": "D2:1", "text": "Second session first turn."},
+    ],
+    "session_1_date_time": "1 January 2024",
+    "session_1": [
+        {"speaker": "Alice", "dia_id": "D1:1", "text": "First session first turn."},
+        {"speaker": "Bob", "text": "No dia_id, must be skipped by both systems."},
+        {
+            "speaker": "Alice",
+            "dia_id": "D1:2",
+            "text": "First session second turn.",
+            "blip_caption": "a whiteboard diagram",
+        },
+    ],
+}
+
+
+def _split_caption(body: str) -> tuple[str, str]:
+    """Split a turn body into (spoken part, image caption). Caption is "" when there is none.
+
+    Shared by both extractors below so the caption is compared as a FIELD on both sides rather
+    than as a substring that happens to appear somewhere in one of them.
+    """
+    spoken, marker, rest = body.partition(_IMAGE_MARKER)
+    if not marker:
+        return body.strip(), ""
+    caption = rest.rstrip()
+    assert caption.endswith("]"), f"malformed image line: {rest!r}"
+    return spoken.strip(), caption[:-1]
+
+
+def _recall_payload(document: str) -> dict[str, str]:
+    """Informational fields of one on-disk RE-call corpus document.
+
+    Parses the real file `write_conversation_corpus` wrote (``# speaker — date`` header, then a
+    ``speaker: text`` body and an optional image line) back into named fields, so the comparison
+    against Mem0 is field-by-field and independent of either side's formatting.
+    """
+    header, sep, body = document.partition("\n\n")
+    assert sep and header.startswith("# "), f"unexpected document shape: {document!r}"
+    header_speaker, dash, date = header[2:].partition(" — ")
+    assert dash, f"document header carries no session date: {header!r}"
+    spoken, caption = _split_caption(body)
+    speaker, colon, text = spoken.partition(": ")
+    assert colon, f"document body carries no speaker: {spoken!r}"
+    assert speaker == header_speaker.strip()
+    return {"speaker": speaker, "date": date.strip(), "text": text, "caption": caption}
+
+
+def _mem0_payload(content: str) -> dict[str, str]:
+    """Informational fields of one Mem0 message content (``[date] speaker: text`` + image line)."""
+    assert content.startswith("["), f"message carries no session date: {content!r}"
+    date, sep, rest = content[1:].partition("] ")
+    assert sep, f"message carries no session date: {content!r}"
+    spoken, caption = _split_caption(rest)
+    speaker, colon, text = spoken.partition(": ")
+    assert colon, f"message carries no speaker: {spoken!r}"
+    return {"speaker": speaker, "date": date.strip(), "text": text, "caption": caption}
+
+
+def test_conversation_to_messages_mirrors_recall_turn_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Differential test: what Mem0 is fed must equal what RE-call actually indexed.
 
     `write_conversation_corpus` is the function `RecallSystem.ingest` -> `index_conversation`
-    actually indexes turns through. This test drives BOTH it and `_conversation_to_messages` off
-    the same fixture and checks they agree on which turns survive (a turn missing `dia_id` is
-    silently dropped by `write_conversation_corpus`, so `_conversation_to_messages` must drop it
-    too) and in what order (numeric session order, not dict insertion order — `session_2` is
-    inserted before `session_1` below specifically to catch a naive walk).
+    indexes turns through, so this reads the corpus IT WROTE back off disk — the real documents,
+    not a restatement of them — and compares the information in each against
+    `_conversation_to_messages`'s output, turn for turn:
+
+    - **order** comes from the walk itself. `_turn_document` is wrapped to record the dia_id of
+      every turn RE-call emits, in emission order; the documents are then replayed in that order.
+      Reading the directory alone could not do this (a filesystem listing has no walk order), and
+      re-deriving the order from the session/turn numbers would just reimplement the walk under
+      test. `session_2` is declared before `session_1` in the fixture so a naive walk is caught.
+    - **content** is compared as parsed fields (speaker, session date, text, image caption), so a
+      change to `_turn_document`'s body — the session date above all, which LOCOMO's temporal
+      questions turn on — fails here instead of silently handing RE-call an advantage Mem0 never
+      got.
+    - **skips** are compared by count: the dia_id-less turn must vanish from both sides.
     """
-    from recall.eval.locomo import write_conversation_corpus
+    from recall.eval import locomo
 
     from benchmarks.systems import _conversation_to_messages
 
-    conversation = {
-        "speaker_a": "Alice",
-        "speaker_b": "Bob",
-        "session_2_date_time": "2 January 2024",
-        "session_2": [
-            {"speaker": "Bob", "dia_id": "D2:1", "text": "Second session first turn."},
-        ],
-        "session_1_date_time": "1 January 2024",
-        "session_1": [
-            {"speaker": "Alice", "dia_id": "D1:1", "text": "First session first turn."},
-            {"speaker": "Bob", "text": "No dia_id, must be skipped by both systems."},
-            {
-                "speaker": "Alice",
-                "dia_id": "D1:2",
-                "text": "First session second turn.",
-                "blip_caption": "a whiteboard diagram",
-            },
-        ],
+    walk_order: list[str] = []
+    original_turn_document = locomo._turn_document
+
+    def _recording_turn_document(turn: dict[str, Any], session_date: str) -> str:
+        walk_order.append(str(turn.get("dia_id")))
+        return original_turn_document(turn, session_date)
+
+    monkeypatch.setattr(locomo, "_turn_document", _recording_turn_document)
+
+    written = locomo.write_conversation_corpus(PARITY_CONVERSATION, tmp_path)
+    messages = _conversation_to_messages(PARITY_CONVERSATION)
+
+    documents = {
+        locomo._filename_to_dia_id(p.name): p.read_text(encoding="utf-8")
+        for p in sorted(tmp_path.iterdir())
     }
-
-    written = write_conversation_corpus(conversation, tmp_path)
-    messages = _conversation_to_messages(conversation)
-
+    # Every turn the walk emitted landed on disk under its own dia_id, and nothing else did.
+    assert sorted(documents) == sorted(walk_order)
     # Same COUNT: the dia_id-less turn is dropped by write_conversation_corpus (RecallSystem's
     # indexing path); _conversation_to_messages (Mem0's) must drop it too or corpora diverge.
-    assert len(messages) == written == 3
-    # Same ORDER: numeric session order (session_1 before session_2), turn order within a session.
-    assert [m["content"].splitlines()[0] for m in messages] == [
-        "Alice: First session first turn.",
-        "Alice: First session second turn.",
-        "Bob: Second session first turn.",
+    assert len(messages) == written == len(documents) == 3
+    # Same ORDER and same INFORMATION, turn by turn, against the documents RE-call really indexed.
+    recall_payloads = [_recall_payload(documents[dia_id]) for dia_id in walk_order]
+    mem0_payloads = [_mem0_payload(m["content"]) for m in messages]
+    assert mem0_payloads == recall_payloads
+    # And the walk really did produce the turns the fixture describes, in numeric session order —
+    # pinning this catches a change applied to BOTH sides at once, which the equality above cannot.
+    assert recall_payloads == [
+        {
+            "speaker": "Alice",
+            "date": "1 January 2024",
+            "text": "First session first turn.",
+            "caption": "",
+        },
+        {
+            "speaker": "Alice",
+            "date": "1 January 2024",
+            "text": "First session second turn.",
+            "caption": "a whiteboard diagram",
+        },
+        {
+            "speaker": "Bob",
+            "date": "2 January 2024",
+            "text": "Second session first turn.",
+            "caption": "",
+        },
     ]
-    # Same CONTENT: the image caption RecallSystem embeds in the chunk body must survive too.
-    assert "a whiteboard diagram" in messages[1]["content"]
     # Role tracks speaker (Alice == speaker_a -> "user", Bob -> "assistant"), not turn position.
     assert [m["role"] for m in messages] == ["user", "user", "assistant"]
+
+
+def test_conversation_to_session_messages_groups_by_session_without_losing_turns() -> None:
+    """Session grouping is the ingest chunk unit; it must partition the flat walk, not alter it."""
+    from benchmarks.systems import _conversation_to_messages, _conversation_to_session_messages
+
+    grouped = _conversation_to_session_messages(PARITY_CONVERSATION)
+
+    assert [len(session) for session in grouped] == [2, 1]
+    assert [m for session in grouped for m in session] == _conversation_to_messages(
+        PARITY_CONVERSATION
+    )
+
+
+class _FakeMemory:
+    """Stand-in for `mem0.Memory`, recording exactly how ingest chunked its `add()` calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[dict[str, str]], str]] = []
+
+    def add(self, messages: list[dict[str, str]], user_id: str) -> None:
+        self.calls.append((list(messages), user_id))
+
+
+def test_mem0_ingest_chunks_one_add_call_per_session() -> None:
+    """Ingestion must not funnel a whole conversation through a single `add()`.
+
+    Mem0 runs an LLM fact-extraction pass per `add()`, so one call carrying every turn invites
+    truncation and under-extraction — a self-inflicted handicap on the competitor, and the easiest
+    possible rebuttal to the published result. Sessions are the chunk unit; this pins the call
+    count, the `user_id` on every call, and that chunking neither reorders nor loses a turn.
+
+    Runs without `mem0ai` installed: `Mem0System._memory` returns the already-set `_mem`, so no
+    `from mem0 import Memory` ever executes.
+    """
+    from benchmarks.systems import Mem0System, _conversation_to_messages
+
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    fake = _FakeMemory()
+    system._mem = fake
+    system.ingest({"sample_id": "c1", "conversation": PARITY_CONVERSATION})
+
+    assert len(fake.calls) == 2  # one per session, NOT one for the whole conversation
+    assert [user_id for _, user_id in fake.calls] == ["bench-c1", "bench-c1"]
+    assert [len(messages) for messages, _ in fake.calls] == [2, 1]
+    # Chunking is a split, not a rewrite: same turns, same order, nothing dropped.
+    assert [m for messages, _ in fake.calls for m in messages] == _conversation_to_messages(
+        PARITY_CONVERSATION
+    )
 
 
 @pytest.mark.skipif(
