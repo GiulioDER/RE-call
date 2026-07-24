@@ -48,9 +48,24 @@ K = 10
 N_QUERIES = 40
 QUERY_SEED = 8
 #: Up to this many independent corpus builds, before giving up (see `filtered_corpus`'s docstring
-#: for why a build can need a retry at all). Empirically the pathology reproduces on the large
-#: majority of builds, so this is a safety margin, not the expected path.
-MAX_CORPUS_BUILD_ATTEMPTS = 4
+#: for why a build can need a retry at all).
+#:
+#: Measured, not guessed: over 14 builds against pgvector 0.8.4 the pathology reproduced on 11,
+#: so p ~= 0.79 per build and the spurious-failure rate is (1 - p) ** ATTEMPTS. At 4 that is ~2e-3,
+#: which is not rare enough for a suite that runs on every push — it turned master red on
+#: cc292df with no code change behind it. At 8 it is ~4e-6.
+#:
+#: Raising the cap is close to free because the loop stops at the FIRST build that reproduces:
+#: the expected cost stays ~1/p ~= 1.3 builds. A higher cap only lengthens the rare bad tail, it
+#: does not slow the common path.
+#:
+#: The measurement also settled which knob to turn. Outcomes are bimodal — a build either shows
+#: the pathology hard (recall 0.34-0.42, 39-40/40 truncated) or not at all (recall exactly 1.0000,
+#: 0 truncated), with nothing in between — so loosening TUNED_RECALL_FLOOR would buy nothing and
+#: would blunt a real regression. And the same data seed produced both outcomes across repeated
+#: builds (1003 -> pathology, pathology, none), which confirms the variance is pgvector's HNSW
+#: graph construction and not the corpus: re-seeding differently would not help either.
+MAX_CORPUS_BUILD_ATTEMPTS = 8
 _ENV_EF = "RECALL_HNSW_EF_SEARCH_FILTERED"
 _ENV_SCAN = "RECALL_HNSW_ITERATIVE_SCAN_FILTERED"
 
@@ -92,8 +107,11 @@ def _build_corpus(seed: int) -> PgVectorStore:
     return store
 
 
-def _reproduces_pathology(store: PgVectorStore) -> bool:
-    """Does this build show the untuned pathology strongly enough for the tests below?
+def _measure_untuned(store: PgVectorStore) -> tuple[float, int]:
+    """Measure this build under the untuned defaults: `(mean recall@k, truncated count)`.
+
+    The caller decides whether that clears the bar; returning the numbers rather than a bool is
+    what lets the fixture say *what it saw* when it gives up, instead of only that it did.
 
     Runs the EXACT same `_run_queries` the real tests call, under the EXACT same forced-untuned
     env `_measure(tuned=False, ...)` applies -- not a cheaper proxy. An earlier version of this
@@ -113,7 +131,7 @@ def _reproduces_pathology(store: PgVectorStore) -> bool:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = old
-    return recall < TUNED_RECALL_FLOOR and truncated > 0
+    return recall, truncated
 
 
 @pytest.fixture(scope="module")
@@ -134,19 +152,34 @@ def filtered_corpus():
     genuine regression that weakens the pathology rather than removes it.
     """
     store: PgVectorStore | None = None
+    observed: list[str] = []
     for attempt in range(MAX_CORPUS_BUILD_ATTEMPTS):
         if store is not None:
             store.drop_table()
             store.close()
         store = _build_corpus(seed=1000 + attempt)
-        if _reproduces_pathology(store):
+        recall, truncated = _measure_untuned(store)
+        observed.append(f"seed {1000 + attempt}: recall={recall:.4f} truncated={truncated}")
+        if recall < TUNED_RECALL_FLOOR and truncated > 0:
             break
     else:
+        # Drop the last corpus before failing. `pytest.fail` raises, so without this the teardown
+        # below never runs and every give-up leaks a 20,000-row table into the test database --
+        # invisible in ephemeral CI, cumulative for anyone running the suite locally.
+        if store is not None:
+            store.drop_table()
+            store.close()
+        # Report what was actually measured. The outcome is bimodal, so these numbers separate the
+        # two causes on sight: values near recall=1.0000 / truncated=0 mean the pathology did not
+        # occur at all (bad luck, or pgvector no longer exhibits it), whereas values just above
+        # the floor would mean it has genuinely weakened. Without them a reader cannot tell which,
+        # and the only recourse is to re-run and hope.
         pytest.fail(
             f"could not build a corpus reproducing the untuned HNSW recall pathology in "
             f"{MAX_CORPUS_BUILD_ATTEMPTS} attempts -- either the environment's pgvector build "
             f"differs materially from the one this test was written against, or the pathology "
-            f"itself has changed"
+            f"itself has changed. Wanted recall < {TUNED_RECALL_FLOOR} and truncated > 0; "
+            f"measured per attempt:\n  " + "\n  ".join(observed)
         )
 
     yield store
