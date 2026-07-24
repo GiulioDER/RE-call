@@ -22,6 +22,7 @@ from recall.calibration import (
     load_for,
     save,
     separability,
+    separability_interval,
 )
 
 
@@ -63,6 +64,50 @@ def test_separability_counts_pairs_the_way_the_definition_says():
     assert separability([3, 4, 5], [1, 2, 6]) == 6 / 9
 
 
+# --- the interval on separability ----------------------------------------------------------
+
+def test_the_interval_reproduces_the_published_longmemeval_number():
+    # FINDINGS section 10b quotes AUC 0.753 over 470 answerable / 30 unanswerable. Pinned here
+    # because the document states the interval as evidence that no signal reaches the 0.90 bar:
+    # if this estimator ever moves, that published claim moves with it.
+    lo, hi = separability_interval(0.753, 470, 30)
+
+    assert (round(lo, 3), round(hi, 3)) == (0.680, 0.826)
+    assert hi < MIN_SEPARABILITY, "the whole interval must sit below the bar for the claim to hold"
+
+
+def test_the_interval_is_narrower_than_the_crude_small_class_shortcut():
+    # sqrt(A(1-A)/n_min) ignores the larger class and reports ~0.079 on these counts, which puts
+    # 0.90 back inside the interval. Using it would understate the evidence and make an unusable
+    # threshold look merely unproven — the trap the estimator's docstring warns about.
+    crude_half = 1.96 * (0.753 * (1 - 0.753) / 30) ** 0.5
+    lo, hi = separability_interval(0.753, 470, 30)
+
+    assert (hi - lo) / 2 < crude_half
+    assert 0.753 + crude_half > MIN_SEPARABILITY, "the crude bound would not have excluded 0.90"
+
+
+def test_the_smaller_class_drives_the_width():
+    # Labelling more unanswerable queries is the expensive half and the half that pays. Stated as
+    # a test so "collect more samples" in the failure message points somewhere specific.
+    balanced = separability_interval(0.80, 100, 100)
+    lopsided = separability_interval(0.80, 1000, 10)
+
+    assert (balanced[1] - balanced[0]) < (lopsided[1] - lopsided[0])
+
+
+def test_perfect_separation_has_no_width():
+    # AUC 1.0 has a true standard error of zero; the variance term can go fractionally negative
+    # on rounding, and a NaN here would silently make `certified` unreachable.
+    assert separability_interval(1.0, 50, 50) == (1.0, 1.0)
+
+
+def test_the_interval_never_escapes_the_unit_range():
+    lo, hi = separability_interval(0.99, 20, 20)
+
+    assert 0.0 <= lo <= hi <= 1.0
+
+
 # --- certification ------------------------------------------------------------------------
 
 def test_a_separable_calibration_with_enough_samples_is_certified():
@@ -82,6 +127,43 @@ def test_an_overlapping_calibration_is_refused_even_with_plenty_of_samples():
     assert cal.separability < MIN_SEPARABILITY
     assert cal.certified is False
     assert "separab" in cal.certification_reason.lower()
+
+
+def test_a_point_estimate_above_the_bar_is_refused_when_its_interval_is_not():
+    # THE small-sample fail-open. 20 answerable and 20 unanswerable, of which one unanswerable
+    # outscores every answerable: 380 of 400 pairs ordered correctly, AUC 0.95 — comfortably past
+    # the 0.90 bar on the point estimate, and certified by the rule that read only that point.
+    # Its 95% interval reaches down to 0.879, so these samples have NOT established 0.90, and a
+    # calibration set this thin clears the bar by luck about as often as by separation.
+    answerable = _spread(0.90, 20)
+    unanswerable = _spread(0.20, 19) + [0.99]
+    cal = from_samples("e", answerable, unanswerable)
+
+    assert cal.separability == 0.95
+    assert cal.separability > MIN_SEPARABILITY
+    assert cal.separability_ci is not None and cal.separability_ci[0] < MIN_SEPARABILITY
+    assert cal.certified is False
+
+
+def test_the_thin_sample_refusal_is_not_confused_with_an_overlap_refusal():
+    # Same verdict, opposite remedy: an overlapping corpus needs a different signal and will
+    # never certify, while this one may certify on more labels. A message that read the same for
+    # both would send the user to rebuild a pipeline that was fine.
+    thin = from_samples("e", _spread(0.90, 20), _spread(0.20, 19) + [0.99])
+    overlapping = from_samples("e", _spread(0.70, 200), _spread(0.69, 60))
+
+    assert "interval" in thin.certification_reason
+    assert "more" in thin.certification_reason.lower()
+    assert "overlap" in overlapping.certification_reason.lower()
+    assert "interval" not in overlapping.certification_reason
+
+
+def test_the_certified_message_carries_the_interval_not_just_the_point():
+    cal = from_samples("e", _spread(0.90, MIN_CALIBRATION_SAMPLES),
+                       _spread(0.20, MIN_CALIBRATION_SAMPLES))
+
+    assert cal.certified is True
+    assert "[1.000, 1.000]" in cal.certification_reason
 
 
 def test_too_few_answerable_samples_is_refused():
@@ -142,6 +224,23 @@ def test_the_diagnosis_round_trips_through_the_saved_file(tmp_path):
     back = load_for("e", p)
     assert back.separability == cal.separability
     assert back.certified is True
+    # The interval is recomputed from the persisted (auc, n, n) rather than read back, so a file
+    # written by an older version is judged by the same rule as a fresh one.
+    assert back.separability_ci == cal.separability_ci
+
+
+def test_the_saved_file_records_the_interval_the_verdict_was_taken_from(tmp_path):
+    # A file showing `separability: 0.95` beside `certified: false` reads as a bug unless the
+    # interval that produced the verdict is written down next to it.
+    import json
+
+    cal = from_samples("e", _spread(0.90, 20), _spread(0.20, 19) + [0.99])
+    p = save(cal, tmp_path / "c.json")
+    payload = json.loads(p.read_text(encoding="utf-8"))
+
+    assert payload["separability"] == 0.95
+    assert payload["certified"] is False
+    assert payload["separability_ci"][0] < MIN_SEPARABILITY
 
 
 def test_a_calibration_file_written_before_this_check_is_unknown_not_certified(tmp_path):

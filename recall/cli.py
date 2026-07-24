@@ -366,7 +366,11 @@ def main(argv: list[str] | None = None) -> None:
         print(f"embedder:  {embedder.name}")
         print(f"threshold: {cal.threshold} (scale {cal.scale})")
         sep = "n/a" if cal.separability is None else f"{cal.separability:.3f}"
-        print(f"separability (AUC): {sep} over {cal.n_answerable} answerable / "
+        ci = cal.separability_ci
+        # The interval, not just the point, because the bar is applied to its lower bound — a
+        # reader who sees only "0.95" cannot reconstruct why a certification failed.
+        sep_ci = "" if ci is None else f" [{ci[0]:.3f}, {ci[1]:.3f}]"
+        print(f"separability (AUC): {sep}{sep_ci} over {cal.n_answerable} answerable / "
               f"{cal.n_unanswerable} unanswerable")
         print(f"FCR at default 0.50: {measured.fcr_at_050:.2f} -> at calibrated: "
               f"{measured.fcr_at_suggested:.2f}")

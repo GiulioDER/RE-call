@@ -55,6 +55,10 @@ MIN_CALIBRATION_SAMPLES = 20
 #: the point of measuring instead of asserting.
 MIN_SEPARABILITY = 0.90
 
+#: z for the two-sided 95% interval on separability. The bar above is applied to the interval's
+#: LOWER bound, so this is the confidence with which a certification claims to clear it.
+SEPARABILITY_Z = 1.96
+
 
 def separability(answerable: list[float], unanswerable: list[float]) -> float | None:
     """Probability a random answerable sample outscores a random unanswerable one (AUC).
@@ -72,6 +76,47 @@ def separability(answerable: list[float], unanswerable: list[float]) -> float | 
     wins = sum(1 for a in answerable for u in unanswerable if a > u)
     ties = sum(1 for a in answerable for u in unanswerable if a == u)
     return (wins + 0.5 * ties) / (len(answerable) * len(unanswerable))
+
+
+def separability_interval(
+    auc: float, n_answerable: int, n_unanswerable: int, z: float = SEPARABILITY_Z
+) -> tuple[float, float]:
+    """Two-sided confidence interval on `separability`, by the Hanley & McNeil (1982) estimator.
+
+    A point AUC is not a measurement without its width, and the width here is dominated by the
+    SMALLER class. Abstention sets are lopsided by nature — unanswerable queries are the expensive
+    ones to label — so the honest interval is wide exactly where the honest answer matters.
+
+    Two reasons this estimator and not a bootstrap. It needs only ``(auc, n, n)``, so a
+    calibration **loaded from disk** — which persists the AUC and the counts, never the raw
+    samples — can still be judged; a bootstrap could only ever judge a calibration built in the
+    same process, and a rule that silently stops applying after a round-trip is the class of
+    silent failure this module exists to remove. And it is deterministic: the same artifact
+    certifies the same way on every host, where a resampled bound would jitter across the bar.
+
+    The estimator assumes exponential score distributions. It is standard, published and
+    reproducible from the numbers in a calibration file, which is what a claim needs to be
+    checkable; where it errs it is mildly conservative, and conservative is the safe direction
+    for a gate that decides whether to trust an abstention.
+
+    ⚠️ Do not read the crude ``sqrt(A(1-A)/n_min)`` shortcut as this quantity. It ignores the
+    larger class entirely: on the LongMemEval samples (AUC 0.753 over 470/30) it reports SE 0.079
+    against this estimator's **0.037** — wide enough to leave 0.90 inside the interval and make an
+    unusable threshold look merely unproven. Measured in FINDINGS §10b.
+    """
+    if n_answerable < 1 or n_unanswerable < 1:
+        return (0.0, 1.0)
+    q1 = auc / (2 - auc)
+    q2 = 2 * auc * auc / (1 + auc)
+    variance = (
+        auc * (1 - auc)
+        + (n_answerable - 1) * (q1 - auc * auc)
+        + (n_unanswerable - 1) * (q2 - auc * auc)
+    ) / (n_answerable * n_unanswerable)
+    # Clamped: rounding can drive the variance fractionally negative at AUC 1.0, where the true
+    # standard error is exactly 0 and the interval is the point itself.
+    half = z * math.sqrt(max(variance, 0.0))
+    return (max(0.0, auc - half), min(1.0, auc + half))
 
 
 def _quantile(sorted_values: list[float], q: float) -> float:
@@ -140,12 +185,32 @@ class Calibration:
     n_unanswerable: int | None = None
 
     @property
+    def separability_ci(self) -> tuple[float, float] | None:
+        """95% interval on `separability`, or None when there was nothing to judge."""
+        if self.separability is None:
+            return None
+        if self.n_answerable is None or self.n_unanswerable is None:
+            return None
+        return separability_interval(self.separability, self.n_answerable, self.n_unanswerable)
+
+    @property
     def certified(self) -> bool | None:
         """Is this threshold supportable by the data it was fitted on?
 
         Tri-state on purpose. ``True`` passed both checks; ``False`` failed one; ``None`` means
         there was nothing to judge (one-class samples, or an artifact written before this check
         existed). ``None`` must never be read as ``True``.
+
+        The separability bar is applied to the **lower bound** of the interval, not to the point
+        estimate. A point AUC above 0.90 on a thin calibration set is a sample that came out
+        lucky as often as it is a corpus that separates: at 20 samples per class — the minimum
+        this module accepts — a measured 0.95 carries a lower bound of 0.879, so the data has
+        not established the bar it appears to clear. Certifying on the point estimate would let
+        exactly the failure this check exists to catch back in through small-sample noise, which
+        is the same defect as the in-sample fit FINDINGS §2b retracted a number for, wearing a
+        different hat. The direction matters more than the width: an over-certified threshold
+        refuses real answers silently, while an under-certified one prints how many more samples
+        would settle it.
 
         **This is a diagnosis and changes nothing at runtime.** `threshold`, `scale` and
         `confidence()` are identical whether or not it certifies. A gate that also silently moved
@@ -158,7 +223,9 @@ class Calibration:
             return None
         if min(self.n_answerable, self.n_unanswerable) < MIN_CALIBRATION_SAMPLES:
             return False
-        return self.separability >= MIN_SEPARABILITY
+        ci = self.separability_ci
+        assert ci is not None  # guarded by the None checks above
+        return ci[0] >= MIN_SEPARABILITY
 
     @property
     def certification_reason(self) -> str:
@@ -183,16 +250,28 @@ class Calibration:
                 "a q05/q95 boundary is not identifiable from a handful of points and collapses "
                 "onto the extremes"
             )
+        lo, hi = separability_interval(
+            self.separability, self.n_answerable, self.n_unanswerable
+        )
         if self.separability < MIN_SEPARABILITY:
             return (
-                f"separability {self.separability:.3f} < {MIN_SEPARABILITY}: answerable and "
-                "unanswerable scores overlap, so NO threshold separates them — this one will "
-                "refuse real answers, reject unanswerable queries, or both, and moving it only "
-                "trades one error for the other"
+                f"separability {self.separability:.3f} [{lo:.3f}, {hi:.3f}] < "
+                f"{MIN_SEPARABILITY}: answerable and unanswerable scores overlap, so NO threshold "
+                "separates them — this one will refuse real answers, reject unanswerable queries, "
+                "or both, and moving it only trades one error for the other"
+            )
+        if lo < MIN_SEPARABILITY:
+            # Distinguished from the case above because the remedy is completely different: this
+            # corpus may well separate, and the way to find out is more labels, not a new signal.
+            return (
+                f"separability {self.separability:.3f} clears {MIN_SEPARABILITY} but its 95% "
+                f"interval [{lo:.3f}, {hi:.3f}] does not: {self.n_answerable}/"
+                f"{self.n_unanswerable} samples cannot establish the bar this estimate appears to "
+                "reach. Label more queries — the interval narrows with the smaller class"
             )
         return (
-            f"separability {self.separability:.3f} over {self.n_answerable}/"
-            f"{self.n_unanswerable} samples"
+            f"separability {self.separability:.3f} [{lo:.3f}, {hi:.3f}] over "
+            f"{self.n_answerable}/{self.n_unanswerable} samples"
         )
 
     def confidence(self, cosine: float) -> float:
@@ -250,6 +329,11 @@ def save(cal: Calibration, path: str | Path | None = None) -> Path:
     payload = {"embedder": cal.embedder, "threshold": cal.threshold, "scale": cal.scale}
     if cal.separability is not None:
         payload["separability"] = round(cal.separability, 4)
+    # Recomputable from (separability, n, n) rather than stored state, but written out because the
+    # point estimate is what a reader anchors on and the interval is what the verdict was taken
+    # from. A file that records only 0.95 next to `certified: false` reads as a bug.
+    if cal.separability_ci is not None:
+        payload["separability_ci"] = [round(v, 4) for v in cal.separability_ci]
     if cal.n_answerable is not None:
         payload["n_answerable"] = cal.n_answerable
     if cal.n_unanswerable is not None:

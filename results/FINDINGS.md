@@ -804,14 +804,14 @@ held-out the gap is smaller still. Driving false-abstain to 0.05 costs false-con
 Six signals were then measured on the same 500 questions and the same haystacks, differing only in
 the signal:
 
-| signal | kind | AUC | best BE (in-sample) |
-|---|---|---|---|
-| `dense_top1` *(ships today)* | relevance, bi-encoder | **0.753** | 0.285 |
-| `rerank_top1` | relevance, cross-encoder | 0.742 | 0.271 |
-| `hybrid_top1` | relevance, RRF fusion | 0.739 | 0.289 |
-| `entail_max` | answerability, QNLI | 0.648 | 0.347 |
-| `margin_1_5` | distributional | 0.579 | 0.388 |
-| `ratio_1_5` | distributional | 0.545 | 0.400 |
+| signal | kind | AUC | 95% CI | best BE (in-sample) |
+|---|---|---|---|---|
+| `dense_top1` *(ships today)* | relevance, bi-encoder | **0.753** | [0.680, **0.826**] | 0.285 |
+| `rerank_top1` | relevance, cross-encoder | 0.742 | [0.666, 0.818] | 0.271 |
+| `hybrid_top1` | relevance, RRF fusion | 0.739 | [0.663, 0.815] | 0.289 |
+| `entail_max` | answerability, QNLI | 0.648 | [0.557, 0.739] | 0.347 |
+| `margin_1_5` | distributional | 0.579 | [0.479, 0.679] | 0.388 |
+| `ratio_1_5` | distributional | 0.545 | [0.442, 0.648] | 0.400 |
 
 **Nothing beat the signal already shipping.** Three structurally different relevance signals —
 including a cross-encoder that reads query and document *jointly* — cluster at 0.74–0.75. The
@@ -832,9 +832,31 @@ Stacked behind a lowered gate it does not beat the threshold alone either:
 | gate 0.600 + judge | 0.332 | 0.433 | 0.383 |
 | gate 0.650 + judge | 0.381 | 0.233 | 0.307 |
 
-⚠️ **n=30 unanswerable.** The standard error on AUC is ~0.08, so the three signals at 0.74–0.75 are
-*not* distinguishable from one another. What this sample does support is the only conclusion drawn
-from it: none of them is near the ~0.9 a usable abstention gate needs.
+⚠️ **n=30 unanswerable — and what that does and does not permit.** The three signals at 0.74–0.75
+are **not** distinguishable from one another; their intervals overlap almost entirely, so the
+ordering among them is noise and no claim here rests on it.
+
+What the sample *does* support is the only conclusion drawn from it: **none of them reaches the
+~0.90 a usable abstention gate needs.** The best signal's interval tops out at **0.826**, and the
+bar sits outside it. That statement needs the interval computed correctly, so the arithmetic is
+stated rather than asserted.
+
+> **Correction (2026-07-25).** This paragraph previously read "the standard error on AUC is ~0.08".
+> That is `sqrt(A(1-A)/n_min)`, which ignores the 470-sample answerable class entirely and is not
+> the standard error of an AUC. The Hanley & McNeil (1982) estimator over both classes gives
+> **0.037** — the intervals in the table above. The published figure was **2.1× too wide**, wide
+> enough to put 0.90 back inside the interval (0.753 + 1.96 × 0.079 = 0.907) and reduce this
+> section's finding to "unproven" when the data in fact excludes the bar. An error in the
+> conservative direction is still an error: it understated evidence this document had already
+> collected, and a reader checking the claim would have found it did not hold. The estimator now
+> ships as `recall.calibration.separability_interval`, so the number in this table and the number
+> the library certifies against come from one function that a test pins to these values.
+
+The interval is also why the certification rule tests the **lower bound** rather than the point
+estimate. At the 20-samples-per-class minimum this module accepts, a measured AUC of 0.95 carries a
+lower bound of 0.879: it clears the bar on the point and has not established it. Certifying on the
+point would readmit, through small-sample noise, exactly the silent failure §10b exists to expose —
+the same defect as the in-sample fit §2b retracted a number for, wearing a different hat.
 
 **§9c closes the obvious escape hatch.** The natural objection to the row above is that only the
 *shipped* QNLI judge was tried, and a better one might separate what it cannot. That was tested
