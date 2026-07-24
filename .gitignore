@@ -19,3 +19,9 @@ results/scale*/.recall-synthetic
 
 # LOCOMO benchmark data — fetched on demand, not vendored (see recall/eval/locomo.py)
 locomo10.json
+
+# Head-to-head benchmark output (benchmarks/run.py). Every run writes a timestamped `.json` plus a
+# `.partial.jsonl` sidecar here; the sidecar is per-run scratch that exists only so a crash does
+# not lose paid-for work. A publishable artifact is copied out deliberately — it is not committed
+# by whoever happened to run the benchmark last.
+benchmarks/results/

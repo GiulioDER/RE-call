@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from statistics import fmean, median
 from typing import Any
 
 from benchmarks.llm import Completer
@@ -10,14 +12,26 @@ from recall.eval.locomo import _rate
 #: The exact token the generator must emit when the memories don't answer the question.
 NO_ANSWER = "NO_ANSWER"
 
+#: Wrapping the model routinely puts around a one-word reply: quotes, markdown emphasis, a final
+#: full stop, an enclosing bracket. Stripped from both ends before the token is compared.
+#: Deliberately excludes ``_`` — the token itself contains one.
+_WRAPPERS = " \t\r\n\"'`*.!?,:;()[]{}<>"
+
 
 def is_abstention(answer: str) -> bool:
-    """True iff the generated answer is exactly the abstention token (case/space-insensitive).
+    """True iff the answer is the abstention token, ignoring surrounding punctuation/quotes.
 
-    Requires the WHOLE answer to be the token — an answer that merely mentions ``NO_ANSWER`` in a
-    sentence is a real (if odd) answer, not an abstention.
+    The token is what the whole benchmark counts, on BOTH arms, so an over-strict match does not
+    fail safe — it deflates the headline abstention rate and inflates nothing that would reveal
+    the error. An exact-equality test scored ``NO_ANSWER.``, ``"NO_ANSWER"`` and ``**NO_ANSWER**``
+    as real answers; they are the same refusal wearing punctuation the generator was never
+    instructed to omit.
+
+    Still requires the answer to be NOTHING BUT the token once that wrapping is removed. An answer
+    that merely mentions ``NO_ANSWER`` inside a sentence is a real (if odd) answer, and stripping
+    only the ends is what keeps that distinction: the sentence still has words attached.
     """
-    return answer.strip().casefold() == NO_ANSWER.casefold()
+    return answer.strip().strip(_WRAPPERS).casefold() == NO_ANSWER.casefold()
 
 
 GEN_SYSTEM_PROMPT = (
@@ -113,6 +127,52 @@ def _json_safe_rate(rate: dict[str, Any]) -> dict[str, Any]:
     return rate
 
 
+#: A word-ish run, or a single standalone punctuation mark — the granularity a BPE tokeniser
+#: charges for, near enough for a comparison between two arms.
+_TOKENISH = re.compile(r"\w+|[^\w\s]")
+
+
+def approx_tokens(text: str) -> int:
+    """A tokeniser-free token count. Deterministic, offline, and the same function for both arms.
+
+    Not a substitute for the generator's real tokeniser and not presented as one — the name says
+    approximate and the artifact key says `tokens_approx`. What it has to be is IDENTICAL across
+    arms and reproducible without a model download, because the quantity being reported is a
+    RATIO between two systems' retrieved context, not an absolute token bill.
+    """
+    return len(_TOKENISH.findall(text))
+
+
+def _size_summary(values: list[int]) -> dict[str, float | None]:
+    """Mean and median of `values`; both None for an empty list (JSON-safe, no NaN)."""
+    if not values:
+        return {"mean": None, "median": None}
+    return {"mean": round(fmean(values), 1), "median": round(median(values), 1)}
+
+
+def context_size(outcomes: list[Outcome]) -> dict[str, Any]:
+    """How much retrieved context each arm actually fed the generator.
+
+    This is the measurement that keeps the headline honest. At the same ``k``, the two arms are
+    not handing the generator the same amount of material: RE-call joins up to k VERBATIM dialogue
+    turns, while Mem0 joins k LLM-COMPRESSED facts — plausibly several times fewer transcript
+    tokens for the identical budget. That asymmetry favours RE-call and is invisible in an
+    accuracy table.
+
+    It is reported, not equalised. Equalising would mean overriding one system's own retrieval
+    defaults, which the design forbids (§5.2: Mem0's `search` is not hobbled). Publishing mean and
+    median char + approximate-token length per arm makes the asymmetry a number a reader can weigh
+    — and makes it impossible to claim later that nobody knew.
+    """
+    chars = [len(o.context) for o in outcomes]
+    tokens = [approx_tokens(o.context) for o in outcomes]
+    return {
+        "n": len(outcomes),
+        "chars": _size_summary(chars),
+        "tokens_approx": _size_summary(tokens),
+    }
+
+
 def aggregate(outcomes: list[Outcome]) -> dict[str, Any]:
     """Both reporting columns, plus a per-category breakdown.
 
@@ -120,6 +180,10 @@ def aggregate(outcomes: list[Outcome]) -> dict[str, Any]:
     perfect on that axis alone. ``answerable_false_abstain`` is what exposes that: it is the rate
     at which the system refused questions that actually had an answer. The two columns must
     always be reported together.
+
+    ``retrieved_context`` rides along for the same reason (see `context_size`): the size of the
+    context each arm was handed is part of reading its score, so it is printed and published
+    beside the rates rather than left to be derived from the raw dump by whoever thinks to.
     """
     answerable = [o for o in outcomes if not o.is_adversarial]
     adversarial = [o for o in outcomes if o.is_adversarial]
@@ -141,5 +205,6 @@ def aggregate(outcomes: list[Outcome]) -> dict[str, Any]:
         "answerable_accuracy": _json_safe_rate(_rate([bool(o.correct) for o in answerable])),
         "adversarial_abstention": _json_safe_rate(_rate([o.abstained for o in adversarial])),
         "answerable_false_abstain": _json_safe_rate(_rate([o.abstained for o in answerable])),
+        "retrieved_context": context_size(outcomes),
         "by_category": by_category,
     }

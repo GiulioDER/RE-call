@@ -17,9 +17,9 @@ import pytest
 
 from benchmarks import run as run_module
 from benchmarks.llm import OpenRouterLLM
-from benchmarks.pipeline import Outcome
+from benchmarks.pipeline import GEN_SYSTEM_PROMPT, JUDGE_SYSTEM_PROMPT, Outcome
 from benchmarks.run import _load, main, run_arm
-from benchmarks.systems import MemorySystem
+from benchmarks.systems import DEFAULT_K, MemorySystem
 
 #: Pinned run time, so the tests can name the artifact files exactly. `main` takes `now` as a
 #: parameter for this reason — nothing here freezes the process clock.
@@ -169,7 +169,7 @@ class _StubSys:
         return "ctx"
 
 
-def _stub_build(arm: str, model: str, openrouter_key: str) -> MemorySystem:
+def _stub_build(arm: str, model: str, openrouter_key: str, k: int, run_id: str) -> MemorySystem:
     return _StubSys()
 
 
@@ -179,7 +179,7 @@ def _stub_complete(self: OpenRouterLLM, system: str, user: str) -> str:
 
 
 def test_load_sets_adversarial_flag_from_category(tmp_path: Path) -> None:
-    _convs, questions = _load(_write_fixture(tmp_path))
+    _convs, questions, _skipped = _load(_write_fixture(tmp_path))
     flags = {q["question_id"]: q["adversarial"] for q in questions}
     # category 5 and ONLY category 5 is adversarial; every other surviving question is answerable
     assert flags == {
@@ -200,7 +200,7 @@ def test_load_derives_adversarial_from_category_not_from_field_presence(tmp_path
     a wrong answer — silently deflating the abstention column in a published artifact. Deriving
     the flag from the category is what makes the row come out adversarial with no gold at all.
     """
-    _convs, questions = _load(_write_fixture(tmp_path))
+    _convs, questions, _skipped = _load(_write_fixture(tmp_path))
     both = {q["question_id"]: q for q in questions}["conv-a:4"]
     assert both["question"] == "Did Bob make the black and white bowl in the photo?"
     assert both["adversarial"] is True
@@ -212,8 +212,8 @@ def test_load_derives_adversarial_from_category_not_from_field_presence(tmp_path
 
 def test_load_question_ids_are_stable_and_unique(tmp_path: Path) -> None:
     path = _write_fixture(tmp_path)
-    _c1, first = _load(path)
-    _c2, second = _load(path)
+    _c1, first, _s1 = _load(path)
+    _c2, second, _s2 = _load(path)
     ids = [q["question_id"] for q in first]
     # stable: the same file yields the same ids, run to run
     assert ids == [q["question_id"] for q in second]
@@ -228,15 +228,44 @@ def test_load_question_ids_are_stable_and_unique(tmp_path: Path) -> None:
 
 
 def test_load_skips_questions_a_run_cannot_score(tmp_path: Path) -> None:
-    _convs, questions = _load(_write_fixture(tmp_path))
+    _convs, questions, _skipped = _load(_write_fixture(tmp_path))
     kept = {q["question"] for q in questions}
     assert "Unscoreable: no gold answer" not in kept
     assert "Category out of range" not in kept
     assert all(q["question"].strip() for q in questions)
 
 
+def test_load_reports_how_many_rows_it_dropped_and_why(tmp_path: Path) -> None:
+    """A published n that is not 1,540/446 must be explainable from the artifact, not guessed at.
+
+    The loader silently dropped rows for three different reasons. Counted, they are a footnote;
+    uncounted, a reader comparing this run's n against LOCOMO's documented split cannot tell "the
+    dataset has defects we skipped" from "the harness loses questions".
+    """
+    _convs, questions, skipped = _load(_write_fixture(tmp_path))
+    assert skipped["total"] == 3
+    assert skipped["by_reason"] == {
+        "no_gold_answer": 1,
+        "blank_question": 1,
+        "category_not_scored": 1,
+    }
+    # and the books balance: kept + skipped accounts for every `qa` row in the fixture
+    assert len(questions) + skipped["total"] == sum(len(c["qa"]) for c in _fixture())
+
+
+def test_load_requires_a_sample_id(tmp_path: Path) -> None:
+    """A LOCOMO item with no `sample_id` stops the run instead of merging into `bench-None`."""
+    path = tmp_path / "no-sample-id.json"
+    path.write_text(
+        json.dumps([{"conversation": {}, "qa": [{"question": "q", "answer": "a", "category": 1}]}]),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="sample_id"):
+        _load(path)
+
+
 def test_load_carries_the_fields_run_question_needs(tmp_path: Path) -> None:
-    _convs, questions = _load(_write_fixture(tmp_path))
+    _convs, questions, _skipped = _load(_write_fixture(tmp_path))
     by_id = {q["question_id"]: q for q in questions}
     answerable = by_id["conv-a:0"]
     assert answerable["answer"] == "adoption agencies"
@@ -250,7 +279,7 @@ def test_load_carries_the_fields_run_question_needs(tmp_path: Path) -> None:
 
 
 def test_load_slices_conversations_and_their_questions(tmp_path: Path) -> None:
-    convs, questions = _load(_write_fixture(tmp_path), limit=1)
+    convs, questions, _skipped = _load(_write_fixture(tmp_path), limit=1)
     assert [c["sample_id"] for c in convs] == ["conv-a"]
     # the question list must be sliced WITH the conversations, or the harness would score
     # questions about a conversation it never ingested
@@ -263,7 +292,7 @@ def test_load_returns_the_outer_locomo_items_for_ingest(tmp_path: Path) -> None:
     Handing the inner conversation object to `RecallSystem.ingest` would index zero turns and make
     the arm abstain on everything — a spectacular, entirely false abstention score.
     """
-    convs, _questions = _load(_write_fixture(tmp_path))
+    convs, _questions, _skipped = _load(_write_fixture(tmp_path))
     assert convs[0]["sample_id"] == "conv-a"
     assert convs[0]["conversation"]["speaker_a"] == "Alice"
 
@@ -291,7 +320,9 @@ def test_main_ingests_each_conversation_before_scoring_its_own_questions(
             events.append(("retrieve", question))
             return "ctx"
 
-    def _fake_build(arm: str, model: str, openrouter_key: str) -> MemorySystem:
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str
+    ) -> MemorySystem:
         return _OrderedSys()
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "unused-by-the-fake-completer")
@@ -318,18 +349,118 @@ def test_main_ingests_each_conversation_before_scoring_its_own_questions(
     assert payload["aggregate"]["adversarial_abstention"]["n"] == 2
     by_id = {o["question_id"]: o for o in payload["outcomes"]}
     assert set(by_id) == {"conv-a:0", "conv-a:2", "conv-a:3", "conv-a:4", "conv-b:0"}
-    # the artifact must be re-scorable: question text, retrieved context, answer and verdict
+    # the artifact must be re-scorable: question text, GOLD, retrieved context, answer, verdict
     record = by_id["conv-a:0"]
     assert record["question"] == "What did Alice research?"
+    assert record["gold"] == "adoption agencies"
     assert record["context"] == "ctx"
     assert record["answer"] == "an answer"
     assert record["correct"] is True
     assert by_id["conv-a:3"]["correct"] is None  # adversarial: unscored by construction
     assert by_id["conv-a:4"]["correct"] is None  # ditto, despite its stray `answer` field
+    # an adversarial has no gold to be correct about; the record says so rather than omitting it
+    assert by_id["conv-a:3"]["gold"] == ""
+    assert by_id["conv-a:4"]["gold"] == ""
 
     # the incremental sidecar ends up holding exactly the same records as the final artifact
     lines = (out / f"{_STAMP_2CONV}.partial.jsonl").read_text(encoding="utf-8").splitlines()
     assert [json.loads(line) for line in lines] == payload["outcomes"]
+
+
+def test_main_records_the_configuration_that_produced_the_numbers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The artifact must identify its own run: budget, model, prompts, temperature, versions.
+
+    Every number in the file is a function of these settings — change `k`, the generator prompt or
+    the Mem0 release and the same code produces different results — so an artifact carrying only
+    the arm name and the model string documents a run nobody can reproduce, including its author.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "unused-by-the-fake-completer")
+    monkeypatch.setattr(run_module, "_build_system", _stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    out = tmp_path / "results"
+    code = main(
+        [
+            "--arm", "recall",
+            "--data", str(_write_fixture(tmp_path)),
+            "--conversations", "1",
+            "--k", "11",
+            "--out", str(out),
+        ],
+        now=_NOW,
+    )
+    assert code == 0
+
+    payload = json.loads((out / f"{_STAMP_1CONV}.json").read_text(encoding="utf-8"))
+    config = payload["config"]
+    assert config["k"] == 11
+    assert config["model"] == "openai/gpt-4o-mini"
+    assert config["temperature"] == 0.0
+    assert config["base_url"] == "https://openrouter.ai/api/v1"
+    # both prompts VERBATIM: a re-scorer has to be able to reproduce the judge, not paraphrase it
+    assert config["gen_system_prompt"] == GEN_SYSTEM_PROMPT
+    assert config["judge_system_prompt"] == JUDGE_SYSTEM_PROMPT
+    # tolerated as None when the bench extra is not installed — but the key is always present
+    assert "mem0ai_version" in config
+    # the loader's drops are published beside n, so a headline n is explainable
+    assert payload["skipped_questions"]["total"] == 3
+    # and the retrieved-context volume is reported, since the arms do not retrieve the same amount
+    ctx = payload["aggregate"]["retrieved_context"]
+    assert ctx["n"] == 4
+    assert ctx["chars"]["mean"] == 3.0  # every stub context is "ctx"
+    assert ctx["tokens_approx"]["median"] == 1.0
+
+
+def test_main_threads_k_to_the_adapters_and_defaults_to_five(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--k` reaches both adapters, and omitting it keeps the documented default of 5."""
+    seen: list[int] = []
+
+    def _recording_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str
+    ) -> MemorySystem:
+        seen.append(k)
+        return _StubSys()
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "unused-by-the-fake-completer")
+    monkeypatch.setattr(run_module, "_build_system", _recording_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    argv = [
+        "--arm", "recall",
+        "--data", str(_write_fixture(tmp_path)),
+        "--conversations", "1",
+        "--out", str(tmp_path / "results"),
+    ]
+    assert main(argv, now=_NOW) == 0
+    assert main([*argv, "--k", "17"], now=_NOW + timedelta(seconds=1)) == 0
+    assert seen == [DEFAULT_K, 17]
+    assert DEFAULT_K == 5  # the default is 5, and it is not to be changed silently
+
+
+@pytest.mark.parametrize("bad", ["0", "-1"])
+def test_main_rejects_a_non_positive_conversation_count(
+    bad: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--conversations 0` sliced the dataset to nothing; a negative sliced from the END.
+
+    Both produced a complete-looking artifact for a slice nobody asked for, so they are rejected
+    at the parser rather than measured.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "unused")
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--arm", "recall",
+                "--data", str(_write_fixture(tmp_path)),
+                "--conversations", bad,
+                "--out", str(tmp_path / "results"),
+            ],
+            now=_NOW,
+        )
 
 
 def test_main_persists_each_conversation_before_starting_the_next(
@@ -354,7 +485,9 @@ def test_main_persists_each_conversation_before_starting_the_next(
         def retrieve(self, question: str) -> str:
             return "ctx"
 
-    def _fake_build(arm: str, model: str, openrouter_key: str) -> MemorySystem:
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str
+    ) -> MemorySystem:
         return _CrashingSys()
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "unused-by-the-fake-completer")
@@ -431,7 +564,9 @@ def test_main_dump_has_no_nan_token(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         def retrieve(self, question: str) -> str:
             return ""
 
-    def _fake_build(arm: str, model: str, openrouter_key: str) -> MemorySystem:
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str
+    ) -> MemorySystem:
         return _EmptySys()
 
     def _fake_complete(self: OpenRouterLLM, system: str, user: str) -> str:
