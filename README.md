@@ -455,10 +455,12 @@ Two behavioural changes worth knowing before you upgrade:
   intent — on the reference corpus it took working edges from 0 to 2 — but it does mean memories
   that were served as `ok` can now correctly come back `superseded`.
 
-## Upgrading to the next release (unreleased)
+## Upgrading to 0.5.1
 
-Five changes on `main` that are not in 0.5.0 yet, listed here because each can make something
-that currently succeeds start failing. Full detail in [CHANGELOG.md](https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md).
+Five changes that **shipped in 0.5.1**, listed here because each can make something that currently
+succeeds start failing. If you are on 0.5.0, upgrading to the current release applies all five at
+once — 0.5.2 adds only the LOCOMO benchmark and changes no behaviour. Full detail in
+[CHANGELOG.md](https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md).
 
 - **`RECALL_ALLOW_INSECURE_DSN` is now an explicit allowlist** — only `1|true|yes|on` disable the
   guard, and **every other value, including `0` and `false`, keeps it ON**. A deployment relying
@@ -467,7 +469,6 @@ that currently succeeds start failing. Full detail in [CHANGELOG.md](https://git
 - **The `mcp` extra requires `mcp>=1.27.2`** (was `>=1.10`). Versions 1.10–1.27.1 installed
   cleanly and then failed on every authenticated call, so this now fails at install time instead.
   Upgrade with `pip install -U "recall-rag[mcp]"`.
-
 - **`recall index` refuses a mass prune.** A re-index that would delete 50% or more of the
   sources under a root (`RECALL_MAX_PRUNE_FRACTION`, default `0.5`, above a floor of 5 indexed
   sources) raises `PruneGuardTripped` and deletes nothing — that is how a *missing* corpus stops
