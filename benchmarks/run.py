@@ -158,6 +158,39 @@ def _load(
     return conversations, questions, {"total": sum(skipped.values()), "by_reason": skipped}
 
 
+#: OpenRouter issues keys with this prefix. Checking it is free and turns a placeholder or a
+#: mistyped key into an immediate failure instead of one discovered mid-run.
+OPENROUTER_KEY_PREFIX = "sk-or-"
+
+
+def validate_openrouter_key(key: str | None) -> str:
+    """Return `key` if it can plausibly be an OpenRouter key, else raise ValueError explaining why.
+
+    An is-it-set check is not enough. `export OPENROUTER_API_KEY=...` pasted verbatim leaves the
+    three characters "..." in the environment: truthy, so it passes, and the run then dies on a 401
+    at the first generator call — or, on the mem0 arm, only AFTER per-session LLM extraction during
+    ingest has already been paid for. Validating the shape up front makes that failure free.
+
+    The message never contains the key itself, only its length: this text goes to stderr and into
+    logs, and a key with the wrong prefix is still a secret.
+    """
+    if key is None or not key.strip():
+        raise ValueError("OPENROUTER_API_KEY is not set - the generator and judge both need it")
+    if any(char.isspace() for char in key):
+        raise ValueError(
+            f"OPENROUTER_API_KEY contains whitespace (length {len(key)}) - a stray quote or "
+            "newline usually means the shell captured more than the key itself"
+        )
+    if not key.startswith(OPENROUTER_KEY_PREFIX):
+        raise ValueError(
+            f"OPENROUTER_API_KEY does not look like an OpenRouter key: expected it to start with "
+            f"{OPENROUTER_KEY_PREFIX!r}, got a {len(key)}-character value that does not. A "
+            "placeholder such as '...' passes a mere is-it-set check and then fails only after "
+            "the run has started - on the mem0 arm, after ingest has already spent money."
+        )
+    return key
+
+
 def _build_system(arm: str, model: str, openrouter_key: str, k: int, run_id: str) -> MemorySystem:
     """Construct the arm under test. `model` and `k` are shared so only the memory system differs.
 
@@ -353,13 +386,15 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
             "  curl -sLO https://raw.githubusercontent.com/snap-research/locomo/main/data/"
             "locomo10.json"
         )
-    key = os.environ.get("OPENROUTER_API_KEY")
-    if not key:
-        # Checked BEFORE ingestion: ingesting the Mem0 arm burns LLM calls, and discovering the
-        # missing generator key afterwards would waste them.
-        # ASCII only: argparse writes this to stderr, and a Windows cp1252 console mangles
-        # anything else.
-        p.error("OPENROUTER_API_KEY is not set - the generator and judge both need it")
+    # Checked BEFORE ingestion: ingesting the Mem0 arm burns LLM calls, and discovering a bad
+    # generator key afterwards would waste them. The shape is validated, not just the presence -
+    # see validate_openrouter_key for the placeholder case that motivated it.
+    # ASCII only: argparse writes this to stderr, and a Windows cp1252 console mangles anything
+    # else.
+    try:
+        key = validate_openrouter_key(os.environ.get("OPENROUTER_API_KEY"))
+    except ValueError as exc:
+        p.error(str(exc))
 
     llm = OpenRouterLLM(model=args.model, api_key=key)
     completer: Completer = llm.complete
