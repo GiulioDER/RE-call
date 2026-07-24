@@ -63,6 +63,13 @@ class Outcome:
     abstained: bool
     correct: bool | None
 
+    def __post_init__(self) -> None:
+        if (self.correct is None) != self.is_adversarial:
+            raise ValueError(
+                "Outcome.correct must be None iff is_adversarial is True "
+                f"(is_adversarial={self.is_adversarial!r}, correct={self.correct!r})"
+            )
+
 
 def run_question(
     retrieve: Callable[[str], str], completer: Completer, q: dict[str, Any]
@@ -93,6 +100,19 @@ def run_question(
     )
 
 
+def _json_safe_rate(rate: dict[str, Any]) -> dict[str, Any]:
+    """Replace the NaN ``rate``/``ci95`` that ``_rate`` returns for an empty input with ``None``.
+
+    On real LOCOMO every category is single-purpose (adversarial-only or answerable-only), so one
+    of the two sub-blocks per category is always built from an empty list. Bare ``NaN`` is not
+    valid JSON for any non-Python parser, so every rate block ``aggregate`` returns must be
+    sanitised before it can be safely ``json.dumps``-ed.
+    """
+    if rate["n"] == 0:
+        return {"n": 0, "rate": None, "ci95": [None, None]}
+    return rate
+
+
 def aggregate(outcomes: list[Outcome]) -> dict[str, Any]:
     """Both reporting columns, plus a per-category breakdown.
 
@@ -108,15 +128,18 @@ def aggregate(outcomes: list[Outcome]) -> dict[str, Any]:
     for category in sorted({o.category for o in outcomes}):
         cat_answerable = [o for o in answerable if o.category == category]
         cat_adversarial = [o for o in adversarial if o.category == category]
+        cat_accuracy = _rate([bool(o.correct) for o in cat_answerable])
+        cat_adv_abstention = _rate([o.abstained for o in cat_adversarial])
+        cat_false_abstain = _rate([o.abstained for o in cat_answerable])
         by_category[category] = {
-            "answerable_accuracy": _rate([bool(o.correct) for o in cat_answerable]),
-            "adversarial_abstention": _rate([o.abstained for o in cat_adversarial]),
-            "answerable_false_abstain": _rate([o.abstained for o in cat_answerable]),
+            "answerable_accuracy": _json_safe_rate(cat_accuracy),
+            "adversarial_abstention": _json_safe_rate(cat_adv_abstention),
+            "answerable_false_abstain": _json_safe_rate(cat_false_abstain),
         }
 
     return {
-        "answerable_accuracy": _rate([bool(o.correct) for o in answerable]),
-        "adversarial_abstention": _rate([o.abstained for o in adversarial]),
-        "answerable_false_abstain": _rate([o.abstained for o in answerable]),
+        "answerable_accuracy": _json_safe_rate(_rate([bool(o.correct) for o in answerable])),
+        "adversarial_abstention": _json_safe_rate(_rate([o.abstained for o in adversarial])),
+        "answerable_false_abstain": _json_safe_rate(_rate([o.abstained for o in answerable])),
         "by_category": by_category,
     }
