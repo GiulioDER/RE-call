@@ -163,7 +163,10 @@ class Calibration:
     @property
     def certification_reason(self) -> str:
         """Why `certified` came out the way it did, in one line fit for a log or a CLI."""
-        if self.certified is None:
+        # Spelled out rather than delegated to `certified is None`. It is the same condition, but
+        # written this way both a reader and the type checker can see that the three fields are
+        # non-None below — `certified` is a property and narrows nothing.
+        if self.separability is None or self.n_answerable is None or self.n_unanswerable is None:
             return (
                 "not judged: the calibration set had only one class, or this artifact predates "
                 "the separability check"

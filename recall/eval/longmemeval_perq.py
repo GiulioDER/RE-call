@@ -32,6 +32,7 @@ import uuid
 from pathlib import Path
 
 from recall.calibration import from_samples
+from recall.embeddings import Embedder
 from recall.eval.metrics import wilson_ci
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
@@ -82,7 +83,8 @@ def _rate(flags: list[bool]) -> dict:
             "ci": (round(lo, 4), round(hi, 4)), "n": len(flags)}
 
 
-def evaluate(dsn: str, master: str, questions: list[dict], embedder, k: int = 5) -> dict:
+def evaluate(dsn: str, master: str, questions: list[dict], embedder: Embedder,
+             k: int = 5) -> dict:
     scratch = "pq_" + uuid.uuid4().hex[:8]
     fit, held = questions[::2], questions[1::2]
 
