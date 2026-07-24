@@ -56,15 +56,21 @@ def populate_haystack(
     store = PgVectorStore(dsn, dim=dim, table=scratch)
     store.ensure_schema()
     cols = ", ".join(_COPIED)
-    # `source` holds an absolute path; the questions name bare files. Matching on the suffix
-    # keeps the question file portable across the machine that indexed the corpus.
-    like = [f"%{f}" for f in files]
+    # Match `metadata->>'file'` — the path RELATIVE to the index root, which is exactly the bare
+    # name the question file carries — with `=`, not the absolute `source` with a suffix `LIKE`.
+    #
+    # Two reasons, one correctness and one cost. `LIKE` treats `_` as a single-character
+    # wildcard and LongMemEval ids are full of underscores ("answer_c63c0458"), so a suffix
+    # match silently pulled in every session differing only at that position: measured 50
+    # sessions copied for a 49-session haystack. And a leading-wildcard LIKE cannot use an
+    # index, so each of 500 populates sequentially scanned all 321,569 rows; the store already
+    # creates an index on this expression, so equality makes it a lookup.
     with store._connect() as conn:  # noqa: SLF001 - eval-only helper, not library surface
         conn.execute(f"TRUNCATE {scratch}")
         conn.execute(
             f"INSERT INTO {scratch} ({cols}) "
-            f"SELECT {cols} FROM {master} WHERE source LIKE ANY(%s)",
-            (like,),
+            f"SELECT {cols} FROM {master} WHERE metadata->>'file' = ANY(%s)",
+            (files,),
         )
         conn.commit()
     return store

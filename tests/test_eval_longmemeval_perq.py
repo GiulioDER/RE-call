@@ -99,6 +99,36 @@ def test_reusing_the_scratch_table_replaces_the_previous_haystack(master):
         sub.close()
 
 
+def test_an_underscore_in_a_session_id_is_not_treated_as_a_wildcard(tmp_path):
+    # LongMemEval session ids are full of underscores ("answer_c63c0458"). Under LIKE, `_`
+    # matches any single character, so a suffix-match pull of one session also drags in every
+    # session whose name differs only at that position — silently enlarging the haystack the
+    # question is scored against. Caught in the real run: 49 requested, 50 copied.
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a_b.md").write_text("the wanted session about deploys", encoding="utf-8")
+    (corpus / "aXb.md").write_text("an unrelated session about lunch", encoding="utf-8")
+
+    emb = HashingEmbedder(dim=64)
+    table = "m_" + uuid.uuid4().hex[:8]
+    store = PgVectorStore(TEST_DSN, dim=emb.dim, table=table)
+    store.ensure_schema()
+    Indexer(store, emb).index_path(corpus)
+    scratch = "sc_" + uuid.uuid4().hex[:8]
+    try:
+        sub = populate_haystack(TEST_DSN, emb.dim, table, scratch, ["a_b.md"])
+        try:
+            with sub._connect() as conn:  # noqa: SLF001
+                got = {r[0] for r in conn.execute(f"SELECT DISTINCT source FROM {scratch}")}
+            assert len(got) == 1, f"underscore matched more than the requested session: {got}"
+        finally:
+            sub.drop_table()
+            sub.close()
+    finally:
+        store.drop_table()
+        store.close()
+
+
 def test_a_haystack_naming_an_absent_session_copies_what_exists(master):
     # The converter already refuses gold outside the haystack; a haystack naming a session the
     # master index does not hold means the index is incomplete, and the count is how the runner
