@@ -15,6 +15,13 @@ Every run costs money (generator + judge calls on OpenRouter), so the raw per-qu
 written for every run and treated as the publishable artifact: it carries the retrieved context,
 the generated answer and the verdict for each question, which is what lets a reader re-score the
 run under different rules — or catch the harness lying — without paying for it again.
+
+Two properties of the output exist because the money is real:
+
+- results are written INCREMENTALLY, one JSONL line per scored question, appended after each
+  conversation. A rate limit or a Ctrl-C on conversation 7 of 10 then costs the conversation in
+  flight, not the six already paid for.
+- the filename carries a UTC timestamp, so a second run never overwrites the first one's artifact.
 """
 from __future__ import annotations
 
@@ -22,6 +29,7 @@ import argparse
 import json
 import os
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -141,11 +149,52 @@ def _build_system(arm: str, model: str, openrouter_key: str) -> MemorySystem:
     raise ValueError(f"unknown arm {arm!r}")
 
 
+def _text_by_id(questions: list[dict[str, Any]]) -> dict[str, str]:
+    """Question text keyed by `question_id`, so an `Outcome` (which carries only the id) can be
+    written out as a self-contained, re-scorable record."""
+    return {str(q["question_id"]): str(q["question"]) for q in questions}
+
+
+def _outcome_record(outcome: Outcome, text_by_id: dict[str, str]) -> dict[str, Any]:
+    """One per-question record: the scored `Outcome` plus the question text joined back in.
+
+    The same shape is used for the incremental JSONL lines and for the `outcomes` array of the
+    final artifact, so a run that died half-way is re-scored by exactly the code that reads a run
+    that finished.
+    """
+    return {**asdict(outcome), "question": text_by_id.get(outcome.question_id, "")}
+
+
+def _append_records(path: Path, records: list[dict[str, Any]]) -> None:
+    """Append one conversation's records to the incremental JSONL sidecar and close the file.
+
+    Append-and-close per conversation rather than one handle held open for the whole run: the
+    point is that the bytes have reached the OS by the time the next conversation starts, so a
+    crash, a rate limit or a Ctrl-C loses at most the conversation in flight. JSONL rather than
+    rewriting a JSON array each time because appending cannot corrupt what is already there.
+    """
+    with path.open("a", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record) + "\n")
+
+
+def _run_stamp(arm: str, model: str, conversations: int, now: datetime) -> str:
+    """The filename stem for one run's artifacts — unique per run because of the timestamp.
+
+    Without it the stem is `{arm}_{model}_{N}conv`, so re-running the same arm/model/slice
+    silently overwrites the previous run's results file: an artifact that cost real money and may
+    already have been published and linked. `now` is passed in rather than read from the clock in
+    here so a test can pin the name.
+    """
+    stamped = now.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{arm}_{model.replace('/', '-')}_{conversations}conv_{stamped}"
+
+
 def _results_payload(
     arm: str,
     model: str,
     conversations: list[dict[str, Any]],
-    questions: list[dict[str, Any]],
+    text_by_id: dict[str, str],
     outcomes: list[Outcome],
     aggregate_: dict[str, Any],
 ) -> dict[str, Any]:
@@ -154,20 +203,22 @@ def _results_payload(
     The question TEXT is joined back in here (an `Outcome` carries only the id), so the file can be
     read and re-scored without also holding the LOCOMO source alongside it.
     """
-    text_by_id = {q["question_id"]: q["question"] for q in questions}
     return {
         "arm": arm,
         "model": model,
         "conversations": len(conversations),
         "questions": len(outcomes),
         "aggregate": aggregate_,
-        "outcomes": [
-            {**asdict(o), "question": text_by_id.get(o.question_id, "")} for o in outcomes
-        ],
+        "outcomes": [_outcome_record(o, text_by_id) for o in outcomes],
     }
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
+    """Run one arm. `now` stamps the output filenames; it defaults to the wall clock in UTC.
+
+    It is a parameter rather than a `datetime.now()` buried in the filename logic so a test can
+    pin the artifact paths without freezing time process-wide.
+    """
     p = argparse.ArgumentParser(
         prog="python -m benchmarks.run",
         description="Run one arm of the memory head-to-head benchmark over LOCOMO.",
@@ -199,6 +250,11 @@ def main(argv: list[str] | None = None) -> int:
     convs, questions = _load(args.data, args.conversations)
     system = _build_system(args.arm, args.model, key)
 
+    text_by_id = _text_by_id(questions)
+    args.out.mkdir(parents=True, exist_ok=True)
+    stamp = _run_stamp(args.arm, args.model, len(convs), now or datetime.now(timezone.utc))
+    partial_path = args.out / f"{stamp}.partial.jsonl"
+
     outcomes: list[Outcome] = []
     for position, conv in enumerate(convs):
         sample_id = _sample_id(conv, position)
@@ -209,21 +265,23 @@ def main(argv: list[str] | None = None) -> int:
         system.ingest(conv)
         conv_outcomes, _ = run_arm(system, completer, conv_questions)
         outcomes.extend(conv_outcomes)
+        # Persist BEFORE the next conversation is touched: everything scored above has already
+        # been paid for in generator and judge calls, and this is the write that keeps it.
+        _append_records(partial_path, [_outcome_record(o, text_by_id) for o in conv_outcomes])
         print(
             f"  [{position + 1}/{len(convs)}] {sample_id}: {len(conv_outcomes)} questions scored",
             flush=True,
         )
 
     agg = aggregate(outcomes)
-    payload = _results_payload(args.arm, args.model, convs, questions, outcomes, agg)
-    args.out.mkdir(parents=True, exist_ok=True)
-    stamp = f"{args.arm}_{args.model.replace('/', '-')}_{len(convs)}conv"
+    payload = _results_payload(args.arm, args.model, convs, text_by_id, outcomes, agg)
     path = args.out / f"{stamp}.json"
     # `aggregate` already sanitises its empty rate blocks to None, so this never emits the bare
     # `NaN` token that no non-Python JSON parser accepts.
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(json.dumps(agg, indent=2))
     print(f"full results -> {path}")
+    print(f"incremental  -> {partial_path}")
     return 0
 
 
