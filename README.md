@@ -358,6 +358,39 @@ Four tools: `recall_search` (verdict + confidence + provenance, or an explicit a
 tenant-scoped), `recall_stats` (size, freshness, and the process metrics). Full guide →
 [docs/USING_WITH_CLAUDE.md](https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md).
 
+## Use it with LangChain or LlamaIndex
+
+```bash
+pip install "recall-rag[langchain]"     # or: "recall-rag[llamaindex]"
+```
+
+```python
+from recall.integrations.langchain import RecallRetriever   # or .llamaindex
+
+retriever = RecallRetriever.from_store(store, emb, k=5)
+docs = retriever.invoke("what is the rate limit?")          # LlamaIndex: .retrieve(...)
+```
+
+Drop-in retrievers for both frameworks, so RE-call can be the `retriever=` behind any chain, agent
+or query engine. They differ from an ordinary vector retriever in exactly one way, and it is the
+whole point:
+
+> **When the trust layer abstains, they return nothing** — an empty `list[Document]` /
+> `list[NodeWithScore]`, not a best-effort neighbour.
+
+A plain similarity retriever always hands back its top-k, so a chain cites the closest vector even
+when that memory is stale or superseded — and the stale hit is often the *highest*-cosine one. Here
+the chain gets nothing instead of a confident wrong memory. Every returned document carries the
+trust signal in `metadata` (`recall_verdict`, `recall_confidence`, `recall_cosine`,
+`superseded_by`), so a downstream prompt or reranker can use it; pass
+`return_abstention_reason=True` if you would rather receive one empty document carrying
+`recall_reason` than an empty list.
+
+`from_store()` takes the same knobs as `trusted_search` — `k`, `source`, `calibration`, `reranker`,
+`entailment`. Both adapters accept an injectable search function, so they are unit-tested without a
+database, and both ship in `dev` as well as their own extra — the `test` and `typecheck` jobs
+install `.[dev]` only, so otherwise they would be shipped but never CI-tested or type-checked.
+
 ## What this does not do
 
 Stated plainly, because the failure mode this library exists to prevent is confident overreach.
@@ -459,7 +492,8 @@ Two behavioural changes worth knowing before you upgrade:
 
 Five changes that **shipped in 0.5.1**, listed here because each can make something that currently
 succeeds start failing. If you are on 0.5.0, upgrading to the current release applies all five at
-once — 0.5.2 adds only the LOCOMO benchmark and changes no behaviour. Full detail in
+once — everything since is additive (0.5.2 the LOCOMO benchmark, 0.5.3 the LangChain and
+LlamaIndex retrievers) and changes no existing behaviour. Full detail in
 [CHANGELOG.md](https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md).
 
 - **`RECALL_ALLOW_INSECURE_DSN` is now an explicit allowlist** — only `1|true|yes|on` disable the

@@ -18,7 +18,7 @@ build-backend = "hatchling.build"
 # so installing both into one environment gives two distributions writing the same import path, and
 # whichever installed last wins. Nothing detects it. Install `recall-rag`, never `recall`.
 name = "recall-rag"
-version = "0.5.2"
+version = "0.5.3"
 description = "Trustworthy retrieval for an AI agent's own memory — verdict, confidence and provenance per hit, or an explicit abstention"
 readme = "README.md"
 requires-python = ">=3.11"
