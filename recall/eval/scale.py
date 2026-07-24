@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 from recall.embeddings import Embedder
+from recall.store import PgVectorStore
 from recall.eval.harness import (
     _throwaway_store,
     run_trust_eval,
@@ -66,7 +67,7 @@ def _percentiles(samples_ms: list[float]) -> dict[str, float]:
 
 
 def measure_retrieval(
-    store, embedder: Embedder, queries: list[dict], k: int = 5
+    store: PgVectorStore, embedder: Embedder, queries: list[dict], k: int = 5
 ) -> tuple[dict, dict, dict]:
     """Recall@k unfiltered, recall@k under a `source` filter, and latency percentiles.
 

@@ -47,8 +47,40 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
 
-      - name: Test (pytest on real pgvector)
-        run: pytest -q
+      # Coverage over the SHIPPED packages only (`recall`, `recall_mcp`) — putting the tests in
+      # the denominator inflates the number with code that is 100% covered by definition.
+      #
+      # The floor is 70, measured against ~75% in exactly this environment (the `[dev]` extra,
+      # no fastembed/voyage/rerank — the model-backed tests self-skip here, so their modules read
+      # lower than a local run with the extras installed). It is a RATCHET, not a target: set
+      # below the observed number so a normal PR never trips it on noise, and raised deliberately
+      # when a real jump lands. A gate nobody fails on drifts down one PR at a time; a gate pinned
+      # to the exact current number fails on the first unlucky rounding.
+      - name: Test (pytest on real pgvector, with coverage)
+        run: pytest -q --cov=recall --cov=recall_mcp --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+
+  # Static typing, in its own job: it needs no database, so a type error surfaces in ~30s instead
+  # of behind the full integration suite, and a red DB service never hides a red type check.
+  #
+  # Optional extras are deliberately NOT installed here. `recall.rerank` / `recall.entailment` /
+  # `recall.embeddings` import theirs lazily behind a guard, and pyproject's mypy overrides pin
+  # those modules to `follow_imports = skip` so this job's result does not depend on whether a
+  # 2 GB torch wheel happens to be present.
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]" mypy
+
+      - name: Type check (mypy)
+        run: mypy
 
   # The declared floors, actually installed and actually run.
   #

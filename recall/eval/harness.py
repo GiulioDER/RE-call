@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -37,7 +38,7 @@ from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder, TimedReranker, TimingStats, timed_call
 from recall.trust import trusted_search
-from recall.types import ScoredChunk, TrustedHit
+from recall.types import ScoredChunk, TrustedHit, TrustedResult
 
 EVAL_DIR = Path(__file__).parent
 FUSIONS = ["dense", "hybrid", "hybrid+rerank"]
@@ -69,7 +70,9 @@ def _key(hit: ScoredChunk) -> str:
 
 
 @contextmanager
-def _throwaway_store(dsn: str, emb: Embedder, corpus_dir: Path, prefix: str):
+def _throwaway_store(
+    dsn: str, emb: Embedder, corpus_dir: Path, prefix: str
+) -> "Iterator[PgVectorStore]":
     """Schema-created, corpus-indexed throwaway store for one eval stage.
 
     Setup runs INSIDE the guard: a failure while creating the schema or indexing must still
@@ -283,7 +286,9 @@ def run_nearmiss_eval(
                 timed = _TimedJudge(arm_judge) if arm_judge is not None else None
                 q_times: list[float] = []
 
-                def _search(text: str, loo_cal: Calibration | None = None):
+                def _search(
+                    text: str, loo_cal: Calibration | None = None
+                ) -> TrustedResult:
                     # loo_cal is the refit that never saw this query; fall back to the arm's own
                     # calibration when the arm is unfitted, or when the class was too small to
                     # hold a sample out (see _loo_calibrations).

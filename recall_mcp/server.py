@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager
 from contextlib import asynccontextmanager
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 import anyio.to_thread
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
 
 from recall.calibration import load_for
@@ -37,8 +39,29 @@ DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost
 #: Transport to serve. `stdio` is a private pipe between one client and this process — there is no
 #: network listener and no remote caller to authenticate, so auth is not required there. The HTTP
 #: transports open a socket, and `build_auth` refuses to start them without tokens.
-TRANSPORT = os.environ.get("RECALL_TRANSPORT", "stdio")
+Transport = Literal["stdio", "sse", "streamable-http"]
+TRANSPORTS: tuple[Transport, ...] = ("stdio", "sse", "streamable-http")
 HTTP_TRANSPORTS = frozenset({"streamable-http", "sse"})
+
+
+def _read_transport() -> Transport:
+    """`RECALL_TRANSPORT`, validated against the three the SDK accepts.
+
+    Unvalidated, a typo reached `mcp.run(transport=...)` as an arbitrary string. `stdo` does not
+    fall back to stdio and does not name a listener — it produces whatever the SDK does with an
+    unknown transport, at the end of startup, having already opened a store and read the token
+    file. Failing here names the bad value and the valid set instead.
+    """
+    value = os.environ.get("RECALL_TRANSPORT", "stdio")
+    if value not in TRANSPORTS:
+        raise ValueError(
+            f"RECALL_TRANSPORT={value!r} is not a valid transport; "
+            f"expected one of {', '.join(TRANSPORTS)}"
+        )
+    return value  # narrowed to Transport by the membership test above
+
+
+TRANSPORT: Transport = _read_transport()
 #: Bind address for the HTTP transports. Exposed as RECALL_* because the SDK's own FASTMCP_HOST /
 #: FASTMCP_PORT are read when the FastMCP object is constructed at import time, which makes them
 #: unreliable to set from a wrapper — and every other knob in this server is RECALL_*.
@@ -162,7 +185,9 @@ async def _to_thread(fn: Callable[[], _T]) -> _T:
     return await anyio.to_thread.run_sync(fn)
 
 
-def _make_lifespan(token_registry: TokenRegistry | None):
+def _make_lifespan(
+    token_registry: TokenRegistry | None,
+) -> "Callable[[FastMCP], AbstractAsyncContextManager[dict]]":
     """Build the lifespan.
 
     Two shapes, decided by whether auth is on:
@@ -175,7 +200,7 @@ def _make_lifespan(token_registry: TokenRegistry | None):
     """
 
     @asynccontextmanager
-    async def _lifespan(_server: FastMCP):
+    async def _lifespan(_server: FastMCP) -> "AsyncIterator[dict]":
         from recall.store import require_secure_dsn
 
         # FAIL CLOSED, unlike the CLI's warning: a server is unattended, so a stderr note about
@@ -324,7 +349,8 @@ def build_server() -> FastMCP:
             # Unauthenticated stdio: one caller, one tenant, a private pipe. There is no principal
             # to charge and no one to protect the local user from but themselves, so the budget
             # does not apply — matching how auth itself is scoped.
-            return state["store"]
+            store: PgVectorStore = state["store"]
+            return store
 
         token = get_access_token()
         if token is None:
@@ -348,8 +374,9 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="recall_search",
-        annotations={"title": "Search agent memory", "readOnlyHint": True,
-                     "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        annotations=ToolAnnotations(title="Search agent memory", readOnlyHint=True,
+                                    destructiveHint=False, idempotentHint=True,
+                                    openWorldHint=False),
     )
     async def recall_search(query: str, source: str | None = None, k: int = 5) -> str:
         """Search the agent's OWN memory before acting, and get actionable guidance.
@@ -383,8 +410,9 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="recall_index",
-        annotations={"title": "Add to agent memory", "readOnlyHint": False,
-                     "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        annotations=ToolAnnotations(title="Add to agent memory", readOnlyHint=False,
+                                    destructiveHint=False, idempotentHint=True,
+                                    openWorldHint=False),
     )
     async def recall_index(path: str) -> str:
         """Index a markdown file or folder into the agent's memory so it can be recalled later.
@@ -425,8 +453,9 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="recall_forget",
-        annotations={"title": "Forget agent memory", "readOnlyHint": False,
-                     "destructiveHint": True, "idempotentHint": True, "openWorldHint": False},
+        annotations=ToolAnnotations(title="Forget agent memory", readOnlyHint=False,
+                                    destructiveHint=True, idempotentHint=True,
+                                    openWorldHint=False),
     )
     async def recall_forget(sources: list[str]) -> str:
         """Permanently delete indexed memory for the given source(s). IRREVERSIBLE.
@@ -452,8 +481,9 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="recall_stats",
-        annotations={"title": "Memory freshness & size", "readOnlyHint": True,
-                     "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+        annotations=ToolAnnotations(title="Memory freshness & size", readOnlyHint=True,
+                                    destructiveHint=False, idempotentHint=True,
+                                    openWorldHint=False),
     )
     async def recall_stats() -> str:
         """Report how much memory exists and whether it is stale (freshness check).

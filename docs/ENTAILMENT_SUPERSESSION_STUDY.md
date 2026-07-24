@@ -44,7 +44,7 @@ near-misses. There is no threshold to fix; the distractor's cosine is genuinely 
 
 ## 2. An entailment stage helps — as a *layer*, not a replacement
 
-We added an optional entailment stage (`recall/entailment.py`, `pip install recall[entail]`,
+We added an optional entailment stage (`recall/entailment.py`, `pip install recall-rag[entail]`,
 OFF by default): a QNLI cross-encoder — "does this sentence answer this question?" — judges the
 verdict-ok hits, and an ok hit that does not entail the query is demoted to a new verdict
 `not_entailed`. The decision happens at the judge's own trained boundary; **there is no

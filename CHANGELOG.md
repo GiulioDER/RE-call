@@ -7,7 +7,138 @@ dates — this project does not currently tag releases.
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-07-24
+
 ### Added
+- **A LangChain retriever** (`recall/integrations/langchain.py`, extra `langchain`) — `RecallRetriever`
+  is a drop-in `langchain_core` `BaseRetriever`, so RE-call can sit behind any chain, agent or
+  `create_retrieval_chain` pipeline. It differs from an ordinary vector retriever in one way, which
+  is the point: **when the trust layer abstains it returns no documents**, not a best-effort
+  neighbour — a plain similarity retriever always hands back its top-k, so a chain cites the closest
+  vector even when that memory is stale or superseded, and the stale hit is often the
+  *highest*-cosine one. Each `Document` carries the trust signal in `metadata` (`recall_verdict`,
+  `recall_confidence`, `recall_cosine`, `superseded_by`). Install with
+  `pip install "recall-rag[langchain]"`.
+- **A LlamaIndex retriever** (`recall/integrations/llamaindex.py`, extra `llamaindex`) — the same
+  adapter against `llama_index.core`, for any LlamaIndex query engine, chat engine or agent. An
+  abstention becomes an empty `list[NodeWithScore]`, so a query engine synthesises from nothing
+  rather than from a stale, superseded or unentailed memory; node `score` is the cosine similarity
+  and the calibrated confidence rides in `metadata['recall_confidence']`. Install with
+  `pip install "recall-rag[llamaindex]"`.
+
+  Both adapters take an injectable search function, so they are unit-tested without a database, and
+  both are in `dev` as well as their own extra — the `test` and `typecheck` jobs install `.[dev]`
+  only, so without that the adapters would be shipped but never CI-tested or type-checked.
+
+### Fixed
+- **The README's second upgrade section said "unreleased" for changes that had already shipped.**
+  It described the five breaking changes as being "on `main` … not in 0.5.0 yet" — they went out in
+  0.5.1, so a reader on the published page was told a released guard was still pending. Now headed
+  *Upgrading to 0.5.1*, and it states that 0.5.2 adds only the LOCOMO benchmark and changes no
+  behaviour. PyPI freezes a version's description at upload and the fix landed after 0.5.2 went
+  out, so the 0.5.2 project page kept the stale wording — **this release is what carries the
+  correction to PyPI readers.**
+- **`CITATION.cff` sat at 0.5.1 through the whole 0.5.2 release.** The version is written in three
+  places and the drift test covered only two, so the one file whose entire job is to say which
+  version produced a result was the one nothing checked. Bumped, and the test now asserts all
+  three agree.
+
+### Changed
+- **The README documents the two framework integrations** (*Use it with LangChain or LlamaIndex*).
+  They shipped in this release with no README presence at all — the only mention of either
+  ecosystem was LangMem in the prior-art table.
+
+## [0.5.2] — 2026-07-23
+
+### Added
+- **The LOCOMO benchmark** (`recall/eval/locomo.py`, `locomo_abstention.py`,
+  `locomo_entailment_sweep.py`) — the standard long-term-memory benchmark Mem0 and Zep report, run
+  against the retrieval layer with **no LLM judge**: retrieval is scored by exact string-match
+  against LOCOMO's gold evidence turns, not by an LLM-as-judge. It is deliberately **not** a J
+  score — RE-call ships no generator, so nothing here sits beside Mem0's 66.9 or Zep's 66.0.
+  - **Retrieval**: evidence-turn **hit@5 0.615** [0.59, 0.64] with the free local embedder.
+  - **Abstention**: the **446 adversarial questions** (22.5% of LOCOMO) that, per an independent
+    audit, no published result scores. Default abstention is **0.00**; the shipped levers
+    (calibration, an entailment judge) raise it to 0.37–0.77 only by refusing 26–56% of
+    *legitimate* questions. A judge sweep shows a stronger QNLI cross-encoder lifts best separation
+    0.197 → 0.240 but still refuses 44% of legitimate questions — the residual is the
+    entity-attribution reasoning the library omits by design.
+  - Full write-up in `results/FINDINGS.md` §9; 24 unit tests over the pure logic. The benchmark
+    itself is a local eval (needs pgvector + a cross-encoder download), not a CI gate.
+
+### Fixed
+- **Unresolved merge-conflict markers in the README, published to PyPI.** 0.5.1 shipped with raw
+  `<<<<<<< Updated upstream` / `=======` / `>>>>>>> Stashed changes` markers around the
+  standard-benchmark bullet — an artifact of a `git stash` reconcile committed unresolved, so both
+  the GitHub landing page and the PyPI 0.5.1 project description rendered the markers to every
+  visitor. Resolved in favour of the current claim (LOCOMO runs against the library; hit@5 0.615;
+  the 446-adversarial abstention boundary), dropping the stale "this repo has never run either"
+  side. PyPI freezes a version's description at upload, so this needs a release.
+
+## [0.5.1] — 2026-07-23
+
+### Fixed
+- **The README now renders on PyPI.** The project page for 0.5.0 showed a broken banner and no
+  demo image, for two independent reasons — both fixed here, and both needing a release because
+  PyPI freezes a version's description at upload:
+  - **Relative paths don't resolve on PyPI.** `docs/banner.svg` and every `docs/…`/`results/…`
+    link were repo-relative — fine on GitHub, 404 on PyPI, which has no repo to resolve them
+    against. All image `src`s and doc links are now absolute (`raw.githubusercontent.com` for
+    images, `github.com/.../blob/master` for docs), so they work on both.
+  - **PyPI strips SVG images entirely** (its description sanitiser drops `<svg>` and SVG `<img>`
+    for security). The banner now points at the existing `docs/banner.png`, and the demo has a
+    new rasterised `docs/superseded-catch.png` (rendered from the SVG at 2×, reduced-motion end
+    state so every row is present). The animated SVG stays in the repo for GitHub.
+
+### Changed
+- **The distribution is now published as `recall-rag`** (the import stays `recall`). `recall` on
+  PyPI belongs to an unrelated Python-2-era RPC framework whose last release was in 2014; the name
+  is occupied and not reclaimable, and `re-call` is rejected by PyPI's similarity guard as too
+  close to it. Install with `pip install "recall-rag[fastembed]"`. ⚠️ That other `recall` package
+  also provides a top-level `recall` module, so `recall` and `recall-rag` must not share an
+  environment — whichever installs last wins the import path, and nothing detects it.
+
+### Added
+- **BM25 and single-leg baselines in the labelled evaluation** (`recall/eval/bm25.py`). Every
+  retrieval number this project published was previously unanchored: `hit@5 = 0.705` cannot be
+  read as good or bad without knowing what plain keyword matching scores on the same corpus, the
+  same chunks and the same questions. `python -m recall.eval.labelled` now reports four arms —
+  `bm25`, `dense`, `sparse`, `hybrid` — instead of one. On the public PEP corpus (bge-small, 44
+  held-out answerable): BM25 **0.455**, sparse-only **0.023**, dense-only **0.682**, hybrid
+  **0.705** — so the pipeline beats the baseline by **+0.25**, and dense carries it (hybrid's
+  +0.023 over dense-alone is within the interval on this corpus).
+  - The BM25 implementation is dependency-free (Okapi, `k1=1.5`, `b=0.75`, untuned) rather than
+    `rank_bm25`, so the anchor for every published number cannot change under a dependency bump.
+  - `PgVectorStore.iter_chunks()` streams the tenant's chunks through a server-side cursor, which
+    is how the baseline indexes *exactly* the chunks the other arms search. Deliberately outside
+    `_with_retry`: a mid-scan reconnect would restart the cursor and yield rows twice.
+  - `HybridRetriever(use_dense=False)` completes the ablation switch that `use_sparse=False`
+    started. It is an ablation, not a serving mode — with no dense leg there are no cosines, so
+    `gap_warning` reports False for every query and must not be read as "no gap".
+- **A prior-art section in the README.** Zep/Graphiti, Mem0, Letta and LangMem, what each does
+  about a fact that stopped being true, and the one real difference here: validity is *authored*,
+  not inferred. Stated as a trade — precision on the edges that exist, paid for in coverage
+  (2 of 792 memos declared `supersedes:`) — rather than as a win.
+- **`mypy` as a CI gate** (`[tool.mypy]`, `typecheck` job), with `disallow_untyped_defs`. It found
+  two defects the test suite did not; both are in Fixed below.
+- **Coverage measurement** on the test job (`pytest-cov`, over `recall` and `recall_mcp` only).
+- **A release workflow** (`.github/workflows/release.yml`) publishing on a `v*` tag via PyPI
+  Trusted Publishing — no API token in repository secrets. It builds once, installs the built
+  *wheel* into a clean environment on 3.11 and 3.13 and imports it there, and only then publishes;
+  `uv build` succeeding proves the metadata parses, not that the wheel's contents work.
+
+### Fixed
+- **`RECALL_TRANSPORT` was never validated.** An unrecognised value (`stdo`, `http`) was passed
+  straight to `mcp.run(transport=...)` at the very end of startup, after a store had been opened
+  and the token file read. It is now checked at import against the three transports the SDK
+  accepts, and names both the bad value and the valid set.
+- **`ensure_schema()` crashed with a bare `TypeError` against a foreign table.** `CREATE TABLE IF
+  NOT EXISTS` is a no-op when a table of that name already exists, so pointing a store at an
+  unrelated `chunks` table reached the dimension check with no `embedding` column and indexed
+  `None`. It now raises a `ValueError` naming the table.
+- MCP tool annotations are constructed as `ToolAnnotations` rather than passed as a bare dict, and
+  `StoreRegistry` passes `table=` explicitly instead of splatting a conditional `**kwargs` — both
+  were shapes a type checker could not see through.
 - **A prune guard on re-index** (`recall/index.py`). Re-indexing removes rows for files gone from
   disk; that made `recall index` quietly destructive when a corpus was *missing* rather than
   deleted — an unmounted volume, an interrupted sync, a path that still resolves. It now raises

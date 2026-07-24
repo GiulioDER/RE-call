@@ -41,7 +41,7 @@ means that corpus's content leaves the host and is processed by a third-party se
 a hypothetical, it is what "embed with a cloud model" means.
 
 For a sensitive corpus, use `recall.embeddings.FastEmbedEmbedder` instead: it runs the embedding
-model locally (`pip install recall[fastembed]`) and never makes a network call with chunk text. This
+model locally (`pip install recall-rag[fastembed]`) and never makes a network call with chunk text. This
 is the default — and, as shipped, the *only* backend `recall_mcp/server.py` and
 `examples/self_recall_agent.py` can select via `RECALL_EMBEDDER` (`make_embedder` in
 `recall_mcp/service.py` accepts `"fastembed"` or `"hashing"` only; `VoyageEmbedder` is reached by

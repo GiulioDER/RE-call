@@ -187,8 +187,8 @@ def evaluate(
         METRICS.increment("recall_gap_warnings_total")
     if result.staleness.stale:
         METRICS.increment("recall_stale_results_total")
-    for hit in trusted:
-        METRICS.increment("recall_verdicts_total", verdict=hit.verdict)
+    for trusted_hit in trusted:  # not `hit`: that name is bound to a ScoredChunk above
+        METRICS.increment("recall_verdicts_total", verdict=trusted_hit.verdict)
     return TrustedResult(
         query=result.query,
         hits=ok + rest,
