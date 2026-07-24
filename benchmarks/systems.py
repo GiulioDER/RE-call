@@ -124,13 +124,13 @@ def mem0_config(
     return {"llm": llm, "embedder": emb}
 
 
-def _conversation_to_messages(conversation: dict[str, Any]) -> list[dict[str, str]]:
-    """Map one LOCOMO conversation's turns to Mem0's ``[{"role", "content"}]`` chat shape.
+def _conversation_to_session_messages(conversation: dict[str, Any]) -> list[list[dict[str, str]]]:
+    """One LOCOMO conversation as Mem0 chat messages, GROUPED BY SESSION and in walk order.
 
     Mirrors `recall.eval.locomo.write_conversation_corpus`'s turn walk exactly — same session
-    discovery, same sort, same skip rule — so `RecallSystem` and `Mem0System` ingest the identical
-    set of turns in the identical order. Diverge here and the benchmark stops comparing memory
-    systems and starts comparing which one got fed more/different material:
+    discovery, same sort, same skip rule, same per-turn information — so `RecallSystem` and
+    `Mem0System` ingest the identical material in the identical order. Diverge here and the
+    benchmark stops comparing memory systems and starts comparing which one got fed more:
 
     - Sessions are found by the ``session_`` prefix, excluding the sibling ``_date_time`` keys,
       and sorted numerically by the trailing session number (dict/string order would put
@@ -138,36 +138,57 @@ def _conversation_to_messages(conversation: dict[str, Any]) -> list[dict[str, st
     - A turn without a ``dia_id`` is skipped, because `write_conversation_corpus` skips it too
       (it uses `dia_id` for the output filename) — keeping it here would feed Mem0 a turn RE-call
       never sees.
+    - Every field `_turn_document` writes into an indexed RE-call document is written into the
+      message content: speaker, **session date**, turn text, and the image caption line when
+      present. The session date is not decoration — `_turn_document`'s own docstring records that
+      it is frequently the answer to LOCOMO's temporal (category 2) questions, so a Mem0 message
+      without it would hand RE-call an information advantage on a whole question category. It is
+      carried as a ``[date]`` prefix INSIDE the content (rather than as message metadata) so it
+      survives Mem0's LLM fact-extraction step, which only ever reads the content.
 
-    Content-wise this reuses `_turn_document`'s body convention (``"speaker: text"``, plus the
-    image caption line when present) so the same information — not just the same turn count —
-    reaches both systems; only the RE-call-specific markdown header/date line is dropped, since
-    Mem0 messages have no place for it. Role is derived from `speaker_a` vs `speaker_b` (LOCOMO
-    conversations are always two-party) so Mem0 sees a real alternating chat transcript rather
-    than every turn collapsed onto one role.
+    Grouping is by session because `Mem0System.ingest` issues one ``add()`` per group; see the
+    comment there. Role is derived from `speaker_a` vs `speaker_b` (LOCOMO conversations are
+    always two-party) so Mem0 sees a real alternating chat transcript rather than every turn
+    collapsed onto one role.
     """
     speaker_a = conversation.get("speaker_a")
     sessions = sorted(
         (k for k in conversation if k.startswith("session_") and not k.endswith("date_time")),
         key=lambda k: int(k.split("_")[1]),
     )
-    messages: list[dict[str, str]] = []
+    grouped: list[list[dict[str, str]]] = []
     for key in sessions:
         turns = conversation[key]
         if not isinstance(turns, list):
             continue
+        # Same default as `write_conversation_corpus`: a session with no date line still gets the
+        # same placeholder on both sides, so neither system silently sees a field the other lacks.
+        date = conversation.get(f"{key}_date_time", "unknown date")
+        session_messages: list[dict[str, str]] = []
         for turn in turns:
             if not turn.get("dia_id"):
                 continue
             speaker = turn.get("speaker", "unknown")
             text = turn.get("text", "")
-            content = f"{speaker}: {text}"
+            content = f"[{date}] {speaker}: {text}"
             caption = turn.get("blip_caption")
             if caption:
                 content += f"\n\n[shared an image: {caption}]"
             role = "user" if speaker == speaker_a else "assistant"
-            messages.append({"role": role, "content": content})
-    return messages
+            session_messages.append({"role": role, "content": content})
+        if session_messages:
+            grouped.append(session_messages)
+    return grouped
+
+
+def _conversation_to_messages(conversation: dict[str, Any]) -> list[dict[str, str]]:
+    """Flat, ordered view of `_conversation_to_session_messages` — every turn, session order.
+
+    Kept as the single description of "what Mem0 is fed, in what order", so the parity test can
+    compare one flat sequence against `write_conversation_corpus`'s corpus without having to know
+    how ingestion happens to be chunked.
+    """
+    return [m for session in _conversation_to_session_messages(conversation) for m in session]
 
 
 class Mem0System:
@@ -175,7 +196,8 @@ class Mem0System:
 
     Mirrors `RecallSystem`'s per-conversation tenancy: each LOCOMO conversation gets its own Mem0
     ``user_id`` (``bench-{sample_id}``), so one conversation's turns cannot leak into another's
-    answers the way they could if every conversation shared one Mem0 user.
+    answers the way they could if every conversation shared one Mem0 user. Ingestion is chunked
+    one ``add()`` per LOCOMO session — see `ingest`.
     """
 
     name = "mem0"
@@ -205,8 +227,18 @@ class Mem0System:
         # object), matching `RecallSystem.ingest`'s contract — see the comment there.
         self._user = f"bench-{conversation.get('sample_id')}"
         inner = conversation["conversation"]
-        messages = _conversation_to_messages(inner)
-        self._memory().add(messages, user_id=self._user)
+        memory = self._memory()
+        # ONE `add()` PER SESSION, not one per conversation. Mem0 runs an LLM fact-extraction pass
+        # inside every `add()` call, so handing it a whole LOCOMO conversation (hundreds of turns,
+        # tens of thousands of tokens) in a single call risks context truncation and severe
+        # under-extraction — the benchmark would then be measuring a misconfiguration of Mem0
+        # rather than Mem0. The LOCOMO session is the fair chunk: it is the unit the dataset itself
+        # groups turns into, the unit RE-call's corpus walk iterates, and it bounds each extraction
+        # call to a realistic conversation length. Sessions are sent in walk order under the SAME
+        # `user_id`, so Mem0 accumulates exactly the same material, in the same sequence, as the
+        # single-call version would have — only split at a boundary it can actually digest.
+        for session_messages in _conversation_to_session_messages(inner):
+            memory.add(session_messages, user_id=self._user)
 
     def retrieve(self, question: str) -> str:
         if self._user is None:
