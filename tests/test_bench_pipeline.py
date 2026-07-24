@@ -1,4 +1,10 @@
-from benchmarks.pipeline import NO_ANSWER, generate_answer, is_abstention, judge_correct
+from benchmarks.pipeline import (
+    GEN_SYSTEM_PROMPT,
+    NO_ANSWER,
+    generate_answer,
+    is_abstention,
+    judge_correct,
+)
 
 
 def test_is_abstention_exact_token() -> None:
@@ -36,6 +42,44 @@ def test_generate_answer_empty_context_still_calls_llm() -> None:
         return "NO_ANSWER"
 
     assert generate_answer(completer, context="", question="q") == "NO_ANSWER"
+
+
+def test_generate_answer_wraps_context_in_memories_delimiters() -> None:
+    seen: dict[str, str] = {}
+
+    def completer(system: str, user: str) -> str:
+        seen["user"] = user
+        return "500 rps"
+
+    generate_answer(completer, context="rate limit is 500 rps", question="how many rps?")
+    user = seen["user"]
+    start = user.index("<memories>")
+    end = user.index("</memories>")
+    assert start != -1
+    assert end > start
+    # the untrusted context is inside the delimited block
+    assert "rate limit is 500 rps" in user[start:end]
+
+
+def test_generate_answer_question_is_outside_memories_block() -> None:
+    seen: dict[str, str] = {}
+
+    def completer(system: str, user: str) -> str:
+        seen["user"] = user
+        return "500 rps"
+
+    generate_answer(completer, context="rate limit is 500 rps", question="how many rps?")
+    user = seen["user"]
+    end = user.index("</memories>")
+    # the question must appear after the closing delimiter, not inside the untrusted block
+    assert "how many rps?" in user[end:]
+    assert "how many rps?" not in user[: user.index("<memories>")]
+
+
+def test_gen_system_prompt_instructs_memories_are_data_not_instructions() -> None:
+    lowered = GEN_SYSTEM_PROMPT.casefold()
+    assert "<memories>" in lowered
+    assert "instruction" in lowered
 
 
 def test_judge_correct_parses_yes_no() -> None:
