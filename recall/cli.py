@@ -365,12 +365,29 @@ def main(argv: list[str] | None = None) -> None:
         path = save(cal, args.out)
         print(f"embedder:  {embedder.name}")
         print(f"threshold: {cal.threshold} (scale {cal.scale})")
+        sep = "n/a" if cal.separability is None else f"{cal.separability:.3f}"
+        print(f"separability (AUC): {sep} over {cal.n_answerable} answerable / "
+              f"{cal.n_unanswerable} unanswerable")
         print(f"FCR at default 0.50: {measured.fcr_at_050:.2f} -> at calibrated: "
               f"{measured.fcr_at_suggested:.2f}")
         print(f"saved: {path}")
         if args.out and Path(args.out).resolve() != _resolve_path(None).resolve():
             print(f"note: searches load {_resolve_path(None)} by default — set "
                   f"{ENV_VAR}={path} for this file to be used")
+
+        # Exit non-zero on a threshold the data does not support. The file is still written: the
+        # artifact records `certified: false` and the reason, and refusing to write would destroy
+        # the evidence of WHY. What changes is that a calibration step can now fail — measured on
+        # LongMemEval, an uncertified threshold refused 44% of the questions retrieval had just
+        # answered correctly, and neither the API nor the file said anything was wrong.
+        if cal.certified is False:
+            print(f"\nNOT CERTIFIED: {cal.certification_reason}", file=sys.stderr)
+            print("Saved anyway — there is no better threshold for this data — but abstention on "
+                  "this corpus is not trustworthy. Do NOT read an abstention as evidence that the "
+                  "answer is absent.", file=sys.stderr)
+            raise SystemExit(1)
+        if cal.certified is None:
+            print(f"\nnot judged: {cal.certification_reason}", file=sys.stderr)
 
 
 if __name__ == "__main__":

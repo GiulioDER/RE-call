@@ -1,4 +1,6 @@
 
+import pytest
+
 from recall.cli import main
 
 from tests.conftest import TEST_DSN, requires_db
@@ -82,15 +84,25 @@ def test_cli_calibrate_writes_calibration_file(tmp_path, capsys):
         encoding="utf-8",
     )
     out_path = tmp_path / "cal.json"
-    main(
-        ["--embedder", "hashing", "--dsn", TEST_DSN, "calibrate", str(queries),
-         "--corpus", str(tmp_path), "--out", str(out_path)]
-    )
+    # Two samples cannot support a percentile boundary (FINDINGS §6), so the separability check
+    # refuses to certify and `calibrate` exits non-zero — while STILL writing the file, because
+    # the artifact is what records why. A calibration step that cannot fail is not a check.
+    with pytest.raises(SystemExit) as exc:
+        main(
+            ["--embedder", "hashing", "--dsn", TEST_DSN, "calibrate", str(queries),
+             "--corpus", str(tmp_path), "--out", str(out_path)]
+        )
+    assert exc.value.code == 1
+
     data = json.loads(out_path.read_text(encoding="utf-8"))
     assert data["embedder"] == "hashing-64"
     assert "threshold" in data and "scale" in data
-    printed = capsys.readouterr().out
-    assert "threshold" in printed
+    assert data["certified"] is False
+    assert "sample" in data["certification_reason"].lower()
+    captured = capsys.readouterr()
+    assert "threshold" in captured.out
+    assert "separability" in captured.out
+    assert "NOT CERTIFIED" in captured.err
 
 
 @requires_db

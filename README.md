@@ -80,6 +80,8 @@ table without them is marketing.
 | **Reranking rescues a weak embedder** | Hybrid + cross-encoder lifts MRR **0.63 → 1.00** offline | Situational: a strong embedder already saturates this corpus |
 | **Fine-tuning pays only for a vocabulary gap** | **+0.00** on a rich corpus; **0.31 → 0.55** held-out MRR on opaque jargon → [study](https://github.com/GiulioDER/RE-call/blob/master/docs/RAG_TRAINING_STUDY.md) | Measure your gap first |
 | **Near-misses need a judge, not a threshold** | QNLI stage cuts near-miss false-confidence **1.00 → 0.60**, **0.80 → 0.50**, same judge across embedders → [study](https://github.com/GiulioDER/RE-call/blob/master/docs/ENTAILMENT_SUPERSESSION_STUDY.md) | Judge-alone *degrades* far-gap detection — the two stack, neither replaces the other |
+| **Retrieval, on a second public benchmark** | **hit@5 0.970** [0.94, 0.99] on LongMemEval per-question haystacks with the *free local* embedder; **knowledge-update 1.000** (36/36) — the category this library exists for, and the most robust one under haystack pressure → [FINDINGS §10](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | A *retrieval* figure — evidence session in the top 5 — **not** the benchmark's LLM-judged answer accuracy. It does not belong in a column with one |
+| **Abstention has a bounded domain** | Far gaps: accuracy **1.00** (PEPs), **0.89** (real corpus). Near-misses: **it fails** — false-abstain **0.481** on LongMemEval, and **six** candidate signals all score AUC ≤ 0.753. Independently corroborated on LOCOMO, where no judge configuration crosses into usable territory either → [FINDINGS §9–§10](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | Nothing was retuned, because every alternative measured *worse*. `recall calibrate` now reports separability and refuses to certify instead |
 
 Full methodology, per-embedder tables and the negative results → **[results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)**.
 Design rationale and the reasoning behind each guard → **[docs/WRITEUP.md](https://github.com/GiulioDER/RE-call/blob/master/docs/WRITEUP.md)**.
@@ -413,6 +415,22 @@ Stated plainly, because the failure mode this library exists to prevent is confi
   discrimination, not the trust layer. STR, latency and scale figures are unaffected.
 - **Gap detection is bounded by the embedder.** With a weak one, no threshold separates answerable
   from unanswerable — measured, not assumed.
+- **Abstention catches *far gaps*, not *near-misses* — and the gap between those is large.** Where
+  the unanswerable questions are genuinely off-topic, it works: accuracy **1.00** on the PEPs,
+  **0.89** on the real corpus. Where they are *near-misses by construction* — the haystack is the
+  user's own history and the question asks about something never mentioned but topically adjacent —
+  it does not: on LongMemEval it wrongly refused **48%** of questions retrieval had answered
+  correctly. Six candidate signals were measured on the same 500 questions and **all** of them
+  failed: dense cosine **0.753** AUC, cross-encoder rerank 0.742, RRF fusion 0.739, the shipped QNLI
+  judge **0.648**, and two distributional statistics at 0.58 and 0.55. Relevance signals cannot
+  answer an answerability question, and the best of the six does not beat what already ships.
+  Nothing was retuned; instead `recall calibrate` now reports the **separability** of your
+  calibration set and **exits non-zero rather than certify a threshold the data cannot support** —
+  so this failure is visible on *your* corpus before you trust it. **Independently corroborated on
+  LOCOMO**, where the adversarial split reaches the same wall from the other side: no judge or
+  threshold configuration crosses into usable territory, and a *stronger* judge shifts the curve
+  without crossing it. Two benchmarks, two harnesses, one conclusion. →
+  [FINDINGS §9–§10](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)
 - **Filtered ANN search stopped truncating — which is not the same as better recall.** An HNSW
   walk is filter-blind, so a `source`-filtered query exhausted its candidate list before finding
   `k` matches: at pgvector's defaults, **40/40** queries silently returned fewer results than
