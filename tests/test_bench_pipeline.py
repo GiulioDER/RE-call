@@ -1,4 +1,7 @@
+import json
 from typing import Any
+
+import pytest
 
 from benchmarks.pipeline import (
     GEN_SYSTEM_PROMPT,
@@ -161,12 +164,51 @@ def test_aggregate_reports_both_columns() -> None:
         Outcome("2", "cat1", False, "c", "a", abstained=False, correct=False),
         Outcome("3", "cat5", True, "", "NO_ANSWER", abstained=True, correct=None),
         Outcome("4", "cat5", True, "c", "wrong", abstained=False, correct=None),
+        # an answerable question that abstained: must land in BOTH denominators below. Without
+        # this fixture, a buggy aggregate() that dropped abstained-answerable questions from the
+        # accuracy denominator (flattering the published accuracy number) would still pass.
+        Outcome("5", "cat1", False, "c", "NO_ANSWER", abstained=True, correct=False),
     ]
     agg = aggregate(outs)
-    assert agg["answerable_accuracy"]["n"] == 2
-    assert agg["answerable_accuracy"]["rate"] == 0.5
+    assert agg["answerable_accuracy"]["n"] == 3
+    assert agg["answerable_accuracy"]["rate"] == pytest.approx(1 / 3, abs=1e-4)
     assert agg["adversarial_abstention"]["n"] == 2
     assert agg["adversarial_abstention"]["rate"] == 0.5
-    assert agg["answerable_false_abstain"]["n"] == 2
-    assert agg["answerable_false_abstain"]["rate"] == 0.0
+    assert agg["answerable_false_abstain"]["n"] == 3
+    assert agg["answerable_false_abstain"]["rate"] == pytest.approx(1 / 3, abs=1e-4)
     assert set(agg["by_category"]) == {"cat1", "cat5"}
+
+
+def test_aggregate_empty_rate_blocks_are_json_safe() -> None:
+    agg = aggregate([])
+    for key in ("answerable_accuracy", "adversarial_abstention", "answerable_false_abstain"):
+        block = agg[key]
+        assert block["n"] == 0
+        assert block["rate"] is None
+        assert block["ci95"] == [None, None]
+    dumped = json.dumps(agg)
+    assert "NaN" not in dumped
+
+
+def test_aggregate_json_dumps_empty_category_subblock_without_nan() -> None:
+    # cat5 is adversarial-only on real LOCOMO, so its answerable_accuracy sub-block is built
+    # from an empty list — the exact case Task 7's json.dumps must not choke on.
+    outs = [
+        Outcome("1", "cat5", True, "", "NO_ANSWER", abstained=True, correct=None),
+    ]
+    agg = aggregate(outs)
+    cat5 = agg["by_category"]["cat5"]
+    assert cat5["answerable_accuracy"]["n"] == 0
+    assert cat5["answerable_accuracy"]["rate"] is None
+    assert cat5["answerable_accuracy"]["ci95"] == [None, None]
+    assert "NaN" not in json.dumps(agg)
+
+
+def test_outcome_rejects_answerable_question_with_none_correct() -> None:
+    with pytest.raises(ValueError):
+        Outcome("1", "cat1", False, "c", "a", abstained=False, correct=None)
+
+
+def test_outcome_rejects_adversarial_question_with_bool_correct() -> None:
+    with pytest.raises(ValueError):
+        Outcome("1", "cat5", True, "c", "a", abstained=False, correct=True)
