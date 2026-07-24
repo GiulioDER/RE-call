@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "RE-call: Retrieval-Augmented Self-Recall"
-version: 0.5.1
+version: 0.5.3
 abstract: >-
   RE-call is a retrieval engine for an AI agent's own memory that returns confidence, provenance,
   and validity with every hit — instead of the closest vector match alone — and prefers an explicit

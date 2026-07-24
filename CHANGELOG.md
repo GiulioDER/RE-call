@@ -7,6 +7,8 @@ dates — this project does not currently tag releases.
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-07-24
+
 ### Added
 - **A LangChain retriever** (`recall/integrations/langchain.py`, extra `langchain`) — `RecallRetriever`
   is a drop-in `langchain_core` `BaseRetriever`, so RE-call can sit behind any chain, agent or
@@ -33,8 +35,18 @@ dates — this project does not currently tag releases.
   It described the five breaking changes as being "on `main` … not in 0.5.0 yet" — they went out in
   0.5.1, so a reader on the published page was told a released guard was still pending. Now headed
   *Upgrading to 0.5.1*, and it states that 0.5.2 adds only the LOCOMO benchmark and changes no
-  behaviour. ⚠️ PyPI freezes a version's description at upload, so the 0.5.2 project page still
-  carries the stale wording; correcting it for PyPI readers needs a release.
+  behaviour. PyPI freezes a version's description at upload and the fix landed after 0.5.2 went
+  out, so the 0.5.2 project page kept the stale wording — **this release is what carries the
+  correction to PyPI readers.**
+- **`CITATION.cff` sat at 0.5.1 through the whole 0.5.2 release.** The version is written in three
+  places and the drift test covered only two, so the one file whose entire job is to say which
+  version produced a result was the one nothing checked. Bumped, and the test now asserts all
+  three agree.
+
+### Changed
+- **The README documents the two framework integrations** (*Use it with LangChain or LlamaIndex*).
+  They shipped in this release with no README presence at all — the only mention of either
+  ecosystem was LangMem in the prior-art table.
 
 ## [0.5.2] — 2026-07-23
 
