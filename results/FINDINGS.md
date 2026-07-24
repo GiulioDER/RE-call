@@ -665,6 +665,23 @@ Two things the curve does **not** license:
   the steepest climb of any category) but does not close the gap, so §9's reading that cat3 is
   hard for this pipeline survives the curve.
 
+**The default candidate pool was not what bound the curve.** A natural objection: the pool is 20
+candidates per leg, so a curve measured to k=20 might be reading the pool's edge rather than the
+retrieval's reach. Re-run with the pool raised to 100 per leg — a *different configuration*, not a
+deeper look at the same one, so it is reported as one — the rows through k=20 are identical
+(0.624 / 0.717 / 0.798; k=1 moves 0.365 → 0.373, inside the build noise below). The pool of 20 was
+not the constraint. Extended to k=50 the same run reaches **0.872** [0.854, 0.888], cat3 **0.728**:
+
+| k | overall (pool 100) | cat3 |
+|---|---|---|
+| 5 | 0.624 | 0.380 |
+| 20 | 0.798 | 0.620 |
+| 50 | **0.872** | 0.728 |
+
+The reach keeps climbing well past the depth a generator would actually consume, which only
+sharpens the "depth is not free" caveat: the ceiling is high, and spending context to reach it is
+the trade the caller makes, not one this number makes for them.
+
 ⚠️ **This run's k=5 reads 0.624; the table above it, published from an earlier run, reads 0.615.**
 Same configuration, same data, same code path — a different HNSW index build. The gap is 0.009,
 well inside either interval, and it is the build nondeterminism this repo already documents for
@@ -677,6 +694,7 @@ Reproduce:
 
 ```bash
 python -m recall.eval.locomo --data locomo10.json --k-curve 1,3,5,10,20
+python -m recall.eval.locomo --data locomo10.json --k-curve 1,5,10,20,50 --candidate-k 100
 ```
 
 ### 9b. Abstention: 0.00 out of the box, and why the shipped levers only half-fix it
