@@ -588,3 +588,158 @@ Reproduce this one end to end — corpus, questions and ground truth are all pub
 git clone --depth 1 https://github.com/python/peps
 python -m recall.eval.labelled --corpus peps/peps     --questions recall/eval/peps_questions.json --glob '**/*.rst'
 ```
+
+## 9. LongMemEval: the retrieval result, and the abstention failure underneath it
+
+Every number above this section was measured on a corpus this repo ships, generates, or owns. This
+one is measured on a **public benchmark with public ground truth** — LongMemEval (MIT,
+`xiaowu0162/longmemeval-cleaned`) — chosen because it is the only benchmark in the agent-memory
+field whose question taxonomy names the two things this library is about: **knowledge-update** (78
+instances) and **abstention** (30). The retrieval protocol published alongside it *skips every
+abstention instance*, on the reasonable grounds that they have no answer location. That is exactly
+the class this library exists to serve.
+
+`bge-small` (the free local embedder), hybrid dense+sparse, no reranker. 500 questions, calibrated
+on half and scored on the other half. Three candidate-set sizes, because the benchmark's own
+protocol gives each question its own ~49-session haystack while a single merged index is what a
+real memory store looks like:
+
+| | per-question (~49 sessions) | Oracle (940) | merged S (19,195) |
+|---|---|---|---|
+| chunks searched | 796 | 21,251 | 321,569 |
+| **hit@5** | **0.970** [0.94, 0.99] | 0.719 [0.66, 0.77] | 0.366 [0.31, 0.43] |
+| MRR | 0.921 | 0.577 | 0.242 |
+| fitted threshold | 0.713 | 0.723 | 0.752 |
+| abstention accuracy | 0.733 | 0.733 | 0.800 |
+| **false-abstain** | **0.481** | 0.409 | 0.328 |
+| search p50 | 66 ms | 68 ms | 90 ms |
+
+hit@5 is monotone in candidate-set size across a 390x range, which is a coherence check the harness
+could have failed and did not.
+
+Per-category on the comparable (per-question) arm:
+
+| category | hit@5 | n |
+|---|---|---|
+| **knowledge-update** | **1.000** [0.90, 1.00] | 36 |
+| single-session-assistant | 1.000 | 28 |
+| single-session-preference | 1.000 | 15 |
+| multi-session | 0.983 | 60 |
+| single-session-user | 0.969 | 32 |
+| temporal-reasoning | 0.922 | 64 |
+
+**Knowledge-update is also the most robust category under haystack pressure**: from the Oracle
+corpus to the 19,195-session merged one it retains 74% of its hit@5 while the overall retains 51%
+and single-session-user retains 30%. The plausible mechanism is that a knowledge-update session
+contains an explicit revision, which is lexically distinctive and survives the sparse leg of the
+fusion, whereas a preference mentioned in passing is not. That is a hypothesis; the retention
+numbers are not.
+
+**Four things this number is not.** (1) It is a *retrieval* figure — whether the evidence session
+came back in the top 5 — not the benchmark's LLM-judged answer accuracy, and it does not belong in
+a column with one. (2) The merged arms are *harder* than the published protocol, so 0.366 is a
+lower bound and is not comparable in that direction either. (3) **Temporal-reasoning is not
+quotable from any arm**: 3,942 of 19,195 sessions carry more than one date across haystacks and a
+merged corpus holds one copy per session; the converter counts and prints this. (4) Ground truth is
+session-level, so a multi-session question scores a hit on *any one* of its evidence sessions.
+
+### 9b. The abstention layer failed here, and no available signal fixes it
+
+False-abstain **0.481** on the comparable arm: retrieval returned the right session 97% of the time
+and the trust layer then refused to answer nearly half of those. It also moves the wrong way —
+false-abstain *rises* as the haystack narrows (0.328 -> 0.409 -> 0.481) while the fitted threshold
+*falls* (0.752 -> 0.723 -> 0.713).
+
+The obvious diagnosis — a misplaced threshold — was tested first and is wrong. Top-1 cosine over
+all 500 questions:
+
+| | answerable (n=470) | unanswerable (n=30) |
+|---|---|---|
+| q05 / q25 | 0.612 / 0.671 | — / 0.620 |
+| median | 0.723 | 0.647 |
+| q75 / max | 0.774 / 0.938 | 0.689 / 0.811 |
+
+**AUC 0.753.** The unanswerable range sits almost entirely inside the answerable range. The best
+threshold obtainable on these samples scores balanced error **0.285** against the shipped rule's
+**0.305** — and that ceiling is *in-sample*, the very defect §2b retracted a number for, so
+held-out the gap is smaller still. Driving false-abstain to 0.05 costs false-confidence of ~0.78.
+**Recalibration was ruled out by measurement, not by argument.**
+
+Six signals were then measured on the same 500 questions and the same haystacks, differing only in
+the signal:
+
+| signal | kind | AUC | best BE (in-sample) |
+|---|---|---|---|
+| `dense_top1` *(ships today)* | relevance, bi-encoder | **0.753** | 0.285 |
+| `rerank_top1` | relevance, cross-encoder | 0.742 | 0.271 |
+| `hybrid_top1` | relevance, RRF fusion | 0.739 | 0.289 |
+| `entail_max` | answerability, QNLI | 0.648 | 0.347 |
+| `margin_1_5` | distributional | 0.579 | 0.388 |
+| `ratio_1_5` | distributional | 0.545 | 0.400 |
+
+**Nothing beat the signal already shipping.** Three structurally different relevance signals —
+including a cross-encoder that reads query and document *jointly* — cluster at 0.74–0.75. The
+cross-encoder's failure is the informative one: it is trained for **relevance**, it ranks relevance
+well enough to reach hit@5 0.970, and it scores a topically related session that does *not* contain
+the answer just as highly as one that does. **Relevance is not answerability.**
+
+The QNLI judge — the one built-in trained on answerability rather than relevance — came in **below
+plain cosine** (0.648). At its own untuned boundary it scores false-confidence 0.533, and §5 of this
+document measured that same judge's residual near-miss false-confidence at **0.50** on a corpus it
+had never seen. The bound transferred exactly; it was simply never good enough for this workload.
+Stacked behind a lowered gate it does not beat the threshold alone either:
+
+| configuration | false-abstain | false-confident | balanced |
+|---|---|---|---|
+| shipped cosine @0.713 | 0.443 | 0.167 | **0.305** |
+| judge alone @0.5 | 0.321 | 0.533 | 0.427 |
+| gate 0.600 + judge | 0.332 | 0.433 | 0.383 |
+| gate 0.650 + judge | 0.381 | 0.233 | 0.307 |
+
+⚠️ **n=30 unanswerable.** The standard error on AUC is ~0.08, so the three signals at 0.74–0.75 are
+*not* distinguishable from one another. What this sample does support is the only conclusion drawn
+from it: none of them is near the ~0.9 a usable abstention gate needs.
+
+### 9c. Why abstention works elsewhere — the bounded domain
+
+This is not a contradiction of §2, §4 or §8; it is their boundary, located.
+
+Where abstention was measured to work — PEPs accuracy **1.00**, the private memory corpus **0.89**,
+the 14-document corpus 2/2 — the unanswerable queries are **genuinely off-topic**, and the two
+cosine distributions are disjoint (bge-small: answerable 0.70–0.90 against unanswerable 0.51–0.64).
+That is the **far-gap** class, and the calibrated threshold handles it.
+
+LongMemEval's abstention questions are **near-miss by construction**: the haystack is the user's own
+conversation history and the question asks about something never mentioned but topically adjacent.
+That is §5's class, at 30 instances instead of 10, with the same outcome.
+
+**So the honest scope of the abstention guard is: far gaps, yes; near-misses, no.** This document
+already said "abstention quality is bounded by the embedder" (§2) and "the near-miss class needs a
+judge" (§5). This section adds the part that was missing: *the judge this repo ships is not good
+enough for it either*, and no cheaper signal is.
+
+### 9d. What was changed as a result — a diagnosis, not a retune
+
+Nothing in the abstention path was tuned, because every alternative measured worse. The defect
+worth fixing was not that abstention fails on this workload; it is that it failed **silently**.
+`best_threshold` bisects overlapping distributions — it always did, and its docstring always said
+so — and then returns a number indistinguishable from a working threshold.
+
+`from_samples` now reports **`separability`** (the Mann-Whitney AUC of the two calibration classes,
+deliberately threshold-free so it cannot be inflated by fitting and scoring on the same samples)
+along with the class counts, and `Calibration.certified` is tri-state: `False` when the classes
+overlap (AUC < 0.90) or a class has fewer than 20 samples (§6), and `None` — never `True` — when
+there is nothing to judge or the artifact predates the check. It warns from the library, records the
+verdict in the saved artifact, and makes `recall calibrate` exit non-zero.
+
+**It changes nothing at runtime**, by design and by test: the threshold, the scale and the
+confidence mapping are identical whether or not it certifies. A gate that also moved the boundary
+would replace one invisible failure with another.
+
+Reproduce:
+
+```bash
+python -m recall.eval.longmemeval --dataset longmemeval_s_cleaned.json --out ./s_out
+python -m recall.eval.labelled --corpus ./s_out/corpus --questions ./s_out/questions.json
+python -m recall.eval.longmemeval_perq --questions ./s_out/questions.json --master <indexed-table>
+```
