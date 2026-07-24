@@ -50,13 +50,23 @@ QUERY_SEED = 8
 #: Up to this many independent corpus builds, before giving up (see `filtered_corpus`'s docstring
 #: for why a build can need a retry at all).
 #:
-#: Measured, not guessed: over 14 builds against pgvector 0.8.4 the pathology reproduced on 11,
-#: so p ~= 0.79 per build and the spurious-failure rate is (1 - p) ** ATTEMPTS. At 4 that is ~2e-3,
-#: which is not rare enough for a suite that runs on every push — it turned master red on
-#: cc292df with no code change behind it. At 8 it is ~4e-6.
+#: Sized from CI's own failure record rather than from a local measurement, because the two
+#: disagree and only one of them runs on every push. Locally, against pgvector 0.8.4, the pathology
+#: reproduced on 11 of 14 builds (p ~= 0.79), which puts the give-up rate at (1 - p) ** 4 ~= 2e-3.
+#: CI says otherwise: since this module landed (0af9190) the fixture has given up TWICE in ~76
+#: job-runs at 4 attempts — run #136's `floor` job, and run #151's `test` job, which turned master
+#: red on a README-only commit. That is ~2.6e-2, about 13x what the local p predicts. pgvector's
+#: graph construction is evidently less likely to produce the pathology on CI's
+#: `pgvector/pgvector:pg16` image than on the dev box, so the local figure is the wrong one to size
+#: against.
+#:
+#: The observed rate extrapolates without re-deriving p: the builds are independent, so doubling
+#: the attempts squares the give-up rate. From ~2.6e-2 at 4 attempts, 8 gives ~6.8e-4 per job
+#: (~1 red per 700 pushes — monthly at this repo's rate, which is not quiet enough to be worth the
+#: change) and 12 gives ~1.8e-5 (~1 per 28,000). Hence 12.
 #:
 #: Raising the cap is close to free because the loop stops at the FIRST build that reproduces:
-#: the expected cost stays ~1/p ~= 1.3 builds. A higher cap only lengthens the rare bad tail, it
+#: the expected cost stays ~1/p ~= 1.7 builds. A higher cap only lengthens the rare bad tail, it
 #: does not slow the common path.
 #:
 #: The measurement also settled which knob to turn. Outcomes are bimodal — a build either shows
@@ -65,7 +75,7 @@ QUERY_SEED = 8
 #: would blunt a real regression. And the same data seed produced both outcomes across repeated
 #: builds (1003 -> pathology, pathology, none), which confirms the variance is pgvector's HNSW
 #: graph construction and not the corpus: re-seeding differently would not help either.
-MAX_CORPUS_BUILD_ATTEMPTS = 8
+MAX_CORPUS_BUILD_ATTEMPTS = 12
 _ENV_EF = "RECALL_HNSW_EF_SEARCH_FILTERED"
 _ENV_SCAN = "RECALL_HNSW_ITERATIVE_SCAN_FILTERED"
 
