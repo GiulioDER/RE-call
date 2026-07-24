@@ -8,6 +8,8 @@ from benchmarks.pipeline import (
     NO_ANSWER,
     Outcome,
     aggregate,
+    approx_tokens,
+    context_size,
     generate_answer,
     is_abstention,
     judge_correct,
@@ -24,10 +26,84 @@ def test_is_abstention_is_whitespace_and_case_tolerant() -> None:
     assert is_abstention("No_Answer") is True
 
 
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "NO_ANSWER.",
+        '"NO_ANSWER"',
+        "'NO_ANSWER'",
+        "**NO_ANSWER**",
+        "`NO_ANSWER`",
+        "(NO_ANSWER)",
+        "  NO_ANSWER .  ",
+        "NO_ANSWER!",
+    ],
+)
+def test_is_abstention_tolerates_wrapping_punctuation(answer: str) -> None:
+    """The token wearing the punctuation a chat model routinely adds is still an abstention.
+
+    This is the headline number on BOTH arms, so an over-strict match does not fail safe: every
+    `NO_ANSWER.` counted as a real answer deflates adversarial abstention and inflates nothing
+    that would reveal the mistake.
+    """
+    assert is_abstention(answer) is True
+
+
 def test_is_abstention_false_for_real_answer() -> None:
     assert is_abstention("The limit is 500 rps.") is False
     # a real answer that merely mentions the token is not an abstention
     assert is_abstention("There is no answer key labelled NO_ANSWER here, but it is 500.") is False
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        # the token plus real content is an ANSWER, however it is punctuated — loosening the match
+        # far enough to swallow these would make the abstention column meaningless
+        "NO_ANSWER for the second part, but the first is 500 rps.",
+        "The code NO_ANSWER means nothing here.",
+        "no_answer_key",
+        "NO_ANSWERS",
+        "",
+    ],
+)
+def test_is_abstention_false_when_the_token_is_not_the_whole_answer(answer: str) -> None:
+    assert is_abstention(answer) is False
+
+
+def test_approx_tokens_counts_words_and_standalone_punctuation() -> None:
+    assert approx_tokens("") == 0
+    assert approx_tokens("hello world") == 2
+    # punctuation is charged separately, as a BPE tokeniser broadly would
+    assert approx_tokens("Alice: it is 500 rps.") == 7
+
+
+def test_context_size_reports_mean_and_median_per_arm() -> None:
+    """The retrieved-context volume must be a published number, not a thing a reader must infer.
+
+    At the same k the arms do not retrieve comparable material (verbatim turns vs compressed
+    facts), so this is the measurement that keeps an accuracy comparison honest.
+    """
+    outs = [
+        Outcome("1", "cat1", False, "abcd", "a", abstained=False, correct=True),
+        Outcome("2", "cat1", False, "ab", "a", abstained=False, correct=True),
+        Outcome("3", "cat1", False, "abcdefghij", "a", abstained=False, correct=True),
+    ]
+    stats = context_size(outs)
+    assert stats["n"] == 3
+    assert stats["chars"]["median"] == 4.0
+    assert stats["chars"]["mean"] == pytest.approx(16 / 3, abs=0.05)
+    assert stats["tokens_approx"]["median"] == 1.0
+
+
+def test_context_size_is_json_safe_when_empty() -> None:
+    stats = context_size([])
+    assert stats == {
+        "n": 0,
+        "chars": {"mean": None, "median": None},
+        "tokens_approx": {"mean": None, "median": None},
+    }
+    assert "NaN" not in json.dumps(stats)
 
 
 def test_generate_answer_passes_context_and_question_to_llm() -> None:
@@ -61,8 +137,10 @@ def test_generate_answer_wraps_context_in_memories_delimiters() -> None:
 
     generate_answer(completer, context="rate limit is 500 rps", question="how many rps?")
     user = seen["user"]
-    start = user.index("<memories>")
-    end = user.index("</memories>")
+    # `find`, not `index`: `index` RAISES when the delimiter is missing, so the `!= -1` assertion
+    # below could never fail and never asserted anything. `find` returns -1 and the check is real.
+    start = user.find("<memories>")
+    end = user.find("</memories>")
     assert start != -1
     assert end > start
     # the untrusted context is inside the delimited block

@@ -7,7 +7,51 @@ The benchmark runs two memory systems through an IDENTICAL LLM generator (see
 """
 from __future__ import annotations
 
+import re
+import tempfile
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+#: Retrieval budget shared by every arm unless ``--k`` overrides it. 5 is the value the harness was
+#: originally written with and the number every early result was measured at; it is kept as the
+#: default so a rerun without flags reproduces those runs, and it is recorded in the results
+#: artifact so a reader never has to guess which budget produced a published number.
+DEFAULT_K = 5
+
+#: Benchmark-only table. Never the default `recall_chunks`: a benchmark run must not be able to
+#: touch, or be polluted by, a real corpus sharing the same database.
+BENCH_TABLE = "bench_locomo_chunks"
+
+#: Prefix of the per-conversation tenant (RE-call) / user id (Mem0). Shared by both adapters so the
+#: two arms are isolated the same way and a stray id is recognisable in either store.
+TENANT_PREFIX = "bench-"
+
+
+def sample_id_of(conversation: dict[str, Any]) -> str:
+    """The LOCOMO item's `sample_id`, or a loud failure. THE single identity rule for the harness.
+
+    Both adapters scope their memory to ``bench-{sample_id}``, and the run script groups questions
+    by the same value. Three separate fallbacks used to exist for a missing `sample_id` — a
+    positional `conv{i}` in the run script and a bare `str(None)` in each adapter — so a dataset
+    row without one produced the tenant ``bench-None`` in BOTH adapters: every such conversation
+    would share one memory, answer each other's questions, and inflate accuracy with no error and
+    no visible symptom in the artifact. There is no correct fallback here, so there is none: a
+    LOCOMO item with no usable `sample_id` stops the run.
+    """
+    raw = conversation.get("sample_id")
+    text = "" if raw is None else str(raw).strip()
+    if not text:
+        raise ValueError(
+            "LOCOMO item has no usable 'sample_id' — it is the per-conversation memory scope "
+            "(tenant/user id) for both arms, and a shared fallback would silently merge "
+            "conversations into one memory"
+        )
+    return text
+
+
+def tenant_for(conversation: dict[str, Any]) -> str:
+    """The memory scope for one LOCOMO item, identical on both arms."""
+    return f"{TENANT_PREFIX}{sample_id_of(conversation)}"
 
 
 @runtime_checkable
@@ -18,6 +62,12 @@ class MemorySystem(Protocol):
     whatever was last ingested. Both are per-conversation — LOCOMO's conversations are unrelated
     worlds, and the benchmark harness ingests exactly once per conversation before scoring its
     questions.
+
+    Deliberately three members and no more. Both concrete adapters also expose a ``describe()``
+    that reports their configuration into the results artifact, but that is NOT part of the
+    protocol: the protocol is the seam a test double has to satisfy, and widening it would make
+    every stub carry reporting machinery that has nothing to do with the behaviour under test.
+    The run script reads `describe` duck-typed, and a system without one simply reports nothing.
     """
 
     name: str
@@ -44,7 +94,7 @@ class RecallSystem:
 
     name = "recall"
 
-    def __init__(self, dsn: str, embedder_name: str = "fastembed", k: int = 5) -> None:
+    def __init__(self, dsn: str, embedder_name: str = "fastembed", k: int = DEFAULT_K) -> None:
         from recall.eval.locomo import _make_embedder
 
         self._dsn = dsn
@@ -52,6 +102,22 @@ class RecallSystem:
         self._embedder_name = embedder_name
         self._embedder = _make_embedder(embedder_name)
         self._tenant: str | None = None
+
+    @property
+    def embedder(self) -> Any:
+        """The live `Embedder`. Exposed so a caller can build a store at the matching `dim`."""
+        return self._embedder
+
+    def describe(self) -> dict[str, Any]:
+        """This arm's configuration, for the results artifact. Carries no secret (the DSN, which
+        may embed a password, is deliberately not reported)."""
+        return {
+            "system": self.name,
+            "k": self._k,
+            "embedder": {"name": self._embedder_name, "model": self._embedder.name},
+            "table": BENCH_TABLE,
+            "tenant": self._tenant,
+        }
 
     def ingest(self, conversation: dict[str, Any]) -> None:
         from recall.eval.locomo import index_conversation
@@ -62,12 +128,35 @@ class RecallSystem:
         # `speaker_a`/`speaker_b`) that `index_conversation` actually indexes. Passing the outer
         # item straight into `index_conversation` would find zero `session_` keys and silently
         # index nothing.
-        self._tenant = f"bench-{conversation.get('sample_id')}"
+        self._tenant = tenant_for(conversation)
         inner = conversation["conversation"]
         with PgVectorStore(
-            self._dsn, dim=self._embedder.dim, tenant=self._tenant, table="bench_locomo_chunks"
+            self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=BENCH_TABLE
         ) as store:
+            store.ensure_schema()
+            self._clear(store)
             index_conversation(store, self._embedder, inner)
+
+    @staticmethod
+    def _clear(store: Any) -> int:
+        """Delete every row this tenant already holds. Returns the number of sources removed.
+
+        Without this, a SECOND run against the same database silently doubles the corpus instead
+        of replacing it. `index_conversation` writes each turn to a fresh `mkdtemp` directory, and
+        `Indexer` derives both the chunk id (``md5(f"{abs_path}:{i}")``) and the row's `source`
+        from that absolute path — so run two sees paths run one never used. The id differs, so
+        ``ON CONFLICT (tenant_id, id)`` never fires; the `source` differs, so `replace_sources`
+        matches nothing to delete. Every turn is inserted again, alongside its twin.
+
+        The damage is not cosmetic: top-k then fills with duplicate copies of the same turns, so
+        RE-call's effective context SHRINKS with each rerun and the published numbers become a
+        function of how many times the harness happened to be run. Clearing at ingest makes a run
+        idempotent — the second run measures the same corpus as the first.
+        """
+        sources = sorted({chunk.source for chunk in store.iter_chunks()})
+        if sources:
+            store.delete_sources(sources)
+        return len(sources)
 
     def retrieve(self, question: str) -> str:
         from recall.store import PgVectorStore
@@ -76,7 +165,7 @@ class RecallSystem:
         if self._tenant is None:
             raise RuntimeError("RecallSystem.retrieve() called before ingest()")
         with PgVectorStore(
-            self._dsn, dim=self._embedder.dim, tenant=self._tenant, table="bench_locomo_chunks"
+            self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=BENCH_TABLE
         ) as store:
             result = trusted_search(store, self._embedder, question, k=self._k)
             if result.abstained:
@@ -84,11 +173,57 @@ class RecallSystem:
             return "\n".join(hit.chunk.text for hit in result.hits)
 
 
+def mem0ai_version() -> str | None:
+    """The installed `mem0ai` version, or None when the `bench` extra is absent.
+
+    Reported into the results artifact: Mem0's API and its extraction prompt both move between
+    releases, so a number published without the version it was produced against is not
+    reproducible. Absence is tolerated because every module here imports `mem0` lazily and the
+    offline tests run without the extra installed.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("mem0ai")
+    except PackageNotFoundError:
+        return None
+
+
+#: Embedding width per embedder choice, needed because the vector store is configured EXPLICITLY
+#: below and Mem0's Qdrant config defaults to 1536 — which silently mismatches the 384-wide
+#: bge-small the controlled arm uses.
+_EMBEDDER_DIMS = {"huggingface": 384, "openai": 1536}
+
+#: Keys whose values are secrets. The results artifact is meant to be published, and `describe()`
+#: reports the Mem0 config into it verbatim apart from these.
+_SECRET_KEYS = frozenset({"api_key"})
+
+
+def _redact(value: Any) -> Any:
+    """Deep-copy `value`, replacing every secret-named leaf with a placeholder."""
+    if isinstance(value, dict):
+        return {
+            k: ("***redacted***" if k in _SECRET_KEYS and v is not None else _redact(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(v) for v in value]
+    return value
+
+
+def _slug(text: str) -> str:
+    """`text` reduced to the characters a Qdrant collection name and a path segment both accept."""
+    return re.sub(r"[^0-9A-Za-z_-]+", "_", text).strip("_") or "run"
+
+
 def mem0_config(
     openrouter_key: str,
     model: str,
     embedder: str = "huggingface",
     openai_key: str | None = None,
+    *,
+    run_id: str = "adhoc",
+    storage_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build a Mem0 config: LLM via OpenRouter (OpenAI-compatible), embedder local by default.
 
@@ -105,6 +240,19 @@ def mem0_config(
     - `embedder="openai"` is the deliberate exception: Mem0's own documented default embedder is
       OpenAI `text-embedding-3-small`. Keeping it selectable (off by default) supports an ablation
       arm that measures Mem0 "as shipped" rather than only the fairness-controlled arm.
+
+    The **vector store is configured explicitly**, and that is a correctness fix rather than
+    tidiness. Left unset, Mem0 falls back to its own on-disk default — one Qdrant database at a
+    fixed path, under one fixed collection name — so a second benchmark run reopens the FIRST
+    run's collection and adds to it. That is the same silent-accumulation defect
+    `RecallSystem._clear` fixes on the other arm, and it has to be fixed on both or the comparison
+    is between one system that was reset and one that was not. Path and collection are stamped
+    with `run_id`, so every run starts on storage no previous run has ever written to.
+
+    `embedding_model_dims` is set from the chosen embedder for the same reason: Mem0's Qdrant
+    config defaults it to 1536, which is right for `text-embedding-3-small` and wrong for the
+    384-wide bge-small the controlled arm uses. `history_db_path` is stamped too — it defaults to
+    a single `~/.mem0/history.db` shared by every run on the machine.
     """
     llm = {
         "provider": "openai",
@@ -121,7 +269,23 @@ def mem0_config(
         }
     else:
         emb = {"provider": "huggingface", "config": {"model": "BAAI/bge-small-en-v1.5"}}
-    return {"llm": llm, "embedder": emb}
+    root = Path(storage_dir) if storage_dir is not None else Path(tempfile.gettempdir())
+    run = _slug(run_id)
+    workspace = root / "recall-bench-mem0" / run
+    vector_store = {
+        "provider": "qdrant",
+        "config": {
+            "collection_name": f"bench_{run}",
+            "path": str(workspace / "qdrant"),
+            "embedding_model_dims": _EMBEDDER_DIMS.get(embedder, _EMBEDDER_DIMS["huggingface"]),
+        },
+    }
+    return {
+        "llm": llm,
+        "embedder": emb,
+        "vector_store": vector_store,
+        "history_db_path": str(workspace / "history.db"),
+    }
 
 
 def _conversation_to_session_messages(conversation: dict[str, Any]) -> list[list[dict[str, str]]]:
@@ -208,12 +372,31 @@ class Mem0System:
         model: str,
         embedder: str = "huggingface",
         openai_key: str | None = None,
-        k: int = 5,
+        k: int = DEFAULT_K,
+        *,
+        run_id: str = "adhoc",
+        storage_dir: str | Path | None = None,
     ) -> None:
-        self._config = mem0_config(openrouter_key, model, embedder, openai_key)
+        self._config = mem0_config(
+            openrouter_key, model, embedder, openai_key, run_id=run_id, storage_dir=storage_dir
+        )
         self._k = k
         self._user: str | None = None
         self._mem: Any = None
+
+    def describe(self) -> dict[str, Any]:
+        """This arm's configuration, for the results artifact. API keys are redacted."""
+        redacted: dict[str, Any] = _redact(self._config)
+        return {
+            "system": self.name,
+            "k": self._k,
+            "embedder": redacted["embedder"],
+            "vector_store": redacted["vector_store"],
+            "llm": redacted["llm"],
+            "history_db_path": redacted["history_db_path"],
+            "mem0ai_version": mem0ai_version(),
+            "user": self._user,
+        }
 
     def _memory(self) -> Any:
         if self._mem is None:
@@ -225,7 +408,7 @@ class Mem0System:
     def ingest(self, conversation: dict[str, Any]) -> None:
         # `conversation` here is the OUTER LOCOMO item (`sample_id` + nested `conversation`
         # object), matching `RecallSystem.ingest`'s contract — see the comment there.
-        self._user = f"bench-{conversation.get('sample_id')}"
+        self._user = tenant_for(conversation)
         inner = conversation["conversation"]
         memory = self._memory()
         # ONE `add()` PER SESSION, not one per conversation. Mem0 runs an LLM fact-extraction pass
@@ -243,6 +426,11 @@ class Mem0System:
     def retrieve(self, question: str) -> str:
         if self._user is None:
             raise RuntimeError("Mem0System.retrieve() called before ingest()")
-        res = self._memory().search(question, user_id=self._user, limit=self._k)
+        # mem0ai 2.x's `search` signature: the entity id goes in `filters`, and the budget is
+        # `top_k`. The 1.x spelling (`user_id=`, `limit=`) does not merely get ignored on 2.x —
+        # `_reject_top_level_entity_params` raises on a top-level `user_id`. Everything else is
+        # left at Mem0's own defaults (notably its `threshold`), per the design's fairness rule
+        # that each system runs on its recommended retrieval settings.
+        res = self._memory().search(question, filters={"user_id": self._user}, top_k=self._k)
         results = res["results"] if isinstance(res, dict) else res
         return "\n".join(r["memory"] for r in results)

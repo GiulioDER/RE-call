@@ -9,13 +9,14 @@ back.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from benchmarks.systems import MemorySystem
+from benchmarks.systems import BENCH_TABLE, MemorySystem, sample_id_of, tenant_for
 
 
 def _mem0_installed() -> bool:
@@ -37,9 +38,42 @@ class _FakeSystem:
 
 def test_fake_satisfies_protocol() -> None:
     system: MemorySystem = _FakeSystem()
+    # the runtime check, not just the annotation: a `MemorySystem = ...` binding is erased at
+    # runtime, so without this the test asserted nothing about the protocol at all
+    assert isinstance(_FakeSystem(), MemorySystem)
     system.ingest({"sample_id": "c1"})
     assert system.retrieve("q") == "ctx for q"
     assert system.name == "fake"
+
+
+def test_sample_id_is_required_and_shared_by_both_adapters() -> None:
+    """One identity rule, and it fails loudly. Three divergent fallbacks used to exist.
+
+    A LOCOMO item with no `sample_id` produced the tenant/user `bench-None` in BOTH adapters, so
+    every such conversation shared one memory: questions answered out of a neighbour's turns, and
+    accuracy inflated with no error anywhere. There is no safe fallback, so there is none.
+    """
+    assert sample_id_of({"sample_id": "conv-26"}) == "conv-26"
+    assert tenant_for({"sample_id": "conv-26"}) == "bench-conv-26"
+    # numeric sample_ids exist in the wild; they identify fine, they just are not strings
+    assert sample_id_of({"sample_id": 7}) == "7"
+    for broken in ({}, {"sample_id": None}, {"sample_id": ""}, {"sample_id": "   "}):
+        with pytest.raises(ValueError, match="sample_id"):
+            sample_id_of(broken)
+
+
+def test_recall_system_describe_reports_its_configuration() -> None:
+    """The results artifact must be able to name the embedder and budget that produced it."""
+    from benchmarks.systems import RecallSystem
+
+    system = RecallSystem("postgresql://x/y", embedder_name="hashing", k=9)
+    described = system.describe()
+    assert described["system"] == "recall"
+    assert described["k"] == 9
+    assert described["embedder"] == {"name": "hashing", "model": "hashing-64"}
+    assert described["table"] == BENCH_TABLE
+    # no DSN anywhere in the published block — it can carry a password
+    assert "postgresql://" not in json.dumps(described)
 
 
 def test_fake_records_ingested_conversations() -> None:
@@ -113,6 +147,65 @@ def test_recall_system_returns_empty_string_on_abstention() -> None:
     assert ctx == ""
 
 
+@pytest.mark.skipif(not os.environ.get("RECALL_TEST_DSN"), reason="needs Postgres")
+def test_recall_system_reingest_does_not_duplicate_the_corpus() -> None:
+    """Ingesting the same conversation twice must REPLACE its rows, never accumulate them.
+
+    This is the defect that made results a function of how many times the harness was run.
+    `index_conversation` writes each turn into a fresh `mkdtemp` directory, and `Indexer` derives
+    the chunk id from the absolute path (``md5(f"{abs_path}:{i}")``) and the row's `source` from
+    it too — so a second run presents ids that collide with nothing (`ON CONFLICT` never fires)
+    and sources that match nothing (`replace_sources` deletes nothing). Every turn gets inserted
+    beside its twin, top-k fills with duplicates, and RE-call's effective context shrinks.
+
+    Asserts real CONTENT counts, not just that ingest returned: the row count after the second
+    ingest must equal the count after the first (and the number of turns), and the distinctive
+    fact must appear exactly once in the retrieved context.
+    """
+    from recall.store import PgVectorStore
+
+    from benchmarks.systems import RecallSystem
+
+    marker = "quokka-telemetry-4417"
+    conv = {
+        "sample_id": "itest-reingest",
+        "conversation": {
+            "speaker_a": "Alice",
+            "speaker_b": "Bob",
+            "session_1_date_time": "1 January 2024",
+            "session_1": [
+                {
+                    "speaker": "Alice",
+                    "dia_id": "D1:1",
+                    "text": f"Our new monitoring code name is {marker}.",
+                },
+                {"speaker": "Bob", "dia_id": "D1:2", "text": "Got it, I'll wire the dashboards."},
+            ],
+        },
+    }
+    dsn = os.environ["RECALL_TEST_DSN"]
+    system = RecallSystem(dsn)
+    tenant = tenant_for(conv)
+
+    def _rows() -> tuple[int, int]:
+        with PgVectorStore(
+            dsn, dim=system.embedder.dim, tenant=tenant, table=BENCH_TABLE
+        ) as store:
+            chunks = list(store.iter_chunks())
+        return len(chunks), sum(1 for c in chunks if marker in c.text)
+
+    system.ingest(conv)
+    first_total, first_marker = _rows()
+    system.ingest(conv)
+    second_total, second_marker = _rows()
+
+    assert first_total == 2  # the two turns, indexed once each
+    assert first_marker == 1
+    assert (second_total, second_marker) == (first_total, first_marker)
+    # and the duplication is absent where it would actually cost accuracy: the served context
+    assert system.retrieve("What is the name of the new monitoring code?").count(marker) == 1
+
+
 def test_mem0_config_points_llm_at_openrouter_and_local_embedder() -> None:
     from benchmarks.systems import mem0_config
 
@@ -134,6 +227,54 @@ def test_mem0_config_default_arm_uses_openai_embeddings() -> None:
     assert cfg["embedder"]["provider"] == "openai"
     assert cfg["embedder"]["config"]["model"] == "text-embedding-3-small"
     assert cfg["embedder"]["config"]["api_key"] == "sk-emb"
+    # the store must be sized for THIS embedder; Mem0's Qdrant default (1536) is right here and
+    # silently wrong for the 384-wide bge-small the controlled arm uses
+    assert cfg["vector_store"]["config"]["embedding_model_dims"] == 1536
+
+
+def test_mem0_config_isolates_storage_per_run(tmp_path: Path) -> None:
+    """Two runs must not share a vector store, or run two measures run one's memories as well.
+
+    Left unconfigured, Mem0 opens ONE on-disk Qdrant database at a fixed path under a fixed
+    collection name, so a second benchmark run reopens the first run's collection and adds to it —
+    the mirror of the RE-call re-ingest defect, and it has to be fixed on both arms or the
+    comparison is between one system that was reset and one that was not.
+    """
+    from benchmarks.systems import mem0_config
+
+    first = mem0_config("sk-x", "openai/gpt-4o-mini", run_id="run-A", storage_dir=tmp_path)
+    second = mem0_config("sk-x", "openai/gpt-4o-mini", run_id="run-B", storage_dir=tmp_path)
+
+    assert first["vector_store"]["provider"] == "qdrant"
+    assert first["vector_store"]["config"]["embedding_model_dims"] == 384  # bge-small, not 1536
+    # path AND collection differ, so neither Qdrant's storage nor its namespace is shared
+    assert (
+        first["vector_store"]["config"]["path"] != second["vector_store"]["config"]["path"]
+    )
+    assert (
+        first["vector_store"]["config"]["collection_name"]
+        != second["vector_store"]["config"]["collection_name"]
+    )
+    assert str(tmp_path) in first["vector_store"]["config"]["path"]
+    # the SQLite history db defaults to one shared ~/.mem0/history.db; stamped for the same reason
+    assert first["history_db_path"] != second["history_db_path"]
+
+
+def test_mem0_describe_redacts_api_keys() -> None:
+    """`describe()` is copied verbatim into a PUBLISHED artifact. It must never carry a key."""
+    from benchmarks.systems import Mem0System
+
+    system = Mem0System("sk-openrouter-secret", model="openai/gpt-4o-mini", k=7)
+    described = system.describe()
+    dumped = json.dumps(described)
+    assert "sk-openrouter-secret" not in dumped
+    assert described["llm"]["config"]["api_key"] == "***redacted***"
+    # but everything a reader needs to reproduce the arm is still there
+    assert described["k"] == 7
+    assert described["llm"]["config"]["model"] == "openai/gpt-4o-mini"
+    assert described["embedder"]["provider"] == "huggingface"
+    assert described["vector_store"]["provider"] == "qdrant"
+    assert "mem0ai_version" in described  # None when the bench extra is absent, and that is fine
 
 
 _IMAGE_MARKER = "\n\n[shared an image: "
@@ -291,13 +432,29 @@ def test_conversation_to_session_messages_groups_by_session_without_losing_turns
 
 
 class _FakeMemory:
-    """Stand-in for `mem0.Memory`, recording exactly how ingest chunked its `add()` calls."""
+    """Stand-in for `mem0.Memory`, recording exactly how ingest chunked its `add()` calls.
 
-    def __init__(self) -> None:
+    `search` mirrors the mem0ai 2.x signature — keyword-only `filters`/`top_k`, and a hard
+    rejection of the 1.x `user_id=`/`limit=` spelling, which is what the real client does via
+    `_reject_top_level_entity_params`. A permissive fake would let the adapter keep calling an API
+    that no longer exists and the failure would only appear during a paid run.
+    """
+
+    def __init__(self, memories: list[str] | None = None) -> None:
         self.calls: list[tuple[list[dict[str, str]], str]] = []
+        self.searches: list[tuple[str, dict[str, Any], int]] = []
+        self._memories = memories or []
 
     def add(self, messages: list[dict[str, str]], user_id: str) -> None:
         self.calls.append((list(messages), user_id))
+
+    def search(
+        self, query: str, *, filters: dict[str, Any], top_k: int, **kwargs: Any
+    ) -> dict[str, Any]:
+        if kwargs:
+            raise TypeError(f"mem0ai 2.x rejects top-level entity params: {sorted(kwargs)}")
+        self.searches.append((query, filters, top_k))
+        return {"results": [{"memory": m} for m in self._memories]}
 
 
 def test_mem0_ingest_chunks_one_add_call_per_session() -> None:
@@ -325,6 +482,28 @@ def test_mem0_ingest_chunks_one_add_call_per_session() -> None:
     assert [m for messages, _ in fake.calls for m in messages] == _conversation_to_messages(
         PARITY_CONVERSATION
     )
+
+
+def test_mem0_retrieve_uses_the_2x_search_api_and_the_configured_budget() -> None:
+    """The entity id goes in `filters` and the budget is `top_k` — the 1.x spelling now RAISES."""
+    from benchmarks.systems import Mem0System
+
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini", k=7)
+    fake = _FakeMemory(["fact one", "fact two"])
+    system._mem = fake
+    system.ingest({"sample_id": "c1", "conversation": PARITY_CONVERSATION})
+
+    assert system.retrieve("what happened?") == "fact one\nfact two"
+    assert fake.searches == [("what happened?", {"user_id": "bench-c1"}, 7)]
+
+
+def test_mem0_retrieve_before_ingest_is_an_error() -> None:
+    from benchmarks.systems import Mem0System
+
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    system._mem = _FakeMemory()
+    with pytest.raises(RuntimeError):
+        system.retrieve("q")
 
 
 @pytest.mark.skipif(

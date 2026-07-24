@@ -4,6 +4,7 @@
 
     python -m benchmarks.run --arm recall --conversations 1
     python -m benchmarks.run --arm mem0  --conversations 1 --model openai/gpt-4o-mini
+    python -m benchmarks.run --arm recall --conversations 1 --k 10   # wider retrieval budget
 
 One process runs ONE arm. The arms share the generator, the judge, the question list and the
 scoring code (`benchmarks.pipeline`) — the only thing that differs between them is which
@@ -22,6 +23,11 @@ Two properties of the output exist because the money is real:
   conversation. A rate limit or a Ctrl-C on conversation 7 of 10 then costs the conversation in
   flight, not the six already paid for.
 - the filename carries a UTC timestamp, so a second run never overwrites the first one's artifact.
+
+The artifact also carries the run's full `config` block — retrieval budget, per-arm embedder,
+`mem0ai` version, Mem0's vector-store settings, both system prompts verbatim, temperature and the
+model string — plus the count of `qa` rows the loader could not score. Between them, a reader can
+tell which settings produced the numbers and why n is what it is, from the file alone.
 """
 from __future__ import annotations
 
@@ -34,8 +40,21 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.llm import Completer, OpenRouterLLM
-from benchmarks.pipeline import Outcome, aggregate, run_question
-from benchmarks.systems import MemorySystem, Mem0System, RecallSystem
+from benchmarks.pipeline import (
+    GEN_SYSTEM_PROMPT,
+    JUDGE_SYSTEM_PROMPT,
+    Outcome,
+    aggregate,
+    run_question,
+)
+from benchmarks.systems import (
+    DEFAULT_K,
+    MemorySystem,
+    Mem0System,
+    RecallSystem,
+    mem0ai_version,
+    sample_id_of,
+)
 from recall.eval.locomo import (
     ADVERSARIAL_CATEGORY,
     ANSWERABLE_CATEGORIES,
@@ -60,16 +79,10 @@ def run_arm(
     return outcomes, aggregate(outcomes)
 
 
-def _sample_id(conversation: dict[str, Any], position: int) -> str:
-    """Stable identity for one LOCOMO item, mirroring `recall.eval.locomo.run`'s fallback."""
-    raw = conversation.get("sample_id")
-    return str(raw) if raw else f"conv{position}"
-
-
 def _load(
     data_path: Path, limit: int | None = None
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Load LOCOMO into (outer conversation items, flat question list).
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Load LOCOMO into (outer conversation items, flat question list, skipped-row report).
 
     The conversations are returned as the OUTER items — `sample_id` plus the nested `conversation`
     object — because that is what `MemorySystem.ingest` takes on both adapters. Handing over the
@@ -89,6 +102,13 @@ def _load(
       `run_conversation` makes for questions with no `evidence`).
     - `question_id` is `{sample_id}:{position-in-qa}`, so it stays stable when the rules above skip
       a neighbouring row, and stays joinable back to the source file.
+
+    Every skip is COUNTED, by reason, and the counts are returned as the third element. LOCOMO's
+    published shape is 1,540 answerable + 446 adversarial; a run that reports any other n is
+    either measuring a different dataset or dropping rows, and until the drops were counted there
+    was no way for a reader — or for the author — to tell those two apart from the artifact. The
+    report is printed and published, so a headline n that differs from the canonical one comes
+    with its own explanation instead of an accusation.
     """
     conversations: list[dict[str, Any]] = json.loads(data_path.read_text(encoding="utf-8"))
     if limit is not None:
@@ -96,20 +116,28 @@ def _load(
 
     questions: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for position, conversation in enumerate(conversations):
-        sample_id = _sample_id(conversation, position)
+    skipped: dict[str, int] = {}
+
+    def _skip(reason: str) -> None:
+        skipped[reason] = skipped.get(reason, 0) + 1
+
+    for conversation in conversations:
+        sample_id = sample_id_of(conversation)
         for index, qa in enumerate(conversation.get("qa") or []):
             category = qa.get("category")
             if category != ADVERSARIAL_CATEGORY and category not in ANSWERABLE_CATEGORIES:
+                _skip("category_not_scored")
                 continue
             question = str(qa.get("question") or "").strip()
             if not question:
+                _skip("blank_question")
                 continue
             adversarial = category == ADVERSARIAL_CATEGORY
             raw_answer = qa.get("answer")
             # str(): a handful of LOCOMO gold answers are ints, and the judge prompt is text.
             answer = "" if raw_answer is None else str(raw_answer).strip()
             if not adversarial and not answer:
+                _skip("no_gold_answer")
                 continue
             question_id = f"{sample_id}:{index}"
             if question_id in seen:
@@ -127,25 +155,36 @@ def _load(
                     "answer": "" if adversarial else answer,
                 }
             )
-    return conversations, questions
+    return conversations, questions, {"total": sum(skipped.values()), "by_reason": skipped}
 
 
-def _build_system(arm: str, model: str, openrouter_key: str) -> MemorySystem:
-    """Construct the arm under test. `model` is shared across arms so only memory differs."""
+def _build_system(arm: str, model: str, openrouter_key: str, k: int, run_id: str) -> MemorySystem:
+    """Construct the arm under test. `model` and `k` are shared so only the memory system differs.
+
+    `run_id` is the run's unique stamp; the Mem0 arms carry it into their vector-store path and
+    collection name so a rerun cannot reopen a previous run's accumulated store.
+    """
     if arm == "recall":
         # RECALL_TEST_DSN first: it is the DSN the repo's own integration tests already point at,
         # so a machine set up to run them can run the benchmark with no extra configuration.
         dsn = os.environ.get("RECALL_TEST_DSN") or os.environ.get("RECALL_DSN") or DEFAULT_DSN
-        return RecallSystem(dsn)
+        return RecallSystem(dsn, k=k)
     if arm == "mem0":
-        return Mem0System(openrouter_key, model)
+        return Mem0System(openrouter_key, model, k=k, run_id=run_id)
     if arm == "mem0-default":
         # The ablation arm: Mem0 as shipped, on its documented OpenAI embedder rather than the
         # local one the fairness-controlled `mem0` arm uses.
         openai_key = os.environ.get("OPENAI_API_KEY")
         if not openai_key:
             raise RuntimeError("--arm mem0-default needs OPENAI_API_KEY (its embedder is OpenAI)")
-        return Mem0System(openrouter_key, model, embedder="openai", openai_key=openai_key)
+        return Mem0System(
+            openrouter_key,
+            model,
+            embedder="openai",
+            openai_key=openai_key,
+            k=k,
+            run_id=run_id,
+        )
     raise ValueError(f"unknown arm {arm!r}")
 
 
@@ -155,14 +194,32 @@ def _text_by_id(questions: list[dict[str, Any]]) -> dict[str, str]:
     return {str(q["question_id"]): str(q["question"]) for q in questions}
 
 
-def _outcome_record(outcome: Outcome, text_by_id: dict[str, str]) -> dict[str, Any]:
-    """One per-question record: the scored `Outcome` plus the question text joined back in.
+def _gold_by_id(questions: list[dict[str, Any]]) -> dict[str, str]:
+    """Gold answer keyed by `question_id` (empty string for adversarials, which have none)."""
+    return {str(q["question_id"]): str(q["answer"]) for q in questions}
+
+
+def _outcome_record(
+    outcome: Outcome, text_by_id: dict[str, str], gold_by_id: dict[str, str]
+) -> dict[str, Any]:
+    """One per-question record: the scored `Outcome` plus the question text and gold answer.
 
     The same shape is used for the incremental JSONL lines and for the `outcomes` array of the
     final artifact, so a run that died half-way is re-scored by exactly the code that reads a run
     that finished.
+
+    `gold` is in the record because the file claims to be re-scorable WITHOUT the LOCOMO source,
+    and re-scoring means re-running the judge — which needs the gold answer. Without it the claim
+    held only for re-reading the verdicts already paid for, not for producing new ones, and a
+    reader who wanted to grade the run under a different judge had to fetch and re-join
+    `locomo10.json` by `question_id`. It is the empty string for an adversarial, which is the
+    honest record: there is no gold answer to be correct about.
     """
-    return {**asdict(outcome), "question": text_by_id.get(outcome.question_id, "")}
+    return {
+        **asdict(outcome),
+        "question": text_by_id.get(outcome.question_id, ""),
+        "gold": gold_by_id.get(outcome.question_id, ""),
+    }
 
 
 def _append_records(path: Path, records: list[dict[str, Any]]) -> None:
@@ -190,27 +247,77 @@ def _run_stamp(arm: str, model: str, conversations: int, now: datetime) -> str:
     return f"{arm}_{model.replace('/', '-')}_{conversations}conv_{stamped}"
 
 
+def _run_config(
+    arm: str, model: str, k: int, llm: OpenRouterLLM, system: MemorySystem
+) -> dict[str, Any]:
+    """Everything a reader needs to identify and reproduce this run, in the artifact itself.
+
+    The design promises "pinned versions, full configs, both prompts, seed" (§5.4), and the
+    artifact was shipping the arm name and the model string alone. Every remaining number in the
+    file is a function of the settings below — change `k`, the embedder, the generator prompt or
+    the Mem0 release and the same code produces different results — so an artifact without them
+    documents a run nobody can reproduce, including its author six months later.
+
+    Per-arm configuration comes from the adapter's own `describe()` (duck-typed: a stub system in
+    a test simply has none), which redacts API keys — this file is meant to be published.
+    Temperature stands in for the seed: the OpenAI-compatible API exposes no seed for these
+    models, and temperature 0.0 is the determinism knob that does exist.
+    """
+    describe = getattr(system, "describe", None)
+    return {
+        "k": k,
+        "arm": arm,
+        "model": model,
+        "temperature": llm.temperature,
+        "base_url": llm.base_url,
+        "max_attempts": llm.max_attempts,
+        "mem0ai_version": mem0ai_version(),
+        "system": describe() if callable(describe) else {},
+        "gen_system_prompt": GEN_SYSTEM_PROMPT,
+        "judge_system_prompt": JUDGE_SYSTEM_PROMPT,
+    }
+
+
 def _results_payload(
     arm: str,
     model: str,
     conversations: list[dict[str, Any]],
     text_by_id: dict[str, str],
+    gold_by_id: dict[str, str],
     outcomes: list[Outcome],
     aggregate_: dict[str, Any],
+    config: dict[str, Any],
+    skipped: dict[str, Any],
 ) -> dict[str, Any]:
-    """The publishable artifact: run identity, the aggregate, and every per-question record.
+    """The publishable artifact: run identity, config, the aggregate, and every per-question record.
 
-    The question TEXT is joined back in here (an `Outcome` carries only the id), so the file can be
-    read and re-scored without also holding the LOCOMO source alongside it.
+    The question TEXT and the GOLD answer are joined back in here (an `Outcome` carries only the
+    id), so the file can be read and re-scored — judge included — without also holding the LOCOMO
+    source alongside it.
     """
     return {
         "arm": arm,
         "model": model,
+        "config": config,
         "conversations": len(conversations),
         "questions": len(outcomes),
+        "skipped_questions": skipped,
         "aggregate": aggregate_,
-        "outcomes": [_outcome_record(o, text_by_id) for o in outcomes],
+        "outcomes": [_outcome_record(o, text_by_id, gold_by_id) for o in outcomes],
     }
+
+
+def _positive_int(raw: str) -> int:
+    """argparse type for a count that must be at least 1.
+
+    `--conversations 0` used to slice the dataset to nothing and produce a complete-looking
+    artifact with n=0 in every cell; a negative value sliced from the END of the list, silently
+    benchmarking a different subset than the one named. Both are rejected at the parser now.
+    """
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {value}")
+    return value
 
 
 def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
@@ -226,7 +333,17 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     p.add_argument("--arm", choices=["recall", "mem0", "mem0-default"], required=True)
     p.add_argument("--model", default="openai/gpt-4o-mini")
     p.add_argument("--data", type=Path, default=Path("locomo10.json"))
-    p.add_argument("--conversations", type=int, default=1)
+    p.add_argument("--conversations", type=_positive_int, default=1)
+    p.add_argument(
+        "--k",
+        type=_positive_int,
+        default=DEFAULT_K,
+        help=(
+            f"retrieval budget passed to BOTH arms (default {DEFAULT_K}). Recorded in the results "
+            "artifact; the arms do not retrieve comparable volumes at the same k, so the artifact "
+            "also reports each arm's retrieved-context size"
+        ),
+    )
     p.add_argument("--out", type=Path, default=Path("benchmarks/results"))
     args = p.parse_args(argv)
 
@@ -247,17 +364,22 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     llm = OpenRouterLLM(model=args.model, api_key=key)
     completer: Completer = llm.complete
 
-    convs, questions = _load(args.data, args.conversations)
-    system = _build_system(args.arm, args.model, key)
-
-    text_by_id = _text_by_id(questions)
+    convs, questions, skipped = _load(args.data, args.conversations)
     args.out.mkdir(parents=True, exist_ok=True)
     stamp = _run_stamp(args.arm, args.model, len(convs), now or datetime.now(timezone.utc))
+    # The stamp is built BEFORE the system so the Mem0 arms can name their vector-store path and
+    # collection after this run, and never reopen an earlier run's accumulated store.
+    system = _build_system(args.arm, args.model, key, args.k, stamp)
+
+    text_by_id = _text_by_id(questions)
+    gold_by_id = _gold_by_id(questions)
     partial_path = args.out / f"{stamp}.partial.jsonl"
+    if skipped["total"]:
+        print(f"skipped {skipped['total']} unscoreable qa rows: {skipped['by_reason']}", flush=True)
 
     outcomes: list[Outcome] = []
     for position, conv in enumerate(convs):
-        sample_id = _sample_id(conv, position)
+        sample_id = sample_id_of(conv)
         conv_questions = [q for q in questions if q["sample_id"] == sample_id]
         # Ingest THEN score, one conversation at a time: both adapters scope retrieval to the last
         # conversation ingested, so ingesting all of them up front would answer every question out
@@ -267,14 +389,26 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         outcomes.extend(conv_outcomes)
         # Persist BEFORE the next conversation is touched: everything scored above has already
         # been paid for in generator and judge calls, and this is the write that keeps it.
-        _append_records(partial_path, [_outcome_record(o, text_by_id) for o in conv_outcomes])
+        _append_records(
+            partial_path, [_outcome_record(o, text_by_id, gold_by_id) for o in conv_outcomes]
+        )
         print(
             f"  [{position + 1}/{len(convs)}] {sample_id}: {len(conv_outcomes)} questions scored",
             flush=True,
         )
 
     agg = aggregate(outcomes)
-    payload = _results_payload(args.arm, args.model, convs, text_by_id, outcomes, agg)
+    payload = _results_payload(
+        args.arm,
+        args.model,
+        convs,
+        text_by_id,
+        gold_by_id,
+        outcomes,
+        agg,
+        _run_config(args.arm, args.model, args.k, llm, system),
+        skipped,
+    )
     path = args.out / f"{stamp}.json"
     # `aggregate` already sanitises its empty rate blocks to None, so this never emits the bare
     # `NaN` token that no non-Python JSON parser accepts.
