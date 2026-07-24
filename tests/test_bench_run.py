@@ -18,8 +18,13 @@ import pytest
 from benchmarks import run as run_module
 from benchmarks.llm import OpenRouterLLM
 from benchmarks.pipeline import GEN_SYSTEM_PROMPT, JUDGE_SYSTEM_PROMPT, Outcome
-from benchmarks.run import _load, main, run_arm
+from benchmarks.run import _load, main, run_arm, validate_openrouter_key
 from benchmarks.systems import DEFAULT_K, MemorySystem
+
+#: A shape-valid but obviously fake key. `main` validates the key's SHAPE before doing any work
+#: (see `validate_openrouter_key`), so the placeholder these tests used to pass is now rejected —
+#: which is the point. The completer is faked in every `main` test, so the value is never sent.
+_FAKE_KEY = "sk-or-v1-unused-by-the-fake-completer"
 
 #: Pinned run time, so the tests can name the artifact files exactly. `main` takes `now` as a
 #: parameter for this reason — nothing here freezes the process clock.
@@ -325,7 +330,7 @@ def test_main_ingests_each_conversation_before_scoring_its_own_questions(
     ) -> MemorySystem:
         return _OrderedSys()
 
-    monkeypatch.setenv("OPENROUTER_API_KEY", "unused-by-the-fake-completer")
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
     monkeypatch.setattr(run_module, "_build_system", _fake_build)
     monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
 
@@ -376,7 +381,7 @@ def test_main_records_the_configuration_that_produced_the_numbers(
     the Mem0 release and the same code produces different results — so an artifact carrying only
     the arm name and the model string documents a run nobody can reproduce, including its author.
     """
-    monkeypatch.setenv("OPENROUTER_API_KEY", "unused-by-the-fake-completer")
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
     monkeypatch.setattr(run_module, "_build_system", _stub_build)
     monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
 
@@ -425,7 +430,7 @@ def test_main_threads_k_to_the_adapters_and_defaults_to_five(
         seen.append(k)
         return _StubSys()
 
-    monkeypatch.setenv("OPENROUTER_API_KEY", "unused-by-the-fake-completer")
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
     monkeypatch.setattr(run_module, "_build_system", _recording_build)
     monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
 
@@ -450,7 +455,7 @@ def test_main_rejects_a_non_positive_conversation_count(
     Both produced a complete-looking artifact for a slice nobody asked for, so they are rejected
     at the parser rather than measured.
     """
-    monkeypatch.setenv("OPENROUTER_API_KEY", "unused")
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
     with pytest.raises(SystemExit):
         main(
             [
@@ -490,7 +495,7 @@ def test_main_persists_each_conversation_before_starting_the_next(
     ) -> MemorySystem:
         return _CrashingSys()
 
-    monkeypatch.setenv("OPENROUTER_API_KEY", "unused-by-the-fake-completer")
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
     monkeypatch.setattr(run_module, "_build_system", _fake_build)
     monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
 
@@ -526,7 +531,7 @@ def test_main_timestamps_the_filenames_so_a_rerun_cannot_clobber_a_published_art
     The stem used to be `{arm}_{model}_{N}conv`, so the second run silently replaced a results
     file that cost real money and may already have been linked from the article.
     """
-    monkeypatch.setenv("OPENROUTER_API_KEY", "unused-by-the-fake-completer")
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
     monkeypatch.setattr(run_module, "_build_system", _stub_build)
     monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
 
@@ -572,7 +577,7 @@ def test_main_dump_has_no_nan_token(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     def _fake_complete(self: OpenRouterLLM, system: str, user: str) -> str:
         return "NO_ANSWER"
 
-    monkeypatch.setenv("OPENROUTER_API_KEY", "unused-by-the-fake-completer")
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
     monkeypatch.setattr(run_module, "_build_system", _fake_build)
     monkeypatch.setattr(OpenRouterLLM, "complete", _fake_complete)
 
@@ -592,3 +597,43 @@ def test_main_dump_has_no_nan_token(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     cat5 = payload["aggregate"]["by_category"]["cat5-adversarial"]
     assert cat5["answerable_accuracy"]["rate"] is None
     assert cat5["adversarial_abstention"]["rate"] == 1.0
+
+
+# --- key validation -------------------------------------------------------------------------
+# Regression tests for a real incident: `export OPENROUTER_API_KEY=...` was pasted verbatim, so
+# the variable held the three characters "...". A mere is-it-set check passed, the recall arm ran
+# all the way to its first generator call, and only then died on a 401. On the mem0 arm the same
+# mistake would fail LATER still — after per-session LLM extraction during ingest had already
+# been paid for. These pin the shape check that turns that into an immediate, free failure.
+
+
+def test_validate_openrouter_key_accepts_a_real_looking_key() -> None:
+    key = "sk-or-v1-" + "a" * 64
+    assert validate_openrouter_key(key) == key
+
+
+def test_validate_openrouter_key_rejects_unset_and_blank() -> None:
+    for bad in (None, "", "   "):
+        with pytest.raises(ValueError, match="not set"):
+            validate_openrouter_key(bad)
+
+
+def test_validate_openrouter_key_rejects_the_placeholder_that_passed_an_is_set_check() -> None:
+    with pytest.raises(ValueError, match="OpenRouter key"):
+        validate_openrouter_key("...")
+
+
+def test_validate_openrouter_key_rejects_embedded_whitespace() -> None:
+    # a stray newline or quote from the shell, e.g. a key sourced from a CRLF file
+    with pytest.raises(ValueError, match="whitespace"):
+        validate_openrouter_key("sk-or-v1-abc\n")
+
+
+def test_validate_openrouter_key_error_never_echoes_the_key() -> None:
+    # the message goes to stderr and into logs; a wrong-prefix key is still a secret
+    secret = "sk-XX-supersecretvalue"
+    with pytest.raises(ValueError) as excinfo:
+        validate_openrouter_key(secret)
+    message = str(excinfo.value)
+    assert secret not in message
+    assert "supersecret" not in message
