@@ -154,9 +154,11 @@ INSECURE_DSN_OPT_OUT = "RECALL_ALLOW_INSECURE_DSN"
 #: Neither knob alone is enough: `ef_search` widens the candidate list (fixes recall) but a
 #: filtered scan can still exhaust it before reaching k matches (truncation); `iterative_scan`
 #: re-widens the scan on exhaustion (fixes truncation) but not recall by itself. Both are needed
-#: together. Deliberately NOT applied to an unfiltered query — that arm already measures recall
-#: 1.000 at ef_search's default, so paying the wider search there would only add latency for no
-#: recall gain (see the PR's latency measurement).
+#: together. These two knobs apply to FILTERED queries; the unfiltered arm has its own, separate
+#: widening for `k` past ef_search's default (see `_PGVECTOR_DEFAULT_EF_SEARCH` below). The earlier
+#: claim that the unfiltered arm needs no tuning held only at `k <= ef_search` — at k=10, where it
+#: was measured; it does not generalise past ef_search's default, which is the gap that widening
+#: closes.
 #:
 #: Both are read at CALL time (not import time) via `os.environ`, matching how
 #: `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` are read in `recall_mcp/service.py`, so a
