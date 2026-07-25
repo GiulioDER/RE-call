@@ -142,3 +142,22 @@ def test_a_haystack_naming_an_absent_session_copies_what_exists(master):
     finally:
         sub.drop_table()
         sub.close()
+
+
+def test_populate_reuses_one_store_across_refills(master):
+    # PERF-002: evaluate() builds the scratch store once and passes store= per question, refilling
+    # rows without reconstructing the store or re-running ensure_schema every time. Exercise that
+    # reuse path: one store, two refills, contents replaced each time and embeddings still queryable.
+    _master_store, emb, table = master
+    scratch = "sc_" + uuid.uuid4().hex[:8]
+    sub = PgVectorStore(TEST_DSN, dim=emb.dim, table=scratch)
+    sub.ensure_schema()
+    try:
+        populate_haystack(TEST_DSN, emb.dim, table, scratch, ["s1.md"], store=sub)
+        assert sub.count() == 1
+        populate_haystack(TEST_DSN, emb.dim, table, scratch, ["s2.md", "s3.md"], store=sub)
+        assert sub.count() == 2
+        assert sub.query_dense(emb.embed(["backup"])[0], k=5)  # embeddings survive the refill
+    finally:
+        sub.drop_table()
+        sub.close()
