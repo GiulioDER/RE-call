@@ -665,22 +665,38 @@ Two things the curve does **not** license:
   the steepest climb of any category) but does not close the gap, so §9's reading that cat3 is
   hard for this pipeline survives the curve.
 
-**The default candidate pool was not what bound the curve.** A natural objection: the pool is 20
-candidates per leg, so a curve measured to k=20 might be reading the pool's edge rather than the
-retrieval's reach. Re-run with the pool raised to 100 per leg — a *different configuration*, not a
-deeper look at the same one, so it is reported as one — the rows through k=20 are identical
-(0.624 / 0.717 / 0.798; k=1 moves 0.365 → 0.373, inside the build noise below). The pool of 20 was
-not the constraint. Extended to k=50 the same run reaches **0.872** [0.854, 0.888], cat3 **0.728**:
+**The candidate pool: a control that does not control for what it was meant to.** A natural
+objection to the curve above: the pool is 20 candidates per leg, so a curve measured to k=20 might
+be reading the pool's edge rather than the retrieval's reach. The control was to re-run with the
+pool raised to 100 per leg; the rows through k=20 came back identical (0.624 / 0.717 / 0.798, k=1
+moving 0.365 → 0.373), and that was read as "the pool of 20 was not the constraint".
 
-| k | overall (pool 100) | cat3 |
-|---|---|---|
-| 5 | 0.624 | 0.380 |
-| 20 | 0.798 | 0.620 |
-| 50 | **0.872** | 0.728 |
+> ⚠️ **That inference is retracted, and the k=50 row with it.** Neither survives the configuration
+> the control actually ran under.
+>
+> **The agreement through k=20 was arithmetically forced.** This branch predates the
+> [#81](https://github.com/GiulioDER/RE-call/issues/81) sparse-leg fix, so the lexical leg ANDed
+> every query term and was largely inert on LOCOMO's ~8-term questions — meaning the fused ranking
+> was, in practice, the *dense* ranking. The first 20 rows of a 100-candidate dense fetch are the
+> same 20 rows as a 20-candidate fetch, from the same scan in the same order. Two configurations
+> that must agree cannot testify that the pool was not binding.
+>
+> **And the pool was never 100.** `query_dense` runs on the unfiltered path, where
+> `hnsw.ef_search` defaults to 40 and an HNSW scan cannot return more rows than it examined, so
+> `--candidate-k 100` supplies at most **40** dense candidates. With the lexical leg inert, the
+> supply behind a `k=50` row was bounded near 40 — below the depth the row claims to report. The
+> **0.872** is therefore withdrawn as a k=50 figure; it is a reach measured against however many
+> candidates existed, which was fewer than fifty.
+>
+> Fixed in `recall/store.py` (raise-only widening of the unfiltered scan). **Re-measuring this
+> curve needs a re-run with both fixes** — the sparse leg working and the dense scan widened — and
+> a re-run is a full re-index, so it has not been done here. The k=1…20 rows of the *default*
+> curve above are unaffected: they were measured at pool 20, where nothing was truncated.
 
-The reach keeps climbing well past the depth a generator would actually consume, which only
-sharpens the "depth is not free" caveat: the ceiling is high, and spending context to reach it is
-the trade the caller makes, not one this number makes for them.
+What the control does still establish is narrower, and worth keeping: raising the pool did not
+*hurt*, and the depth curve's shape through k=20 is not an artifact of the pool's edge — a 20-per-leg
+pool supplies more than 20 fused candidates, so a curve to k=20 was never reading its own boundary.
+The claim that had to be dropped is the stronger one, that a *deeper* pool buys nothing.
 
 ⚠️ **This run's k=5 reads 0.624; the table above it, published from an earlier run, reads 0.615.**
 Same configuration, same data, same code path — a different HNSW index build. The gap is 0.009,
