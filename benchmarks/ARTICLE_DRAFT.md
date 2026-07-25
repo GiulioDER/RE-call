@@ -25,28 +25,37 @@ LOCOMO, through an *identical* generator and judge — the only variable is the 
 
 ## The complete results
 
-Answerable accuracy (LLM-as-judge), paired McNemar (same 1,540 questions both systems):
+Answerable accuracy (LLM-as-judge), paired McNemar (each system answers the identical question set):
 
-| generator | budget | judge | RE-call | Mem0 | paired p |
-|---|---|---|---|---|---|
-| gpt-4o-mini | item-matched (k=10/10) | gpt-4o-mini | **0.416** | 0.378 | 0.0059 |
-| gpt-4o-mini | item-matched | gpt-4o | **0.466** | 0.412 | 0.00018 |
-| gpt-4o-mini | token-matched (k=10/20) | gpt-4o-mini | **0.416** | 0.370 | 0.00077 |
-| gpt-4o-mini | token-matched | gpt-4o | **0.466** | 0.411 | 0.00018 |
-| **gpt-4o** (strong) | token-matched | gpt-4o | **0.497** | 0.425 | 0.0025 |
+| generator | budget | judge | n | RE-call | Mem0 | paired p |
+|---|---|---|---|---|---|---|
+| gpt-4o-mini | item-matched (k=10/10) | gpt-4o-mini | 1,540 | **0.416** | 0.378 | 0.0059 |
+| gpt-4o-mini | item-matched | gpt-4o | 1,540 | **0.466** | 0.412 | 0.00018 |
+| gpt-4o-mini | token-matched (k=10/20) | gpt-4o-mini | 1,540 | **0.416** | 0.370 | 0.00077 |
+| gpt-4o-mini | token-matched | gpt-4o | 1,540 | **0.466** | 0.411 | 0.00018 |
+| **gpt-4o** (strong) | token-matched | gpt-4o | **584** | **0.497** | 0.425 | 0.0025 |
+
+The gpt-4o-mini rows are the **full benchmark** (1,540 answerable questions, all 10 conversations).
+The gpt-4o row is a **4-conversation subset** (n=584) — the paired comparison is valid and
+significant, but that row has not yet been re-run at full n, and we say so rather than let the
+column widths imply otherwise.
 
 **RE-call is the more accurate of the two across *both* OpenAI generators** — the models the
 incumbents actually evaluate with — at every retrieval budget and both judges. We test the
 strong-generator case with gpt-4o, not an off-ecosystem model chosen to change the answer.
 
 Abstention on the 446 adversarial questions (does the system refuse when the answer isn't there?),
-and its inseparable twin, false-abstention on answerable questions:
+and its inseparable twin, false-abstention on answerable questions — **full benchmark, gpt-4o-mini
+generator (n=446 adversarial, 1,540 answerable)**:
 
 | | RE-call | Mem0 |
 |---|---|---|
 | adversarial abstention (want high) | 0.883 | **0.948** |
 | answerable false-abstain (want low) | **0.291** | 0.340 |
 | discrimination (abstention − false-abstain) | 0.593 | 0.608 |
+
+(Under the gpt-4o generator on the 4-conversation subset these shift to 0.925/0.954 abstention and
+0.276/0.324 false-abstain — abstention is partly a generator behaviour, so we label which one.)
 
 **Read this straight: on both OpenAI models — the cheap one and the strong one — RE-call is the more
 accurate of the two (p=0.006 down to p=0.0003), at every budget and both judges. Mem0 abstains
@@ -93,8 +102,8 @@ facts a stronger reader can exploit, while RE-call returns raw turns that read t
 - The two systems return different amounts of text per item; matching on `k` doesn't match tokens.
   We ran **both** matchings; the result holds at each, so we're not hiding behind a budget. We also
   held the *embedder* constant — both systems on the same strong local model (bge-large): RE-call
-  **0.478** vs Mem0 **0.370**, paired **p=0.000022** (gpt-4o-mini generator). A better embedder
-  didn't flip the ranking; only the generator does — so the flip is a property of how each memory's
+  **0.478** vs Mem0 **0.370**, paired **p=0.000022** (gpt-4o-mini generator, 4-conversation subset
+  n=584). A better embedder didn't flip the ranking — so any gap is a property of how each memory's
   output is *read*, not of retrieval quality.
 - LOCOMO's answer key is **6.4% wrong** (99/1,540; independent audit, verified per-question against
   the source). The theoretical ceiling is **~93.6%**, not 100%. Excluding those keys moves both
@@ -108,7 +117,7 @@ facts a stronger reader can exploit, while RE-call returns raw turns that read t
   judges (p = 0.0059 to 0.0002). The only place Mem0 led was Claude Sonnet, an off-ecosystem model
   we discarded as irrelevant to how anyone actually runs this.
 - Its cat1 single-hop retrieval recall is the weak spot; a stronger embedder + reranker lifted it
-  39%→50% (accuracy 0.440→0.476), a real gain, not category-redefining.
+  39%→50% (accuracy 0.440→0.476, 4-conversation subset), a real gain, not category-redefining.
 - **The axis where RE-call is unambiguously ahead is cost**: its memory layer makes **zero** LLM
   calls (measured, not asserted — see below), so it runs local and free, while Mem0 charges an LLM
   extraction call per memory written.
