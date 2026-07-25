@@ -12,7 +12,7 @@
   <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-584%20·%20real%20pgvector-brightgreen" alt="584 tests">
+  <img src="https://img.shields.io/badge/tests-677%20·%20real%20pgvector-brightgreen" alt="677 tests">
 </p>
 
 <p align="center">
@@ -141,6 +141,13 @@ on a laptop.
 110 hand-labelled questions against 794 real memos (6,491 chunks), phrased the way a person asks
 rather than as document headings. Four hypotheses, tested one at a time on the **same** 46 held-out
 questions — three eliminated, one confirmed:
+
+> ⚠️ **Measured before [#81](https://github.com/GiulioDER/RE-call/issues/81) was fixed** (2026-07-25).
+> Every "hybrid" row below ran with a sparse leg that only fired when a single chunk contained *every*
+> term of the query, so on longer questions it contributed nothing and the arm was effectively
+> dense-only. These numbers have **not** been re-measured — the corpus is private. Read them as a
+> lower bound on the hybrid configuration. The `candidate pool 20 → 100` null in particular is
+> suspect: with the lexical leg dead, widening the pool only widened the *dense* pool.
 
 | change | hit@5 | Δ | cost |
 |---|---|---|---|
