@@ -728,7 +728,8 @@ downstream J. Those two statements together invite a reading the data never supp
 bounds what a system built on this library can reach. It bounds what it reaches *at k=5*. So the
 curve was measured — every depth scored from **one** retrieval per question, which is exact rather
 than approximate because the candidate pool does not depend on `k`, so top-k is a prefix of
-top-max(k) (`--k-curve`, asserted in the harness):
+top-max(k) by construction (`--k-curve`; the harness's coherence assert pins the k-row to the
+pooled headline rate — a labeling guard, not a check of the prefix itself):
 
 | k | overall hit@k | 95% CI | cat1 | cat2 (temporal) | cat3 | cat4 |
 |---|---|---|---|---|---|---|

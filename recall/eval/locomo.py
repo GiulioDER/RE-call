@@ -382,7 +382,7 @@ def run(
     all_hits = [h for flags in pooled_retrieval.values() for h in flags]
 
     # The depth curve, pooled the same way. Per-category as well as overall: §9a's weakest
-    # category (cat3, 0.370 at k=5) is the one a reader will ask about, and "does depth rescue
+    # category (cat3, 0.391 at k=5) is the one a reader will ask about, and "does depth rescue
     # it" is not answerable from an overall rate.
     curve: dict[str, Any] = {}
     for d in depths:
@@ -397,16 +397,17 @@ def run(
             "by_category": {c: _rate(f) for c, f in sorted(by_cat.items())},
         }
 
-    # Coherence check: the curve's row at the primary k is scored by truncating a deeper
-    # retrieval, and it must equal the rate scored from a search issued at that k directly. They
-    # are the same ranking only because `candidate_k` is independent of `k` — if that ever stops
-    # being true the curve silently becomes a different measurement, so it is asserted, not
-    # assumed. (Same discipline as §9c's two-harness cross-check.)
+    # Coherence check: the pooled headline hit@k (from q["hit"] = hit_by_k[k]) must equal the
+    # curve's own row at k (from q["hit_by_k"][k]). Both are scored from the SAME single retrieval,
+    # so this does NOT independently re-verify that top-k is a prefix of the fused pool — that is a
+    # property of the retriever, and one retrieval cannot check it. What it guards is the
+    # depth-labeling above: that q["hit"] is recorded at k and not at some other depth. If that
+    # drifts the run fails instead of silently reporting a different metric under the same name.
     if str(k) in curve and all_hits:
         primary = curve[str(k)]["overall"]["rate"]
         assert primary == _rate(all_hits)["rate"], (
-            f"depth curve at k={k} reads {primary} but a direct k={k} scoring reads "
-            f"{_rate(all_hits)['rate']}: top-k is no longer a prefix of the fused pool"
+            f"depth curve at k={k} reads {primary} but the pooled headline hit@k reads "
+            f"{_rate(all_hits)['rate']}: q['hit'] is not scored at k"
         )
 
     return {

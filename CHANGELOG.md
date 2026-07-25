@@ -127,14 +127,19 @@ dates — this project does not currently tag releases.
   rather than silently, because the number was published.
 - **FINDINGS §9a quoted LOCOMO retrieval at a single depth, and §9 calls `hit@k` a ceiling.**
   Together those read as "0.615 bounds any system built on this library", which the data never
-  said — it bounds k=5. The measured curve reaches **0.717 at k=10** and **0.798 at k=20**
-  (n=1,536), and **0.872 at k=50** once the candidate pool is raised. A control run at pool 100
-  reproduces pool 20 exactly through k=20, so the default pool was not what bound the curve. §9a
-  now publishes both, states that depth costs generator context rather than being free, and notes
-  that cat3 remains the floor at every depth. Also records that this run's
-  k=5 reads **0.624** against the published **0.615** — same configuration, different HNSW build,
-  0.009 apart and inside both intervals. Both are left standing rather than the older one
-  silently replaced; the headline carries roughly ±0.01 of index-build noise that one figure hides.
+  said — it bounds k=5. The measured depth curve (default pool 20) reaches **0.717 at k=10** and
+  **0.798 at k=20** (n=1,536). §9a now publishes the curve, states that depth costs generator
+  context rather than being free, and notes that cat3 remains the floor at every depth. A first
+  pass also reported **0.872 at k=50** behind a pool-100 "control" that appeared to reproduce
+  pool 20 through k=20; **both are retracted in §9a.** The unfiltered dense scan is capped near
+  `hnsw.ef_search=40`, so `--candidate-k 100` supplied fewer than 50 candidates and the k=50 figure
+  is withdrawn; and with the sparse leg inert the two runs could differ only by index-build noise,
+  so they agreed to within ±0.01 rather than "exactly" — which cannot show the pool was non-binding.
+  Re-measuring the deeper curve needs a re-run with both the #81 sparse-leg fix and the `store.py`
+  scan widening. Also records that this run's k=5 reads **0.624** against the published **0.615** —
+  same configuration, different HNSW build, 0.009 apart and inside both intervals. Both are left
+  standing rather than the older one silently replaced; the headline carries roughly ±0.01 of
+  index-build noise that one figure hides.
 - **README's LongMemEval claim led with the easy arm.** `hit@5 0.970` is the benchmark's own
   ~49-session per-question haystack; the merged 19,195-session arm — the one shaped like a real
   memory store — scores **0.366**, and was reachable only through FINDINGS. Both arms are now in
