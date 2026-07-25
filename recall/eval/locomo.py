@@ -275,8 +275,10 @@ def run_conversation(
         if cat == ADVERSARIAL_CATEGORY:
             # The abstention arm. `trusted_search` is the agent-facing entry point, and its
             # `abstained` flag is the whole answer: the correct behaviour on an unanswerable
-            # question is to refuse, regardless of what came back underneath.
-            result = trusted_search(store, embedder, question, k=k)
+            # question is to refuse, regardless of what came back underneath. Pass candidate_k so
+            # this arm shares the same fused pool as the depth-curve arm above and the report's
+            # top-level `candidate_k` — not silently the retriever's default.
+            result = trusted_search(store, embedder, question, k=k, candidate_k=candidate_k)
             abstained.append(result.abstained)
             per_question.append(
                 {
