@@ -132,12 +132,15 @@ not modelled):
 |---|---|---|
 | LLM calls the memory layer made | **0** | 99 |
 | tokens the memory layer sent to an LLM | **0** | 985,687 |
-| $ to build the memory (gpt-4o-mini extraction) | **$0.00** | **$0.166** |
-| at Mem0's default extraction model (gpt-4o-class) | **$0.00** | ~$2.66 |
+| $ to build the memory — gpt-4o-mini extraction | **$0.00** | **$0.166** |
+| $ to build the memory — gpt-4o extraction (measured) | **$0.00** | **$2.65** |
 
-The ratio isn't "N×" — it's **free vs not-free**. RE-call's memory-layer cost is $0 and stays $0 at
-any scale; Mem0's grows linearly with every memory written. A system ingesting millions of memories
-pays millions of LLM calls with Mem0, zero with RE-call on a local embedder. For write-heavy, cost-sensitive, offline, or privacy-bound
+Both Mem0 figures are metered, not modelled. Two things follow. First, the ratio isn't "N×" — it's
+**free vs not-free**: RE-call's memory cost is $0 and *stays* $0 at any scale and any model, because
+it uses no LLM; Mem0's grows linearly with every memory written. Second, Mem0's cost is *unbounded
+in quality* — a 16× jump from mini to gpt-4o extraction — while RE-call never leaves zero. And the
+kicker: at the $2.65 (gpt-4o) tier Mem0 still scored **0.425**, below RE-call's **0.497 at $0**. You
+pay more for less. For write-heavy, cost-sensitive, offline, or privacy-bound
 deployments — most of them — a memory that's competitive on accuracy and **free to write** is the
 correct engineering choice. That is the honest headline: not "most accurate," but *"trustworthy and
 effectively free, at competitive accuracy, on the models you actually use."*
