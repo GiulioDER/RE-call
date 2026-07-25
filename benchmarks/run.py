@@ -211,7 +211,13 @@ def _build_system(
         dsn = os.environ.get("RECALL_TEST_DSN") or os.environ.get("RECALL_DSN") or DEFAULT_DSN
         return RecallSystem(dsn, embedder_name=embedder, k=k, reranker_name=reranker)
     if arm == "mem0":
-        return Mem0System(openrouter_key, model, k=k, run_id=run_id)
+        # `--embedder fastembed:MODEL` puts BOTH arms on the same local model: RE-call via
+        # fastembed, Mem0 via its huggingface provider on the same MODEL. Bare `fastembed` (the
+        # default) leaves Mem0 on its bge-small default.
+        hf_model = "BAAI/bge-small-en-v1.5"
+        if embedder.startswith("fastembed:"):
+            hf_model = embedder[len("fastembed:"):]
+        return Mem0System(openrouter_key, model, k=k, run_id=run_id, hf_model=hf_model)
     if arm == "mem0-default":
         # The ablation arm: Mem0 as shipped, on its documented OpenAI embedder rather than the
         # local one the fairness-controlled `mem0` arm uses.

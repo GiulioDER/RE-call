@@ -593,3 +593,21 @@ def test_resolve_embedder_routes_voyage_prefix_to_a_named_current_model(monkeypa
     monkeypatch.setattr(recall.embeddings, "VoyageEmbedder", _FakeVoyage)
     resolve_embedder("voyage:voyage-4-large")
     assert captured["model"] == "voyage-4-large"
+
+
+def test_mem0_config_uses_the_given_huggingface_model_and_its_dim() -> None:
+    from benchmarks.systems import mem0_config
+
+    cfg = mem0_config("sk-or-x", "openai/gpt-4o-mini", hf_model="BAAI/bge-large-en-v1.5")
+    assert cfg["embedder"]["provider"] == "huggingface"
+    assert cfg["embedder"]["config"]["model"] == "BAAI/bge-large-en-v1.5"
+    # the Qdrant collection must be created at the model's real width, not the bge-small default
+    assert cfg["vector_store"]["config"]["embedding_model_dims"] == 1024
+
+
+def test_mem0_config_defaults_to_bge_small_384() -> None:
+    from benchmarks.systems import mem0_config
+
+    cfg = mem0_config("sk-or-x", "openai/gpt-4o-mini")
+    assert cfg["embedder"]["config"]["model"] == "BAAI/bge-small-en-v1.5"
+    assert cfg["vector_store"]["config"]["embedding_model_dims"] == 384
