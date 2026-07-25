@@ -36,7 +36,7 @@ from recall.embeddings import Embedder
 from recall.eval.bm25 import BM25Retriever
 from recall.eval.metrics import wilson_ci
 from recall.index import Indexer
-from recall.retriever import HybridRetriever
+from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
 from recall.types import RetrievalResult, TrustedResult
@@ -84,7 +84,8 @@ def _rate(flags: list[bool]) -> dict:
 
 
 def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, k: int = 5,
-             rerank: bool = False, glob: str = "**/*.md", candidate_k: int = 20) -> dict:
+             rerank: bool = False, glob: str = "**/*.md",
+             candidate_k: int = DEFAULT_CANDIDATE_K) -> dict:
     answerable = [q for q in questions if q.get("answerable")]
     unanswerable = [q for q in questions if not q.get("answerable")]
 

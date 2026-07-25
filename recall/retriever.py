@@ -8,6 +8,13 @@ from recall.rerank import Reranker
 from recall.store import PgVectorStore
 from recall.types import RetrievalResult, ScoredChunk
 
+#: Default candidate pool per retrieval leg before fusion. Exposed as a module constant (not only a
+#: signature default) so the eval harness references the SAME number instead of a hardcoded copy:
+#: this value BINDS the depth curve — the fused pool holds at most ``2 * candidate_k`` distinct
+#: chunks before truncation to k, so hit@k stops rising once k reaches the pool. A curve run past it
+#: measures the pool, not the depth, so the eval must use exactly this default.
+DEFAULT_CANDIDATE_K = 20
+
 
 def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
     """Fuse several best-first ID rankings into one score map (Reciprocal Rank Fusion).
@@ -56,7 +63,7 @@ class HybridRetriever:
         *,
         gap_threshold: float = DEFAULT_GAP_THRESHOLD,
         max_age: timedelta = timedelta(days=2),
-        candidate_k: int = 20,
+        candidate_k: int = DEFAULT_CANDIDATE_K,
         use_sparse: bool = True,
         use_dense: bool = True,
     ) -> None:
