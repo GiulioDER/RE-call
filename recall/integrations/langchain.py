@@ -35,7 +35,7 @@ from recall.calibration import Calibration
 from recall.embeddings import Embedder
 from recall.rerank import Reranker
 from recall.store import PgVectorStore
-from recall.trust import trusted_search
+from recall.trust import marked_text, servable_hits, trusted_search
 from recall.types import TrustedHit, TrustedResult
 
 try:
@@ -74,7 +74,7 @@ def _hit_to_document(hit: TrustedHit) -> Document:
         valid_from=val.valid_from.isoformat() if val.valid_from is not None else None,
         valid_until=val.valid_until.isoformat() if val.valid_until is not None else None,
     )
-    return Document(page_content=hit.chunk.text, metadata=metadata)
+    return Document(page_content=marked_text(hit), metadata=metadata)
 
 
 class RecallRetriever(BaseRetriever):
@@ -91,6 +91,12 @@ class RecallRetriever(BaseRetriever):
 
     search_fn: SearchFn
     return_abstention_reason: bool = False
+    #: Serve hits the trust layer refused. Off by default: `TrustedResult.hits` is `ok +
+    #: rest`, so forwarding it wholesale handed a chain the very superseded memory this
+    #: library exists to demote — and did so only when some OTHER hit happened to be ok,
+    #: which is not a rule anyone chose. When on, each untrusted hit's `page_content`
+    #: carries an in-band warning, because out-of-band metadata is what failed here.
+    include_untrusted: bool = False
 
     @classmethod
     def from_store(
@@ -140,4 +146,7 @@ class RecallRetriever(BaseRetriever):
                     )
                 ]
             return []
-        return [_hit_to_document(hit) for hit in result.hits]
+        return [
+            _hit_to_document(hit)
+            for hit in servable_hits(result.hits, include_untrusted=self.include_untrusted)
+        ]

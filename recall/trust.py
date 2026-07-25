@@ -14,6 +14,7 @@ step over `HybridRetriever.search()`:
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import replace
 
@@ -42,6 +43,14 @@ from recall.types import (
 )
 
 _UNCALIBRATED = Calibration(embedder="uncalibrated", threshold=DEFAULT_GAP_THRESHOLD)
+
+#: ANSI escape sequences a terminal ACTS on: CSI (`\x1b[…`), OSC (`\x1b]…` up to BEL or ST), and
+#: the two-character forms. Matched as whole sequences so nothing is left behind to re-arm.
+_ANSI_SEQUENCE = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]"        # CSI — cursor moves, erases, colours
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC — window title, hyperlinks
+    r"|\x1b[@-Z\\-_]"                 # two-character escapes
+)
 
 
 def resolve_successor(file: str, supersession: dict[str, str]) -> str | None:
@@ -107,6 +116,33 @@ def _verdict(
 MAX_REF_CHARS = 120
 
 
+def terminal_safe(value: str | None) -> str:
+    """Strip anything a terminal would interpret rather than display.
+
+    The sibling of `safe_ref` for the OTHER interpreter this library writes to. `recall.cli`
+    prints corpus-controlled strings — file names, successor names, chunk previews — and a
+    terminal executes ANSI escapes: `\\x1b[2K\\r` erases the line just written, `\\x1b[1A` moves
+    up over it. A corpus can therefore make `recall lint` render a clean report while scrolling
+    away the issues it just found.
+
+    A filter, not a renderer: unlike `safe_ref` it adds no quotes and no length bound, because
+    the CLI's own format strings already do the layout and an operator reading their own corpus
+    should see the name they wrote.
+
+    Whole SEQUENCES go, not just the `\\x1b` that introduces them. Dropping the escape byte alone
+    is the tempting one-liner and it is wrong twice over: it leaves `[2K` behind as literal
+    garbage in the operator's output, and it leaves a payload that becomes live again the moment
+    anything upstream reinserts an escape byte. Removing the sequence removes both.
+    """
+    if value is None:
+        return ""
+    cleaned = _ANSI_SEQUENCE.sub("", str(value))
+    return "".join(
+        ch for ch in cleaned
+        if not unicodedata.category(ch).startswith(("Cc", "Cf", "Zl", "Zp"))
+    )
+
+
 def safe_ref(value: str | None) -> str:
     """Render a corpus-controlled identifier for inclusion in agent-facing prose.
 
@@ -147,6 +183,46 @@ def safe_ref(value: str | None) -> str:
     if len(cleaned) > MAX_REF_CHARS:
         cleaned = cleaned[:MAX_REF_CHARS] + "…"
     return f'"{cleaned}"'
+
+
+def is_trusted(hit: TrustedHit) -> bool:
+    """Whether a hit may be relied on — the single definition of ``ok`` the adapters share."""
+    return hit.verdict == "ok"
+
+
+def marked_text(hit: TrustedHit) -> str:
+    """The hit's text, carrying an IN-BAND warning when its verdict is not ``ok``.
+
+    Exists because out-of-band metadata is exactly what failed at the framework boundary. Both
+    adapters attach `recall_verdict` to a Document/Node's `metadata`, but LangChain's stock
+    `stuff_documents_chain` and LlamaIndex's default node handling render `page_content` / `text`
+    alone into the prompt — so the memory arrived and the warning did not. A caller who
+    deliberately opts into untrusted hits gets the warning where the model will actually see it.
+
+    The successor file is corpus-controlled, so it goes through `safe_ref` for the same reason
+    `abstain_reason` does.
+    """
+    if is_trusted(hit):
+        return hit.chunk.text
+    detail = ""
+    if hit.verdict == "superseded" and hit.validity.superseded_by:
+        detail = f" by {safe_ref(hit.validity.superseded_by)}"
+    return (
+        f"[RE-CALL WARNING — this memory is {hit.verdict}{detail}. It did NOT pass the trust "
+        f"layer; treat it as untrusted context and do not rely on it.]\n{hit.chunk.text}"
+    )
+
+
+def servable_hits(hits: list[TrustedHit], *, include_untrusted: bool = False) -> list[TrustedHit]:
+    """The hits an adapter may hand to a chain.
+
+    `TrustedResult.hits` is `ok + rest`, so a result with ONE valid hit does not abstain and
+    carries every superseded/expired/invalid hit along with it. Serving that list wholesale made
+    the adapters inconsistent with themselves: the same superseded memo was withheld when nothing
+    else matched (abstention -> empty) and forwarded when something unrelated did. Nobody chose
+    that rule; it fell out of reusing the list.
+    """
+    return list(hits) if include_untrusted else [h for h in hits if is_trusted(h)]
 
 
 def abstain_reason(hits: list[TrustedHit]) -> str:
