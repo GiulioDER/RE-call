@@ -174,7 +174,7 @@ class _StubSys:
         return "ctx"
 
 
-def _stub_build(arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed") -> MemorySystem:
+def _stub_build(arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed", **_extra: object) -> MemorySystem:
     return _StubSys()
 
 
@@ -326,7 +326,7 @@ def test_main_ingests_each_conversation_before_scoring_its_own_questions(
             return "ctx"
 
     def _fake_build(
-        arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed"
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed", **_extra: object
     ) -> MemorySystem:
         return _OrderedSys()
 
@@ -425,7 +425,7 @@ def test_main_threads_k_to_the_adapters_and_defaults_to_five(
     seen: list[int] = []
 
     def _recording_build(
-        arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed"
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed", **_extra: object
     ) -> MemorySystem:
         seen.append(k)
         return _StubSys()
@@ -491,7 +491,7 @@ def test_main_persists_each_conversation_before_starting_the_next(
             return "ctx"
 
     def _fake_build(
-        arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed"
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed", **_extra: object
     ) -> MemorySystem:
         return _CrashingSys()
 
@@ -570,7 +570,7 @@ def test_main_dump_has_no_nan_token(tmp_path: Path, monkeypatch: pytest.MonkeyPa
             return ""
 
     def _fake_build(
-        arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed"
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed", **_extra: object
     ) -> MemorySystem:
         return _EmptySys()
 

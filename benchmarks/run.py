@@ -192,7 +192,13 @@ def validate_openrouter_key(key: str | None) -> str:
 
 
 def _build_system(
-    arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed"
+    arm: str,
+    model: str,
+    openrouter_key: str,
+    k: int,
+    run_id: str,
+    embedder: str = "fastembed",
+    reranker: str = "none",
 ) -> MemorySystem:
     """Construct the arm under test. `model` and `k` are shared so only the memory system differs.
 
@@ -203,7 +209,7 @@ def _build_system(
         # RECALL_TEST_DSN first: it is the DSN the repo's own integration tests already point at,
         # so a machine set up to run them can run the benchmark with no extra configuration.
         dsn = os.environ.get("RECALL_TEST_DSN") or os.environ.get("RECALL_DSN") or DEFAULT_DSN
-        return RecallSystem(dsn, embedder_name=embedder, k=k)
+        return RecallSystem(dsn, embedder_name=embedder, k=k, reranker_name=reranker)
     if arm == "mem0":
         return Mem0System(openrouter_key, model, k=k, run_id=run_id)
     if arm == "mem0-default":
@@ -388,6 +394,15 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
             "retrieval-quality ablation. Recorded in the results config."
         ),
     )
+    p.add_argument(
+        "--reranker",
+        default="none",
+        help=(
+            "RE-call arm second-stage reranker (ignored by the mem0 arms). 'none' = default; "
+            "'voyage:rerank-2.5' = Voyage cross-encoder over the fused candidate pool. Recorded in "
+            "the results config."
+        ),
+    )
     p.add_argument("--out", type=Path, default=Path("benchmarks/results"))
     args = p.parse_args(argv)
 
@@ -415,7 +430,9 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     stamp = _run_stamp(args.arm, args.model, len(convs), now or datetime.now(timezone.utc))
     # The stamp is built BEFORE the system so the Mem0 arms can name their vector-store path and
     # collection after this run, and never reopen an earlier run's accumulated store.
-    system = _build_system(args.arm, args.model, key, args.k, stamp, embedder=args.embedder)
+    system = _build_system(
+        args.arm, args.model, key, args.k, stamp, embedder=args.embedder, reranker=args.reranker
+    )
 
     text_by_id = _text_by_id(questions)
     gold_by_id = _gold_by_id(questions)
