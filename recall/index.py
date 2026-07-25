@@ -422,6 +422,23 @@ class Indexer:
                 f"none of the {candidates} candidate file(s) under {root} could be read: "
                 f"every one of them vanished between the scan and the read"
             )
+        # Hand the planner statistics for the rows this run just wrote, before anyone queries
+        # them. Without this the table a first run builds is never-analyzed until autovacuum
+        # gets to it (60s naptime by default), and for that window the planner estimates ONE
+        # matching row for a source-filtered `query_dense` and picks an exact scan over the HNSW
+        # index — correct answers, but the index unused and `query_dense`'s `hnsw.ef_search` /
+        # `hnsw.iterative_scan` tuning inert. See `PgVectorStore.analyze`.
+        #
+        # After the vanished-everything check above, so a run that indexed nothing because the
+        # corpus was missing raises rather than analyzing. Best-effort inside the store, so it
+        # cannot turn a successful run into a failed one.
+        #
+        # `written` is a deliberate UNDER-estimate of the rows modified: `replace_sources`
+        # deletes before it inserts, so a re-index touches roughly twice this, and `deleted`
+        # counts SOURCES rather than rows. Erring low only makes this marginally less eager than
+        # autovacuum, which is the safe direction for a foreground cost.
+        if written or deleted:
+            self._store.analyze_if_stale(written)
         return IndexStats(files=indexed, chunks=written, skipped=skipped, deleted=deleted)
 
     def _flush(self, sources: list[str], chunks: list[Chunk]) -> int:

@@ -164,6 +164,58 @@ INSECURE_DSN_OPT_OUT = "RECALL_ALLOW_INSECURE_DSN"
 #: without restarting.
 DEFAULT_HNSW_EF_SEARCH_FILTERED = 200
 DEFAULT_HNSW_ITERATIVE_SCAN_FILTERED = "relaxed_order"
+#: pgvector's own default for `hnsw.ef_search`, and therefore the point at which an UNFILTERED
+#: query starts silently returning fewer rows than it asked for.
+#:
+#: An HNSW scan cannot return more rows than it examined, so `LIMIT k` with `k > ef_search`
+#: yields ef_search rows — no error, no warning, no way for the caller to tell. The comment on
+#: DEFAULT_HNSW_EF_SEARCH_FILTERED above says the unfiltered arm needs no tuning because it
+#: "already measures recall 1.000 at ef_search's default". That measurement was taken at k=10;
+#: it holds for k <= ef_search and does not generalise past it, which is the gap this closes.
+#:
+#: Measured on 72,151 chunks (FinanceBench, dim 1024): `query_dense(k=50)` returned exactly 40
+#: rows for 150 of 150 queries, so a `HybridRetriever(candidate_k=50)` was really running at 40
+#: and could not say so. Raising ef_search to cover k lifted that leg's page recall from 0.600
+#: to 0.727 at k=50 and to 0.853 at k=100 — and the truncation had been manufacturing an
+#: apparent advantage for the sparse leg, since pages the dense leg would have returned at
+#: ranks 41-100 showed up as "only the sparse leg found this".
+_PGVECTOR_DEFAULT_EF_SEARCH = 40
+
+#: How far past `k` to widen an unfiltered HNSW scan.
+#:
+#: `ef_search = k` is not enough. It returns k rows, but they are not the true top-k: the walk is
+#: explored just wide enough to fill the answer and then stops. Measured on the 72,151-chunk
+#: FinanceBench index (dim 1024) — overlap with an exact scan's top-k, and the resulting
+#: evidence-page hit@5, over 60 questions:
+#:
+#:        ef_search |  k=50            |  k=100
+#:       -----------+------------------+------------------
+#:               50 |  0.911 / 0.3000  |       -
+#:              100 |  0.960 / 0.3167  |  0.951 / 0.3167
+#:              200 |  0.989 / 0.3333  |  0.983 / 0.3333
+#:              400 |  1.000 / 0.3667  |  1.000 / 0.3667   <- exact-scan parity, BOTH k
+#:              800 |       -          |  1.000 / 0.3667
+#:
+#: Read the columns, not the multiples: parity arrives at ef_search ~= 400 for k=50 AND k=100, so
+#: on this index the requirement is an ABSOLUTE search width — a property of the graph — and not a
+#: multiple of k. 4x merely happened to coincide with 400 at k=100, which is exactly the kind of
+#: agreement that reads as a law until a second k is measured.
+#:
+#: A multiplier is nonetheless the right shape for the DEFAULT, for two reasons: `ef_search >= k`
+#: is the part that is universal (below it, rows are silently dropped — the bug this closes), and
+#: the absolute floor is corpus-dependent, so no single number can be shipped honestly from one
+#: index. 4x buys 0.989 overlap at k=50 and 1.000 at k=100 while keeping that guarantee.
+#: Deployments wanting exact-scan parity should raise RECALL_HNSW_EF_SEARCH_MULTIPLIER, and the
+#: figure to tune toward is an absolute width measured on their own corpus.
+#:
+#: UNPROVEN: one index, one embedder, two values of k. Whether ~400 generalises across corpus size
+#: or across `m` / `ef_construction` is untested.
+#:
+#: Latency, same index: k=100 at 4x costs 24.3 ms median / 57.6 ms p95 against 6.4 ms at 1x, while
+#: the sparse leg it is fused with costs ~496 ms median — the widened dense walk stays an order of
+#: magnitude cheaper than its own fusion partner. At the shipped default `candidate_k=20` this
+#: moves ef_search 40 -> 80 for no measurable change (11.2 ms -> 9.0 ms, i.e. noise).
+DEFAULT_HNSW_EF_SEARCH_MULTIPLIER = 4
 #: pgvector's only valid values for this GUC, checked by `_hnsw_filtered_tuning()` below — the
 #: configured value is interpolated into `SET LOCAL` (Postgres does not accept a bound parameter
 #: there), so it is validated against this allowlist rather than trusted as-is.
@@ -172,6 +224,24 @@ _HNSW_ITERATIVE_SCAN_VALUES = frozenset({"off", "relaxed_order", "strict_order"}
 #: than a truthiness test: `0`/`false`/`no` must read as "keep the guard", and anything
 #: unrecognised must too, because a typo in a security switch may not grant permission.
 _ENV_TRUE = frozenset({"1", "true", "yes", "on"})
+
+
+#: PostgreSQL's OWN default trigger for an automatic analyze — `autovacuum_analyze_threshold` and
+#: `autovacuum_analyze_scale_factor`. Mirrored (not invented) so that `analyze_if_stale` can only
+#: ever issue an ANALYZE that autovacuum was already going to issue: the total amount of analyze
+#: work is unchanged, and all that moves is WHEN it happens — at the end of the run that made the
+#: rows stale, rather than up to an `autovacuum_naptime` (60s by default) afterwards.
+#:
+#: That equivalence is the whole justification for doing this in the foreground. An unconditional
+#: ANALYZE would not have it: a server indexing one small file at a time into a large table would
+#: pay for a statistics refresh on every call that autovacuum would have declined to make.
+#:
+#: Not env-tunable, and deliberately not read from the server's own settings. Both would be
+#: precision this does not have — the values are per-table overridable, so any single reading can
+#: be wrong, and being wrong here only means analyzing slightly more or less eagerly than
+#: autovacuum would.
+AUTOANALYZE_THRESHOLD = 50
+AUTOANALYZE_SCALE_FACTOR = 0.1
 
 
 def _env_opt_out(name: str) -> bool:
@@ -265,6 +335,26 @@ def resolve_supersession(
             # read path fail closed and tell the operator what to fix.
             unresolved.update(candidates)
     return mapping, frozenset(unresolved)
+
+
+def _ef_search_multiplier() -> int:
+    """How far past `k` to widen an unfiltered HNSW scan; see DEFAULT_HNSW_EF_SEARCH_MULTIPLIER.
+
+    Read at call time, not import time — same convention as `_hnsw_filtered_tuning`, so a test
+    can `monkeypatch.setenv` per case and a long-lived process picks up a change without a
+    restart. Values below 1 are refused rather than clamped: a 0 would silently disable the
+    widening and reintroduce the truncation this exists to prevent.
+    """
+    raw = os.environ.get(
+        "RECALL_HNSW_EF_SEARCH_MULTIPLIER", str(DEFAULT_HNSW_EF_SEARCH_MULTIPLIER)
+    )
+    try:
+        mult = int(raw)
+    except ValueError:
+        raise ValueError(f"RECALL_HNSW_EF_SEARCH_MULTIPLIER={raw!r} is not an integer") from None
+    if mult < 1:
+        raise ValueError(f"RECALL_HNSW_EF_SEARCH_MULTIPLIER={mult} must be >= 1")
+    return mult
 
 
 class PgVectorStore:
@@ -862,6 +952,86 @@ class PgVectorStore:
                 ],
             )
 
+    def analyze(self) -> bool:
+        """Refresh the planner's statistics for this table. Best-effort; never raises.
+
+        Worth doing explicitly because the planner's choice for `query_dense`'s source-filtered
+        arm is decided by these statistics, and a freshly built table has none. Postgres reports
+        `reltuples = -1` / `relpages = 0` and carries no `pg_stats` row for `source`, so it
+        estimates ONE matching row and picks an exact plan (a Bitmap Heap Scan + Sort, cost ~15)
+        over `Index Scan using <table>_emb_idx`. The answers stay correct — an exact scan is an
+        exact search — but the HNSW index is not consulted at all, which also makes the
+        `hnsw.ef_search` / `hnsw.iterative_scan` tuning in `query_dense` inert. On a 20,000-row
+        corpus that costs a millisecond or two per query; on a large one it is a full scan plus a
+        sort of every matching row, per query, until autovacuum's analyze lands.
+
+        Best-effort on purpose. This is an optimisation, not a correctness step: an index run
+        that wrote every row correctly must not be reported as failed because a statistics
+        refresh did not land, and autovacuum will make the same refresh in the background
+        regardless — which is exactly today's behaviour, so failing soft is strictly better than
+        never trying.
+
+        `statement_timeout` is deliberately NOT lifted, unlike `ensure_schema`'s DDL. That lift
+        is justified by an HNSW build being genuinely unbounded and by its failure stranding an
+        INVALID index; neither applies here. ANALYZE samples a bounded number of rows
+        (30,000 at the default `default_statistics_target`) whatever the table's size, so it fits
+        an ordinary statement budget, and lifting a timeout for a pure optimisation is the wrong
+        trade.
+
+        ⚠️ Returns whether the statement COMPLETED, which is not the same as "statistics were
+        refreshed". A role that does not own the table gets `WARNING: permission denied to
+        analyze "<table>", skipping it` and a successful return — verified against the container,
+        not assumed. Nothing is broken by that: `reltuples` stays -1, so `analyze_if_stale` keeps
+        finding the table never-analyzed and retrying, and a permission-denied ANALYZE returns
+        immediately. Autovacuum, which runs as a role that does have the privilege, still does
+        the real work.
+        """
+        try:
+            self._with_retry(lambda conn: conn.execute(f"ANALYZE {self._table}"))
+            return True
+        except psycopg.Error as exc:
+            _log.warning("could not refresh planner statistics for %s: %s", self._table, exc)
+            return False
+
+    def analyze_if_stale(self, modified: int) -> bool:
+        """`analyze()`, but only when autovacuum would have. Returns whether one was issued.
+
+        `modified` is how many rows this run wrote. The rule mirrors autovacuum's own trigger
+        (see `AUTOANALYZE_THRESHOLD` / `AUTOANALYZE_SCALE_FACTOR`), plus the case autovacuum
+        cannot express: a table that has never been analyzed at all (`reltuples < 0`), which is
+        every table a first index run builds and the case this exists for.
+
+        The threshold is what keeps a never-analyzed check from being enough on its own. A table
+        analyzed while it held three rows has `reltuples = 3` and is no longer "never analyzed",
+        so the next run's bulk load would otherwise land against statistics describing three rows
+        and reopen the same window.
+
+        Both statements run inside ONE `_with_retry` op. In pooled mode each `_with_retry` is a
+        separate borrow, so splitting them would decide against one connection's catalog view and
+        then ANALYZE on another's.
+        """
+
+        def _op(conn: "psycopg.Connection") -> bool:
+            row = conn.execute(
+                "SELECT reltuples FROM pg_class WHERE oid = %s::regclass", (self._table,)
+            ).fetchone()
+            # A missing row means the table is not there (dropped from under us). Treated as
+            # never-analyzed so the ANALYZE below is what reports the problem, rather than this
+            # method inventing a diagnosis from a catalog miss.
+            reltuples = float(row[0]) if row and row[0] is not None else -1.0
+            if reltuples >= 0 and modified < AUTOANALYZE_THRESHOLD + (
+                AUTOANALYZE_SCALE_FACTOR * reltuples
+            ):
+                return False
+            conn.execute(f"ANALYZE {self._table}")
+            return True
+
+        try:
+            return self._with_retry(_op)
+        except psycopg.Error as exc:
+            _log.warning("could not refresh planner statistics for %s: %s", self._table, exc)
+            return False
+
     def _rows_to_hits(self, rows: list[tuple]) -> list[ScoredChunk]:
         hits: list[ScoredChunk] = []
         for cid, source, text, metadata, indexed_at, score in rows:
@@ -929,6 +1099,39 @@ class PgVectorStore:
                     return conn.execute(sql, params).fetchall()
 
             rows = self._with_retry(_op)
+        elif k * _ef_search_multiplier() > _PGVECTOR_DEFAULT_EF_SEARCH:
+            # Unfiltered, and pgvector's default HNSW scan is too narrow for this k. Widen it, so
+            # that `LIMIT k` is what decides the size of the answer AND the rows returned are
+            # actually the nearest k rather than whatever the walk happened to reach.
+            #
+            # `set_config(..., is_local => true)` rather than `SET LOCAL <literal>` because it
+            # takes a bound parameter and can therefore compute GREATEST(current, k * multiplier):
+            # an operator who has already raised ef_search (per-database, per-role, or in
+            # postgresql.conf) must not have it LOWERED by this call. Raise-only, never clamp down.
+            #
+            # Skipped entirely when the widened value would not exceed pgvector's own default —
+            # there the scan is already at least this wide, so opening a transaction and issuing
+            # the extra statement would buy nothing. That keeps the original rationale for leaving
+            # the unfiltered arm alone intact over the range where it was actually correct.
+            widen = (
+                "SELECT set_config('hnsw.ef_search', GREATEST("
+                "COALESCE(NULLIF(current_setting('hnsw.ef_search', true), ''), %(default_ef)s)"
+                "::int, %(k)s)::text, true)"
+            )
+            widen_params = {
+                "default_ef": str(_PGVECTOR_DEFAULT_EF_SEARCH),
+                "k": k * _ef_search_multiplier(),
+            }
+
+            def _op_unfiltered(conn: "psycopg.Connection") -> list[tuple]:
+                # SET LOCAL / set_config(local) only survive inside a transaction block, and this
+                # store's connections are autocommit, so the transaction is opened explicitly —
+                # same shape as the filtered arm above, same reason.
+                with conn.transaction():
+                    conn.execute(widen, widen_params)
+                    return conn.execute(sql, params).fetchall()
+
+            rows = self._with_retry(_op_unfiltered)
         else:
             rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._rows_to_hits(rows)
@@ -938,23 +1141,55 @@ class PgVectorStore:
     ) -> list[ScoredChunk]:
         """Full-text search. Ranking is always ts_rank; when `vec` is given, each hit's `score`
         is its true dense cosine against `vec` instead of the ts_rank value, so lexical-only
-        hits are comparable with dense hits downstream."""
+        hits are comparable with dense hits downstream.
+
+        The query is a DISJUNCTION of the question's lexemes, not a conjunction. This used to
+        build its tsquery with ``websearch_to_tsquery``, which implements web-search-box
+        semantics and ANDs every term — so a chunk had to contain *every* word of the question
+        to match at all. On natural-language questions that is essentially never true: measured
+        over 150 real questions (mean 15.9 content terms each), the conjunctive form returned
+        rows for **0** of them, `_rrf` had a single non-empty list to fuse, and `HybridRetriever`
+        silently degraded to dense-only. The disjunctive form matched all 150.
+
+        Requiring every term is also the wrong contract for top-k retrieval: deciding *how much*
+        a partial match is worth is `ts_rank`'s job, and it already scores a chunk matching four
+        query terms above one matching a single term. The AND was doing that job badly by
+        answering "nothing" instead of "less".
+
+        The tsquery is built by normalising the question with the same text-search
+        configuration used to build `tsv` (so query lexemes and indexed lexemes agree), then
+        OR-ing the lexemes. Each is passed through ``quote_literal``, which is what makes a
+        question containing a quote or a tsquery operator a search term rather than syntax.
+        A question that normalises to no lexemes (empty, punctuation, stopwords only) yields a
+        NULL tsquery, which matches nothing — the same answer as before, without an error.
+        """
         if k <= 0:
             raise ValueError("k must be a positive int")
         t = self._table
-        where = "AND source = %(source)s" if source else ""
+        where = "AND c.source = %(source)s" if source else ""
+        # One CTE so the tsquery is built once and both the filter and the ranking see the
+        # identical value; repeating the expression risked them drifting apart under edits.
+        tsquery_cte = """
+            WITH q AS (
+                SELECT (
+                    SELECT string_agg(quote_literal(lexeme), ' | ')
+                    FROM unnest(to_tsvector('english', %(q)s))
+                )::tsquery AS tsq
+            )
+        """
         if vec is not None:
             # cosine only for the k ts_rank winners — computed in the SELECT list of the flat
             # query it would run for EVERY tsquery-matching row before the sort discards them
             sql = f"""
+                {tsquery_cte}
                 SELECT id, source, text, metadata, indexed_at,
                        1 - (embedding <=> %(vec)s) AS score
                 FROM (
-                    SELECT id, source, text, metadata, indexed_at, embedding,
-                           ts_rank(tsv, websearch_to_tsquery('english', %(q)s)) AS rank
-                    FROM {t}
-                    WHERE tenant_id = %(tenant)s
-                      AND tsv @@ websearch_to_tsquery('english', %(q)s)
+                    SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.embedding,
+                           ts_rank(c.tsv, q.tsq) AS rank
+                    FROM {t} c, q
+                    WHERE c.tenant_id = %(tenant)s
+                      AND c.tsv @@ q.tsq
                     {where}
                     ORDER BY rank DESC
                     LIMIT %(k)s
@@ -963,11 +1198,12 @@ class PgVectorStore:
             """
         else:
             sql = f"""
-                SELECT id, source, text, metadata, indexed_at,
-                       ts_rank(tsv, websearch_to_tsquery('english', %(q)s)) AS score
-                FROM {t}
-                WHERE tenant_id = %(tenant)s
-                  AND tsv @@ websearch_to_tsquery('english', %(q)s)
+                {tsquery_cte}
+                SELECT c.id, c.source, c.text, c.metadata, c.indexed_at,
+                       ts_rank(c.tsv, q.tsq) AS score
+                FROM {t} c, q
+                WHERE c.tenant_id = %(tenant)s
+                  AND c.tsv @@ q.tsq
                 {where}
                 ORDER BY score DESC
                 LIMIT %(k)s
@@ -979,6 +1215,7 @@ class PgVectorStore:
             params["source"] = source
         rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._rows_to_hits(rows)
+
 
     def replace_sources(
         self, sources: list[str], chunks: list[Chunk], embeddings: list[list[float]]

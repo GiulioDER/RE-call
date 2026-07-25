@@ -11,11 +11,20 @@ and then the cross-encoder reranker:
 | fusion | MRR | nDCG@10 |
 |---|---|---|
 | dense only | 0.63 | 0.72 |
-| + sparse (hybrid) | 0.74 | 0.80 |
+| + sparse (hybrid) | 0.96 | 0.97 |
 | + cross-encoder rerank | 1.00 | 1.00 |
 
+> **Re-measured 2026-07-25 after [#81](https://github.com/GiulioDER/RE-call/issues/81).** The sparse
+> leg previously built its tsquery with `websearch_to_tsquery`, which ANDs every term, so it only
+> fired on queries whose terms all appeared in one chunk. The hybrid row was published as
+> **0.74 / 0.80**; with the leg working it is **0.96 / 0.97**. The direction of this finding was
+> always right — the magnitude was understated. `dense only` is unchanged, as it must be.
+
 On the strong FastEmbed (bge-small) embedder, dense retrieval already scores nDCG@10 0.97 (MRR
-0.96) and the hybrid arm saturates the corpus at 1.00, so the reranker has nothing left to gain. Honest reading: **hybrid + rerank buys
+0.96) and the hybrid arm saturates the corpus at 1.00, so the reranker has nothing left to gain.
+Note that the hashing embedder's *hybrid* arm now reaches the same 0.96/0.97 as bge-small's *dense*
+arm: with the lexical leg working, the sparse signal substitutes for a good part of what a real
+embedder buys on this corpus. Honest reading: **hybrid + rerank buys
 the most on weaker embedders or harder corpora; on an easy corpus with a strong embedder it is
 redundant.** A rigorous eval has to be able to show that, not just a win.
 
@@ -130,10 +139,23 @@ superseded-trust rate: how often a stale memory is presented as the answer (lowe
 | hashing-64 | **1.00** | **0.00** | 0.25 | 0.00 | 0.737 → 0.737 |
 | bge-small (FastEmbed) | **0.83** | **0.00** | 0.75 | 1.00 | 1.000 → 1.000 |
 
+> ⚠️ **Historical v0.2 table, superseded by [`RESULTS.md`](RESULTS.md).** It was measured on an older
+> query set and column layout (note `successor acc` 0.25 / `abstain acc` 0.00, where the current run
+> reports 0.50 / 1.00), and it predates the [#81](https://github.com/GiulioDER/RE-call/issues/81)
+> sparse-leg fix. It is left as written rather than part-patched, because splicing today's numbers
+> into yesterday's row would produce a table describing no single run.
+>
+> **One conclusion below does not survive the re-measurement.** "Ordinary answerable retrieval is
+> untouched (identical MRR)" held when the hybrid arm scored 0.737 either way. With the sparse leg
+> working, `RESULTS.md` measures hashing-64 at **0.964 → 0.804**: the trust layer now costs
+> answerable MRR on the weak embedder, because it has more genuinely-retrieved material to demote.
+> The bge-small row is still 1.000 → 1.000. Read the claim as embedder-dependent, not general.
+
 - **Plain search fails exactly as predicted**: on 83–100% of the trust queries the top answer is
   the superseded/expired memory — semantic similarity cannot see supersession. With the trust
   layer the stale memory is *never* presented as trustworthy (STR 0.00 on both embedders), and
-  ordinary answerable retrieval is untouched (identical MRR).
+  ordinary answerable retrieval is untouched (identical MRR) — **but see the note above: that last
+  clause no longer holds on the weak embedder once the sparse leg works.**
 - **Successor redirect**: an explicit `supersedes:` edge transfers relevance — when the stale hit
   scored above the threshold, its retrieved successor is promoted even if its own (different)
   wording scores lower. On bge the successor is the top trusted answer in 3/4 cases; the "miss"
@@ -376,6 +398,25 @@ Treat the successor/abstain columns from generated corpora as not-yet-measured.
 
 ## 7. The real number: paraphrased questions cut retrieval to a third
 
+> ⚠️ **Every `hybrid` number in this section predates [#81](https://github.com/GiulioDER/RE-call/issues/81),
+> and the pool sweep additionally predates the `hnsw.ef_search` fix.** Two separate defects, both
+> in the retrieval path this section is measuring:
+>
+> - **The sparse leg was dead.** It ANDed every query term, so on questions phrased as sentences it
+>   almost never fired; every `hybrid` row below is close to a dense-only number. The same caveat
+>   §9 and §10 carry applies here, and this section was missed when those were annotated.
+> - **The dense leg was capped.** `query_dense` ran on the unfiltered path, where `hnsw.ef_search`
+>   defaults to 40 and an HNSW scan cannot return more rows than it examined — so the
+>   `candidate_k=100` sweep below delivered **40** dense candidates, not 100.
+>
+> **Re-measured 2026-07-25** with both fixed, same 46 held-out questions, same runner
+> (`--candidate-k 20`), `bge-small`: `dense` **0.326**, `sparse` **0.348**, `hybrid` **0.457**,
+> `hybrid+rerank` **0.435**. The corpus has grown since publication (824 files / 6,800 chunks
+> against the 794 / 6,491 below), so this is **not** a clean before/after on the fixes alone and
+> the two sets of figures should not be differenced. What it does establish is that on this corpus
+> the working sparse leg is worth roughly **+0.13 over dense alone** — the hybrid is earning its
+> keep here, which the published rows could not show.
+
 Every retrieval figure above this section was measured either on a corpus this repo ships, one it
 generates, or — for the real corpus — with document **headings** as queries. That last one is
 *known-item retrieval*: finding a document you can already name. It scored **recall@5 0.945** and
@@ -456,25 +497,64 @@ Three readings, and none of them is a lever:
 
 1. **Chunk size does not move hit@5.** 0.326 / 0.348 / 0.348 sit inside each other's intervals.
    The shipped 800 is the best of the three on MRR, so the default was already right.
-2. **A bigger candidate pool buys nothing at the top.** Raising `candidate_k` from 20 to 100 leaves
-   hit@5 and hit@10 unchanged and adds only ~0.04 at hit@20 — it surfaces documents that then rank
-   low anyway.
-3. **hit@50 plateaus at ~0.48–0.50 in every configuration.** For half the questions the right
-   document is nowhere in the top *fifty*, whatever the chunking or the pool.
+2. ~~**A bigger candidate pool buys nothing at the top.**~~ **CORRECTED 2026-07-25 — the
+   experiment could not have detected a pool effect, for two independent reasons, and the second
+   survives the first being fixed.**
 
-> **Two caveats on this table, both about the pool.** The `candidate_k=100` sweep was run with an
-> ad-hoc script: the shipped runner (`python -m recall.eval.labelled`) constructs `HybridRetriever`
-> at its default `candidate_k=20` and exposes no flag for it, so re-running it reproduces the
-> 800-char row's hit@5 and hit@10 but not the sweep. And at that default each leg contributes 20
-> candidates, so the fused pool holds **at most 40** — a `hit@50` measured with the shipped runner
-> is arithmetically `hit@40`. Neither caveat disturbs reading 3 (the ceiling is already reached by
-> hit@20, and the pool sweep is precisely the thing that moved nothing), but the hit@50 column
-> should be read as "top ~40–50" rather than as a clean top-fifty.
+   **(a) The pool was never 100.** `hnsw.ef_search` capped the dense leg at 40 (see the banner at
+   the top of §7), so the sweep compared "dense 20 / sparse 20" against "dense 40 / sparse 100".
 
-That last line is the finding. It is a **hard recall ceiling**, and it explains why the two things
-tried before it did so little: a reranker can only reorder what was retrieved, and a bigger pool
-can only add what the index can match. Both were working on the half of the problem that was
-already solvable.
+   **(b) A fused top-5 cannot see a deeper candidate anyway.** RRF gives `dense[r]` and
+   `sparse[r]` identical scores, so candidates unique to one leg fuse in a round-robin
+   `D0, S0, D1, S1, …`. A fused top-5 therefore reads only about the first three ranks of each
+   leg, *whatever* `candidate_k` is. The `+0.000` measured **fusion's reach**; it was read as
+   **candidate recall**, and the section's argument needs the second one.
+
+   Re-measured with both addressed — same 46 held-out questions, one index, only `candidate_k`
+   varying, paired exact McNemar:
+
+   | arm | pool 20 | pool 100 | Δ | discordant | p |
+   |---|---|---|---|---|---|
+   | dense | 0.3261 | 0.3261 | +0.0000 | 0/0 | 1.00 |
+   | sparse | 0.3478 | 0.3261 | −0.0217 | 1/0 | 1.00 |
+   | hybrid (fused top-5) | 0.4565 | 0.3913 | **−0.0652** | 5/2 | 0.45 |
+   | hybrid + cross-encoder | 0.4348 | 0.4565 | **+0.0217** | 2/3 | 1.00 |
+
+   **At n=46 none of these is significant, and that is the honest headline.** But the two point
+   estimates move in *opposite* directions, exactly as the mechanism predicts: a deeper pool
+   *dilutes* a fused ranking (more sparse candidates interleaved into the top 5) and *helps* a
+   reranked one (the cross-encoder re-scores candidates instead of reading their rank). `dense`
+   is flat to 0/0 discordant — a dense-only top-5 is mathematically indifferent to how many
+   candidates were fetched beyond 5.
+
+   Where the same comparison has the power to resolve itself, it does. On FinanceBench
+   (n=150, 72,151 chunks, `voyage-finance-2`), dense-only + reranker went **0.393 → 0.527**
+   (p<0.001) when the pool grew 40 → 100 with `ef_search` corrected. So "a bigger pool buys
+   nothing" is **not** a safe general claim; on this corpus it remains unmeasured at usable power.
+3. **hit@50 plateaus at ~0.48–0.50 in every configuration — but no configuration in this table
+   ever offered fifty distinct dense candidates.** With the dense leg capped at 40, "top fifty"
+   was never measurable here. The *shape* of the finding stands — a recall ceiling well below 1.0
+   that neither reranking nor chunking moved — but its *level* was measured through a truncated
+   leg, and "the right document is nowhere in the top fifty" is stronger than the data supports.
+
+> **Provenance, and a retracted inference.** The `candidate_k=100` sweep originally ran from an
+> ad-hoc script because the shipped runner exposed no flag for the pool. It does now —
+> `python -m recall.eval.labelled --candidate-k N` — so this table is reproducible from the
+> repository, which a published sweep has to be.
+>
+> The original caveat also argued that neither problem could disturb reading 3, because "the pool
+> sweep is precisely the thing that moved nothing". **That inference is retracted.** It assumed
+> the sweep was a valid measurement of the pool, and it was not: the pool never reached 100, and
+> rank fusion cannot promote a deep candidate into a top-5 regardless. A null produced by a
+> mechanism that cannot produce anything else is not evidence.
+
+That last line was read as the finding: a **hard recall ceiling**, with reranking and the pool
+both working on "the half of the problem that was already solvable". A ceiling is real — hit@5 is
+far from 1.0 on this corpus and the embedder swap below is what moved it. But the evidence that
+the *pool* could not lift it does not hold up (reading 2), and the ceiling's level was measured
+through a truncated dense leg (reading 3). What the two experiments jointly established is
+narrower than claimed: **rank fusion cannot exploit a deeper pool** — a property of the fusion
+rule, not of the corpus.
 
 ### Confirmed: it was the embedder
 
@@ -495,14 +575,17 @@ Set against the three eliminated levers, on the same questions:
 | change | Δ hit@5 |
 |---|---|
 | cross-encoder rerank | +0.065 (within noise, 57× latency) |
-| candidate pool 20 → 100 | +0.000 |
+| candidate pool 20 → 100, fused ranking | −0.065 *(n.s.; and see §7 — fusion cannot promote deeper candidates)* |
+| candidate pool 20 → 100, + reranker | +0.022 *(n.s.)* |
 | chunk size 400 / 800 / 1600 | +0.000 |
 | **embedder → voyage-3** | **+0.282** |
 
-The pipeline was never the problem. Three knobs were turned first and none of them mattered,
-which is the useful part of the result: it is evidence that this corpus was hitting a
-representation ceiling, not a tuning one, and that no amount of retrieval engineering was going
-to move it.
+The embedder is the one change here that the sample can resolve, and that conclusion is
+unaffected by the corrections in §7 — both arms were measured at the same pool, on the same
+questions, through the same fusion. What does *not* survive is the stronger framing this
+paragraph used to carry: "three knobs were turned and none of them mattered". Two were turned
+(ranking, chunking); the third was turned through a mechanism that could not register it. The
+representation ceiling is evidenced by the +0.282 directly, not by the eliminations.
 
 **Cost of the fix:** search latency 45 ms → 246 ms (a network round trip per query), an API
 dependency, and the corpus leaving your infrastructure to be embedded. Indexing is *faster*
@@ -511,7 +594,10 @@ either way, false-abstain 0.065 vs 0.043.
 
 ### What is left, and why the repo's own §3 predicts it
 
-Ranking, pool size and chunking are eliminated. What remains is the **representation**: `bge-small`
+Ranking and chunking are eliminated; **pool size is not** — the experiment that appeared to
+eliminate it could not have detected it (§7, reading 2). What remains is still the
+**representation**, and it is evidenced directly by the +0.282 rather than by elimination:
+`bge-small`
 cannot connect a paraphrased question to these documents, because the vocabulary that identifies
 them — project codenames, venue and bot names, internal shorthand — appears nowhere in its
 pretraining.
@@ -615,6 +701,13 @@ measures it with no judge and therefore no judge variance:
   the field's own benchmark.
 
 ### 9a. Retrieval: 0.615 at k=5 — and 0.798 at k=20
+
+> ⚠️ **Measured before [#81](https://github.com/GiulioDER/RE-call/issues/81) was fixed.** The runner
+> uses `HybridRetriever`, whose sparse leg ANDed every query term and so fired only when one chunk
+> contained all of them. LOCOMO questions average ~8 content terms against single-turn documents,
+> so the leg was largely inert and this is close to a dense-only number. **Not re-measured** — a
+> re-run is a full re-index. Treat 0.615 as a lower bound on the hybrid configuration; the same
+> caveat applies to §9b–§9c and to §10 (LongMemEval).
 
 | Category | hit@5 | 95% CI | n |
 |---|---|---|---|
@@ -837,7 +930,15 @@ from two harnesses are worth more than either alone, so the agreement is stated 
 left for a reader to assemble.
 
 `bge-small` (the free local embedder), hybrid dense+sparse, no reranker. 500 questions, calibrated
-on half and scored on the other half. Three candidate-set sizes, because the benchmark's own
+on half and scored on the other half.
+
+> ⚠️ **"hybrid dense+sparse" here predates the [#81](https://github.com/GiulioDER/RE-call/issues/81)
+> fix**: the sparse leg ANDed every query term, so on questions of this length it rarely fired and
+> the arm was close to dense-only. **Not re-measured** — the `lme_s` index alone cost 6h39m to
+> build. Treat these as lower bounds on the hybrid configuration. The §9/§10 *abstention* conclusion
+> is unaffected: it rests on signal separability (AUC ≤ 0.753 across six candidates), and a better
+> candidate pool does not make a relevance signal into an answerability signal.
+ Three candidate-set sizes, because the benchmark's own
 protocol gives each question its own ~49-session haystack while a single merged index is what a
 real memory store looks like:
 
