@@ -8,6 +8,30 @@ dates — this project does not currently tag releases.
 ## [Unreleased]
 
 ### Changed
+- **Republished every number the dead sparse leg touched** (`results/RESULTS.md`, its four charts,
+  `results/FINDINGS.md` §1, `docs/WRITEUP.md`). Following the [#81](https://github.com/GiulioDER/RE-call/issues/81)
+  fix, `make eval` was re-run end to end. On the weak hashing embedder the `hybrid` arm rose from
+  the published **MRR 0.737 / nDCG@10 0.799** to **0.964 / 0.974**, and the trust table's
+  `MRR ans (base)` from 0.737 to 0.964. `dense` is unchanged, which is the control behaving. The
+  §1 finding's *direction* was always right — its magnitude was understated, because the sparse leg
+  only fired on queries whose every term appeared in one chunk.
+
+  Figures that could **not** be re-measured are annotated rather than replaced: the private-corpus
+  ablation in the README, LOCOMO §9a (0.615), and LongMemEval §10 (0.970) all ran through
+  `HybridRetriever` before the fix and are effectively dense-only lower bounds. Re-running them
+  means re-indexing (the LongMemEval index alone cost 6h39m). The README's
+  `candidate pool 20 → 100 → +0.000` null is flagged as suspect for a specific reason: with the
+  lexical leg dead, widening the pool only widened the dense pool.
+
+  `results/RESULTS.md` now carries a provenance block naming the host, because this run's latency
+  columns are **not** comparable to the previous table's — that machine was PostgreSQL 17 /
+  pgvector 0.8.2, this one is 16.14 / 0.8.5 on a shared VPS. Rerank ms/query 691.7 → 2383.0 is the
+  CPU, not a regression.
+
+  The §9/§10 **abstention** conclusions are unaffected: they rest on signal separability
+  (AUC ≤ 0.753 across six candidates), and a better candidate pool does not turn a relevance signal
+  into an answerability signal.
+- **README test badge corrected**, 584 → 677 (the count `pytest --collect-only` actually reports).
 - **Abstention certification now judges the *interval* on separability, not the point estimate**
   (`recall/calibration.py`). `separability_interval()` returns the Hanley & McNeil (1982) 95%
   confidence interval on the AUC, `Calibration.separability_ci` exposes it, the saved artifact
