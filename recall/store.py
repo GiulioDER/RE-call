@@ -938,23 +938,55 @@ class PgVectorStore:
     ) -> list[ScoredChunk]:
         """Full-text search. Ranking is always ts_rank; when `vec` is given, each hit's `score`
         is its true dense cosine against `vec` instead of the ts_rank value, so lexical-only
-        hits are comparable with dense hits downstream."""
+        hits are comparable with dense hits downstream.
+
+        The query is a DISJUNCTION of the question's lexemes, not a conjunction. This used to
+        build its tsquery with ``websearch_to_tsquery``, which implements web-search-box
+        semantics and ANDs every term — so a chunk had to contain *every* word of the question
+        to match at all. On natural-language questions that is essentially never true: measured
+        over 150 real questions (mean 15.9 content terms each), the conjunctive form returned
+        rows for **0** of them, `_rrf` had a single non-empty list to fuse, and `HybridRetriever`
+        silently degraded to dense-only. The disjunctive form matched all 150.
+
+        Requiring every term is also the wrong contract for top-k retrieval: deciding *how much*
+        a partial match is worth is `ts_rank`'s job, and it already scores a chunk matching four
+        query terms above one matching a single term. The AND was doing that job badly by
+        answering "nothing" instead of "less".
+
+        The tsquery is built by normalising the question with the same text-search
+        configuration used to build `tsv` (so query lexemes and indexed lexemes agree), then
+        OR-ing the lexemes. Each is passed through ``quote_literal``, which is what makes a
+        question containing a quote or a tsquery operator a search term rather than syntax.
+        A question that normalises to no lexemes (empty, punctuation, stopwords only) yields a
+        NULL tsquery, which matches nothing — the same answer as before, without an error.
+        """
         if k <= 0:
             raise ValueError("k must be a positive int")
         t = self._table
-        where = "AND source = %(source)s" if source else ""
+        where = "AND c.source = %(source)s" if source else ""
+        # One CTE so the tsquery is built once and both the filter and the ranking see the
+        # identical value; repeating the expression risked them drifting apart under edits.
+        tsquery_cte = """
+            WITH q AS (
+                SELECT (
+                    SELECT string_agg(quote_literal(lexeme), ' | ')
+                    FROM unnest(to_tsvector('english', %(q)s))
+                )::tsquery AS tsq
+            )
+        """
         if vec is not None:
             # cosine only for the k ts_rank winners — computed in the SELECT list of the flat
             # query it would run for EVERY tsquery-matching row before the sort discards them
             sql = f"""
+                {tsquery_cte}
                 SELECT id, source, text, metadata, indexed_at,
                        1 - (embedding <=> %(vec)s) AS score
                 FROM (
-                    SELECT id, source, text, metadata, indexed_at, embedding,
-                           ts_rank(tsv, websearch_to_tsquery('english', %(q)s)) AS rank
-                    FROM {t}
-                    WHERE tenant_id = %(tenant)s
-                      AND tsv @@ websearch_to_tsquery('english', %(q)s)
+                    SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.embedding,
+                           ts_rank(c.tsv, q.tsq) AS rank
+                    FROM {t} c, q
+                    WHERE c.tenant_id = %(tenant)s
+                      AND c.tsv @@ q.tsq
                     {where}
                     ORDER BY rank DESC
                     LIMIT %(k)s
@@ -963,11 +995,12 @@ class PgVectorStore:
             """
         else:
             sql = f"""
-                SELECT id, source, text, metadata, indexed_at,
-                       ts_rank(tsv, websearch_to_tsquery('english', %(q)s)) AS score
-                FROM {t}
-                WHERE tenant_id = %(tenant)s
-                  AND tsv @@ websearch_to_tsquery('english', %(q)s)
+                {tsquery_cte}
+                SELECT c.id, c.source, c.text, c.metadata, c.indexed_at,
+                       ts_rank(c.tsv, q.tsq) AS score
+                FROM {t} c, q
+                WHERE c.tenant_id = %(tenant)s
+                  AND c.tsv @@ q.tsq
                 {where}
                 ORDER BY score DESC
                 LIMIT %(k)s
@@ -979,6 +1012,7 @@ class PgVectorStore:
             params["source"] = source
         rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._rows_to_hits(rows)
+
 
     def replace_sources(
         self, sources: list[str], chunks: list[Chunk], embeddings: list[list[float]]
