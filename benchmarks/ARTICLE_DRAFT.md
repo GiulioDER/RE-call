@@ -33,12 +33,10 @@ Answerable accuracy (LLM-as-judge), paired McNemar (each system answers the iden
 | gpt-4o-mini | item-matched | gpt-4o | 1,540 | **0.466** | 0.412 | 0.00018 |
 | gpt-4o-mini | token-matched (k=10/20) | gpt-4o-mini | 1,540 | **0.416** | 0.370 | 0.00077 |
 | gpt-4o-mini | token-matched | gpt-4o | 1,540 | **0.466** | 0.411 | 0.00018 |
-| **gpt-4o** (strong) | token-matched | gpt-4o | **584** | **0.497** | 0.425 | 0.0025 |
+| **gpt-4o** (strong) | token-matched | gpt-4o | 1,540 | **0.484** | 0.444 | 0.0065 |
 
-The gpt-4o-mini rows are the **full benchmark** (1,540 answerable questions, all 10 conversations).
-The gpt-4o row is a **4-conversation subset** (n=584) — the paired comparison is valid and
-significant, but that row has not yet been re-run at full n, and we say so rather than let the
-column widths imply otherwise.
+**Every row is the full benchmark** — all 1,540 answerable questions across all 10 conversations,
+each system answering the identical set. RE-call is the more accurate of the two in every one.
 
 **RE-call is the more accurate of the two across *both* OpenAI generators** — the models the
 incumbents actually evaluate with — at every retrieval budget and both judges. We test the
@@ -54,13 +52,13 @@ generator (n=446 adversarial, 1,540 answerable)**:
 | answerable false-abstain (want low) | **0.291** | 0.340 |
 | discrimination (abstention − false-abstain) | 0.593 | 0.608 |
 
-(Under the gpt-4o generator on the 4-conversation subset these shift to 0.925/0.954 abstention and
-0.276/0.324 false-abstain — abstention is partly a generator behaviour, so we label which one.)
+(Under the gpt-4o generator, full n, these shift to 0.924/0.955 abstention and 0.294/0.333
+false-abstain — abstention is partly a generator behaviour, so we label which one.)
 
 **Read this straight: on both OpenAI models — the cheap one and the strong one — RE-call is the more
-accurate of the two (p=0.006 down to p=0.0003), at every budget and both judges. Mem0 abstains
-slightly more but also refuses more real questions; the two discriminate about equally.** The only
-configuration where Mem0 came out ahead was an off-ecosystem model (Claude Sonnet) that nobody uses
+accurate of the two at full n=1,540 (p = 0.0002 to 0.0065), at every budget and both judges. Mem0
+abstains slightly more but also refuses more real questions; the two discriminate about equally.**
+The only configuration where Mem0 came out ahead was an off-ecosystem model (Claude Sonnet) nobody uses
 to run this benchmark — so it's not in this table.
 
 ## The four things the headline numbers hide
@@ -113,9 +111,9 @@ facts a stronger reader can exploit, while RE-call returns raw turns that read t
 ## Where RE-call actually stands (up front, no hiding)
 
 - On **both** OpenAI generators — `gpt-4o-mini` and `gpt-4o`, the models the incumbents' own numbers
-  are built on — **RE-call is more accurate than Mem0**, across every retrieval budget and both
-  judges (p = 0.0059 to 0.0002). The only place Mem0 led was Claude Sonnet, an off-ecosystem model
-  we discarded as irrelevant to how anyone actually runs this.
+  are built on — **RE-call is more accurate than Mem0**, at full n=1,540, across every retrieval
+  budget and both judges (p = 0.0002 to 0.0065). The only place Mem0 led was Claude Sonnet, an
+  off-ecosystem model we discarded as irrelevant to how anyone actually runs this.
 - Its cat1 single-hop retrieval recall is the weak spot; a stronger embedder + reranker lifted it
   39%→50% (accuracy 0.440→0.476, 4-conversation subset), a real gain, not category-redefining.
 - **The axis where RE-call is unambiguously ahead is cost**: its memory layer makes **zero** LLM
@@ -148,8 +146,8 @@ Both Mem0 figures are metered, not modelled. Two things follow. First, the ratio
 **free vs not-free**: RE-call's memory cost is $0 and *stays* $0 at any scale and any model, because
 it uses no LLM; Mem0's grows linearly with every memory written. Second, Mem0's cost is *unbounded
 in quality* — a 16× jump from mini to gpt-4o extraction — while RE-call never leaves zero. And the
-kicker: at the $2.65 (gpt-4o) tier Mem0 still scored **0.425**, below RE-call's **0.497 at $0**. You
-pay more for less. For write-heavy, cost-sensitive, offline, or privacy-bound
+kicker: at the gpt-4o tier — where building the full benchmark's memory cost Mem0 **$7.29** and
+RE-call **$0** — Mem0 still scored **0.444**, below RE-call's **0.484**. You pay more for less. For write-heavy, cost-sensitive, offline, or privacy-bound
 deployments — most of them — a memory that's competitive on accuracy and **free to write** is the
 correct engineering choice. That is the honest headline: not "most accurate," but *"trustworthy and
 effectively free, at competitive accuracy, on the models you actually use."*
