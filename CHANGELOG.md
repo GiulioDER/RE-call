@@ -36,13 +36,22 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   undo it. The scale of a refused prune and the `--allow-prune` remedy survive scrubbing; the
   untouched message is logged server-side. (`recall_mcp/service.py`,
   `tests/test_mcp_error_scrubbing.py`)
-- **A stale lockfile can no longer switch off dependency CVE scanning.** `uv lock --check` gated
-  the `audit` job, so the 0.6.0 version bump (which left `uv.lock` at 0.5.3) stopped `pip-audit`
-  running on every pull request — and failed on lockfile drift rather than on a finding, so the
-  red read as a broken build rather than an absent control. `pip-audit` now runs FIRST and
-  unconditionally, exporting without `--frozen` so it resolves regardless of drift; the
-  lock-currency check follows with `if: always()` and an actionable error. Neither check can mask
-  the other. (`.github/workflows/ci.yml`)
+- **A stale lockfile can no longer switch off dependency CVE scanning, and the scan can no longer
+  switch off drift detection.** `uv lock --check` gated the `audit` job, so the 0.6.0 version bump
+  (which left `uv.lock` at 0.5.3) stopped `pip-audit` running on every pull request — and failed
+  on lockfile drift rather than on a finding, so the red read as a broken build rather than an
+  absent control.
+
+  Moving the scan first fixed that half and broke the other: `uv export` without `--frozen`
+  re-resolves and **rewrites `uv.lock` in the workspace**, so the `uv lock --check` that followed
+  it inspected a lock the previous step had just repaired, and passed with the drift still
+  committed. Measured, not reasoned about — introduce a version drift, run the export, and the
+  check goes green.
+
+  The lock check now runs FIRST (before anything can mutate the lock) under `continue-on-error`,
+  so it gates nothing; the scan always runs; the job fails at the end on the recorded outcome.
+  Neither control can suppress the other in either direction, which is what both earlier orderings
+  were missing. (`.github/workflows/ci.yml`)
 - **`recall_index` no longer reads a file the corpus glob excludes.** `candidate_files` filtered a
   DIRECTORY walk to `**/*.md` but returned a SINGLE FILE unconditionally, so the file-type filter
   did not exist for the branch a client is most likely to call. Because `RECALL_INDEX_ROOT`

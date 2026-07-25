@@ -149,19 +149,33 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
 
-      # ORDER MATTERS HERE, AND IT IS THE OPPOSITE OF THE OBVIOUS ONE.
+      # TWO INDEPENDENT CHECKS THAT MUST NOT BE ABLE TO DISABLE EACH OTHER.
       #
-      # `uv lock --check` used to run FIRST and gate everything after it. The 0.6.0 release bumped
-      # pyproject.toml's version without refreshing uv.lock, that step failed, and pip-audit never
-      # ran — dependency CVE scanning was switched OFF on every pull request. Because the job
-      # failed on lockfile drift rather than on a finding, the red read as a broken build rather
-      # than as an absent control, and it stayed that way until someone went looking.
+      # History, because both orderings have already failed here:
       #
-      # So the SCAN now runs first and unconditionally. It exports WITHOUT `--frozen`, resolving
-      # from pyproject.toml, so it works whether or not the committed lock has drifted: a stale
-      # lock can no longer stop the vulnerability scan from happening. The lock-currency check
-      # still runs and still fails the build — it just can only cost a red tick now, never the
-      # CVE coverage.
+      #   1. `uv lock --check` ran first and GATED the scan. The 0.6.0 release bumped
+      #      pyproject.toml's version without refreshing uv.lock, so it failed and pip-audit never
+      #      ran — CVE scanning was off on every PR, and because the job failed on lockfile drift
+      #      rather than on a finding, the red read as a broken build rather than an absent control.
+      #
+      #   2. Moving the scan first (#89) fixed that and broke the other half: `uv export` WITHOUT
+      #      `--frozen` re-resolves and REWRITES uv.lock in the workspace, so the `uv lock --check`
+      #      that followed inspected a lock the previous step had just repaired and always passed.
+      #      Verified directly — introduce a version drift, run the export, and the check goes
+      #      green with the drift still committed.
+      #
+      # So the check runs FIRST, before anything can mutate the lock, but `continue-on-error`
+      # keeps it from gating anything. The scan then always runs. The job fails at the END on the
+      # recorded outcome. Neither control can suppress the other, in either direction, which is
+      # the property both previous versions were missing.
+      - name: Check the committed lockfile is current
+        id: lockcheck
+        continue-on-error: true
+        run: uv lock --check
+
+      # No `--frozen`: it resolves from pyproject.toml, so a drifted lock cannot stop the scan.
+      # The side effect that makes this safe only in THIS position is that it rewrites uv.lock —
+      # harmless on a throwaway runner checkout, fatal to the check above if it ran first.
       - name: Export dependencies for scanning
         run: uv export --all-extras --no-emit-project --format requirements-txt -o requirements.lock.txt
 
@@ -171,14 +185,11 @@ jobs:
       - name: Audit dependencies (pip-audit)
         run: uvx pip-audit --requirement requirements.lock.txt --no-deps
 
-      # `if: always()` so a CVE finding cannot hide lockfile drift either — neither of these two
-      # checks may mask the other, which was the whole failure above.
-      - name: Check the committed lockfile is current
-        if: always()
+      # `always()` so a CVE finding cannot hide lockfile drift either.
+      - name: Fail if the lockfile had drifted
+        if: always() && steps.lockcheck.outcome == 'failure'
         run: |
-          if ! uv lock --check; then
-            echo "::error::uv.lock has drifted from pyproject.toml. If you changed the version or"
-            echo "::error::any dependency, run 'uv lock' and commit the result in the SAME commit."
-            echo "::error::A stale lock means the committed pins are not what this project resolves."
-            exit 1
-          fi
+          echo "::error::uv.lock has drifted from pyproject.toml. If you changed the version or"
+          echo "::error::any dependency, run 'uv lock' and commit the result in the SAME commit."
+          echo "::error::A stale lock means the committed pins are not what this project resolves."
+          exit 1
