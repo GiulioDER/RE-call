@@ -3,9 +3,12 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is pre-1.0 `0.MINOR.PATCH`, so
 a minor bump may still break schema or API. Dates are commit dates from `git log`, not release-tag
-dates — this project does not currently tag releases.
+dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publishes to PyPI
+(see `.github/workflows/release.yml`).
 
 ## [Unreleased]
+
+## [0.6.0] — 2026-07-25
 
 ### Added
 - **`python -m recall.eval.locomo --k-curve 1,3,5,10,20`** — scores hit@k at several retrieval

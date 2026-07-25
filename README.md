@@ -535,12 +535,35 @@ Two behavioural changes worth knowing before you upgrade:
   intent — on the reference corpus it took working edges from 0 to 2 — but it does mean memories
   that were served as `ok` can now correctly come back `superseded`.
 
+## Upgrading to 0.6.0
+
+**Your retrieval results will change, on the same corpus and the same queries.** 0.6.0 is the
+first release since 0.5.1 that is not purely additive, and the reason is three defects in the
+retrieval path that each made it return less than it should have:
+
+- **The lexical leg was firing on almost nothing.** It built its full-text query by ANDing every
+  term, so a chunk had to contain *every* word of the question to match at all — on questions
+  phrased as sentences, essentially never. `hybrid` was, in practice, dense-only.
+- **The dense leg was silently capped at 40 candidates.** `hnsw.ef_search` defaults to 40 and an
+  HNSW scan cannot return more rows than it examined, so any `candidate_k` above 40 was quietly
+  ignored. No error, no warning.
+- **A freshly-indexed table did not use its vector index at all** until autovacuum caught up,
+  because the planner had no statistics for the rows just written.
+
+All three make results *better*, not different-for-its-own-sake, and none changes an API. But if
+you have baselines, thresholds calibrated against retrieval scores, or golden-output tests, expect
+them to move — that is the whole point of the fixes. Nothing needs reconfiguring: the fixes are
+unconditional, and the previously-inert `candidate_k` now does what it says.
+
+Two published claims of ours were corrected in the same pass, since both rested on the capped
+dense leg — see [FINDINGS §7 and §9a](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md).
+
 ## Upgrading to 0.5.1
 
 Five changes that **shipped in 0.5.1**, listed here because each can make something that currently
-succeeds start failing. If you are on 0.5.0, upgrading to the current release applies all five at
-once — everything since is additive (0.5.2 the LOCOMO benchmark, 0.5.3 the LangChain and
-LlamaIndex retrievers) and changes no existing behaviour. Full detail in
+succeeds start failing. If you are on 0.5.0, upgrading applies all five at once. 0.5.2 (the LOCOMO
+benchmark) and 0.5.3 (the LangChain and LlamaIndex retrievers) are additive; 0.6.0 is not — see
+above. Full detail in
 [CHANGELOG.md](https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md).
 
 - **`RECALL_ALLOW_INSECURE_DSN` is now an explicit allowlist** — only `1|true|yes|on` disable the
