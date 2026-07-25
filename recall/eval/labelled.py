@@ -84,7 +84,7 @@ def _rate(flags: list[bool]) -> dict:
 
 
 def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, k: int = 5,
-             rerank: bool = False, glob: str = "**/*.md") -> dict:
+             rerank: bool = False, glob: str = "**/*.md", candidate_k: int = 20) -> dict:
     answerable = [q for q in questions if q.get("answerable")]
     unanswerable = [q for q in questions if not q.get("answerable")]
 
@@ -100,7 +100,7 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
         # transfer (FINDINGS section 2), and an uncalibrated run would measure the default, not
         # the system. Fitted on half the questions, scored on the other half.
         fit, held = questions[::2], questions[1::2]
-        retr = HybridRetriever(store, embedder)
+        retr = HybridRetriever(store, embedder, candidate_k=candidate_k)
 
         def top_cos(q: str) -> float:
             hits = store.query_dense(embedder.embed([q])[0], k=1)
@@ -150,8 +150,12 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
         # dense-only / sparse-only say which leg of the hybrid is carrying it.
         arms = {
             "bm25": score_arm(BM25Retriever(store)),
-            "dense": score_arm(HybridRetriever(store, embedder, use_sparse=False)),
-            "sparse": score_arm(HybridRetriever(store, embedder, use_dense=False)),
+            "dense": score_arm(
+                HybridRetriever(store, embedder, use_sparse=False, candidate_k=candidate_k)
+            ),
+            "sparse": score_arm(
+                HybridRetriever(store, embedder, use_dense=False, candidate_k=candidate_k)
+            ),
             "hybrid": score_arm(retr),
         }
         if rerank:
@@ -160,7 +164,9 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
             from recall.rerank import CrossEncoderReranker
 
             arms["hybrid+rerank"] = score_arm(
-                HybridRetriever(store, embedder, reranker=CrossEncoderReranker())
+                HybridRetriever(
+                    store, embedder, reranker=CrossEncoderReranker(), candidate_k=candidate_k
+                )
             )
 
         abstained, false_abstain = [], []
@@ -176,6 +182,7 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
                        "index_seconds": round(index_s, 1)},
             "questions": {"total": len(questions), "answerable": len(answerable),
                           "unanswerable": len(unanswerable), "held_out": len(held)},
+            "candidate_k": candidate_k,
             "threshold": cal.threshold,
             "arms": arms,
             "abstention_accuracy": _rate(abstained),
@@ -197,6 +204,9 @@ def main() -> None:
                     help="corpus file glob — e.g. '**/*.rst' for a PEP checkout")
     ap.add_argument("--rerank", action="store_true",
                     help="also score a cross-encoder arm from the SAME index")
+    ap.add_argument("--candidate-k", type=int, default=20,
+                    help="candidates each leg contributes before fusion; the pool a "
+                         "reranker sees is their union (default: 20)")
     ap.add_argument("--dsn", default=DEFAULT_DSN)
     args = ap.parse_args()
 
@@ -207,7 +217,8 @@ def main() -> None:
         raise SystemExit(f"answerable questions without relevant_files: {missing}")
 
     report = evaluate(args.dsn, Path(args.corpus), questions, _make_embedder(args.embedder),
-                      k=args.k, rerank=args.rerank, glob=args.glob)
+                      k=args.k, rerank=args.rerank, glob=args.glob,
+                      candidate_k=args.candidate_k)
     print(json.dumps(report, indent=2))
 
 
