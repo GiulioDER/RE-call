@@ -30,7 +30,7 @@ from recall.embeddings import Embedder
 from recall.frontmatter import validity_bounds
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.rerank import Reranker
-from recall.retriever import HybridRetriever
+from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
 from recall.store import PgVectorStore
 from recall.types import (
     Provenance,
@@ -336,19 +336,27 @@ def trusted_search(
     reranker: Reranker | None = None,
     now: datetime | None = None,
     entailment: "EntailmentJudge | None" = None,
+    candidate_k: int = DEFAULT_CANDIDATE_K,
 ) -> TrustedResult:
     """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point.
 
     `entailment` is OFF by default: when a judge is passed, verdict-ok hits that do not entail
     an answer to the query are demoted to ``not_entailed`` (see `recall.entailment`) — the
     near-miss guard the cosine threshold cannot provide. Costs one judge pass per ok hit.
+
+    `candidate_k` is the per-leg pool size handed to the retriever (default the library's own
+    ``DEFAULT_CANDIDATE_K``). It is exposed so a caller that widened the pool for its other
+    retrievals — e.g. an eval sweep — can hold this call to the SAME pool, rather than silently
+    reverting to the default here.
     """
     if k < 1:
         raise ValueError("k must be >= 1")
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
     # always come from the same calibration (or the same uncalibrated default)
     cal = calibration or _UNCALIBRATED
-    retriever = HybridRetriever(store, embedder, reranker=reranker, gap_threshold=cal.threshold)
+    retriever = HybridRetriever(
+        store, embedder, reranker=reranker, gap_threshold=cal.threshold, candidate_k=candidate_k
+    )
     result = retriever.search(query, k=k, source=source)
     supersession, unresolved = store.supersession() if result.hits else ({}, frozenset())
     trusted = evaluate(
