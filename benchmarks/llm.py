@@ -47,6 +47,12 @@ class OpenRouterLLM:
         self._api_key = api_key
         self._sleep = sleep
         self._client: object | None = None
+        #: The benchmark's OWN generator+judge usage (this instance drives both). Recorded as the
+        #: `harness` baseline so the memory layer's cost can be isolated as total - harness.
+        self._usage = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+
+    def usage(self) -> dict[str, int]:
+        return dict(self._usage)
 
     def complete(self, system: str, user: str) -> str:
         def _once() -> str:
@@ -64,5 +70,10 @@ class OpenRouterLLM:
             temperature=self.temperature,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         )
+        resp_usage = getattr(resp, "usage", None)
+        if resp_usage is not None:
+            self._usage["calls"] += 1
+            self._usage["prompt_tokens"] += int(getattr(resp_usage, "prompt_tokens", 0) or 0)
+            self._usage["completion_tokens"] += int(getattr(resp_usage, "completion_tokens", 0) or 0)
         content = resp.choices[0].message.content
         return content or ""

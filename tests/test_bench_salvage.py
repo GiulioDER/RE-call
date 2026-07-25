@@ -282,7 +282,7 @@ def test_merge_only_rebuilds_the_artifact_and_its_aggregate_without_scoring(
     # schema-identical to a normally-produced artifact, plus the salvage markers
     assert set(payload) == {
         "arm", "model", "config", "conversations", "questions", "skipped_questions",
-        "aggregate", "outcomes", "salvaged", "salvage",
+        "usage", "aggregate", "outcomes", "salvaged", "salvage",
     }
     assert payload["arm"] == "recall"
     assert payload["conversations"] == 3
