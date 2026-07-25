@@ -145,21 +145,36 @@ questions — three eliminated, one confirmed:
 > ⚠️ **Measured before [#81](https://github.com/GiulioDER/RE-call/issues/81) was fixed** (2026-07-25).
 > Every "hybrid" row below ran with a sparse leg that only fired when a single chunk contained *every*
 > term of the query, so on longer questions it contributed nothing and the arm was effectively
-> dense-only. These numbers have **not** been re-measured — the corpus is private. Read them as a
-> lower bound on the hybrid configuration. The `candidate pool 20 → 100` null in particular is
-> suspect: with the lexical leg dead, widening the pool only widened the *dense* pool.
+> dense-only. Read them as a lower bound on the hybrid configuration.
+>
+> **Re-measured 2026-07-25**, same 46 held-out questions, same runner: `dense` 0.326, `sparse`
+> 0.348, `hybrid` **0.457**, `hybrid+rerank` 0.435. The corpus has grown since (824 files against
+> 794), so this is *not* a clean before/after and the two sets are not differenced — but on this
+> corpus a working lexical leg is worth roughly **+0.13 over dense alone**.
+>
+> **The `candidate pool 20 → 100` null is worse than suspect — it is retracted.** The original
+> reading here, that widening the pool only widened the *dense* pool, was too generous: it did not
+> widen the dense pool either. `hnsw.ef_search` defaults to 40 and an HNSW scan cannot return more
+> rows than it examined, so `candidate_k=100` delivered **40** dense candidates
+> ([fixed](https://github.com/GiulioDER/RE-call/blob/master/recall/store.py)). And even uncapped,
+> RRF scores `dense[r]` and `sparse[r]` identically, so a fused top-5 reads only ~3 ranks into each
+> leg whatever the pool is — the null was arithmetic, not evidence. Full correction in
+> [FINDINGS §7](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md).
 
 | change | hit@5 | Δ | cost |
 |---|---|---|---|
 | baseline — bge-small, hybrid dense+sparse | 0.348 [0.23, 0.49] | — | 45 ms |
 | + cross-encoder rerank | 0.391 [0.26, 0.54] | +0.043 *(within noise)* | **57× latency** |
-| candidate pool 20 → 100 | 0.348 | **+0.000** | — |
+| candidate pool 20 → 100 | *retracted — see the note above* | fused −0.065, +reranker +0.022 *(both n.s., n=46)* | — |
 | chunk size 400 / 800 / 1600 | 0.326 / 0.348 / 0.348 | **+0.000** | a re-index each |
 | **embedder → voyage-3** | **0.630 [0.49, 0.76]** | **+0.282** | 246 ms, API dependency, data egress |
 
-`hit@50` plateaus at ~0.50 in every local configuration: for half the questions the right document
-was nowhere in the top *fifty*, which is why reordering and bigger pools could not help — a
-reranker only reorders what was retrieved. **The ceiling was the representation, not the pipeline.**
+`hit@50` plateaus at ~0.50 in every local configuration — though with the dense leg capped at 40,
+no run here ever offered a true top *fifty*, so read that as "top ~40–50". A recall ceiling is
+real and the embedder is what moved it. The claim that **bigger pools therefore could not help**
+does not follow and has been withdrawn: on a corpus where the comparison has power (FinanceBench,
+n=150), dense-only + reranker went **0.393 → 0.527** when the pool grew 40 → 100 with `ef_search`
+corrected. **The ceiling was the representation — but the pipeline was never actually ruled out.**
 
 The three eliminations are what make the fourth result a diagnosis rather than a lucky guess. The
 abstention layer was never the bottleneck: 89% of unanswerable questions correctly refused, 4–7%
