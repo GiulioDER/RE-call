@@ -41,9 +41,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from recall.embeddings import Embedder
-from recall.eval.locomo import _make_embedder
+from recall.eval.locomo import _make_embedder, _rate
 from recall.eval.locomo_abstention import _partition_questions
-from recall.eval.metrics import wilson_ci
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
 
@@ -134,15 +133,6 @@ def _abstains_at(q: QuestionScores, threshold: float) -> bool:
     if q.max_entail is None:
         return True
     return q.max_entail < threshold
-
-
-def _rate(flags: list[bool]) -> dict[str, Any]:
-    lo, hi = wilson_ci(flags)
-    return {
-        "n": len(flags),
-        "rate": round(sum(flags) / len(flags), 4) if flags else float("nan"),
-        "ci95": [round(lo, 4), round(hi, 4)],
-    }
 
 
 def gather_scores(

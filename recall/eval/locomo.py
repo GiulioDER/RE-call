@@ -70,6 +70,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -126,6 +127,23 @@ def _make_embedder(name: str) -> Embedder:
     return FastEmbedEmbedder()
 
 
+_SAFE_CORPUS_NAME = re.compile(r"\A[A-Za-z0-9:._-]+\Z")
+
+
+def _check_corpus_name(value: str, kind: str) -> str:
+    """Reject a dataset-derived path component that could escape the corpus directory.
+
+    `dia_id` and `sample_id` come straight from the (third-party, HTTPS-downloaded) LOCOMO JSON,
+    and both become filesystem paths — a per-turn filename and the per-conversation corpus dir. A
+    `../`, an absolute path, or an embedded separator in a tampered dataset would let the converter
+    write outside the workspace. Mirrors `recall.eval.longmemeval._check_session_id`, the guard the
+    sibling converter already applies to the same class.
+    """
+    if not isinstance(value, str) or not _SAFE_CORPUS_NAME.match(value) or value in {".", ".."}:
+        raise ValueError(f"unsafe LOCOMO {kind} (path traversal?): {value!r}")
+    return value
+
+
 def _dia_id_to_filename(dia_id: str) -> str:
     """``D1:3`` -> ``D1_3.md``.
 
@@ -133,6 +151,7 @@ def _dia_id_to_filename(dia_id: str) -> str:
     alternate data stream), and this repo is developed on Windows and run in CI on Linux. Encoding
     it away means the corpus that CI scores is byte-identical to the one a contributor scores.
     """
+    _check_corpus_name(dia_id, "dia_id")
     return dia_id.replace(":", "_") + ".md"
 
 
@@ -350,6 +369,7 @@ def run(
     try:
         for i, conv in enumerate(conversations):
             sample_id = conv.get("sample_id") or f"conv{i}"
+            _check_corpus_name(str(sample_id), "sample_id")
             # One tenant per conversation. LOCOMO's conversations are unrelated worlds; a shared
             # tenant would let a question retrieve another conversation's turn, and the
             # evidence-id check would not catch it (ids are only unique WITHIN a conversation,

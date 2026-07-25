@@ -76,18 +76,22 @@ class BM25Retriever:
         self._k1 = k1
         self._b = b
         self._chunks: list[Chunk] = []
-        self._tf: list[Counter[str]] = []
         self._len: list[int] = []
+        #: term -> list of (chunk index, term frequency in that chunk). An inverted index, so
+        #: `score` touches only the documents that actually contain each query term instead of
+        #: walking the whole corpus per term.
+        self._postings: dict[str, list[tuple[int, int]]] = {}
         #: term -> number of documents containing it
         df: Counter[str] = Counter()
 
-        for chunk in store.iter_chunks():
+        for i, chunk in enumerate(store.iter_chunks()):
             tokens = tokenize(chunk.text)
             tf = Counter(tokens)
             self._chunks.append(chunk)
-            self._tf.append(tf)
             self._len.append(len(tokens))
             df.update(tf.keys())
+            for term, freq in tf.items():
+                self._postings.setdefault(term, []).append((i, freq))
 
         n = len(self._chunks)
         # An empty corpus has no average length to divide by. Guard here rather than at query
@@ -110,10 +114,7 @@ class BM25Retriever:
             idf = self._idf.get(term)
             if idf is None:  # not in the corpus: contributes nothing, and has no IDF to look up
                 continue
-            for i, tf in enumerate(self._tf):
-                f = tf.get(term)
-                if not f:
-                    continue
+            for i, f in self._postings.get(term, ()):
                 norm = 1.0 - self._b + self._b * (self._len[i] / self._avgdl)
                 scores[i] += idf * (f * (self._k1 + 1.0)) / (f + self._k1 * norm)
         return scores
