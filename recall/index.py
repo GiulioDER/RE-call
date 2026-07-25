@@ -4,6 +4,7 @@ import hashlib
 import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from pathlib import Path
 
 from recall.cache import EmbeddingCache, embed_with_cache
@@ -246,6 +247,19 @@ def _confined_to(root: Path, paths: Iterable[Path]) -> list[Path]:
     return kept
 
 
+def _matches_glob(file: Path, glob: str) -> bool:
+    """Whether a directory walk under `glob` would have yielded `file`.
+
+    Compared against the glob's LAST component (`**/*.md` -> `*.md`), because that is the only
+    part that constrains the file itself — the leading `**/` says where to look, not what to
+    accept, and a file named directly has no walk root to anchor it against. `PurePath.match` is
+    deliberately not used: its handling of a leading `**` differs across the supported 3.11-3.13
+    range, and a confinement rule that means different things on different interpreters is the
+    kind of fix that is one upgrade away from being wrong.
+    """
+    return fnmatch(file.name, glob.rsplit("/", 1)[-1])
+
+
 def candidate_files(path: str | Path, glob: str = DEFAULT_GLOB) -> list[Path]:
     """Return the confined, sorted file list that `index_path(path, glob)` would index.
 
@@ -253,9 +267,31 @@ def candidate_files(path: str | Path, glob: str = DEFAULT_GLOB) -> list[Path]:
     runs, no embedding is requested. This is what lets a caller MEASURE a tree (file count, total
     bytes) and refuse to index it before spending anything, using the exact same walk `index_path`
     uses, so the measurement can never diverge from what would actually be indexed.
+
+    A SINGLE FILE is held to the same glob as a directory walk, and that is a security boundary
+    rather than a consistency nicety. This branch used to return the file unconditionally, so the
+    `**/*.md` filter that a walk applies simply did not exist for a path naming one file — while
+    the caller that most needs it (`recall_index`, whose `RECALL_INDEX_ROOT` defaults to the
+    server's own working directory) can only ever name one path. `.env` and a relative
+    `tokens.json` both live in exactly that directory, the latter holding plaintext bearer tokens
+    for OTHER tenants, and both were indexable and therefore searchable.
+
+    Refused LOUDLY, not filtered to an empty list: `index_path` would report "indexed 0 file(s)"
+    and exit 0, which is the same silence the prune guard exists to break — and here it would be
+    reporting success for a request that was actually blocked. The message names `--glob`, so the
+    legitimate case it also catches (`recall index somefile.py`) has an obvious way forward.
     """
     root = Path(path).resolve()
-    return sorted(_confined_to(root, root.glob(glob))) if root.is_dir() else [root]
+    if root.is_dir():
+        return sorted(_confined_to(root, root.glob(glob)))
+    if not _matches_glob(root, glob):
+        raise ValueError(
+            f"{str(root)!r} does not match the glob {glob!r}, so it is not part of this corpus. "
+            f"Indexing a file reads it into memory that `recall_search` can return verbatim, so "
+            f"a path is admitted only when the corpus pattern claims it. Pass an explicit glob "
+            f"(CLI: --glob) if this file type really is your corpus."
+        )
+    return [root]
 
 
 @dataclass(frozen=True)

@@ -14,6 +14,7 @@ step over `HybridRetriever.search()`:
 """
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import replace
 
 from recall.observability import METRICS
@@ -100,24 +101,73 @@ def _verdict(
     return "ok", validity
 
 
+#: Longest corpus-controlled identifier rendered into agent-facing prose. Real memo paths sit far
+#: below this; the bound exists so a hostile 10 KB file name cannot bury the sentence it appears
+#: in under its own payload.
+MAX_REF_CHARS = 120
+
+
+def safe_ref(value: str | None) -> str:
+    """Render a corpus-controlled identifier for inclusion in agent-facing prose.
+
+    `provenance.file` and `validity.superseded_by` are `metadata['file']` — a path chosen by
+    whoever can write a file into the corpus — and they are interpolated into `reason`, which
+    `recall_mcp.service.search_memory` folds into `advice`, the field `recall_search` tells the
+    model to obey. That is untrusted input reaching an instruction channel, so it is treated as
+    data being quoted rather than as prose being continued.
+
+    No attempt is made to recognise malicious wording; that is unwinnable and would fail exactly
+    when it mattered. What is removed instead are the three properties that let corpus text
+    impersonate this library's own voice:
+
+    - **Control characters and line breaks.** A newline is what turns an identifier into what
+      looks like a fresh instruction on its own line. Dropped by Unicode category, which also
+      takes the bidirectional overrides (`Cf`) that can visually reorder a line into something
+      other than what it says.
+    - **Length.** Bounded, so a payload cannot push the real message out of view.
+    - **Undelimited placement.** Quoted, so it reads as a quoted name — and the delimiter is
+      stripped from the body, because a quote that the value can close is not a delimiter.
+
+    `None` renders as ``unknown`` rather than the string ``"None"``: a hit whose provenance is
+    missing should say so, not name a file that does not exist.
+    """
+    if value is None:
+        return "unknown"
+    cleaned = "".join(
+        " " if ch.isspace() else ch
+        for ch in str(value)
+        if not unicodedata.category(ch).startswith(("Cc", "Cf", "Zl", "Zp"))
+    )
+    # The delimiter is REMOVED from the body, not escaped: an escape (`\"`) still puts the
+    # closing character in the string, and the reader that matters here is a language model
+    # rather than a parser that honours backslashes.
+    cleaned = " ".join(cleaned.replace('"', "'").split())
+    if not cleaned:
+        return "unknown"
+    if len(cleaned) > MAX_REF_CHARS:
+        cleaned = cleaned[:MAX_REF_CHARS] + "…"
+    return f'"{cleaned}"'
+
+
 def abstain_reason(hits: list[TrustedHit]) -> str:
     if not hits:
         return "no memory retrieved at all"
     best = max(hits, key=lambda h: h.cosine)
+    file = safe_ref(best.provenance.file)
     if best.verdict == "superseded":
         return (
-            f"best candidate ({best.provenance.file}) is superseded by "
-            f"{best.validity.superseded_by} — consult the successor, not this memory"
+            f"best candidate ({file}) is superseded by "
+            f"{safe_ref(best.validity.superseded_by)} — consult the successor, not this memory"
         )
     if best.verdict == "expired":
-        return f"best candidate ({best.provenance.file}) is outside its validity window (expired)"
+        return f"best candidate ({file}) is outside its validity window (expired)"
     if best.verdict == "not_yet_valid":
-        return f"best candidate ({best.provenance.file}) is not yet valid"
+        return f"best candidate ({file}) is not yet valid"
     if best.verdict == "invalid_metadata":
-        return f"best candidate ({best.provenance.file}) carries malformed validity metadata"
+        return f"best candidate ({file}) carries malformed validity metadata"
     if best.verdict == "ambiguous_supersession":
         return (
-            f"a supersession edge points at the best candidate ({best.provenance.file}) by a "
+            f"a supersession edge points at the best candidate ({file}) by a "
             f"basename that more than one document carries, so the edge cannot be resolved — "
             f"disambiguate the corpus rather than trusting either copy"
         )
