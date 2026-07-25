@@ -46,8 +46,18 @@ python -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
 
 ```bash
-chmod 600 tokens.json     # the server warns if this is readable by group or other
+sudo install -o "$USER" -m 600 tokens.json /etc/recall/tokens.json
+export RECALL_AUTH_TOKENS_FILE=/etc/recall/tokens.json
 ```
+
+> ⚠️ **Keep the token file outside `RECALL_INDEX_ROOT`**, which defaults to the server's working
+> directory. `recall_index` reads files as the server's own user, so a token file sitting in the
+> index root is a file an authenticated principal can ask the server to index and then read back
+> through `recall_search` — other tenants' credentials included. `chmod 600` does not help against
+> that, because the server is the owner. Indexing now refuses anything the corpus glob excludes,
+> so `tokens.json` is no longer reachable that way; keeping it on a different path means you are
+> not relying on that one check. Prefer `token_sha256` over `token` for the same reason: then
+> there is no recoverable credential on disk at all.
 
 `token_sha256` accepts a precomputed digest, so an operator provisioning access never has to write
 a live credential to disk in recoverable form:
