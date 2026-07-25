@@ -13,9 +13,16 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   refused.** Both returned `result.hits` wholesale, and `trust.evaluate` builds that list as
   `ok + rest` — so whenever at least one hit was `ok` the result did not abstain and every
   superseded, expired, not-yet-valid or invalid-metadata hit rode along with it. The verdict
-  travelled in `metadata`, which is not sufficient: LangChain's stock `stuff_documents_chain` and
-  LlamaIndex's default node handling render `page_content` / `text` alone into the prompt, so the
-  memory arrived and the warning did not. The tell that this was a defect rather than a choice is
+  travelled in `metadata`, which is not sufficient — now **measured against LangChain itself**
+  rather than assumed: `langchain_core.tools.create_retriever_tool`, the standard way to hand a
+  retriever to an agent and the primary way this library is consumed, formats each document with
+  `PromptTemplate.from_template("{page_content}")` and joins the results. Every `recall_*` key is
+  dropped before the model sees it, so the memory arrived and the warning did not.
+  `tests/test_integrations_agent_tool_contract.py` pins this at the real boundary — it fails if
+  the adapter regresses *and* if LangChain ever changes that default, since the fix's reasoning
+  depends on it. (An earlier draft of this entry cited `stuff_documents_chain`, which lives in the
+  `langchain` package this project does not depend on and was never actually exercised.) The tell
+  that this was a defect rather than a choice is
   that each adapter was inconsistent with *itself* — the same superseded memo was withheld when
   nothing else matched (abstention → empty) and served when something unrelated did. Only `ok`
   hits are returned now; `include_untrusted=True` opts back in and marks each untrusted hit
