@@ -674,7 +674,7 @@ moving 0.365 → 0.373), and that was read as "the pool of 20 was not the constr
 > ⚠️ **That inference is retracted, and the k=50 row with it.** Neither survives the configuration
 > the control actually ran under.
 >
-> **The agreement was forced by construction, not earned.** This branch predates the
+> **The agreement was forced by construction, not earned.** Both runs predate the
 > [#81](https://github.com/GiulioDER/RE-call/issues/81) sparse-leg fix, so the lexical leg ANDed
 > every query term and was largely inert on LOCOMO's ~8-term questions — meaning the fused ranking
 > was, in practice, the *dense* ranking. Against a common index, the first 20 rows of a
