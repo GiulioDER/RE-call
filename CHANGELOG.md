@@ -9,6 +9,40 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Security
+- **The LangChain and LlamaIndex adapters no longer hand a chain a memory the trust layer
+  refused.** Both returned `result.hits` wholesale, and `trust.evaluate` builds that list as
+  `ok + rest` — so whenever at least one hit was `ok` the result did not abstain and every
+  superseded, expired, not-yet-valid or invalid-metadata hit rode along with it. The verdict
+  travelled in `metadata`, which is not sufficient: LangChain's stock `stuff_documents_chain` and
+  LlamaIndex's default node handling render `page_content` / `text` alone into the prompt, so the
+  memory arrived and the warning did not. The tell that this was a defect rather than a choice is
+  that each adapter was inconsistent with *itself* — the same superseded memo was withheld when
+  nothing else matched (abstention → empty) and served when something unrelated did. Only `ok`
+  hits are returned now; `include_untrusted=True` opts back in and marks each untrusted hit
+  **in-band** via `recall.trust.marked_text`, because out-of-band metadata is exactly what failed.
+  (`recall/integrations/*.py`, `recall/trust.py`, `tests/test_integrations_untrusted_hits.py`)
+- **The CLI no longer prints corpus-controlled escape sequences to a terminal.** File names,
+  successor names and chunk previews went straight into `print()`, and a terminal *executes* ANSI
+  escapes — `\x1b[2K\r` erases the line just written. A corpus could make `recall lint` render a
+  clean report while scrolling away the issues it had just found. New `recall.trust.terminal_safe`
+  removes whole escape sequences (not merely the introducing `\x1b`, which would leave `[2K` as
+  literal garbage and re-arm the moment anything reinserted an escape byte) plus remaining control
+  and bidirectional-override characters. (`recall/cli.py`, `tests/test_cli_terminal_injection.py`)
+- **`PruneGuardTripped` and the all-candidates-vanished `FileNotFoundError` no longer carry server
+  paths through the MCP boundary.** Both name the directory they acted on — the right diagnostic
+  for a CLI operator, a filesystem map for a remote tenant. The redaction lives at the boundary
+  where the audience changes rather than in the library, so `recall/index.py` keeps saying exactly
+  what it means, the CLI loses nothing, and a later edit to one of those messages cannot quietly
+  undo it. The scale of a refused prune and the `--allow-prune` remedy survive scrubbing; the
+  untouched message is logged server-side. (`recall_mcp/service.py`,
+  `tests/test_mcp_error_scrubbing.py`)
+- **A stale lockfile can no longer switch off dependency CVE scanning.** `uv lock --check` gated
+  the `audit` job, so the 0.6.0 version bump (which left `uv.lock` at 0.5.3) stopped `pip-audit`
+  running on every pull request — and failed on lockfile drift rather than on a finding, so the
+  red read as a broken build rather than an absent control. `pip-audit` now runs FIRST and
+  unconditionally, exporting without `--frozen` so it resolves regardless of drift; the
+  lock-currency check follows with `if: always()` and an actionable error. Neither check can mask
+  the other. (`.github/workflows/ci.yml`)
 - **`recall_index` no longer reads a file the corpus glob excludes.** `candidate_files` filtered a
   DIRECTORY walk to `**/*.md` but returned a SINGLE FILE unconditionally, so the file-type filter
   did not exist for the branch a client is most likely to call. Because `RECALL_INDEX_ROOT`

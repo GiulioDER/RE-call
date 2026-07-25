@@ -71,6 +71,19 @@ claimed: `safe_ref` makes no attempt to recognise hostile wording, because a fil
 out-guess the payload fails exactly when it matters. The separation is the control; sanitising is
 defence in depth behind it.
 
+The same rule is applied at every other boundary where this library writes into something that
+*interprets* what it is handed:
+
+- **The framework adapters** (`recall/integrations/`) return only verdict-`ok` hits. They used to
+  return `TrustedResult.hits` wholesale — which is `ok + rest` — so a superseded memory reached
+  the chain whenever some other hit happened to be `ok`, with the verdict in `metadata` that
+  LangChain's stock `stuff_documents_chain` never renders. `include_untrusted=True` opts back in
+  and marks each untrusted hit **in the text itself**.
+- **The CLI** (`recall/cli.py`) filters corpus-controlled strings through
+  `recall.trust.terminal_safe` before printing. A terminal executes ANSI escapes, so a file name
+  containing `\x1b[2K\r` could erase the line it was printed on — enough to make `recall lint`
+  show a clean report while hiding what it found.
+
 **The chunk `text` a search returns is still untrusted input, and always will be** — returning
 your memory verbatim is the entire point of the library. Treat retrieved text as data in your own
 prompt construction: delimit it, and never concatenate it into a system prompt. That is the
