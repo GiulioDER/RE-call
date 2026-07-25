@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import os
 import statistics
 import time
 import uuid
@@ -37,6 +38,8 @@ from recall.eval.metrics import wilson_ci
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
+
+DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 
 #: Columns copied verbatim. `tsv` is deliberately absent — it is GENERATED ALWAYS ... STORED,
 #: cannot be inserted into, and regenerates from `text` on the target. Listing it would make the
@@ -171,7 +174,7 @@ def main() -> None:
     ap.add_argument("--master", required=True, help="table holding the fully indexed corpus")
     ap.add_argument("--embedder", default="fastembed")
     ap.add_argument("-k", type=int, default=5)
-    ap.add_argument("--dsn", default="postgresql://recall:recall@localhost:5432/recall")
+    ap.add_argument("--dsn", default=DEFAULT_DSN)
     args = ap.parse_args()
 
     from recall.eval.labelled import _make_embedder
