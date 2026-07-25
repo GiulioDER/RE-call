@@ -164,6 +164,58 @@ INSECURE_DSN_OPT_OUT = "RECALL_ALLOW_INSECURE_DSN"
 #: without restarting.
 DEFAULT_HNSW_EF_SEARCH_FILTERED = 200
 DEFAULT_HNSW_ITERATIVE_SCAN_FILTERED = "relaxed_order"
+#: pgvector's own default for `hnsw.ef_search`, and therefore the point at which an UNFILTERED
+#: query starts silently returning fewer rows than it asked for.
+#:
+#: An HNSW scan cannot return more rows than it examined, so `LIMIT k` with `k > ef_search`
+#: yields ef_search rows — no error, no warning, no way for the caller to tell. The comment on
+#: DEFAULT_HNSW_EF_SEARCH_FILTERED above says the unfiltered arm needs no tuning because it
+#: "already measures recall 1.000 at ef_search's default". That measurement was taken at k=10;
+#: it holds for k <= ef_search and does not generalise past it, which is the gap this closes.
+#:
+#: Measured on 72,151 chunks (FinanceBench, dim 1024): `query_dense(k=50)` returned exactly 40
+#: rows for 150 of 150 queries, so a `HybridRetriever(candidate_k=50)` was really running at 40
+#: and could not say so. Raising ef_search to cover k lifted that leg's page recall from 0.600
+#: to 0.727 at k=50 and to 0.853 at k=100 — and the truncation had been manufacturing an
+#: apparent advantage for the sparse leg, since pages the dense leg would have returned at
+#: ranks 41-100 showed up as "only the sparse leg found this".
+_PGVECTOR_DEFAULT_EF_SEARCH = 40
+
+#: How far past `k` to widen an unfiltered HNSW scan.
+#:
+#: `ef_search = k` is not enough. It returns k rows, but they are not the true top-k: the walk is
+#: explored just wide enough to fill the answer and then stops. Measured on the 72,151-chunk
+#: FinanceBench index (dim 1024) — overlap with an exact scan's top-k, and the resulting
+#: evidence-page hit@5, over 60 questions:
+#:
+#:        ef_search |  k=50            |  k=100
+#:       -----------+------------------+------------------
+#:               50 |  0.911 / 0.3000  |       -
+#:              100 |  0.960 / 0.3167  |  0.951 / 0.3167
+#:              200 |  0.989 / 0.3333  |  0.983 / 0.3333
+#:              400 |  1.000 / 0.3667  |  1.000 / 0.3667   <- exact-scan parity, BOTH k
+#:              800 |       -          |  1.000 / 0.3667
+#:
+#: Read the columns, not the multiples: parity arrives at ef_search ~= 400 for k=50 AND k=100, so
+#: on this index the requirement is an ABSOLUTE search width — a property of the graph — and not a
+#: multiple of k. 4x merely happened to coincide with 400 at k=100, which is exactly the kind of
+#: agreement that reads as a law until a second k is measured.
+#:
+#: A multiplier is nonetheless the right shape for the DEFAULT, for two reasons: `ef_search >= k`
+#: is the part that is universal (below it, rows are silently dropped — the bug this closes), and
+#: the absolute floor is corpus-dependent, so no single number can be shipped honestly from one
+#: index. 4x buys 0.989 overlap at k=50 and 1.000 at k=100 while keeping that guarantee.
+#: Deployments wanting exact-scan parity should raise RECALL_HNSW_EF_SEARCH_MULTIPLIER, and the
+#: figure to tune toward is an absolute width measured on their own corpus.
+#:
+#: UNPROVEN: one index, one embedder, two values of k. Whether ~400 generalises across corpus size
+#: or across `m` / `ef_construction` is untested.
+#:
+#: Latency, same index: k=100 at 4x costs 24.3 ms median / 57.6 ms p95 against 6.4 ms at 1x, while
+#: the sparse leg it is fused with costs ~496 ms median — the widened dense walk stays an order of
+#: magnitude cheaper than its own fusion partner. At the shipped default `candidate_k=20` this
+#: moves ef_search 40 -> 80 for no measurable change (11.2 ms -> 9.0 ms, i.e. noise).
+DEFAULT_HNSW_EF_SEARCH_MULTIPLIER = 4
 #: pgvector's only valid values for this GUC, checked by `_hnsw_filtered_tuning()` below — the
 #: configured value is interpolated into `SET LOCAL` (Postgres does not accept a bound parameter
 #: there), so it is validated against this allowlist rather than trusted as-is.
@@ -265,6 +317,26 @@ def resolve_supersession(
             # read path fail closed and tell the operator what to fix.
             unresolved.update(candidates)
     return mapping, frozenset(unresolved)
+
+
+def _ef_search_multiplier() -> int:
+    """How far past `k` to widen an unfiltered HNSW scan; see DEFAULT_HNSW_EF_SEARCH_MULTIPLIER.
+
+    Read at call time, not import time — same convention as `_hnsw_filtered_tuning`, so a test
+    can `monkeypatch.setenv` per case and a long-lived process picks up a change without a
+    restart. Values below 1 are refused rather than clamped: a 0 would silently disable the
+    widening and reintroduce the truncation this exists to prevent.
+    """
+    raw = os.environ.get(
+        "RECALL_HNSW_EF_SEARCH_MULTIPLIER", str(DEFAULT_HNSW_EF_SEARCH_MULTIPLIER)
+    )
+    try:
+        mult = int(raw)
+    except ValueError:
+        raise ValueError(f"RECALL_HNSW_EF_SEARCH_MULTIPLIER={raw!r} is not an integer") from None
+    if mult < 1:
+        raise ValueError(f"RECALL_HNSW_EF_SEARCH_MULTIPLIER={mult} must be >= 1")
+    return mult
 
 
 class PgVectorStore:
@@ -929,6 +1001,39 @@ class PgVectorStore:
                     return conn.execute(sql, params).fetchall()
 
             rows = self._with_retry(_op)
+        elif k * _ef_search_multiplier() > _PGVECTOR_DEFAULT_EF_SEARCH:
+            # Unfiltered, and pgvector's default HNSW scan is too narrow for this k. Widen it, so
+            # that `LIMIT k` is what decides the size of the answer AND the rows returned are
+            # actually the nearest k rather than whatever the walk happened to reach.
+            #
+            # `set_config(..., is_local => true)` rather than `SET LOCAL <literal>` because it
+            # takes a bound parameter and can therefore compute GREATEST(current, k * multiplier):
+            # an operator who has already raised ef_search (per-database, per-role, or in
+            # postgresql.conf) must not have it LOWERED by this call. Raise-only, never clamp down.
+            #
+            # Skipped entirely when the widened value would not exceed pgvector's own default —
+            # there the scan is already at least this wide, so opening a transaction and issuing
+            # the extra statement would buy nothing. That keeps the original rationale for leaving
+            # the unfiltered arm alone intact over the range where it was actually correct.
+            widen = (
+                "SELECT set_config('hnsw.ef_search', GREATEST("
+                "COALESCE(NULLIF(current_setting('hnsw.ef_search', true), ''), %(default_ef)s)"
+                "::int, %(k)s)::text, true)"
+            )
+            widen_params = {
+                "default_ef": str(_PGVECTOR_DEFAULT_EF_SEARCH),
+                "k": k * _ef_search_multiplier(),
+            }
+
+            def _op_unfiltered(conn: "psycopg.Connection") -> list[tuple]:
+                # SET LOCAL / set_config(local) only survive inside a transaction block, and this
+                # store's connections are autocommit, so the transaction is opened explicitly —
+                # same shape as the filtered arm above, same reason.
+                with conn.transaction():
+                    conn.execute(widen, widen_params)
+                    return conn.execute(sql, params).fetchall()
+
+            rows = self._with_retry(_op_unfiltered)
         else:
             rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._rows_to_hits(rows)
