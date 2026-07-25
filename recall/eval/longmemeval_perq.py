@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import os
 import statistics
 import time
 import uuid
@@ -38,6 +39,8 @@ from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
 
+DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
+
 #: Columns copied verbatim. `tsv` is deliberately absent — it is GENERATED ALWAYS ... STORED,
 #: cannot be inserted into, and regenerates from `text` on the target. Listing it would make the
 #: INSERT fail; omitting `text` would make it regenerate empty and silently disable the sparse
@@ -46,16 +49,24 @@ _COPIED = ("tenant_id", "id", "source", "text", "metadata", "embedding", "indexe
 
 
 def populate_haystack(
-    dsn: str, dim: int, master: str, scratch: str, files: list[str]
+    dsn: str, dim: int, master: str, scratch: str, files: list[str], *,
+    store: PgVectorStore | None = None,
 ) -> PgVectorStore:
     """Fill `scratch` with the master rows whose source file is in `files`; return its store.
+
+    Pass `store` to reuse one `PgVectorStore` across every question (the caller owns its lifecycle):
+    `evaluate` builds the scratch store once and only the rows change per question, so constructing
+    a fresh store + running `ensure_schema` each time was ~1000 connection opens and ~500 redundant
+    DDL passes over a full LongMemEval run. Without `store`, a new store is created and its schema
+    ensured — the standalone path the tests exercise.
 
     Replaces the table's contents rather than adding to them: one scratch table is reused across
     every question, and an append would grow the haystack monotonically, making each successive
     question easier against a corpus that is supposed to be fixed at ~40 sessions.
     """
-    store = PgVectorStore(dsn, dim=dim, table=scratch)
-    store.ensure_schema()
+    if store is None:
+        store = PgVectorStore(dsn, dim=dim, table=scratch)
+        store.ensure_schema()
     cols = ", ".join(_COPIED)
     # Match `metadata->>'file'` — the path RELATIVE to the index root, which is exactly the bare
     # name the question file carries — with `=`, not the absolute `source` with a suffix `LIKE`.
@@ -88,34 +99,36 @@ def evaluate(dsn: str, master: str, questions: list[dict], embedder: Embedder,
     scratch = "pq_" + uuid.uuid4().hex[:8]
     fit, held = questions[::2], questions[1::2]
 
-    def top_cos_in_haystack(q: dict) -> float:
-        sub = populate_haystack(dsn, embedder.dim, master, scratch, q["haystack_files"])
-        try:
-            hits = sub.query_dense(embedder.embed([q["query"]])[0], k=1)
+    # One scratch store for the whole run: build it (and its schema) once, then only refill the
+    # rows per question. Rebuilding a PgVectorStore + ensure_schema per question was ~1000
+    # connection opens and ~500 redundant DDL passes over a full LongMemEval run.
+    store = PgVectorStore(dsn, dim=embedder.dim, table=scratch)
+    store.ensure_schema()
+    try:
+        def top_cos_in_haystack(q: dict) -> float:
+            populate_haystack(dsn, embedder.dim, master, scratch, q["haystack_files"], store=store)
+            hits = store.query_dense(embedder.embed([q["query"]])[0], k=1)
             return hits[0].score if hits else 0.0
-        finally:
-            sub.close()
 
-    # Calibrated on the fit half, exactly as `labelled` does — a threshold from another corpus's
-    # cosine regime does not transfer (FINDINGS section 2), and per-question haystacks are a
-    # different regime again from the merged corpus.
-    cal = from_samples(
-        embedder.name,
-        [top_cos_in_haystack(q) for q in fit if q.get("answerable")],
-        [top_cos_in_haystack(q) for q in fit if not q.get("answerable")],
-    )
+        # Calibrated on the fit half, exactly as `labelled` does — a threshold from another
+        # corpus's cosine regime does not transfer (FINDINGS section 2), and per-question
+        # haystacks are a different regime again from the merged corpus.
+        cal = from_samples(
+            embedder.name,
+            [top_cos_in_haystack(q) for q in fit if q.get("answerable")],
+            [top_cos_in_haystack(q) for q in fit if not q.get("answerable")],
+        )
 
-    hits, reciprocal, latency, misses = [], [], [], []
-    by_type: dict[str, list[bool]] = collections.defaultdict(list)
-    abstained, false_abstain, haystack_sizes = [], [], []
+        hits, reciprocal, latency, misses = [], [], [], []
+        by_type: dict[str, list[bool]] = collections.defaultdict(list)
+        abstained, false_abstain, haystack_sizes = [], [], []
 
-    for q in held:
-        sub = populate_haystack(dsn, embedder.dim, master, scratch, q["haystack_files"])
-        try:
-            haystack_sizes.append(sub.count())
+        for q in held:
+            populate_haystack(dsn, embedder.dim, master, scratch, q["haystack_files"], store=store)
+            haystack_sizes.append(store.count())
             if q.get("answerable"):
                 t = time.perf_counter()
-                res = HybridRetriever(sub, embedder).search(q["query"], k=k)
+                res = HybridRetriever(store, embedder).search(q["query"], k=k)
                 latency.append((time.perf_counter() - t) * 1000)
                 files, want = [], set(q["relevant_files"])
                 for h in res.hits:
@@ -131,38 +144,35 @@ def evaluate(dsn: str, master: str, questions: list[dict], embedder: Embedder,
                     misses.append({"id": q["id"], "query": q["query"],
                                    "expected": sorted(want), "got": files[:k]})
                 false_abstain.append(
-                    trusted_search(sub, embedder, q["query"], k=k, calibration=cal).abstained
+                    trusted_search(store, embedder, q["query"], k=k, calibration=cal).abstained
                 )
             else:
                 abstained.append(
-                    trusted_search(sub, embedder, q["query"], k=k, calibration=cal).abstained
+                    trusted_search(store, embedder, q["query"], k=k, calibration=cal).abstained
                 )
-        finally:
-            sub.close()
 
-    final = PgVectorStore(dsn, dim=embedder.dim, table=scratch)
-    final.drop_table()
-    final.close()
-
-    lat = sorted(latency)
-    return {
-        "protocol": "per-question haystack",
-        "master_table": master,
-        "haystack_chunks": {
-            "mean": round(statistics.mean(haystack_sizes), 1) if haystack_sizes else 0,
-            "min": min(haystack_sizes, default=0), "max": max(haystack_sizes, default=0),
-        },
-        "questions": {"total": len(questions), "held_out": len(held)},
-        "threshold": cal.threshold,
-        f"hit_at_{k}": _rate(hits),
-        "mrr": round(statistics.mean(reciprocal), 4) if reciprocal else float("nan"),
-        "by_type": {t: _rate(v) for t, v in sorted(by_type.items())},
-        "latency_ms": {"p50": round(lat[len(lat) // 2], 1),
-                       "p95": round(lat[int(0.95 * len(lat))], 1)} if lat else {},
-        "abstention_accuracy": _rate(abstained),
-        "false_abstain": _rate(false_abstain),
-        "misses": misses,
-    }
+        lat = sorted(latency)
+        return {
+            "protocol": "per-question haystack",
+            "master_table": master,
+            "haystack_chunks": {
+                "mean": round(statistics.mean(haystack_sizes), 1) if haystack_sizes else 0,
+                "min": min(haystack_sizes, default=0), "max": max(haystack_sizes, default=0),
+            },
+            "questions": {"total": len(questions), "held_out": len(held)},
+            "threshold": cal.threshold,
+            f"hit_at_{k}": _rate(hits),
+            "mrr": round(statistics.mean(reciprocal), 4) if reciprocal else float("nan"),
+            "by_type": {t: _rate(v) for t, v in sorted(by_type.items())},
+            "latency_ms": {"p50": round(lat[len(lat) // 2], 1),
+                           "p95": round(lat[int(0.95 * len(lat))], 1)} if lat else {},
+            "abstention_accuracy": _rate(abstained),
+            "false_abstain": _rate(false_abstain),
+            "misses": misses,
+        }
+    finally:
+        store.drop_table()
+        store.close()
 
 
 def main() -> None:
@@ -171,7 +181,7 @@ def main() -> None:
     ap.add_argument("--master", required=True, help="table holding the fully indexed corpus")
     ap.add_argument("--embedder", default="fastembed")
     ap.add_argument("-k", type=int, default=5)
-    ap.add_argument("--dsn", default="postgresql://recall:recall@localhost:5432/recall")
+    ap.add_argument("--dsn", default=DEFAULT_DSN)
     args = ap.parse_args()
 
     from recall.eval.labelled import _make_embedder

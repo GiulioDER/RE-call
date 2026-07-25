@@ -79,19 +79,14 @@ from pathlib import Path
 from typing import Any
 
 from recall.embeddings import Embedder
+from recall.eval.labelled import _make_embedder
 from recall.eval.metrics import wilson_ci
 from recall.index import Indexer
-from recall.retriever import HybridRetriever
+from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
-
-#: `HybridRetriever`'s own default candidate pool per leg. Named here because it BINDS the depth
-#: curve: the fused pool holds at most `2 * candidate_k` distinct chunks before truncation to k,
-#: so hit@k stops moving once k reaches the pool no matter how large k gets. A curve that runs
-#: past it is measuring the pool, not the depth.
-DEFAULT_CANDIDATE_K = 20
 
 #: LOCOMO's numeric category ids. The audit above notes these do NOT match the order the papers
 #: present them in, so they are named here from the data itself (by inspecting members of each),
@@ -106,25 +101,6 @@ CATEGORY_NAMES = {
     4: "cat4",
     5: "cat5-adversarial",
 }
-
-
-def _make_embedder(name: str) -> Embedder:
-    """Mirrors `recall.eval.labelled._make_embedder` — same names, same meanings."""
-    if name == "hashing":
-        from recall.embeddings import HashingEmbedder
-
-        return HashingEmbedder(dim=64)
-    if name == "voyage":
-        from recall.embeddings import VoyageEmbedder
-
-        return VoyageEmbedder()
-    if name.startswith("st:"):
-        from recall.embeddings import SentenceTransformerEmbedder
-
-        return SentenceTransformerEmbedder(name[3:])
-    from recall.embeddings import FastEmbedEmbedder
-
-    return FastEmbedEmbedder()
 
 
 _SAFE_CORPUS_NAME = re.compile(r"\A[A-Za-z0-9:._-]+\Z")
@@ -188,7 +164,10 @@ def write_conversation_corpus(conversation: dict[str, Any], out_dir: Path) -> in
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     sessions = sorted(
-        (k for k in conversation if k.startswith("session_") and not k.endswith("date_time")),
+        # Only `session_<int>` keys: this both selects the dialog sessions (excluding
+        # `session_N_date_time`) and guards `int(...)` below from a non-numeric `session_*` key,
+        # which would otherwise raise ValueError mid-sort instead of being skipped.
+        (k for k in conversation if re.fullmatch(r"session_\d+", k)),
         key=lambda k: int(k.split("_")[1]),
     )
     written = 0
