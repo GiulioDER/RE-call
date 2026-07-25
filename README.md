@@ -12,7 +12,7 @@
   <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-677%20·%20real%20pgvector-brightgreen" alt="677 tests">
+  <img src="https://img.shields.io/badge/tests-688%20·%20real%20pgvector-brightgreen" alt="688 tests">
 </p>
 
 <p align="center">
