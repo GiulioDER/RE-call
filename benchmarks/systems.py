@@ -55,6 +55,24 @@ def resolve_embedder(name: str) -> Any:
     return _make_embedder(name)
 
 
+def resolve_reranker(name: str) -> Any:
+    """The RE-call arm's optional second-stage reranker, or None.
+
+    ``none`` (default) -> no reranker. ``voyage:<model>`` -> Voyage cross-encoder, e.g.
+    ``voyage:rerank-2.5``. RE-call's retriever reranks the WHOLE fused candidate pool before
+    truncating to k, so a reranker can rescue an answer that ranked below the cutoff — the cat1
+    failure the benchmark exposed. See benchmarks/VOYAGE_REFERENCE.md.
+    """
+    if not name or name == "none":
+        return None
+    voyage_prefix = "voyage:"
+    if name.startswith(voyage_prefix):
+        from benchmarks.voyage_rerank import VoyageReranker
+
+        return VoyageReranker(model=name[len(voyage_prefix):])
+    raise ValueError(f"unknown reranker {name!r} (use 'none' or 'voyage:<model>')")
+
+
 def sample_id_of(conversation: dict[str, Any]) -> str:
     """The LOCOMO item's `sample_id`, or a loud failure. THE single identity rule for the harness.
 
@@ -122,11 +140,19 @@ class RecallSystem:
 
     name = "recall"
 
-    def __init__(self, dsn: str, embedder_name: str = "fastembed", k: int = DEFAULT_K) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        embedder_name: str = "fastembed",
+        k: int = DEFAULT_K,
+        reranker_name: str = "none",
+    ) -> None:
         self._dsn = dsn
         self._k = k
         self._embedder_name = embedder_name
         self._embedder = resolve_embedder(embedder_name)
+        self._reranker_name = reranker_name
+        self._reranker = resolve_reranker(reranker_name)
         self._tenant: str | None = None
 
     @property
@@ -141,6 +167,7 @@ class RecallSystem:
             "system": self.name,
             "k": self._k,
             "embedder": {"name": self._embedder_name, "model": self._embedder.name},
+            "reranker": self._reranker_name,
             "table": BENCH_TABLE,
             "tenant": self._tenant,
         }
@@ -193,7 +220,9 @@ class RecallSystem:
         with PgVectorStore(
             self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=BENCH_TABLE
         ) as store:
-            result = trusted_search(store, self._embedder, question, k=self._k)
+            result = trusted_search(
+                store, self._embedder, question, k=self._k, reranker=self._reranker
+            )
             if result.abstained:
                 return ""
             return "\n".join(hit.chunk.text for hit in result.hits)
