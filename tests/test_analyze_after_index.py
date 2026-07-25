@@ -28,7 +28,7 @@ from recall.embeddings import HashingEmbedder
 from recall.index import Indexer
 from recall.store import PgVectorStore
 
-from tests.conftest import TEST_DSN, requires_db
+from tests.conftest import requires_db
 
 pytestmark = requires_db
 
