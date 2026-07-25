@@ -149,17 +149,36 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
 
-      # Verify the lockfile is in sync with pyproject.toml — a drifted lock would audit stale
-      # versions. Then resolve the full dependency set (all extras) to a hashed requirements file
-      # and scan it with pip-audit.
-      - name: Check lockfile is current
-        run: uv lock --check
-
-      - name: Export locked dependencies
-        run: uv export --frozen --all-extras --no-emit-project --format requirements-txt -o requirements.lock.txt
+      # ORDER MATTERS HERE, AND IT IS THE OPPOSITE OF THE OBVIOUS ONE.
+      #
+      # `uv lock --check` used to run FIRST and gate everything after it. The 0.6.0 release bumped
+      # pyproject.toml's version without refreshing uv.lock, that step failed, and pip-audit never
+      # ran — dependency CVE scanning was switched OFF on every pull request. Because the job
+      # failed on lockfile drift rather than on a finding, the red read as a broken build rather
+      # than as an absent control, and it stayed that way until someone went looking.
+      #
+      # So the SCAN now runs first and unconditionally. It exports WITHOUT `--frozen`, resolving
+      # from pyproject.toml, so it works whether or not the committed lock has drifted: a stale
+      # lock can no longer stop the vulnerability scan from happening. The lock-currency check
+      # still runs and still fails the build — it just can only cost a red tick now, never the
+      # CVE coverage.
+      - name: Export dependencies for scanning
+        run: uv export --all-extras --no-emit-project --format requirements-txt -o requirements.lock.txt
 
       # --no-deps: the exported file already pins the full transitive set, so audit exactly
       # those versions instead of re-resolving. This is a real gate (a known CVE fails CI); if
       # it proves too noisy, add `continue-on-error: true` to downgrade it to advisory.
       - name: Audit dependencies (pip-audit)
         run: uvx pip-audit --requirement requirements.lock.txt --no-deps
+
+      # `if: always()` so a CVE finding cannot hide lockfile drift either — neither of these two
+      # checks may mask the other, which was the whole failure above.
+      - name: Check the committed lockfile is current
+        if: always()
+        run: |
+          if ! uv lock --check; then
+            echo "::error::uv.lock has drifted from pyproject.toml. If you changed the version or"
+            echo "::error::any dependency, run 'uv lock' and commit the result in the SAME commit."
+            echo "::error::A stale lock means the committed pins are not what this project resolves."
+            exit 1
+          fi

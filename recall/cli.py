@@ -11,7 +11,7 @@ from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
 from recall.store import DEFAULT_TENANT, PgVectorStore, warn_if_insecure_dsn
-from recall.trust import trusted_search
+from recall.trust import terminal_safe, trusted_search
 from recall.types import TrustedResult
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
@@ -39,9 +39,17 @@ def _print_result(result: TrustedResult) -> None:
     if result.reason:
         print(f"  reason: {result.reason}")
     for h in result.hits:
-        preview = h.chunk.text.replace("\n", " ")[:52]
-        name = h.provenance.file or h.chunk.source
-        redirect = f" -> use {h.validity.superseded_by}" if h.validity.superseded_by else ""
+        # All three are corpus-controlled and all three are printed to a terminal, which
+        # INTERPRETS ANSI escapes rather than showing them — a file name carrying `\x1b[2K\r`
+        # erases the line it was printed on. Same class as the `advice` injection, different
+        # interpreter. `terminal_safe` filters, so ordinary names render exactly as authored.
+        preview = terminal_safe(h.chunk.text).replace("\n", " ")[:52]
+        name = terminal_safe(h.provenance.file or h.chunk.source)
+        redirect = (
+            f" -> use {terminal_safe(h.validity.superseded_by)}"
+            if h.validity.superseded_by
+            else ""
+        )
         print(
             f"  {h.verdict:<14} conf={h.confidence:.2f} cos={h.cosine:.3f}  "
             f"{name}{redirect}  {preview!r}"

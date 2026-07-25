@@ -18,6 +18,32 @@ from recall.trust import trusted_search
 
 _log = get_logger("mcp.service")
 
+#: Stands in for a redacted server-side path in a client-facing error.
+REDACTED_PATH = "<server index root>"
+
+
+def _scrub_paths(message: str, *paths: Path) -> str:
+    """Replace server-side absolute paths in `message` with `REDACTED_PATH`.
+
+    Errors raised deep in `recall.index` — `PruneGuardTripped`, the all-candidates-vanished
+    `FileNotFoundError` — name the directory they acted on. That is exactly what a CLI operator
+    needs and exactly what a remote tenant must not receive, so the redaction lives HERE, at the
+    boundary where the audience changes, rather than in the library. `recall/index.py` goes on
+    saying precisely what it means, the CLI keeps its diagnostics, and a future edit to one of
+    those messages cannot quietly undo this.
+
+    Both the plain and the `repr()` spelling are replaced: these messages interpolate paths with
+    `!r`, and on Windows that doubles every backslash, so scrubbing only `str(path)` would miss
+    the form actually present in the text.
+    """
+    for p in paths:
+        raw = str(p)
+        for form in (raw, raw.replace("\\", "\\\\")):
+            if form:
+                message = message.replace(form, REDACTED_PATH)
+    return message
+
+
 HASHING_DIM = 64  # offline HashingEmbedder width; matches the eval/test default
 MAX_SEARCH_K = 50  # upper bound on hits per search — clamps untrusted client input
 #: Upper bound on a search query, in characters. `k` bounds the RESULT set; this bounds the
@@ -355,7 +381,20 @@ def index_memory(
     if on_measured is not None:
         on_measured(len(files), total_bytes)
 
-    stats = Indexer(store, embedder).index_path(target, files=files)
+    try:
+        stats = Indexer(store, embedder).index_path(target, files=files)
+    except (RuntimeError, OSError, ValueError) as exc:
+        # The library's own message is preserved verbatim for the OPERATOR and redacted for the
+        # CLIENT. Only the server-side paths are removed — the scale of a refused prune, and the
+        # `--allow-prune` remedy, survive, because a refusal that hides both the cause and the fix
+        # is worse than the disclosure it prevents.
+        #
+        # Re-raised as the SAME type: `PruneGuardTripped` is deliberately not a `ValueError`
+        # (the caller's path was fine; the filesystem was not), and flattening that distinction
+        # here would undo the choice `recall.index` made on purpose.
+        _log.warning("index of %r failed: %s", path, exc)
+        scrubbed = _scrub_paths(str(exc), target, root)
+        raise type(exc)(scrubbed) from exc
     message = f"Indexed {stats.chunks} chunk(s) from {stats.files} file(s) into memory."
     if stats.skipped:
         message += f" {stats.skipped} file(s) were unchanged and not re-embedded."
