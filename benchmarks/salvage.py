@@ -494,6 +494,10 @@ def resume(
         aggregate(outcomes),
         config,
         skipped,
+        # A salvaged artifact is stitched from partials that never carried token usage, and any
+        # re-scored questions are only a subset — so a token total here would be a lie. Marked
+        # unmetered rather than reported as zero.
+        {"note": "usage not metered on salvaged runs"},
     )
 
     known_ids = {str(q["question_id"]) for q in questions}

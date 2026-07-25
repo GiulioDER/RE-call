@@ -40,6 +40,9 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.llm import Completer, OpenRouterLLM
+from benchmarks.usage import install_openai_meter
+from benchmarks.usage import reset as reset_usage
+from benchmarks.usage import snapshot as usage_snapshot
 from benchmarks.pipeline import (
     GEN_SYSTEM_PROMPT,
     JUDGE_SYSTEM_PROMPT,
@@ -335,6 +338,7 @@ def _results_payload(
     aggregate_: dict[str, Any],
     config: dict[str, Any],
     skipped: dict[str, Any],
+    usage: dict[str, Any],
 ) -> dict[str, Any]:
     """The publishable artifact: run identity, config, the aggregate, and every per-question record.
 
@@ -349,6 +353,7 @@ def _results_payload(
         "conversations": len(conversations),
         "questions": len(outcomes),
         "skipped_questions": skipped,
+        "usage": usage,
         "aggregate": aggregate_,
         "outcomes": [_outcome_record(o, text_by_id, gold_by_id) for o in outcomes],
     }
@@ -428,6 +433,11 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     except ValueError as exc:
         p.error(str(exc))
 
+    # Meter every LLM call in this process BEFORE any client is built: the harness generator/judge
+    # AND the memory layer's own calls (Mem0's extraction) both route through the OpenAI SDK. The
+    # memory layer's cost is then total - harness; for RE-call it is ~0, which is the whole point.
+    reset_usage()
+    install_openai_meter()
     llm = OpenRouterLLM(model=args.model, api_key=key)
     completer: Completer = llm.complete
 
@@ -467,6 +477,19 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         )
 
     agg = aggregate(outcomes)
+    total_usage = usage_snapshot()
+    harness_usage = llm.usage()
+    # memory_layer = everything the process sent to an LLM, minus the harness's own generator+judge.
+    # RE-call sends nothing from its retrieval path, so this is ~0; Mem0's is its extraction cost.
+    memory_usage = {
+        field: total_usage.get(field, 0) - harness_usage.get(field, 0)
+        for field in ("calls", "prompt_tokens", "completion_tokens")
+    }
+    usage_block = {
+        "total": total_usage,
+        "harness_generator_judge": harness_usage,
+        "memory_layer": memory_usage,
+    }
     payload = _results_payload(
         args.arm,
         args.model,
@@ -477,6 +500,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         agg,
         _run_config(args.arm, args.model, args.k, llm, system),
         skipped,
+        usage_block,
     )
     path = args.out / f"{stamp}.json"
     # `aggregate` already sanitises its empty rate blocks to None, so this never emits the bare
