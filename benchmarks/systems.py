@@ -37,11 +37,19 @@ def resolve_embedder(name: str) -> Any:
     installed fastembed. Every other name (``fastembed`` default, ``st:``, ``voyage``, ``hashing``)
     defers unchanged to the shared factory, so existing runs are byte-for-byte unaffected.
     """
-    prefix = "fastembed:"
-    if name.startswith(prefix):
+    fe_prefix = "fastembed:"
+    if name.startswith(fe_prefix):
         from recall.embeddings import FastEmbedEmbedder
 
-        return FastEmbedEmbedder(model_name=name[len(prefix):])
+        return FastEmbedEmbedder(model_name=name[len(fe_prefix):])
+    # `voyage:<model>` pins a CURRENT Voyage model; the bare `voyage` route in the shared factory
+    # still resolves to VoyageEmbedder's default, which is the LEGACY voyage-3. Current generation
+    # is voyage-4 (voyage-4-large is "best general-purpose"); see benchmarks/VOYAGE_REFERENCE.md.
+    voyage_prefix = "voyage:"
+    if name.startswith(voyage_prefix):
+        from recall.embeddings import VoyageEmbedder
+
+        return VoyageEmbedder(model=name[len(voyage_prefix):])
     from recall.eval.locomo import _make_embedder
 
     return _make_embedder(name)

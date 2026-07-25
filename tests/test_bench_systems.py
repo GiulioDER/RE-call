@@ -577,3 +577,19 @@ def test_resolve_embedder_defers_other_names_to_the_shared_factory(monkeypatch: 
     )
     resolve_embedder("hashing")
     assert seen["name"] == "hashing"
+
+
+def test_resolve_embedder_routes_voyage_prefix_to_a_named_current_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The bare "voyage" route resolves to VoyageEmbedder's legacy voyage-3 default; "voyage:MODEL"
+    # pins a current model. Monkeypatch so the test never needs VOYAGE_API_KEY or the network.
+    captured: dict[str, Any] = {}
+
+    class _FakeVoyage:
+        def __init__(self, model: str) -> None:
+            captured["model"] = model
+
+    import recall.embeddings
+
+    monkeypatch.setattr(recall.embeddings, "VoyageEmbedder", _FakeVoyage)
+    resolve_embedder("voyage:voyage-4-large")
+    assert captured["model"] == "voyage-4-large"
