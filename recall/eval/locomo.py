@@ -225,6 +225,16 @@ def _rate(flags: list[bool]) -> dict[str, Any]:
     }
 
 
+def _depths(ks: Sequence[int] | None, k: int) -> list[int]:
+    """Sorted, de-duplicated retrieval depths to score — always including the headline ``k``.
+
+    One source of truth for both ``run`` and ``run_conversation``: ``k`` is folded in
+    unconditionally, so every caller — including a direct ``run_conversation`` that passes a ``ks``
+    omitting ``k`` — scores the headline depth. Without it, ``hit_by_k[k]`` below could miss.
+    """
+    return sorted({int(d) for d in ((*ks, k) if ks else (k,))})
+
+
 def run_conversation(
     conversation: dict[str, Any],
     qa: list[dict[str, Any]],
@@ -251,7 +261,7 @@ def run_conversation(
     store.ensure_schema()
     Indexer(store, embedder).index_path(corpus_dir)
 
-    depths = sorted({int(d) for d in (ks or [k])})
+    depths = _depths(ks, k)
     max_k = max(depths)
     retriever = HybridRetriever(store, embedder, candidate_k=candidate_k)
     hits_by_cat: dict[int, list[bool]] = {c: [] for c in ANSWERABLE_CATEGORIES}
@@ -291,7 +301,7 @@ def run_conversation(
         retrieval = retriever.search(question, k=max_k)
         hit_by_k = _hit_by_depth(retrieval.hits, evidence, depths)
         retrieved = _retrieved_dia_ids(retrieval.hits)
-        hit = hit_by_k[k] if k in hit_by_k else hit_by_k[max_k]
+        hit = hit_by_k[k]  # k ∈ depths by construction (_depths folds it in)
         hits_by_cat[cat].append(hit)
         per_question.append(
             {
@@ -331,7 +341,7 @@ def run(
     if limit is not None:
         conversations = conversations[:limit]
 
-    depths = sorted({int(d) for d in (list(ks) + [k])} if ks else {k})
+    depths = _depths(ks, k)
     embedder = _make_embedder(embedder_name)
     started = time.time()
     per_conversation: list[dict[str, Any]] = []
@@ -382,31 +392,36 @@ def run(
     all_hits = [h for flags in pooled_retrieval.values() for h in flags]
 
     # The depth curve, pooled the same way. Per-category as well as overall: §9a's weakest
-    # category (cat3, 0.370 at k=5) is the one a reader will ask about, and "does depth rescue
+    # category (cat3, 0.391 at k=5) is the one a reader will ask about, and "does depth rescue
     # it" is not answerable from an overall rate.
+    scored = [
+        q
+        for res in per_conversation
+        for q in res["questions"]
+        if q.get("hit_by_k") and q["category"] in ANSWERABLE_CATEGORIES
+    ]
     curve: dict[str, Any] = {}
     for d in depths:
         by_cat: dict[str, list[bool]] = {}
-        for res in per_conversation:
-            for q in res["questions"]:
-                if q.get("hit_by_k") and q["category"] in ANSWERABLE_CATEGORIES:
-                    by_cat.setdefault(CATEGORY_NAMES[q["category"]], []).append(q["hit_by_k"][d])
+        for q in scored:
+            by_cat.setdefault(CATEGORY_NAMES[q["category"]], []).append(q["hit_by_k"][d])
         flat = [h for f in by_cat.values() for h in f]
         curve[str(d)] = {
             "overall": _rate(flat),
             "by_category": {c: _rate(f) for c, f in sorted(by_cat.items())},
         }
 
-    # Coherence check: the curve's row at the primary k is scored by truncating a deeper
-    # retrieval, and it must equal the rate scored from a search issued at that k directly. They
-    # are the same ranking only because `candidate_k` is independent of `k` — if that ever stops
-    # being true the curve silently becomes a different measurement, so it is asserted, not
-    # assumed. (Same discipline as §9c's two-harness cross-check.)
+    # Coherence check: the pooled headline hit@k (from q["hit"] = hit_by_k[k]) must equal the
+    # curve's own row at k (from q["hit_by_k"][k]). Both are scored from the SAME single retrieval,
+    # so this does NOT independently re-verify that top-k is a prefix of the fused pool — that is a
+    # property of the retriever, and one retrieval cannot check it. What it guards is the
+    # depth-labeling above: that q["hit"] is recorded at k and not at some other depth. If that
+    # drifts the run fails instead of silently reporting a different metric under the same name.
     if str(k) in curve and all_hits:
         primary = curve[str(k)]["overall"]["rate"]
         assert primary == _rate(all_hits)["rate"], (
-            f"depth curve at k={k} reads {primary} but a direct k={k} scoring reads "
-            f"{_rate(all_hits)['rate']}: top-k is no longer a prefix of the fused pool"
+            f"depth curve at k={k} reads {primary} but the pooled headline hit@k reads "
+            f"{_rate(all_hits)['rate']}: q['hit'] is not scored at k"
         )
 
     return {
@@ -446,6 +461,7 @@ def _print_report(report: dict[str, Any]) -> None:
     if len(curve) > 1:
         print("DEPTH — hit@k against retrieval depth, from ONE retrieval per question.")
         print(f"  (candidate pool {report.get('candidate_k')} per leg; the curve cannot exceed it)")
+        # Every depth scores the same question set, so all rows share the same category keys.
         cats = list(next(iter(curve.values()))["by_category"].keys())
         print(f"  {'k':<5}{'OVERALL':<12}" + "".join(f"{c:<16}" for c in cats))
         for kk in sorted(curve, key=int):
@@ -526,6 +542,11 @@ def main(argv: list[str] | None = None) -> int:
             p.error(f"--k-curve must be comma-separated integers, got {args.k_curve!r}")
         if not ks or any(d < 1 for d in ks):
             p.error("--k-curve depths must all be >= 1")
+
+    if args.k < 1:
+        p.error("--k must be >= 1")
+    if args.candidate_k < 1:
+        p.error("--candidate-k must be >= 1")
 
     report = run(
         args.data,

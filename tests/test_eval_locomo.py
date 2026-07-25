@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from recall.eval.locomo import (
     ADVERSARIAL_CATEGORY,
+    _depths,
     _dia_id_to_filename,
     _filename_to_dia_id,
     _hit_by_depth,
@@ -176,3 +177,13 @@ def test_any_of_several_evidence_turns_counts_as_a_hit() -> None:
     hits = [_FakeHit(_dia_id_to_filename("D1:2"))]
 
     assert _hit_by_depth(hits, ["D1:7", "D1:2"], [1])[1] is True
+
+
+def test_depths_always_includes_the_headline_k() -> None:
+    # run_conversation reads hit_by_k[k]; if k were ever absent from the scored depths the
+    # headline would be missing (before, a fallback silently reported a deeper depth instead).
+    # _depths folds k in unconditionally, and also dedupes and sorts.
+    assert _depths([10, 20], 5) == [5, 10, 20]      # k absent from the curve list -> still scored
+    assert _depths([5, 5, 10], 5) == [5, 10]        # duplicates collapse
+    assert _depths(None, 5) == [5]                  # no curve -> just the headline
+    assert _depths([20, 3, 1], 5) == [1, 3, 5, 20]  # sorted ascending
