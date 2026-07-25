@@ -33,6 +33,7 @@ from typing import Any
 
 from recall.calibration import Calibration
 from recall.embeddings import Embedder
+from recall.integrations import trust_metadata
 from recall.rerank import Reranker
 from recall.store import PgVectorStore
 from recall.trust import marked_text, servable_hits, trusted_search
@@ -58,22 +59,8 @@ def _hit_to_document(hit: TrustedHit) -> Document:
     The chunk's own metadata is preserved; the ``recall_*`` and provenance keys are layered on top
     (and win on a collision), so a downstream consumer can read the verdict without re-deriving it.
     """
-    prov = hit.provenance
-    val = hit.validity
     metadata: dict[str, Any] = dict(hit.chunk.metadata)
-    metadata.update(
-        recall_verdict=hit.verdict,
-        recall_confidence=hit.confidence,
-        recall_cosine=hit.cosine,
-        chunk_id=hit.chunk.id,
-        source=prov.source,
-        file=prov.file,
-        ord=prov.ord,
-        indexed_at=prov.indexed_at.isoformat() if prov.indexed_at is not None else None,
-        superseded_by=val.superseded_by,
-        valid_from=val.valid_from.isoformat() if val.valid_from is not None else None,
-        valid_until=val.valid_until.isoformat() if val.valid_until is not None else None,
-    )
+    metadata.update(trust_metadata(hit))
     return Document(page_content=marked_text(hit), metadata=metadata)
 
 
@@ -110,13 +97,16 @@ class RecallRetriever(BaseRetriever):
         reranker: Reranker | None = None,
         entailment: Any | None = None,
         return_abstention_reason: bool = False,
+        include_untrusted: bool = False,
     ) -> RecallRetriever:
         """Build a retriever that calls :func:`recall.trust.trusted_search` on each query.
 
         ``store`` and ``embedder`` are captured by reference; their lifecycle is the caller's — a
         server holds one open ``PgVectorStore`` (with a pool) for the process. ``entailment`` is the
         optional near-miss judge (see :mod:`recall.entailment`), left untyped here so importing the
-        adapter does not pull in the ``entail`` extra.
+        adapter does not pull in the ``entail`` extra. ``include_untrusted`` opts a live-store
+        retriever into serving trust-refused hits (with an in-band warning) — the same escape hatch
+        the constructor exposes, reachable through the documented factory.
         """
 
         def _search(query: str) -> TrustedResult:
@@ -131,7 +121,11 @@ class RecallRetriever(BaseRetriever):
                 entailment=entailment,
             )
 
-        return cls(search_fn=_search, return_abstention_reason=return_abstention_reason)
+        return cls(
+            search_fn=_search,
+            return_abstention_reason=return_abstention_reason,
+            include_untrusted=include_untrusted,
+        )
 
     def _get_relevant_documents(
         self, query: str, *, run_manager: CallbackManagerForRetrieverRun
