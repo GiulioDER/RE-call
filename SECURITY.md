@@ -76,9 +76,14 @@ The same rule is applied at every other boundary where this library writes into 
 
 - **The framework adapters** (`recall/integrations/`) return only verdict-`ok` hits. They used to
   return `TrustedResult.hits` wholesale — which is `ok + rest` — so a superseded memory reached
-  the chain whenever some other hit happened to be `ok`, with the verdict in `metadata` that
-  LangChain's stock `stuff_documents_chain` never renders. `include_untrusted=True` opts back in
-  and marks each untrusted hit **in the text itself**.
+  the chain whenever some other hit happened to be `ok`, carrying its verdict only in `metadata`.
+  Metadata is not a control on that path: `langchain_core.tools.create_retriever_tool` — the
+  standard way to give an agent a retriever — formats documents with
+  `PromptTemplate.from_template("{page_content}")`, so every `recall_*` key is dropped before the
+  model sees it. That is asserted against LangChain in
+  `tests/test_integrations_agent_tool_contract.py` rather than taken on trust, and the test fails
+  if the default ever changes. `include_untrusted=True` opts back in and marks each untrusted hit
+  **in the text itself**.
 - **The CLI** (`recall/cli.py`) filters corpus-controlled strings through
   `recall.trust.terminal_safe` before printing. A terminal executes ANSI escapes, so a file name
   containing `\x1b[2K\r` could erase the line it was printed on — enough to make `recall lint`
