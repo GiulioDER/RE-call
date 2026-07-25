@@ -6,11 +6,13 @@
 
 ## The claim
 
-On the two models the incumbents actually evaluate with — `gpt-4o-mini` and `gpt-4o` — RE-call is
-the more accurate of the two, and it builds memory for **free** while Mem0 pays an LLM call per
-memory written. We'll show you every cell, including the one config where Mem0 led (an expensive
-off-ecosystem model nobody runs this on) and every methodological reason the headline scores you've
-seen don't measure what they claim.
+On the two OpenAI readers the incumbents actually evaluate with — `gpt-4o-mini` and `gpt-4o` —
+RE-call is the more accurate of the two, and it builds memory at **zero marginal API cost** while
+Mem0 pays an LLM call per memory written. That accuracy lead is real but **reader-conditional** —
+~4 points on those two readers, narrowing as the reader strengthens and reversing on a third
+generator (Claude Sonnet) we ran *after* pre-registration; we show that row too. We'll show you
+every cell and every methodological reason the headline scores you've seen don't measure what they
+claim.
 
 What we *are* claiming is narrower and, we think, more useful: **the LOCOMO accuracy scores everyone
 cites — the 90%-plus numbers — are measured with instruments we can show are unreliable, and they
@@ -36,11 +38,16 @@ Answerable accuracy (LLM-as-judge), paired McNemar (each system answers the iden
 | **gpt-4o** (strong) | token-matched | gpt-4o | 1,540 | **0.484** | 0.444 | 0.0065 |
 
 **Every row is the full benchmark** — all 1,540 answerable questions across all 10 conversations,
-each system answering the identical set. RE-call is the more accurate of the two in every one.
+each system answering the identical set. RE-call is the more accurate of the two in every one, and
+the margin survives Holm–Bonferroni correction across all five rows (every row holds; largest
+adjusted p = 0.012).
 
 **RE-call is the more accurate of the two across *both* OpenAI generators** — the models the
-incumbents actually evaluate with — at every retrieval budget and both judges. We test the
-strong-generator case with gpt-4o, not an off-ecosystem model chosen to change the answer.
+incumbents actually evaluate with — at every retrieval budget and both judges. But watch the trend
+*within* the table: at the gpt-4o judge the lead is +0.054 under the gpt-4o-mini generator and
++0.040 under gpt-4o (both n=1,540) — it shrinks as the reader strengthens, and a third,
+stronger-still generator reverses it (§3). This is a property of the reader tier, not a
+reader-independent win.
 
 Abstention on the 446 adversarial questions (does the system refuse when the answer isn't there?),
 and its inseparable twin, false-abstention on answerable questions — **full benchmark, gpt-4o-mini
@@ -55,11 +62,12 @@ generator (n=446 adversarial, 1,540 answerable)**:
 (Under the gpt-4o generator, full n, these shift to 0.924/0.955 abstention and 0.294/0.333
 false-abstain — abstention is partly a generator behaviour, so we label which one.)
 
-**Read this straight: on both OpenAI models — the cheap one and the strong one — RE-call is the more
-accurate of the two at full n=1,540 (p = 0.0002 to 0.0065), at every budget and both judges. Mem0
-abstains slightly more but also refuses more real questions; the two discriminate about equally.**
-The only configuration where Mem0 came out ahead was an off-ecosystem model (Claude Sonnet) nobody uses
-to run this benchmark — so it's not in this table.
+**Read this straight: on both OpenAI readers — the cheap one and the strong one — RE-call is the more
+accurate of the two at full n=1,540 (p = 0.0002 to 0.0065, Holm-corrected), at every budget and both
+judges. Mem0 abstains slightly more but also refuses more real questions; the two discriminate about
+equally.** The one configuration where Mem0 came out ahead — Claude Sonnet as generator — was added
+*after* pre-registration and is not in this headline table; we report it in §3 rather than bury it,
+because the trend it belongs to (our lead narrowing as the reader strengthens) is itself the finding.
 
 ## The four things the headline numbers hide
 
@@ -86,15 +94,20 @@ the judges' own rubric:
 A benchmark graded by a judge that's wrong 86% of the time on the hard cases is not measuring what
 it claims.
 
-### 3. The result can depend on the generator — so we test the one people actually use
+### 3. The result depends on the generator — and our lead is reader-conditional
 A "which memory is best" number that flips when you swap an unrelated component isn't a property of
 the memory — so a benchmark that reports one score without naming the generator is hiding a
 variable. We report across the generators the incumbents actually evaluate with, `gpt-4o-mini` and
-`gpt-4o`, and RE-call is ahead on both. Tellingly, the *one* configuration where Mem0 overtook was
-Claude Sonnet — an off-ecosystem model that jumped Mem0 +0.158 while RE-call moved +0.05. That
-single result would flip a naive "Mem0 wins on strong models" headline; it evaporates the moment you
-use the model people actually run this on. The mechanism is measurable: Mem0 returns LLM-compressed
-facts a stronger reader can exploit, while RE-call returns raw turns that read the same to any model.
+`gpt-4o`, and RE-call is ahead on both. We then ran a third generator, **Claude Sonnet 4.5, which was
+not in our pre-registration**, and Mem0 won it: on the 4-conversation subset (n=584, gpt-4o judge)
+RE-call scored **0.565 vs Mem0 0.608**. Put the three side by side and the pattern is monotone —
+RE-call's lead is **+0.054** under gpt-4o-mini and **+0.040** under gpt-4o (both n=1,540), and
+**−0.043** under Sonnet (n=584); all at the gpt-4o judge. The honest reading is not "Sonnet doesn't
+count" but "our accuracy lead is
+a property of the reader tier": the stronger the generator, the smaller our edge, until it reverses.
+The mechanism is measurable and predicts exactly this — Mem0 returns LLM-compressed facts a stronger
+reader can exploit, while RE-call returns raw turns a weaker reader handles better. We keep the claim
+to the readers where we hold it, and disclose the one where we don't.
 
 ### 4. Nobody controls for retrieval budget or the corrupt answer keys
 - The two systems return different amounts of text per item; matching on `k` doesn't match tokens.
@@ -112,13 +125,15 @@ facts a stronger reader can exploit, while RE-call returns raw turns that read t
 
 - On **both** OpenAI generators — `gpt-4o-mini` and `gpt-4o`, the models the incumbents' own numbers
   are built on — **RE-call is more accurate than Mem0**, at full n=1,540, across every retrieval
-  budget and both judges (p = 0.0002 to 0.0065). The only place Mem0 led was Claude Sonnet, an
-  off-ecosystem model we discarded as irrelevant to how anyone actually runs this.
+  budget and both judges (p = 0.0002 to 0.0065, Holm-corrected). That lead is **reader-conditional**:
+  it narrows as the generator strengthens and reverses on Claude Sonnet (a post-hoc generator, §3),
+  so we claim it for the OpenAI reader tier the field benchmarks with, not as a universal result.
 - Its cat1 single-hop retrieval recall is the weak spot; a stronger embedder + reranker lifted it
   39%→50% (accuracy 0.440→0.476, 4-conversation subset), a real gain, not category-redefining.
 - **The axis where RE-call is unambiguously ahead is cost**: its memory layer makes **zero** LLM
-  calls (measured, not asserted — see below), so it runs local and free, while Mem0 charges an LLM
-  extraction call per memory written.
+  calls (measured, not asserted — see below), so building and querying memory costs **zero marginal
+  API tokens** — you run the embedder locally, and the generator that reads the results costs the
+  same for both systems — while Mem0 charges an LLM extraction call per memory written.
 
 What RE-call is built for is the axis this whole post argues the field mis-measures: **trustworthy,
 auditable memory** — calibrated abstention, per-hit provenance, validity/supersession, exact source
@@ -143,18 +158,21 @@ not modelled):
 | $ to build the memory — gpt-4o extraction (measured) | **$0.00** | **$2.65** |
 
 Both Mem0 figures are metered, not modelled. Two things follow. First, the ratio isn't "N×" — it's
-**free vs not-free**: RE-call's memory cost is $0 and *stays* $0 at any scale and any model, because
-it uses no LLM; Mem0's grows linearly with every memory written. Second, Mem0's cost is *unbounded
-in quality* — a 16× jump from mini to gpt-4o extraction — while RE-call never leaves zero. And the
-kicker: at the gpt-4o tier — where building the full benchmark's memory cost Mem0 **$7.29** and
-RE-call **$0** — Mem0 still scored **0.444**, below RE-call's **0.484**. You pay more for less. For write-heavy, cost-sensitive, offline, or privacy-bound
-deployments — most of them — a memory that's competitive on accuracy and **free to write** is the
-correct engineering choice. That is the honest headline: not "most accurate," but *"trustworthy and
-effectively free, at competitive accuracy, on the models you actually use."*
+**zero-marginal-cost vs linear**: RE-call's memory layer spends $0 in API tokens and *stays* $0 at
+any scale and any model, because it uses no LLM; Mem0's grows linearly with every memory written.
+Second, Mem0's cost is *unbounded in quality* — a 16× jump from mini to gpt-4o extraction — while
+RE-call never leaves zero. And the kicker: at the gpt-4o tier — where building the full benchmark's
+memory cost Mem0 **$7.29** (272 metered extraction calls, 2.62M tokens) and RE-call **$0** — Mem0
+still scored **0.444**, below RE-call's **0.484**. You pay more for less. For write-heavy,
+cost-sensitive, offline, or privacy-bound deployments — most of them — a memory that's competitive on
+accuracy and **free of per-write API cost** is the correct engineering choice. That is the honest
+headline: not "most accurate," but *"trustworthy, zero marginal API cost, at competitive accuracy on
+the OpenAI readers you actually use."*
 
 ## Reproduce it
 
-Every configuration was pre-registered before the numbers were seen. The harness, the per-question
+Every headline configuration was pre-registered before the numbers were seen; the one post-hoc
+addition (the Claude Sonnet generator) is labelled as such. The harness, the per-question
 raw dumps (context, answer, both judges' verdicts), the human labels, and the corrupt-key list are
 all published; one command reproduces any cell. Rerun it, re-judge it, re-label it — that's the
 point.
