@@ -11,11 +11,20 @@ and then the cross-encoder reranker:
 | fusion | MRR | nDCG@10 |
 |---|---|---|
 | dense only | 0.63 | 0.72 |
-| + sparse (hybrid) | 0.74 | 0.80 |
+| + sparse (hybrid) | 0.96 | 0.97 |
 | + cross-encoder rerank | 1.00 | 1.00 |
 
+> **Re-measured 2026-07-25 after [#81](https://github.com/GiulioDER/RE-call/issues/81).** The sparse
+> leg previously built its tsquery with `websearch_to_tsquery`, which ANDs every term, so it only
+> fired on queries whose terms all appeared in one chunk. The hybrid row was published as
+> **0.74 / 0.80**; with the leg working it is **0.96 / 0.97**. The direction of this finding was
+> always right — the magnitude was understated. `dense only` is unchanged, as it must be.
+
 On the strong FastEmbed (bge-small) embedder, dense retrieval already scores nDCG@10 0.97 (MRR
-0.96) and the hybrid arm saturates the corpus at 1.00, so the reranker has nothing left to gain. Honest reading: **hybrid + rerank buys
+0.96) and the hybrid arm saturates the corpus at 1.00, so the reranker has nothing left to gain.
+Note that the hashing embedder's *hybrid* arm now reaches the same 0.96/0.97 as bge-small's *dense*
+arm: with the lexical leg working, the sparse signal substitutes for a good part of what a real
+embedder buys on this corpus. Honest reading: **hybrid + rerank buys
 the most on weaker embedders or harder corpora; on an easy corpus with a strong embedder it is
 redundant.** A rigorous eval has to be able to show that, not just a win.
 
@@ -130,10 +139,23 @@ superseded-trust rate: how often a stale memory is presented as the answer (lowe
 | hashing-64 | **1.00** | **0.00** | 0.25 | 0.00 | 0.737 → 0.737 |
 | bge-small (FastEmbed) | **0.83** | **0.00** | 0.75 | 1.00 | 1.000 → 1.000 |
 
+> ⚠️ **Historical v0.2 table, superseded by [`RESULTS.md`](RESULTS.md).** It was measured on an older
+> query set and column layout (note `successor acc` 0.25 / `abstain acc` 0.00, where the current run
+> reports 0.50 / 1.00), and it predates the [#81](https://github.com/GiulioDER/RE-call/issues/81)
+> sparse-leg fix. It is left as written rather than part-patched, because splicing today's numbers
+> into yesterday's row would produce a table describing no single run.
+>
+> **One conclusion below does not survive the re-measurement.** "Ordinary answerable retrieval is
+> untouched (identical MRR)" held when the hybrid arm scored 0.737 either way. With the sparse leg
+> working, `RESULTS.md` measures hashing-64 at **0.964 → 0.804**: the trust layer now costs
+> answerable MRR on the weak embedder, because it has more genuinely-retrieved material to demote.
+> The bge-small row is still 1.000 → 1.000. Read the claim as embedder-dependent, not general.
+
 - **Plain search fails exactly as predicted**: on 83–100% of the trust queries the top answer is
   the superseded/expired memory — semantic similarity cannot see supersession. With the trust
   layer the stale memory is *never* presented as trustworthy (STR 0.00 on both embedders), and
-  ordinary answerable retrieval is untouched (identical MRR).
+  ordinary answerable retrieval is untouched (identical MRR) — **but see the note above: that last
+  clause no longer holds on the weak embedder once the sparse leg works.**
 - **Successor redirect**: an explicit `supersedes:` edge transfers relevance — when the stale hit
   scored above the threshold, its retrieved successor is promoted even if its own (different)
   wording scores lower. On bge the successor is the top trusted answer in 3/4 cases; the "miss"
@@ -616,6 +638,13 @@ measures it with no judge and therefore no judge variance:
 
 ### 9a. Retrieval: hit@5 0.615 with the free local embedder
 
+> ⚠️ **Measured before [#81](https://github.com/GiulioDER/RE-call/issues/81) was fixed.** The runner
+> uses `HybridRetriever`, whose sparse leg ANDed every query term and so fired only when one chunk
+> contained all of them. LOCOMO questions average ~8 content terms against single-turn documents,
+> so the leg was largely inert and this is close to a dense-only number. **Not re-measured** — a
+> re-run is a full re-index. Treat 0.615 as a lower bound on the hybrid configuration; the same
+> caveat applies to §9b–§9c and to §10 (LongMemEval).
+
 | Category | hit@5 | 95% CI | n |
 |---|---|---|---|
 | cat1 | 0.592 | [0.53, 0.65] | 282 |
@@ -736,7 +765,15 @@ from two harnesses are worth more than either alone, so the agreement is stated 
 left for a reader to assemble.
 
 `bge-small` (the free local embedder), hybrid dense+sparse, no reranker. 500 questions, calibrated
-on half and scored on the other half. Three candidate-set sizes, because the benchmark's own
+on half and scored on the other half.
+
+> ⚠️ **"hybrid dense+sparse" here predates the [#81](https://github.com/GiulioDER/RE-call/issues/81)
+> fix**: the sparse leg ANDed every query term, so on questions of this length it rarely fired and
+> the arm was close to dense-only. **Not re-measured** — the `lme_s` index alone cost 6h39m to
+> build. Treat these as lower bounds on the hybrid configuration. The §9/§10 *abstention* conclusion
+> is unaffected: it rests on signal separability (AUC ≤ 0.753 across six candidates), and a better
+> candidate pool does not make a relevance signal into an answerability signal.
+ Three candidate-set sizes, because the benchmark's own
 protocol gives each question its own ~49-session haystack while a single merged index is what a
 real memory store looks like:
 
