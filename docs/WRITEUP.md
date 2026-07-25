@@ -98,8 +98,12 @@ the cross-encoder are added:
 | fusion | MRR | nDCG@10 |
 |---|---|---|
 | dense only | 0.63 | 0.72 |
-| + sparse (hybrid) | 0.74 | 0.80 |
+| + sparse (hybrid) | 0.96 | 0.97 |
 | + cross-encoder rerank | 1.00 | 1.00 |
+
+> Re-measured 2026-07-25 after [#81](https://github.com/GiulioDER/RE-call/issues/81) (the sparse leg
+> ANDed every query term, so it only fired when one chunk held them all). The hybrid row was
+> published as 0.74 / 0.80; the finding's direction was right and its magnitude understated.
 
 On the strong bge-small embedder, dense retrieval already scores nDCG@10 0.97 and the hybrid arm
 saturates the corpus at 1.00, so the reranker has nothing left to gain. The honest reading — which a real eval must be able to

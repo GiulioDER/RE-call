@@ -12,6 +12,12 @@ These run against the REAL pgvector container (`@requires_db`) — the pathology
 planner/executor behaviour under an approximate index, not something a fake connection can
 reproduce.
 
+The whole module has a precondition that is easy to miss: the planner must actually CHOOSE the
+HNSW index. On a never-analyzed table it does not — with no statistics it estimates one matching
+row for the filtered query and takes an exact plan, which by construction measures recall 1.0000
+with 0 truncated and tests nothing here. `_build_corpus` therefore ANALYZEs, and
+`MAX_CORPUS_BUILD_ATTEMPTS` records what that changed.
+
 A note on the corpus construction, because it is NOT incidental: the same 20,000-row / dim-64 /
 10%-selective shape reliably shows the collapse ONLY when the rows are upserted in several
 separate calls (batches of 1,000 — as a real `recall index` run naturally does, file by file),
@@ -50,32 +56,44 @@ QUERY_SEED = 8
 #: Up to this many independent corpus builds, before giving up (see `filtered_corpus`'s docstring
 #: for why a build can need a retry at all).
 #:
-#: Sized from CI's own failure record rather than from a local measurement, because the two
-#: disagree and only one of them runs on every push. Locally, against pgvector 0.8.4, the pathology
-#: reproduced on 11 of 14 builds (p ~= 0.79), which puts the give-up rate at (1 - p) ** 4 ~= 2e-3.
-#: CI says otherwise: since this module landed (0af9190) the fixture has given up TWICE in ~76
-#: job-runs at 4 attempts — run #136's `floor` job, and run #151's `test` job, which turned master
-#: red on a README-only commit. That is ~2.6e-2, about 13x what the local p predicts. pgvector's
-#: graph construction is evidently less likely to produce the pathology on CI's
-#: `pgvector/pgvector:pg16` image than on the dev box, so the local figure is the wrong one to size
-#: against.
+#: **Most of the variance this cap was sized against was not pgvector's — it was the autovacuum
+#: launcher's.** `_build_corpus` now ANALYZEs, and with that in place the pathology reproduced on
+#: **10 of 10** independent builds (seeds 2000-2009, pgvector 0.8.5 / PostgreSQL 16.14): untuned
+#: recall 0.3400-0.4175 with 39-40/40 truncated, tuned 0.8825-0.9275 with 0 truncated. The
+#: history this cap was derived from looked like this instead:
 #:
-#: The observed rate extrapolates without re-deriving p: the builds are independent, so doubling
-#: the attempts squares the give-up rate. From ~2.6e-2 at 4 attempts, 8 gives ~6.8e-4 per job
-#: (~1 red per 700 pushes — monthly at this repo's rate, which is not quiet enough to be worth the
-#: change) and 12 gives ~1.8e-5 (~1 per 28,000). Hence 12.
+#:   - Locally the pathology reproduced on 11 of 14 builds (p ~= 0.79).
+#:   - On CI the fixture gave up TWICE in ~76 job-runs at 4 attempts (~2.6e-2), ~13x what the
+#:     local p predicts — run #136's `floor` job and run #151's `test` job, the latter turning
+#:     master red on a README-only commit.
+#:   - Sizing against the CI rate and squaring per doubling gave ~1.8e-5 at 12 attempts.
 #:
-#: Raising the cap is close to free because the loop stops at the FIRST build that reproduces:
-#: the expected cost stays ~1/p ~= 1.7 builds. A higher cap only lengthens the rare bad tail, it
-#: does not slow the common path.
+#: All of those non-reproductions are explained by a single mechanism that has nothing to do with
+#: graph construction: a never-analyzed table makes the planner take an EXACT plan and skip the
+#: HNSW index entirely, which cannot truncate and cannot miss a neighbour, so it measures recall
+#: exactly 1.0000 / 0 truncated every time. The corpus build takes ~47s against a 60s
+#: `autovacuum_naptime`, so whether statistics existed by query time was close to a coin flip —
+#: and a machine whose autovacuum happened to be quicker to fire would look "less likely to
+#: produce the pathology", which is exactly how CI differed from the dev box.
+#:
+#: 12 -> 6, not -> 1. Ten for ten is a point estimate with a wide interval (a 95% lower bound on
+#: p from 0/10 failures is only ~0.74), so this does not establish that pgvector's graph
+#: construction contributes NO residual variance — only that it is not the dominant term. 6 is
+#: safe under both readings: at the newly measured p it is pure headroom, and even at the old
+#: local p = 0.79 it gives (1 - p) ** 6 ~= 8.5e-5, ~1 red per 12,000 pushes. Keeping a few
+#: attempts stays close to free because the loop stops at the FIRST build that reproduces, so
+#: the expected cost is ~1/p ~= 1 build either way; halving the cap only shortens the rare bad
+#: tail, which now matters more, because a give-up is much likelier to mean something real
+#: changed in pgvector than that the dice came up wrong.
 #:
 #: The measurement also settled which knob to turn. Outcomes are bimodal — a build either shows
 #: the pathology hard (recall 0.34-0.42, 39-40/40 truncated) or not at all (recall exactly 1.0000,
 #: 0 truncated), with nothing in between — so loosening TUNED_RECALL_FLOOR would buy nothing and
-#: would blunt a real regression. And the same data seed produced both outcomes across repeated
-#: builds (1003 -> pathology, pathology, none), which confirms the variance is pgvector's HNSW
-#: graph construction and not the corpus: re-seeding differently would not help either.
-MAX_CORPUS_BUILD_ATTEMPTS = 12
+#: would blunt a real regression. Note that the "exactly 1.0000" pole is the signature of the
+#: exact plan described above, not of a well-connected graph: an earlier version of this comment
+#: read the same seed producing both outcomes as proof that the variance was pgvector's, but
+#: varying only the statistics state on ONE fixed build produces both outcomes too.
+MAX_CORPUS_BUILD_ATTEMPTS = 6
 _ENV_EF = "RECALL_HNSW_EF_SEARCH_FILTERED"
 _ENV_SCAN = "RECALL_HNSW_ITERATIVE_SCAN_FILTERED"
 
@@ -114,6 +132,18 @@ def _build_corpus(seed: int) -> PgVectorStore:
     # Batched, not one upsert() call -- see the module docstring.
     for start in range(0, N_ROWS, BATCH):
         store.upsert(chunks[start : start + BATCH], vectors[start : start + BATCH])
+    # Statistics, or the planner will not use the HNSW index at all and this whole module
+    # measures nothing. A freshly built table reports `reltuples = -1` and carries no `pg_stats`
+    # row for `source`, so the planner estimates ONE matching row for the filtered query and
+    # takes an exact plan (Bitmap Heap Scan + Sort) instead of `Index Scan using <t>_emb_idx`.
+    # An exact plan cannot truncate and cannot miss a neighbour, so the measurement comes back
+    # recall 1.0000 / 0 truncated -- indistinguishable, from the outside, from "this build's
+    # HNSW graph happened to come out well-connected". See the `filtered_corpus` docstring.
+    #
+    # These rows go in via `store.upsert` rather than through `Indexer.index_path`, so the
+    # ANALYZE that a real index run now issues (see `Indexer.index_path`) does not happen here
+    # on its own.
+    store.analyze()
     return store
 
 
@@ -153,13 +183,19 @@ def filtered_corpus():
     conftest because that one is function-scoped (a fresh table per test) -- exactly what this
     module deliberately avoids.
 
-    Retries the build (fresh seed, fresh table) up to `MAX_CORPUS_BUILD_ATTEMPTS` times: the
-    pathology this module exists to test is real and reproduces on most builds, but pgvector's
-    HNSW graph construction carries its own internal randomness (graph-level assignment) that
-    nothing here controls, so an otherwise-identical build occasionally comes out well-connected
-    enough that even the untuned defaults do not collapse recall. Retrying a fresh build is a
-    truthful fix for that -- loosening the threshold instead would just as easily paper over a
-    genuine regression that weakens the pathology rather than removes it.
+    Retries the build (fresh seed, fresh table) up to `MAX_CORPUS_BUILD_ATTEMPTS` times. The
+    pathology this module exists to test is real and now reproduces on every build measured
+    (10/10 -- see `MAX_CORPUS_BUILD_ATTEMPTS`), but pgvector's HNSW graph construction carries
+    internal randomness (graph-level assignment) that nothing here controls, and it has not been
+    established that it contributes none at all. Retrying a fresh build is a truthful fix for
+    that residue -- loosening the threshold instead would just as easily paper over a genuine
+    regression that weakens the pathology rather than removes it.
+
+    The retry loop used to absorb something else as well, silently: a build whose statistics had
+    not landed yet measured recall 1.0000 / 0 truncated because the planner never touched the
+    HNSW index, and the fixture read that as "unlucky graph, try again". `_build_corpus` now
+    ANALYZEs, so that no longer happens -- and if this fixture starts giving up again, the cause
+    is far more likely to be a real change in pgvector than luck.
     """
     store: PgVectorStore | None = None
     observed: list[str] = []
