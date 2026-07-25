@@ -27,7 +27,9 @@ def test_index_rejects_path_outside_root(tmp_path, make_store, monkeypatch):
     store = make_store(64)
     emb = HashingEmbedder(dim=64)
     # tmp_path is the PARENT of the allowed root -> must be rejected before any read.
-    with pytest.raises(ValueError, match="outside the allowed index root"):
+    # The message deliberately no longer echoes the RESOLVED root back to the caller — that was a
+    # filesystem-mapping oracle for a path probe. See tests/test_error_path_disclosure.py.
+    with pytest.raises(ValueError, match="outside the directory this server is allowed to index"):
         index_memory(store, emb, str(tmp_path))
 
 
