@@ -249,6 +249,14 @@ def mem0ai_version() -> str | None:
 #: bge-small the controlled arm uses.
 _EMBEDDER_DIMS = {"huggingface": 384, "openai": 1536}
 
+#: Output dimension per HuggingFace embedding model, so Mem0's Qdrant collection is created at the
+#: right width. Wrong dims silently break similarity. Extend when a new model is used on this arm.
+_HF_MODEL_DIMS = {
+    "BAAI/bge-small-en-v1.5": 384,
+    "BAAI/bge-base-en-v1.5": 768,
+    "BAAI/bge-large-en-v1.5": 1024,
+}
+
 #: Keys whose values are secrets. The results artifact is meant to be published, and `describe()`
 #: reports the Mem0 config into it verbatim apart from these.
 _SECRET_KEYS = frozenset({"api_key"})
@@ -277,6 +285,7 @@ def mem0_config(
     embedder: str = "huggingface",
     openai_key: str | None = None,
     *,
+    hf_model: str = "BAAI/bge-small-en-v1.5",
     run_id: str = "adhoc",
     storage_dir: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -323,7 +332,7 @@ def mem0_config(
             "config": {"model": "text-embedding-3-small", "api_key": openai_key},
         }
     else:
-        emb = {"provider": "huggingface", "config": {"model": "BAAI/bge-small-en-v1.5"}}
+        emb = {"provider": "huggingface", "config": {"model": hf_model}}
     root = Path(storage_dir) if storage_dir is not None else Path(tempfile.gettempdir())
     run = _slug(run_id)
     workspace = root / "recall-bench-mem0" / run
@@ -332,7 +341,11 @@ def mem0_config(
         "config": {
             "collection_name": f"bench_{run}",
             "path": str(workspace / "qdrant"),
-            "embedding_model_dims": _EMBEDDER_DIMS.get(embedder, _EMBEDDER_DIMS["huggingface"]),
+            "embedding_model_dims": (
+                _EMBEDDER_DIMS["openai"]
+                if embedder == "openai"
+                else _HF_MODEL_DIMS.get(hf_model, _EMBEDDER_DIMS["huggingface"])
+            ),
         },
     }
     return {
@@ -429,11 +442,18 @@ class Mem0System:
         openai_key: str | None = None,
         k: int = DEFAULT_K,
         *,
+        hf_model: str = "BAAI/bge-small-en-v1.5",
         run_id: str = "adhoc",
         storage_dir: str | Path | None = None,
     ) -> None:
         self._config = mem0_config(
-            openrouter_key, model, embedder, openai_key, run_id=run_id, storage_dir=storage_dir
+            openrouter_key,
+            model,
+            embedder,
+            openai_key,
+            hf_model=hf_model,
+            run_id=run_id,
+            storage_dir=storage_dir,
         )
         self._k = k
         self._user: str | None = None
