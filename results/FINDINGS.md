@@ -674,12 +674,28 @@ moving 0.365 → 0.373), and that was read as "the pool of 20 was not the constr
 > ⚠️ **That inference is retracted, and the k=50 row with it.** Neither survives the configuration
 > the control actually ran under.
 >
-> **The agreement through k=20 was arithmetically forced.** This branch predates the
+> **The agreement was forced by construction, not earned.** This branch predates the
 > [#81](https://github.com/GiulioDER/RE-call/issues/81) sparse-leg fix, so the lexical leg ANDed
 > every query term and was largely inert on LOCOMO's ~8-term questions — meaning the fused ranking
-> was, in practice, the *dense* ranking. The first 20 rows of a 100-candidate dense fetch are the
-> same 20 rows as a 20-candidate fetch, from the same scan in the same order. Two configurations
-> that must agree cannot testify that the pool was not binding.
+> was, in practice, the *dense* ranking. Against a common index, the first 20 rows of a
+> 100-candidate dense fetch are the same 20 rows as a 20-candidate fetch: same scan, same order.
+> The quantity the control varied **cannot** affect the metric at k ≤ 20, so agreement there is
+> not evidence that the pool was not binding.
+>
+> The two runs did not in fact share an index, which the shipped JSON makes visible:
+>
+> | k | pool 20 | pool 100 |
+> |---|---|---|
+> | 1 | 0.3652 | 0.3730 |
+> | 5 | 0.6243 | 0.6237 |
+> | 10 | 0.7168 | 0.7168 |
+> | 20 | 0.7982 | 0.7982 |
+>
+> So what the control actually shows is agreement *up to index-build noise* — the same ±0.01 this
+> section already documents. Note also that the prose above called the k=5 rows identical at
+> "0.624"; they are 0.6243 and 0.6237, which rounding hid. Neither reading rescues the inference:
+> a comparison whose independent variable cannot move the dependent one is uninformative whether
+> the numbers match or not.
 >
 > **And the pool was never 100.** `query_dense` runs on the unfiltered path, where
 > `hnsw.ef_search` defaults to 40 and an HNSW scan cannot return more rows than it examined, so
