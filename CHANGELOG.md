@@ -7,7 +7,53 @@ dates — this project does not currently tag releases.
 
 ## [Unreleased]
 
+### Fixed
+- **A bulk index run now hands the planner statistics for the rows it just wrote**
+  (`PgVectorStore.analyze` / `analyze_if_stale`, called from `Indexer.index_path`). On a freshly
+  built, never-analyzed table PostgreSQL reports `reltuples = -1` and carries no `pg_stats` row
+  for `source`, so the planner estimated **one** matching row for `query_dense`'s source-filtered
+  arm and chose an exact plan (Bitmap Heap Scan + Sort, cost ~15) over
+  `Index Scan using <table>_emb_idx` (cost 215). Answers stayed correct — an exact scan is an
+  exact search — but the HNSW index was not consulted at all, which also made the
+  `hnsw.ef_search` / `hnsw.iterative_scan` tuning in `query_dense` inert until autovacuum's
+  analyze landed (`autovacuum_naptime`, 60s by default). On a 20,000-row corpus that window costs
+  a millisecond or two per query; on a large one it is a full scan plus a sort of every matching
+  row, per query, after every first build.
+
+  The refresh fires only when autovacuum's own trigger would have
+  (`AUTOANALYZE_THRESHOLD + AUTOANALYZE_SCALE_FACTOR * reltuples`, mirroring PostgreSQL's
+  defaults) or when the table has never been analyzed at all. So no ANALYZE is issued that
+  autovacuum was not already going to issue — only its timing moves, from up to a naptime after
+  the run to the end of the run itself. A server indexing one small file at a time into a large
+  table therefore pays nothing. The threshold is what a bare never-analyzed check would miss: a
+  table analyzed while it held three rows is no longer "never analyzed", and the next bulk load
+  would otherwise land against statistics describing three rows.
+
+  Best-effort throughout: a failed refresh is logged and the run succeeds, because it is an
+  optimisation and autovacuum will make the same refresh regardless. `statement_timeout` is
+  **not** lifted (unlike `ensure_schema`'s DDL) — ANALYZE samples a bounded number of rows
+  whatever the table's size, and lifting a timeout for an optimisation is the wrong trade.
+  Deliberately not called from `ensure_schema`, which runs on every store open including against
+  tables taking live writes.
+
 ### Changed
+- **`tests/test_hnsw_filtered_recall.py` no longer races the autovacuum launcher.** Its
+  `_build_corpus` now calls `store.analyze()`, because the fixture depends on the HNSW index
+  actually being *used*, and a never-analyzed table takes the exact plan instead. Holding the
+  HNSW graph constant and varying only whether statistics existed, on one 20,000-row build:
+
+  | statistics | untuned recall@10 | truncated |
+  |---|---|---|
+  | none (`reltuples = -1`) | 1.0000 | 0/40 |
+  | after `ANALYZE` | 0.3700 | 40/40 |
+
+  The first row is the planner declining the index, and it is *mechanically* recall 1.0000 with
+  0 truncated — an exact plan cannot miss a neighbour or return short. That is indistinguishable
+  from the outside from "this build's HNSW graph came out well-connected", which is what the
+  module's docstring previously attributed the fixture's bimodal outcomes to; the docstring's
+  supporting evidence (the same seed producing both outcomes) is equally explained by whether
+  autoanalyze had fired during the ~47s build, a coin flip against the 60s naptime. The docstring
+  now says so, and `MAX_CORPUS_BUILD_ATTEMPTS` drops accordingly.
 - **Republished every number the dead sparse leg touched** (`results/RESULTS.md`, its four charts,
   `results/FINDINGS.md` §1, `docs/WRITEUP.md`). Following the [#81](https://github.com/GiulioDER/RE-call/issues/81)
   fix, `make eval` was re-run end to end. On the weak hashing embedder the `hybrid` arm rose from
@@ -31,7 +77,8 @@ dates — this project does not currently tag releases.
   The §9/§10 **abstention** conclusions are unaffected: they rest on signal separability
   (AUC ≤ 0.753 across six candidates), and a better candidate pool does not turn a relevance signal
   into an answerability signal.
-- **README test badge corrected**, 584 → 677 (the count `pytest --collect-only` actually reports).
+- **README test badge corrected**, 584 → 677 → 688 (the count `pytest --collect-only` actually
+  reports).
 - **Abstention certification now judges the *interval* on separability, not the point estimate**
   (`recall/calibration.py`). `separability_interval()` returns the Hanley & McNeil (1982) 95%
   confidence interval on the AUC, `Calibration.separability_ci` exposes it, the saved artifact

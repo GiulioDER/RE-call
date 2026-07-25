@@ -174,6 +174,24 @@ _HNSW_ITERATIVE_SCAN_VALUES = frozenset({"off", "relaxed_order", "strict_order"}
 _ENV_TRUE = frozenset({"1", "true", "yes", "on"})
 
 
+#: PostgreSQL's OWN default trigger for an automatic analyze — `autovacuum_analyze_threshold` and
+#: `autovacuum_analyze_scale_factor`. Mirrored (not invented) so that `analyze_if_stale` can only
+#: ever issue an ANALYZE that autovacuum was already going to issue: the total amount of analyze
+#: work is unchanged, and all that moves is WHEN it happens — at the end of the run that made the
+#: rows stale, rather than up to an `autovacuum_naptime` (60s by default) afterwards.
+#:
+#: That equivalence is the whole justification for doing this in the foreground. An unconditional
+#: ANALYZE would not have it: a server indexing one small file at a time into a large table would
+#: pay for a statistics refresh on every call that autovacuum would have declined to make.
+#:
+#: Not env-tunable, and deliberately not read from the server's own settings. Both would be
+#: precision this does not have — the values are per-table overridable, so any single reading can
+#: be wrong, and being wrong here only means analyzing slightly more or less eagerly than
+#: autovacuum would.
+AUTOANALYZE_THRESHOLD = 50
+AUTOANALYZE_SCALE_FACTOR = 0.1
+
+
 def _env_opt_out(name: str) -> bool:
     """True only when `name` is set to an explicit affirmative (see `_ENV_TRUE`)."""
     return os.environ.get(name, "").strip().lower() in _ENV_TRUE
@@ -861,6 +879,86 @@ class PgVectorStore:
                     for c, e in zip(chunks, embeddings)
                 ],
             )
+
+    def analyze(self) -> bool:
+        """Refresh the planner's statistics for this table. Best-effort; never raises.
+
+        Worth doing explicitly because the planner's choice for `query_dense`'s source-filtered
+        arm is decided by these statistics, and a freshly built table has none. Postgres reports
+        `reltuples = -1` / `relpages = 0` and carries no `pg_stats` row for `source`, so it
+        estimates ONE matching row and picks an exact plan (a Bitmap Heap Scan + Sort, cost ~15)
+        over `Index Scan using <table>_emb_idx`. The answers stay correct — an exact scan is an
+        exact search — but the HNSW index is not consulted at all, which also makes the
+        `hnsw.ef_search` / `hnsw.iterative_scan` tuning in `query_dense` inert. On a 20,000-row
+        corpus that costs a millisecond or two per query; on a large one it is a full scan plus a
+        sort of every matching row, per query, until autovacuum's analyze lands.
+
+        Best-effort on purpose. This is an optimisation, not a correctness step: an index run
+        that wrote every row correctly must not be reported as failed because a statistics
+        refresh did not land, and autovacuum will make the same refresh in the background
+        regardless — which is exactly today's behaviour, so failing soft is strictly better than
+        never trying.
+
+        `statement_timeout` is deliberately NOT lifted, unlike `ensure_schema`'s DDL. That lift
+        is justified by an HNSW build being genuinely unbounded and by its failure stranding an
+        INVALID index; neither applies here. ANALYZE samples a bounded number of rows
+        (30,000 at the default `default_statistics_target`) whatever the table's size, so it fits
+        an ordinary statement budget, and lifting a timeout for a pure optimisation is the wrong
+        trade.
+
+        ⚠️ Returns whether the statement COMPLETED, which is not the same as "statistics were
+        refreshed". A role that does not own the table gets `WARNING: permission denied to
+        analyze "<table>", skipping it` and a successful return — verified against the container,
+        not assumed. Nothing is broken by that: `reltuples` stays -1, so `analyze_if_stale` keeps
+        finding the table never-analyzed and retrying, and a permission-denied ANALYZE returns
+        immediately. Autovacuum, which runs as a role that does have the privilege, still does
+        the real work.
+        """
+        try:
+            self._with_retry(lambda conn: conn.execute(f"ANALYZE {self._table}"))
+            return True
+        except psycopg.Error as exc:
+            _log.warning("could not refresh planner statistics for %s: %s", self._table, exc)
+            return False
+
+    def analyze_if_stale(self, modified: int) -> bool:
+        """`analyze()`, but only when autovacuum would have. Returns whether one was issued.
+
+        `modified` is how many rows this run wrote. The rule mirrors autovacuum's own trigger
+        (see `AUTOANALYZE_THRESHOLD` / `AUTOANALYZE_SCALE_FACTOR`), plus the case autovacuum
+        cannot express: a table that has never been analyzed at all (`reltuples < 0`), which is
+        every table a first index run builds and the case this exists for.
+
+        The threshold is what keeps a never-analyzed check from being enough on its own. A table
+        analyzed while it held three rows has `reltuples = 3` and is no longer "never analyzed",
+        so the next run's bulk load would otherwise land against statistics describing three rows
+        and reopen the same window.
+
+        Both statements run inside ONE `_with_retry` op. In pooled mode each `_with_retry` is a
+        separate borrow, so splitting them would decide against one connection's catalog view and
+        then ANALYZE on another's.
+        """
+
+        def _op(conn: "psycopg.Connection") -> bool:
+            row = conn.execute(
+                "SELECT reltuples FROM pg_class WHERE oid = %s::regclass", (self._table,)
+            ).fetchone()
+            # A missing row means the table is not there (dropped from under us). Treated as
+            # never-analyzed so the ANALYZE below is what reports the problem, rather than this
+            # method inventing a diagnosis from a catalog miss.
+            reltuples = float(row[0]) if row and row[0] is not None else -1.0
+            if reltuples >= 0 and modified < AUTOANALYZE_THRESHOLD + (
+                AUTOANALYZE_SCALE_FACTOR * reltuples
+            ):
+                return False
+            conn.execute(f"ANALYZE {self._table}")
+            return True
+
+        try:
+            return self._with_retry(_op)
+        except psycopg.Error as exc:
+            _log.warning("could not refresh planner statistics for %s: %s", self._table, exc)
+            return False
 
     def _rows_to_hits(self, rows: list[tuple]) -> list[ScoredChunk]:
         hits: list[ScoredChunk] = []

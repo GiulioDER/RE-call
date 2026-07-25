@@ -32,6 +32,7 @@ class _RecordingStore:
     def __init__(self):
         self.chunks = []
         self.deleted = []
+        self.analyzed = []
 
     def source_content_hashes(self):
         return {}  # nothing indexed yet, so every file is new
@@ -43,6 +44,10 @@ class _RecordingStore:
     def replace_sources(self, sources, chunks, embeddings):
         self.chunks.extend(chunks)
         return len(chunks)
+
+    def analyze_if_stale(self, modified):
+        self.analyzed.append(modified)
+        return True
 
 
 # --------------------------------------------------------------------------------------------
