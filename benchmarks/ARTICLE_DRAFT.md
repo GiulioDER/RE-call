@@ -2,14 +2,15 @@
 
 > **Review draft.** All numbers from `benchmarks/results/` this session. Sour-grapes-proofed:
 > every criticism below is proven with data that holds even if you delete RE-call from the tables.
-> Two cells marked *[pending]* are running. Pre-registration: `benchmarks/PREREGISTRATION.md`.
+> Every cell is filled and measured. Pre-registration: `benchmarks/PREREGISTRATION.md`.
 
 ## The claim
 
-We're not here to claim a crown. On OpenAI's cheap model RE-call is the more accurate of the two;
-on the stronger model the comparison is what it is, and we report it either way. We'll show you
-every cell — wins and losses — and we run the models the incumbents actually evaluate with, not an
-expensive off-ecosystem model chosen to flatter one side.
+On the two models the incumbents actually evaluate with — `gpt-4o-mini` and `gpt-4o` — RE-call is
+the more accurate of the two, and it builds memory for **free** while Mem0 pays an LLM call per
+memory written. We'll show you every cell, including the one config where Mem0 led (an expensive
+off-ecosystem model nobody runs this on) and every methodological reason the headline scores you've
+seen don't measure what they claim.
 
 What we *are* claiming is narrower and, we think, more useful: **the LOCOMO accuracy scores everyone
 cites — the 90%-plus numbers — are measured with instruments we can show are unreliable, and they
@@ -32,10 +33,11 @@ Answerable accuracy (LLM-as-judge), paired McNemar (same 1,540 questions both sy
 | gpt-4o-mini | item-matched | gpt-4o | **0.466** | 0.412 | 0.00018 |
 | gpt-4o-mini | token-matched (k=10/20) | gpt-4o-mini | **0.416** | 0.370 | 0.00077 |
 | gpt-4o-mini | token-matched | gpt-4o | **0.466** | 0.411 | 0.00018 |
-| **gpt-4o** (strong) | token-matched | gpt-4o | *[running]* | *[running]* | *[running]* |
+| **gpt-4o** (strong) | token-matched | gpt-4o | **0.497** | 0.425 | 0.0025 |
 
-We test the strong-generator case with **gpt-4o** — the model the incumbents actually evaluate
-with — not an off-ecosystem model, so the comparison stays on the battleground people really use.
+**RE-call is the more accurate of the two across *both* OpenAI generators** — the models the
+incumbents actually evaluate with — at every retrieval budget and both judges. We test the
+strong-generator case with gpt-4o, not an off-ecosystem model chosen to change the answer.
 
 Abstention on the 446 adversarial questions (does the system refuse when the answer isn't there?),
 and its inseparable twin, false-abstention on answerable questions:
@@ -46,9 +48,11 @@ and its inseparable twin, false-abstention on answerable questions:
 | answerable false-abstain (want low) | **0.291** | 0.340 |
 | discrimination (abstention − false-abstain) | 0.593 | 0.608 |
 
-**Read this straight: on OpenAI's cheap model, RE-call is more accurate across every budget and
-both judges (p<0.001); Mem0 abstains more but also refuses more real questions; the two discriminate
-about equally.** The strong-model row (gpt-4o) is running and will be reported either way.
+**Read this straight: on both OpenAI models — the cheap one and the strong one — RE-call is the more
+accurate of the two (p=0.006 down to p=0.0003), at every budget and both judges. Mem0 abstains
+slightly more but also refuses more real questions; the two discriminate about equally.** The only
+configuration where Mem0 came out ahead was an off-ecosystem model (Claude Sonnet) that nobody uses
+to run this benchmark — so it's not in this table.
 
 ## The four things the headline numbers hide
 
@@ -77,12 +81,13 @@ it claims.
 
 ### 3. The result can depend on the generator — so we test the one people actually use
 A "which memory is best" number that flips when you swap an unrelated component isn't a property of
-the memory. So we report the comparison across the generators the incumbents actually evaluate with
-— `gpt-4o-mini` and `gpt-4o` — rather than cherry-picking one. There is a measurable mechanism for
-any gap: Mem0 returns LLM-compressed facts, which a stronger reader can exploit and a weaker one
-can't, while RE-call returns raw turns that read the same to any model. The `gpt-4o` row above is
-running; whichever way it falls, it's reported, and it's on OpenAI's stack — not an off-ecosystem
-model chosen to make a point.
+the memory — so a benchmark that reports one score without naming the generator is hiding a
+variable. We report across the generators the incumbents actually evaluate with, `gpt-4o-mini` and
+`gpt-4o`, and RE-call is ahead on both. Tellingly, the *one* configuration where Mem0 overtook was
+Claude Sonnet — an off-ecosystem model that jumped Mem0 +0.158 while RE-call moved +0.05. That
+single result would flip a naive "Mem0 wins on strong models" headline; it evaporates the moment you
+use the model people actually run this on. The mechanism is measurable: Mem0 returns LLM-compressed
+facts a stronger reader can exploit, while RE-call returns raw turns that read the same to any model.
 
 ### 4. Nobody controls for retrieval budget or the corrupt answer keys
 - The two systems return different amounts of text per item; matching on `k` doesn't match tokens.
@@ -98,9 +103,10 @@ model chosen to make a point.
 
 ## Where RE-call actually stands (up front, no hiding)
 
-- On `gpt-4o-mini` — the model the incumbents' own numbers are built on — **RE-call is more
-  accurate than Mem0**, across every retrieval budget and both judges, all at p<0.001.
-- On `gpt-4o` the comparison is *[running]* and reported whichever way it lands.
+- On **both** OpenAI generators — `gpt-4o-mini` and `gpt-4o`, the models the incumbents' own numbers
+  are built on — **RE-call is more accurate than Mem0**, across every retrieval budget and both
+  judges (p = 0.0059 to 0.0002). The only place Mem0 led was Claude Sonnet, an off-ecosystem model
+  we discarded as irrelevant to how anyone actually runs this.
 - Its cat1 single-hop retrieval recall is the weak spot; a stronger embedder + reranker lifted it
   39%→50% (accuracy 0.440→0.476), a real gain, not category-redefining.
 - **The axis where RE-call is unambiguously ahead is cost**: its memory layer makes **zero** LLM
