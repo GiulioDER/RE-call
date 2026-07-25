@@ -16,7 +16,13 @@ from typing import Any
 
 import pytest
 
-from benchmarks.systems import BENCH_TABLE, MemorySystem, sample_id_of, tenant_for
+from benchmarks.systems import (
+    BENCH_TABLE,
+    MemorySystem,
+    resolve_embedder,
+    sample_id_of,
+    tenant_for,
+)
 
 
 def _mem0_installed() -> bool:
@@ -543,3 +549,31 @@ def test_mem0_system_smoke() -> None:
     system.ingest(conv)
     ctx = system.retrieve("What is the name of the new monitoring code?")
     assert "quokka-telemetry-4417" in ctx
+
+
+def test_resolve_embedder_routes_fastembed_prefix_to_a_named_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The retrieval-quality ablation depends on this route reaching FastEmbedEmbedder with the
+    # model name after the prefix. Monkeypatch the class so the test never downloads a model.
+    captured: dict[str, Any] = {}
+
+    class _FakeFastEmbed:
+        def __init__(self, model_name: str) -> None:
+            captured["model_name"] = model_name
+
+    import recall.embeddings
+
+    monkeypatch.setattr(recall.embeddings, "FastEmbedEmbedder", _FakeFastEmbed)
+    resolve_embedder("fastembed:BAAI/bge-large-en-v1.5")
+    assert captured["model_name"] == "BAAI/bge-large-en-v1.5"
+
+
+def test_resolve_embedder_defers_other_names_to_the_shared_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, str] = {}
+
+    import recall.eval.locomo
+
+    monkeypatch.setattr(
+        recall.eval.locomo, "_make_embedder", lambda name: seen.setdefault("name", name)
+    )
+    resolve_embedder("hashing")
+    assert seen["name"] == "hashing"

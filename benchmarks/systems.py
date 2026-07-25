@@ -27,6 +27,26 @@ BENCH_TABLE = "bench_locomo_chunks"
 TENANT_PREFIX = "bench-"
 
 
+def resolve_embedder(name: str) -> Any:
+    """Benchmark embedder resolver: a superset of `recall.eval.locomo._make_embedder`.
+
+    Adds a ``fastembed:<model>`` route so the RE-call arm can be run on a STRONGER local embedder
+    than the default `bge-small` without an API key — the whole point of the retrieval-quality
+    ablation (does a better embedder fix single-hop recall?). ``fastembed:BAAI/bge-large-en-v1.5``
+    and ``fastembed:mixedbread-ai/mxbai-embed-large-v1`` are 1024-dim CPU models available in the
+    installed fastembed. Every other name (``fastembed`` default, ``st:``, ``voyage``, ``hashing``)
+    defers unchanged to the shared factory, so existing runs are byte-for-byte unaffected.
+    """
+    prefix = "fastembed:"
+    if name.startswith(prefix):
+        from recall.embeddings import FastEmbedEmbedder
+
+        return FastEmbedEmbedder(model_name=name[len(prefix):])
+    from recall.eval.locomo import _make_embedder
+
+    return _make_embedder(name)
+
+
 def sample_id_of(conversation: dict[str, Any]) -> str:
     """The LOCOMO item's `sample_id`, or a loud failure. THE single identity rule for the harness.
 
@@ -95,12 +115,10 @@ class RecallSystem:
     name = "recall"
 
     def __init__(self, dsn: str, embedder_name: str = "fastembed", k: int = DEFAULT_K) -> None:
-        from recall.eval.locomo import _make_embedder
-
         self._dsn = dsn
         self._k = k
         self._embedder_name = embedder_name
-        self._embedder = _make_embedder(embedder_name)
+        self._embedder = resolve_embedder(embedder_name)
         self._tenant: str | None = None
 
     @property
