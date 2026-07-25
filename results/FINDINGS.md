@@ -700,7 +700,7 @@ measures it with no judge and therefore no judge variance:
   vendors drop it. The one axis this library exists for is unmeasured by the entire field, inside
   the field's own benchmark.
 
-### 9a. Retrieval: hit@5 0.615 with the free local embedder
+### 9a. Retrieval: 0.615 at k=5 — and 0.798 at k=20
 
 > ⚠️ **Measured before [#81](https://github.com/GiulioDER/RE-call/issues/81) was fixed.** The runner
 > uses `HybridRetriever`, whose sparse leg ANDed every query term and so fired only when one chunk
@@ -720,6 +720,107 @@ measures it with no judge and therefore no judge variance:
 bge-small, hybrid dense+sparse, no rerank. A comparable retrieval anchor at last — measured on the
 standard benchmark, not on this repo's own corpus. Consistent with §8: on ordinary prose the local
 embedder is not the bottleneck.
+
+#### The depth curve — and why quoting one depth was a mistake
+
+The table above reports a single depth, and this document calls `hit@k` a **ceiling** on any
+downstream J. Those two statements together invite a reading the data never supported: that 0.615
+bounds what a system built on this library can reach. It bounds what it reaches *at k=5*. So the
+curve was measured — every depth scored from **one** retrieval per question, which is exact rather
+than approximate because the candidate pool does not depend on `k`, so top-k is a prefix of
+top-max(k) (`--k-curve`, asserted in the harness):
+
+| k | overall hit@k | 95% CI | cat1 | cat2 (temporal) | cat3 | cat4 |
+|---|---|---|---|---|---|---|
+| 1 | 0.365 | [0.342, 0.390] | 0.266 | 0.505 | 0.163 | 0.367 |
+| 3 | 0.545 | [0.520, 0.570] | 0.482 | 0.629 | 0.315 | 0.559 |
+| **5** | **0.624** | [0.600, 0.648] | 0.606 | 0.670 | 0.391 | 0.639 |
+| 10 | 0.717 | [0.694, 0.739] | 0.723 | 0.757 | 0.511 | 0.722 |
+| **20** | **0.798** | [0.777, 0.818] | 0.816 | 0.807 | 0.620 | 0.809 |
+
+n=1,536 answerable, bge-small, hybrid, no rerank, candidate pool 20 per leg. 806 s.
+
+**The evidence turn is reachable far more often than the headline says.** At k=20 the ceiling is
+**0.798**, not 0.615 — and it passes 0.717 at k=10. Anyone reading 0.615 as "this retrieval
+substrate caps a generator below the ~66 that LOCOMO's published J scores report" was reading a
+property of the *depth this document chose to quote*, not a property of the library. That reading
+was available because §9 stated the ceiling and never stated the curve, so the correction belongs
+here rather than in a rebuttal.
+
+Two things the curve does **not** license:
+
+- **Depth is not free.** k=20 hands a generator four times the context of k=5, with four times the
+  distractors, and the whole thesis of this repo is that a confidently wrong retrieved memory is
+  worse than a missing one. 0.798 is a ceiling at a larger context budget, not a better system.
+  Comparing it to a published J obtained at a different budget would be the same category error
+  this section is correcting.
+- **cat3 is still the floor**, 0.620 at k=20 against 0.816 for cat1. Depth lifts it (0.163 → 0.620,
+  the steepest climb of any category) but does not close the gap, so §9's reading that cat3 is
+  hard for this pipeline survives the curve.
+
+**The candidate pool: a control that does not control for what it was meant to.** A natural
+objection to the curve above: the pool is 20 candidates per leg, so a curve measured to k=20 might
+be reading the pool's edge rather than the retrieval's reach. The control was to re-run with the
+pool raised to 100 per leg; the rows through k=20 came back identical (0.624 / 0.717 / 0.798, k=1
+moving 0.365 → 0.373), and that was read as "the pool of 20 was not the constraint".
+
+> ⚠️ **That inference is retracted, and the k=50 row with it.** Neither survives the configuration
+> the control actually ran under.
+>
+> **The agreement was forced by construction, not earned.** Both runs predate the
+> [#81](https://github.com/GiulioDER/RE-call/issues/81) sparse-leg fix, so the lexical leg ANDed
+> every query term and was largely inert on LOCOMO's ~8-term questions — meaning the fused ranking
+> was, in practice, the *dense* ranking. Against a common index, the first 20 rows of a
+> 100-candidate dense fetch are the same 20 rows as a 20-candidate fetch: same scan, same order.
+> The quantity the control varied **cannot** affect the metric at k ≤ 20, so agreement there is
+> not evidence that the pool was not binding.
+>
+> The two runs did not in fact share an index, which the shipped JSON makes visible:
+>
+> | k | pool 20 | pool 100 |
+> |---|---|---|
+> | 1 | 0.3652 | 0.3730 |
+> | 5 | 0.6243 | 0.6237 |
+> | 10 | 0.7168 | 0.7168 |
+> | 20 | 0.7982 | 0.7982 |
+>
+> So what the control actually shows is agreement *up to index-build noise* — the same ±0.01 this
+> section already documents. Note also that the prose above called the k=5 rows identical at
+> "0.624"; they are 0.6243 and 0.6237, which rounding hid. Neither reading rescues the inference:
+> a comparison whose independent variable cannot move the dependent one is uninformative whether
+> the numbers match or not.
+>
+> **And the pool was never 100.** `query_dense` runs on the unfiltered path, where
+> `hnsw.ef_search` defaults to 40 and an HNSW scan cannot return more rows than it examined, so
+> `--candidate-k 100` supplies at most **40** dense candidates. With the lexical leg inert, the
+> supply behind a `k=50` row was bounded near 40 — below the depth the row claims to report. The
+> **0.872** is therefore withdrawn as a k=50 figure; it is a reach measured against however many
+> candidates existed, which was fewer than fifty.
+>
+> Fixed in `recall/store.py` (raise-only widening of the unfiltered scan). **Re-measuring this
+> curve needs a re-run with both fixes** — the sparse leg working and the dense scan widened — and
+> a re-run is a full re-index, so it has not been done here. The k=1…20 rows of the *default*
+> curve above are unaffected: they were measured at pool 20, where nothing was truncated.
+
+What the control does still establish is narrower, and worth keeping: raising the pool did not
+*hurt*, and the depth curve's shape through k=20 is not an artifact of the pool's edge — a 20-per-leg
+pool supplies more than 20 fused candidates, so a curve to k=20 was never reading its own boundary.
+The claim that had to be dropped is the stronger one, that a *deeper* pool buys nothing.
+
+⚠️ **This run's k=5 reads 0.624; the table above it, published from an earlier run, reads 0.615.**
+Same configuration, same data, same code path — a different HNSW index build. The gap is 0.009,
+well inside either interval, and it is the build nondeterminism this repo already documents for
+calibration (README, "ANN recall"; issue #26). Both numbers are left standing rather than the older
+one quietly overwritten: the honest summary is that the headline carries roughly ±0.01 of
+index-build noise that a single quoted figure hides, and two runs is enough to show that it exists,
+not enough to size it.
+
+Reproduce:
+
+```bash
+python -m recall.eval.locomo --data locomo10.json --k-curve 1,3,5,10,20
+python -m recall.eval.locomo --data locomo10.json --k-curve 1,5,10,20,50 --candidate-k 100
+```
 
 ### 9b. Abstention: 0.00 out of the box, and why the shipped levers only half-fix it
 

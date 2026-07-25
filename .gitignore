@@ -19,3 +19,6 @@ results/scale*/.recall-synthetic
 
 # LOCOMO benchmark data — fetched on demand, not vendored (see recall/eval/locomo.py)
 locomo10.json
+
+# Benchmark run logs — transient. The JSON reports beside them are the artifact.
+results/locomo/*.log

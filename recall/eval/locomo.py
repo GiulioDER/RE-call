@@ -73,6 +73,7 @@ import os
 import shutil
 import tempfile
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,12 @@ from recall.store import PgVectorStore
 from recall.trust import trusted_search
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
+
+#: `HybridRetriever`'s own default candidate pool per leg. Named here because it BINDS the depth
+#: curve: the fused pool holds at most `2 * candidate_k` distinct chunks before truncation to k,
+#: so hit@k stops moving once k reaches the pool no matter how large k gets. A curve that runs
+#: past it is measuring the pool, not the depth.
+DEFAULT_CANDIDATE_K = 20
 
 #: LOCOMO's numeric category ids. The audit above notes these do NOT match the order the papers
 #: present them in, so they are named here from the data itself (by inspecting members of each),
@@ -196,6 +203,19 @@ def _retrieved_dia_ids(hits: list) -> list[str]:
     return out
 
 
+def _hit_by_depth(hits: list, evidence: list[str], depths: Sequence[int]) -> dict[int, bool]:
+    """`hit@d` for every depth in `depths`, scored from ONE ranked hit list.
+
+    Truncation is applied to the CHUNK hits and the dialog ids are derived afterwards, which is
+    the whole correctness question here. Several chunks can map to the same turn, so the id list
+    is shorter than the hit list and slicing *it* to d would reach further down the ranking than
+    depth d ever returned — inflating every k below the maximum, and inflating it most where
+    chunking is densest. Same trap as `_retrieved_dia_ids` returning distinct ids: the id list is
+    a projection of the ranking, not the ranking.
+    """
+    return {d: any(e in _retrieved_dia_ids(hits[:d]) for e in evidence) for d in depths}
+
+
 def _rate(flags: list[bool]) -> dict[str, Any]:
     lo, hi = wilson_ci(flags)
     return {
@@ -213,13 +233,27 @@ def run_conversation(
     embedder: Embedder,
     k: int,
     corpus_dir: Path,
+    ks: Sequence[int] | None = None,
+    candidate_k: int = DEFAULT_CANDIDATE_K,
 ) -> dict[str, Any]:
-    """Index one conversation and score every question against it."""
+    """Index one conversation and score every question against it.
+
+    `ks` scores several retrieval depths from ONE retrieval instead of one depth per run. That is
+    exact rather than an approximation: `candidate_k` fixes the fused pool independently of `k`,
+    so `search(k=n)` returns the first `n` of the same ranking `search(k=N>n)` returns. The k=5
+    row of a curve therefore has to reproduce a k=5 run exactly, and `run()` checks that it does.
+
+    Truncation is applied to the CHUNK hits, not to the dialog ids derived from them: several
+    chunks can map to one turn, so slicing the id list would score a deeper retrieval than the
+    one asked for and inflate every k below the maximum.
+    """
     n_turns = write_conversation_corpus(conversation, corpus_dir)
     store.ensure_schema()
     Indexer(store, embedder).index_path(corpus_dir)
 
-    retriever = HybridRetriever(store, embedder)
+    depths = sorted({int(d) for d in (ks or [k])})
+    max_k = max(depths)
+    retriever = HybridRetriever(store, embedder, candidate_k=candidate_k)
     hits_by_cat: dict[int, list[bool]] = {c: [] for c in ANSWERABLE_CATEGORIES}
     abstained: list[bool] = []
     per_question: list[dict[str, Any]] = []
@@ -254,9 +288,10 @@ def run_conversation(
             # No gold evidence -> nothing to score against. Skipped rather than counted as a
             # miss: scoring it either way would be reporting a label gap as a system property.
             continue
-        retrieval = retriever.search(question, k=k)
+        retrieval = retriever.search(question, k=max_k)
+        hit_by_k = _hit_by_depth(retrieval.hits, evidence, depths)
         retrieved = _retrieved_dia_ids(retrieval.hits)
-        hit = any(e in retrieved for e in evidence)
+        hit = hit_by_k[k] if k in hit_by_k else hit_by_k[max_k]
         hits_by_cat[cat].append(hit)
         per_question.append(
             {
@@ -265,6 +300,7 @@ def run_conversation(
                 "evidence": evidence,
                 "retrieved": retrieved,
                 "hit": hit,
+                "hit_by_k": hit_by_k,
             }
         )
 
@@ -288,11 +324,14 @@ def run(
     limit: int | None,
     keep_corpus: Path | None,
     table: str,
+    ks: Sequence[int] | None = None,
+    candidate_k: int = DEFAULT_CANDIDATE_K,
 ) -> dict[str, Any]:
     conversations = json.loads(data_path.read_text(encoding="utf-8"))
     if limit is not None:
         conversations = conversations[:limit]
 
+    depths = sorted({int(d) for d in (list(ks) + [k])} if ks else {k})
     embedder = _make_embedder(embedder_name)
     started = time.time()
     per_conversation: list[dict[str, Any]] = []
@@ -315,6 +354,8 @@ def run(
                     embedder=embedder,
                     k=k,
                     corpus_dir=corpus_dir,
+                    ks=depths,
+                    candidate_k=candidate_k,
                 )
             per_conversation.append(res)
             print(
@@ -340,11 +381,41 @@ def run(
     ]
     all_hits = [h for flags in pooled_retrieval.values() for h in flags]
 
+    # The depth curve, pooled the same way. Per-category as well as overall: §9a's weakest
+    # category (cat3, 0.370 at k=5) is the one a reader will ask about, and "does depth rescue
+    # it" is not answerable from an overall rate.
+    curve: dict[str, Any] = {}
+    for d in depths:
+        by_cat: dict[str, list[bool]] = {}
+        for res in per_conversation:
+            for q in res["questions"]:
+                if q.get("hit_by_k") and q["category"] in ANSWERABLE_CATEGORIES:
+                    by_cat.setdefault(CATEGORY_NAMES[q["category"]], []).append(q["hit_by_k"][d])
+        flat = [h for f in by_cat.values() for h in f]
+        curve[str(d)] = {
+            "overall": _rate(flat),
+            "by_category": {c: _rate(f) for c, f in sorted(by_cat.items())},
+        }
+
+    # Coherence check: the curve's row at the primary k is scored by truncating a deeper
+    # retrieval, and it must equal the rate scored from a search issued at that k directly. They
+    # are the same ranking only because `candidate_k` is independent of `k` — if that ever stops
+    # being true the curve silently becomes a different measurement, so it is asserted, not
+    # assumed. (Same discipline as §9c's two-harness cross-check.)
+    if str(k) in curve and all_hits:
+        primary = curve[str(k)]["overall"]["rate"]
+        assert primary == _rate(all_hits)["rate"], (
+            f"depth curve at k={k} reads {primary} but a direct k={k} scoring reads "
+            f"{_rate(all_hits)['rate']}: top-k is no longer a prefix of the fused pool"
+        )
+
     return {
         "benchmark": "LOCOMO",
         "metric": f"evidence-turn hit@{k} (retrieval only, no LLM judge)",
         "embedder": embedder_name,
         "k": k,
+        "candidate_k": candidate_k,
+        "depth_curve": curve,
         "conversations": len(conversations),
         "elapsed_s": round(time.time() - started, 1),
         "retrieval_by_category": {c: _rate(f) for c, f in sorted(pooled_retrieval.items())},
@@ -371,6 +442,18 @@ def _print_report(report: dict[str, Any]) -> None:
     print(f"  {'OVERALL':<20} hit@{report['k']} {o['rate']:.3f} "
           f" [{o['ci95'][0]:.2f}, {o['ci95'][1]:.2f}]  n={o['n']}")
     print()
+    curve = report.get("depth_curve") or {}
+    if len(curve) > 1:
+        print("DEPTH — hit@k against retrieval depth, from ONE retrieval per question.")
+        print(f"  (candidate pool {report.get('candidate_k')} per leg; the curve cannot exceed it)")
+        cats = list(next(iter(curve.values()))["by_category"].keys())
+        print(f"  {'k':<5}{'OVERALL':<12}" + "".join(f"{c:<16}" for c in cats))
+        for kk in sorted(curve, key=int):
+            row = curve[kk]
+            line = f"  {kk:<5}{row['overall']['rate']:<12.3f}"
+            line += "".join(f"{row['by_category'][c]['rate']:<16.3f}" for c in cats)
+            print(line)
+        print()
     print("ABSTENTION — category 5, adversarial. No published LOCOMO result reports this.")
     a = report["abstention_adversarial"]
     if a["n"]:
@@ -394,6 +477,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dsn", default=DEFAULT_DSN)
     p.add_argument("--embedder", default="fastembed", help="fastembed | voyage | hashing | st:PATH")
     p.add_argument("--k", type=int, default=5, help="retrieval depth for hit@k (default 5)")
+    p.add_argument(
+        "--k-curve",
+        default=None,
+        help="comma-separated depths to score in ONE pass, e.g. 1,3,5,10,20. Exact, not "
+             "approximate: the candidate pool does not depend on k, so top-k is a prefix of "
+             "top-max(k). --k stays the headline depth and is always included",
+    )
+    p.add_argument(
+        "--candidate-k", type=int, default=DEFAULT_CANDIDATE_K,
+        help=f"candidates per retrieval leg before fusion (default {DEFAULT_CANDIDATE_K}). Raise "
+             "it to score depths past the default pool — but that changes the fusion, so the "
+             "result is a different configuration, not a deeper look at the published one",
+    )
     p.add_argument(
         "--conversations", type=int, default=None, help="score only the first N conversations"
     )
@@ -422,6 +518,15 @@ def main(argv: list[str] | None = None) -> int:
             "locomo10.json"
         )
 
+    ks = None
+    if args.k_curve:
+        try:
+            ks = [int(part) for part in args.k_curve.split(",") if part.strip()]
+        except ValueError:
+            p.error(f"--k-curve must be comma-separated integers, got {args.k_curve!r}")
+        if not ks or any(d < 1 for d in ks):
+            p.error("--k-curve depths must all be >= 1")
+
     report = run(
         args.data,
         dsn=args.dsn,
@@ -430,6 +535,8 @@ def main(argv: list[str] | None = None) -> int:
         limit=args.conversations,
         keep_corpus=args.keep_corpus,
         table=args.table,
+        ks=ks,
+        candidate_k=args.candidate_k,
     )
     _print_report(report)
     if args.out:
