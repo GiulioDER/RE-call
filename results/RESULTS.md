@@ -1,8 +1,21 @@
 # RE-call — measured results, complete
 
-Every evaluation this project has run, in one file. Interpretation and history live in
+Every evaluation this project has run, in one file. Interpretation lives in
 [`FINDINGS.md`](FINDINGS.md); this file is the numbers, each section with the command that
 reproduces it.
+
+**How to check any of this.** Every section carries one of three evidence tiers. Nothing is
+published here that falls outside them.
+
+| tier | means | sections |
+|---|---|---|
+| **📦 artifact** | a committed JSON/markdown result file in `results/` you can diff against the table | §6, §7 |
+| **▶️ reproducible** | no committed artifact, but the corpus is public or ships here and one command regenerates it | §1, §2, §3, §4 (PEPs), §7, §9 |
+| **🔒 private** | measured on a corpus that cannot be published; the aggregates are all that exist | §4 (memory corpus), §5, §8 |
+
+A 🔒 row is the weakest kind of evidence in this document and is labelled wherever it appears.
+Where a figure was published in the past and its artifact was not retained, the figure has been
+removed rather than restated.
 
 **Local vs cloud, up front.** Rows marked **local** run entirely on your hardware — the corpus,
 the queries and the index never leave your machine, and the marginal API cost is $0
@@ -11,7 +24,7 @@ Rows marked **cloud** use the Voyage API: better on some corpora (measured below
 document and query is sent to a third party, and the row only reproduces with `VOYAGE_API_KEY`
 set. RE-call itself never requires the cloud path — it is an option, not a dependency.
 
-## 1. Core retrieval ablation — embedder × fusion (14-doc corpus)
+## 1. Core retrieval ablation — embedder × fusion (14-doc corpus) ▶️
 
 Reproduce the local (key-free) rows with `make eval` — needs Docker + the local embedder only. The
 Voyage cloud row appears when `VOYAGE_API_KEY` is set.
@@ -58,7 +71,7 @@ Cost/latency (mean wall time per call):
 | BAAI/bge-small-en-v1.5 | hybrid | 16.1 | 0.0 |
 | BAAI/bge-small-en-v1.5 | hybrid+rerank | 39.4 | 1922.1 |
 
-## 2. Trust layer — superseded/expired memories vs plain search
+## 2. Trust layer — superseded/expired memories vs plain search ▶️
 
 STR = superseded-trust rate: how often a stale memory was presented as the answer on the
 validity-sensitive queries (lower is better). The final two columns verify the trust layer does
@@ -86,7 +99,7 @@ two-document relation.
 At scale (synthetic corpus, §5): STR trust **0.00 [0.00, 0.02]** at coverage **1.00** over n=250 —
 the headline claim, bounded.
 
-## 3. Entailment abstention — near-miss queries (arms A/B/C)
+## 3. Entailment abstention — near-miss queries (arms A/B/C) ▶️
 
 Near-miss = a high-similarity memory that does NOT answer the query — the class a cosine threshold
 passes by construction. Arms: `threshold` = calibrated cosine threshold (status quo),
@@ -108,7 +121,7 @@ The one cloud measurement on this class (v0.3 run, older query set, not re-runna
 voyage-3 near-miss FCR **0.40 → 0.40** with the judge, gap FCR 0.00 → 0.00, false-abstain
 0.00 → 0.07, judge 125 ms — the strongest embedder had the least for the judge to fix.
 
-## 4. Real corpora — where local vs cloud actually separates
+## 4. Real corpora — where local vs cloud actually separates ▶️ 🔒
 
 Two corpora, 110 hand-labelled paraphrased questions each (half calibrate the threshold, half
 score), hybrid dense+sparse, no reranker unless stated. This is the section that prices the cloud:
@@ -139,7 +152,7 @@ git clone --depth 1 https://github.com/python/peps
 python -m recall.eval.labelled --corpus peps/peps --questions recall/eval/peps_questions.json --glob '**/*.rst'
 ```
 
-## 5. Domain fine-tuning — free lift where the vocabulary gap is
+## 5. Domain fine-tuning — free lift where the vocabulary gap is 🔒
 
 `finetune/train.py`, OnlineContrastiveLoss on (query, gold-chunk) pairs, scored on held-out
 paraphrased queries. All local. Full study: [docs/RAG_TRAINING_STUDY.md](../docs/RAG_TRAINING_STUDY.md).
@@ -153,7 +166,7 @@ Fine-tuning's payoff equals the vocabulary gap between the base model and your c
 corpus the embedder already reads, large on jargon. It is the local-only counterpart to §4's cloud
 swap — same condition (unusual vocabulary) predicts both.
 
-## 6. Scale — synthetic corpus, two arms
+## 6. Scale — synthetic corpus, two arms 📦
 
 `recall.eval.synthetic` generates the trust-corpus shape at arbitrary size. Details:
 [scale/SCALE.md](scale/SCALE.md), [scale-pressure/SCALE.md](scale-pressure/SCALE.md).
@@ -187,7 +200,7 @@ order-of-magnitude only. Filtered dense search returns `k` results when `k` exis
 (`hnsw.ef_search=200` + `iterative_scan=relaxed_order`, pinned by
 `tests/test_hnsw_filtered_recall.py`) — a correctness fix, not a quality one (FINDINGS §5b).
 
-## 7. LOCOMO — the standard benchmark (retrieval + the axis nobody scores)
+## 7. LOCOMO — the standard benchmark (retrieval + the axis nobody scores) 📦
 
 Public benchmark (10 conversations, 1,536 answerable + 446 adversarial questions). RE-call
 produces **no LLM-judge (J) score** — it has no generator; these are exact retrieval and
@@ -206,10 +219,10 @@ top-max(k) by construction). n=1,536 answerable; candidate pool 20 per leg; 625 
 | 10 | 0.778 | [0.757, 0.798] | 0.731 | 0.807 | 0.554 | 0.807 |
 | **20** | **0.855** | [0.836, 0.872] | 0.837 | 0.872 | 0.620 | 0.880 |
 
-The working sparse leg is worth about **+0.05 at k=5** over the effectively dense-only
-configuration the earlier runs measured (0.615/0.624 across two pre-fix builds), and +0.06 at
-k=20 (0.798 → 0.855). cat3 is still the floor at every depth. Default-configuration adversarial
-abstention on the same run: 0.000 [0.00, 0.01], n=446 (§7b).
+The working sparse leg is worth **+0.05 at k=5** and **+0.06 at k=20** over the effectively
+dense-only configuration the pre-fix run measured (0.624 → 0.671; 0.798 → 0.855;
+`locomo/depth_curve_pool20.json`). cat3 is the floor at every depth. Default-configuration
+adversarial abstention on the same run: 0.000 [0.00, 0.01], n=446 (§7b).
 
 Pool control (same code path, `--candidate-k 100`; 1,038 s): a deeper pool **dilutes** the fused
 prefix — RRF interleaves five times as many low-rank candidates — while enabling depth past the
@@ -222,11 +235,7 @@ prefix — RRF interleaves five times as many low-rank candidates — while enab
 | 50 | — (beyond the pool) | **0.877** [0.860, 0.892] |
 
 Raising `--candidate-k` is a different fusion configuration, not a deeper look at the published
-one. Full analysis and the history of the earlier (invalid, retracted) pre-fix control:
-FINDINGS §9a.
-
-Historical anchor: the pre-#81 runs (sparse leg effectively inert → dense-only) measured overall
-hit@5 **0.615/0.624** across two index builds — the ±0.01 build noise is documented in FINDINGS §9a.
+one. Why the pre-fix pool control was retracted: FINDINGS §9a.
 
 ```bash
 python -m recall.eval.locomo --data locomo10.json --k-curve 1,3,5,10,20
@@ -267,11 +276,16 @@ python -m recall.eval.locomo_abstention       --data locomo10.json --answerable-
 python -m recall.eval.locomo_entailment_sweep --data locomo10.json --answerable-sample 40
 ```
 
-## 8. LongMemEval — knowledge-update and abstention, named by the benchmark itself
+## 8. LongMemEval — knowledge-update and abstention, named by the benchmark itself 🔒
 
-`bge-small` local, 500 questions, calibrated on half, scored on half. Configuration note: measured
-pre-#81, so read retrieval rows as effectively **dense-only lower bounds** (a post-fix re-score
-requires rebuilding the 6h39m merged index and is tracked as follow-up; FINDINGS §10).
+`bge-small` local, 500 questions, calibrated on half, scored on half.
+
+> **🔒 Weakest evidence in this file — two independent reasons.** (1) Measured **pre-#81**, so every
+> retrieval row is an effectively **dense-only lower bound**; a post-fix re-score needs the 6h39m
+> merged index rebuilt and has not been run. (2) **No result artifact was retained** — the indexes
+> and the run output are gone, so unlike §6/§7 these tables cannot be diffed against anything in
+> this repo. The commands below regenerate them from the public dataset, which is the only check
+> available. Treat the numbers as this project's own record, not as independently verified.
 
 | | per-question (~49 sessions) | Oracle (940) | merged S (19,195) |
 |---|---|---|---|
@@ -305,14 +319,25 @@ size. Since then the library *certifies* rather than pretends: `Calibration.cert
 when the calibration classes overlap (AUC < 0.90) or are under 20 samples per class — it warns,
 records the verdict, and changes nothing at runtime (FINDINGS §10d).
 
-## 9. Head-to-head vs Mem0 — same generator, same judge, only the memory differs
+```bash
+python -m recall.eval.longmemeval --dataset longmemeval_s_cleaned.json --out ./s_out
+python -m recall.eval.labelled --corpus ./s_out/corpus --questions ./s_out/questions.json
+python -m recall.eval.longmemeval_perq --questions ./s_out/questions.json --master <indexed-table>
+```
+
+## 9. Head-to-head vs Mem0 — same generator, same judge, only the memory differs ▶️
 
 The comparison people actually ask for. Full LOCOMO, LLM-as-judge, **paired** on identical
-question sets; pre-registered before any number was seen. The harness, pre-registration,
-per-question raw dumps, blind human labels and the corrupt-key list live on the
-`bench/head-to-head` branch (being finalized for publication alongside the write-up).
-RE-call ran **entirely local** (bge embedder, no LLM in the memory layer);
-Mem0 as shipped (LLM extraction per memory written).
+question sets; pre-registered before any number was seen. RE-call ran **entirely local** (bge
+embedder, no LLM in the memory layer); Mem0 as shipped (LLM extraction per memory written).
+
+> **What is published, precisely.** The harness (`benchmarks/`), the pre-registration, the blind
+> human labels, the corrupt-key list and an adversarial independent recompute of every cell
+> (`benchmarks/REVIEW.md`) live on the **`bench/head-to-head`** branch. The **per-question raw
+> dumps do not** — `benchmarks/results/` is gitignored, so each run writes them locally only.
+> Every figure below is reproducible with the commands in that branch, and every one of them was
+> re-derived from the dumps by a second, independent script; none is currently checkable from a
+> committed artifact.
 
 Answerable accuracy (n=1,540, all 10 conversations; every row survives Holm–Bonferroni, largest
 adjusted p = 0.012):
@@ -348,15 +373,16 @@ zero-marginal vs linear-per-memory, not "N× cheaper".
 
 **Honest boundaries, from the same study:**
 
-- **The accuracy lead is reader-conditional.** +0.054 (gpt-4o-mini reader) → +0.040 (gpt-4o) →
-  **−0.043 on Claude Sonnet 4.5** (post-hoc, not pre-registered, n=584): the stronger the reader,
-  the smaller the lead, until it reverses. Claimed for the OpenAI reader tier the field
-  benchmarks with; disclosed where it doesn't hold.
-- **The standard judge is unreliable and it doesn't rescue anyone.** On the 199
-  judge-disagreement questions, blind hand-labelling found gpt-4o right 85.6% of the time and
-  gpt-4o-mini 14.4% — and the error is not system-asymmetric, so the ranking holds under either.
-  On the 1,369 questions where both judges agree the margin is the same: RE-call 0.440 vs
-  Mem0 0.399 (+0.041, p=0.0056) — the win does not live in the contested tail.
+- **The accuracy lead is reader-conditional.** At the gpt-4o judge: +0.055 (gpt-4o-mini reader) →
+  +0.041 (gpt-4o) → **−0.043 on Claude Sonnet 4.5** (post-hoc, not pre-registered, n=584): the
+  stronger the reader, the smaller the lead, until it reverses. Claimed for the OpenAI reader tier
+  the field benchmarks with; disclosed where it doesn't hold.
+- **The standard judge is unreliable and it doesn't rescue anyone.** The two judges disagreed on
+  199 answerable questions; blind hand-labelling scored 195 of them (4 undecidable, excluded) and
+  found gpt-4o right **85.6%** of the time against gpt-4o-mini's **14.4%** — and the error is not
+  system-asymmetric (0.870 vs 0.839 by arm), so the ranking holds under either. On the 1,369
+  questions where both judges agree the margin is the same: RE-call 0.440 vs Mem0 0.399
+  (+0.041, p=0.0056) — the win does not live in the contested tail.
 - **Same-embedder control**: both systems on bge-large — RE-call 0.478 vs Mem0 0.370, paired
   p=0.000022 (n=584) — the gap is in how each memory's output reads, not retrieval quality.
 - **LOCOMO's answer key is 6.4% wrong** (99/1,540, independently audited); excluding those moves
