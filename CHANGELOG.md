@@ -101,6 +101,39 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   that holds `id-token: write` for Trusted Publishing. Tags are retained as trailing comments.
   (`.github/workflows/ci.yml`, `.github/workflows/release.yml`)
 
+### Fixed
+- **`recall_forget` and `recall_search(source=…)` now act on the identifier `recall_search`
+  actually shows the caller.** A hit's `source` field is the root-relative `metadata['file']` (e.g.
+  `notes.md`), but forget matched — and the source filter compared — the *absolute* `source` column
+  the indexer writes (`/abs/corpus/notes.md`). So following the documented right-to-erasure contract
+  ("pass sources exactly as they appear in `recall_search` hits") deleted **nothing** on any
+  directory-indexed corpus (every id fell into `sources_not_found`), and `search(source=…)` matched
+  nothing. Both now resolve an identifier against `metadata->>'file'` *or* `source`, keeping legacy
+  and absolute-path callers working; deletion is unchanged and still doubly tenant-scoped. A real
+  index→search→forget round-trip is now tested (the prior tests hand-built chunks whose `source`
+  already equalled the relative name, hiding the split). (`recall/store.py`, `recall_mcp/service.py`,
+  `tests/test_mcp_service_forget.py`)
+- **`recall lint --fix --apply` writes a memo atomically.** `apply_proposal` — the one path that
+  rewrites a user's own document in place — used `Path.write_text`, which truncates the file at open;
+  a crash / disk-full mid-write left the original truncated and unrecoverable. It now stages the new
+  content in a sibling temp file (fsync + `os.replace`, permission bits preserved) so any failure
+  leaves the original intact. (`recall/fix.py`, `tests/test_fix.py`)
+- **`RECALL_HNSW_EF_SEARCH_FILTERED` is validated where it is read.** A non-integer raised an opaque
+  `int()` error naming no variable, and an out-of-range value (0, negative, >1000) passed the cast
+  and only failed later inside `SET LOCAL hnsw.ef_search`, erroring on every filtered search. It now
+  fails at config time with a message that names the variable and the accepted `1..1000` range —
+  matching the sibling `iterative_scan` / multiplier knobs. (`recall/store.py`, `tests/test_store.py`)
+
+### Changed
+- **The server's integer environment knobs are validated at import.** `RECALL_PORT`,
+  `RECALL_POOL_SIZE` and `RECALL_STATEMENT_TIMEOUT_MS` were read with a bare `int()` — a typo crashed
+  with an opaque message naming no variable, and no value was bounds-checked. They now go through a
+  validated reader (named error, range enforced), mirroring `RECALL_TRANSPORT`. **Breaking:**
+  `RECALL_STATEMENT_TIMEOUT_MS=0` — which Postgres treats as "no limit" — is now rejected, because it
+  silently disabled the pool-exhaustion cap the knob exists to enforce; set a large value if you
+  intend an effectively-unlimited timeout. (`recall_mcp/server.py`,
+  `tests/test_server_env_validation.py`)
+
 ## [0.6.0] — 2026-07-25
 
 ### Added
