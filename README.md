@@ -12,7 +12,7 @@
   <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-688%20·%20real%20pgvector-brightgreen" alt="688 tests">
+  <img src="https://img.shields.io/badge/tests-783%20·%20real%20pgvector-brightgreen" alt="783 tests">
 </p>
 
 <p align="center">
@@ -478,7 +478,7 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 
 ## Engineering
 
-**584 tests, 7 skipped.** The database-touching ones run against a real pgvector container — no mock
+**783 tests, 7 skipped.** The database-touching ones run against a real pgvector container — no mock
 DB. CI runs `ruff`, `mypy`, the suite against PostgreSQL under coverage, the suite *again* at the
 declared dependency floor, and `pip-audit` over a checked-in `uv.lock` — each as a gate rather than
 a report.
@@ -508,32 +508,6 @@ Several defects were found only by running the library against a real corpus and
 each has a regression test quoting the input that caused it: a single NUL byte in one file aborting a
 792-file index; every declared supersession edge failing on reference *formatting*; five tests that
 encoded the developer's own environment and failed on a correctly-configured host.
-
-## Upgrading to 0.5.0
-
-**The chunks table gains a `tenant_id` column and its primary key becomes `(tenant_id, id)`.**
-`ensure_schema()` performs that migration in place on an existing table and assigns existing rows to
-the `default` tenant, which is also the default `tenant=` — so a single-tenant deployment upgrades
-without noticing. There is a test that builds an old-shape table, inserts a row, opens it with this
-version, and asserts the row survives and is still retrievable.
-
-The key had to change: chunk ids derive from the file path, so two tenants indexing the same layout
-produced the *same id*, and under the old single-column key one tenant's re-index silently
-overwrote the other's row.
-
-Two behavioural changes worth knowing before you upgrade:
-
-- **The abstention threshold is fitted differently** (mid-gap rather than on the lowest answerable
-  sample). It abstains *more*, and on measured data far more accurately — on the held-out sweep,
-  false-confidence on unanswerable queries drops from **0.205 to 0.045**, for an additional
-  **0.7%** of answerable queries wrongly abstained on (false-abstain 0.003 → 0.010). A separate
-  end-to-end run of the shipped rule on the same host measured gap FCR **0.000** at false-abstain
-  0.015; that number is not comparable to the 0.205, which comes from the sweep. Re-run
-  `recall calibrate` and re-check any threshold you have pinned.
-- **`supersedes:` matching is more tolerant.** `name`, `name.md`, `[name]` and `[[name]]` now all
-  resolve to the same document, so edges that were silently dangling may start applying. That is the
-  intent — on the reference corpus it took working edges from 0 to 2 — but it does mean memories
-  that were served as `ok` can now correctly come back `superseded`.
 
 ## Upgrading to 0.6.0
 
@@ -585,6 +559,32 @@ above. Full detail in
   unchanged — unauthenticated by design, and not metered.
 - **Schema DDL gives up after 5s of lock contention** (`RECALL_SCHEMA_LOCK_TIMEOUT_MS`; `0`
   restores the old unbounded wait). The DDL is idempotent and retried on the next store open.
+
+## Upgrading to 0.5.0
+
+**The chunks table gains a `tenant_id` column and its primary key becomes `(tenant_id, id)`.**
+`ensure_schema()` performs that migration in place on an existing table and assigns existing rows to
+the `default` tenant, which is also the default `tenant=` — so a single-tenant deployment upgrades
+without noticing. There is a test that builds an old-shape table, inserts a row, opens it with this
+version, and asserts the row survives and is still retrievable.
+
+The key had to change: chunk ids derive from the file path, so two tenants indexing the same layout
+produced the *same id*, and under the old single-column key one tenant's re-index silently
+overwrote the other's row.
+
+Two behavioural changes worth knowing before you upgrade:
+
+- **The abstention threshold is fitted differently** (mid-gap rather than on the lowest answerable
+  sample). It abstains *more*, and on measured data far more accurately — on the held-out sweep,
+  false-confidence on unanswerable queries drops from **0.205 to 0.045**, for an additional
+  **0.7%** of answerable queries wrongly abstained on (false-abstain 0.003 → 0.010). A separate
+  end-to-end run of the shipped rule on the same host measured gap FCR **0.000** at false-abstain
+  0.015; that number is not comparable to the 0.205, which comes from the sweep. Re-run
+  `recall calibrate` and re-check any threshold you have pinned.
+- **`supersedes:` matching is more tolerant.** `name`, `name.md`, `[name]` and `[[name]]` now all
+  resolve to the same document, so edges that were silently dangling may start applying. That is the
+  intent — on the reference corpus it took working edges from 0 to 2 — but it does mean memories
+  that were served as `ok` can now correctly come back `superseded`.
 
 ## Reproduce
 
