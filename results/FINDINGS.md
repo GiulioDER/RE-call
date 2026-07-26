@@ -913,6 +913,49 @@ python -m recall.eval.locomo                 --data locomo10.json               
 python -m recall.eval.locomo_abstention      --data locomo10.json --answerable-sample 40  # 9b ablation
 python -m recall.eval.locomo_entailment_sweep --data locomo10.json --answerable-sample 40  # 9c ROC sweep
 
+### 9d. Answer accuracy, cost and speed: the paired head-to-head vs Mem0
+
+§9a measured *retrieval* and was explicit that a top-5 hit is **not** the LLM-judged answer accuracy
+the incumbents report. This subsection measures that metric directly — but as a **paired** contest,
+not a leaderboard number. RE-call and **Mem0** (the most-adopted open-source memory layer) answer
+the **identical** LOCOMO question set through an **identical generator and judge**; the only variable
+is the memory. Paired **McNemar** over per-question outcomes, full **n=1,540** answerable questions.
+
+| generator | budget | judge | RE-call | Mem0 | paired p |
+|---|---|---|---|---|---|
+| gpt-4o-mini | item (k=10/10) | gpt-4o-mini | **0.416** | 0.378 | 0.0059 |
+| gpt-4o-mini | item | gpt-4o | **0.466** | 0.412 | 0.00018 |
+| gpt-4o-mini | token (k=10/20) | gpt-4o-mini | **0.416** | 0.370 | 0.00077 |
+| gpt-4o-mini | token | gpt-4o | **0.466** | 0.411 | 0.00018 |
+| gpt-4o | token | gpt-4o | **0.484** | 0.444 | 0.0065 |
+
+RE-call is the more accurate of the two on every row, and the margin survives **Holm–Bonferroni**
+across all five (largest adjusted p = **0.012**). It also holds on the 1,369 questions where the two
+judges agree (0.440 vs 0.399, p=0.006), so it is not a judge-noise artifact.
+
+**Reader-tier caveat — the lead is a property of the reader, not a universal fact.** At the gpt-4o
+judge the margin runs +0.055 (gpt-4o-mini generator) → +0.041 (gpt-4o) and **reverses on Claude
+Sonnet** (RE-call 0.565 vs Mem0 0.608, n=584) — a generator run *after* pre-registration. The
+mechanism is measurable: Mem0 returns LLM-compressed facts a stronger reader can exploit; RE-call
+returns raw turns. The claim is for the OpenAI reader tier the field benchmarks with, not beyond.
+
+**Mem0 as-shipped.** On Mem0's own documented default embedder (`text-embedding-3-small`, both arms,
+full n=1,540): RE-call **0.42** vs Mem0 **0.366** (+0.046 to +0.057, p ≤ 0.0014). Its shipped
+embedder did not close the gap — it widened it slightly (Mem0 scored *below* its own bge-small).
+
+**Cost.** Metered memory-layer LLM usage building the full benchmark's memory: RE-call **0 calls /
+$0**; Mem0 **272 calls / 2.6M tokens / $7.29** (gpt-4o extraction). RE-call's write path calls no
+LLM, so this stays $0 at any scale and any model.
+
+**Speed** (isolated memory-layer timing, both arms on the same local embedder, idle machine): ingest
+**~4.3× faster** — 67 s vs 288 s for two conversations, the extraction gap as wall-clock; retrieve
+median **77 ms vs 104 ms** (~26%, non-overlapping intervals) *despite* RE-call opening a Postgres
+connection per call. Ingest and the $0/0-calls cost are the robust claims; retrieve speed is
+reported as **directional** — the repeated-query bootstrap CI is optimistic (effective n ≈ 80) and
+the backends differ (Postgres vs in-process Qdrant).
+
+> Reproduce: `python -m benchmarks.run --arm {recall,mem0} --embedder router:openai/text-embedding-3-small --conversations 10` for the as-shipped arm, and `python -m benchmarks.latency` for the timings. Every per-question dump and the paired recompute are published under `benchmarks/`.
+
 ## 10. LongMemEval: the retrieval result, and the abstention failure underneath it
 
 §9 measured LOCOMO — the benchmark the vendors report. This section measures the *other* public one,
