@@ -101,16 +101,49 @@ cd /root/recall && ./.venv/bin/python -m recall.eval.gap_run --beir-root ./beir 
 ⚠️ **Local and cloud identical to three decimals ⇒ the cloud embedder was never used.** Fix the key
 before burning the night.
 
-## 7. The full run
+## 7. The full run — MANY PROCESSES, not one
+
+**Do not run this serially.** Measured on the reference box (EPYC 7763, ~61-CPU cgroup quota),
+a single `gap_run` process embeds at **10.3 docs/s**, which is ~24 h for the remaining ~282 k
+documents.
+
+The reason is not thread misconfiguration, which was checked and ruled out:
+
+| threads | docs/s |
+|---|---|
+| 1 | 2.2 |
+| 8 | 5.7 |
+| 32 | 9.0 |
+| default (256 visible) | **10.3** ← already the best single-process setting |
+
+Throughput rises monotonically with threads, so there is no oversubscription pathology to fix.
+What the curve shows is **~7% scaling efficiency**: one thread does 2.2 docs/s, and ~61 CPUs of
+quota buys 10.3 rather than ~130. ONNX splits a single small forward pass across threads and gains
+almost nothing. Small-model CPU inference scales by *process*, not by thread.
+
+Note also that the cloud embedder measured **61.5 docs/s — six times faster than local**. The API
+is not the bottleneck; the local embedder is. (The API is still the budget risk, §5.)
+
+So: N workers over disjoint corpus subsets, few threads each. `gap_run` already takes `--datasets`,
+so this needs no code change. `scripts/run_gap_parallel.sh` in this repo launches 7 × 8 threads
+(= 56, under the quota):
 
 ```bash
-cd /root/recall && nohup ./.venv/bin/python -m recall.eval.gap_run --beir-root ./beir --out ./results/gap --dsn 'postgresql://recall:recall@127.0.0.1:5432/recall' > run.log 2>&1 &
+cd /root/recall && ./scripts/run_gap_parallel.sh
 ```
 
-Expect **4–10 hours** for the remaining 16 corpora (~290k documents, each embedded twice). Fully
-resumable: `nfcorpus` is already done and gets skipped; if the box dies, re-run the identical
-command and finished corpora are not repeated. A *failed* corpus is deliberately **not** retried —
-add `--retry-failed` on purpose, never by reflex.
+✅ **Right if:** `ps aux | grep -c "[g]ap_run"` prints 7, `cat /proc/loadavg` shows a 1-minute load
+near the CPU quota (~50–60 here, *not* ~8), and no log under `/root/logs/` contains `Traceback`.
+
+Workers share `--out`, writing one `<dataset>.json` each — no contention, since every evaluation
+uses its own Postgres table. Fully resumable at worker granularity: relaunch and finished corpora
+are skipped. A *failed* corpus is deliberately **not** retried — pass `--retry-failed` on purpose,
+never by reflex.
+
+⚠️ **Watch for completion, not for silence.** A waiter that only greps for the success marker
+returns 0 when the SSH connection drops and is indistinguishable from success — this happened
+during the first run of this book. Poll for *both* "all 17 results present" and "no workers
+alive", and report which one fired.
 
 ```bash
 tail -f /root/recall/run.log
