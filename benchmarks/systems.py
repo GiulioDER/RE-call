@@ -50,6 +50,18 @@ def resolve_embedder(name: str) -> Any:
         from recall.embeddings import VoyageEmbedder
 
         return VoyageEmbedder(model=name[len(voyage_prefix):])
+    # `router:<model>` = an OpenAI-compatible cloud embedder served by OpenRouter, e.g.
+    # `router:openai/text-embedding-3-small`. On BEAM this is not a convenience but the only sane
+    # route: the 1M bucket is 37.2 M tokens of dialogue, and pushing that through a 33 M parameter
+    # model on CPU is ~70 TFLOPs per conversation — measured at 12-20 minutes each, ~10 hours for
+    # the bucket, and it is what took a 12 GB laptop down. The same tokens cost about $0.75 through
+    # the hosted embedder, which is ALSO the one Mem0's published BEAM run uses, so matching it
+    # makes the cell more comparable rather than less.
+    router_prefix = "router:"
+    if name.startswith(router_prefix):
+        from recall.embeddings import OpenAICompatEmbedder
+
+        return OpenAICompatEmbedder(model=name[len(router_prefix):])
     from recall.eval.locomo import _make_embedder
 
     return _make_embedder(name)
