@@ -30,7 +30,8 @@ config that was run post-hoc, lost, and is excluded from the headline. Plus one 
 | 6/7 | "Zero tokens / $7.29" asserted not measured | **SURVIVES** | Metered: RE memory-layer = 0 calls / 0 tok; Mem0 = 272 calls / 2.62M tok → $7.29 |
 | 9 | Corrupt-key exclusion favours RE-call | **SURVIVES** | 99/99 matched; RE +0.0224 vs Mem0 +0.0211 — symmetric |
 | 1 | **Accuracy claim's generality** | **⚠️ WOUNDED** | Sonnet flip, reader-tier trend — below |
-| 2/ext | Mem0 not run as-shipped; single benchmark | **RESIDUAL** | Open caveats — below |
+| 2 | Mem0 not run as-shipped (its OpenAI embedder) | **RESOLVED** (measured 07-26) | Mem0 on `text-embedding-3-small`, n=1,540: RE 0.42 vs Mem0 0.366, **+0.046 to +0.057**, p ≤ 0.0014 — gap *widened*, not closed |
+| ext | Single-benchmark external validity | **RESIDUAL** | Accuracy edge rests on LOCOMO alone — below |
 
 ---
 
@@ -133,12 +134,22 @@ win."* That keeps the win where it's real and pre-empts the counter-example.
   prints five raw p-values without one. It survives Holm (above) — so add the sentence, don't
   change the numbers.
 
-## Residual (not closeable on desk / no-API)
+## Resolved after the desk pass
 
-- **Mem0 is not benchmarked as-shipped.** The headline runs Mem0 on the local `bge-small` embedder;
-  Mem0's documented default is OpenAI `text-embedding-3-small`. `systems.py` supports that arm but
-  no result file for it exists. The bge-large control (RE-call still wins by more) makes a flip
-  unlikely, but "was Mem0 shown at its best?" is the fair question a maintainer will ask.
+- **Mem0 as-shipped — RESOLVED (measured 2026-07-26).** Ran Mem0 on its documented default embedder,
+  OpenAI `text-embedding-3-small`, served via OpenRouter (both arms, same generator + judge, full
+  n=1,540). RE-call **0.42** vs Mem0 **0.366**, margin **+0.046 to +0.057** (the spread is RE-call's
+  own run-to-run noise across two runs: 0.4117 / 0.4221), McNemar **p = 0.0014 to 8.5e-5**. Mem0's
+  shipped embedder did **not** close the gap — it *widened* it: Mem0 scored *lower* on
+  text-embedding-3-small (0.366) than on bge-small (0.378 / 0.370), while RE-call held ~0.42. Cost
+  edge intact on this arm too: RE-call memory-layer **0 calls**, Mem0 **272 calls / 2.6M tokens**.
+  Reached without an OpenAI account — OpenRouter serves `openai/text-embedding-3-small` (see
+  `recall.embeddings.OpenAICompatEmbedder` and the `router:` embedder). Artifacts:
+  `recall_…_10conv_20260725T214559Z.json` (+ `…214534Z` as the noise check),
+  `mem0_…_10conv_20260726T083247Z.json`.
+
+## Residual (still open)
+
 - **External validity.** The accuracy edge rests on one benchmark, and the article's own mechanism
   ties it to LOCOMO's "answer sits verbatim in a turn" structure. A synthesis-heavy benchmark
   (where fact-compression helps) could read differently. State that the accuracy claim is
