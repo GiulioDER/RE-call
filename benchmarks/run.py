@@ -217,6 +217,21 @@ def _build_system(
         # `--embedder fastembed:MODEL` puts BOTH arms on the same local model: RE-call via
         # fastembed, Mem0 via its huggingface provider on the same MODEL. Bare `fastembed` (the
         # default) leaves Mem0 on its bge-small default.
+        # `--embedder router:MODEL` puts BOTH arms on the same OpenRouter-served cloud embedder
+        # (e.g. `router:openai/text-embedding-3-small`): RE-call via OpenAICompatEmbedder, Mem0 via
+        # its `openai` provider pointed at OpenRouter with the SAME key the generator/judge use — so
+        # Mem0's documented default embedder is measurable without an OpenAI account.
+        if embedder.startswith("router:"):
+            return Mem0System(
+                openrouter_key,
+                model,
+                embedder="openai",
+                openai_key=openrouter_key,
+                openai_model=embedder[len("router:"):],
+                openai_base_url="https://openrouter.ai/api/v1",
+                k=k,
+                run_id=run_id,
+            )
         hf_model = "BAAI/bge-small-en-v1.5"
         if embedder.startswith("fastembed:"):
             hf_model = embedder[len("fastembed:"):]

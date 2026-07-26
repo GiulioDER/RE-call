@@ -50,6 +50,14 @@ def resolve_embedder(name: str) -> Any:
         from recall.embeddings import VoyageEmbedder
 
         return VoyageEmbedder(model=name[len(voyage_prefix):])
+    # `router:<model>` = an OpenAI-compatible cloud embedder served by OpenRouter, e.g.
+    # `router:openai/text-embedding-3-small`. Lets BOTH arms run on Mem0's documented default
+    # embedder without an OpenAI account — the key is the OpenRouter one the generator/judge use.
+    router_prefix = "router:"
+    if name.startswith(router_prefix):
+        from recall.embeddings import OpenAICompatEmbedder
+
+        return OpenAICompatEmbedder(model=name[len(router_prefix):])
     from recall.eval.locomo import _make_embedder
 
     return _make_embedder(name)
@@ -146,6 +154,7 @@ class RecallSystem:
         embedder_name: str = "fastembed",
         k: int = DEFAULT_K,
         reranker_name: str = "none",
+        table: str = BENCH_TABLE,
     ) -> None:
         self._dsn = dsn
         self._k = k
@@ -153,6 +162,9 @@ class RecallSystem:
         self._embedder = resolve_embedder(embedder_name)
         self._reranker_name = reranker_name
         self._reranker = resolve_reranker(reranker_name)
+        # Overridable so a side experiment (e.g. the latency benchmark) can use its own table at a
+        # different embedder width without colliding with the accuracy runs' `bench_locomo_chunks`.
+        self._table = table
         self._tenant: str | None = None
 
     @property
@@ -168,7 +180,7 @@ class RecallSystem:
             "k": self._k,
             "embedder": {"name": self._embedder_name, "model": self._embedder.name},
             "reranker": self._reranker_name,
-            "table": BENCH_TABLE,
+            "table": self._table,
             "tenant": self._tenant,
         }
 
@@ -184,7 +196,7 @@ class RecallSystem:
         self._tenant = tenant_for(conversation)
         inner = conversation["conversation"]
         with PgVectorStore(
-            self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=BENCH_TABLE
+            self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=self._table
         ) as store:
             store.ensure_schema()
             self._clear(store)
@@ -218,7 +230,7 @@ class RecallSystem:
         if self._tenant is None:
             raise RuntimeError("RecallSystem.retrieve() called before ingest()")
         with PgVectorStore(
-            self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=BENCH_TABLE
+            self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=self._table
         ) as store:
             result = trusted_search(
                 store, self._embedder, question, k=self._k, reranker=self._reranker
@@ -286,6 +298,8 @@ def mem0_config(
     openai_key: str | None = None,
     *,
     hf_model: str = "BAAI/bge-small-en-v1.5",
+    openai_model: str = "text-embedding-3-small",
+    openai_base_url: str | None = None,
     run_id: str = "adhoc",
     storage_dir: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -327,10 +341,14 @@ def mem0_config(
         },
     }
     if embedder == "openai":
-        emb = {
-            "provider": "openai",
-            "config": {"model": "text-embedding-3-small", "api_key": openai_key},
-        }
+        emb_config: dict[str, Any] = {"model": openai_model, "api_key": openai_key}
+        # When set, route the embedder through an OpenAI-compatible proxy (OpenRouter) rather than
+        # api.openai.com — the SAME model, a key that is not OpenAI's. `embedding_dims` is left
+        # unset so Mem0 does not send the `dimensions` param (some proxies reject it); the native
+        # 1536-wide vector matches the Qdrant collection width configured below.
+        if openai_base_url:
+            emb_config["openai_base_url"] = openai_base_url
+        emb = {"provider": "openai", "config": emb_config}
     else:
         emb = {"provider": "huggingface", "config": {"model": hf_model}}
     root = Path(storage_dir) if storage_dir is not None else Path(tempfile.gettempdir())
@@ -443,6 +461,8 @@ class Mem0System:
         k: int = DEFAULT_K,
         *,
         hf_model: str = "BAAI/bge-small-en-v1.5",
+        openai_model: str = "text-embedding-3-small",
+        openai_base_url: str | None = None,
         run_id: str = "adhoc",
         storage_dir: str | Path | None = None,
     ) -> None:
@@ -452,6 +472,8 @@ class Mem0System:
             embedder,
             openai_key,
             hf_model=hf_model,
+            openai_model=openai_model,
+            openai_base_url=openai_base_url,
             run_id=run_id,
             storage_dir=storage_dir,
         )

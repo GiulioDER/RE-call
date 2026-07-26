@@ -115,7 +115,11 @@ to the readers where we hold it, and disclose the one where we don't.
   held the *embedder* constant — both systems on the same strong local model (bge-large): RE-call
   **0.478** vs Mem0 **0.370**, paired **p=0.000022** (gpt-4o-mini generator, 4-conversation subset
   n=584). A better embedder didn't flip the ranking — so any gap is a property of how each memory's
-  output is *read*, not of retrieval quality.
+  output is *read*, not of retrieval quality. We also ran Mem0 on **its own documented default
+  embedder** — OpenAI `text-embedding-3-small` — at full n=1,540, both arms otherwise identical:
+  RE-call **0.42** vs Mem0 **0.366**, paired **p ≤ 0.0014**. Mem0's shipped embedder didn't close
+  the gap; it scored *below* its bge-small (0.366 vs 0.378). "You didn't show Mem0 at its best"
+  doesn't hold — and that best still cost 272 extraction calls to RE-call's zero.
 - LOCOMO's answer key is **6.4% wrong** (99/1,540; independent audit, verified per-question against
   the source). The theoretical ceiling is **~93.6%**, not 100%. Excluding those keys moves both
   systems almost identically (RE-call +2.2, Mem0 +2.1), so it doesn't change the comparison — but
@@ -172,7 +176,8 @@ the OpenAI readers you actually use."*
 ## Reproduce it
 
 Every headline configuration was pre-registered before the numbers were seen; the one post-hoc
-addition (the Claude Sonnet generator) is labelled as such. The harness, the per-question
-raw dumps (context, answer, both judges' verdicts), the human labels, and the corrupt-key list are
-all published; one command reproduces any cell. Rerun it, re-judge it, re-label it — that's the
-point.
+addition (the Claude Sonnet generator) is labelled as such. The harness, the human labels, and the
+corrupt-key list are published, and one command regenerates the per-question dumps (context, answer,
+both judges' verdicts) for any cell — those dumps are run-scratch (`benchmarks/results/` is
+gitignored), so you reproduce them rather than read ours. Rerun it, re-judge it, re-label it —
+that's the point.
