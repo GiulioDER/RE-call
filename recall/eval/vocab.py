@@ -184,3 +184,48 @@ def crowding(vectors: Sequence[Sequence[float]], *, sample: int | None = None, s
     similarity = (matrix / norms) @ (matrix / norms).T
     np.fill_diagonal(similarity, -np.inf)
     return float(similarity.max(axis=1).mean())
+
+
+#: Code regions, stripped before vocabulary statistics. Order matters: fenced blocks are matched
+#: before inline spans, because a fence is made of the same backticks an inline span is.
+_CODE_PATTERNS = (
+    re.compile(r"```.*?```", re.DOTALL),          # markdown fenced block
+    re.compile(r"~~~.*?~~~", re.DOTALL),          # the other markdown fence
+    re.compile(r"<pre\b.*?</pre>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<code\b.*?</code>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"`[^`\n]+`"),                     # inline span
+)
+
+
+def strip_code(text: str) -> str:
+    """`text` with code blocks and inline code spans removed.
+
+    Source code is not evidence of unusual *domain vocabulary*, but it looks identical to the
+    metric: `partial_spearman` shatters into subwords exactly as a project codename does. Measured
+    on real corpora, RE-call's own Python source scores 0.407 and its test suite 0.432 against
+    0.504 for a codename-heavy prose corpus and 0.227 for ordinary prose — code is nearly as
+    "idiosyncratic" as the thing the study is trying to detect.
+
+    Scope, stated because the motivating observation is NOT what this fixes: it removes code
+    *marked up as code inside prose*, moving a markdown corpus by about -0.03 to -0.04 at ~11%
+    code density. It barely touches a file that IS code — RE-call's `.py` sources move -0.002,
+    because Python files carry no fences or `<code>` tags. That is the right scope for this study
+    (CQADupStack is StackExchange prose with embedded code, BEIR is prose), but a corpus of raw
+    source files would need different treatment and none appears here.
+    """
+    for pattern in _CODE_PATTERNS:
+        text = pattern.sub(" ", text)
+    return text
+
+
+def code_density(text: str) -> float:
+    """Share of `text`'s word tokens that sit inside code.
+
+    Reported alongside `oov_rate` as a diagnostic rather than subtracted from it. Stripping code
+    removes the contamination; this number is how much was removed, which is what lets a reader
+    (or a reviewer) see whether a corpus's score rested on the part we deleted.
+    """
+    total = len(word_tokens([text]))
+    if total == 0:
+        return float("nan")
+    return (total - len(word_tokens([strip_code(text)]))) / total

@@ -93,6 +93,47 @@ embedding runs finish in a night. A smaller haystack is an easier haystack, so a
 **not** comparable to published BEIR numbers — only the within-corpus gap is, and only because both
 embedders see the identical subsample. This must be stated wherever the numbers appear.
 
+## PREREGISTRATION — frozen 2026-07-26, before any gap was measured
+
+Everything below is fixed now, while no `gap` figure exists for any BEIR corpus. Each of these is
+a knob that could be turned after seeing results to make a finding appear, which is precisely the
+in-sample defect §2b retracted a number for. Changing any of them later is permitted, but only as
+a **restatement**: the pre-registered result gets published alongside it.
+
+### The analysis set excludes the corpora that generated the hypothesis
+
+§7's finding — *the cloud embedder wins on idiosyncratic vocabulary* — was **discovered by looking
+at the private memory corpus**. A predictor designed with the knowledge that this corpus is both
+high-OOV and high-gap is guaranteed to fit it, so scoring it as evidence is circular.
+
+- **Primary analysis: BEIR + CQADupStack only.** Genuinely held out.
+- **Reported but excluded:** the private memory corpus (discovery, §7) and PEPs (first
+  replication, §8). Both appear in the writeup as context, neither enters the correlation.
+
+At n≈20 the two excluded points cost almost nothing, and their exclusion is what makes the rest
+out-of-sample.
+
+### Frozen parameters
+
+| parameter | value | why this value, decided before seeing any gap |
+|---|---|---|
+| `min_pieces` | **2** | Definitional: 2 means "the tokenizer has no whole-word entry for this", which is exactly the claim being made. 3 is arbitrary — and the smoke test showed 3 gives a *larger* separation (5.2× vs 3.5×), which is the reason it must not be chosen now. |
+| `token_budget` | smallest corpus's token count, floor 2 000 | Rank ordering is stable from 16k down to 2k (ρ = 1.000; 0.964 at 1k) across 7 local text corpora. The analysis is rank-based, so the magnitude drift does not propagate — only the floor matters. |
+| `crowding` sample | fixed across corpora, set at ingest | Sampling changes what "nearest" means; a sparser sample has more distant neighbours. |
+| primary response | `gap = cloud − local` | What is built and tested. |
+| secondary response | `headroom_capture` | Ceiling-corrected structurally rather than statistically. Reported always, not only if the primary disappoints. |
+| correction | Holm over the 3 predictors | Reported alongside the inter-predictor correlation matrix, because Holm assumes independence and is over-conservative if the predictors turn out to be near-copies. |
+| code handling | `strip_code` before `oov_rate`; `code_density` reported | Identifiers shatter like codenames. Scope limit: this removes code *marked up inside prose* (≈ −0.03 on a markdown corpus at ~11% density), not files that are wholly code (−0.002 on `.py`). The study's corpora are prose. |
+
+### Declared in advance: what each outcome means
+
+- **A predictor beats the null (Holm-adjusted p < 0.05):** a rule applicable to a corpus you have
+  never retrieved from.
+- **No predictor beats the null:** *"skip the vocabulary analysis, just measure your local
+  embedder on 30 labelled questions."* Published in the register of §3's null result.
+- **Primary and secondary responses disagree:** published as the finding it is — the predictor was
+  tracking headroom, or tracking the gap, and which one is now known.
+
 ## Compute
 
 A rented box for one night. **Not VPS2 or VPS3** — §7's fine-tune died at 44/96 steps from 629% CPU

@@ -15,7 +15,14 @@ import random
 
 import pytest
 
-from recall.eval.gap_study import holm_adjust, partial_spearman, permutation_p, spearman
+from recall.eval.gap_study import (
+    headroom_capture,
+    holm_adjust,
+    partial_spearman,
+    permutation_p,
+    predictor_correlations,
+    spearman,
+)
 
 
 def test_spearman_is_one_for_a_perfectly_monotone_relation():
@@ -120,3 +127,47 @@ def test_analysis_functions_are_nan_safe_on_degenerate_input():
     # "measured, and there is no relation".
     assert math.isnan(spearman([1, 1, 1], [1, 2, 3]))
     assert math.isnan(partial_spearman([1, 1, 1], [1, 2, 3], [3, 2, 1]))
+
+
+def test_headroom_capture_equalises_two_corpora_at_very_different_ceilings():
+    """Why this response variable exists, in one assertion.
+
+    Corpus A: local 0.50 -> cloud 0.75, a raw gap of +0.25. Corpus B: local 0.90 -> cloud 0.95, a
+    raw gap of +0.05 — five times smaller, and it would rank near the bottom on the raw gap. But
+    both cloud models captured exactly half the room that was left. The raw gap partly measures
+    how much headroom a corpus happened to have; this measures what was done with it.
+    """
+    assert headroom_capture(0.50, 0.75) == pytest.approx(0.5)
+    assert headroom_capture(0.90, 0.95) == pytest.approx(0.5)
+
+
+def test_headroom_capture_is_signed_when_the_cloud_model_loses():
+    # §8 publishes a configuration where the cloud embedder loses. A response variable that could
+    # not represent that would quietly drop the honest half of the result.
+    assert headroom_capture(0.60, 0.50) == pytest.approx(-0.25)
+
+
+def test_headroom_capture_is_nan_at_a_saturated_ceiling():
+    # No room left means the question "how much of the room was captured" has no answer. Zero
+    # would read as "the cloud model achieved nothing", which is a different claim.
+    assert math.isnan(headroom_capture(1.0, 1.0))
+
+
+def test_predictor_correlations_reports_each_unordered_pair_once():
+    pairs = predictor_correlations({"a": [1, 2, 3, 4], "b": [1, 2, 3, 4], "c": [4, 3, 2, 1]})
+    assert set(pairs) == {("a", "b"), ("a", "c"), ("b", "c")}
+
+
+def test_predictor_correlations_exposes_predictors_that_are_the_same_measurement():
+    """The claim "three distinct hypotheses" is empirical, so it gets checked rather than asserted.
+
+    If the predictors cluster, Holm over three is also the wrong correction — it assumes
+    independent tests and is over-conservative for correlated ones.
+    """
+    pairs = predictor_correlations({
+        "oov": [0.1, 0.2, 0.3, 0.4, 0.5],
+        "twin": [0.11, 0.21, 0.31, 0.41, 0.51],   # the same measurement, rescaled
+        "other": [0.5, 0.1, 0.4, 0.2, 0.3],
+    })
+    assert pairs[("oov", "twin")] == pytest.approx(1.0)
+    assert abs(pairs[("oov", "other")]) < 0.5

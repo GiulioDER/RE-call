@@ -151,3 +151,49 @@ def holm_adjust(pvalues: Sequence[float]) -> list[float]:
         running = max(running, min(1.0, pvalues[idx] * (m - rank)))
         adjusted[idx] = running
     return adjusted
+
+
+def headroom_capture(local: float, cloud: float) -> float:
+    """Share of the local model's remaining headroom that the cloud model captured.
+
+    `(cloud - local) / (1 - local)`. The raw gap is bounded and heteroscedastic — a corpus where
+    the local embedder already scores 0.9 cannot show +0.28 however idiosyncratic its vocabulary —
+    which is the entire reason the local score has to be partialled out of the raw analysis. This
+    corrects for the ceiling *structurally* instead: local 0.50 -> 0.75 and local 0.90 -> 0.95 are
+    raw gaps of +0.25 and +0.05, five times apart, but both captured exactly half the room left.
+
+    Secondary to the raw gap, not a replacement for it. Where the two disagree, the disagreement is
+    the finding — a predictor that only survives under one response variable has told you which
+    quantity it was tracking all along.
+
+    Signed, so the configuration where the cloud model loses is representable. NaN at a saturated
+    ceiling, where there is no room to have captured any share of.
+    """
+    room = 1.0 - local
+    if room <= 0.0:
+        return float("nan")
+    return (cloud - local) / room
+
+
+def predictor_correlations(
+    predictors: dict[str, Sequence[Number]],
+) -> dict[tuple[str, str], float]:
+    """Spearman correlation between every unordered pair of predictors.
+
+    Two jobs, both of which are checks on claims made elsewhere rather than results in themselves.
+
+    It tests "these are distinct hypotheses" — an empirical claim, made when `vocab_novelty` was
+    dropped for measuring what `oov_rate` already measured, and therefore one that gets verified
+    rather than asserted.
+
+    And it decides whether Holm is the right correction at all: Holm controls the family-wise
+    error rate assuming the tests are independent, so on predictors that turn out to be near-copies
+    of one another it is over-conservative and would bury a real finding under a correction for
+    multiplicity that is not really there.
+    """
+    names = sorted(predictors)
+    return {
+        (a, b): spearman(predictors[a], predictors[b])
+        for i, a in enumerate(names)
+        for b in names[i + 1 :]
+    }

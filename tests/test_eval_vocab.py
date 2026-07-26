@@ -13,9 +13,11 @@ import pytest
 
 from recall.eval.vocab import (
     bge_encoder,
+    code_density,
     crowding,
     oov_rate,
     query_overlap,
+    strip_code,
     subword_pieces,
 )
 
@@ -195,3 +197,63 @@ def test_crowding_is_nan_for_fewer_than_two_documents():
     # "How close is the nearest other document" is undefined when there is no other document.
     assert math.isnan(crowding([[1.0, 0.0]]))
     assert math.isnan(crowding([]))
+
+
+def test_strip_code_removes_fenced_blocks_but_keeps_the_prose_around_them():
+    """Identifiers shatter exactly like codenames do, so code inflates `oov_rate` for a reason
+    that has nothing to do with domain vocabulary.
+
+    Measured: RE-call's own Python source scores 0.407 and its tests 0.432, against 0.504 for a
+    codename-heavy prose corpus and 0.227 for ordinary prose. CQADupStack's tex, mathematica and
+    programmers subforums are full of code, so uncorrected the predictor could not distinguish
+    "unusual vocabulary" from "contains code".
+    """
+    text = "the pipeline runs nightly\n```python\ndef partial_spearman(xs, ys):\n    return 0\n```\nand reports"
+    stripped = strip_code(text)
+    assert "pipeline" in stripped
+    assert "reports" in stripped
+    assert "partial_spearman" not in stripped
+
+
+def test_strip_code_removes_inline_spans():
+    assert "oov_rate" not in strip_code("call `oov_rate` on the corpus")
+    assert "corpus" in strip_code("call `oov_rate` on the corpus")
+
+
+def test_strip_code_removes_html_code_tags():
+    # StackExchange dumps — which is what CQADupStack is — carry <code>, not markdown fences.
+    assert "sudo_apt_get" not in strip_code("try <code>sudo_apt_get</code> first")
+    assert "first" in strip_code("try <code>sudo_apt_get</code> first")
+
+
+def test_code_density_is_the_share_of_word_tokens_sitting_inside_code():
+    # tokens: run, foo_bar, now -> exactly one of three is code.
+    assert code_density("run `foo_bar` now") == pytest.approx(1 / 3)
+
+
+def test_code_density_is_zero_for_prose_and_nan_for_nothing():
+    assert code_density("the system restarts after a crash") == 0.0
+    assert math.isnan(code_density(""))
+
+
+def test_strip_code_leaves_an_unclosed_fence_alone():
+    """An unbalanced fence must not swallow the rest of the document.
+
+    This is not hypothetical: computing density over a CONCATENATION of 784 markdown files paired
+    an unclosed fence in one file with a fence in another and reported 71.9% code for a prose
+    corpus — a wrong number that looked like a finding. Within a single document the shortest-match
+    rule already makes an unclosed fence inert, and this pins it so a future 'improvement' to the
+    regex cannot quietly reintroduce the swallow.
+    """
+    text = "the deployment failed\n```python\nnever closed"
+    assert "deployment" in strip_code(text)
+    assert "failed" in strip_code(text)
+
+
+def test_code_density_is_measured_per_document_not_across_a_join():
+    # The same hazard from the caller's side: two documents, each with one unclosed fence. Scored
+    # individually neither has closed code; joined, they pair and everything between vanishes.
+    a, b = "alpha ```one", "beta ```two"
+    assert code_density(a) == 0.0
+    assert code_density(b) == 0.0
+    assert code_density(a + "\n" + b) > 0.0  # the artefact, reproduced deliberately
