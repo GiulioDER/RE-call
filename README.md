@@ -16,11 +16,13 @@
 </p>
 
 <p align="center">
+  <a href="#why-re-call">Why RE-call</a>
+  &nbsp;·&nbsp;
+  <a href="#who-is-it-for">Who it's for</a>
+  &nbsp;·&nbsp;
   <a href="#see-it-in-one-screen">See it</a>
   &nbsp;·&nbsp;
   <a href="#what-is-actually-verified">What's verified</a>
-  &nbsp;·&nbsp;
-  <a href="#production-posture">Production posture</a>
   &nbsp;·&nbsp;
   <a href="#quickstart--2-minutes-no-api-key">Quickstart</a>
   &nbsp;·&nbsp;
@@ -28,6 +30,45 @@
 </p>
 
 ---
+
+## Why RE-call
+
+Give your AI agent, app, or team a long-term memory that is **free to run**, **stays on your
+machines**, and **tells the truth about what it knows**.
+
+- **$0 per memory, at any scale.** There is no LLM anywhere in the ingest or retrieval path —
+  writing a memory is an embedding, searching is Postgres. In the head-to-head below, building the
+  full benchmark's memory cost Mem0 **$7.29** in metered API calls; RE-call cost **$0.00** — and
+  scored higher on the same questions.
+- **Your data never leaves your infrastructure.** Local embeddings plus the PostgreSQL you already
+  run and back up. No vendor cloud, no graph database, no per-query data egress — which also means
+  it works offline and in privacy-bound environments. (A cloud embedder is a measured *option* for
+  jargon-heavy corpora, never a dependency.)
+- **Performance you can check.** Against **Mem0** — the most-adopted open-source memory layer — on
+  the LOCOMO benchmark, with an identical generator and judge and paired questions, RE-call is the
+  more accurate system on both OpenAI reader models the field benchmarks with (p = 0.0002–0.0065,
+  Holm-corrected), and refuses fewer legitimate questions. We also publish the configuration where
+  it loses, because a benchmark you can't lose isn't one.
+- **It knows when it doesn't know.** Every result carries a verdict, a confidence, and where it
+  came from. Memories that were superseded or expired are demoted instead of served, and a question
+  your memory can't answer gets an explicit *"I don't know"* instead of confident noise.
+
+## Who is it for
+
+| you are | the problem you have | what RE-call does about it |
+|---|---|---|
+| **a dev building an agent** | it re-litigates settled decisions and contradicts its own memory | supersession and validity enforced at retrieval; abstention as a first-class return value; drop-in LangChain / LlamaIndex retrievers and an MCP server for Claude |
+| **a solo founder / indie hacker** | memory layers charge an LLM call for every memory written | $0 marginal cost, forever — embed locally, store in the Postgres you already have, and scaling up never creates a new API bill |
+| **a SaaS or small company** | user data can't be shipped to a third party just to have "memory" | multi-tenant with database-enforced row-level security, token auth, `recall forget` for right-to-erasure, MIT license, all on your own Postgres |
+| **a trader / researcher / operator** | notes pile up and the stale conclusion outranks its own correction | built inside a production trading-research agent for exactly this: closed experiments stay closed, reversed decisions stop resurfacing |
+
+**Try it in 2 minutes, no API key** → [Quickstart](#quickstart--2-minutes-no-api-key). Everything
+below this point is the evidence: what was measured, how, and where it fails — with the losses
+published next to the wins.
+
+---
+
+## The problem, precisely
 
 **Most RAG hands back the closest vector match. That's the wrong answer more often than you'd think.**
 
@@ -290,8 +331,8 @@ Two further differences, and one deficit:
   against this library ([FINDINGS §9](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)), but **not** the metric Mem0 and Zep
   report: their **J** score (LLM-as-a-Judge ≈66) grades a *generator* this library does not ship,
   so no number here belongs beside it. What is measured is the retrieval substrate underneath such
-  a system — evidence-turn **hit@5 0.615** [0.59, 0.64] with the free local embedder, rising to
-  **hit@20 0.798** [0.78, 0.82] across the measured depth curve ([FINDINGS §9a](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)).
+  a system — evidence-turn **hit@5 0.671** [0.65, 0.69] with the free local embedder, rising to
+  **hit@20 0.855** [0.84, 0.87] across the measured depth curve ([FINDINGS §9a](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)).
   Both depths are quoted deliberately: `hit@k` is a *ceiling* on any downstream J, and a ceiling
   published at one depth reads as a ceiling at every depth — it is not. Depth is not free either,
   since k=20 spends four times the generator's context to buy it — and the one

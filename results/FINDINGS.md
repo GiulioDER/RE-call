@@ -134,38 +134,39 @@ confidently builds on a decision that was reversed. Six validity-sensitive queri
 deliberately closer to the *stale* version — the adversarial case) measure it. STR =
 superseded-trust rate: how often a stale memory is presented as the answer (lower is better).
 
-| embedder | STR plain search | STR trust layer | successor acc | abstain acc | MRR answerable (plain → trust) |
-|---|---|---|---|---|---|
-| hashing-64 | **1.00** | **0.00** | 0.25 | 0.00 | 0.737 → 0.737 |
-| bge-small (FastEmbed) | **0.83** | **0.00** | 0.75 | 1.00 | 1.000 → 1.000 |
+Numbers from the current regenerated run ([`RESULTS.md`](RESULTS.md), 2026-07-25, after the
+[#81](https://github.com/GiulioDER/RE-call/issues/81) sparse-leg fix — one run, no splicing):
 
-> ⚠️ **Historical v0.2 table, superseded by [`RESULTS.md`](RESULTS.md).** It was measured on an older
-> query set and column layout (note `successor acc` 0.25 / `abstain acc` 0.00, where the current run
-> reports 0.50 / 1.00), and it predates the [#81](https://github.com/GiulioDER/RE-call/issues/81)
-> sparse-leg fix. It is left as written rather than part-patched, because splicing today's numbers
-> into yesterday's row would produce a table describing no single run.
->
-> **One conclusion below does not survive the re-measurement.** "Ordinary answerable retrieval is
-> untouched (identical MRR)" held when the hybrid arm scored 0.737 either way. With the sparse leg
-> working, `RESULTS.md` measures hashing-64 at **0.964 → 0.804**: the trust layer now costs
-> answerable MRR on the weak embedder, because it has more genuinely-retrieved material to demote.
-> The bge-small row is still 1.000 → 1.000. Read the claim as embedder-dependent, not general.
+| embedder | STR plain search | STR trust layer | trust coverage | successor acc | abstain acc | MRR answerable (plain → trust) |
+|---|---|---|---|---|---|---|
+| hashing-64 | **1.00** | **0.00** | 0.67 | 0.50 | 1.00 | 0.964 → 0.804 |
+| bge-small (FastEmbed) | **0.83** | **0.00** | 0.83 | 0.75 | 0.50 | 1.000 → 1.000 |
+
+> **Provenance.** An earlier v0.2 table sat here (older query set and column layout: successor acc
+> 0.25 / abstain acc 0.00 on hashing, hybrid MRR 0.737 on both sides of the trust layer, sparse leg
+> pre-#81). It has been replaced wholesale rather than part-patched — every column above comes from
+> the single current run. One of the old table's conclusions did not survive the re-measurement:
+> "ordinary answerable retrieval is untouched (identical MRR)" held only while the sparse leg was
+> broken. With the leg working, hashing-64 pays **0.964 → 0.804** answerable MRR under the trust
+> layer — it now has genuinely-retrieved material to demote — while bge-small stays 1.000 → 1.000.
+> The no-cost claim is embedder-dependent, not general.
 
 - **Plain search fails exactly as predicted**: on 83–100% of the trust queries the top answer is
   the superseded/expired memory — semantic similarity cannot see supersession. With the trust
-  layer the stale memory is *never* presented as trustworthy (STR 0.00 on both embedders), and
-  ordinary answerable retrieval is untouched (identical MRR) — **but see the note above: that last
-  clause no longer holds on the weak embedder once the sparse leg works.**
+  layer the stale memory is *never* presented as trustworthy — STR 0.00 on both embedders, at
+  coverage 0.67–0.83, so the zero is not bought by blanket abstention (read STR and coverage
+  together; §5b bounds the same claim at n=250).
 - **Successor redirect**: an explicit `supersedes:` edge transfers relevance — when the stale hit
   scored above the threshold, its retrieved successor is promoted even if its own (different)
   wording scores lower. On bge the successor is the top trusted answer in 3/4 cases; the "miss"
   is honest ranking, not stale trust: the successor was verdict-ok but ranked behind *another
   valid, topically-related memory* (strict top-1 metric).
-- **Abstention quality is bounded by the embedder — §2's lesson resurfaces.** bge + calibrated
-  threshold abstains perfectly on expired/not-yet-valid-only queries (2/2). hashing-64 cannot
-  abstain at all (0/2): its answerable/unanswerable cosine regimes overlap, so unrelated
-  memories clear any workable threshold. A weak embedder cannot support calibrated abstention,
-  at any threshold — same failure mode as gap detection.
+- **The n=2 abstain column is not evidence either way, and an earlier version of this section
+  over-read it.** The old run scored bge 2/2 and hashing 0/2 and this bullet called abstention
+  "bounded by the embedder"; the current run scores bge 1/2 and hashing 2/2 — the ordering
+  *flipped* between runs, which is exactly what a two-sample column does (Wilson intervals span
+  most of [0, 1]; `RESULTS.md`). The embedder-bound-abstention claim itself stands, but on the
+  measurements sized to carry it: §2's separability analysis, §5b's n=100 arm, and §9–§10.
 - **Limits stated plainly**: the redirect requires the successor to be *retrieved* (it is not
   re-queried); validity metadata is declared by the memory author, not inferred; and the
   calibration comes from a small labeled query set (see §2 for why it must be per-embedder).
@@ -197,6 +198,12 @@ the judge's own trained boundary — no per-embedder constant to recalibrate, an
 | hashing-64 | 1.00 → **0.60** | 1.00 → 0.20 | 0.00 → 0.21 | 856 |
 | bge-small | 0.80 → **0.50** | 0.00 → 0.00 | 0.00 → 0.07 | 149 |
 | voyage-3 | 0.40 → 0.40 | 0.00 → 0.00 | 0.00 → 0.07 | 125 |
+
+*(v0.3 run, and the only measurement of the cloud embedder on this query set — the voyage row is
+not re-runnable key-free. The local rows have since been regenerated post-#81 with an added
+`entail-only` ablation arm; the current three-arm table is in [`RESULTS.md`](RESULTS.md), with the
+same direction — the judge roughly halves near-miss FCR — and per-run numbers that differ within
+the small-n noise these 10-query sets carry.)*
 
 Honest reading: the same judge transfers across embedders with zero retuning (the property a
 score threshold provably lacks, §2) — but the **judge-alone ablation degrades far-gap detection**
@@ -373,9 +380,12 @@ wrong: midgap reaches 0.045 gap FCR, while Youden J reaches 0.015 and q20 reache
 same table. Midgap buys most of the available FCR at a small fraction of the false-abstain cost,
 which is the actual claim.
 
-⚠️ **Outlier robustness needs samples.** The floor is a 5th percentile, which cannot exclude
-anything below ~20 answerable samples; on the 14-document corpus it still collapses onto the
-minimum. Bisecting the gap adds margin at any size, but stability requires a real calibration set.
+**Limitation, by design — outlier robustness needs samples.** The floor is a 5th percentile,
+which cannot exclude anything below ~20 answerable samples; on the 14-document corpus it still
+collapses onto the minimum. Bisecting the gap adds margin at any size, but stability requires a
+real calibration set. This is a permanent property of a percentile rule, not a pending fix —
+`Calibration.certified` (§10d) refuses to certify below 20 samples per class for exactly this
+reason.
 
 ### What this evaluation still cannot measure
 
@@ -396,26 +406,21 @@ The synthetic corpus was fixed in one respect and remains broken in another.
 
 Treat the successor/abstain columns from generated corpora as not-yet-measured.
 
-## 7. The real number: paraphrased questions cut retrieval to a third
+## 7. The real number: paraphrased questions collapse retrieval — 0.945 on headings, 0.33 as shipped, 0.46 with the fixed hybrid
 
-> ⚠️ **Every `hybrid` number in this section predates [#81](https://github.com/GiulioDER/RE-call/issues/81),
-> and the pool sweep additionally predates the `hnsw.ef_search` fix.** Two separate defects, both
-> in the retrieval path this section is measuring:
+> **Current numbers (re-measured 2026-07-25, both retrieval fixes live).** Same 46 held-out
+> questions, same runner (`--candidate-k 20`), `bge-small`, after the
+> [#81](https://github.com/GiulioDER/RE-call/issues/81) sparse-leg fix and the `hnsw.ef_search`
+> widening: **dense 0.326 · sparse 0.348 · hybrid 0.457 · hybrid+rerank 0.435** (hit@5). The
+> working sparse leg is worth roughly **+0.13 over dense alone** on this corpus — the hybrid earns
+> its keep here, which the as-shipped rows below could not show.
 >
-> - **The sparse leg was dead.** It ANDed every query term, so on questions phrased as sentences it
->   almost never fired; every `hybrid` row below is close to a dense-only number. The same caveat
->   §9 and §10 carry applies here, and this section was missed when those were annotated.
-> - **The dense leg was capped.** `query_dense` ran on the unfiltered path, where `hnsw.ef_search`
->   defaults to 40 and an HNSW scan cannot return more rows than it examined — so the
->   `candidate_k=100` sweep below delivered **40** dense candidates, not 100.
->
-> **Re-measured 2026-07-25** with both fixed, same 46 held-out questions, same runner
-> (`--candidate-k 20`), `bge-small`: `dense` **0.326**, `sparse` **0.348**, `hybrid` **0.457**,
-> `hybrid+rerank` **0.435**. The corpus has grown since publication (824 files / 6,800 chunks
-> against the 794 / 6,491 below), so this is **not** a clean before/after on the fixes alone and
-> the two sets of figures should not be differenced. What it does establish is that on this corpus
-> the working sparse leg is worth roughly **+0.13 over dense alone** — the hybrid is earning its
-> keep here, which the published rows could not show.
+> The historical rows in the rest of this section were measured before those fixes: the sparse leg
+> ANDed every query term (so every `hybrid` figure below is close to dense-only), and the
+> `candidate_k=100` sweep additionally ran with the dense scan capped at 40 candidates. They are
+> kept because the section's findings were made — and in two cases retracted — on them. The corpus
+> has also grown since (824 files / 6,800 chunks against the 794 / 6,491 below), so the current
+> and historical figures should not be differenced for a fixes-only before/after.
 
 Every retrieval figure above this section was measured either on a corpus this repo ships, one it
 generates, or — for the real corpus — with document **headings** as queries. That last one is
@@ -700,121 +705,98 @@ measures it with no judge and therefore no judge variance:
   vendors drop it. The one axis this library exists for is unmeasured by the entire field, inside
   the field's own benchmark.
 
-### 9a. Retrieval: 0.615 at k=5 — and 0.798 at k=20
+### 9a. Retrieval: 0.671 at k=5 — and 0.855 at k=20
 
-> ⚠️ **Measured before [#81](https://github.com/GiulioDER/RE-call/issues/81) was fixed.** The runner
-> uses `HybridRetriever`, whose sparse leg ANDed every query term and so fired only when one chunk
-> contained all of them. LOCOMO questions average ~8 content terms against single-turn documents,
-> so the leg was largely inert and this is close to a dense-only number. **Not re-measured** — a
-> re-run is a full re-index. Treat 0.615 as a lower bound on the hybrid configuration; the same
-> caveat applies to §9b–§9c and to §10 (LongMemEval).
-
-| Category | hit@5 | 95% CI | n |
-|---|---|---|---|
-| cat1 | 0.592 | [0.53, 0.65] | 282 |
-| cat2 (temporal) | 0.667 | [0.61, 0.72] | 321 |
-| cat3 | 0.370 | [0.28, 0.47] | 92 |
-| cat4 | 0.630 | [0.60, 0.66] | 841 |
-| **overall** | **0.615** | **[0.59, 0.64]** | 1,536 |
-
-bge-small, hybrid dense+sparse, no rerank. A comparable retrieval anchor at last — measured on the
-standard benchmark, not on this repo's own corpus. Consistent with §8: on ordinary prose the local
-embedder is not the bottleneck.
-
-#### The depth curve — and why quoting one depth was a mistake
-
-The table above reports a single depth, and this document calls `hit@k` a **ceiling** on any
-downstream J. Those two statements together invite a reading the data never supported: that 0.615
-bounds what a system built on this library can reach. It bounds what it reaches *at k=5*. So the
-curve was measured — every depth scored from **one** retrieval per question, which is exact rather
-than approximate because the candidate pool does not depend on `k`, so top-k is a prefix of
-top-max(k) by construction (`--k-curve`; the harness's coherence assert pins the k-row to the
-pooled headline rate — a labeling guard, not a check of the prefix itself):
+**Re-measured 2026-07-26 with both retrieval fixes live** — the
+[#81](https://github.com/GiulioDER/RE-call/issues/81) sparse-leg fix and the
+[#84](https://github.com/GiulioDER/RE-call/pull/84) dense-scan widening. Every depth is scored
+from **one** retrieval per question, which is exact rather than approximate because the candidate
+pool does not depend on `k`, so top-k is a prefix of top-max(k) by construction (`--k-curve`; the
+harness's coherence assert pins the k-row to the pooled headline rate — a labeling guard, not a
+check of the prefix itself). n=1,536 answerable, bge-small, hybrid dense+sparse, no rerank,
+candidate pool 20 per leg, 626 s:
 
 | k | overall hit@k | 95% CI | cat1 | cat2 (temporal) | cat3 | cat4 |
 |---|---|---|---|---|---|---|
-| 1 | 0.365 | [0.342, 0.390] | 0.266 | 0.505 | 0.163 | 0.367 |
-| 3 | 0.545 | [0.520, 0.570] | 0.482 | 0.629 | 0.315 | 0.559 |
-| **5** | **0.624** | [0.600, 0.648] | 0.606 | 0.670 | 0.391 | 0.639 |
-| 10 | 0.717 | [0.694, 0.739] | 0.723 | 0.757 | 0.511 | 0.722 |
-| **20** | **0.798** | [0.777, 0.818] | 0.816 | 0.807 | 0.620 | 0.809 |
+| 1 | 0.398 | [0.374, 0.423] | 0.316 | 0.480 | 0.228 | 0.413 |
+| 3 | 0.577 | [0.552, 0.601] | 0.514 | 0.651 | 0.380 | 0.591 |
+| **5** | **0.671** | [0.647, 0.694] | 0.628 | 0.720 | 0.478 | 0.687 |
+| 10 | 0.778 | [0.757, 0.798] | 0.731 | 0.807 | 0.554 | 0.807 |
+| **20** | **0.855** | [0.836, 0.872] | 0.837 | 0.872 | 0.620 | 0.880 |
 
-n=1,536 answerable, bge-small, hybrid, no rerank, candidate pool 20 per leg. 806 s.
+A comparable retrieval anchor — measured on the standard benchmark, not on this repo's own corpus.
+Consistent with §8: on ordinary prose the local embedder is not the bottleneck.
 
-**The evidence turn is reachable far more often than the headline says.** At k=20 the ceiling is
-**0.798**, not 0.615 — and it passes 0.717 at k=10. Anyone reading 0.615 as "this retrieval
-substrate caps a generator below the ~66 that LOCOMO's published J scores report" was reading a
-property of the *depth this document chose to quote*, not a property of the library. That reading
-was available because §9 stated the ceiling and never stated the curve, so the correction belongs
-here rather than in a rebuttal.
+**What the earlier published numbers were, and what the fixes bought.** The previous runs of this
+harness predate #81: their sparse leg ANDed every query term, and LOCOMO questions average ~8
+content terms against single-turn documents, so the leg was largely inert and those runs measured
+an effectively **dense-only** configuration. They scored overall hit@5 **0.615** and **0.624**
+across two index builds — correct measurements of that configuration, kept here as its record. The
+±0.009 between them is HNSW build nondeterminism (pgvector owns the randomness; this repo already
+documents it for calibration — two runs were enough to show the noise exists, not to size it), and
+the post-fix 0.671 is a **different configuration**, not a third sample of that noise. Against the
+dense-only record, the working lexical leg is worth about **+0.05 at k=5** and **+0.06 at k=20**
+(0.798 → 0.855). §10 (LongMemEval) remains pre-fix — see its configuration note.
+
+#### The depth curve — and why quoting one depth was a mistake
+
+An earlier version of this section reported a single depth while calling `hit@k` a **ceiling** on
+any downstream J. Those two statements together invite a reading the data never supported: that
+the k=5 figure bounds what a system built on this library can reach. It bounds what it reaches
+*at k=5*. That is why the full curve is now the headline table above — at k=20 the ceiling is
+**0.855**, and it passes 0.778 at k=10. Anyone reading the k=5 row as "this retrieval substrate
+caps a generator below the ~66 that LOCOMO's published J scores report" was reading a property of
+the *depth this document chose to quote*, not a property of the library.
 
 Two things the curve does **not** license:
 
 - **Depth is not free.** k=20 hands a generator four times the context of k=5, with four times the
   distractors, and the whole thesis of this repo is that a confidently wrong retrieved memory is
-  worse than a missing one. 0.798 is a ceiling at a larger context budget, not a better system.
+  worse than a missing one. 0.855 is a ceiling at a larger context budget, not a better system.
   Comparing it to a published J obtained at a different budget would be the same category error
   this section is correcting.
-- **cat3 is still the floor**, 0.620 at k=20 against 0.816 for cat1. Depth lifts it (0.163 → 0.620,
+- **cat3 is still the floor**, 0.620 at k=20 against 0.837 for cat1. Depth lifts it (0.228 → 0.620,
   the steepest climb of any category) but does not close the gap, so §9's reading that cat3 is
-  hard for this pipeline survives the curve.
+  hard for this pipeline survives the curve — pre-fix and post-fix alike.
 
-**The candidate pool: a control that does not control for what it was meant to.** A natural
-objection to the curve above: the pool is 20 candidates per leg, so a curve measured to k=20 might
-be reading the pool's edge rather than the retrieval's reach. The control was to re-run with the
-pool raised to 100 per leg; the rows through k=20 came back identical (0.624 / 0.717 / 0.798, k=1
-moving 0.365 → 0.373), and that was read as "the pool of 20 was not the constraint".
+**The candidate pool: measured properly this time.** A natural objection to the curve above: the
+pool is 20 candidates per leg, so a curve measured to k=20 might be reading the pool's edge rather
+than the retrieval's reach. The first attempt at this control (pre-fix) compared pool 20 against
+"pool 100", found the k ≤ 20 rows identical, and read that as "the pool was not the constraint".
+**That inference was retracted, and its k=50 row (0.872) withdrawn**: with the sparse leg inert
+the fused ranking was in practice the dense ranking, and `hnsw.ef_search` capped the dense scan at
+40 candidates whatever `--candidate-k` said — the control varied a quantity that could not move
+the metric, and the pool of 100 never existed. A comparison whose independent variable cannot move
+the dependent one is uninformative whether the numbers match or not. (Full post-mortem in the git
+history of this file and [#84](https://github.com/GiulioDER/RE-call/pull/84).)
 
-> ⚠️ **That inference is retracted, and the k=50 row with it.** Neither survives the configuration
-> the control actually ran under.
->
-> **The agreement was forced by construction, not earned.** Both runs predate the
-> [#81](https://github.com/GiulioDER/RE-call/issues/81) sparse-leg fix, so the lexical leg ANDed
-> every query term and was largely inert on LOCOMO's ~8-term questions — meaning the fused ranking
-> was, in practice, the *dense* ranking. Against a common index, the first 20 rows of a
-> 100-candidate dense fetch are the same 20 rows as a 20-candidate fetch: same scan, same order.
-> The quantity the control varied **cannot** affect the metric at k ≤ 20, so agreement there is
-> not evidence that the pool was not binding.
->
-> The two runs did not in fact share an index, which the shipped JSON makes visible:
->
-> | k | pool 20 | pool 100 |
-> |---|---|---|
-> | 1 | 0.3652 | 0.3730 |
-> | 5 | 0.6243 | 0.6237 |
-> | 10 | 0.7168 | 0.7168 |
-> | 20 | 0.7982 | 0.7982 |
->
-> So what the control actually shows is agreement *up to index-build noise* — the same ±0.01 this
-> section already documents. Note also that the prose above called the k=5 rows identical at
-> "0.624"; they are 0.6243 and 0.6237, which rounding hid. Neither reading rescues the inference:
-> a comparison whose independent variable cannot move the dependent one is uninformative whether
-> the numbers match or not.
->
-> **And the pool was never 100.** `query_dense` runs on the unfiltered path, where
-> `hnsw.ef_search` defaults to 40 and an HNSW scan cannot return more rows than it examined, so
-> `--candidate-k 100` supplies at most **40** dense candidates. With the lexical leg inert, the
-> supply behind a `k=50` row was bounded near 40 — below the depth the row claims to report. The
-> **0.872** is therefore withdrawn as a k=50 figure; it is a reach measured against however many
-> candidates existed, which was fewer than fifty.
->
-> Fixed in `recall/store.py` (raise-only widening of the unfiltered scan). **Re-measuring this
-> curve needs a re-run with both fixes** — the sparse leg working and the dense scan widened — and
-> a re-run is a full re-index, so it has not been done here. The k=1…20 rows of the *default*
-> curve above are unaffected: they were measured at pool 20, where nothing was truncated.
+Both defects fixed (#81; #84's raise-only widening of the unfiltered scan), the control was
+re-run, 2026-07-26, one run per arm:
 
-What the control does still establish is narrower, and worth keeping: raising the pool did not
-*hurt*, and the depth curve's shape through k=20 is not an artifact of the pool's edge — a 20-per-leg
-pool supplies more than 20 fused candidates, so a curve to k=20 was never reading its own boundary.
-The claim that had to be dropped is the stronger one, that a *deeper* pool buys nothing.
+| k | pool 20 | pool 100 |
+|---|---|---|
+| 1 | 0.398 | 0.390 |
+| 5 | **0.671** | 0.596 |
+| 10 | 0.778 | 0.690 |
+| 20 | 0.855 | 0.782 |
+| 50 | — (beyond the pool) | **0.877** [0.860, 0.892] |
 
-⚠️ **This run's k=5 reads 0.624; the table above it, published from an earlier run, reads 0.615.**
-Same configuration, same data, same code path — a different HNSW index build. The gap is 0.009,
-well inside either interval, and it is the build nondeterminism this repo already documents for
-calibration (README, "ANN recall"; issue #26). Both numbers are left standing rather than the older
-one quietly overwritten: the honest summary is that the headline carries roughly ±0.01 of
-index-build noise that a single quoted figure hides, and two runs is enough to show that it exists,
-not enough to size it.
+Two findings, one of them §7's predicted mechanism showing up on cue:
+
+- **A deeper pool now measurably *dilutes* a fused prefix** — −0.075 at k=5, −0.073 at k=20. RRF
+  gives `dense[r]` and `sparse[r]` identical scores, so a five-fold deeper pool interleaves five
+  times as many low-rank candidates into every prefix. Raising `--candidate-k` is a **different
+  fusion configuration**, not a deeper look at the published one — the flag's own help text says
+  so, and now the data does too. This also corrects the pre-fix control's consolation claim that
+  "raising the pool did not hurt": it did not hurt *while it could not do anything*; with a live
+  sparse leg it hurts every fused prefix measured.
+- **The k=50 row now exists legitimately**: **0.877**, measured with ≥50 real fused candidates
+  behind it, cat3 at 0.707 — depth keeps lifting the floor category. Its numerical closeness to
+  the withdrawn 0.872 is a coincidence of the dense-only configuration it replaced, not a
+  vindication of it.
+
+The headline table publishes the pool-20 configuration throughout, and its shape through k=20 is
+not an artifact of the pool's edge — a 20-per-leg pool supplies more than 20 fused candidates.
 
 Reproduce:
 
@@ -837,28 +819,40 @@ is useless. Calibration was fit **in-sample**, on the very answerable-vs-adversa
 then scored on: not a realistic operating point but calibration's *upper bound*, so any failure to
 separate is a property of the data, not the fit.
 
-| Mode | Adversarial abstain ↑ | Answerable false-abstain ↓ |
-|---|---|---|
-| default | 0.000 [0.00, 0.01] | 0.000 [0.00, 0.01] |
-| calibrated (in-sample) | 0.527 [0.48, 0.57] | 0.370 [0.32, 0.42] |
-| entailment judge | 0.374 [0.33, 0.42] | 0.263 [0.22, 0.31] |
-| both | 0.765 [0.72, 0.80] | 0.557 [0.51, 0.61] |
+| Mode | Adversarial abstain ↑ | Answerable false-abstain ↓ | discrimination |
+|---|---|---|---|
+| default | 0.000 [0.00, 0.01] | 0.000 [0.00, 0.01] | 0.000 |
+| calibrated (in-sample) | 0.574 [0.53, 0.62] | 0.420 [0.37, 0.47] | 0.154 |
+| entailment judge | 0.347 [0.30, 0.39] | 0.290 [0.25, 0.34] | 0.057 |
+| both | 0.796 [0.76, 0.83] | 0.603 [0.55, 0.65] | 0.193 |
 
 n=446 adversarial, n=400 answerable (40/conversation, seed 0); QNLI cross-encoder, threshold 0.5.
+Re-measured 2026-07-26 post-#81/#84; per-conversation calibrated thresholds 0.695–0.764 (mean
+0.728), **none of them certified** — `from_samples` reported separability 0.53–0.69 against the
+0.90 bar on every single conversation, which is §10d's gate doing its job on the workload it was
+built for.
+
+**The fixes did not move the conclusion, and the way they failed to move it is the finding.**
+Better retrieval raises both columns together: calibration now catches 0.574 of adversarials
+(was 0.527) but refuses 0.420 of answerable questions (was 0.370). Discrimination —
+the only quantity that matters, since either column alone is gameable — is **0.154 against a
+pre-fix 0.157**. A retrieval fix cannot improve an answerability judgement, because a
+better-retrieved on-topic-but-wrong turn scores *higher*, not lower.
 
 Three findings, one of them a correction of this repo's own first guess:
 
 1. **Calibration moves it — the initial "wrong failure mode, won't help" call was wrong.** Fit on
-   the actual distributions it lifts adversarial abstention from 0 to 0.527. The distributions
+   the actual distributions it lifts adversarial abstention from 0 to 0.574. The distributions
    overlap, as expected for an on-topic adversarial, but *not completely*, and calibration exploits
    the partial gap. Stated because the prediction was published internally before it was measured.
-2. **No mode is a clean win, and the best absolute catch is the worst trade.** `both` refuses 76.5%
-   of adversarials but also **55.7% of answerable questions** — unusable. Even the mildest useful
-   mode gives up a quarter of legitimate answers.
+2. **No mode is a clean win, and the best absolute catch is the worst trade.** `both` refuses 79.6%
+   of adversarials but also **60.3% of answerable questions** — unusable. Even the mildest useful
+   mode gives up nearly a third of legitimate answers.
 3. **Entailment is the better-founded lever, even though its absolute catch is lower.** Its
-   0.374 / 0.263 is not in-sample-biased — the judge is pretrained, nothing is fit to the test set —
-   whereas calibration's 0.527 is an optimistic ceiling a held-out fit would not reach. Best honest
-   ratio: entailment. Best honest *conclusion*: neither closes the gap.
+   0.347 / 0.290 is not in-sample-biased — the judge is pretrained, nothing is fit to the test set —
+   whereas calibration's 0.574 is an optimistic ceiling a held-out fit would not reach. Best honest
+   *conclusion*: neither closes the gap, and post-fix neither even improves the trade (finding
+   above the table).
 
 **The residual is architectural, not a tuning failure.** Separating "what did Caroline realize" from
 "what did Melanie realize" when both turns are in the corpus and both score high is entity-level
@@ -879,6 +873,14 @@ false-abstain — how well the judge tells the two classes apart.
 |---|---|---|---|
 | `qnli-distilroberta` (shipped default) | 0.374 / 0.263 | thr 0.95 → 0.697 / 0.500 | **0.197** |
 | `qnli-electra-base` (stronger, same task) | 0.511 / 0.328 | thr 0.99 → 0.677 / 0.438 | **0.240** |
+
+> **These two rows are the pre-#81/#84 run; a post-fix re-measure is in flight.** §9b's table above
+> has been re-measured and its `entailment judge` row now reads 0.347 / 0.290, so the cross-check
+> at the end of this section — which asserts the two harnesses agree to three decimals — is
+> currently comparing a new number against an old one and will be re-verified, not assumed, when
+> the sweep lands. The finding this section carries does not rest on the third decimal: it is that
+> a stronger same-task judge shifts the curve without crossing into usable territory, and §9b's
+> post-fix numbers move both columns together in the same way.
 
 n=446 adversarial, n=400 answerable, seed 0. Three results:
 
@@ -933,12 +935,16 @@ left for a reader to assemble.
 `bge-small` (the free local embedder), hybrid dense+sparse, no reranker. 500 questions, calibrated
 on half and scored on the other half.
 
-> ⚠️ **"hybrid dense+sparse" here predates the [#81](https://github.com/GiulioDER/RE-call/issues/81)
-> fix**: the sparse leg ANDed every query term, so on questions of this length it rarely fired and
-> the arm was close to dense-only. **Not re-measured** — the `lme_s` index alone cost 6h39m to
-> build. Treat these as lower bounds on the hybrid configuration. The §9/§10 *abstention* conclusion
-> is unaffected: it rests on signal separability (AUC ≤ 0.753 across six candidates), and a better
-> candidate pool does not make a relevance signal into an answerability signal.
+> **Configuration note — read every retrieval row here as effectively dense-only.** These runs
+> predate the [#81](https://github.com/GiulioDER/RE-call/issues/81) fix: the sparse leg ANDed every
+> query term, so on questions of this length it rarely fired. The retrieval figures are therefore
+> **lower bounds on the fixed hybrid configuration** — a statement of what was measured, not a
+> defect in it: the dense-only numbers were measured correctly and stand as such. A post-fix
+> re-score has not been run because the fixes are query-time but this benchmark's indexes were not
+> retained (the merged `lme_s` index alone cost 6h39m to build); it is tracked as follow-up work,
+> not silently pending. The *abstention* conclusion — §10's actual finding — is unaffected either
+> way: it rests on signal separability (AUC ≤ 0.753 across six candidates), and a better candidate
+> pool does not make a relevance signal into an answerability signal.
  Three candidate-set sizes, because the benchmark's own
 protocol gives each question its own ~49-session haystack while a single merged index is what a
 real memory store looks like:
@@ -1035,9 +1041,10 @@ Stacked behind a lowered gate it does not beat the threshold alone either:
 | gate 0.600 + judge | 0.332 | 0.433 | 0.383 |
 | gate 0.650 + judge | 0.381 | 0.233 | 0.307 |
 
-⚠️ **n=30 unanswerable — and what that does and does not permit.** The three signals at 0.74–0.75
-are **not** distinguishable from one another; their intervals overlap almost entirely, so the
-ordering among them is noise and no claim here rests on it.
+**Sample-size limitation — n=30 unanswerable, and what that does and does not permit.** This is
+the benchmark's own abstention-class size, not a sampling choice, so it cannot be re-run larger.
+The three signals at 0.74–0.75 are **not** distinguishable from one another; their intervals
+overlap almost entirely, so the ordering among them is noise and no claim here rests on it.
 
 What the sample *does* support is the only conclusion drawn from it: **none of them reaches the
 ~0.90 a usable abstention gate needs.** The best signal's interval tops out at **0.826**, and the
