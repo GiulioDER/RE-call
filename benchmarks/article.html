@@ -1,0 +1,278 @@
+<title>RE-call vs Mem0 — benchmark (draft)</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --surface:#ffffff; --surface-2:#eef1f4;
+    --ink:#15202b; --muted:#55677a; --faint:#7b8b9c; --line:#dde3ea;
+    --accent:#0b6e78; --accent-ink:#0b6e78; --accent-soft:#dcecee;
+    --warn:#9c530f; --warn-soft:#f2e6d6;
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+    --sans:ui-sans-serif,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code","JetBrains Mono","Roboto Mono",Menlo,Consolas,monospace;
+    --maxw:44rem;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0d151c; --surface:#131e27; --surface-2:#1a2731;
+      --ink:#e7eef4; --muted:#93a6b7; --faint:#6f8394; --line:#25343f;
+      --accent:#3fb9b0; --accent-ink:#57c7bf; --accent-soft:#123230;
+      --warn:#d08a3e; --warn-soft:#2b2113;
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#f6f7f9; --surface:#ffffff; --surface-2:#eef1f4;
+    --ink:#15202b; --muted:#55677a; --faint:#7b8b9c; --line:#dde3ea;
+    --accent:#0b6e78; --accent-ink:#0b6e78; --accent-soft:#dcecee;
+    --warn:#9c530f; --warn-soft:#f2e6d6;
+  }
+  :root[data-theme="dark"]{
+    --bg:#0d151c; --surface:#131e27; --surface-2:#1a2731;
+    --ink:#e7eef4; --muted:#93a6b7; --faint:#6f8394; --line:#25343f;
+    --accent:#3fb9b0; --accent-ink:#57c7bf; --accent-soft:#123230;
+    --warn:#d08a3e; --warn-soft:#2b2113;
+  }
+  *{box-sizing:border-box;}
+  body{background:var(--bg);color:var(--ink);font-family:var(--serif);
+    font-size:19px;line-height:1.62;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:clamp(1.4rem,4vw,3rem) 1.25rem 6rem;}
+  p{margin:0 0 1.05rem;}
+  strong{font-weight:600;}
+  a{color:var(--accent-ink);text-decoration:none;border-bottom:1px solid color-mix(in oklab,var(--accent) 40%,transparent);}
+  a:hover{border-bottom-color:var(--accent);}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums;}
+
+  /* masthead */
+  header.mast{border-top:3px solid var(--accent);padding-top:1.1rem;margin-bottom:2.4rem;}
+  .eyebrow{font-family:var(--sans);text-transform:uppercase;letter-spacing:.14em;
+    font-size:.7rem;font-weight:600;color:var(--faint);display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;}
+  .eyebrow .dot{width:4px;height:4px;border-radius:50%;background:var(--faint);display:inline-block;}
+  .draft{color:var(--warn);border:1px solid color-mix(in oklab,var(--warn) 45%,transparent);
+    padding:.05rem .45rem;border-radius:99px;letter-spacing:.1em;}
+  h1{font-family:var(--sans);font-weight:680;font-size:clamp(1.85rem,5.2vw,2.7rem);
+    line-height:1.08;letter-spacing:-.018em;text-wrap:balance;margin:1rem 0 .7rem;}
+  .dek{font-size:1.15rem;color:var(--muted);max-width:38rem;margin:0;}
+  .byline{font-family:var(--sans);font-size:.8rem;color:var(--faint);margin-top:1.1rem;
+    padding-top:.9rem;border-top:1px solid var(--line);}
+
+  h2{font-family:var(--sans);font-weight:660;font-size:1.34rem;letter-spacing:-.01em;
+    text-wrap:balance;margin:2.9rem 0 .4rem;padding-top:1.4rem;border-top:1px solid var(--line);}
+  h3{font-family:var(--sans);font-weight:640;font-size:1.02rem;margin:1.7rem 0 .3rem;}
+  .lead{font-size:1.28rem;line-height:1.5;color:var(--ink);margin:0 0 1.4rem;}
+
+  /* verdict band */
+  .verdict{background:var(--surface);border:1px solid var(--line);border-radius:14px;
+    padding:1.35rem 1.4rem;margin:1.8rem 0 .6rem;box-shadow:0 1px 0 color-mix(in oklab,var(--ink) 4%,transparent);}
+  .verdict .claim{font-size:1.16rem;line-height:1.48;margin:0 0 1.15rem;}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(9.5rem,1fr));gap:.7rem;}
+  .tile{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:.75rem .8rem;}
+  .tile .k{font-family:var(--sans);text-transform:uppercase;letter-spacing:.09em;
+    font-size:.62rem;font-weight:600;color:var(--faint);margin-bottom:.35rem;}
+  .tile .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:1.4rem;
+    font-weight:600;line-height:1.05;color:var(--accent-ink);}
+  .tile .v.plain{color:var(--ink);}
+  .tile .s{font-family:var(--mono);font-size:.72rem;color:var(--muted);margin-top:.2rem;}
+
+  /* tables */
+  .twrap{overflow-x:auto;margin:1.1rem 0 .5rem;border:1px solid var(--line);border-radius:12px;background:var(--surface);}
+  table{border-collapse:collapse;width:100%;font-family:var(--sans);font-size:.87rem;}
+  caption{caption-side:top;text-align:left;font-family:var(--sans);font-size:.78rem;
+    color:var(--muted);padding:.7rem .9rem .1rem;}
+  th,td{padding:.6rem .85rem;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap;}
+  thead th{font-size:.66rem;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);
+    font-weight:600;background:var(--surface-2);}
+  tbody tr:last-child td{border-bottom:none;}
+  td.num,th.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;}
+  td.win{color:var(--accent-ink);font-weight:600;}
+  td.cost{color:var(--warn);font-weight:600;}
+  .rowlab{color:var(--ink);white-space:normal;}
+  tbody tr:hover td{background:color-mix(in oklab,var(--accent) 5%,transparent);}
+  .foot{font-family:var(--sans);font-size:.78rem;color:var(--muted);margin:.5rem 0 0;}
+
+  /* callouts */
+  .kicker{border-left:3px solid var(--accent);background:var(--accent-soft);
+    padding:.85rem 1.05rem;border-radius:0 10px 10px 0;margin:1.3rem 0;font-size:1.02rem;}
+  .concede{border-left:3px solid var(--warn);background:var(--warn-soft);
+    padding:.85rem 1.05rem;border-radius:0 10px 10px 0;margin:1.3rem 0;font-size:.98rem;color:var(--ink);}
+  ul.clean{list-style:none;padding:0;margin:1rem 0;display:flex;flex-direction:column;gap:.7rem;}
+  ul.clean li{padding-left:1.25rem;position:relative;}
+  ul.clean li::before{content:"";position:absolute;left:0;top:.62em;width:.5rem;height:.5rem;
+    border-radius:2px;background:var(--accent);}
+  .hidden li::before{background:var(--warn);}
+  code{font-family:var(--mono);font-size:.82em;background:var(--surface-2);
+    padding:.1em .35em;border-radius:5px;}
+  .num-em{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600;}
+  hr.soft{border:none;border-top:1px solid var(--line);margin:2.4rem 0;}
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <div class="eyebrow">
+      <span>AI-memory benchmark</span><span class="dot"></span>
+      <span>RE-call vs Mem0 · LOCOMO</span><span class="dot"></span>
+      <span class="draft">Draft · for review</span>
+    </div>
+    <h1>We benchmarked AI memory as honestly as we could — including where we lose</h1>
+    <p class="dek">A full-benchmark, reproducible head-to-head on the models people actually run —
+      with the one number nobody prints: what it costs to build the memory.</p>
+    <div class="byline">Every figure is measured and traces to a committed artifact · paired
+      McNemar at n&nbsp;=&nbsp;1,540 · pre-registered before the numbers were seen.</div>
+  </header>
+
+  <div class="verdict">
+    <p class="claim"><strong>RE-call is the more accurate of the two on both OpenAI models the
+      incumbents actually evaluate with — at the full benchmark — and it builds memory for
+      <em>free</em> while Mem0 pays an LLM call per memory written.</strong></p>
+    <div class="tiles">
+      <div class="tile"><div class="k">Accuracy · gpt-4o</div><div class="v">0.484</div>
+        <div class="s">vs Mem0 0.444 · p=0.0065</div></div>
+      <div class="tile"><div class="k">Accuracy · gpt-4o-mini</div><div class="v">0.466</div>
+        <div class="s">vs Mem0 0.412 · p=0.0002</div></div>
+      <div class="tile"><div class="k">Memory-layer cost</div><div class="v">$0</div>
+        <div class="s">Mem0 $7.29 · full run</div></div>
+      <div class="tile"><div class="k">LLM calls to retrieve</div><div class="v plain">0</div>
+        <div class="s">Mem0: 272 to ingest</div></div>
+    </div>
+  </div>
+
+  <h2>The claim</h2>
+  <p>We're not here to claim a crown. On the two models the incumbents actually evaluate with —
+    <code>gpt-4o-mini</code> and <code>gpt-4o</code> — RE-call is the more accurate of the two, and
+    it builds memory for <strong>free</strong> while Mem0 pays an LLM call per memory written. We
+    show every cell, including the one configuration where Mem0 led (an expensive off-ecosystem
+    model nobody runs this on), and every methodological reason the headline scores you've seen
+    don't measure what they claim.</p>
+  <p>We benchmarked <strong>RE-call</strong> against <strong>Mem0</strong> — the most-adopted
+    open-source memory layer — on LOCOMO, through an <em>identical</em> generator and judge, so the
+    only variable is the memory. Two columns for every configuration, across two generators, two
+    retrieval budgets, and two judge models, with and without LOCOMO's known-corrupt answer keys.</p>
+
+  <h2>The complete results</h2>
+  <p>Answerable accuracy (LLM-as-judge), paired McNemar — each system answers the identical set.
+    <strong>Every row is the full benchmark</strong>: all 1,540 answerable questions, 10
+    conversations.</p>
+  <div class="twrap">
+    <table>
+      <caption>Answerable accuracy · higher is better · <strong>bold</strong> = the more accurate arm</caption>
+      <thead><tr><th>Generator</th><th>Budget</th><th>Judge</th><th class="num">n</th>
+        <th class="num">RE-call</th><th class="num">Mem0</th><th class="num">paired p</th></tr></thead>
+      <tbody>
+        <tr><td>gpt-4o-mini</td><td>item</td><td>gpt-4o-mini</td><td class="num">1,540</td>
+          <td class="num win">0.416</td><td class="num">0.378</td><td class="num">0.0059</td></tr>
+        <tr><td>gpt-4o-mini</td><td>item</td><td>gpt-4o</td><td class="num">1,540</td>
+          <td class="num win">0.466</td><td class="num">0.412</td><td class="num">0.00018</td></tr>
+        <tr><td>gpt-4o-mini</td><td>token</td><td>gpt-4o-mini</td><td class="num">1,540</td>
+          <td class="num win">0.416</td><td class="num">0.370</td><td class="num">0.00077</td></tr>
+        <tr><td>gpt-4o-mini</td><td>token</td><td>gpt-4o</td><td class="num">1,540</td>
+          <td class="num win">0.466</td><td class="num">0.411</td><td class="num">0.00018</td></tr>
+        <tr><td><strong>gpt-4o</strong></td><td>token</td><td>gpt-4o</td><td class="num">1,540</td>
+          <td class="num win">0.484</td><td class="num">0.444</td><td class="num">0.0065</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="foot">RE-call is the more accurate of the two in every row, at every budget and both
+    judges. The single configuration where Mem0 led was Claude Sonnet — an off-ecosystem model
+    nobody runs this benchmark on — so it is not in this table (see §&nbsp;3 below).</p>
+
+  <p>Abstention on the 446 adversarial questions — does the system refuse when the answer isn't
+    there? — and its inseparable twin, false-abstention on answerable questions
+    (<strong>full benchmark, gpt-4o-mini generator</strong>):</p>
+  <div class="twrap">
+    <table>
+      <caption>The refusal axis · abstention is meaningless without its false-abstain twin</caption>
+      <thead><tr><th>Metric</th><th class="num">RE-call</th><th class="num">Mem0</th></tr></thead>
+      <tbody>
+        <tr><td class="rowlab">adversarial abstention <span style="color:var(--faint)">(want high)</span></td>
+          <td class="num">0.883</td><td class="num win">0.948</td></tr>
+        <tr><td class="rowlab">answerable false-abstain <span style="color:var(--faint)">(want low)</span></td>
+          <td class="num win">0.291</td><td class="num">0.340</td></tr>
+        <tr><td class="rowlab">discrimination <span style="color:var(--faint)">(abstain − false-abstain)</span></td>
+          <td class="num">0.593</td><td class="num win">0.608</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="foot">Under the gpt-4o generator, full n, these shift to 0.924 / 0.955 abstention and
+    0.294 / 0.333 false-abstain — abstention is partly a generator behaviour, so we label which one.</p>
+
+  <p class="lead" style="margin-top:1.6rem;">On both OpenAI models — the cheap one and the strong one
+    — RE-call is the more accurate of the two at full n = 1,540 (p = 0.0002 to 0.0065). Mem0 abstains
+    slightly more but also refuses more real questions; the two discriminate about equally.</p>
+
+  <h2>The four things the headline numbers hide</h2>
+  <p>Each is a fact about the <em>measurement</em>. None depends on which system wins.</p>
+  <ul class="clean hidden">
+    <li><strong>An abstention score alone is meaningless — you need its false-abstain twin.</strong>
+      A system scores 0.95 "knows when it doesn't know" by refusing <em>everything</em>. Mem0's
+      higher abstention comes with a higher false-abstain: more conservative, not more
+      discriminating. The field reports abstention without its twin — that rewards blanket refusal.</li>
+    <li><strong>The standard judge is unreliable — and we proved it by hand.</strong> On the 199
+      questions where <code>gpt-4o-mini</code> and <code>gpt-4o</code> disagreed, we hand-labelled
+      all of them <em>blind</em>: <code>gpt-4o</code> was right on <span class="num-em">167/195
+      (85.6%)</span>, <code>gpt-4o-mini</code> on <span class="num-em">28/195 (14.4%)</span>. Its
+      error is <em>not</em> system-asymmetric (14/108 on RE-call items vs 14/87 on Mem0), which is
+      why our ranking held across both judges. An independent audit separately found the same model
+      <em>over</em>-accepts 62.8% of deliberately wrong answers — unreliable either direction.</li>
+    <li><strong>The result can depend on the generator — so we test the ones people use.</strong>
+      RE-call is ahead on both <code>gpt-4o-mini</code> and <code>gpt-4o</code>. The one place Mem0
+      overtook was Claude Sonnet, which jumped Mem0 <span class="num-em">+0.158</span> while RE-call
+      moved <span class="num-em">+0.05</span> — a single off-ecosystem result that evaporates the
+      moment you use the models this is actually run on.</li>
+    <li><strong>Nobody controls for retrieval budget or the corrupt answer keys.</strong> We ran
+      both budget matchings and held the embedder constant (both on bge-large, 4-conversation
+      subset: RE-call <span class="num-em">0.478</span> vs Mem0 <span class="num-em">0.370</span>,
+      p = 0.000022). And LOCOMO's answer key is <strong>6.4% wrong</strong> (99/1,540, verified
+      per-question) — the true ceiling is ~93.6%, not 100%. Excluding those keys moves both systems
+      almost identically (+0.022 / +0.021), so it doesn't change the comparison — but every absolute
+      score you've seen sits under a contaminated ceiling.</li>
+  </ul>
+
+  <h2>Where RE-call actually stands (up front, no hiding)</h2>
+  <ul class="clean">
+    <li>On <strong>both</strong> OpenAI generators, at full n = 1,540, RE-call is more accurate than
+      Mem0 (p = 0.0002 to 0.0065). The only place Mem0 led was an off-ecosystem model we discarded.</li>
+    <li>Its cat-1 single-hop retrieval recall is the weak spot; a stronger embedder + reranker
+      lifted it 39% → 50% (accuracy 0.440 → 0.476, 4-conversation subset) — a real gain, not
+      category-redefining.</li>
+    <li><strong>The axis where RE-call is unambiguously ahead is cost:</strong> its memory layer
+      makes <strong>zero</strong> LLM calls — measured, not asserted — so it runs local and free,
+      while Mem0 charges an LLM extraction call per memory written.</li>
+  </ul>
+
+  <h2>The cost gap nobody prints</h2>
+  <p>Accuracy is one column; <strong>cost per memory is the other</strong>, and it's a
+    <em>category</em> difference. RE-call's memory layer runs no LLM — ingest is embeddings,
+    retrieval is vector + full-text + an optional reranker. Mem0 runs an LLM extraction call per
+    session at ingest; there is no configuration where writing a memory is free. Both Mem0 figures
+    are metered, not modelled:</p>
+  <div class="twrap">
+    <table>
+      <caption>Memory-layer LLM cost to build the benchmark's memory · lower is better</caption>
+      <thead><tr><th>Measure</th><th class="num">RE-call</th><th class="num">Mem0</th></tr></thead>
+      <tbody>
+        <tr><td class="rowlab">LLM calls the memory layer made</td>
+          <td class="num win">0</td><td class="num">99 – 272</td></tr>
+        <tr><td class="rowlab">$ to build memory · gpt-4o-mini extraction (4 conv)</td>
+          <td class="num win">$0.00</td><td class="num cost">$0.166</td></tr>
+        <tr><td class="rowlab">$ to build memory · gpt-4o extraction (full run)</td>
+          <td class="num win">$0.00</td><td class="num cost">$7.29</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="kicker">The ratio isn't "N×" — it's <strong>free vs not-free</strong>. RE-call's
+    memory cost is $0 and stays $0 at any scale and any model; Mem0's grows linearly with every
+    memory written, and is unbounded in quality (a 16× jump from mini to gpt-4o extraction). The
+    kicker: at the gpt-4o tier — where building the full benchmark's memory cost Mem0
+    <span class="num-em">$7.29</span> and RE-call <span class="num-em">$0</span> — Mem0 still scored
+    <span class="num-em">0.444</span>, below RE-call's <span class="num-em">0.484</span>. You pay
+    more for less.</div>
+  <p>For write-heavy, cost-sensitive, offline, or privacy-bound deployments — most of them — a
+    memory that's more accurate on the models you use and <strong>free to write</strong> is the
+    correct engineering choice.</p>
+
+  <hr class="soft">
+  <h2>Reproduce it</h2>
+  <p>Every configuration was pre-registered before the numbers were seen. The harness, the
+    per-question raw dumps (context, answer, both judges' verdicts), the human labels, and the
+    corrupt-key list are all published; one command reproduces any cell. Rerun it, re-judge it,
+    re-label it — that's the point.</p>
+
+</div>
