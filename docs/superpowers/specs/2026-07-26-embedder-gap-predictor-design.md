@@ -62,16 +62,31 @@ Both outcomes are publishable, and that is deliberate:
 
 A design with only one publishable outcome is a design that will find one.
 
-### n=2 cannot validate a predictor
+### How many corpora, and why not eight
 
 §7 and §8 give two corpora. Any metric separates two points perfectly — that is a line through
-two dots, and it is the same in-sample defect that §2b already retracted a number for. So:
+two dots, and it is the same in-sample defect that §2b already retracted a number for.
 
-**Corpora (target n=8):** NFCorpus (medical jargon) · SciFact · SciDocs · FiQA (financial) ·
-CQADupStack-programming (technical shorthand) · ArguAna (plain argumentative English — the
-low-jargon anchor) · PEPs · the private memory corpus.
+Eight is not enough either, which the power calculation says plainly. Partialling out one
+covariate leaves `n - 3` degrees of freedom:
 
-BEIR ships qrels for the first six, which convert to the harness's `relevant_files` format.
+| n corpora | df | min detectable \|partial r\| (α=.05) | first Holm test of 3 |
+|---|---|---|---|
+| 8 | 5 | 0.75 | **0.85** |
+| 12 | 9 | 0.60 | 0.70 |
+| **20** | 17 | 0.46 | **0.54** |
+
+At n=8 nothing short of a partial correlation of **0.85** survives correction. A null result there
+would not mean "no effect", it would mean "underpowered" — a night of compute spent to learn
+nothing, and a negative finding we could not honestly publish.
+
+**Corpora (target n≈20):** CQADupStack's ~12 subforums (tex · mathematica · physics · programmers ·
+gis · unix · android · english · gaming · stats · webmasters · wordpress) — each its own corpus
+with its own qrels, spanning TeX/Mathematica jargon through to plain English, which is precisely
+the axis under test — plus NFCorpus (medical) · SciFact · SciDocs · FiQA (financial) · ArguAna
+(plain argumentative English, the low-jargon anchor) · PEPs · the private memory corpus.
+
+BEIR ships qrels for all of these, which convert to the harness's `relevant_files` format.
 
 **Subsampling:** corpora are capped (qrels-relevant documents plus random negatives) so the local
 embedding runs finish in a night. A smaller haystack is an easier haystack, so absolute scores are
