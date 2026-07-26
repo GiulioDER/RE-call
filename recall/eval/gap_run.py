@@ -35,7 +35,7 @@ _log = logging.getLogger(__name__)
 
 #: Preregistered. See the spec's PREREGISTRATION section for why each value, decided before any
 #: BEIR gap existed.
-MAX_DOCS = 5_000          # subsample cap; both embedders see the identical subsample
+MAX_DOCS = 20_000        # COMMON subsample cap; raised from 5_000 on 2026-07-26 (see spec restatement)
 TOKEN_BUDGET = 2_000      # oov_rate size control; rank ordering is stable 16k->2k (rho=1.000)
 MIN_PIECES = 2            # "the tokenizer has no whole-word entry for this"
 CROWDING_SAMPLE = 500     # fixed across corpora: sampling changes what "nearest" means

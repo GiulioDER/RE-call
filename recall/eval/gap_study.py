@@ -206,6 +206,20 @@ PREDICTORS = ("oov_rate", "query_overlap", "crowding")
 POWER_FLOOR = 12
 
 
+def _haystack_confound(usable: Sequence[dict], gap: Sequence[float],
+                       local: Sequence[float]) -> dict:
+    """How much of the gap tracks corpus SIZE rather than anything about its vocabulary."""
+    sizes = [r["predictors"].get("n_documents", float("nan")) for r in usable]
+    if not sizes or any(s != s for s in sizes):
+        return {"spearman": float("nan"), "partial_spearman": float("nan"), "range": {}}
+    return {
+        "spearman": spearman(sizes, gap),
+        "partial_spearman": partial_spearman(sizes, gap, local),
+        "range": {"n_documents": [min(sizes), max(sizes)],
+                  "fold": round(max(sizes) / min(sizes), 2) if min(sizes) else float("nan")},
+    }
+
+
 def analyse_records(records: Sequence[dict], *, arm: str = "hybrid") -> dict:
     """The preregistered analysis, over the run's per-corpus records.
 
@@ -241,6 +255,11 @@ def analyse_records(records: Sequence[dict], *, arm: str = "hybrid") -> dict:
         "null_spearman": spearman(local, responses["gap"]),
         "predictor_correlations": {f"{a}~{b}": v for (a, b), v in
                                    predictor_correlations(values).items()},
+        # The subsample cap is a COMMON cap, not an equalising one: corpora under it are used
+        # whole, so document counts still vary several-fold. A bigger haystack is a harder
+        # haystack and can move the gap by itself, so the residual is measured and reported
+        # rather than carried in prose as a caveat no reader can check.
+        "haystack_confound": _haystack_confound(usable, responses["gap"], local),
         "predictors": {
             name: {
                 "spearman_raw": spearman(values[name], responses["gap"]),

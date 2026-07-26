@@ -215,3 +215,37 @@ def test_analyse_records_ignores_failed_records_and_says_so():
     assert out["excluded"] == ["broken"]
     # n=4 is far under the floor; a null here means underpowered and the output must carry that.
     assert out["underpowered"] is True
+
+
+def test_analyse_records_surfaces_haystack_size_as_a_measured_confound():
+    """A common subsample cap compresses haystack size across corpora; it does not equalise it.
+
+    Corpora smaller than the cap are used whole, so document counts still range about 5.5x. A
+    bigger haystack is a harder haystack and can move the gap on its own, so the residual is
+    reported as a number rather than carried in prose as a caveat nobody can check.
+    """
+    rng = random.Random(5)
+    records = []
+    for i in range(16):
+        n_docs = 4000 + 1000 * i          # the haystack, deliberately varied
+        local = 0.5 + rng.gauss(0, 0.02)  # and NOT confounded with the local score
+        cloud = min(0.99, local + 0.00002 * n_docs + rng.gauss(0, 0.005))
+        rec = _record(f"c{i}", local, cloud, rng.random(), rng.random(), rng.random())
+        rec["predictors"]["n_documents"] = n_docs
+        records.append(rec)
+
+    out = analyse_records(records, arm="hybrid")
+    assert abs(out["haystack_confound"]["spearman"]) > 0.5
+    assert "n_documents" in out["haystack_confound"]["range"]
+
+
+def test_analyse_records_reports_no_haystack_confound_when_sizes_do_not_track_the_gap():
+    rng = random.Random(9)
+    records = []
+    for i in range(16):
+        local = 0.4 + 0.02 * i
+        rec = _record(f"c{i}", local, min(0.99, local + 0.1 + rng.gauss(0, 0.02)),
+                      rng.random(), rng.random(), rng.random())
+        rec["predictors"]["n_documents"] = rng.randint(4000, 20000)
+        records.append(rec)
+    assert abs(analyse_records(records, arm="hybrid")["haystack_confound"]["spearman"]) < 0.5

@@ -125,6 +125,23 @@ out-of-sample.
 | correction | Holm over the 3 predictors | Reported alongside the inter-predictor correlation matrix, because Holm assumes independence and is over-conservative if the predictors turn out to be near-copies. |
 | code handling | `strip_code` before `oov_rate`; `code_density` reported | Identifiers shatter like codenames. Scope limit: this removes code *marked up inside prose* (≈ −0.03 on a markdown corpus at ~11% density), not files that are wholly code (−0.002 on `.py`). The study's corpora are prose. |
 
+### RESTATEMENT 2026-07-26 — `MAX_DOCS` 5 000 → 20 000
+
+Recorded as a restatement rather than an edit, and legitimate only because **no gap has been
+measured for any corpus**. A larger machine became available, and the honest way to spend capacity
+is on a better study rather than a faster one.
+
+What it does *not* change: the cap stays **common across corpora**, so haystack size remains
+controlled. That control is the reason a cap exists at all, not the cost saving. Full BEIR corpora
+range 3.6k (nfcorpus) → 68k (cqadupstack-tex), a **19× spread**, and a bigger haystack is a harder
+haystack that can move the gap by itself. A 20k common cap compresses that to roughly **5.5×**.
+
+What it does change: five corpora (nfcorpus, scifact, arguana, cqadupstack-mathematica,
+cqadupstack-webmasters) now fall under the cap and are used whole. Haystack size therefore still
+varies, so `analyse_records` reports `haystack_confound` — the correlation between `n_documents`
+and the gap, raw and partialled on the local score. Measured and printed, not carried in prose as
+a caveat no reader can check.
+
 ### Declared in advance: what each outcome means
 
 - **A predictor beats the null (Holm-adjusted p < 0.05):** a rule applicable to a corpus you have
