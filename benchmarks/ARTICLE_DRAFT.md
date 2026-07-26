@@ -69,6 +69,38 @@ equally.** The one configuration where Mem0 came out ahead — Claude Sonnet as 
 *after* pre-registration and is not in this headline table; we report it in §3 rather than bury it,
 because the trend it belongs to (our lead narrowing as the reader strengthens) is itself the finding.
 
+### Correction pending: our Mem0 arm was missing one of Mem0's three retrieval signals
+
+Found on 2026-07-26 while refreshing these numbers against Mem0's newest release, and published
+here before it is fixed, because it cuts against us.
+
+Mem0's current algorithm scores three signals in parallel and fuses them: semantic similarity,
+BM25 keywords, and an **entity boost**. The entity half is built on spaCy, which ships in the
+optional `mem0ai[nlp]` extra — and our benchmark environment installed plain `mem0ai`. Without
+spaCy, `mem0.utils.entity_extraction.extract_entities` returns an empty list by design, so in
+every run above:
+
+- no entities were extracted or linked at write time;
+- at query time `query_entities` came back empty, so `entity_boosts` stayed `{}` and the boost
+  contributed exactly nothing (`ENTITY_BOOST_WEIGHT = 0.5` — not a rounding term);
+- BM25 still ran (its sparse encoder loads from `fastembed`, which we do have), but on
+  unlemmatized queries.
+
+The run logs carry the warning — `Failed to load spaCy full model: spaCy is not installed` — and
+nobody read it. So the tables above compare RE-call against a Mem0 running two of its three
+signals, one of them degraded. **Treat every Mem0 cell above as a lower bound on Mem0, and every
+RE-call margin as an upper bound on our lead**, until the re-run lands.
+
+Two things this does not change: the cost gap (extraction costs an LLM call whether or not spaCy is
+installed) and the abstention/false-abstain rows, where Mem0 already beats us on the axis we care
+most about. What it may well change is the accuracy margin — which, per §3, was already narrow and
+reader-conditional.
+
+The lesson generalises past this repo: **an optional extra that degrades silently is a benchmark
+hazard.** Mem0 did nothing wrong here — the fallback is deliberate and it warns. We installed the
+competitor the lazy way and then measured it. The re-run pins `mem0ai[nlp]` plus the spaCy model
+and asserts a non-empty entity extraction at start-up, so the failure cannot recur quietly.
+
 ## The four things the headline numbers hide
 
 Each of these is a fact about the *measurement*. None depends on which system wins.
