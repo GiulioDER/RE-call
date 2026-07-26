@@ -1,0 +1,113 @@
+# When is a cloud embedder worth it? — study design
+
+**Date:** 2026-07-26 · **Branch:** `research/vocab-gap-predictor` · **Status:** design approved, implementation started
+
+## Why this exists
+
+FINDINGS §8 established a *conditional* rule:
+
+| hit@5 | bge-small (local) | voyage-3 (cloud) | Δ |
+|---|---|---|---|
+| private memory corpus, 794 docs | 0.348 | 0.630 | **+0.282** |
+| PEPs, 746 docs (public) | 0.705 | 0.727 | **+0.022** |
+
+The rule reads: *pay for a cloud embedder when your corpus vocabulary is unusual — internal
+codenames, project shorthand, identifiers absent from any pretraining set.*
+
+That is true and it is **not operational**. A reader cannot apply it to their own corpus, and a
+reviewer cannot critique it. This study tries to turn "unusual" into a number you can compute
+before you spend anything.
+
+There is a second motive, stated so it is not mistaken for a hidden one: this result is the
+anchor for a technical-review request to the Voyage team and to the local-embedding community
+(bge / sentence-transformers / fastembed). The study is designed to be worth publishing whether
+or not anyone replies.
+
+## The question
+
+> What property of a corpus predicts how much a cloud embedder will beat a local one — and is
+> that gap closable by adapting the local model instead?
+
+## The design
+
+**Unit of observation:** one corpus. **Response:** `gap = hit@5(voyage-3) − hit@5(bge-small)`,
+both measured through the existing `recall.eval.labelled` harness so nothing but the embedder
+changes.
+
+**Candidate predictors** (all computable without touching the cloud API):
+
+| predictor | intuition |
+|---|---|
+| `oov_rate` | share of word *types* the local model's tokenizer shatters into ≥k subwords |
+| `vocab_novelty` | share of types absent from a reference technical-English vocabulary |
+| `query_overlap` | lexical overlap between questions and their gold documents — low overlap = paraphrase pressure |
+| `crowding` | mean nearest-neighbour cosine among documents in local embedding space |
+| **`bge_hit@5`** | **the null model — the local embedder's own score** |
+
+### The null model is the point
+
+`gap = voyage − bge`, so the gap is mechanically anti-correlated with `bge` through the ceiling
+alone: a corpus where the local model already scores 0.9 cannot show a +0.28 gap. Any vocabulary
+metric will therefore correlate with the gap *without explaining anything*.
+
+**The finding is not "predictor X correlates with the gap." It is whether X explains variance
+beyond `bge_hit@5`** — partial correlation, local score held fixed.
+
+Both outcomes are publishable, and that is deliberate:
+
+- **X beats the null** → a rule you can apply to a corpus you have never retrieved from.
+- **X does not beat the null** → *"skip the vocabulary analysis; just measure your local embedder
+  on 30 labelled questions."* Cheaper advice, equally useful, and an honest negative result of the
+  same kind as §2 and §3.
+
+A design with only one publishable outcome is a design that will find one.
+
+### n=2 cannot validate a predictor
+
+§7 and §8 give two corpora. Any metric separates two points perfectly — that is a line through
+two dots, and it is the same in-sample defect that §2b already retracted a number for. So:
+
+**Corpora (target n=8):** NFCorpus (medical jargon) · SciFact · SciDocs · FiQA (financial) ·
+CQADupStack-programming (technical shorthand) · ArguAna (plain argumentative English — the
+low-jargon anchor) · PEPs · the private memory corpus.
+
+BEIR ships qrels for the first six, which convert to the harness's `relevant_files` format.
+
+**Subsampling:** corpora are capped (qrels-relevant documents plus random negatives) so the local
+embedding runs finish in a night. A smaller haystack is an easier haystack, so absolute scores are
+**not** comparable to published BEIR numbers — only the within-corpus gap is, and only because both
+embedders see the identical subsample. This must be stated wherever the numbers appear.
+
+## Compute
+
+A rented box for one night. **Not VPS2 or VPS3** — §7's fine-tune died at 44/96 steps from 629% CPU
+beside live systems, and `nice` lowers priority without capping thread count. Every BEIR corpus is
+public; the private memory corpus is embedded locally and never leaves this machine.
+
+## Non-goals
+
+- No partnership, logo, sponsorship, credits or compute request in the resulting outreach.
+- pgvector and Anthropic are **out of this round**. Both have real give-first material and neither
+  has an open question attached; firing at four organisations at once is what makes outreach look
+  scattershot.
+- No sixth clever metric. The analysis is worth more than another predictor.
+
+## Risks
+
+**The only reproducible number makes the cloud embedder look unnecessary.** +0.022 on the PEPs is
+public; the +0.282 sits on a corpus nobody else can see. This is walked into deliberately: lead with
+the conditional rule, never either number alone. The cloud model wins exactly where its makers would
+predict it wins, and that is a usable result for them.
+
+**A predictor that fails to beat the null may read as a null study.** Mitigated by writing the
+negative outcome up as the finding it is, in the register §3 already established.
+
+**Subsample size confounds the gap.** Haystack size has measurable effects elsewhere in this repo
+(§10b: false-abstain *rises* as the haystack narrows). If the gap correlates with subsample size
+across corpora, that is a confound and must be reported as one, not tuned away.
+
+## Success criteria
+
+Not "we found a predictor." The study succeeds if it returns a defensible answer to *does a
+vocabulary metric beat simply measuring your local model* — in either direction — with the
+confound above either ruled out or reported.
