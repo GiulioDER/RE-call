@@ -159,12 +159,17 @@ A previous version of this file published each of these. They did not survive re
   deleted, because the claim was published. → [FINDINGS §8](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)
 - **"ANN recall is tuned on the filtered path"** — the heading this file gave the HNSW fix, which
   reads as a recall improvement. Two measurements were taken and only the flattering one reached
-  the docs: the 0.38 → ~0.90 lift comes from a fixture corpus the test *retries until it
-  reproduces the pathology*, while an independent A/B on a normally-built corpus moved recall the
-  other way (0.523 → 0.483). What was actually fixed is **truncation** — filtered search returning
-  fewer results than requested — and the PR that shipped it said so at the time. Reworded above,
-  and corrected in FINDINGS §5b and the changelog, rather than deleted.
+  the docs: a fixture corpus moved 0.36–0.43 → 0.88–0.94, while an independent A/B on a
+  normally-built corpus moved recall the *other* way (0.523 → 0.483). What was actually fixed is
+  **truncation** — filtered search returning fewer results than requested. Reworded above, and
+  corrected in FINDINGS §5b, rather than deleted.
   → [#57](https://github.com/GiulioDER/RE-call/pull/57)
+- **"The collapse needs rows committed across several transactions"** — the mechanism this repo
+  published for that pathology, attributing it to pgvector building a less well-connected graph.
+  It is a **statistics race**: an unanalyzed table takes an exact `Seq Scan` plan, never consults
+  the HNSW index, and reports recall 1.0000 under any `ef_search`. A single-transaction 20,000-row
+  upsert reproduces the collapse just as hard once the table is analyzed. The batching was winning
+  the race, not shaping the graph. → [#98](https://github.com/GiulioDER/RE-call/pull/98)
 - **LOCOMO "hit@5 0.615"** — published as the pre-fix retrieval anchor, and as one of two runs whose
   spread was read as HNSW build noise. Its result artifact was never retained, so it cannot be
   checked against anything in this repo and has been **removed rather than restated**. The pre-fix
@@ -476,11 +481,13 @@ Stated plainly, because the failure mode this library exists to prevent is confi
   filter-blind, so a `source`-filtered query exhausted its candidate list before finding `k`
   matches: at pgvector's defaults, **40/40** queries silently returned fewer results than asked
   for. `hnsw.ef_search=200` + `hnsw.iterative_scan=relaxed_order` fix that unambiguously (0/40 and
-  0/30 in two measurements). Those two **disagree on recall** — 0.38 → ~0.90 on the test fixture,
-  **0.523 → 0.483** on a normally-built corpus — because `relaxed_order` fills to `k` with
+  0/30 in two measurements). Those two **disagree on recall** — 0.36–0.43 → 0.88–0.94 on the test
+  fixture, **0.523 → 0.483** on a normally-built corpus — because `relaxed_order` fills to `k` with
   approximate matches. It trades truncation for approximation. The unfiltered path still runs at
   the defaults, and the tenant-predicate combination has not been measured on a multi-tenant table.
-  → [#57](https://github.com/GiulioDER/RE-call/pull/57)
+  Note the pathology is a **statistics race**, not graph shape: an unanalyzed table takes a
+  `Seq Scan` and reports recall 1.0000 under any `ef_search`.
+  → [#57](https://github.com/GiulioDER/RE-call/pull/57), [#98](https://github.com/GiulioDER/RE-call/pull/98)
 - **No token revocation without a restart.** Bearer tokens, scopes and one tenant per principal
   ship ([docs/AUTH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/AUTH.md)), but the
   token file is read at startup, so removing access takes effect on reload, not on save. Per-tenant

@@ -278,21 +278,34 @@ found it. A metric that cannot fail is not evidence, and an earlier version of t
 as evidence that post-filtering recall collapse "did not reproduce".
 
 Measured properly — directly against `query_dense`, 20,000 rows, a filter matching 10% — pgvector's
-defaults give **recall@10 0.38 with 40/40 queries truncated** below the requested `k`.
+defaults give **recall@10 ≈0.36–0.43 with 40/40 queries truncated** below the requested `k`.
 `hnsw.ef_search=200` + `hnsw.iterative_scan=relaxed_order` on the filtered path take truncation to
-**0/40**, pinned by `tests/test_hnsw_filtered_recall.py`. Two measurements were run in
-[#57](https://github.com/GiulioDER/RE-call/pull/57); they agree on truncation and **disagree on
-recall**, so both are published:
+**0/40** and recall to **0.88–0.94**, pinned by `tests/test_hnsw_filtered_recall.py`. Two
+measurements were run in [#57](https://github.com/GiulioDER/RE-call/pull/57); they agree on
+truncation and **disagree on recall**, so both are published:
 
 | corpus | recall@10 untuned → tuned | truncated untuned → tuned |
 |---|---|---|
-| the fixture's — which the test rebuilds until it reproduces a strong pathology | 0.38 → ~0.90 | 40/40 → 0/40 |
+| the test fixture (20,000 rows, 10% selectivity, analyzed) | 0.36–0.43 → 0.88–0.94 | 40/40 → 0/40 |
 | built the way a real multi-file index run builds one (10 batched upserts, 30 queries) | **0.523 → 0.483** | 29/30 → 0/30 |
 
 Untuned returns *few but accurate* hits; `relaxed_order` fills to `k` with approximate ones. **The
 supportable claim is the narrow one: filtered dense search now returns `k` results when `k` exist.**
-That is a correctness fix, not a quality one — and the 0.38 baseline is itself unstable, observed
-across 0.33–0.52 on that fixture.
+That is a correctness fix, not a quality one.
+
+> **What actually drives this was itself misdiagnosed, and the correction is worth more than the
+> numbers.** The collapse was attributed to pgvector building a less well-connected graph when rows
+> arrive across several committed transactions. It is a **statistics race**: an *unanalyzed* table
+> takes an exact `Seq Scan + Sort` plan, never consults the HNSW index, and therefore reports recall
+> **1.0000 under any `ef_search` at all**. Measured both ways with an ANALYZE in place, a single
+> 20,000-row single-transaction upsert reproduces the pathology just as hard. What batching did was
+> commit rows mid-build, letting an autovacuum worker analyze the table first — winning the race,
+> not shaping the graph. The fixture no longer retries until the pathology appears (that cap was
+> compensating for exactly the variance ANALYZE removes) and the test now asserts the index is
+> genuinely walked before measuring, so it cannot pass **vacuously** by reporting a fix that was
+> never exercised. This also gives the second row above a candidate explanation — a batched build is
+> the one most likely to have been analyzed — which is stated as a hypothesis, not a result.
+> → [#98](https://github.com/GiulioDER/RE-call/pull/98)
 
 **Not covered by either arm:** a real-language corpus (the generated text is templated, so absolute
 retrieval quality is optimistic), the cloud embedder at scale, and a filtered-recall arm that
