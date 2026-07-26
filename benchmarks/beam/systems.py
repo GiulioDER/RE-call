@@ -38,6 +38,49 @@ DEFAULT_TOP_K = 200
 EMBED_BATCH = 32
 
 
+#: BEAM stamps turns with a human-readable `time_anchor` like "March-01-2024". Two things in the
+#: VENDORED answerer prompt consume that value, and both break on it:
+#:
+#:   1. it SORTS the memories by `created_at` as a plain string, so "April" precedes "January"
+#:      precedes "March" — the chronological order the prompt promises is scrambled;
+#:   2. it renders `created_at[:10]`, which truncates "March-01-2024" to "March-01-2".
+#:
+#: The prompt then instructs the model to "prefer the more recent one" on contradictions and to
+#: "pay attention to dates" on temporal questions. Handing it a scrambled order and a mangled
+#: label sabotages exactly those instructions — and `knowledge_update` (-0.192) and
+#: `temporal_reasoning` (-0.133) were this arm's two worst categories against Mem0, whose own
+#: pipeline hands the same prompt ISO 8601 timestamps that sort and render correctly.
+#:
+#: So the anchor is normalised to ISO on the way in. This is a defect fix, not a tuning choice:
+#: it removes a handicap that was ours alone and makes the two arms comparable on the dimension
+#: the prompt actually reads.
+_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+}
+
+
+def _iso_date(anchor: str) -> str:
+    """"March-01-2024" -> "2024-03-01". Unparseable input returns "" rather than a guess.
+
+    An unrecognised anchor must NOT fall through as its raw self: a mix of ISO and non-ISO keys
+    in one sort is worse than no key at all, because it orders confidently and wrongly. Empty
+    sorts first and renders blank, which the prompt already handles.
+    """
+    parts = (anchor or "").replace("/", "-").split("-")
+    if len(parts) != 3:
+        return ""
+    month, day, year = (p.strip() for p in parts)
+    if month.lower() not in _MONTHS:
+        # Already ISO (YYYY-MM-DD)? Keep it.
+        if len(month) == 4 and month.isdigit():
+            return anchor.strip()
+        return ""
+    if not (day.isdigit() and year.isdigit() and len(year) == 4):
+        return ""
+    return f"{year}-{_MONTHS[month.lower()]:02d}-{int(day):02d}"
+
+
 def _turn_document(turn: dict[str, str], index: int) -> str:
     """One dialogue turn as a standalone markdown document.
 
@@ -181,7 +224,9 @@ class BeamRecallSystem:
             for i, turn in enumerate(conversation.turns):
                 name = _filename(i)
                 (workspace / name).write_text(_turn_document(turn, i), encoding="utf-8")
-                self._dates[name] = turn.get("date", "")
+                # ISO so the vendored prompt's string sort is chronological and its
+                # `created_at[:10]` render is a whole date rather than "March-01-2".
+                self._dates[name] = _iso_date(turn.get("date", ""))
             with PgVectorStore(
                 self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=self._table
             ) as store:
