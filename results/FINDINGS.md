@@ -899,3 +899,45 @@ count (or fraction) of entailed hits, and that the right value is not 1. That is
 validated on adversarial held-out data, not a benchmark tweak — the abstention claim is what
 RE-call sells, and on the one public benchmark that tests it directly, the default policy is too
 permissive to collect.
+
+### 9h. RETRACTION of §9g's proposed fix — the count rule does not pay
+
+§9g reported, on ONE conversation, that counting entailed hits separates BEAM's unanswerable
+questions from its answerable ones, with "abstain if entailed < 3" giving 100 % correct-abstain
+at 22 % false-abstain. It flagged n = 2 unanswerable and called itself "a direction with a
+mechanism, not a result". The full probe (30 unanswerable, 270 answerable, conversations 0-14,
+$0) came back weaker and the conclusion does not survive:
+
+| entailed in top-10 | §9g pilot (n=2) | full probe (n=30) |
+|---|---|---|
+| mean, unanswerable | 1.00 | **3.57** |
+| mean, answerable | 5.28 | **5.93** |
+| "< 3" correct-abstain | 100 % | **43.3 %** |
+| "< 3" false-abstain | 22 % | 19.6 % |
+
+The separation is real but modest, and on BEAM's 9:1 answerable:unanswerable mix it never pays:
+
+| policy | correct-abstain | false-abstain | net vs shipped |
+|---|---|---|---|
+| answer if ≥1 entails (**ships today**) | 23.3 % | 9.3 % | — |
+| ≥2 | 26.7 % | 11.8 % | **−0.011** |
+| ≥3 | 43.3 % | 19.6 % | **−0.036** |
+| ≥5 | 66.7 % | 34.4 % | **−0.092** |
+
+Every stricter policy gains on 30 questions and loses on 270. **The shipped `any()` policy is
+already the best of the five on this benchmark**, which is the opposite of §9g's recommendation.
+
+Two things worth keeping from this:
+
+**The mechanism in §9g was right; its extrapolation was not.** `any()` over ~200 candidates IS
+maximally permissive, and entailment count DOES order the classes correctly where cosine inverts
+them (§9f). Neither of those claims is retracted. What is retracted is that changing the policy
+improves the cell — it does not, and the reason is arithmetic that was available before the probe
+ran: abstention is 10 % of BEAM, false-abstention risk is 90 %.
+
+**A benchmark whose payoff is 9:1 against withholding cannot be the venue for an
+abstention claim.** That is not a complaint about BEAM — its abstention category is well built
+(§9g's hallucination finding stands: Mem0 fabricates on 46 % of unanswerable questions). It means
+the abstention argument needs a metric that prices a false answer against a withheld one, and
+BEAM's aggregate does not. Reporting our abstention story through this aggregate would understate
+it no matter how good the policy got.
