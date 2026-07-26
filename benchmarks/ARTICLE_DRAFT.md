@@ -173,6 +173,26 @@ accuracy and **free of per-write API cost** is the correct engineering choice. T
 headline: not "most accurate," but *"trustworthy, zero marginal API cost, at competitive accuracy on
 the OpenAI readers you actually use."*
 
+## The same gap, on the clock
+
+No LLM at ingest isn't only cheaper — it's faster, and the cost table already predicts it: every
+dollar Mem0 spends extracting a memory is also wall-clock RE-call never waits for. We timed the
+memory layer in isolation (no generator, no judge), both arms on the same local embedder:
+
+- **Ingest (building memory): RE-call ~4.3× faster** — 67s vs 288s for two LOCOMO conversations.
+  That is the per-session extraction call, measured as time instead of tokens; it *stays* an
+  advantage at any scale, because RE-call's write path never calls an LLM.
+- **Retrieve (answering a query): RE-call measurably faster too** — median **77 ms vs 104 ms** per
+  call (~26%, non-overlapping intervals), and it wins *despite* opening a Postgres connection per
+  call while Mem0 queries an in-process store. We did not expect this — RE-call does *more* per query
+  (hybrid fusion + a trust judge) — and it is still ahead.
+
+What this is *not*: a load test. One run, two conversations, and the retrieve interval is optimistic
+(repeated queries are correlated), so we report retrieval speed as **directional**, not a benchmarked
+SLA. The robust claim is ingest: for a **write-heavy, large-corpus** deployment — importing a
+history, indexing a knowledge base, an agent that remembers all day — a memory that builds with no
+LLM call is both cheaper and several times faster to fill, every time.
+
 ## Reproduce it
 
 Every headline configuration was pre-registered before the numbers were seen; the one post-hoc

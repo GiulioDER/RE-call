@@ -148,6 +148,23 @@ win."* That keeps the win where it's real and pre-empts the counter-example.
   `recall_…_10conv_20260725T214559Z.json` (+ `…214534Z` as the noise check),
   `mem0_…_10conv_20260726T083247Z.json`.
 
+## Speed — measured 2026-07-26 (isolated latency, `benchmarks/latency.py`)
+
+Timed the memory layer alone (no generator/judge), both arms on the same local embedder, sequential
+on an idle machine, 2 conversations × 40 queries × 5 reps.
+
+- **Ingest: RE-call ~4.3× faster** — 67.3s vs 288.4s for two conversations. This is the cost edge as
+  time — Mem0's per-session LLM extraction. Robust and expected.
+- **Retrieve: RE-call measurably faster** — median **77.0 ms** (CI [75.8, 77.9]) vs **103.6 ms**
+  (CI [102.1, 104.6]), ~26%, intervals disjoint — and RE-call wins *despite* opening a Postgres
+  connection per call while Mem0 uses in-process Qdrant.
+
+Caveats (why retrieve is **directional**, not an SLA): the 400 measurements are 40 queries × 5 reps,
+and reps of one query are correlated → the bootstrap CI is optimistic (effective n ≈ 80). The gap
+survives a ~3× wider CI, so the direction holds but the precision is overstated. Backends also
+differ (PG-per-call-connect vs in-process Qdrant), and it is one small run. **Robust claim = ingest
++ the $0/0-calls cost; retrieve = directional.**
+
 ## Residual (still open)
 
 - **External validity.** The accuracy edge rests on one benchmark, and the article's own mechanism
