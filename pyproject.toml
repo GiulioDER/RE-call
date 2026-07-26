@@ -90,11 +90,14 @@ llamaindex = ["llama-index-core>=0.11"]
 # prompt, its retrieval defaults and its API all move between releases: 2.x renamed `search`'s
 # arguments (`user_id=`/`limit=` -> `filters={"user_id": ...}`/`top_k=`) and now REJECTS the 1.x
 # spelling outright, so a range would let a `pip install` months from now silently change what a
-# published number means — or break the adapter outright. `==2.0.13` is the current stable release
-# (2026-07-22) and the version `benchmarks/systems.py` is written against; it is recorded into
+# published number means — or break the adapter outright. `==2.0.14` is the current stable release
+# (2026-07-25) and the version `benchmarks/systems.py` is written against; it is recorded into
 # every results artifact via `importlib.metadata.version("mem0ai")`. Bumping it is a deliberate
-# re-run, not a resolver decision.
-bench = ["mem0ai==2.0.13", "openai>=1.0"]
+# re-run, not a resolver decision. The 2.0.13 -> 2.0.14 diff was audited before bumping: vector-store
+# provider fixes plus a new Oracle provider, with NO change to the extraction prompts or the
+# retrieval scoring — the "token-efficient memory algorithm" landed in OSS at v2.0.0, so cells
+# produced against 2.0.13 already measure it. Artifacts carry the exact version either way.
+bench = ["mem0ai==2.0.14", "openai>=1.0"]
 # pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
 # failing it — a hung CI job reads as "still running", not as a regression.
 #
