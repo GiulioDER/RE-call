@@ -5,7 +5,7 @@
 cd /root/recall || exit 1
 . /root/.voyage_env
 export RECALL_DSN=postgresql://recall:recall@127.0.0.1:5432/recall
-export OMP_NUM_THREADS=8 TOKENIZERS_PARALLELISM=false
+export RECALL_EMBED_THREADS=8 OMP_NUM_THREADS=8 TOKENIZERS_PARALLELISM=false
 
 W0="scifact cqadupstack-android cqadupstack-tex"
 W1="scidocs cqadupstack-english cqadupstack-unix"
