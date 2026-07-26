@@ -40,6 +40,18 @@ RE-call is a retrieval engine for that memory that is *honest about what it does
 **verdict + confidence + provenance** with every hit — not just similarity — demotes memories that
 were superseded or expired, and prefers an explicit **abstention** over confident noise.
 
+## RE-call's edges, measured
+
+Head-to-head against **[Mem0](https://github.com/mem0ai/mem0)** — the most-adopted open-source
+memory layer — on the public **LOCOMO** benchmark, with an *identical* generator and judge and
+paired questions (full table, losses and caveats included →
+[FINDINGS §9d](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)):
+
+- 🎯 **More accurate** on both OpenAI reader models the field benchmarks with (paired p = 0.0002–0.0065, Holm-corrected) — and the lead holds even on **Mem0's own default embedder** (`text-embedding-3-small`): **0.42 vs 0.366** at full n=1,540.
+- 💸 **$0 to build, at any scale** — no LLM anywhere in the ingest or retrieval path. Building the benchmark's memory cost Mem0 **$7.29** in metered API calls; RE-call **$0.00**.
+- ⚡ **~4.3× faster to build** memory (and measurably faster to query) — a large corpus or a write-heavy agent fills fast, with no per-write API bill.
+- 🔒 **On your own Postgres**, offline-capable — every hit returns a verdict, confidence, and provenance, or an explicit *"I don't know."*
+
 ## See it in one screen
 
 <p align="center">
