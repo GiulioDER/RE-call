@@ -96,6 +96,36 @@ def _rate(flags: list[bool]) -> dict:
             "ci": (round(lo, 4), round(hi, 4)), "n": len(flags)}
 
 
+def _assert_master_covers(store: PgVectorStore, master: str, questions: list[dict]) -> dict:
+    """Refuse to score against a master missing sessions the questions reference.
+
+    This arm never indexes — it copies rows out of `master` — so it cannot repair a partial index
+    the way `labelled` does, and it cannot notice one either: `populate_haystack` matches
+    `metadata->>'file' = ANY(files)`, so a session absent from the master simply yields a smaller
+    haystack, and the run reports a hit rate computed against a corpus that is not the one being
+    claimed, with no error anywhere.
+
+    Postgres makes this concrete rather than theoretical. It is crash-safe, so a reset mid-build
+    never leaves corrupt rows — it leaves *fewer* rows, each committed and valid. A kept table
+    (`labelled --table`) is precisely where such a remnant survives to be reused.
+    """
+    required = {f for q in questions for f in q.get("haystack_files", [])}
+    with store._connect() as conn:  # noqa: SLF001 - eval-only helper, not library surface
+        rows = conn.execute(f"SELECT DISTINCT metadata->>'file' FROM {master}").fetchall()
+    present = {r[0] for r in rows if r[0]}
+    missing = sorted(required - present)
+    if missing:
+        raise ValueError(
+            f"master table {master!r} is missing {len(missing)} of {len(required)} session(s) the "
+            f"questions reference — e.g. {missing[:5]}. Scoring against it would measure a smaller "
+            f"haystack than the one reported. This is what a Postgres reset mid-index leaves "
+            f"behind (crash-safe means fewer rows, not corrupt rows). Repair it by re-running "
+            f"`recall.eval.labelled --table {master}`: indexing skips by stored content hash, so "
+            f"only the missing sessions are embedded."
+        )
+    return {"sessions_required": len(required), "sessions_present": len(required)}
+
+
 def evaluate(dsn: str, master: str, questions: list[dict], embedder: Embedder,
              k: int = 5) -> dict:
     scratch = "pq_" + uuid.uuid4().hex[:8]
@@ -107,6 +137,8 @@ def evaluate(dsn: str, master: str, questions: list[dict], embedder: Embedder,
     store = PgVectorStore(dsn, dim=embedder.dim, table=scratch)
     store.ensure_schema()
     try:
+        # BEFORE any scoring: a partial master must stop the run, not shrink its haystacks.
+        coverage = _assert_master_covers(store, master, questions)
         def top_cos_in_haystack(q: dict) -> float:
             populate_haystack(dsn, embedder.dim, master, scratch, q["haystack_files"], store=store)
             hits = store.query_dense(embedder.embed([q["query"]])[0], k=1)
@@ -161,6 +193,9 @@ def evaluate(dsn: str, master: str, questions: list[dict], embedder: Embedder,
         return {
             "protocol": "per-question haystack",
             "master_table": master,
+            # Recorded, not merely checked: a reviewer reading this JSON can see the master was
+            # verified complete rather than assumed to be.
+            "master_coverage": coverage,
             "haystack_chunks": {
                 "mean": round(statistics.mean(haystack_sizes), 1) if haystack_sizes else 0,
                 "min": min(haystack_sizes, default=0), "max": max(haystack_sizes, default=0),

@@ -133,6 +133,28 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   silently disabled the pool-exhaustion cap the knob exists to enforce; set a large value if you
   intend an effectively-unlimited timeout. (`recall_mcp/server.py`,
   `tests/test_server_env_validation.py`)
+- **`recall.eval.labelled` can keep its index: `--table NAME`.** The harness built into
+  `lab_<uuid>` and dropped it in `finally`, unconditionally. For a 14-document corpus that is
+  correct hygiene; for LongMemEval it made the benchmark practically unrepeatable — the merged-S
+  index costs hours to embed, and FINDINGS §10 had to record that a post-#81 re-score could not
+  be run *because the index had not been retained*. A named table is kept, so one build now
+  serves the merged `labelled` arm, `longmemeval_perq --master`, and any later re-score;
+  `Indexer` already skips by stored content hash, so re-running against a kept table resumes
+  instead of re-embedding, which also makes a multi-hour build survive a crash. The anonymous
+  default still drops, and the report names the table only when it survives the run.
+  (`recall/eval/labelled.py`, `tests/test_eval_labelled_table.py`)
+- **A kept index now has to prove it is complete before anything scores against it.** Keeping a
+  table introduced a failure mode that dropping every table had hidden. Postgres is crash-safe, so
+  a reset mid-build never yields corrupt rows — it yields *fewer* rows, each committed and valid.
+  `labelled` repairs that on a re-run (a source with no stored content hash is re-indexed) but
+  `longmemeval_perq` cannot: it never indexes, it copies rows out of `--master`, and
+  `populate_haystack` matches on `metadata->>'file'`, so a missing session silently shrinks that
+  question's haystack and the run reports a hit rate for a corpus that was never searched. `perq`
+  now refuses a master missing any referenced session, naming the table and the shortfall, and
+  records `master_coverage` in its report; `labelled` records `sources_expected` /
+  `sources_indexed` so completeness is a visible pair in the results JSON rather than an
+  assumption. (`recall/eval/longmemeval_perq.py`, `recall/eval/labelled.py`,
+  `tests/test_eval_index_completeness.py`)
 
 ## [0.6.0] — 2026-07-25
 
