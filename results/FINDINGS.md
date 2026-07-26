@@ -812,3 +812,27 @@ The genuinely comparable experiment is the reverse of what we ran: put RE-call t
 unmodified harness. The seam is one call — `mem0.search(question, user_id, top_k)` returning
 `[{memory, created_at}]` — which is exactly the interface `benchmarks/beam/systems.py` already
 implements for BEAM. That is the natural next arm, and the adapter for it already exists.
+
+### 9f. The BEAM arm embeds through the hosted embedder — stated, not buried
+
+The LOCOMO arms in §9a-c run RE-call on local `bge-small` via fastembed. The BEAM arm does not:
+it uses `openai/text-embedding-3-small` through OpenRouter. That is a real methodological change
+and it belongs in the open, so:
+
+**Why.** BEAM's 1M bucket is **37.2 M tokens** of dialogue — 1.06 M per conversation, mean turn
+620 tokens, an order of magnitude denser than LOCOMO's chat lines. Through a 33 M-parameter model
+on CPU that is ~70 TFLOPs per conversation: measured at 12-20 minutes each and ~10 hours for the
+bucket, at 4.5 GB resident. The same tokens cost ~$0.75 hosted, at ~42 s per conversation.
+
+**Why it does not weaken the comparison — it strengthens it.** Mem0's published BEAM run embeds
+with `text-embedding-3-small` too. Running RE-call on `bge-small` against a Mem0 cell built on
+`text-embedding-3-small` would have handicapped our own arm on a dimension nobody asked about,
+and any deficit would have been reported as a retrieval result. Matching their embedder isolates
+what the arm is actually for: retrieval and answer construction, judged by their judge.
+
+**What it costs in comparability elsewhere.** A BEAM cell and a LOCOMO cell in this repo are now
+not embedder-matched to each other. They were never meant to be pooled — different corpora,
+different judges, different protocols (§9e) — but no table should imply otherwise.
+
+Vector width changes 384 -> 1536 with the embedder, so `bench_beam_chunks` is rebuilt for the run;
+nothing is carried over from a 384-wide index.
