@@ -57,7 +57,7 @@ from benchmarks.beam.prompts import (
     get_beam_answer_generation_prompt,
     get_beam_nugget_judge_prompt,
 )
-from benchmarks.beam.systems import DEFAULT_TOP_K, BeamRecallSystem
+from benchmarks.beam.systems import BEAM_TABLE, DEFAULT_TOP_K, BeamRecallSystem
 from benchmarks.llm import Completer, OpenRouterLLM
 from benchmarks.usage import install_openai_meter
 from benchmarks.usage import reset as reset_usage
@@ -425,6 +425,21 @@ def _main() -> None:
         help="Questions scored concurrently. 1 = sequential (~2 min/question, ~24 h for 700).",
     )
     parser.add_argument(
+        "--table",
+        default=BEAM_TABLE,
+        help="Chunk table to index into. Isolate a side experiment here: the arms clear and "
+        "re-index their tenants as they walk the corpus, so two runs sharing a table can delete "
+        "each other's chunks mid-question.",
+    )
+    parser.add_argument(
+        "--question-types",
+        default=None,
+        help="Comma-separated BEAM categories to score (default: all ten). Exists so a defect fix "
+        "can be VALIDATED on the categories it should move, for a few dollars, before committing "
+        "the cost of a full re-run — and so the validation subset is recorded in the artifact "
+        "rather than implied by a smaller n.",
+    )
+    parser.add_argument(
         "--entailment",
         type=int,
         default=0,
@@ -562,6 +577,7 @@ def _main() -> None:
         args.dsn,
         embedder_name=args.embedder,
         k=args.k,
+        table=args.table,
         entailment_top_n=args.entailment,
         reranker_name=args.reranker
     )
@@ -636,8 +652,13 @@ def _main() -> None:
         return scored
 
     try:
+        wanted_types = (
+            {s.strip() for s in args.question_types.split(",")} if args.question_types else None
+        )
         for conv in conversations:
             pending = [q for q in conv.questions if q.question_id not in done]
+            if wanted_types is not None:
+                pending = [q for q in pending if q.question_type in wanted_types]
             if not pending:
                 print(f"  conversation {conv.index}: all {len(conv.questions)} scored, skipping")
                 continue
@@ -654,6 +675,7 @@ def _main() -> None:
     total = usage_snapshot()
     summary = {
         "arm": "recall",
+        "question_types": args.question_types or "all",
         "chat_size": args.chat_size,
         "model": args.model,
         "judge_model": args.judge_model or args.model,
