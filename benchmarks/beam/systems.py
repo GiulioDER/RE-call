@@ -140,6 +140,24 @@ class BeamRecallSystem:
             store.delete_sources(sources)
         return len(sources)
 
+    def top_cosine(self, question: str) -> float:
+        """Best raw cosine for `question`, BEFORE the trust layer's threshold is applied.
+
+        Calibration needs the unfiltered score distribution: sampling through `retrieve` would
+        only ever observe scores that already cleared the current threshold, so the fit would
+        chase its own tail and certify whatever it started from.
+        """
+        from recall.store import PgVectorStore
+
+        if self._tenant is None:
+            raise RuntimeError("BeamRecallSystem.top_cosine() called before ingest()")
+        vector = self._embedder.embed([question])[0]
+        with PgVectorStore(
+            self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=self._table
+        ) as store:
+            hits = store.query_dense(vector, k=5)
+        return max((h.score for h in hits), default=0.0)
+
     def retrieve(self, question: str) -> list[dict[str, str]]:
         """Top-k memories as ``{"memory", "created_at"}`` dicts, best rank first.
 
