@@ -941,3 +941,37 @@ abstention claim.** That is not a complaint about BEAM — its abstention catego
 the abstention argument needs a metric that prices a false answer against a withheld one, and
 BEAM's aggregate does not. Reporting our abstention story through this aggregate would understate
 it no matter how good the policy got.
+
+### 9i. Newest-wins dedup: rejected on principle, and it does not fire anyway
+
+Proposed after §9's TTL diagnosis: collapse near-identical chunks, keep the newest, so a fact
+restated 24 times cannot outvote its own correction. Two independent findings kill it.
+
+**On principle.** Recency is not reliability, and this corpus contains the counter-example: the
+top-ranked chunk for the user-feedback question was *"Achieving a 90 % satisfaction rate is a
+strong start"* — the ASSISTANT speculating, not a recorded fact. Mem0 built a fabricated answer
+on it. A newest-wins rule promotes exactly that: recent, on-topic, and without authority. A
+memory layer that confuses the two is worse than one that does not order at all.
+
+**Empirically it barely fires** (58 questions, k=200, conversations 0-14, $0):
+
+| cosine threshold | survivors of 200 | gold value still present |
+|---|---|---|
+| 0.98 | 196 | 0.466 |
+| 0.95 | 193 | 0.466 |
+| 0.92 | 187 | 0.466 |
+| 0.90 | 183 | 0.466 |
+
+Four chunks collapse at the strict threshold, seventeen at the loose one, and the presence of the
+gold value does not move at any of them. The reason matters more than the numbers: the 24 stale
+restatements are **not textual near-duplicates**. They are paraphrases — "I set the TTL to 15
+minutes", "cache expiry is 900 seconds", "using a 15-minute TTL". The repetition is SEMANTIC and
+cosine does not group it, so no similarity threshold reaches it.
+
+That also retires the idea in its general form: any dedup keyed on embedding similarity will miss
+the repetition that actually causes the failure.
+
+**What survives.** The diagnosis in §9 stands and is causal — at k=5, where the stale copies fall
+outside the window, the same system answers the TTL question correctly and scores 1.00 against
+0.00 at k=200. Cutting context defeats stale repetition; deduplicating it does not. That is why
+the k sweep, not the dedup rule, is the result worth carrying forward.
