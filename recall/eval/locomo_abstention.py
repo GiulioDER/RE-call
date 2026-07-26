@@ -58,7 +58,13 @@ MODES = ("default", "calibrated", "entail", "both")
 
 def _top_cosine(retriever: HybridRetriever, query: str, k: int) -> float | None:
     result = retriever.search(query, k=k)
-    return result.hits[0].score if result.hits else None
+    # Fit on the MAX cosine over the returned hits, not hits[0]. `result.hits` is ordered by RRF
+    # fusion, not by cosine, so once the sparse leg fires (#81/#82) the rank-0 hit is frequently
+    # NOT the highest-cosine one. The abstention decision this threshold is scored against
+    # (`trust.evaluate`) abstains iff NO hit clears the threshold — i.e. it thresholds exactly this
+    # max-over-hits. Fitting on hits[0] would bias the threshold and, on the FINDINGS §9a-mandated
+    # re-run, publish a biased in-sample number. Matches the sibling harnesses' query_dense(k=1).
+    return max((h.score for h in result.hits), default=None)
 
 
 def _partition_questions(

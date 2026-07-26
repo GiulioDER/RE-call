@@ -2,10 +2,24 @@
 
 Reproduce the local (key-free) rows with `make eval` — needs Docker + the local embedder only. The Voyage cloud row appears when `VOYAGE_API_KEY` is set.
 
+> **Provenance.** Regenerated 2026-07-25 on PostgreSQL 16.14 / pgvector 0.8.5 / Python 3.12.3, in
+> one run, after the [#81](https://github.com/GiulioDER/RE-call/issues/81) sparse-leg fix. Two things
+> follow, and they have different causes:
+>
+> - **Quality metrics moved because of the fix.** The `hybrid` rows rose (hashing-64 MRR 0.737 →
+>   0.964); `dense` is unchanged, as it must be. The sparse leg previously ANDed every query term,
+>   so it fired only when one chunk contained all of them.
+> - **Latency moved because of the host.** The previous table was measured on a different machine
+>   (PostgreSQL 17 / pgvector 0.8.2). Rerank ms/query going 691.7 → 2383.0 is a slower shared CPU,
+>   **not** a regression. Latency figures here are only comparable within this table.
+>
+> Mixing the two runs — keeping the old latency beside the new quality — would have been the
+> dishonest option, so the whole file is one run.
+
 | embedder | fusion | P@5 | R@5 | MRR | nDCG@10 | FCR no-guard | FCR guard |
 |---|---|---|---|---|---|---|---|
 | hashing-64 | dense | 0.186 | 0.929 | 0.626 | 0.715 | 1.00† | 0.20 |
-| hashing-64 | hybrid | 0.186 | 0.929 | 0.737 | 0.799 | 1.00† | 0.20 |
+| hashing-64 | hybrid | 0.200 | 1.000 | 0.964 | 0.974 | 1.00† | 0.20 |
 | hashing-64 | hybrid+rerank | 0.200 | 1.000 | 1.000 | 1.000 | 1.00† | 0.20 |
 | BAAI/bge-small-en-v1.5 | dense | 0.200 | 1.000 | 0.964 | 0.974 | 1.00† | 1.00 |
 | BAAI/bge-small-en-v1.5 | hybrid | 0.200 | 1.000 | 1.000 | 1.000 | 1.00† | 1.00 |
@@ -21,10 +35,10 @@ Cost/latency (mean wall time per call):
 |---|---|---|---|
 | hashing-64 | dense | 0.1 | 0.0 |
 | hashing-64 | hybrid | 0.1 | 0.0 |
-| hashing-64 | hybrid+rerank | 0.1 | 691.7 |
-| BAAI/bge-small-en-v1.5 | dense | 16.4 | 0.0 |
-| BAAI/bge-small-en-v1.5 | hybrid | 16.9 | 0.0 |
-| BAAI/bge-small-en-v1.5 | hybrid+rerank | 21.0 | 735.6 |
+| hashing-64 | hybrid+rerank | 0.1 | 1357.1 |
+| BAAI/bge-small-en-v1.5 | dense | 13.3 | 0.0 |
+| BAAI/bge-small-en-v1.5 | hybrid | 16.1 | 0.0 |
+| BAAI/bge-small-en-v1.5 | hybrid+rerank | 39.4 | 1922.1 |
 
 ## Trust layer — superseded/expired memories vs plain search
 
@@ -32,7 +46,7 @@ STR = superseded-trust rate: how often a stale memory was presented as the answe
 
 | embedder | STR baseline | STR recency | STR trust | trust coverage | successor acc | abstain acc | MRR ans (base) | MRR ans (trust) |
 |---|---|---|---|---|---|---|---|---|
-| hashing-64 | 1.00 | 1.00 | 0.00 | 0.67 | 0.50 | 1.00 | 0.737 | 0.648 |
+| hashing-64 | 1.00 | 1.00 | 0.00 | 0.67 | 0.50 | 1.00 | 0.964 | 0.804 |
 | BAAI/bge-small-en-v1.5 | 0.83 | 1.00 | 0.00 | 0.83 | 0.75 | 0.50 | 1.000 | 1.000 |
 
 **Read STR trust together with trust coverage.** STR counts queries where a stale memory was served with verdict `ok`, so a system that returns nothing scores a perfect 0.00. The claim is 0.00 STR *at high coverage*; 0.00 STR at low coverage is a system that abstained its way to a good number.
@@ -50,9 +64,9 @@ Near-miss = a high-similarity memory that does NOT answer the query — the clas
 
 | embedder | arm | near-miss FCR | gap FCR | false-abstain | MRR ans | judge ms (judged calls) | total ms/query |
 |---|---|---|---|---|---|---|---|
-| hashing-64 | threshold | 0.70 | 0.60 | 0.29 | 0.429 | 0 | 6 |
-| hashing-64 | threshold+entail | 0.30 | 0.20 | 0.64 | 0.357 | 476 | 336 |
-| hashing-64 | entail-only | 0.60 | 0.40 | 0.07 | 0.881 | 1142 | 1150 |
-| BAAI/bge-small-en-v1.5 | threshold | 1.00 | 0.00 | 0.07 | 0.929 | 0 | 25 |
-| BAAI/bge-small-en-v1.5 | threshold+entail | 0.50 | 0.00 | 0.14 | 0.857 | 218 | 203 |
-| BAAI/bge-small-en-v1.5 | entail-only | 0.80 | 0.40 | 0.07 | 0.929 | 1040 | 1071 |
+| hashing-64 | threshold | 0.70 | 0.60 | 0.29 | 0.429 | 0 | 9 |
+| hashing-64 | threshold+entail | 0.30 | 0.20 | 0.64 | 0.357 | 1675 | 1167 |
+| hashing-64 | entail-only | 0.70 | 0.20 | 0.07 | 0.893 | 2753 | 2772 |
+| BAAI/bge-small-en-v1.5 | threshold | 1.00 | 0.00 | 0.07 | 0.929 | 0 | 41 |
+| BAAI/bge-small-en-v1.5 | threshold+entail | 0.50 | 0.00 | 0.14 | 0.857 | 1791 | 1486 |
+| BAAI/bge-small-en-v1.5 | entail-only | 0.80 | 0.20 | 0.07 | 0.929 | 2225 | 2287 |

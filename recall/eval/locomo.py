@@ -70,16 +70,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from recall.embeddings import Embedder
+from recall.eval.labelled import _make_embedder
 from recall.eval.metrics import wilson_ci
 from recall.index import Indexer
-from recall.retriever import HybridRetriever
+from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
 
@@ -100,23 +103,21 @@ CATEGORY_NAMES = {
 }
 
 
-def _make_embedder(name: str) -> Embedder:
-    """Mirrors `recall.eval.labelled._make_embedder` — same names, same meanings."""
-    if name == "hashing":
-        from recall.embeddings import HashingEmbedder
+_SAFE_CORPUS_NAME = re.compile(r"\A[A-Za-z0-9:._-]+\Z")
 
-        return HashingEmbedder(dim=64)
-    if name == "voyage":
-        from recall.embeddings import VoyageEmbedder
 
-        return VoyageEmbedder()
-    if name.startswith("st:"):
-        from recall.embeddings import SentenceTransformerEmbedder
+def _check_corpus_name(value: str, kind: str) -> str:
+    """Reject a dataset-derived path component that could escape the corpus directory.
 
-        return SentenceTransformerEmbedder(name[3:])
-    from recall.embeddings import FastEmbedEmbedder
-
-    return FastEmbedEmbedder()
+    `dia_id` and `sample_id` come straight from the (third-party, HTTPS-downloaded) LOCOMO JSON,
+    and both become filesystem paths — a per-turn filename and the per-conversation corpus dir. A
+    `../`, an absolute path, or an embedded separator in a tampered dataset would let the converter
+    write outside the workspace. Mirrors `recall.eval.longmemeval._check_session_id`, the guard the
+    sibling converter already applies to the same class.
+    """
+    if not isinstance(value, str) or not _SAFE_CORPUS_NAME.match(value) or value in {".", ".."}:
+        raise ValueError(f"unsafe LOCOMO {kind} (path traversal?): {value!r}")
+    return value
 
 
 def _dia_id_to_filename(dia_id: str) -> str:
@@ -126,6 +127,7 @@ def _dia_id_to_filename(dia_id: str) -> str:
     alternate data stream), and this repo is developed on Windows and run in CI on Linux. Encoding
     it away means the corpus that CI scores is byte-identical to the one a contributor scores.
     """
+    _check_corpus_name(dia_id, "dia_id")
     return dia_id.replace(":", "_") + ".md"
 
 
@@ -162,7 +164,10 @@ def write_conversation_corpus(conversation: dict[str, Any], out_dir: Path) -> in
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     sessions = sorted(
-        (k for k in conversation if k.startswith("session_") and not k.endswith("date_time")),
+        # Only `session_<int>` keys: this both selects the dialog sessions (excluding
+        # `session_N_date_time`) and guards `int(...)` below from a non-numeric `session_*` key,
+        # which would otherwise raise ValueError mid-sort instead of being skipped.
+        (k for k in conversation if re.fullmatch(r"session_\d+", k)),
         key=lambda k: int(k.split("_")[1]),
     )
     written = 0
@@ -223,6 +228,19 @@ def _retrieved_dia_ids(hits: list) -> list[str]:
     return out
 
 
+def _hit_by_depth(hits: list, evidence: list[str], depths: Sequence[int]) -> dict[int, bool]:
+    """`hit@d` for every depth in `depths`, scored from ONE ranked hit list.
+
+    Truncation is applied to the CHUNK hits and the dialog ids are derived afterwards, which is
+    the whole correctness question here. Several chunks can map to the same turn, so the id list
+    is shorter than the hit list and slicing *it* to d would reach further down the ranking than
+    depth d ever returned — inflating every k below the maximum, and inflating it most where
+    chunking is densest. Same trap as `_retrieved_dia_ids` returning distinct ids: the id list is
+    a projection of the ranking, not the ranking.
+    """
+    return {d: any(e in _retrieved_dia_ids(hits[:d]) for e in evidence) for d in depths}
+
+
 def _rate(flags: list[bool]) -> dict[str, Any]:
     lo, hi = wilson_ci(flags)
     return {
@@ -230,6 +248,16 @@ def _rate(flags: list[bool]) -> dict[str, Any]:
         "rate": round(sum(flags) / len(flags), 4) if flags else float("nan"),
         "ci95": [round(lo, 4), round(hi, 4)],
     }
+
+
+def _depths(ks: Sequence[int] | None, k: int) -> list[int]:
+    """Sorted, de-duplicated retrieval depths to score — always including the headline ``k``.
+
+    One source of truth for both ``run`` and ``run_conversation``: ``k`` is folded in
+    unconditionally, so every caller — including a direct ``run_conversation`` that passes a ``ks``
+    omitting ``k`` — scores the headline depth. Without it, ``hit_by_k[k]`` below could miss.
+    """
+    return sorted({int(d) for d in ((*ks, k) if ks else (k,))})
 
 
 def run_conversation(
@@ -240,11 +268,29 @@ def run_conversation(
     embedder: Embedder,
     k: int,
     corpus_dir: Path,
+    ks: Sequence[int] | None = None,
+    candidate_k: int = DEFAULT_CANDIDATE_K,
 ) -> dict[str, Any]:
-    """Index one conversation and score every question against it."""
+    """Index one conversation and score every question against it.
+
+    `ks` scores several retrieval depths from ONE retrieval instead of one depth per run. That is
+    exact rather than an approximation: `candidate_k` fixes the fused pool independently of `k`,
+    so `search(k=n)` returns the first `n` of the same ranking `search(k=N>n)` returns. The k=5
+    row of a curve therefore has to reproduce a k=5 run exactly, and `run()` checks that it does.
+
+    Truncation is applied to the CHUNK hits, not to the dialog ids derived from them: several
+    chunks can map to one turn, so slicing the id list would score a deeper retrieval than the
+    one asked for and inflate every k below the maximum.
+    """
+    # Master inlined write-corpus + index here; this calls the extracted `index_conversation`
+    # instead, which runs those same three steps. Keeping the helper matters because the
+    # head-to-head harness (`benchmarks/systems.py`) ingests through it, and two copies of the
+    # indexing path is exactly how the benchmark and the eval drift apart.
     n_turns = index_conversation(store, embedder, conversation, corpus_dir=corpus_dir)
 
-    retriever = HybridRetriever(store, embedder)
+    depths = _depths(ks, k)
+    max_k = max(depths)
+    retriever = HybridRetriever(store, embedder, candidate_k=candidate_k)
     hits_by_cat: dict[int, list[bool]] = {c: [] for c in ANSWERABLE_CATEGORIES}
     abstained: list[bool] = []
     per_question: list[dict[str, Any]] = []
@@ -258,8 +304,10 @@ def run_conversation(
         if cat == ADVERSARIAL_CATEGORY:
             # The abstention arm. `trusted_search` is the agent-facing entry point, and its
             # `abstained` flag is the whole answer: the correct behaviour on an unanswerable
-            # question is to refuse, regardless of what came back underneath.
-            result = trusted_search(store, embedder, question, k=k)
+            # question is to refuse, regardless of what came back underneath. Pass candidate_k so
+            # this arm shares the same fused pool as the depth-curve arm above and the report's
+            # top-level `candidate_k` — not silently the retriever's default.
+            result = trusted_search(store, embedder, question, k=k, candidate_k=candidate_k)
             abstained.append(result.abstained)
             per_question.append(
                 {
@@ -279,9 +327,10 @@ def run_conversation(
             # No gold evidence -> nothing to score against. Skipped rather than counted as a
             # miss: scoring it either way would be reporting a label gap as a system property.
             continue
-        retrieval = retriever.search(question, k=k)
+        retrieval = retriever.search(question, k=max_k)
+        hit_by_k = _hit_by_depth(retrieval.hits, evidence, depths)
         retrieved = _retrieved_dia_ids(retrieval.hits)
-        hit = any(e in retrieved for e in evidence)
+        hit = hit_by_k[k]  # k ∈ depths by construction (_depths folds it in)
         hits_by_cat[cat].append(hit)
         per_question.append(
             {
@@ -290,6 +339,7 @@ def run_conversation(
                 "evidence": evidence,
                 "retrieved": retrieved,
                 "hit": hit,
+                "hit_by_k": hit_by_k,
             }
         )
 
@@ -313,11 +363,14 @@ def run(
     limit: int | None,
     keep_corpus: Path | None,
     table: str,
+    ks: Sequence[int] | None = None,
+    candidate_k: int = DEFAULT_CANDIDATE_K,
 ) -> dict[str, Any]:
     conversations = json.loads(data_path.read_text(encoding="utf-8"))
     if limit is not None:
         conversations = conversations[:limit]
 
+    depths = _depths(ks, k)
     embedder = _make_embedder(embedder_name)
     started = time.time()
     per_conversation: list[dict[str, Any]] = []
@@ -326,6 +379,7 @@ def run(
     try:
         for i, conv in enumerate(conversations):
             sample_id = conv.get("sample_id") or f"conv{i}"
+            _check_corpus_name(str(sample_id), "sample_id")
             # One tenant per conversation. LOCOMO's conversations are unrelated worlds; a shared
             # tenant would let a question retrieve another conversation's turn, and the
             # evidence-id check would not catch it (ids are only unique WITHIN a conversation,
@@ -340,6 +394,8 @@ def run(
                     embedder=embedder,
                     k=k,
                     corpus_dir=corpus_dir,
+                    ks=depths,
+                    candidate_k=candidate_k,
                 )
             per_conversation.append(res)
             print(
@@ -365,11 +421,46 @@ def run(
     ]
     all_hits = [h for flags in pooled_retrieval.values() for h in flags]
 
+    # The depth curve, pooled the same way. Per-category as well as overall: §9a's weakest
+    # category (cat3, 0.391 at k=5) is the one a reader will ask about, and "does depth rescue
+    # it" is not answerable from an overall rate.
+    scored = [
+        q
+        for res in per_conversation
+        for q in res["questions"]
+        if q.get("hit_by_k") and q["category"] in ANSWERABLE_CATEGORIES
+    ]
+    curve: dict[str, Any] = {}
+    for d in depths:
+        by_cat: dict[str, list[bool]] = {}
+        for q in scored:
+            by_cat.setdefault(CATEGORY_NAMES[q["category"]], []).append(q["hit_by_k"][d])
+        flat = [h for f in by_cat.values() for h in f]
+        curve[str(d)] = {
+            "overall": _rate(flat),
+            "by_category": {c: _rate(f) for c, f in sorted(by_cat.items())},
+        }
+
+    # Coherence check: the pooled headline hit@k (from q["hit"] = hit_by_k[k]) must equal the
+    # curve's own row at k (from q["hit_by_k"][k]). Both are scored from the SAME single retrieval,
+    # so this does NOT independently re-verify that top-k is a prefix of the fused pool — that is a
+    # property of the retriever, and one retrieval cannot check it. What it guards is the
+    # depth-labeling above: that q["hit"] is recorded at k and not at some other depth. If that
+    # drifts the run fails instead of silently reporting a different metric under the same name.
+    if str(k) in curve and all_hits:
+        primary = curve[str(k)]["overall"]["rate"]
+        assert primary == _rate(all_hits)["rate"], (
+            f"depth curve at k={k} reads {primary} but the pooled headline hit@k reads "
+            f"{_rate(all_hits)['rate']}: q['hit'] is not scored at k"
+        )
+
     return {
         "benchmark": "LOCOMO",
         "metric": f"evidence-turn hit@{k} (retrieval only, no LLM judge)",
         "embedder": embedder_name,
         "k": k,
+        "candidate_k": candidate_k,
+        "depth_curve": curve,
         "conversations": len(conversations),
         "elapsed_s": round(time.time() - started, 1),
         "retrieval_by_category": {c: _rate(f) for c, f in sorted(pooled_retrieval.items())},
@@ -396,6 +487,19 @@ def _print_report(report: dict[str, Any]) -> None:
     print(f"  {'OVERALL':<20} hit@{report['k']} {o['rate']:.3f} "
           f" [{o['ci95'][0]:.2f}, {o['ci95'][1]:.2f}]  n={o['n']}")
     print()
+    curve = report.get("depth_curve") or {}
+    if len(curve) > 1:
+        print("DEPTH — hit@k against retrieval depth, from ONE retrieval per question.")
+        print(f"  (candidate pool {report.get('candidate_k')} per leg; the curve cannot exceed it)")
+        # Every depth scores the same question set, so all rows share the same category keys.
+        cats = list(next(iter(curve.values()))["by_category"].keys())
+        print(f"  {'k':<5}{'OVERALL':<12}" + "".join(f"{c:<16}" for c in cats))
+        for kk in sorted(curve, key=int):
+            row = curve[kk]
+            line = f"  {kk:<5}{row['overall']['rate']:<12.3f}"
+            line += "".join(f"{row['by_category'][c]['rate']:<16.3f}" for c in cats)
+            print(line)
+        print()
     print("ABSTENTION — category 5, adversarial. No published LOCOMO result reports this.")
     a = report["abstention_adversarial"]
     if a["n"]:
@@ -419,6 +523,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dsn", default=DEFAULT_DSN)
     p.add_argument("--embedder", default="fastembed", help="fastembed | voyage | hashing | st:PATH")
     p.add_argument("--k", type=int, default=5, help="retrieval depth for hit@k (default 5)")
+    p.add_argument(
+        "--k-curve",
+        default=None,
+        help="comma-separated depths to score in ONE pass, e.g. 1,3,5,10,20. Exact, not "
+             "approximate: the candidate pool does not depend on k, so top-k is a prefix of "
+             "top-max(k). --k stays the headline depth and is always included",
+    )
+    p.add_argument(
+        "--candidate-k", type=int, default=DEFAULT_CANDIDATE_K,
+        help=f"candidates per retrieval leg before fusion (default {DEFAULT_CANDIDATE_K}). Raise "
+             "it to score depths past the default pool — but that changes the fusion, so the "
+             "result is a different configuration, not a deeper look at the published one",
+    )
     p.add_argument(
         "--conversations", type=int, default=None, help="score only the first N conversations"
     )
@@ -447,6 +564,20 @@ def main(argv: list[str] | None = None) -> int:
             "locomo10.json"
         )
 
+    ks = None
+    if args.k_curve:
+        try:
+            ks = [int(part) for part in args.k_curve.split(",") if part.strip()]
+        except ValueError:
+            p.error(f"--k-curve must be comma-separated integers, got {args.k_curve!r}")
+        if not ks or any(d < 1 for d in ks):
+            p.error("--k-curve depths must all be >= 1")
+
+    if args.k < 1:
+        p.error("--k must be >= 1")
+    if args.candidate_k < 1:
+        p.error("--candidate-k must be >= 1")
+
     report = run(
         args.data,
         dsn=args.dsn,
@@ -455,6 +586,8 @@ def main(argv: list[str] | None = None) -> int:
         limit=args.conversations,
         keep_corpus=args.keep_corpus,
         table=args.table,
+        ks=ks,
+        candidate_k=args.candidate_k,
     )
     _print_report(report)
     if args.out:
