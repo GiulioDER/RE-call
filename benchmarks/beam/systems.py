@@ -25,6 +25,18 @@ BEAM_TABLE = "bench_beam_chunks"
 #: measuring a different retrieval task.
 DEFAULT_TOP_K = 200
 
+#: Chunks embedded per ONNX call. The library default is 512, which is right for a corpus of short
+#: uniform notes and badly wrong here: ONNX pads every document in a batch to the LONGEST one, and
+#: BEAM turns vary from one line to several hundred. A single 512-wide flush was measured stuck
+#: inside one `onnxruntime.run` for over thirteen minutes at 4.5 GB resident, having written zero
+#: chunks — on a 12 GB laptop that is what took the machine down, and on a 12-core VPS it still
+#: pushed load average from 7 to 17 while a live host served traffic.
+#:
+#: 32 is a benchmark-local flush size, NOT a library change: the vectors, the chunks and the rows
+#: written are byte-identical, only the number computed per call differs. Padding waste falls with
+#: the square of the batch width, so this is ~16x less wasted compute for the same result.
+EMBED_BATCH = 32
+
 
 def _turn_document(turn: dict[str, str], index: int) -> str:
     """One dialogue turn as a standalone markdown document.
@@ -116,7 +128,7 @@ class BeamRecallSystem:
             ) as store:
                 store.ensure_schema()
                 self._clear(store)
-                Indexer(store, self._embedder).index_path(workspace)
+                Indexer(store, self._embedder, batch_chunks=EMBED_BATCH).index_path(workspace)
             return len(conversation.turns)
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
