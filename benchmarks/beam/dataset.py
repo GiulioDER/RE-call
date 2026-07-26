@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from ast import literal_eval as _python_literal  # safe: builds literals only, never executes code
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -61,10 +62,40 @@ class Conversation:
 
 
 def load_parquet(path: Path) -> list[dict[str, Any]]:
-    """Read a BEAM split's parquet into plain dicts, with no pandas in the import graph."""
+    """Read a BEAM split's parquet into plain dicts, with no pandas in the import graph.
+
+    Materialises the WHOLE split. For the 1M bucket that is ~40 M tokens of dialogue expanding to
+    >3 GB of Python objects and many minutes before the first conversation is available — measured.
+    Prefer `iter_rows`, which converts one row at a time; this stays for callers that genuinely
+    want the list (tests, ad-hoc inspection of a small split).
+    """
     import pyarrow.parquet as pq
 
     return pq.read_table(path).to_pylist()
+
+
+def iter_rows(path: Path, indices: set[int] | None = None) -> Iterator[tuple[int, dict[str, Any]]]:
+    """Yield ``(index, row)`` for a split, converting ONE row to Python at a time.
+
+    The Arrow table itself is cheap to hold (columnar, compressed); what is expensive is turning
+    160 M characters of nested dialogue into Python objects. Doing that per row keeps peak memory
+    to one conversation and lets indexing start in seconds instead of after a full-split parse.
+    Rows outside `indices` are never converted at all.
+    """
+    if path.suffix == ".parquet":
+        import pyarrow.parquet as pq
+
+        table = pq.read_table(path)
+        for idx in range(table.num_rows):
+            if indices is not None and idx not in indices:
+                continue
+            yield idx, table.slice(idx, 1).to_pylist()[0]
+        return
+    # JSON fallback: no way to slice lazily, so this one is read whole.
+    for idx, row in enumerate(json.loads(path.read_text(encoding="utf-8"))):
+        if indices is not None and idx not in indices:
+            continue
+        yield idx, row
 
 
 def _parse_probing(raw: Any) -> dict[str, Any]:
@@ -205,35 +236,52 @@ def _questions_of(probing: dict[str, Any], chat_size: str, conv_idx: int) -> lis
     return questions
 
 
+def iter_conversations(
+    path: Path, chat_size: str, indices: list[int] | None = None
+) -> Iterator[Conversation]:
+    """Yield `Conversation` objects one at a time, holding at most one in memory.
+
+    This is what the runner uses: it ingests and scores a conversation before the next one is
+    parsed, so peak memory is one conversation rather than the whole split.
+    """
+    wanted = set(indices) if indices is not None else None
+    for idx, row in iter_rows(path, wanted):
+        yield Conversation(
+            chat_size=chat_size,
+            index=idx,
+            conversation_id=row.get("conversation_id") or f"{chat_size}_{idx}",
+            turns=_flatten_turns(row.get("chat", [])),
+            questions=_questions_of(
+                _parse_probing(row.get("probing_questions", "{}")), chat_size, idx
+            ),
+        )
+
+
+def count_conversations(path: Path, indices: list[int] | None = None) -> int:
+    """How many conversations a run will cover, WITHOUT converting any of them to Python.
+
+    Exists so the runner can print "35 conversations" up front without paying the parse cost that
+    `iter_conversations` is designed to spread out.
+    """
+    if path.suffix == ".parquet":
+        import pyarrow.parquet as pq
+
+        total = pq.read_metadata(path).num_rows
+    else:
+        total = len(json.loads(path.read_text(encoding="utf-8")))
+    if indices is None:
+        return total
+    return sum(1 for i in indices if i < total)
+
+
 def load_conversations(
     path: Path, chat_size: str, indices: list[int] | None = None
 ) -> list[Conversation]:
-    """Load a BEAM split into `Conversation` objects.
+    """Eager version of `iter_conversations`, for tests and small splits.
 
     `path` is either the HuggingFace parquet for the split or a JSON file previously converted
     from it. `indices` selects a subset by position — the same positions upstream's
     `--conversations` uses, so a subset run's question ids still join against the published
     artifact.
     """
-    if path.suffix == ".parquet":
-        rows = load_parquet(path)
-    else:
-        rows = json.loads(path.read_text(encoding="utf-8"))
-    wanted = set(indices) if indices is not None else None
-
-    conversations: list[Conversation] = []
-    for idx, row in enumerate(rows):
-        if wanted is not None and idx not in wanted:
-            continue
-        conversations.append(
-            Conversation(
-                chat_size=chat_size,
-                index=idx,
-                conversation_id=row.get("conversation_id") or f"{chat_size}_{idx}",
-                turns=_flatten_turns(row.get("chat", [])),
-                questions=_questions_of(
-                    _parse_probing(row.get("probing_questions", "{}")), chat_size, idx
-                ),
-            )
-        )
-    return conversations
+    return list(iter_conversations(path, chat_size, indices))

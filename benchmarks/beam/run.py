@@ -51,7 +51,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from benchmarks.beam.dataset import Question, load_conversations
+from benchmarks.beam.dataset import Question, count_conversations, iter_conversations
 from benchmarks.beam.prompts import (
     BEAM_JUDGE_SYSTEM_PROMPT,
     get_beam_answer_generation_prompt,
@@ -446,7 +446,11 @@ def main() -> None:
     if not args.data:
         raise SystemExit("--data is required (path to the BEAM split parquet or converted JSON)")
 
-    conversations = load_conversations(args.data, args.chat_size, indices)
+    # Streamed, not materialised: converting all 35 conversations of the 1M bucket up front
+    # cost >3 GB and 20+ minutes before the first turn was indexed. One at a time, the first
+    # conversation is ready in ~3 s.
+    n_conversations = count_conversations(args.data, indices)
+    conversations = iter_conversations(args.data, args.chat_size, indices)
     system = BeamRecallSystem(
         args.dsn, embedder_name=args.embedder, k=args.k, reranker_name=args.reranker
     )
@@ -475,7 +479,7 @@ def main() -> None:
                 {
                     "dry_run": True,
                     "cost": 0.0,
-                    "conversations": len(conversations),
+                    "conversations": n_conversations,
                     "questions": len(report),
                     "questions_with_zero_memories": empty,
                     "mean_memories": round(
@@ -502,7 +506,7 @@ def main() -> None:
 
     rows, done = _already_done(args.resume)
     print(
-        f"RE-call arm: {len(conversations)} conversations, {len(done)} questions already scored, "
+        f"RE-call arm: {n_conversations} conversations, {len(done)} questions already scored, "
         f"{args.workers} workers"
     )
     write, handle = _writer(out_base.with_suffix(".partial.jsonl"))
