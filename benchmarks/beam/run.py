@@ -28,7 +28,7 @@ questions AND the FALSE-abstain rate on the other nine categories, and neither n
 from the other.
 
 **Results are written incrementally, and a restart resumes.** One JSONL line per scored question,
-flushed as it lands; `--resume <sidecar>` reloads those lines and skips their question ids. A rate
+flushed as it lands; `--resume <sidecars…>` reloads those lines and skips their question ids. A rate
 limit on question 600 of 700 costs the question in flight, not the 599 already paid for — and the
 retry costs nothing for the 599 either.
 
@@ -242,16 +242,72 @@ def _writer(path: Path):
     return write, handle
 
 
-def _already_done(path: Path | None) -> tuple[list[dict[str, Any]], set[str]]:
-    """Rows from a previous run's sidecar, plus the question ids they cover.
+def _coverage(expected: set[str], scored: set[str]) -> dict[str, Any]:
+    """Expected vs scored question ids, with the shortfall spelled out.
+
+    `complete` is the field to assert on: a paired comparison against a run that silently dropped
+    questions is not the comparison it claims to be, and `benchmarks.beam.pair` refuses to align
+    mismatched sets for the same reason.
+    """
+    missing = sorted(expected - scored)
+    return {
+        "expected": len(expected),
+        "scored": len(scored & expected),
+        "missing": len(missing),
+        "complete": not missing,
+        # Bounded: enough to resume from and to see the shape of the loss, not a second copy of
+        # the question set inside every artifact.
+        "missing_ids": missing[:50],
+        "missing_ids_truncated": max(0, len(missing) - 50),
+    }
+
+
+def _already_done(paths: list[Path] | None) -> tuple[list[dict[str, Any]], set[str]]:
+    """Rows from previous runs' sidecars, plus the question ids they cover.
+
+    Takes a LIST because a run that was interrupted and resumed leaves one sidecar per attempt,
+    and the questions already paid for are spread across all of them — resuming from only the
+    newest would re-pay for the earlier ones. Duplicate ids across sidecars keep the first
+    occurrence; they are the same scored question either way.
 
     Resume is by question id rather than by position: the pool finishes out of order, so a
     positional resume would skip questions that were never scored and re-pay for ones that were.
     """
-    if path is None or not path.exists():
-        return [], set()
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-    return rows, {str(r["question_id"]) for r in rows}
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in paths or []:
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line:
+                continue
+            row = json.loads(line)
+            qid = str(row["question_id"])
+            if qid in seen:
+                continue
+            seen.add(qid)
+            rows.append(row)
+    return rows, seen
+
+
+class RunAborted(RuntimeError):
+    """A condition that will fail every remaining question identically, so the run stops."""
+
+
+#: Substrings identifying a failure that is about the ACCOUNT, not about the question. Retrying
+#: these burns the task list producing nothing, and dropping them one-by-one produces a run that
+#: exits 0 with a clean-looking summary over whatever happened to succeed first.
+_TERMINAL_MARKERS = (
+    "402",           # OpenRouter: out of credits / max_tokens unaffordable
+    "401",           # bad or revoked key
+    "insufficient_quota",
+    "requires more credits",
+)
+
+
+def _is_terminal(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return any(marker.lower() in text for marker in _TERMINAL_MARKERS)
 
 
 def _run_pool(tasks: list[Any], work: Any, workers: int) -> list[Any]:
@@ -259,22 +315,41 @@ def _run_pool(tasks: list[Any], work: Any, workers: int) -> list[Any]:
 
     A task that raises is logged and dropped rather than killing the run: one question failing
     after retries must not discard the hundreds already paid for. The dropped ids stay absent from
-    the artifact, and `aggregate` reports n, so a short run is visible rather than silent.
+    the artifact, and the run reports `coverage`, so a short run is visible rather than silent.
+
+    EXCEPT when the failure is terminal. Running out of credits mid-run is not a flaky question —
+    it fails every remaining one identically. Dropping those one at a time is how this harness
+    turned an empty OpenRouter balance into a tidy `n: 599` summary and exit 0: 101 questions
+    "failed", the artifact looked publishable, and nothing said the account was empty. That is
+    infrastructure wearing a verdict's clothes. A terminal error now aborts the run and says why,
+    while the sidecar keeps every question already scored so `--resume` picks up where it stopped.
     """
     results: list[Any] = []
     if workers <= 1:
         for task in tasks:
             try:
                 results.append(work(task))
-            except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            except Exception as exc:  # noqa: BLE001 - classified, then re-raised or reported
+                if _is_terminal(exc):
+                    raise RunAborted(str(exc)) from exc
                 print(f"  ! question failed, dropped: {exc}")
         return results
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for future in [pool.submit(work, task) for task in tasks]:
+        futures = [pool.submit(work, task) for task in tasks]
+        aborted: BaseException | None = None
+        for future in futures:
+            if aborted is not None:
+                future.cancel()
+                continue
             try:
                 results.append(future.result())
-            except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            except Exception as exc:  # noqa: BLE001 - classified, then re-raised or reported
+                if _is_terminal(exc):
+                    aborted = exc
+                    continue
                 print(f"  ! question failed, dropped: {exc}")
+        if aborted is not None:
+            raise RunAborted(str(aborted)) from aborted
     return results
 
 
@@ -301,6 +376,19 @@ def _load_published(path: Path) -> dict[str, dict[str, Any]]:
 
 
 def main() -> None:
+    try:
+        _main()
+    except RunAborted as exc:
+        raise SystemExit(
+            "RUN ABORTED — this fails every remaining question, so nothing further was "
+            f"attempted.\n  {exc}\n"
+            "Every question scored so far is in the .partial.jsonl sidecar; pass it (and any "
+            "earlier ones) to --resume once the account is topped up, and only the unscored "
+            "questions will be paid for."
+        ) from exc
+
+
+def _main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, help="BEAM split parquet (or converted JSON)")
     parser.add_argument("--chat-size", default="1M", choices=["100K", "500K", "1M", "10M"])
@@ -339,9 +427,11 @@ def main() -> None:
     parser.add_argument(
         "--resume",
         type=Path,
+        nargs="*",
         default=None,
-        help="A previous run's .partial.jsonl. Its question ids are skipped and its rows are "
-        "carried into this run's artifact, so a restart never re-pays for scored questions.",
+        help="One or more previous .partial.jsonl sidecars. Their question ids are skipped and "
+        "their rows are carried into this run's artifact, so a restart never re-pays for scored "
+        "questions. Pass every sidecar from every attempt — an interrupted run leaves one each.",
     )
     args = parser.parse_args()
 
@@ -434,6 +524,13 @@ def main() -> None:
             else None,
             "usage": {"total": usage_snapshot(), "harness_generator_judge": judge_llm.usage()},
             "n": len(rows),
+            # Coverage is stated, not left to be inferred from `n`. A sustained provider outage
+            # exhausts the retry budget on whatever is in flight and those questions are dropped
+            # so the rest of the run survives — which is right, but it means a run can finish
+            # cleanly, exit 0, and be short. It happened: 101 of 700 were lost to one outage
+            # window and `n: 599` was the only trace. An explicit missing-id list makes a short
+            # run impossible to mistake for a complete one, and feeds straight back into --resume.
+            "coverage": _coverage(set(published), {str(r["question_id"]) for r in rows}),
         }
         out_base.with_suffix(".json").write_text(
             json.dumps({"summary": summary, "rows": rows}, ensure_ascii=False, indent=1),
