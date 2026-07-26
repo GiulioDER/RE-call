@@ -1,0 +1,88 @@
+{
+  "benchmark": "LOCOMO \u2014 abstention ablation",
+  "embedder": "fastembed",
+  "k": 5,
+  "answerable_sample_per_conv": 40,
+  "seed": 0,
+  "conversations": 10,
+  "elapsed_s": 852.1,
+  "calibrated_threshold": {
+    "min": 0.692,
+    "max": 0.752,
+    "mean": 0.724
+  },
+  "modes": {
+    "default": {
+      "adversarial_abstention": {
+        "n": 446,
+        "rate": 0.0,
+        "ci95": [
+          0.0,
+          0.0085
+        ]
+      },
+      "answerable_false_abstain": {
+        "n": 400,
+        "rate": 0.0,
+        "ci95": [
+          0.0,
+          0.0095
+        ]
+      }
+    },
+    "calibrated": {
+      "adversarial_abstention": {
+        "n": 446,
+        "rate": 0.5269,
+        "ci95": [
+          0.4805,
+          0.5728
+        ]
+      },
+      "answerable_false_abstain": {
+        "n": 400,
+        "rate": 0.37,
+        "ci95": [
+          0.3241,
+          0.4183
+        ]
+      }
+    },
+    "entail": {
+      "adversarial_abstention": {
+        "n": 446,
+        "rate": 0.3744,
+        "ci95": [
+          0.3308,
+          0.4202
+        ]
+      },
+      "answerable_false_abstain": {
+        "n": 400,
+        "rate": 0.2625,
+        "ci95": [
+          0.2218,
+          0.3077
+        ]
+      }
+    },
+    "both": {
+      "adversarial_abstention": {
+        "n": 446,
+        "rate": 0.7646,
+        "ci95": [
+          0.723,
+          0.8016
+        ]
+      },
+      "answerable_false_abstain": {
+        "n": 400,
+        "rate": 0.5575,
+        "ci95": [
+          0.5085,
+          0.6054
+        ]
+      }
+    }
+  }
+}
