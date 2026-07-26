@@ -1,4 +1,5 @@
 import contextlib
+import logging
 import uuid
 from urllib.parse import urlsplit, urlunsplit
 
@@ -475,6 +476,149 @@ def test_hnsw_filtered_tuning_rejects_non_int_ef_search(monkeypatch):
     monkeypatch.setenv("RECALL_HNSW_EF_SEARCH_FILTERED", "200; DROP TABLE chunks; --")
     with pytest.raises(ValueError):
         store._hnsw_filtered_tuning()
+
+
+def test_hnsw_filtered_tuning_non_int_ef_search_names_the_variable(monkeypatch):
+    # ENV-001: int() alone raises "invalid literal for int() with base 10: ..." — it names neither
+    # the variable nor which knob is misconfigured. The error must name RECALL_HNSW_EF_SEARCH_FILTERED,
+    # exactly as the sibling iterative_scan and RECALL_HNSW_EF_SEARCH_MULTIPLIER already do.
+    store = _bare_store(_RecordingConn())
+    monkeypatch.setenv("RECALL_HNSW_EF_SEARCH_FILTERED", "not-a-number")
+    with pytest.raises(ValueError, match="RECALL_HNSW_EF_SEARCH_FILTERED"):
+        store._hnsw_filtered_tuning()
+
+
+def test_hnsw_filtered_tuning_rejects_out_of_range_ef_search(monkeypatch):
+    # ENV-001: a valid int outside pgvector's 1..1000 range passes int() and is caught nowhere at
+    # config time — it flows into `SET LOCAL hnsw.ef_search = {n}` and errors on EVERY filtered
+    # search. Reject it up front with a message that names the variable.
+    store = _bare_store(_RecordingConn())
+    for bad in ("0", "-5", "100000"):
+        monkeypatch.setenv("RECALL_HNSW_EF_SEARCH_FILTERED", bad)
+        with pytest.raises(ValueError, match="RECALL_HNSW_EF_SEARCH_FILTERED"):
+            store._hnsw_filtered_tuning()
+
+
+# --- analyze / analyze_if_stale: keeping the planner's statistics current ----------------------
+# (pure/DB-free: the decision rule and the best-effort contract, against a recording connection)
+
+
+class _AnalyzeConn:
+    """Records SQL and answers the `reltuples` probe with a configurable value.
+
+    Separate from `_RecordingConn` because that one's `_canned_row` dispatch answers
+    `ensure_schema`'s probes; this needs one probe answered with a value the test chooses, which
+    is the whole input to the decision under test.
+    """
+
+    def __init__(self, reltuples: float = -1.0, analyze_raises: Exception | None = None) -> None:
+        self._reltuples = reltuples
+        self._analyze_raises = analyze_raises
+        self.sql: list[str] = []
+        # `_with_retry` only reconnects when the connection reports itself dead. This one is
+        # alive throughout, so a raising ANALYZE propagates rather than being retried.
+        self.closed = False
+        self.broken = False
+
+    @property
+    def analyzed(self) -> bool:
+        return any(s.startswith("ANALYZE") for s in self.sql)
+
+    def execute(self, sql="", *_args, **_kwargs):
+        text = " ".join(str(sql).split())
+        self.sql.append(text)
+        if text.startswith("ANALYZE") and self._analyze_raises is not None:
+            raise self._analyze_raises
+        return _Cursor((self._reltuples,))
+
+
+def test_analyze_if_stale_fires_on_a_never_analyzed_table():
+    # reltuples = -1 is Postgres' "never vacuumed or analyzed". This is the case the whole
+    # feature exists for: with no statistics the planner estimates ONE matching row for a
+    # source-filtered query and never reaches for the HNSW index.
+    conn = _AnalyzeConn(reltuples=-1.0)
+    store = _bare_store(conn)
+    assert store.analyze_if_stale(1) is True
+    assert conn.analyzed
+
+
+def test_analyze_if_stale_skips_a_small_change_to_an_analyzed_table():
+    # 100 chunks into a 100,000-row table is far below autovacuum's own trigger
+    # (50 + 0.1 * 100000 = 10,050), so this must not spend a foreground ANALYZE that
+    # autovacuum was never going to run either.
+    conn = _AnalyzeConn(reltuples=100_000.0)
+    store = _bare_store(conn)
+    assert store.analyze_if_stale(100) is False
+    assert not conn.analyzed
+
+
+def test_analyze_if_stale_fires_once_the_change_reaches_autovacuums_threshold():
+    # The boundary the rule mirrors: 50 + 0.1 * 1000 = 150.
+    store = _bare_store(_AnalyzeConn(reltuples=1000.0))
+    assert store.analyze_if_stale(149) is False
+    conn = _AnalyzeConn(reltuples=1000.0)
+    store = _bare_store(conn)
+    assert store.analyze_if_stale(150) is True
+    assert conn.analyzed
+
+
+def test_analyze_if_stale_fires_on_a_bulk_load_into_a_table_analyzed_while_tiny():
+    """The hole a bare never-analyzed check would leave open.
+
+    A table analyzed when it held 3 rows has `reltuples = 3`, so "never analyzed" is already
+    false — and the next run bulk-loads 500,000 chunks against statistics describing 3 rows.
+    Autovacuum would certainly analyze that; the point of this rule is that it happens before
+    the next query rather than up to a naptime after it.
+    """
+    conn = _AnalyzeConn(reltuples=3.0)
+    store = _bare_store(conn)
+    assert store.analyze_if_stale(500_000) is True
+    assert conn.analyzed
+
+
+def test_analyze_is_best_effort_and_does_not_raise(caplog):
+    """A failed statistics refresh must never fail the index run that triggered it.
+
+    `statement_timeout` is deliberately NOT lifted for this statement (unlike `ensure_schema`'s
+    DDL), so `QueryCanceled` is the realistic failure — and the run that reached it has already
+    written every row correctly. Reported, because a silent one hides a planner that will go on
+    choosing the wrong plan.
+    """
+    conn = _AnalyzeConn(analyze_raises=psycopg.errors.QueryCanceled("canceled on timeout"))
+    store = _bare_store(conn)
+    with caplog.at_level(logging.WARNING, logger="recall.store"):
+        assert store.analyze() is False
+    assert conn.analyzed  # it really was attempted
+    assert "statistics" in caplog.text
+
+
+def test_analyze_if_stale_is_best_effort_and_does_not_raise():
+    conn = _AnalyzeConn(
+        reltuples=-1.0, analyze_raises=psycopg.errors.QueryCanceled("canceled on timeout")
+    )
+    store = _bare_store(conn)
+    assert store.analyze_if_stale(1) is False
+
+
+def test_analyze_reads_reltuples_and_analyzes_on_one_connection():
+    """Both statements go through a single `_with_retry` op.
+
+    In pooled mode each `_with_retry` is a separate borrow, so splitting these would decide
+    against one connection's catalog view and then ANALYZE on another's.
+    """
+    conn = _AnalyzeConn(reltuples=-1.0)
+    store = _bare_store(conn)
+    borrows = {"n": 0}
+    real = store._with_retry
+
+    def counting(op):
+        borrows["n"] += 1
+        return real(op)
+
+    store._with_retry = counting  # type: ignore[method-assign]
+    store.analyze_if_stale(1)
+    assert borrows["n"] == 1
+    assert [s.split()[0] for s in conn.sql] == ["SELECT", "ANALYZE"]
 
 
 @requires_db

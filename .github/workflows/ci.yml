@@ -31,9 +31,9 @@ jobs:
       RECALL_TEST_DSN: postgresql://recall:recall@localhost:5432/recall
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.12"
           cache: pip
@@ -69,9 +69,9 @@ jobs:
   typecheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.12"
           cache: pip
@@ -117,15 +117,15 @@ jobs:
       RECALL_TEST_DSN: postgresql://recall:recall@localhost:5432/recall
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       # The `requires-python` floor, not the version the other job happens to use.
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.11"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
 
       # `--resolution lowest-direct`: oldest version of each DIRECT dependency, transitives
       # resolved normally. `lowest` would also pin every transitive to its floor, which tests
@@ -144,22 +144,52 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
 
-      # Verify the lockfile is in sync with pyproject.toml — a drifted lock would audit stale
-      # versions. Then resolve the full dependency set (all extras) to a hashed requirements file
-      # and scan it with pip-audit.
-      - name: Check lockfile is current
+      # TWO INDEPENDENT CHECKS THAT MUST NOT BE ABLE TO DISABLE EACH OTHER.
+      #
+      # History, because both orderings have already failed here:
+      #
+      #   1. `uv lock --check` ran first and GATED the scan. The 0.6.0 release bumped
+      #      pyproject.toml's version without refreshing uv.lock, so it failed and pip-audit never
+      #      ran — CVE scanning was off on every PR, and because the job failed on lockfile drift
+      #      rather than on a finding, the red read as a broken build rather than an absent control.
+      #
+      #   2. Moving the scan first (#89) fixed that and broke the other half: `uv export` WITHOUT
+      #      `--frozen` re-resolves and REWRITES uv.lock in the workspace, so the `uv lock --check`
+      #      that followed inspected a lock the previous step had just repaired and always passed.
+      #      Verified directly — introduce a version drift, run the export, and the check goes
+      #      green with the drift still committed.
+      #
+      # So the check runs FIRST, before anything can mutate the lock, but `continue-on-error`
+      # keeps it from gating anything. The scan then always runs. The job fails at the END on the
+      # recorded outcome. Neither control can suppress the other, in either direction, which is
+      # the property both previous versions were missing.
+      - name: Check the committed lockfile is current
+        id: lockcheck
+        continue-on-error: true
         run: uv lock --check
 
-      - name: Export locked dependencies
-        run: uv export --frozen --all-extras --no-emit-project --format requirements-txt -o requirements.lock.txt
+      # No `--frozen`: it resolves from pyproject.toml, so a drifted lock cannot stop the scan.
+      # The side effect that makes this safe only in THIS position is that it rewrites uv.lock —
+      # harmless on a throwaway runner checkout, fatal to the check above if it ran first.
+      - name: Export dependencies for scanning
+        run: uv export --all-extras --no-emit-project --format requirements-txt -o requirements.lock.txt
 
       # --no-deps: the exported file already pins the full transitive set, so audit exactly
       # those versions instead of re-resolving. This is a real gate (a known CVE fails CI); if
       # it proves too noisy, add `continue-on-error: true` to downgrade it to advisory.
       - name: Audit dependencies (pip-audit)
         run: uvx pip-audit --requirement requirements.lock.txt --no-deps
+
+      # `always()` so a CVE finding cannot hide lockfile drift either.
+      - name: Fail if the lockfile had drifted
+        if: always() && steps.lockcheck.outcome == 'failure'
+        run: |
+          echo "::error::uv.lock has drifted from pyproject.toml. If you changed the version or"
+          echo "::error::any dependency, run 'uv lock' and commit the result in the SAME commit."
+          echo "::error::A stale lock means the committed pins are not what this project resolves."
+          exit 1

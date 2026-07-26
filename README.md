@@ -12,7 +12,7 @@
   <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-584%20·%20real%20pgvector-brightgreen" alt="584 tests">
+  <img src="https://img.shields.io/badge/tests-688%20·%20real%20pgvector-brightgreen" alt="688 tests">
 </p>
 
 <p align="center">
@@ -74,12 +74,14 @@ table without them is marketing.
 
 | Claim | Measurement | Limit |
 |---|---|---|
-| **Supersession beats similarity** | Superseded-trust rate **0.00**, 95% Wilson **[0.00, 0.02]**, n=250, against a baseline of **1.00** — plain search returns the stale memory *every time* on adversarially-worded queries | Generated corpus; the successor/abstain columns on it are **not** meaningful (below) |
+| **Supersession beats similarity — where the edge was authored** | Superseded-trust rate **0.00**, 95% Wilson **[0.00, 0.02]**, n=250, against a baseline of **1.00** — plain search returns the stale memory *every time* on adversarially-worded queries | Generated corpus; the successor/abstain columns on it are **not** meaningful (below). **And the mechanism is only as good as its coverage: 2 of 792 real memos declared `supersedes:` while 60 closed a decision in prose** — the enforcement is exact, the corpus is sparse, and both halves are load-bearing ([below](#prior-art--and-where-this-genuinely-differs)) |
 | **Abstention is calibrated, not guessed** | On the real corpus: threshold **0.728 ± 0.042** over 4 index rebuilds, false-abstain **0.015**, gap false-confidence **0.000** | Needs ≥ ~20 labelled samples; below that the rule loses its outlier robustness |
 | **Timestamps cannot replace declared supersession** | "Trust the newest relevant hit", steelmanned, still trusts the stale memory **83–100%** of the time | — |
 | **Reranking rescues a weak embedder** | Hybrid + cross-encoder lifts MRR **0.63 → 1.00** offline | Situational: a strong embedder already saturates this corpus |
 | **Fine-tuning pays only for a vocabulary gap** | **+0.00** on a rich corpus; **0.31 → 0.55** held-out MRR on opaque jargon → [study](https://github.com/GiulioDER/RE-call/blob/master/docs/RAG_TRAINING_STUDY.md) | Measure your gap first |
 | **Near-misses need a judge, not a threshold** | QNLI stage cuts near-miss false-confidence **1.00 → 0.60**, **0.80 → 0.50**, same judge across embedders → [study](https://github.com/GiulioDER/RE-call/blob/master/docs/ENTAILMENT_SUPERSESSION_STUDY.md) | Judge-alone *degrades* far-gap detection — the two stack, neither replaces the other |
+| **Retrieval, on a second public benchmark** | **knowledge-update 1.000** (36/36) — the category this library exists for, and the most robust one under haystack pressure (retains 74% of hit@5 across a 20× larger corpus where the overall figure retains 51%). Overall **hit@5 0.970** [0.94, 0.99] on LongMemEval's own per-question haystacks with the *free local* embedder → [FINDINGS §10](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | A *retrieval* figure — evidence session in the top 5 — **not** the benchmark's LLM-judged answer accuracy. It does not belong in a column with one. **And 0.970 is the benchmark's ~49-session haystack, not a memory store: on one merged 19,195-session index the same questions score 0.366.** Both arms are published because the second is the one that looks like production |
+| **Abstention has a bounded domain** | Far gaps: accuracy **1.00** (PEPs), **0.89** (real corpus). Near-misses: **it fails** — false-abstain **0.481** on LongMemEval, and **six** candidate signals all score AUC ≤ 0.753 — the best one's 95% interval tops out at **0.826**, below the ~0.90 a usable gate needs, so the bar is *excluded* rather than merely unproven. Independently corroborated on LOCOMO, where no judge configuration crosses into usable territory either → [FINDINGS §9–§10](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | Nothing was retuned, because every alternative measured *worse*. `recall calibrate` reports separability **with its interval**, certifies on the interval's lower bound, and exits non-zero rather than certify a threshold the data cannot support |
 
 Full methodology, per-embedder tables and the negative results → **[results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)**.
 Design rationale and the reasoning behind each guard → **[docs/WRITEUP.md](https://github.com/GiulioDER/RE-call/blob/master/docs/WRITEUP.md)**.
@@ -140,17 +142,39 @@ on a laptop.
 rather than as document headings. Four hypotheses, tested one at a time on the **same** 46 held-out
 questions — three eliminated, one confirmed:
 
+> ⚠️ **Measured before [#81](https://github.com/GiulioDER/RE-call/issues/81) was fixed** (2026-07-25).
+> Every "hybrid" row below ran with a sparse leg that only fired when a single chunk contained *every*
+> term of the query, so on longer questions it contributed nothing and the arm was effectively
+> dense-only. Read them as a lower bound on the hybrid configuration.
+>
+> **Re-measured 2026-07-25**, same 46 held-out questions, same runner: `dense` 0.326, `sparse`
+> 0.348, `hybrid` **0.457**, `hybrid+rerank` 0.435. The corpus has grown since (824 files against
+> 794), so this is *not* a clean before/after and the two sets are not differenced — but on this
+> corpus a working lexical leg is worth roughly **+0.13 over dense alone**.
+>
+> **The `candidate pool 20 → 100` null is worse than suspect — it is retracted.** The original
+> reading here, that widening the pool only widened the *dense* pool, was too generous: it did not
+> widen the dense pool either. `hnsw.ef_search` defaults to 40 and an HNSW scan cannot return more
+> rows than it examined, so `candidate_k=100` delivered **40** dense candidates
+> ([fixed](https://github.com/GiulioDER/RE-call/blob/master/recall/store.py)). And even uncapped,
+> RRF scores `dense[r]` and `sparse[r]` identically, so a fused top-5 reads only ~3 ranks into each
+> leg whatever the pool is — the null was arithmetic, not evidence. Full correction in
+> [FINDINGS §7](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md).
+
 | change | hit@5 | Δ | cost |
 |---|---|---|---|
 | baseline — bge-small, hybrid dense+sparse | 0.348 [0.23, 0.49] | — | 45 ms |
 | + cross-encoder rerank | 0.391 [0.26, 0.54] | +0.043 *(within noise)* | **57× latency** |
-| candidate pool 20 → 100 | 0.348 | **+0.000** | — |
+| candidate pool 20 → 100 | *retracted — see the note above* | fused −0.065, +reranker +0.022 *(both n.s., n=46)* | — |
 | chunk size 400 / 800 / 1600 | 0.326 / 0.348 / 0.348 | **+0.000** | a re-index each |
 | **embedder → voyage-3** | **0.630 [0.49, 0.76]** | **+0.282** | 246 ms, API dependency, data egress |
 
-`hit@50` plateaus at ~0.50 in every local configuration: for half the questions the right document
-was nowhere in the top *fifty*, which is why reordering and bigger pools could not help — a
-reranker only reorders what was retrieved. **The ceiling was the representation, not the pipeline.**
+`hit@50` plateaus at ~0.50 in every local configuration — though with the dense leg capped at 40,
+no run here ever offered a true top *fifty*, so read that as "top ~40–50". A recall ceiling is
+real and the embedder is what moved it. The claim that **bigger pools therefore could not help**
+does not follow and has been withdrawn: on a corpus where the comparison has power (FinanceBench,
+n=150), dense-only + reranker went **0.393 → 0.527** when the pool grew 40 → 100 with `ef_search`
+corrected. **The ceiling was the representation — but the pipeline was never actually ruled out.**
 
 The three eliminations are what make the fourth result a diagnosis rather than a lucky guess. The
 abstention layer was never the bottleneck: 89% of unanswerable questions correctly refused, 4–7%
@@ -266,7 +290,11 @@ Two further differences, and one deficit:
   against this library ([FINDINGS §9](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)), but **not** the metric Mem0 and Zep
   report: their **J** score (LLM-as-a-Judge ≈66) grades a *generator* this library does not ship,
   so no number here belongs beside it. What is measured is the retrieval substrate underneath such
-  a system — evidence-turn **hit@5 0.615** [0.59, 0.64] with the free local embedder — and the one
+  a system — evidence-turn **hit@5 0.615** [0.59, 0.64] with the free local embedder, rising to
+  **hit@20 0.798** [0.78, 0.82] across the measured depth curve ([FINDINGS §9a](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)).
+  Both depths are quoted deliberately: `hit@k` is a *ceiling* on any downstream J, and a ceiling
+  published at one depth reads as a ceiling at every depth — it is not. Depth is not free either,
+  since k=20 spends four times the generator's context to buy it — and the one
   axis no published LOCOMO result scores at all: the **446 adversarial questions** (22.5% of the
   set) that test whether a system knows what it doesn't know. There, out of the box, RE-call
   abstains on **zero** — the on-topic-wrong-attribution case is the §4 stale-hit geometry under
@@ -358,6 +386,39 @@ Four tools: `recall_search` (verdict + confidence + provenance, or an explicit a
 tenant-scoped), `recall_stats` (size, freshness, and the process metrics). Full guide →
 [docs/USING_WITH_CLAUDE.md](https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md).
 
+## Use it with LangChain or LlamaIndex
+
+```bash
+pip install "recall-rag[langchain]"     # or: "recall-rag[llamaindex]"
+```
+
+```python
+from recall.integrations.langchain import RecallRetriever   # or .llamaindex
+
+retriever = RecallRetriever.from_store(store, emb, k=5)
+docs = retriever.invoke("what is the rate limit?")          # LlamaIndex: .retrieve(...)
+```
+
+Drop-in retrievers for both frameworks, so RE-call can be the `retriever=` behind any chain, agent
+or query engine. They differ from an ordinary vector retriever in exactly one way, and it is the
+whole point:
+
+> **When the trust layer abstains, they return nothing** — an empty `list[Document]` /
+> `list[NodeWithScore]`, not a best-effort neighbour.
+
+A plain similarity retriever always hands back its top-k, so a chain cites the closest vector even
+when that memory is stale or superseded — and the stale hit is often the *highest*-cosine one. Here
+the chain gets nothing instead of a confident wrong memory. Every returned document carries the
+trust signal in `metadata` (`recall_verdict`, `recall_confidence`, `recall_cosine`,
+`superseded_by`), so a downstream prompt or reranker can use it; pass
+`return_abstention_reason=True` if you would rather receive one empty document carrying
+`recall_reason` than an empty list.
+
+`from_store()` takes the same knobs as `trusted_search` — `k`, `source`, `calibration`, `reranker`,
+`entailment`. Both adapters accept an injectable search function, so they are unit-tested without a
+database, and both ship in `dev` as well as their own extra — the `test` and `typecheck` jobs
+install `.[dev]` only, so otherwise they would be shipped but never CI-tested or type-checked.
+
 ## What this does not do
 
 Stated plainly, because the failure mode this library exists to prevent is confident overreach.
@@ -380,6 +441,25 @@ Stated plainly, because the failure mode this library exists to prevent is confi
   discrimination, not the trust layer. STR, latency and scale figures are unaffected.
 - **Gap detection is bounded by the embedder.** With a weak one, no threshold separates answerable
   from unanswerable — measured, not assumed.
+- **Abstention catches *far gaps*, not *near-misses* — and the gap between those is large.** Where
+  the unanswerable questions are genuinely off-topic, it works: accuracy **1.00** on the PEPs,
+  **0.89** on the real corpus. Where they are *near-misses by construction* — the haystack is the
+  user's own history and the question asks about something never mentioned but topically adjacent —
+  it does not: on LongMemEval it wrongly refused **48%** of questions retrieval had answered
+  correctly. Six candidate signals were measured on the same 500 questions and **all** of them
+  failed: dense cosine **0.753** AUC, cross-encoder rerank 0.742, RRF fusion 0.739, the shipped QNLI
+  judge **0.648**, and two distributional statistics at 0.58 and 0.55. The best of the six carries a
+  95% interval of **[0.680, 0.826]** — the ~0.90 bar sits *outside* it, so this is a measured
+  exclusion, not a small-sample shrug. Relevance signals cannot answer an answerability question,
+  and none of the six beats what already ships. Nothing was retuned; instead `recall calibrate`
+  reports the **separability** of your calibration set with its interval, judges the bar against
+  that interval's **lower bound** — a point estimate of 0.95 on 20 samples a side reaches down to
+  0.879 and has not established 0.90 — and **exits non-zero rather than certify a threshold the
+  data cannot support**, so this failure is visible on *your* corpus before you trust it. **Independently corroborated on
+  LOCOMO**, where the adversarial split reaches the same wall from the other side: no judge or
+  threshold configuration crosses into usable territory, and a *stronger* judge shifts the curve
+  without crossing it. Two benchmarks, two harnesses, one conclusion. →
+  [FINDINGS §9–§10](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)
 - **Filtered ANN search stopped truncating — which is not the same as better recall.** An HNSW
   walk is filter-blind, so a `source`-filtered query exhausted its candidate list before finding
   `k` matches: at pgvector's defaults, **40/40** queries silently returned fewer results than
@@ -455,10 +535,36 @@ Two behavioural changes worth knowing before you upgrade:
   intent — on the reference corpus it took working edges from 0 to 2 — but it does mean memories
   that were served as `ok` can now correctly come back `superseded`.
 
-## Upgrading to the next release (unreleased)
+## Upgrading to 0.6.0
 
-Five changes on `main` that are not in 0.5.0 yet, listed here because each can make something
-that currently succeeds start failing. Full detail in [CHANGELOG.md](https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md).
+**Your retrieval results will change, on the same corpus and the same queries.** 0.6.0 is the
+first release since 0.5.1 that is not purely additive, and the reason is three defects in the
+retrieval path that each made it return less than it should have:
+
+- **The lexical leg was firing on almost nothing.** It built its full-text query by ANDing every
+  term, so a chunk had to contain *every* word of the question to match at all — on questions
+  phrased as sentences, essentially never. `hybrid` was, in practice, dense-only.
+- **The dense leg was silently capped at 40 candidates.** `hnsw.ef_search` defaults to 40 and an
+  HNSW scan cannot return more rows than it examined, so any `candidate_k` above 40 was quietly
+  ignored. No error, no warning.
+- **A freshly-indexed table did not use its vector index at all** until autovacuum caught up,
+  because the planner had no statistics for the rows just written.
+
+All three make results *better*, not different-for-its-own-sake, and none changes an API. But if
+you have baselines, thresholds calibrated against retrieval scores, or golden-output tests, expect
+them to move — that is the whole point of the fixes. Nothing needs reconfiguring: the fixes are
+unconditional, and the previously-inert `candidate_k` now does what it says.
+
+Two published claims of ours were corrected in the same pass, since both rested on the capped
+dense leg — see [FINDINGS §7 and §9a](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md).
+
+## Upgrading to 0.5.1
+
+Five changes that **shipped in 0.5.1**, listed here because each can make something that currently
+succeeds start failing. If you are on 0.5.0, upgrading applies all five at once. 0.5.2 (the LOCOMO
+benchmark) and 0.5.3 (the LangChain and LlamaIndex retrievers) are additive; 0.6.0 is not — see
+above. Full detail in
+[CHANGELOG.md](https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md).
 
 - **`RECALL_ALLOW_INSECURE_DSN` is now an explicit allowlist** — only `1|true|yes|on` disable the
   guard, and **every other value, including `0` and `false`, keeps it ON**. A deployment relying
@@ -467,7 +573,6 @@ that currently succeeds start failing. Full detail in [CHANGELOG.md](https://git
 - **The `mcp` extra requires `mcp>=1.27.2`** (was `>=1.10`). Versions 1.10–1.27.1 installed
   cleanly and then failed on every authenticated call, so this now fails at install time instead.
   Upgrade with `pip install -U "recall-rag[mcp]"`.
-
 - **`recall index` refuses a mass prune.** A re-index that would delete 50% or more of the
   sources under a root (`RECALL_MAX_PRUNE_FRACTION`, default `0.5`, above a floor of 5 indexed
   sources) raises `PruneGuardTripped` and deletes nothing — that is how a *missing* corpus stops
