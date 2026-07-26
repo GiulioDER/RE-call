@@ -836,3 +836,66 @@ different judges, different protocols (§9e) — but no table should imply other
 
 Vector width changes 384 -> 1536 with the embedder, so `bench_beam_chunks` is rebuilt for the run;
 nothing is carried over from a 384-wide index.
+
+### 9g. BEAM's abstention category is a hallucination test, and it is where the margin is
+
+Three questions were asked of this data: is the benchmark measuring something real, is it
+backfitted to Mem0, and is there room to improve. The answers are yes, no, and yes — with a
+concrete mechanism for the third.
+
+**The category is sharp.** Scoring Mem0's own published answers (n=70 abstention questions):
+
+| Mem0 did | n | mean score |
+|---|---|---|
+| abstained | 38 | **0.974** |
+| answered | 32 | **0.016** |
+
+Near-perfectly binary. The rubric nuggets read "there is no information related to X", so the
+judge is testing exactly one thing: does the system invent an answer when the evidence is absent.
+Mem0 invents one **46 % of the time** — e.g. answering "User testing showed a positive response:
+the dynamic language switching feature achieved a 90 % satisfaction rate" to a question whose
+gold answer is that no such feedback was ever recorded. The corpus does contain "achieving a 90 %
+satisfaction rate is a strong start" — the ASSISTANT speculating, which the retriever surfaced and
+the answerer read as fact.
+
+**It is not backfitted to Mem0.** A benchmark tuned to flatter them would not expose a 46 %
+fabrication rate on its own vendor, and would not score them 64.1 here against 92.5 on LOCOMO.
+The dataset is third-party (ICLR 2026), and the harness's leniency (§9e) runs the OTHER way — it
+is generous to whoever is being scored, including us.
+
+**The margin is the largest in the benchmark.** Mem0's abstention cell is 0.536. A system that
+withheld correctly every time would score ~0.97. No other category has a 0.43 gap sitting in it,
+and it is the one category whose claim is RE-call's own.
+
+**Why RE-call does not capture it yet, precisely.** `apply_entailment` abstains only when NO hit
+entails an answer — an `any()` over the trusted pool. With ~200 candidates, two false-positive
+entailments are enough to suppress the abstention, and two is what we measured. The judge itself
+is not the problem: it correctly rejected 8 of the top 10 on the question above. The AGGREGATION
+is.
+
+Measured on conversation 0, entailed-count in the top 10 by class:
+
+| class | counts | mean |
+|---|---|---|
+| unanswerable | `[0, 2]` | **1.00** |
+| answerable | `[0,0,0,2,3,3,3,4,5,6,7,7,8,8,9,10,10,10]` | **5.28** |
+
+| rule | correct-abstain | false-abstain |
+|---|---|---|
+| abstain if entailed < 1 (**current**) | 50 % | 17 % |
+| abstain if entailed < 3 | **100 %** | 22 % |
+
+Note the direction: this is the separation the COSINE threshold could not provide at any value
+(§9f showed unanswerable cosines run HIGHER than answerable ones, median 0.676 vs 0.641). Counting
+entailments recovers the ordering that similarity inverts.
+
+**⚠ n = 2 unanswerable questions in this sample.** This is a direction with a mechanism, not a
+result. It needs the full 30 abstention questions across conversations 0-14 before any claim is
+made — that validation is free (dry runs make no LLM call) and is the next thing to run.
+
+**The research item, stated as a change:** `recall.entailment.apply_entailment` currently exposes
+one abstention policy, "none entailed". The data says the policy should be a threshold on the
+count (or fraction) of entailed hits, and that the right value is not 1. That is a library change
+validated on adversarial held-out data, not a benchmark tweak — the abstention claim is what
+RE-call sells, and on the one public benchmark that tests it directly, the default policy is too
+permissive to collect.
