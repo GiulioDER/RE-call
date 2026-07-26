@@ -236,6 +236,40 @@ def _questions_of(probing: dict[str, Any], chat_size: str, conv_idx: int) -> lis
     return questions
 
 
+#: Filename pattern for a sharded split. Zero-padded so lexical order is index order.
+SHARD_NAME = "conv_{idx:03d}.json"
+_SHARD_GLOB = "conv_*.json"
+
+
+def shard_split(path: Path, out_dir: Path) -> int:
+    """Split a BEAM parquet into one JSON file per conversation. Returns the count written.
+
+    Why this exists: the 1M split is a SINGLE parquet row group, so there is no such thing as
+    reading one row cheaply — any read decompresses all 35 conversations, measured at 626 MB
+    resident that never returns to the OS. On a 12 GB machine that is a permanent tax for the
+    whole run, on top of the embedder and the indexing peak, and it is what took the machine down.
+
+    Sharding pays that cost ONCE, offline, and leaves 35 files of ~15 MB. A run then holds one
+    conversation instead of thirty-five, and a re-run pays nothing at all.
+    """
+    import pyarrow.parquet as pq
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    table = pq.read_table(path)
+    written = 0
+    for idx in range(table.num_rows):
+        row = table.slice(idx, 1).to_pylist()[0]
+        (out_dir / SHARD_NAME.format(idx=idx)).write_text(
+            json.dumps(row, ensure_ascii=False), encoding="utf-8"
+        )
+        written += 1
+    return written
+
+
+def _shard_paths(directory: Path) -> list[Path]:
+    return sorted(directory.glob(_SHARD_GLOB))
+
+
 def iter_conversations(
     path: Path, chat_size: str, indices: list[int] | None = None
 ) -> Iterator[Conversation]:
@@ -243,18 +277,34 @@ def iter_conversations(
 
     This is what the runner uses: it ingests and scores a conversation before the next one is
     parsed, so peak memory is one conversation rather than the whole split.
+
+    `path` may be a parquet, a converted JSON array, or a DIRECTORY of per-conversation shards
+    written by `shard_split` — the last being the only one of the three that does not hold the
+    whole split resident, and so the one to use on a memory-constrained machine.
     """
     wanted = set(indices) if indices is not None else None
+    if path.is_dir():
+        for shard in _shard_paths(path):
+            idx = int(shard.stem.split("_")[-1])
+            if wanted is not None and idx not in wanted:
+                continue
+            row = json.loads(shard.read_text(encoding="utf-8"))
+            yield _conversation_of(row, chat_size, idx)
+        return
     for idx, row in iter_rows(path, wanted):
-        yield Conversation(
-            chat_size=chat_size,
-            index=idx,
-            conversation_id=row.get("conversation_id") or f"{chat_size}_{idx}",
-            turns=_flatten_turns(row.get("chat", [])),
-            questions=_questions_of(
-                _parse_probing(row.get("probing_questions", "{}")), chat_size, idx
-            ),
-        )
+        yield _conversation_of(row, chat_size, idx)
+
+
+def _conversation_of(row: dict[str, Any], chat_size: str, idx: int) -> Conversation:
+    return Conversation(
+        chat_size=chat_size,
+        index=idx,
+        conversation_id=row.get("conversation_id") or f"{chat_size}_{idx}",
+        turns=_flatten_turns(row.get("chat", [])),
+        questions=_questions_of(
+            _parse_probing(row.get("probing_questions", "{}")), chat_size, idx
+        ),
+    )
 
 
 def count_conversations(path: Path, indices: list[int] | None = None) -> int:
@@ -263,7 +313,9 @@ def count_conversations(path: Path, indices: list[int] | None = None) -> int:
     Exists so the runner can print "35 conversations" up front without paying the parse cost that
     `iter_conversations` is designed to spread out.
     """
-    if path.suffix == ".parquet":
+    if path.is_dir():
+        total = len(_shard_paths(path))
+    elif path.suffix == ".parquet":
         import pyarrow.parquet as pq
 
         total = pq.read_metadata(path).num_rows
