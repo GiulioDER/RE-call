@@ -7,9 +7,17 @@ as truth. See `docs/EMBEDDER_GAP_STUDY.md` for what beat what.
 """
 from __future__ import annotations
 
+import math
+
 import pytest
 
-from recall.eval.vocab import bge_encoder, oov_rate, subword_pieces
+from recall.eval.vocab import (
+    bge_encoder,
+    crowding,
+    oov_rate,
+    query_overlap,
+    subword_pieces,
+)
 
 
 def _pieces(word: str) -> list[str]:
@@ -127,3 +135,63 @@ def test_oov_rate_token_budget_is_deterministic_for_a_given_seed():
     c = oov_rate(texts, _pool_aware_pieces, token_budget=100, seed=8)
     assert a == b
     assert a != c  # different seed genuinely resamples rather than ignoring the seed
+
+
+def test_query_overlap_ignores_function_words():
+    """The defect this metric has to survive: function words swamp the signal.
+
+    Every English question overlaps every English document on {the, is, of, a}. Counted, the
+    statistic sits near a corpus-independent constant and correlates with nothing — the same
+    silent-plausible-number failure as [CLS] and Heaps' law. Here the two queries share three
+    function words and no content at all: unfiltered that scores 0.5, which is noise wearing the
+    costume of evidence.
+    """
+    assert query_overlap("what is the status of the deployment", "the cost of a widget is fixed") == 0.0
+
+
+def test_query_overlap_is_the_share_of_query_content_words_present_in_the_document():
+    # Content words in the query: {status, deployment, pipeline}. The document contains 'status'
+    # and 'pipeline' but not 'deployment' -> 2/3. Query-side coverage, deliberately: the question
+    # is how much of what the ASKER said survives into the document, which is what a lexical
+    # retriever gets for free and a dense retriever must supply.
+    q = "what is the status of the deployment pipeline"
+    doc = "the pipeline reports its status once a minute"
+    assert query_overlap(q, doc) == pytest.approx(2 / 3)
+
+
+def test_query_overlap_is_nan_when_the_query_has_no_content_words():
+    # A query of pure function words has no denominator. Returning 0.0 would mean "no overlap",
+    # which is a measurement; this is the absence of one, and averaging it in would drag a
+    # corpus's mean down for a reason that has nothing to do with its vocabulary.
+    assert math.isnan(query_overlap("what is it", "anything at all"))
+
+
+def test_crowding_excludes_each_document_from_its_own_neighbourhood():
+    """The defect: every vector's nearest neighbour is itself, at cosine 1.0.
+
+    Left in, `crowding` returns exactly 1.0 for every corpus ever measured — the [CLS] failure
+    again, in a different costume. Three mutually orthogonal documents are as UNcrowded as a
+    corpus can be, so the honest answer is 0.0.
+    """
+    assert crowding([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]) == pytest.approx(0.0)
+
+
+def test_crowding_is_one_when_documents_are_indistinguishable():
+    # Two identical documents: each one's nearest OTHER document sits on top of it.
+    assert crowding([[1.0, 0.0], [1.0, 0.0]]) == pytest.approx(1.0)
+
+
+def test_crowding_is_invariant_to_vector_magnitude():
+    # Cosine, not dot product. An embedder that returns unnormalised vectors would otherwise make
+    # a corpus look crowded for having long vectors, which is a property of the model's output
+    # scale and not of whether its documents can be told apart.
+    unit = crowding([[1.0, 0.0], [1.0, 1.0]])
+    scaled = crowding([[10.0, 0.0], [1.0, 1.0]])
+    assert unit == pytest.approx(1 / math.sqrt(2))
+    assert scaled == pytest.approx(unit)
+
+
+def test_crowding_is_nan_for_fewer_than_two_documents():
+    # "How close is the nearest other document" is undefined when there is no other document.
+    assert math.isnan(crowding([[1.0, 0.0]]))
+    assert math.isnan(crowding([]))

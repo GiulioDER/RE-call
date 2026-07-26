@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import random
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 
 #: Word pattern for vocabulary statistics. Underscores are kept inside words because identifiers
 #: (`signal_filter`, `close_all`) are exactly the kind of token this study is about.
@@ -113,3 +113,74 @@ def oov_rate(
         return float("nan")
     shattered = sum(1 for word in types if len(tokenize(word)) >= min_pieces)
     return shattered / len(types)
+
+
+#: Function words, excluded from `query_overlap`. Deliberately short and explicit rather than
+#: pulled from a corpus library: the list is part of the published method, so it has to be
+#: readable in the same file as the metric it changes. Every English question overlaps every
+#: English document on these, so counting them would compress the statistic toward a
+#: corpus-independent constant and destroy the very variation the study needs.
+STOPWORDS = frozenset("""
+a an the this that these those and or but if then else of in on at to from by for with without
+about into over under again further is are was were be been being am do does did doing have has
+had having i you he she it we they them his her its our their what which who whom whose when
+where why how all any both each few more most other some such no nor not only own same so than
+too very can will just should now as
+""".split())
+
+
+def content_types(text: str) -> set[str]:
+    """The distinct lowercased non-stopword words in `text`."""
+    return {word for word in word_types([text]) if word not in STOPWORDS}
+
+
+def query_overlap(query: str, document: str) -> float:
+    """Share of the query's content words that appear in `document`.
+
+    Query-side coverage rather than a symmetric measure (Jaccard, Dice), and the asymmetry is the
+    claim: what matters is how much of what the *asker* said survives into the document, because
+    that is precisely the part a lexical retriever gets for free and a dense retriever has to
+    supply from meaning. A symmetric score would be dominated by document length, which is a
+    property of the corpus's formatting rather than of the question.
+
+    Returns NaN when the query has no content words — the absence of a measurement rather than a
+    measurement of zero, so that averaging does not quietly count it as maximal paraphrase.
+    """
+    asked = content_types(query)
+    if not asked:
+        return float("nan")
+    return len(asked & content_types(document)) / len(asked)
+
+
+def crowding(vectors: Sequence[Sequence[float]], *, sample: int | None = None, seed: int = 0) -> float:
+    """Mean cosine from each document to its nearest *other* document.
+
+    High means the local embedder packs the corpus into a space where documents look alike, and a
+    retriever asked to pick one of them is choosing between near-ties. That is a different
+    hypothesis from `oov_rate`: a corpus can be built entirely from words the model knows and
+    still be undiscriminable, and vice versa.
+
+    Self-similarity is excluded, which is the whole implementation risk. Every vector's nearest
+    neighbour is itself at cosine 1.0, so leaving the diagonal in returns exactly 1.0 for every
+    corpus — a number that is stable, comparable and meaningless.
+
+    `sample` bounds the O(n^2) similarity matrix. Sampling documents changes what "nearest" means
+    (a sparser sample has more distant neighbours), so it must be held fixed across corpora for
+    the same reason `oov_rate`'s token budget must.
+    """
+    import numpy as np
+
+    if len(vectors) < 2:
+        return float("nan")
+    matrix = np.asarray(vectors, dtype=np.float64)
+    if sample is not None and len(matrix) > sample:
+        rng = np.random.default_rng(seed)
+        matrix = matrix[rng.choice(len(matrix), size=sample, replace=False)]
+
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    # A zero vector has no direction, so it has no cosine to anything. Guard the division rather
+    # than letting it produce NaNs that would silently propagate into the corpus mean.
+    norms[norms == 0.0] = 1.0
+    similarity = (matrix / norms) @ (matrix / norms).T
+    np.fill_diagonal(similarity, -np.inf)
+    return float(similarity.max(axis=1).mean())
