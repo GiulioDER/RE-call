@@ -197,3 +197,70 @@ def predictor_correlations(
         for i, a in enumerate(names)
         for b in names[i + 1 :]
     }
+
+
+#: Candidate predictors, in the order the study preregistered them.
+PREDICTORS = ("oov_rate", "query_overlap", "crowding")
+
+#: Below this many usable corpora, a null result means "underpowered" rather than "no effect".
+POWER_FLOOR = 12
+
+
+def analyse_records(records: Sequence[dict], *, arm: str = "hybrid") -> dict:
+    """The preregistered analysis, over the run's per-corpus records.
+
+    One function so that when the overnight job finishes there is nothing left to decide: the
+    predictors, the control, the correction and both response variables are already fixed, and the
+    only thing this reads off the data is the answer.
+
+    Failed corpora are excluded and *named*. `n` is reported rather than inferred, and carries the
+    underpowered flag with it, because the difference between "no effect" and "could not tell" is
+    the difference between a publishable negative result and a wasted night.
+    """
+    usable = [r for r in records if r.get("status") == "ok"]
+    excluded = [r.get("dataset") for r in records if r.get("status") != "ok"]
+
+    local = [r["scores"]["local"][arm] for r in usable]
+    cloud = [r["scores"]["cloud"][arm] for r in usable]
+    responses = {
+        "gap": [c - lo for lo, c in zip(local, cloud)],
+        "headroom": [headroom_capture(lo, c) for lo, c in zip(local, cloud)],
+    }
+
+    values = {name: [r["predictors"][name] for r in usable] for name in PREDICTORS}
+    raw_p = [permutation_p(values[name], responses["gap"], local) for name in PREDICTORS]
+    holm = holm_adjust(raw_p)
+
+    return {
+        "n": len(usable),
+        "arm": arm,
+        "excluded": excluded,
+        "underpowered": len(usable) < POWER_FLOOR,
+        # How much the null model alone explains. Reported as a number so a predictor's partial
+        # correlation is read next to what it had to beat, not in isolation.
+        "null_spearman": spearman(local, responses["gap"]),
+        "predictor_correlations": {f"{a}~{b}": v for (a, b), v in
+                                   predictor_correlations(values).items()},
+        "predictors": {
+            name: {
+                "spearman_raw": spearman(values[name], responses["gap"]),
+                "partial_spearman": partial_spearman(values[name], responses["gap"], local),
+                # |r| between the predictor and the control. Approaching 1 means the control
+                # absorbs the predictor and `partial_spearman`'s denominator goes to zero: the
+                # partial is then arithmetically unstable and its p-value is not to be trusted.
+                # Reported so that case is visible instead of arriving as a confident number.
+                "control_collinearity": spearman(values[name], local),
+                "permutation_p": raw_p[i],
+                "holm_p": holm[i],
+            }
+            for i, name in enumerate(PREDICTORS)
+        },
+        # The secondary response is computed unconditionally. Reporting it only when the primary
+        # disappoints would make it a second attempt rather than a robustness check.
+        "responses": {
+            key: {
+                name: partial_spearman(values[name], series, local) for name in PREDICTORS
+            }
+            for key, series in responses.items()
+        },
+    }

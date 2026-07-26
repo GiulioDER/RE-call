@@ -16,6 +16,7 @@ import random
 import pytest
 
 from recall.eval.gap_study import (
+    analyse_records,
     headroom_capture,
     holm_adjust,
     partial_spearman,
@@ -171,3 +172,46 @@ def test_predictor_correlations_exposes_predictors_that_are_the_same_measurement
     })
     assert pairs[("oov", "twin")] == pytest.approx(1.0)
     assert abs(pairs[("oov", "other")]) < 0.5
+
+
+def _record(name, local, cloud, oov, overlap, crowd):
+    return {"status": "ok", "dataset": name,
+            "scores": {"local": {"hybrid": local}, "cloud": {"hybrid": cloud}},
+            "predictors": {"oov_rate": oov, "query_overlap": overlap, "crowding": crowd}}
+
+
+def test_analyse_records_runs_the_preregistered_analysis_end_to_end():
+    # oov_rate predicts the gap and is INDEPENDENT of the local score. That independence is the
+    # point: making oov a function of i alongside local makes the two collinear, the control then
+    # absorbs the predictor entirely, and the partial correlation destabilises. A predictor that
+    # only moves with the null model cannot be shown to beat it, by construction.
+    rng = random.Random(11)
+    records = []
+    for i in range(18):
+        local = 0.30 + 0.03 * i
+        oov = rng.random()
+        cloud = min(0.99, local + 0.30 * oov + rng.gauss(0, 0.01))
+        records.append(_record(f"c{i}", local, cloud, oov, rng.random(), rng.random()))
+
+    out = analyse_records(records, arm="hybrid")
+    assert out["n"] == 18
+    assert out["predictors"]["oov_rate"]["holm_p"] < 0.05
+    assert out["predictors"]["query_overlap"]["holm_p"] > 0.05
+    # The null model is reported as a number, not assumed: how much the local score alone explains.
+    assert "null_spearman" in out
+    # Collinearity with the control is reported per predictor. Near +/-1 the partial correlation
+    # is arithmetically unstable and the study cannot answer the question for that predictor —
+    # which must be visible rather than showing up as a confidently wrong p-value.
+    assert abs(out["predictors"]["oov_rate"]["control_collinearity"]) < 0.9
+    # Both response variables, always — the secondary is not contingent on the primary's result.
+    assert "headroom" in out["responses"]
+
+
+def test_analyse_records_ignores_failed_records_and_says_so():
+    records = [_record(f"c{i}", 0.3, 0.5, 0.4, 0.5, 0.6) for i in range(4)]
+    records.append({"status": "failed", "dataset": "broken", "error": "404"})
+    out = analyse_records(records, arm="hybrid")
+    assert out["n"] == 4
+    assert out["excluded"] == ["broken"]
+    # n=4 is far under the floor; a null here means underpowered and the output must carry that.
+    assert out["underpowered"] is True
