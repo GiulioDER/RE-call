@@ -784,3 +784,31 @@ python -m benchmarks.beam.pair --a <recall.json> --b <mem0-rejudged.json>
 
 Cells land here when the paid arms run. Provenance for every constant above:
 `benchmarks/beam/UPSTREAM.md`.
+
+### 9e. Why 92.5 and our 0.444 are not the same measurement
+
+The same harness read for §9d also explains the LOCOMO headline, and the explanation is entirely in
+the protocol rather than in either memory layer. Verified by reading `benchmarks/locomo/prompts.py`
+and the published `results/platform/locomo_results.json` in that repo:
+
+| Their published LOCOMO run | Our head-to-head |
+|---|---|
+| `CATEGORIES_TO_EVALUATE = [1, 2, 3, 4]` — **category 5 excluded entirely** | cat 5 is the axis §9b exists to measure |
+| Answerer told: *"COMMIT AND ANSWER … NEVER say 'not specified' … NEVER return an empty answer"* — abstention is **forbidden** | abstention is the measured behaviour |
+| `ANSWERER_MEMORY_LIMIT = 200` memories, chronological (~7k tokens — their "mean tokens per query") | k = 10/20, token-matched |
+| Judge: dates within **14 days** correct, durations within **50 %** correct, 1-of-N partial credit, and evidence used *"only to ACCEPT answers, never to reject them more strictly"* | strict single verdict |
+| Answerer and judge: **`gpt-5`** (Azure), n = 1,540 | gpt-4o-mini / gpt-4o |
+
+Every one of those moves the number the same way, and none of them is cheating — they are choices,
+documented in code. But they mean **92.5 and our 0.444 are not two values of one quantity**, and any
+table that stacks them is comparing a lenient judge over four categories with abstention forbidden
+against a strict judge over five with abstention scored.
+
+Note the model row in particular: their answerer and judge default to `gpt-5` on *both* benchmarks,
+not gpt-4o. A "reproduction" run configured on gpt-4o would differ from the published cells for that
+reason alone, before retrieval is considered.
+
+The genuinely comparable experiment is the reverse of what we ran: put RE-call through *their*
+unmodified harness. The seam is one call — `mem0.search(question, user_id, top_k)` returning
+`[{memory, created_at}]` — which is exactly the interface `benchmarks/beam/systems.py` already
+implements for BEAM. That is the natural next arm, and the adapter for it already exists.
