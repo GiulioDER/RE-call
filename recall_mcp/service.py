@@ -428,10 +428,16 @@ def forget_memory(store: PgVectorStore, sources: list[str]) -> ForgetResult:
             f"call. Deletion is irreversible; split the request so each one stays reviewable."
         )
     requested = list(dict.fromkeys(sources))  # de-dup, preserve order
-    existing = store.source_content_hashes()  # {source: content_hash}, this tenant only
-    found = [s for s in requested if s in existing]
-    not_found = [s for s in requested if s not in existing]
-    chunks_removed = store.delete_sources(found) if found else 0
+    # An identifier is whatever recall_search showed the caller: the root-relative `file` for an
+    # indexed chunk, or the raw `source` for a legacy row. Resolve each to the absolute `source`
+    # value(s) deletion keys on — matching `metadata->>'file'` OR `source`, tenant-scoped by the
+    # store — so following the documented erasure contract actually deletes. (Previously forget
+    # compared the relative id straight against the absolute `source` column and matched nothing.)
+    resolved = store.sources_for_identifiers(requested)  # {identifier: [source, ...]}
+    found = [s for s in requested if s in resolved]
+    not_found = [s for s in requested if s not in resolved]
+    to_delete = sorted({src for ident in found for src in resolved[ident]})
+    chunks_removed = store.delete_sources(to_delete) if to_delete else 0
     if found and not_found:
         message = (
             f"Forgot {chunks_removed} chunk(s) from {len(found)} source(s); "

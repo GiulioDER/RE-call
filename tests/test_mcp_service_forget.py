@@ -90,3 +90,53 @@ def tenant_table():
     yield name
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute(f"DROP TABLE IF EXISTS {name}")
+
+
+# --- STAKES-001: the identifier recall_search shows == the identifier recall_forget acts on -----
+#
+# The real Indexer writes `source = str(f)` (an ABSOLUTE path) and `metadata['file']` (the
+# ROOT-RELATIVE path), and recall_search surfaces the relative `file`. The earlier forget tests
+# hand-build `Chunk("a1", "f.md", ...)` with `source` already equal to the relative name and no
+# `file` metadata, collapsing the two distinct real-world values into one string — so they never
+# exercise the documented index -> search -> forget round trip. These do.
+
+
+@requires_db
+def test_forget_erases_the_identifier_search_surfaces_for_a_real_indexed_chunk(make_store):
+    """STAKES-001: forgetting the identifier recall_search returns (the relative `file`) must
+    actually delete. Pre-fix, forget matched only the absolute `source` column, so the relative
+    id fell into sources_not_found and nothing was removed — a silent right-to-erasure no-op."""
+    store = make_store(3)
+    abs_source = "/corpus/notes.md"  # index.py: source = str(f), absolute (root is resolve()d)
+    rel_file = "notes.md"            # index.py: metadata['file'] = f.relative_to(root)
+    store.upsert(
+        [
+            Chunk("n1", abs_source, "one", {"file": rel_file}),
+            Chunk("n2", abs_source, "two", {"file": rel_file}),
+            Chunk("k1", "/corpus/keep.md", "keep", {"file": "keep.md"}),
+        ],
+        [[1.0, 0.0, 0.0]] * 3,
+    )
+    # `rel_file` is exactly what a caller reads from a recall_search hit's `source` field.
+    result = forget_memory(store, [rel_file])
+    assert result.chunks_removed == 2
+    assert result.sources_removed == [rel_file]
+    assert result.sources_not_found == []
+    assert store.count() == 1  # only keep.md remains
+
+
+@requires_db
+def test_search_source_filter_matches_the_relative_file_identifier(make_store):
+    """STAKES-001: passing a hit's `source` (relative `file`) back as `search(source=…)` must
+    filter to that document. Pre-fix the filter compared it to the absolute `source` column and
+    matched nothing, so the documented 'search within this source' path returned empty."""
+    store = make_store(3)
+    store.upsert(
+        [
+            Chunk("n1", "/corpus/notes.md", "hello world", {"file": "notes.md"}),
+            Chunk("o1", "/corpus/other.md", "hello world", {"file": "other.md"}),
+        ],
+        [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+    )
+    hits = store.query_dense([1.0, 0.0, 0.0], k=5, source="notes.md")
+    assert [h.chunk.metadata["file"] for h in hits] == ["notes.md"]

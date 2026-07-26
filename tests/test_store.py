@@ -478,6 +478,27 @@ def test_hnsw_filtered_tuning_rejects_non_int_ef_search(monkeypatch):
         store._hnsw_filtered_tuning()
 
 
+def test_hnsw_filtered_tuning_non_int_ef_search_names_the_variable(monkeypatch):
+    # ENV-001: int() alone raises "invalid literal for int() with base 10: ..." — it names neither
+    # the variable nor which knob is misconfigured. The error must name RECALL_HNSW_EF_SEARCH_FILTERED,
+    # exactly as the sibling iterative_scan and RECALL_HNSW_EF_SEARCH_MULTIPLIER already do.
+    store = _bare_store(_RecordingConn())
+    monkeypatch.setenv("RECALL_HNSW_EF_SEARCH_FILTERED", "not-a-number")
+    with pytest.raises(ValueError, match="RECALL_HNSW_EF_SEARCH_FILTERED"):
+        store._hnsw_filtered_tuning()
+
+
+def test_hnsw_filtered_tuning_rejects_out_of_range_ef_search(monkeypatch):
+    # ENV-001: a valid int outside pgvector's 1..1000 range passes int() and is caught nowhere at
+    # config time — it flows into `SET LOCAL hnsw.ef_search = {n}` and errors on EVERY filtered
+    # search. Reject it up front with a message that names the variable.
+    store = _bare_store(_RecordingConn())
+    for bad in ("0", "-5", "100000"):
+        monkeypatch.setenv("RECALL_HNSW_EF_SEARCH_FILTERED", bad)
+        with pytest.raises(ValueError, match="RECALL_HNSW_EF_SEARCH_FILTERED"):
+            store._hnsw_filtered_tuning()
+
+
 # --- analyze / analyze_if_stale: keeping the planner's statistics current ----------------------
 # (pure/DB-free: the decision rule and the best-effort contract, against a recording connection)
 
