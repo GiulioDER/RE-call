@@ -32,6 +32,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from recall.calibration import from_samples
 from recall.embeddings import Embedder
@@ -217,10 +218,12 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
         sources_indexed = sum(
             1 for s in store.source_content_hashes() if Path(s).is_relative_to(corpus_root)
         )
-        corpus_report = {"files": stats.files, "chunks": store.count(),
-                         "sources_expected": stats.files + stats.skipped,
-                         "sources_indexed": sources_indexed,
-                         "index_seconds": round(index_s, 1)}
+        # Annotated because the literal is all-numeric, so an inferred dict[str, float] rejects
+        # the `table` name assigned below when --keep is set.
+        corpus_report: dict[str, Any] = {"files": stats.files, "chunks": store.count(),
+                                         "sources_expected": stats.files + stats.skipped,
+                                         "sources_indexed": sources_indexed,
+                                         "index_seconds": round(index_s, 1)}
         if sources_indexed != stats.files + stats.skipped:
             _log.warning(
                 "index incomplete: %d source(s) in %s, expected %d — re-run to repair "
