@@ -57,6 +57,44 @@ def _filename(index: int) -> str:
     return f"turn_{index:06d}.md"
 
 
+#: How many top-ranked trusted hits the entailment guard actually judges. The guard is a QNLI
+#: cross-encoder (82 M params) and BEAM chunks average 620 tokens, so judging all ~160 trusted
+#: hits for all 300 questions is ~5 PFLOPs — the same CPU arithmetic that already took a laptop
+#: down once this session. 25 is ~0.8 PFLOPs, a couple of hours on the VPS.
+#:
+#: Judging the TOP of the ranking is also the right place to spend the budget rather than a
+#: concession: the abstention decision turns on whether the BEST evidence entails an answer, and
+#: a hit ranked 100th that the top 25 did not support is not going to rescue it. Hits beyond the
+#: cap keep their existing verdict and still reach the answerer as context — the guard changes
+#: WHETHER RE-call abstains and what it trusts most, not how much context the answerer sees.
+ENTAILMENT_TOP_N = 25
+
+
+class TopNEntailment:
+    """Wraps an `EntailmentJudge`, judging only the first `n` candidates.
+
+    Returns True (keep) for everything past the cap. That is deliberate and it is the
+    conservative direction: an unjudged hit keeps whatever verdict it already had, so the cap can
+    only make the guard demote FEWER hits than a full pass would. It cannot manufacture an
+    abstention, and it cannot make RE-call look better by hiding a bad hit — any error it
+    introduces understates the guard's effect rather than overstating it.
+    """
+
+    def __init__(self, inner: Any, n: int = ENTAILMENT_TOP_N) -> None:
+        self._inner = inner
+        self._n = n
+        #: Judged/skipped counts, reported in the artifact so the cap is visible in the results
+        #: rather than only in this docstring.
+        self.judged = 0
+        self.skipped = 0
+
+    def judge(self, query: str, texts: list[str]) -> list[bool]:
+        head, tail = texts[: self._n], texts[self._n :]
+        self.judged += len(head)
+        self.skipped += len(tail)
+        return (self._inner.judge(query, head) if head else []) + [True] * len(tail)
+
+
 class BeamRecallSystem:
     """RE-call over one BEAM conversation at a time.
 
@@ -76,6 +114,7 @@ class BeamRecallSystem:
         reranker_name: str = "none",
         table: str = BEAM_TABLE,
         candidate_k: int | None = None,
+        entailment_top_n: int = 0,
     ) -> None:
         from benchmarks.systems import resolve_embedder, resolve_reranker
 
@@ -94,6 +133,16 @@ class BeamRecallSystem:
         self._reranker_name = reranker_name
         self._reranker = resolve_reranker(reranker_name)
         self._table = table
+        # OFF unless asked for: `trusted_search` ships the guard disabled, and the as-shipped arm
+        # must measure what ships. A non-zero cap builds the QNLI judge ONCE here rather than per
+        # query — the cross-encoder loads ~300 MB of weights, and paying that per question would
+        # dominate the measurement it is supposed to inform.
+        self._entailment_top_n = entailment_top_n
+        self._entailment: Any | None = None
+        if entailment_top_n:
+            from recall.entailment import QnliEntailmentJudge
+
+            self._entailment = TopNEntailment(QnliEntailmentJudge(), entailment_top_n)
         self._tenant: str | None = None
         #: filename -> turn date, so a retrieved chunk can be handed back with its date.
         self._dates: dict[str, str] = {}
@@ -106,6 +155,16 @@ class BeamRecallSystem:
             "candidate_k": self._candidate_k,
             "embedder": {"name": self._embedder_name, "model": self._embedder.name},
             "reranker": self._reranker_name,
+            "entailment": (
+                {
+                    "guard": "qnli-cross-encoder",
+                    "top_n": self._entailment_top_n,
+                    "candidates_judged": self._entailment.judged,
+                    "candidates_skipped_by_cap": self._entailment.skipped,
+                }
+                if self._entailment is not None
+                else {"guard": "off"}
+            ),
             "table": self._table,
             "tenant": self._tenant,
         }
@@ -182,6 +241,7 @@ class BeamRecallSystem:
                 k=self._k,
                 reranker=self._reranker,
                 candidate_k=self._candidate_k,
+                entailment=self._entailment,
             )
             if result.abstained:
                 return []

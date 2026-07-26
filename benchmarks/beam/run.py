@@ -425,6 +425,16 @@ def _main() -> None:
         help="Questions scored concurrently. 1 = sequential (~2 min/question, ~24 h for 700).",
     )
     parser.add_argument(
+        "--entailment",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Enable RE-call's near-miss entailment guard over the top N trusted hits (0 = off, "
+        "the shipped default). The guard is a local QNLI cross-encoder, so it costs CPU and no "
+        "API money; N caps that CPU. Judging is what a cosine threshold cannot do on BEAM, whose "
+        "unanswerable questions score HIGHER than its answerable ones.",
+    )
+    parser.add_argument(
         "--resume",
         type=Path,
         nargs="*",
@@ -549,7 +559,11 @@ def _main() -> None:
     n_conversations = count_conversations(args.data, indices)
     conversations = iter_conversations(args.data, args.chat_size, indices)
     system = BeamRecallSystem(
-        args.dsn, embedder_name=args.embedder, k=args.k, reranker_name=args.reranker
+        args.dsn,
+        embedder_name=args.embedder,
+        k=args.k,
+        entailment_top_n=args.entailment,
+        reranker_name=args.reranker
     )
 
     if args.dry_run:
