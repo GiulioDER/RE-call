@@ -975,3 +975,62 @@ the repetition that actually causes the failure.
 outside the window, the same system answers the TTL question correctly and scores 1.00 against
 0.00 at k=200. Cutting context defeats stale repetition; deduplicating it does not. That is why
 the k sweep, not the dedup rule, is the result worth carrying forward.
+
+### 9j. The "wiped tables" were RLS working correctly — a false alarm, and a passed isolation test
+
+Reported mid-session: all five BEAM chunk tables found empty, no process running, no error, cause
+unknown. A guard was added and the next run was held pending investigation.
+
+**There was no deletion.** The tables carry row-level security (`relrowsecurity` and
+`relforcerowsecurity` both true) with the policy `tenant_id = current_setting('recall.tenant_id')`.
+Raw `psql` sessions do not set that variable, so RLS correctly returned nothing. With the context
+set, the data is untouched:
+
+| table | live tuples | rows deleted, all time |
+|---|---|---|
+| bench_beam_k45 | 107,902 | **0** |
+| bench_beam_fix | 108,015 | **0** |
+| bench_beam_probe | 107,880 | **0** |
+
+All 15 tenants present; `beam-1m-0` alone holds 6,998 chunks. The measuring instrument was wrong,
+not the system — the third time in one session that a conclusion was drawn from a bad probe
+(the 4-question abstention sample, the n=2 entailment pilot, and now this).
+
+**What it accidentally demonstrated.** A session holding a *valid login role* on the database saw
+**zero rows** because it lacked the tenant context. That is precisely the property Track E of the
+suite is meant to test, verified unintentionally against a live index. It is weak evidence — one
+observation, not an adversarial suite — but it is evidence, and it is the first time the isolation
+claim has been exercised outside its own unit tests.
+
+**What is retracted:** the wipe, its unknown cause, and the concern that a mid-run deletion could
+have corrupted the k=45 result. **What stands:** the empty-index guard, which is correct on its
+own terms — an ingest that consumes turns and stores no chunk is a broken run, not a low score.
+
+**What must be re-measured:** the five questions that returned cosine 0.0 in the threshold probe
+now have no explanation, since every tenant is populated. That probe is void; the thirteen
+questions measured between 0.418 and 0.498 remain plausible but should be confirmed.
+
+### 9k. `temporal_reasoning` — diagnosed, no cheap fix, documented as a limit
+
+Second-worst category (0.408 vs Mem0's 0.567). Unlike `instruction_following`, it is NOT a
+threshold artefact: of 7 badly-lost questions only 1 had empty retrieval, and 5 were answered
+confidently and wrongly.
+
+Every one is an interval question — "how many days between A and B" — and in every one the wrong
+INSTANCE of a date was used:
+
+| gold | our answer |
+|---|---|
+| 25 Mar → 1 Apr = 7 days | 14 days, using the *updated* deadline of 15 Apr |
+| 25 Mar → 10 Apr = 16 days | 26 days, using a *different* viewing on 15 Mar |
+| 15 Feb → 20 Feb = 5 days | 0 days, using 10 Jan — the date the deadline was *set* |
+
+The decisive detail: sometimes the correct instance is the OLDER one (the original deadline,
+not the revision). That rules out every recency heuristic, and is the third independent line of
+evidence against newest-wins (§9i).
+
+Mem0 answers these because its stored memory is one distilled line — "Sprint 1 deadline: February
+15, 2024" — while ours is the same date scattered across many raw turns in different roles
+(when set, when revised, when discussed). This is the one category where LLM distillation at
+ingest is genuinely the better architecture, and no retrieval-side change we can afford replicates
+it. Recorded as a known limit rather than an open task.
