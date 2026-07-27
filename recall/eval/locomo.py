@@ -245,6 +245,7 @@ def run_conversation(
     ks: Sequence[int] | None = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
     reranker: Reranker | None = None,
+    allow_existing: bool = False,
 ) -> dict[str, Any]:
     """Index one conversation and score every question against it.
 
@@ -259,6 +260,27 @@ def run_conversation(
     """
     n_turns = write_conversation_corpus(conversation, corpus_dir)
     store.ensure_schema()
+
+    # Refuse to index on top of an existing corpus for this tenant.
+    #
+    # This is a post-condition the run never had, and its absence produced a wrong published
+    # number: two copies of a launcher wrote into one table, every tenant held its corpus twice
+    # (11,764 rows against a correct 5,882), and nothing errored. The candidate pool is a fixed
+    # size, so duplicates halve the DISTINCT documents it can hold and every depth of the curve
+    # came in ~0.05 low — plausible, self-consistent and wrong.
+    #
+    # Refused rather than de-duplicated: a table in that state is evidence that something ran
+    # twice, and silently repairing it would hide the fact worth knowing.
+    existing = store.count()
+    if existing and not allow_existing:
+        raise RuntimeError(
+            f"tenant {store.tenant!r} already holds {existing} chunk(s) in table "
+            f"{store.table!r}. A benchmark run indexes a fresh corpus, so this means a previous "
+            f"run wrote here — indexing again would DOUBLE the corpus and depress every hit@k "
+            f"without erroring. Use a new --table, drop this one, or pass allow_existing=True "
+            f"if you genuinely mean to add to it."
+        )
+
     Indexer(store, embedder).index_path(corpus_dir)
 
     depths = _depths(ks, k)
@@ -339,6 +361,7 @@ def run(
     ks: Sequence[int] | None = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
     reranker: Reranker | None = None,
+    allow_existing: bool = False,
 ) -> dict[str, Any]:
     conversations = json.loads(data_path.read_text(encoding="utf-8"))
     if limit is not None:
@@ -371,6 +394,7 @@ def run(
                     ks=depths,
                     candidate_k=candidate_k,
                     reranker=reranker,
+                    allow_existing=allow_existing,
                 )
             per_conversation.append(res)
             print(

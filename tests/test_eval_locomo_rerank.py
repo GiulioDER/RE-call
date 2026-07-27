@@ -30,6 +30,20 @@ class RecordingReranker:
         return hits
 
 
+def _fresh(table: str) -> PgVectorStore:
+    """A store on an empty table.
+
+    Tests share a database and `run_conversation` now refuses to index over existing rows — rows a
+    previous run of this same test left behind included. Dropping first keeps these assertions
+    about reranking rather than about test order.
+    """
+    store = PgVectorStore(TEST_DSN, dim=64, table=table)
+    store.ensure_schema()
+    store.drop_table()
+    store.ensure_schema()
+    return store
+
+
 def _conversation() -> dict:
     turns = [
         {"speaker": "Caroline", "dia_id": f"D1:{i}", "text": t}
@@ -65,7 +79,7 @@ def _qa() -> list[dict]:
 def test_run_conversation_without_a_reranker_leaves_the_ranking_untouched(tmp_path: Path) -> None:
     """The baseline arm must not silently acquire a reranker."""
     recorder = RecordingReranker()
-    with PgVectorStore(TEST_DSN, dim=64, table="lab_rr_none") as store:
+    with _fresh("lab_rr_none") as store:
         run_conversation(
             _conversation(), _qa(), store=store, embedder=HashingEmbedder(dim=64),
             k=5, corpus_dir=tmp_path / "corpus", ks=[1, 5], candidate_k=20,
@@ -78,7 +92,7 @@ def test_run_conversation_passes_the_reranker_into_the_retrieval_path(tmp_path: 
     """A reranker accepted and then dropped would report 'no effect' — the very outcome under
     test. So the wiring is pinned by counting calls, not by watching the metric move."""
     recorder = RecordingReranker()
-    with PgVectorStore(TEST_DSN, dim=64, table="lab_rr_wired") as store:
+    with _fresh("lab_rr_wired") as store:
         run_conversation(
             _conversation(), _qa(), store=store, embedder=HashingEmbedder(dim=64),
             k=5, corpus_dir=tmp_path / "corpus", ks=[1, 5], candidate_k=20,
@@ -93,7 +107,7 @@ def test_the_reranker_sees_the_whole_pool_not_the_truncated_top_k(tmp_path: Path
     reorders documents that already counted as hits. The gain this experiment is looking for comes
     entirely from documents ranked BELOW k, so the reranker must receive more than k candidates."""
     recorder = RecordingReranker()
-    with PgVectorStore(TEST_DSN, dim=64, table="lab_rr_pool") as store:
+    with _fresh("lab_rr_pool") as store:
         run_conversation(
             _conversation(), _qa(), store=store, embedder=HashingEmbedder(dim=64),
             k=1, corpus_dir=tmp_path / "corpus", ks=[1], candidate_k=20,
