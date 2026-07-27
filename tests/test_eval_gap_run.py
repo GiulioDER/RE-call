@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 from recall.eval.gap_run import failure_record, pending_datasets, summarise
+from tests.conftest import requires_db
 
 
 def _write(path, payload):
@@ -78,6 +79,7 @@ def test_summarise_is_not_underpowered_at_the_preregistered_size(tmp_path):
     assert summarise([f"c{i}" for i in range(18)], tmp_path)["underpowered"] is False
 
 
+@requires_db
 def test_run_corpus_end_to_end_against_real_postgres(tmp_path):
     """materialise -> evaluate(local) -> evaluate(cloud) -> predictors, wired together for real.
 
