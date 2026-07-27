@@ -1,0 +1,47 @@
+{
+  "status": "ok",
+  "dataset": "cqadupstack-physics",
+  "manifest": {
+    "name": "cqadupstack-physics",
+    "documents_requested": 20000,
+    "documents_written": 20000,
+    "questions": 1039,
+    "questions_available": 1039,
+    "seed": 20260726
+  },
+  "scores": {
+    "local": {
+      "bm25": 0.4624,
+      "dense": 0.4798,
+      "sparse": 0.4085,
+      "hybrid": 0.5183,
+      "mrr_hybrid": 0.4133,
+      "held_out": 519
+    },
+    "cloud": {
+      "bm25": 0.4624,
+      "dense": 0.5896,
+      "sparse": 0.4085,
+      "hybrid": 0.5761,
+      "mrr_hybrid": 0.4509,
+      "held_out": 519
+    }
+  },
+  "predictors": {
+    "oov_rate": 0.1697459584295612,
+    "query_overlap": 0.4343162614243835,
+    "crowding": 0.7475910443185567,
+    "code_density": 0.0006290361858867264,
+    "n_documents": 20000,
+    "n_overlap_pairs": 1933
+  },
+  "primary_arm": "hybrid",
+  "seconds": 17381.6,
+  "params": {
+    "max_docs": 20000,
+    "token_budget": 2000,
+    "min_pieces": 2,
+    "crowding_sample": 500,
+    "seed": 20260726
+  }
+}

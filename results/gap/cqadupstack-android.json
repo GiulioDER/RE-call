@@ -1,0 +1,47 @@
+{
+  "status": "ok",
+  "dataset": "cqadupstack-android",
+  "manifest": {
+    "name": "cqadupstack-android",
+    "documents_requested": 20000,
+    "documents_written": 20000,
+    "questions": 699,
+    "questions_available": 699,
+    "seed": 20260726
+  },
+  "scores": {
+    "local": {
+      "bm25": 0.49,
+      "dense": 0.4613,
+      "sparse": 0.4212,
+      "hybrid": 0.533,
+      "mrr_hybrid": 0.406,
+      "held_out": 349
+    },
+    "cloud": {
+      "bm25": 0.49,
+      "dense": 0.6533,
+      "sparse": 0.4241,
+      "hybrid": 0.6246,
+      "mrr_hybrid": 0.479,
+      "held_out": 349
+    }
+  },
+  "predictors": {
+    "oov_rate": 0.20173267326732675,
+    "query_overlap": 0.421496825697887,
+    "crowding": 0.7544424115455154,
+    "code_density": 0.004651718528904531,
+    "n_documents": 20000,
+    "n_overlap_pairs": 1696
+  },
+  "primary_arm": "hybrid",
+  "seconds": 12573.7,
+  "params": {
+    "max_docs": 20000,
+    "token_budget": 2000,
+    "min_pieces": 2,
+    "crowding_sample": 500,
+    "seed": 20260726
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "status": "ok",
+  "dataset": "cqadupstack-mathematica",
+  "manifest": {
+    "name": "cqadupstack-mathematica",
+    "documents_requested": 20000,
+    "documents_written": 16705,
+    "questions": 804,
+    "questions_available": 804,
+    "seed": 20260726
+  },
+  "scores": {
+    "local": {
+      "bm25": 0.2388,
+      "dense": 0.2313,
+      "sparse": 0.2015,
+      "hybrid": 0.2836,
+      "mrr_hybrid": 0.198,
+      "held_out": 402
+    },
+    "cloud": {
+      "bm25": 0.2388,
+      "dense": 0.3383,
+      "sparse": 0.204,
+      "hybrid": 0.3532,
+      "mrr_hybrid": 0.2347,
+      "held_out": 402
+    }
+  },
+  "predictors": {
+    "oov_rate": 0.2595693779904306,
+    "query_overlap": 0.3405185879412684,
+    "crowding": 0.7602947173264938,
+    "code_density": 0.041091317904001015,
+    "n_documents": 16705,
+    "n_overlap_pairs": 1358
+  },
+  "primary_arm": "hybrid",
+  "seconds": 18384.4,
+  "params": {
+    "max_docs": 20000,
+    "token_budget": 2000,
+    "min_pieces": 2,
+    "crowding_sample": 500,
+    "seed": 20260726
+  }
+}
