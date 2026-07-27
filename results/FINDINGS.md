@@ -1034,3 +1034,47 @@ Mem0 answers these because its stored memory is one distilled line — "Sprint 1
 (when set, when revised, when discussed). This is the one category where LLM distillation at
 ingest is genuinely the better architecture, and no retrieval-side change we can afford replicates
 it. Recorded as a known limit rather than an open task.
+
+### 9l. The absolute threshold is embedder-fragile — indicative, NOT yet established
+
+The shipped abstention gate is an absolute cosine, `DEFAULT_GAP_THRESHOLD = 0.50`. Measured
+top-1 distributions on the SAME three BEAM conversations, varying only the embedder:
+
+| embedder | min | q05 | median | max |
+|---|---|---|---|---|
+| bge-small (fastembed, the default) | 0.629 | 0.728 | **0.825** | 0.939 |
+| text-embedding-3-small | 0.403 | 0.498 | **0.635** | 0.852 |
+
+The medians differ by 0.19, and bge-small's MINIMUM (0.629) sits above the cloud embedder's
+median. What the one constant does in each regime:
+
+| threshold 0.50 | starves |
+|---|---|
+| bge-small | **0 of 54** (0 %) |
+| text-embedding-3-small | **19 of 270** (7 %) |
+
+On the default embedder 0.50 is not a threshold at all — it sits below the observed minimum and
+never fires. That is why the defect was invisible until an embedder swap: the gate only starts
+discarding answers on a model nobody had run it against. A corpus-quantile floor derived from the
+data produced 0.728 and 0.498 respectively — two very different numbers, comparable behaviour
+(4 % and 6 %) — which is the thing a constant cannot do.
+
+**Why this is filed as indicative rather than established.** The pattern of this session is that
+small samples reverse at scale: an n=2 entailment pilot promoted a policy that was net NEGATIVE at
+n=30 (§9h), and a k-sweep advantage of +0.029 at n=60 became +0.0007 at n=300. This measurement
+has the same profile — 54 answerable questions in one arm, and **one corpus**. Varying the embedder
+while holding the corpus fixed cannot separate an embedder effect from a property of those three
+conversations, because the top-1 distribution depends on both.
+
+**What would settle it:** 3 embedders x 3 corpora (BEAM, LOCOMO, and the curated memory corpus,
+which is the documental case RE-call actually targets), with the statistic being the VARIANCE of
+the starve rate across the nine conditions — large for the constant and small for the quantile, or
+the claim fails. ~6-10 h of VPS CPU, ~$1 of cloud embedding, no LLM spend at all.
+
+**It can fail.** If the three embedders turn out to live in similar cosine regimes, embedder
+independence is not a real problem, 0.50 is fine, and this line of work closes as unnecessary.
+
+**What is NOT claimed:** that a rate-based threshold improves the BEAM score. It does not. On BEAM
+`absolute@0.40` remains the best cell of everything tested (268 of 270 answerable served), because
+here the unanswerable questions score HIGHER than the answerable ones (§9f) and no function of the
+score separates them. The quantile's argument is robustness across deployments, not accuracy here.
