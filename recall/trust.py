@@ -353,6 +353,30 @@ def trusted_search(
         raise ValueError("k must be >= 1")
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
     # always come from the same calibration (or the same uncalibrated default)
+    #
+    # A calibration on disk is LOADED here when the caller passes none. It used to be read only
+    # by `recall.cli`, so a user who ran `recall calibrate`, saw calibration.json appear, and then
+    # used the library API got the uncalibrated default anyway — silently, while this module's own
+    # docstring promised the threshold "comes from recall.calibration when available". It was
+    # available; nothing fetched it.
+    #
+    # The cost of that gap is measurable, not theoretical: DEFAULT_GAP_THRESHOLD is 0.50, tuned
+    # for bge-small whose cosines run high. On text-embedding-3-small, whose top-1 cosines were
+    # measured between 0.41 and 0.76, it silently dropped 18 of 300 BEAM questions to EMPTY
+    # retrieval — a guaranteed zero, no warning, on a model the library advertises support for.
+    #
+    # Explicit `calibration=` still wins, and a corpus with no calibration file behaves exactly as
+    # before, so this cannot change a result for anyone who had not already calibrated.
+    if calibration is None:
+        from recall.calibration import load_for
+
+        # `name` is part of the Embedder protocol, but this reads it DEFENSIVELY: auto-loading is
+        # a convenience, and a convenience must never turn a search that worked into an
+        # AttributeError. A stub or a partial implementation simply does not get a calibration,
+        # which is exactly the behaviour it had before this feature existed.
+        name = getattr(embedder, "name", None)
+        if isinstance(name, str):
+            calibration = load_for(name)
     cal = calibration or _UNCALIBRATED
     retriever = HybridRetriever(
         store, embedder, reranker=reranker, gap_threshold=cal.threshold, candidate_k=candidate_k
