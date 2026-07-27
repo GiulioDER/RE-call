@@ -989,3 +989,66 @@ python -m recall.eval.longmemeval --dataset longmemeval_s_cleaned.json --out ./s
 python -m recall.eval.labelled --corpus ./s_out/corpus --questions ./s_out/questions.json
 python -m recall.eval.longmemeval_perq --questions ./s_out/questions.json --master <indexed-table>
 ```
+
+## 11. Reranking: the largest single retrieval gain measured here — and it was already shipped
+
+§9a reported hit@5 **0.671** against hit@20 **0.855** and left the implication unexamined: for
+**85.5%** of questions the correct turn was *already retrieved* and merely ranked below position 5.
+That is not a retrieval failure, it is a ranking failure, and it is the failure a cross-encoder
+exists to fix. This library has shipped one since 0.2 and no LOCOMO figure had ever been measured
+with it.
+
+**Turning it on moves hit@5 from 0.671 to 0.777** ([`RESULTS.md` §11](RESULTS.md)) — intervals
+disjoint from the baseline through k=10 at n=1 536. That closes **57%** of the distance to the
+pool's own ceiling, and it is roughly **twice** the largest embedder effect this project has
+measured (the cloud-vs-local median of +0.059 across 17 corpora, §8's restatement).
+
+Three things make it credible rather than merely large:
+
+1. **hit@20 barely moves** (0.855 → 0.870). Reranking reorders a fixed pool, so the pool's own
+   coverage must stay put — and it does. A gain that also lifted k=20 would have meant something
+   other than reranking had changed.
+2. **The gain decays with depth exactly as the mechanism predicts**: +0.155 at k=1, +0.106 at k=5,
+   +0.016 at k=20. Reordering can only act where the truncation bites.
+3. **A second, unrelated cross-encoder reproduces it.** `bge-reranker-base` — 12× the parameters,
+   four years newer, multilingual — lands *within noise* of the shipped model at every depth
+   (0.7734 vs 0.7767 at k=5). Two models that different agreeing that closely says the effect
+   belongs to **reranking**, not to a model choice.
+
+### Every category gains, including the one that usually does not
+
+cat3, the multi-hop floor, goes **0.478 → 0.533**. That is worth stating because the prediction
+registered before the run said the opposite: a pointwise cross-encoder scores one document against
+the query and cannot combine evidence across turns, so extra ranking quality "should not" help
+multi-hop. It helps. §10c's boundary — that the retrieval path cannot *represent* multi-hop
+reasoning — remains true and was over-applied: **ranking the single most relevant turn correctly
+still helps a question whose full answer needs several.** Those are two different claims.
+
+### Why it stays optional
+
+**It costs about 1 050 ms per question** on CPU, roughly 4.2× the wall clock of the whole benchmark
+run. That is a real trade, not a rounding error, and it falls entirely on query latency — indexing
+is untouched.
+
+So reranking is **off by default and one flag away**, which is the honest arrangement when a feature
+buys a large quality gain at a large latency cost. A library that silently made every query four
+times slower to improve a benchmark would be optimising for the benchmark.
+
+The decision it implies, though, is not symmetric:
+
+- **If you are answering a human's question**, ~1 s is usually invisible next to the LLM call that
+  follows, and +0.106 hit@5 is a different quality of answer. Turn it on.
+- **If you are serving high-volume automated retrieval**, or running on constrained hardware, the
+  4× is the dominant cost and the baseline is already competitive. Leave it off.
+- **`ms-marco-MiniLM-L-6-v2` is the right model**, and that is now measured rather than assumed:
+  `bge-reranker-base` is statistically indistinguishable from it at **6.3× the per-query cost**.
+  Reranker choice here is about task match — short query against short passage — not model size.
+
+**Abstention is unaffected** (0.00 on all three arms, n=446). Reranking reorders what retrieval
+returned; the trust layer's verdicts sit downstream and were measured to confirm it.
+
+_An earlier version of these numbers was produced against a corpus that had been indexed twice by
+two concurrent runs (11 764 rows against a correct 5 882). Every depth came in ~0.05 low and cat3
+appeared unmoved at +0.011, which would have published a false limitation. `run_conversation` now
+refuses to index over an existing tenant, and the runner asserts the row count before any result is
+read. See `docs/RESEARCH_PROTOCOL.md`._

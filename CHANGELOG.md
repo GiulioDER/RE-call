@@ -8,7 +8,40 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Added
+- **A measured rerank arm for the LOCOMO harness (`--rerank`), and the numbers that make the case
+  for using it.** §9a reported hit@5 0.671 against hit@20 0.855 without drawing the obvious
+  conclusion: for **85.5%** of questions the correct turn was already retrieved and merely ranked
+  below position 5. That is a ranking failure, not a retrieval one, and this library has shipped a
+  cross-encoder since 0.2 without any LOCOMO figure ever being measured with it.
+
+  Turning it on moves **hit@5 from 0.671 to 0.777** (n = 1 536, intervals disjoint from the baseline
+  through k=10) — **57%** of the distance to the pool's own ceiling, and roughly **twice** the
+  largest embedder effect this project has measured. Every category gains, including the multi-hop
+  floor (cat3 0.478 → 0.533).
+
+  Three checks make it credible rather than merely large: hit@20 barely moves (0.855 → 0.870), as it
+  must when a fixed pool is reordered; the gain decays with depth exactly as the mechanism predicts
+  (+0.155 at k=1 → +0.016 at k=20); and a second, unrelated cross-encoder reproduces it —
+  `bge-reranker-base`, 12× the parameters and four years newer, lands *within noise* at every depth
+  (0.7734 vs 0.7767 at k=5) for **6.3×** the per-query cost. The effect belongs to reranking, not to
+  a model choice.
+
+  **It stays off by default** and costs ~**1 050 ms/query** on CPU. A library that silently made
+  every query four times slower to improve a benchmark would be optimising for the benchmark. The
+  README, `RESULTS.md` §11 and `FINDINGS.md` §11 state the trade and when each side of it wins.
+  `ms-marco-MiniLM-L-6-v2` remains the default, now measured rather than assumed.
+
+  Abstention is unchanged at 0.00 across all three arms (n=446): reranking reorders what retrieval
+  returned and does not touch the trust layer.
+  (`recall/eval/locomo.py`, `scripts/run_locomo_arms.sh`, `tests/test_eval_locomo_rerank.py`)
+
 ### Restated
+- **The README's "cross-encoder rerank +0.065 *(n.s.)*" null did not generalise.** That figure came
+  from 110 questions on one corpus and was correctly reported as non-significant *there*; the
+  surrounding claim that "the pipeline was never the cap" was the part that over-reached. At
+  n = 1 536 on LOCOMO the same lever is the largest retrieval gain measured in this project. The
+  original numbers stand and their scope is now stated. (README, `results/FINDINGS.md` §11)
 - **"Pay for a cloud embedder only when your corpus vocabulary is unusual" does not hold.** That rule
   (README, FINDINGS §8, RESULTS §10) came from two corpora, and its "buys nothing measurable on
   ordinary technical English" half rested on the PEP corpus — **746 documents**. Measured on **17

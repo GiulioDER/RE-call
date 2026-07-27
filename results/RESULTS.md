@@ -460,3 +460,43 @@ held-out corpora the cloud embedder wins **16/17**, and the gap tracks **corpus 
 
 Unchanged by that restatement: domain fine-tuning (§5) attacks the same gap without the API, and the
 Mem0 head-to-head (§9) was won with the local stack end to end.
+
+## 11. Reranking on LOCOMO — three arms, one session 📦
+
+Artifacts: `results/locomo_rerank/{baseline,rerank_shipped,rerank_modern}.json`, each verified at
+**5 882 indexed rows** before its numbers were read. The baseline reproduces `locomo/postfix_pool20.json`
+to four decimals, so these rows sit in the same frame as §7's.
+
+Reproduce: `scripts/run_locomo_arms.sh` (serial, one process, drops and row-checks each table).
+
+`bge-small` · hybrid · pool 20/leg · n = **1 536** answerable · 95% Wilson intervals.
+
+| hit@k | no rerank | `ms-marco-MiniLM-L-6-v2` (shipped) | `bge-reranker-base` |
+|---|---|---|---|
+| **1** | 0.3978 [0.374, 0.422] | **0.5527** [0.528, 0.577] | 0.5645 [0.539, 0.589] |
+| **3** | 0.5768 [0.552, 0.601] | **0.7161** [0.693, 0.738] | 0.7227 [0.700, 0.745] |
+| **5** | 0.6706 [0.647, 0.694] | **0.7767** [0.755, 0.797] | 0.7734 [0.752, 0.794] |
+| **10** | 0.7780 [0.756, 0.798] | **0.8301** [0.810, 0.848] | 0.8340 [0.815, 0.852] |
+| **20** | 0.8548 [0.836, 0.872] | **0.8704** [0.853, 0.886] | 0.8724 [0.855, 0.888] |
+
+Against no rerank, the shipped model's intervals are **disjoint through k = 10**.
+
+Per category at k=5 (n in parentheses):
+
+| category | no rerank | shipped rerank | Δ |
+|---|---|---|---|
+| cat1 (282) | 0.628 | 0.741 | **+0.113** |
+| cat2 temporal (321) | 0.720 | 0.813 | **+0.094** |
+| cat3 multi-hop (92) | 0.478 | 0.533 | **+0.054** |
+| cat4 (841) | 0.687 | 0.801 | **+0.114** |
+
+Cost, same machine, same session:
+
+| arm | wall clock | rerank overhead | per question (n=1 982 scored) |
+|---|---|---|---|
+| no rerank | 653 s | — | — |
+| shipped | 2 728 s | 2 074 s | **≈ 1 050 ms** |
+| `bge-reranker-base` | 13 842 s | 13 188 s | ≈ 6 650 ms |
+
+**Abstention is unchanged at 0.00 on all three arms** (n=446 adversarial). Reranking reorders
+retrieved candidates; it does not touch the trust layer, and these numbers confirm it did not.
