@@ -14,6 +14,7 @@ from __future__ import annotations
 import random
 import re
 from collections.abc import Callable, Iterable, Sequence
+from typing import Any
 
 #: Word pattern for vocabulary statistics. Underscores are kept inside words because identifiers
 #: (`signal_filter`, `close_all`) are exactly the kind of token this study is about.
@@ -42,13 +43,25 @@ DEFAULT_LOCAL_MODEL = "BAAI/bge-small-en-v1.5"
 def bge_encoder(model_name: str = DEFAULT_LOCAL_MODEL) -> Callable[[str], list[str]]:
     """A raw subword encoder for `model_name`, for feeding to `subword_pieces`.
 
-    Uses `tokenizers` directly rather than `transformers`: it is already a fastembed dependency,
-    so asking the local embedder how it segments text costs no new install. The returned callable
-    emits the tokenizer's raw output, special tokens included — stripping them is
-    `subword_pieces`' job, and keeping the two separate is what let the stripping be tested
+    Uses `tokenizers` directly rather than `transformers`, because it arrives with the `fastembed`
+    extra and asking the local embedder how it segments text should not pull in a second stack.
+
+    That extra is **not** part of a default install — an earlier version of this docstring said the
+    dependency "costs no new install", and CI disproved it: the floor and typecheck jobs run without
+    the extras precisely so that unguarded imports show up. Hence the guard, and hence
+    `tokenizers.*` sitting with the other optional extras in `pyproject.toml`'s mypy overrides.
+
+    The returned callable emits the tokenizer's raw output, special tokens included — stripping
+    them is `subword_pieces`' job, and keeping the two separate is what let the stripping be tested
     without a network round trip.
     """
-    from tokenizers import Tokenizer
+    try:
+        from tokenizers import Tokenizer
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise ImportError(
+            "bge_encoder requires the fastembed extra (it brings `tokenizers`): "
+            "pip install recall[fastembed]"
+        ) from exc
 
     tokenizer = Tokenizer.from_pretrained(model_name)
     return lambda word: tokenizer.encode(word).tokens
@@ -172,7 +185,7 @@ def crowding(vectors: Sequence[Sequence[float]], *, sample: int | None = None, s
 
     if len(vectors) < 2:
         return float("nan")
-    matrix = np.asarray(vectors, dtype=np.float64)
+    matrix: Any = np.asarray(vectors, dtype=np.float64)
     if sample is not None and len(matrix) > sample:
         rng = np.random.default_rng(seed)
         matrix = matrix[rng.choice(len(matrix), size=sample, replace=False)]

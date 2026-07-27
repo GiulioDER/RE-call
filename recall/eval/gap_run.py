@@ -101,7 +101,9 @@ def failure_record(dataset: str, exc: BaseException) -> dict[str, Any]:
 
 def summarise(datasets: list[str], out_dir: Path) -> dict[str, Any]:
     """What actually landed, with `usable` stated rather than inferred from a list length."""
-    ok, failed, missing = [], [], []
+    ok: list[str] = []
+    failed: list[str] = []
+    missing: list[str] = []
     for name in datasets:
         path = out_dir / f"{name}.json"
         if not path.exists():

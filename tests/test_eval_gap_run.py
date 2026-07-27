@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from recall.eval.gap_run import failure_record, pending_datasets, summarise
 from tests.conftest import requires_db
 
@@ -88,6 +90,7 @@ def test_run_corpus_end_to_end_against_real_postgres(tmp_path):
     the night already paid for. Uses HashingEmbedder for both arms: the question is whether the
     plumbing fits together, not whether retrieval is any good.
     """
+    pytest.importorskip("tokenizers", reason="bge_encoder needs the fastembed extra")
     from recall.embeddings import HashingEmbedder
     from recall.eval.gap_run import run_corpus
     from tests.conftest import TEST_DSN

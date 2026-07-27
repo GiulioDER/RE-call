@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 import random
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 Number = float | int
 
@@ -176,7 +176,7 @@ def headroom_capture(local: float, cloud: float) -> float:
 
 
 def predictor_correlations(
-    predictors: dict[str, Sequence[Number]],
+    predictors: Mapping[str, Sequence[Number]],
 ) -> dict[tuple[str, str], float]:
     """Spearman correlation between every unordered pair of predictors.
 
