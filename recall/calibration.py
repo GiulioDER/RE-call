@@ -345,6 +345,10 @@ def save(cal: Calibration, path: str | Path | None = None) -> Path:
     return p
 
 
+#: (path, embedder) -> (mtime_ns, Calibration|None). See `load_for` for why this exists.
+_LOAD_CACHE: dict[tuple[str, str], tuple[int, "Calibration | None"]] = {}
+
+
 def load_for(embedder: str, path: str | Path | None = None) -> Calibration | None:
     """Load the calibration for `embedder`, or None when it cannot be applied safely.
 
@@ -355,16 +359,32 @@ def load_for(embedder: str, path: str | Path | None = None) -> Calibration | Non
     every search (zero/negative scale).
     """
     p = _resolve_path(path)
-    if not p.exists():
+    try:
+        mtime = p.stat().st_mtime_ns
+    except OSError:
         return None
+    # Cached by (path, embedder) and invalidated on mtime. `trusted_search` calls this on EVERY
+    # query, so an uncached read would put a file open + JSON parse in the hot retrieval path of a
+    # library whose measured advantage is latency (median 77 ms against a competitor's 104 ms).
+    # A stat is orders of magnitude cheaper than a read+parse and still picks up a re-calibration
+    # written by a concurrent `recall calibrate`, which a load-once cache would miss until restart.
+    #
+    # Races are benign: two threads may both load and both store, and the value is identical
+    # because it derives from the same bytes. No lock, therefore no lock in the hot path either.
+    key = (str(p), embedder)
+    hit = _LOAD_CACHE.get(key)
+    if hit is not None and hit[0] == mtime:
+        return hit[1]
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
         if data.get("embedder") != embedder:
+            _LOAD_CACHE[key] = (mtime, None)
             return None
         threshold = float(data["threshold"])
         scale = float(data["scale"])
     except (OSError, json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
         _log.warning("ignoring unreadable calibration file %s (uncalibrated fallback)", p)
+        _LOAD_CACHE[key] = (mtime, None)
         return None
     if not (math.isfinite(threshold) and -1.0 <= threshold <= 1.0
             and math.isfinite(scale) and scale > 0.0):
@@ -395,4 +415,5 @@ def load_for(embedder: str, path: str | Path | None = None) -> Calibration | Non
         _log.warning(
             "loaded calibration %s is NOT certified — %s", p, cal.certification_reason
         )
+    _LOAD_CACHE[key] = (mtime, cal)
     return cal
