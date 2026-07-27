@@ -8,6 +8,30 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Restated
+- **"Pay for a cloud embedder only when your corpus vocabulary is unusual" does not hold.** That rule
+  (README, FINDINGS §8, RESULTS §10) came from two corpora, and its "buys nothing measurable on
+  ordinary technical English" half rested on the PEP corpus — **746 documents**. Measured on **17
+  held-out BEIR / CQADupStack corpora**, preregistered before any gap was computed and excluding both
+  corpora that generated the hypothesis: voyage-3 beats bge-small on **16 of 17**, median **+0.059**
+  hit@5 hybrid and **+0.105** dense, sign test **p = 0.00027**, 95% CI **[+0.038, +0.068]**.
+
+  What predicts the gap is **corpus size**, not vocabulary: median **+0.013** below 10 000 documents
+  against **+0.062** at 17 000+ (Spearman +0.509; +0.436 with the local score partialled out). The
+  PEP number sits exactly where the small-corpus regime predicts — `nfcorpus` (3 633 docs) +0.019,
+  `scifact` (5 183) +0.013 — so the measurement stands and only its **scope** was wrong.
+
+  §7's proposed mechanism is separately falsified: an out-of-vocabulary rate against bge-small's own
+  tokenizer predicts the gap at Holm-adjusted **p = 0.65**, and that null is clean (`oov_rate`
+  correlates −0.015 with corpus size). No corpus statistic tested beat simply measuring the local
+  embedder, whose score alone carries **−0.512** of the signal. A `crowding` statistic passed the
+  significance test and then failed the preregistered confound check — it is −0.613 correlated with
+  corpus size, and neither survives once the other is held fixed.
+
+  New rule: *little on a few hundred documents, about **+0.06 hit@5** at twenty thousand; to predict
+  your own case, measure your local embedder on ~30 labelled questions.*
+  → `results/gap/FINDINGS-embedder-gap.md`
+
 ### Security
 - **The LangChain and LlamaIndex adapters no longer hand a chain a memory the trust layer
   refused.** Both returned `result.hits` wholesale, and `trust.evaluate` builds that list as

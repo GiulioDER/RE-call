@@ -1,0 +1,58 @@
+{
+  "n": 17,
+  "arm": "hybrid",
+  "excluded": [],
+  "underpowered": false,
+  "null_spearman": -0.5122549019607843,
+  "predictor_correlations": {
+    "crowding~oov_rate": -0.02696078431372549,
+    "crowding~query_overlap": -0.27941176470588236,
+    "oov_rate~query_overlap": 0.35294117647058826
+  },
+  "haystack_confound": {
+    "spearman": 0.5094033454989036,
+    "partial_spearman": 0.43587700181553474,
+    "range": {
+      "n_documents": [
+        3633,
+        20000
+      ],
+      "fold": 5.51
+    }
+  },
+  "predictors": {
+    "oov_rate": {
+      "spearman_raw": 0.42892156862745096,
+      "partial_spearman": 0.2645650521235904,
+      "control_collinearity": -0.4387254901960784,
+      "permutation_p": 0.32656734326567344,
+      "holm_p": 0.6531346865313469
+    },
+    "query_overlap": {
+      "spearman_raw": 0.23774509803921567,
+      "partial_spearman": 0.22933202692685303,
+      "control_collinearity": -0.08088235294117647,
+      "permutation_p": 0.39166083391660833,
+      "holm_p": 0.6531346865313469
+    },
+    "crowding": {
+      "spearman_raw": -0.5931372549019608,
+      "partial_spearman": -0.6553152067051415,
+      "control_collinearity": 0.061274509803921566,
+      "permutation_p": 0.0064993500649935,
+      "holm_p": 0.0194980501949805
+    }
+  },
+  "responses": {
+    "gap": {
+      "oov_rate": 0.2645650521235904,
+      "query_overlap": 0.22933202692685303,
+      "crowding": -0.6553152067051415
+    },
+    "headroom": {
+      "oov_rate": 0.09807312748149029,
+      "query_overlap": 0.33384126750027515,
+      "crowding": -0.7259312246688832
+    }
+  }
+}

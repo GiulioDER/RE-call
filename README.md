@@ -214,10 +214,27 @@ headings, on the **same** held-out split throughout. Two corpora, one embedder s
 | private memory corpus — internal codenames, project shorthand | 0.348 [0.23, 0.49] | **0.630** [0.49, 0.76] | **+0.282** |
 | **public Python PEPs** — ordinary technical prose | **0.705** [0.56, 0.82] | 0.727 [0.58, 0.84] | +0.022 *(n.s.)* |
 
-**The measured rule: pay for a cloud embedder only when your corpus vocabulary is unusual.** That
-condition — and only that condition — produced a gap this sample can resolve. On ordinary technical
-English the free local stack is within noise of the paid one, for ~5× the query latency, an API
-dependency and your documents leaving your infrastructure.
+> ### ⚠️ This rule was restated on 2026-07-27. Read this before the two rows above.
+>
+> The original rule read: *"pay for a cloud embedder only when your corpus vocabulary is unusual."*
+> It was drawn from those two corpora, and **it does not hold**. On **17 held-out** BEIR /
+> CQADupStack corpora — none of which produced the hypothesis — the cloud embedder wins **16 out of
+> 17**, median **+0.059** hit@5 (dense-only **+0.105**), sign test **p = 0.00027**, 95 % CI
+> **[+0.038, +0.068]**.
+>
+> **What predicts the gap is corpus SIZE, not unusual vocabulary**: median **+0.013** below 10 000
+> documents against **+0.062** at 17 000+. The PEP corpus above is 746 documents — smaller than
+> anything in that study — so its +0.022 is the small-corpus regime, not a property of "ordinary
+> English". An out-of-vocabulary rate, the mechanism originally proposed, predicts **nothing**
+> (Holm-adjusted p = 0.65).
+>
+> **The rule as it now stands:** a cloud embedder buys little on a few hundred documents and about
+> **+0.06 hit@5** at twenty thousand — worth weighing against ~5× query latency, an API dependency
+> and your documents leaving your infrastructure. And the cheapest way to predict your own case is
+> not a corpus statistic: **measure your local embedder on ~30 labelled questions.**
+>
+> Full study, per-corpus table, confounds and limits →
+> [`results/gap/FINDINGS-embedder-gap.md`](results/gap/FINDINGS-embedder-gap.md)
 
 **The pipeline was never the cap.** Three other levers were tested one at a time on the same
 questions and none moved it: cross-encoder rerank +0.065 *(n.s., 57× latency)*, chunk size

@@ -1,0 +1,47 @@
+{
+  "status": "ok",
+  "dataset": "cqadupstack-wordpress",
+  "manifest": {
+    "name": "cqadupstack-wordpress",
+    "documents_requested": 20000,
+    "documents_written": 20000,
+    "questions": 541,
+    "questions_available": 541,
+    "seed": 20260726
+  },
+  "scores": {
+    "local": {
+      "bm25": 0.337,
+      "dense": 0.3,
+      "sparse": 0.2963,
+      "hybrid": 0.3667,
+      "mrr_hybrid": 0.2901,
+      "held_out": 270
+    },
+    "cloud": {
+      "bm25": 0.337,
+      "dense": 0.4667,
+      "sparse": 0.3,
+      "hybrid": 0.4556,
+      "mrr_hybrid": 0.3415,
+      "held_out": 270
+    }
+  },
+  "predictors": {
+    "oov_rate": 0.28331332533013204,
+    "query_overlap": 0.5189343511924157,
+    "crowding": 0.7790503776241617,
+    "code_density": 0.013683366083687823,
+    "n_documents": 20000,
+    "n_overlap_pairs": 744
+  },
+  "primary_arm": "hybrid",
+  "seconds": 17146.7,
+  "params": {
+    "max_docs": 20000,
+    "token_budget": 2000,
+    "min_pieces": 2,
+    "crowding_sample": 500,
+    "seed": 20260726
+  }
+}
