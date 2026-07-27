@@ -233,6 +233,21 @@ class BeamRecallSystem:
                 store.ensure_schema()
                 self._clear(store)
                 Indexer(store, self._embedder, batch_chunks=EMBED_BATCH).index_path(workspace)
+                # Fail LOUD on an empty index rather than let the run discover it as scores.
+                # Every beam table was found emptied between two probes, with no process running
+                # and no error anywhere. Had that happened mid-scoring, retrieval would have
+                # returned nothing, the answerer would have refused, and every affected question
+                # would have been recorded as a legitimate 0.00 — a corrupted result wearing the
+                # face of a clean one. An ingest that indexed turns but stored no chunk is not a
+                # low score, it is a broken run, and it must stop the run to say so.
+                stored = sum(1 for _ in store.iter_chunks())
+                if conversation.turns and not stored:
+                    raise RuntimeError(
+                        f"ingest of {self._tenant} wrote ZERO chunks from "
+                        f"{len(conversation.turns)} turns — the index is empty, so every question "
+                        f"for this conversation would score 0.00 without an error. Refusing to "
+                        f"continue: check the store and the table before re-running."
+                    )
             return len(conversation.turns)
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
