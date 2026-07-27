@@ -236,10 +236,27 @@ headings, on the **same** held-out split throughout. Two corpora, one embedder s
 > Full study, per-corpus table, confounds and limits →
 > [`results/gap/FINDINGS-embedder-gap.md`](results/gap/FINDINGS-embedder-gap.md)
 
-**The pipeline was never the cap.** Three other levers were tested one at a time on the same
-questions and none moved it: cross-encoder rerank +0.065 *(n.s., 57× latency)*, chunk size
+**On this corpus the pipeline was not the cap.** Three other levers were tested one at a time on the
+same questions and none moved it: cross-encoder rerank +0.065 *(n.s., 57× latency)*, chunk size
 400/800/1600 **+0.000**, candidate pool 20 → 100 *(n.s.)*. Abstention accuracy held at 0.89–1.00
 throughout — the trust layer was never the bottleneck on either corpus.
+
+> ### ⚠️ The rerank null did NOT generalise — corrected 2026-07-27
+>
+> That +0.065 came from **110 questions** and was not significant at that size. On **LOCOMO,
+> n = 1 536**, reranking is the **largest single retrieval gain this project has measured**:
+> **hit@5 0.671 → 0.777**, intervals disjoint from the baseline through k=10 — roughly **twice** the
+> best embedder effect (§8's +0.059 median across 17 corpora). It lifts every question category,
+> including the multi-hop floor (0.478 → 0.533).
+>
+> It stays **off by default** because it costs ~**1 050 ms/query** on CPU (≈4× wall clock), and it
+> is one flag to turn on. Worth it when a human is waiting for the answer; leave it off for
+> high-volume automated retrieval or constrained hardware. `ms-marco-MiniLM-L-6-v2` is the right
+> model — `bge-reranker-base`, 12× larger and four years newer, is statistically
+> **indistinguishable** at 6.3× the per-query cost.
+>
+> Numbers → [`RESULTS.md` §11](results/RESULTS.md) · meaning →
+> [`FINDINGS.md` §11](results/FINDINGS.md)
 
 > **One claim here was withdrawn.** The pool null was read as "bigger pools cannot help". It could
 > not have detected a pool effect at all — `hnsw.ef_search` capped the dense leg at 40, and RRF

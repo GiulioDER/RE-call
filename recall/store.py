@@ -582,6 +582,16 @@ class PgVectorStore:
     def table(self) -> str:
         return self._table
 
+    @property
+    def tenant(self) -> str:
+        """The tenant this store reads and writes as.
+
+        Exposed so a caller can NAME it in an error. A guard that reports "this tenant already
+        holds data" without saying which tenant sends the reader hunting through config for a
+        value the store already knows.
+        """
+        return self._tenant
+
     def close(self) -> None:
         """Close the connection (or pool) for good.
 
