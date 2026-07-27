@@ -370,7 +370,13 @@ def trusted_search(
     if calibration is None:
         from recall.calibration import load_for
 
-        calibration = load_for(embedder.name)
+        # `name` is part of the Embedder protocol, but this reads it DEFENSIVELY: auto-loading is
+        # a convenience, and a convenience must never turn a search that worked into an
+        # AttributeError. A stub or a partial implementation simply does not get a calibration,
+        # which is exactly the behaviour it had before this feature existed.
+        name = getattr(embedder, "name", None)
+        if isinstance(name, str):
+            calibration = load_for(name)
     cal = calibration or _UNCALIBRATED
     retriever = HybridRetriever(
         store, embedder, reranker=reranker, gap_threshold=cal.threshold, candidate_k=candidate_k
