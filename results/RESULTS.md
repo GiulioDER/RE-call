@@ -139,6 +139,12 @@ same pipeline, only the embedder swapped.
   n.s., pool ±0.065 n.s., chunk size +0.000; FINDINGS §7).
 - **Ordinary technical English: cloud is worth +0.022** — comfortably inside the noise, for ~5×
   the query latency, an API dependency, and your documents leaving your infrastructure.
+  - ⚠️ **Restated 2026-07-27 — scope-limited to this one 746-document corpus.** On **17 held-out**
+    BEIR / CQADupStack corpora the cloud embedder wins **16/17**: median **+0.059** hybrid,
+    **+0.105** dense; sign test **p = 0.00027**; 95% CI **[+0.038, +0.068]**. The gap tracks
+    **corpus size** (**+0.013** under 10k docs vs **+0.062** at 17k+; Spearman +0.509, +0.436
+    partialled on the local score), *not* unusual vocabulary — `oov_rate` fails at Holm p = 0.65.
+    → [`gap/FINDINGS-embedder-gap.md`](gap/FINDINGS-embedder-gap.md)
 - **Abstention holds on both corpora with both embedders**: accuracy 0.89 (memory corpus) and
   1.00 (11/11, PEPs); false-abstain 0.02–0.065. The trust layer was never the bottleneck.
 - Post-fix arms on the memory corpus (2026-07-25, corpus grown to 824 files / 6,800 chunks,
@@ -433,7 +439,10 @@ different scale regardless.
 
 | axis | free / local (bge-small) | cloud (voyage-3) |
 |---|---|---|
-| ordinary technical prose (PEPs) | 0.705 | 0.727 (+0.022, n.s.) |
+| ordinary technical prose (PEPs, **746 docs**) | 0.705 | 0.727 (+0.022, n.s.) |
+| **17 held-out corpora, 3.6k–20k docs** (2026-07-27) | — | **wins 16/17, median +0.059** (p = 0.00027) |
+| ↳ of which, under 10k docs | — | median **+0.013** |
+| ↳ of which, 17k+ docs | — | median **+0.062** |
 | idiosyncratic jargon corpus | 0.348 | **0.630 (+0.282)** |
 | LOCOMO conversational (§7a) | measured | not run at scale |
 | search latency p50 | **45 ms** | 246 ms (network RTT) |
@@ -442,8 +451,12 @@ different scale regardless.
 | data leaves your infra | **never** | every document and every query |
 | abstention accuracy | 0.89–1.00 | 0.89–1.00 (unaffected) |
 
-The measured rule: **pay for the cloud embedder only when your corpus vocabulary is unusual**
+~~The measured rule: **pay for the cloud embedder only when your corpus vocabulary is unusual**
 (internal codenames, shorthand absent from pretraining) — that condition, and only that condition,
-produced a resolvable gap; domain fine-tuning (§5) attacks the same gap without the API. On
-ordinary English the free local stack is within noise of the paid one, and the Mem0 head-to-head
-(§9) was won with the local stack end to end.
+produced a resolvable gap.~~ **Restated 2026-07-27** (struck above, kept for the record): across 17
+held-out corpora the cloud embedder wins **16/17**, and the gap tracks **corpus size** (+0.013 under
+10k docs, +0.062 at 17k+), not unusual vocabulary — an out-of-vocabulary rate predicts nothing
+(Holm p = 0.65). → [`gap/FINDINGS-embedder-gap.md`](gap/FINDINGS-embedder-gap.md)
+
+Unchanged by that restatement: domain fine-tuning (§5) attacks the same gap without the API, and the
+Mem0 head-to-head (§9) was won with the local stack end to end.

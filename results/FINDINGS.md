@@ -22,9 +22,12 @@ Five things, in descending order of how well-evidenced they are. Everything else
    and **six** candidate signals were measured to establish that no cheap signal fixes it — the best
    one's interval tops out at 0.826 against a ~0.90 bar. Corroborated independently on two
    benchmarks. → §5, §9b, §10b, §10c
-3. **Retrieval quality is a property of your corpus's vocabulary, not of this pipeline.** The same
-   stack scores 0.348 on an idiosyncratic private corpus and 0.705 on public technical prose. A
-   cloud embedder is worth +0.282 on the first and +0.022 on the second. → §7, §8
+3. **Retrieval quality is a property of your corpus, not of this pipeline.** The same stack scores
+   0.348 on an idiosyncratic private corpus and 0.705 on public technical prose. A cloud embedder is
+   worth +0.282 on the first and +0.022 on the second — but **on 17 held-out corpora it wins 16
+   times** (median +0.059, sign-test p = 0.00027), and what predicts the gap is **corpus size**, not
+   unusual vocabulary. §8's "buys nothing on ordinary English" was drawn from a 746-document corpus
+   and is **restated**. → §7, §8, [gap study](gap/FINDINGS-embedder-gap.md)
 4. **On the standard benchmark, the substrate is competitive and the adversarial axis is unsolved.**
    LOCOMO hit@5 **0.671**, hit@20 **0.855** — and **0 of 446** adversarial questions abstained on out
    of the box, an axis no published LOCOMO result scores at all. → §9a, §9b
@@ -510,6 +513,40 @@ could not:
 3. **The right rule is therefore conditional**: pay for a cloud embedder when your corpus
    vocabulary is *unusual* — internal codenames, project shorthand, identifiers absent from any
    pretraining set. On ordinary technical English, don't; it buys nothing measurable here.
+
+> ### ⚠️ RESTATED 2026-07-27 — point 3 came from one small corpus and does not hold
+>
+> Point 3 says a cloud embedder "buys nothing measurable" on ordinary technical English. That was
+> measured on **one corpus of 746 documents**. Extended to **17 held-out BEIR / CQADupStack corpora**
+> — none of which generated the hypothesis — it does not survive:
+>
+> | | hybrid | dense (embedder isolated) |
+> |---|---|---|
+> | corpora where voyage-3 beats bge-small | **16 / 17** | 15 / 17 |
+> | median gap | **+0.059** | **+0.105** |
+>
+> Sign test **p = 0.00027**; bootstrap 95% CI on the mean gap **[+0.038, +0.068]**.
+>
+> **What moved was corpus size, not subject matter.** Median gap is **+0.013** below 10 000 documents
+> and **+0.062** at 17 000+; gap against document count is Spearman **+0.509**, still **+0.436** with
+> the local model's own score partialled out. The PEP corpus at 746 documents is smaller than
+> anything in that study, and its +0.022 sits exactly where the small-corpus regime predicts —
+> `nfcorpus` (3 633 docs) gives **+0.019**, `scifact` (5 183) gives **+0.013**.
+>
+> So the §8 *measurement* stands and its *scope* was wrong. The honest rule:
+>
+> > A cloud embedder buys little on a corpus of a few hundred documents and roughly **+0.06 hit@5**
+> > at twenty thousand. **Size** is what moved here — not whether the vocabulary is unusual.
+>
+> **§7's proposed vocabulary mechanism also fails.** An out-of-vocabulary rate computed against
+> bge-small's own tokenizer does *not* predict the gap across those 17 corpora (partial r **+0.265**,
+> Holm-adjusted **p = 0.65**), and the null is clean — `oov_rate` correlates **−0.015** with corpus
+> size, so nothing is hiding inside it. No corpus statistic tested beat simply measuring the local
+> embedder, whose score alone correlates **−0.512** with the gap.
+>
+> Preregistered before any gap was measured; both corpora above are excluded there as the ones that
+> generated the hypothesis. Per-corpus table, confounds and limits:
+> [`results/gap/FINDINGS-embedder-gap.md`](gap/FINDINGS-embedder-gap.md).
 
 The trust layer holds on both: abstention accuracy **1.00** (11/11) on the PEPs for both embedders,
 false-abstain 0.02–0.05. It was never the bottleneck on either corpus.
