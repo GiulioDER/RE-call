@@ -31,7 +31,7 @@ already compute, and "newest" is the ISO date already attached to every chunk.
 
 It reports, per question, how many chunks survive and whether the stale/current values are still
 present — NOT a score. Turning a promising collapse into a benchmark cell requires the paid arm,
-and conflating the two is how a mechanism becomes an overclaim (see §9g/§9h, where exactly that
+and conflating the two is how a mechanism becomes an overclaim (see §9h/§9i, where exactly that
 went wrong at n=2).
 """
 from __future__ import annotations

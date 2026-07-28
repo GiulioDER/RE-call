@@ -8,7 +8,7 @@ Written **before** the corpus is built or any arm is run. As with
 BEAM cannot price this library's central claim, and we can now say exactly why rather than
 complain about it: abstention is 10 % of its questions while false-abstention risk applies to the
 other 90 %, so every abstention policy we tested came out net **negative** on its aggregate
-(§9h). A system that declines to invent cannot win that average by construction.
+(§9i). A system that declines to invent cannot win that average by construction.
 
 That is a reason to measure the claim elsewhere. It is **not** a licence to build a benchmark we
 win. The line this file commits to:
@@ -85,7 +85,8 @@ arithmetic once both sides are measured, and nobody has published it.
 - One judge instance scores both arms, as in the BEAM harness — this removes judge drift from the
   comparison, and it is the design that let us reproduce Mem0's published BEAM number to 0.0005.
 - Retrieval budgets are matched on **tokens**, not on memory count. Matching on count is the error
-  that put our BEAM arm at 4.5× Mem0's context and made its cost look intrinsic (§9f corrections).
+  that put our BEAM arm at 4.5× Mem0's context and made its cost look intrinsic
+  (`benchmarks/beam/rank_probe.py`: ~30,000 tokens per question against Mem0's ~6,700).
 - Mem0 runs at its shipped defaults; RE-call runs at its shipped defaults. Any tuned variant is a
   separately labelled arm, never the headline.
 
