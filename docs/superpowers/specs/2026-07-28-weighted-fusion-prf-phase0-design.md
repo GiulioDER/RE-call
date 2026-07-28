@@ -91,8 +91,19 @@ a trigger built on one would inherit that failure.
 > kill gates. Implemented as `recall.eval.legconf.more_decisive`, with
 > `test_more_decisive_is_not_fooled_by_leg_length` as the regression guard.
 >
-> The diagnostic records `n_dense` and `n_sparse` per question so the residual relationship between
-> firing and sparse-leg depth is **reported rather than assumed away**.
+> **The fix is partial, and the residual is measured, not hoped away.** Simulated on iid noise
+> (200k trials/point): an equal-length 5-vs-5 comparison fires **50.0%** of the time, but a
+> 5-candidate sparse leg against a 20-candidate dense leg fires **35.1%**, and against a
+> 40-candidate dense leg **33.6%**. Truncating a *larger* pool to its top m yields order statistics
+> clustered more tightly near the maximum than a fresh m-sized draw, so matching the sample sizes
+> does not fully match the distributions. (For scale: the unfixed definition fired 11.9% on the
+> same comparison.) The trigger therefore still carries some correlation with tsquery match count,
+> and match count plausibly correlates with question difficulty.
+>
+> **Consequence for Q1, binding:** the diagnostic records `n_dense` and `n_sparse` per question and
+> reports Q1 **stratified by sparse-leg depth** alongside the pooled figure. A firing/not-firing
+> gap that exists in the pooled number but vanishes inside every depth bin is the confound
+> talking, and **does not clear the Q1 gate**. The pooled Q1 alone does not settle it.
 
 ## What Phase 0 measures
 

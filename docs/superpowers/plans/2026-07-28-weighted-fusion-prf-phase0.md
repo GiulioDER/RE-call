@@ -748,11 +748,11 @@ def test_classify_c_when_there_is_no_gold_at_all():
 
 def test_report_splits_hit_rate_by_trigger_and_reports_firing_rate():
     records = [
-        {"trigger": True, "hit": False, "bucket": "b_unretrieved", "category": 3},
-        {"trigger": True, "hit": False, "bucket": "a_misranked", "category": 3},
-        {"trigger": True, "hit": True, "bucket": "hit", "category": 1},
-        {"trigger": False, "hit": True, "bucket": "hit", "category": 1},
-        {"trigger": False, "hit": True, "bucket": "hit", "category": 2},
+        {"trigger": True, "hit": False, "bucket": "b_unretrieved", "category": 3, "n_sparse": 20},
+        {"trigger": True, "hit": False, "bucket": "a_misranked", "category": 3, "n_sparse": 20},
+        {"trigger": True, "hit": True, "bucket": "hit", "category": 1, "n_sparse": 20},
+        {"trigger": False, "hit": True, "bucket": "hit", "category": 1, "n_sparse": 20},
+        {"trigger": False, "hit": True, "bucket": "hit", "category": 2, "n_sparse": 20},
     ]
     r = build_report(records)
 
@@ -770,11 +770,32 @@ def test_report_splits_hit_rate_by_trigger_and_reports_firing_rate():
 
 
 def test_report_handles_an_empty_firing_group():
-    records = [{"trigger": False, "hit": True, "bucket": "hit", "category": 1}]
+    records = [{"trigger": False, "hit": True, "bucket": "hit", "category": 1, "n_sparse": 20}]
     r = build_report(records)
     assert r["q2_firing_rate"]["rate"] == 0.0
     assert r["q1_hit_at_k"]["firing"]["n"] == 0
     assert r["q1_hit_at_k"]["delta"] is None      # undefined, not zero
+
+
+def test_report_stratifies_q1_by_sparse_depth():
+    """The confound control. `more_decisive` leaves a residual sample-size bias (on iid noise a
+    5-vs-20 comparison fires 35.1% rather than 50%), so a pooled Q1 effect could be sparse-leg
+    depth rather than leg disagreement. Each bin must carry its own firing/not-firing split."""
+    records = [
+        {"trigger": True, "hit": False, "bucket": "b_unretrieved", "category": 3, "n_sparse": 2},
+        {"trigger": False, "hit": True, "bucket": "hit", "category": 1, "n_sparse": 3},
+        {"trigger": True, "hit": True, "bucket": "hit", "category": 1, "n_sparse": 20},
+        {"trigger": False, "hit": True, "bucket": "hit", "category": 2, "n_sparse": 20},
+    ]
+    strata = build_report(records)["q1_stratified_by_sparse_depth"]
+
+    assert set(strata) == {"n_sparse_0-4", "n_sparse_20+"}
+    assert strata["n_sparse_0-4"]["n"] == 2
+    assert strata["n_sparse_0-4"]["firing"]["rate"] == 0.0
+    assert strata["n_sparse_0-4"]["not_firing"]["rate"] == 1.0
+    assert strata["n_sparse_0-4"]["delta"] == -1.0
+    # both hits in the deep bin, so the trigger separates nothing there
+    assert strata["n_sparse_20+"]["delta"] == 0.0
 ```
 
 - [ ] **Step 2: Run it and confirm it fails**
@@ -873,6 +894,39 @@ def _rate(flags: list[bool]) -> dict[str, Any]:
     }
 
 
+#: Sparse-leg depth bins for the Q1 confound control.
+#:
+#: `more_decisive` removes the FIRST-ORDER sample-size bias but not all of it. Measured on iid
+#: noise: an equal-length 5-vs-5 comparison fires 50.0% of the time, but a 5-candidate sparse leg
+#: against a 20-candidate dense leg fires only 35.1%, and against a 40-candidate dense leg 33.6% —
+#: because truncating a larger pool to its top m yields order statistics clustered more tightly
+#: near the maximum than a fresh m-sized draw. So the trigger still correlates with how many chunks
+#: matched the tsquery, and n_sparse plausibly correlates with question difficulty too.
+#:
+#: Q1 is therefore reported WITHIN these bins as well as overall. If the firing/not-firing gap
+#: exists only across bins and vanishes inside them, that is the confound talking, not the trigger.
+SPARSE_DEPTH_BINS: tuple[tuple[int, int], ...] = ((0, 4), (5, 9), (10, 19), (20, 1_000_000_000))
+
+
+def _depth_bin(n: int) -> str:
+    for lo, hi in SPARSE_DEPTH_BINS:
+        if lo <= n <= hi:
+            return f"n_sparse_{lo}+" if hi == 1_000_000_000 else f"n_sparse_{lo}-{hi}"
+    return "n_sparse_other"
+
+
+def _split_rates(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """hit-rate for the firing and non-firing halves of `rows`, plus their difference."""
+    f = [r["hit"] for r in rows if r["trigger"]]
+    nf = [r["hit"] for r in rows if not r["trigger"]]
+    fr, nfr = _rate(f), _rate(nf)
+    return {
+        "firing": fr,
+        "not_firing": nfr,
+        "delta": (fr["rate"] - nfr["rate"]) if (f and nf) else None,
+    }
+
+
 def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Q1/Q2/Q3 from per-question records. Pure — every figure traces to `records`."""
     scored = [r for r in records if r["bucket"] != "c_absent"]
@@ -895,6 +949,13 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
         "n_scored": len(scored),
         "n_excluded_unlabelled": len(records) - len(scored),
         "q1_hit_at_k": {"firing": q1_firing, "not_firing": q1_not, "delta": delta},
+        # The confound control. Read this BEFORE q1_hit_at_k: a Q1 effect that survives only in
+        # the pooled number and disappears inside every depth bin is sparse-leg depth talking.
+        "q1_stratified_by_sparse_depth": {
+            label: {"n": len(rows), **_split_rates(rows)}
+            for label in sorted({_depth_bin(r["n_sparse"]) for r in scored})
+            if (rows := [r for r in scored if _depth_bin(r["n_sparse"]) == label])
+        },
         "q2_firing_rate": _rate([r["trigger"] for r in scored]),
         "q2_firing_rate_by_category": by_category,
         "q3_buckets": buckets,
