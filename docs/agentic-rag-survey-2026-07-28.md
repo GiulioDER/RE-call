@@ -19,9 +19,15 @@ attributed to their source; where a fetch returned a vague summary that is state
 > - ✅ **§4.2 (weighted fusion) survives untouched** — it never depended on the trigger, and Phase 0
 >   measured its target at **349 of 1,536 questions (22.7%)** whose gold chunk sits in the fused
 >   candidate pool but below k=5.
-> - ⏳ Everything else — §1 BEAM, §2 the LOCOMO judge audit, §4.1 BGE-M3, §5.1 conformal abstention
->   — is **unexamined**, neither confirmed nor refuted. The §6 ranking predates the only
->   measurement anyone has run against it, so treat it as a reading list, not a plan.
+> - ❌ **§1's framing of BEAM as an untapped opportunity is WRONG.** BEAM was already run — on
+>   `bench/beam-1m`, the same week, results in `results/FINDINGS.md` §9d–§9n: **RE-call 0.594 vs
+>   Mem0 0.650**. RE-call loses the aggregate, though after a calibration fix none of the three
+>   paired families is significant against it. The survey asserted "nobody has run it" because its
+>   author searched the *literature* and not this repo's own memory. §1's description of what BEAM
+>   measures is accurate; its claim about our position on it was not.
+> - ⏳ Genuinely unexamined: §2 the LOCOMO judge audit, §4.1 BGE-M3, §5.1 conformal abstention. The
+>   §6 ranking predates the only measurement run against it, so treat it as a reading list, not a
+>   plan.
 >
 > Kept rather than deleted, and kept with the falsification attached: a survey that quietly drops
 > its own dead recommendation teaches nothing about why it was wrong.
@@ -55,7 +61,24 @@ literature fails C1 outright, and a further chunk is answering M1 with more rank
 
 ---
 
-## 1. The headline finding: someone finally built the benchmark that scores RE-call's thesis
+## 1. ~~The headline finding:~~ the benchmark that scores RE-call's thesis — **and we had already run it**
+
+> **Correction.** This section was written as a discovery: *"here is an untapped benchmark that
+> scores your differentiators."* The description of BEAM below is accurate. The framing is not.
+> **BEAM had already been run against RE-call on branch `bench/beam-1m`**, the same week, with
+> results in `results/FINDINGS.md` §9d–§9n: **RE-call 0.594 vs Mem0 0.650** on BEAM 1M, 300
+> questions, same judge, both at shipped defaults. RE-call loses the aggregate; after a calibration
+> fix none of the three paired families is significant against it.
+>
+> The survey missed this because its author searched the **literature** and never searched **this
+> project's own memory** — the failure `CLAUDE.md` has a standing rule against (*docs_search before
+> manual recall*) and which another session had recorded as a lesson three hours earlier. Read
+> §9d–§9n before acting on anything in this section.
+>
+> One thing from that run worth carrying: **BEAM is adversarial by construction** — its unanswerable
+> questions ask for details never stated about topics discussed at length, so overlap measures score
+> *highest* exactly where there is no answer. Its numbers are an upper bound on difficulty, not
+> deployed behaviour.
 
 `FINDINGS.md` §9 calls trust/supersession *"the one axis nobody else scores."* As of ICLR 2026 that
 is no longer true.
