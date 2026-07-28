@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from recall.calibration import Calibration, from_samples
+from recall.eval.provenance import model_stack
 from recall.embeddings import Embedder
 from recall.eval.locomo import (
     ADVERSARIAL_CATEGORY,
@@ -192,6 +193,7 @@ def run(
         "seed": seed,
         "conversations": len(conversations),
         "elapsed_s": round(time.time() - started, 1),
+        "stack": model_stack(),
         "calibrated_threshold": {
             "min": round(min(thresholds), 3),
             "max": round(max(thresholds), 3),

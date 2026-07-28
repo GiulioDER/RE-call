@@ -86,6 +86,36 @@ Two of those rows deserve the emphasis:
   defect, and having the artifact does not repair it. What changed is the reason: it is no longer
   "uncheckable", it is "checkable and still not evidence for that claim".
 
+## The model stack — why every artifact now carries one
+
+`_provenance` says which **code** produced an artifact. For anything that passes through a model
+that is not enough, and `locomo/postfix_abstention.json` is the proof: it publishes four abstention
+modes, two of them route through a QNLI cross-encoder, and it named no `sentence-transformers`,
+`transformers` or `torch` version at all.
+
+Re-running it on a corpus asserted clean by row count moved the `entail` row by **0.0525**, while
+the calibrated thresholds — fit directly on the distribution a doubled corpus would move —
+reproduced *exactly*. So the corpus was not the variable, and nothing recorded said what was. Two
+of four published rows could not be reproduced by anyone.
+
+Three causes were then eliminated **by measurement, not argument**: corpus doubling (the thresholds
+reproduce exactly), the judge's weights (`DEFAULT_QNLI_REVISION` predates the artifact), and
+`sentence-transformers` (a run pinned back to 5.6.0 returned every mode identical to four decimals
+— which also shows this pipeline is deterministic across independent environments, so run-to-run
+noise is not it either). What remains is most consistent with an **independent HNSW index build**,
+and that is now unfalsifiable: the 07-26 index is gone. The record that could have settled it is
+the one nobody wrote.
+
+Runs now emit `stack` alongside `elapsed_s`, from `recall.eval.provenance.model_stack()`. Artifacts
+that predate this carry `"stack": "unrecorded"` — **the honest value, not a guess**: inventing
+plausible versions would make an unreproducible row look reproducible. The set allowed to say
+`"unrecorded"` is pinned by name in `tests/test_results_artifact_model_stack.py`, so a new artifact
+cannot join it by omission. That list shrinks when a run is redone; it never grows.
+
+What is *not* the gap: `recall.entailment.DEFAULT_QNLI_REVISION` pins the judge's Hub commit, so
+the weights are immutable, and that pin predates every artifact here. The gap was the stack running
+the model.
+
 ## Writing a new run
 
 The committed artifacts are records of specific configurations. **Do not point `--out` at one** —
