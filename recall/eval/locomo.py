@@ -74,7 +74,7 @@ import re
 import shutil
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -83,7 +83,7 @@ from recall.eval.labelled import _make_embedder
 from recall.eval.metrics import wilson_ci
 from recall.index import Indexer
 from recall.rerank import DEFAULT_RERANKER_MODEL, Reranker
-from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
+from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever, LegProbe
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
 
@@ -245,6 +245,7 @@ def run_conversation(
     ks: Sequence[int] | None = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
     reranker: Reranker | None = None,
+    probe: Callable[[LegProbe], None] | None = None,
     allow_existing: bool = False,
 ) -> dict[str, Any]:
     """Index one conversation and score every question against it.
@@ -285,7 +286,9 @@ def run_conversation(
 
     depths = _depths(ks, k)
     max_k = max(depths)
-    retriever = HybridRetriever(store, embedder, candidate_k=candidate_k, reranker=reranker)
+    retriever = HybridRetriever(
+        store, embedder, candidate_k=candidate_k, reranker=reranker, probe=probe
+    )
     hits_by_cat: dict[int, list[bool]] = {c: [] for c in ANSWERABLE_CATEGORIES}
     abstained: list[bool] = []
     per_question: list[dict[str, Any]] = []
