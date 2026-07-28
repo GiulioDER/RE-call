@@ -9,6 +9,22 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
+- **`RECALL_RERANK=1` turns on cross-encoder reranking in the MCP server.** The server is how an
+  agent actually consumes this library, and it had no way to enable the largest retrieval gain the
+  project has measured: `service.py` called `trusted_search` without the `reranker` argument that
+  call has accepted since 0.2. On LOCOMO at n=1,536 that flag is hit@5 **0.671 -> 0.777**, intervals
+  disjoint from the baseline through k=10.
+
+  Off by default at ~1,050 ms/query — a memory server that silently quadrupled every query's latency
+  to improve a benchmark would be choosing for the operator. `ms-marco-MiniLM-L-6-v2` is the default
+  because it was measured to be right, not because it was incumbent: `bge-reranker-base` (12x the
+  parameters) is statistically indistinguishable at 6.3x the cost.
+
+  `RECALL_RERANK_MODEL` requires `RECALL_RERANK_REVISION` — the shipped pin belongs to the shipped
+  weights, and reusing it for different weights would name the wrong artifact in every trace. An
+  unparseable flag is REFUSED rather than read as "off": an operator who asked for reranking and got
+  a fast, quiet, unreranked server would have no way to notice, because that failure looks exactly
+  like success. (`recall_mcp/service.py`, `tests/test_mcp_rerank_opt_in.py`, `docs/USING_WITH_CLAUDE.md`)
 - **A measured rerank arm for the LOCOMO harness (`--rerank`), and the numbers that make the case
   for using it.** §9a reported hit@5 0.671 against hit@20 0.855 without drawing the obvious
   conclusion: for **85.5%** of questions the correct turn was already retrieved and merely ranked

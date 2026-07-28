@@ -12,7 +12,7 @@
   <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-788%20·%20real%20pgvector-brightgreen" alt="788 tests">
+  <img src="https://img.shields.io/badge/tests-890%20·%20real%20pgvector-brightgreen" alt="890 tests">
 </p>
 
 <p align="center">
@@ -135,6 +135,7 @@ table without them is marketing.
 | **Near-misses need a judge, not a threshold** | QNLI stage cuts near-miss false-confidence **0.70 → 0.30** (hashing) and **1.00 → 0.50** (bge-small), same judge across embedders, no per-embedder retuning → [RESULTS §3](https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md) | Judge-alone *degrades* far-gap detection — the two stack, neither replaces the other. Costs ~0.1–1.0 s per query |
 | **Retrieval, on a second public benchmark** | **knowledge-update 1.000** (36/36) — the category this library exists for, and the most robust one under haystack pressure (retains 74% of hit@5 across a 20× larger corpus where the overall figure retains 51%). Overall **hit@5 0.970** [0.94, 0.99] on LongMemEval's own per-question haystacks with the *free local* embedder → [FINDINGS §10](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | A *retrieval* figure — evidence session in the top 5 — **not** the benchmark's LLM-judged answer accuracy. It does not belong in a column with one. **And 0.970 is the benchmark's ~49-session haystack, not a memory store: on one merged 19,195-session index the same questions score 0.366.** Both arms are published because the second is the one that looks like production |
 | **Abstention has a bounded domain** | Far gaps: accuracy **1.00** (PEPs), **0.89** (real corpus). Near-misses: **it fails** — false-abstain **0.481** on LongMemEval, and **six** candidate signals all score AUC ≤ 0.753 — the best one's 95% interval tops out at **0.826**, below the ~0.90 a usable gate needs, so the bar is *excluded* rather than merely unproven. Independently corroborated on LOCOMO, where no judge configuration crosses into usable territory either → [FINDINGS §9–§10](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | Nothing was retuned, because every alternative measured *worse*. `recall calibrate` reports separability **with its interval**, certifies on the interval's lower bound, and exits non-zero rather than certify a threshold the data cannot support |
+| **Free to write — and faster** | No LLM at ingest (Mem0 runs one extraction call per session): **0 LLM calls / $0** to build memory, measured **~4.3× faster to build** and **~26% faster per query** vs Mem0 on LOCOMO, same local embedder → [benchmarks/REVIEW.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md) | One head-to-head (2 conversations, single run); the retrieve CI is optimistic (repeated queries) and the backends differ (Postgres vs in-process Qdrant), so treat retrieval speed as directional — ingest speed and the $0/0-calls cost are the robust part |
 
 Full methodology, per-embedder tables and the negative results → **[results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)**.
 Design rationale and the reasoning behind each guard → **[docs/WRITEUP.md](https://github.com/GiulioDER/RE-call/blob/master/docs/WRITEUP.md)**.
@@ -178,7 +179,7 @@ A previous version of this file published each of these. They did not survive re
 - **"Per-question raw dumps are published"** — said of the Mem0 head-to-head. They are not:
   `benchmarks/results/` is gitignored, so each run writes them locally only. The harness, the
   pre-registration, the blind human labels, the corrupt-key list and an independent adversarial
-  recompute of every cell *are* published, on the `bench/head-to-head` branch. Corrected in
+  recompute of every cell *are* published, in `benchmarks/` on master. Corrected in
   [RESULTS §9](https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md) and FINDINGS §9d.
 
 ## Production posture
@@ -534,7 +535,7 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 
 ## Engineering
 
-**788 tests.** The database-touching ones run against a real pgvector container — no mock
+**890 tests, 4 skipped.** The database-touching ones run against a real pgvector container — no mock
 DB. CI runs `ruff`, `mypy`, the suite against PostgreSQL under coverage, the suite *again* at the
 declared dependency floor, and `pip-audit` over a checked-in `uv.lock` — each as a gate rather than
 a report.

@@ -804,9 +804,10 @@ reported as **directional** — the repeated-query bootstrap CI is optimistic (e
 the backends differ (Postgres vs in-process Qdrant).
 
 > **Reproduce, and what is actually published.** The harness, the pre-registration, the blind
-> human labels, the corrupt-key list and an independent adversarial recompute of every cell
-> (`benchmarks/REVIEW.md`) are on the **`bench/head-to-head`** branch. The **per-question dumps are
-> not published** — `benchmarks/results/` is gitignored, so each run writes them locally only.
+> human labels, the corrupt-key list and an independent adversarial recompute of every cell are in
+> **`benchmarks/`** on master (`benchmarks/REVIEW.md`, `benchmarks/PREREGISTRATION.md`). The
+> **per-question dumps are not published** — `benchmarks/results/` is gitignored, so each run
+> writes them locally only.
 > Regenerate with `python -m benchmarks.run --arm {recall,mem0} --embedder router:openai/text-embedding-3-small --conversations 10`
 > (as-shipped arm) and `python -m benchmarks.latency` (timings).
 

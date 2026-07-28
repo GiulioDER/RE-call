@@ -83,6 +83,18 @@ langchain = ["langchain-core>=0.3"]
 # `dev` anyway so the adapter is CI-tested and type-checked, not validated only on a laptop. Floor
 # 0.11 is the oldest the adapter is tested against. Keep this in step with `dev`.
 llamaindex = ["llama-index-core>=0.11"]
+# Local competitive benchmark only (benchmarks/). NEVER added to `dev` or installed in CI — it is a
+# heavy tree (mem0ai) and the benchmark is run deliberately, by hand, not on every push.
+#
+# `mem0ai` is pinned EXACTLY, not floored. It is the competitor being measured, and its extraction
+# prompt, its retrieval defaults and its API all move between releases: 2.x renamed `search`'s
+# arguments (`user_id=`/`limit=` -> `filters={"user_id": ...}`/`top_k=`) and now REJECTS the 1.x
+# spelling outright, so a range would let a `pip install` months from now silently change what a
+# published number means — or break the adapter outright. `==2.0.13` is the current stable release
+# (2026-07-22) and the version `benchmarks/systems.py` is written against; it is recorded into
+# every results artifact via `importlib.metadata.version("mem0ai")`. Bumping it is a deliberate
+# re-run, not a resolver decision.
+bench = ["mem0ai==2.0.13", "openai>=1.0"]
 # pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
 # failing it — a hung CI job reads as "still running", not as a regression.
 #
@@ -155,7 +167,11 @@ target-version = "py311"
 # The floor is checked where it is actually meaningful: the `floor` CI job RUNS the suite on
 # 3.11 with the declared minimum of every direct dependency.
 [tool.mypy]
-files = ["recall", "recall_mcp"]
+# `recall_interop` is repo-only scaffolding (it is deliberately absent from the wheel's `packages`
+# above), but it is type-checked anyway: it is the code path that produces PUBLISHED benchmark
+# numbers, and a shape mismatch against the third-party harness it feeds does not raise — it
+# degrades into a worse score that reads as a retrieval result.
+files = ["recall", "recall_mcp", "recall_interop", "benchmarks"]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 warn_return_any = true
@@ -179,6 +195,10 @@ module = [
     "datasets.*",
     # Transitive of the extras above and of pgvector; never imported by this package directly.
     "numpy.*",
+    # bench extra (benchmarks/llm.py, benchmarks/systems.py) — lazily imported so the module
+    # type-checks without it.
+    "openai.*",
+    "mem0.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

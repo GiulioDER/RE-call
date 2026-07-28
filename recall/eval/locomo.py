@@ -75,6 +75,7 @@ import shutil
 import tempfile
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -189,6 +190,93 @@ def write_conversation_corpus(conversation: dict[str, Any], out_dir: Path) -> in
     return written
 
 
+@dataclass(frozen=True)
+class ConversationIndexStats:
+    """What `index_conversation` actually wrote and verified for one LOCOMO conversation.
+
+    `turns` is `write_conversation_corpus`'s per-turn document count. `corpus_rows` is the
+    tenant-scoped `store.count()` measured immediately after indexing, once the post-condition
+    in `index_conversation` has confirmed it equals what THIS call wrote (`IndexStats.chunks`) —
+    not a number a concurrent writer could have inflated.
+    """
+
+    turns: int
+    corpus_rows: int
+
+
+def index_conversation(
+    store: PgVectorStore,
+    embedder: Embedder,
+    conversation: dict[str, Any],
+    *,
+    corpus_dir: Path | None = None,
+    allow_existing: bool = False,
+) -> ConversationIndexStats:
+    """Materialise one LOCOMO conversation's turns and index them into `store`.
+
+    Extracted from `run_conversation` so callers outside this module (the head-to-head benchmark's
+    `RecallSystem` adapter) reuse the exact same indexing path — per-turn markdown documents routed
+    through `Indexer.index_path`, never a bespoke in-memory shortcut. `corpus_dir` lets a caller
+    that already manages a workspace (like `run_conversation`, via `--keep-corpus`) supply its own
+    directory; when omitted, a temp dir is created and cleaned up here. Returns turn and row counts
+    (see `ConversationIndexStats`).
+    """
+    cleanup = corpus_dir is None
+    workspace = corpus_dir if corpus_dir is not None else Path(tempfile.mkdtemp(prefix="locomo-"))
+    try:
+        n_turns = write_conversation_corpus(conversation, workspace)
+        store.ensure_schema()
+
+        # Refuse to index on top of an existing corpus for this tenant.
+        #
+        # This lives HERE rather than in `run_conversation` because there are two callers: the
+        # LOCOMO runs and the head-to-head benchmark's `RecallSystem` adapter. The guard was first
+        # written inline in `run_conversation`, after two concurrent launchers doubled a corpus
+        # (11,764 rows against a correct 5,882) and depressed every depth of the curve by ~0.05
+        # without erroring — but that left the benchmark's ingest path able to fail the same way.
+        # A helper extracted so two callers share one indexing path, with the safety check on only
+        # one of them, is how the drift stays invisible.
+        #
+        # Refused rather than de-duplicated: a table in that state is evidence that something ran
+        # twice, and silently repairing it would hide the fact worth knowing.
+        existing = store.count()
+        if existing and not allow_existing:
+            raise RuntimeError(
+                f"tenant {store.tenant!r} already holds {existing} chunk(s) in table "
+                f"{store.table!r}. A benchmark run indexes a fresh corpus, so this means a "
+                f"previous run wrote here — indexing again would DOUBLE the corpus and depress "
+                f"every hit@k without erroring. Use a new table, drop this one, or pass "
+                f"allow_existing=True if you genuinely mean to add to it."
+            )
+
+        stats = Indexer(store, embedder).index_path(workspace)
+
+        # Post-condition, and NOT a restatement of the pre-check above.
+        #
+        # The pre-check reads the table BEFORE indexing, so it catches a sequential re-run and
+        # nothing else. On 2026-07-27 the failure was two CONCURRENT launchers: the second passed
+        # the pre-check on an empty table and wrote while the first was still indexing. Both
+        # finished, every tenant held its corpus twice, and nothing errored.
+        #
+        # `stats.chunks` is how many chunks THIS call wrote. On a tenant the pre-check just proved
+        # empty, the tenant-scoped count must equal it. A larger count means another writer is in
+        # this tenant, and the run is measuring a corpus nobody described.
+        indexed = store.count()
+        if not allow_existing and indexed != stats.chunks:
+            raise RuntimeError(
+                f"tenant {store.tenant!r} holds {indexed} chunk(s) after indexing but this run wrote "
+                f"{stats.chunks}. Another writer is in this table CONCURRENTLY — the pre-check cannot "
+                f"see one that arrives mid-index. Every hit@k from this corpus would be depressed "
+                f"without erroring. Drop the table and re-run alone; take a lock if two runs must "
+                f"share a host (see scripts/run_locomo_arms.sh)."
+            )
+
+        return ConversationIndexStats(turns=n_turns, corpus_rows=indexed)
+    finally:
+        if cleanup:
+            shutil.rmtree(workspace, ignore_errors=True)
+
+
 def _retrieved_dia_ids(hits: list) -> list[str]:
     """Distinct dialog ids behind a result's hits, best rank first."""
     out: list[str] = []
@@ -259,50 +347,15 @@ def run_conversation(
     chunks can map to one turn, so slicing the id list would score a deeper retrieval than the
     one asked for and inflate every k below the maximum.
     """
-    n_turns = write_conversation_corpus(conversation, corpus_dir)
-    store.ensure_schema()
-
-    # Refuse to index on top of an existing corpus for this tenant.
-    #
-    # This is a post-condition the run never had, and its absence produced a wrong published
-    # number: two copies of a launcher wrote into one table, every tenant held its corpus twice
-    # (11,764 rows against a correct 5,882), and nothing errored. The candidate pool is a fixed
-    # size, so duplicates halve the DISTINCT documents it can hold and every depth of the curve
-    # came in ~0.05 low — plausible, self-consistent and wrong.
-    #
-    # Refused rather than de-duplicated: a table in that state is evidence that something ran
-    # twice, and silently repairing it would hide the fact worth knowing.
-    existing = store.count()
-    if existing and not allow_existing:
-        raise RuntimeError(
-            f"tenant {store.tenant!r} already holds {existing} chunk(s) in table "
-            f"{store.table!r}. A benchmark run indexes a fresh corpus, so this means a previous "
-            f"run wrote here — indexing again would DOUBLE the corpus and depress every hit@k "
-            f"without erroring. Use a new --table, drop this one, or pass allow_existing=True "
-            f"if you genuinely mean to add to it."
-        )
-
-    stats = Indexer(store, embedder).index_path(corpus_dir)
-
-    # Post-condition, and NOT a restatement of the pre-check above.
-    #
-    # The pre-check reads the table BEFORE indexing, so it catches a sequential re-run and
-    # nothing else. On 2026-07-27 the failure was two CONCURRENT launchers: the second passed
-    # the pre-check on an empty table and wrote while the first was still indexing. Both
-    # finished, every tenant held its corpus twice, and nothing errored.
-    #
-    # `stats.chunks` is how many chunks THIS call wrote. On a tenant the pre-check just proved
-    # empty, the tenant-scoped count must equal it. A larger count means another writer is in
-    # this tenant, and the run is measuring a corpus nobody described.
-    indexed = store.count()
-    if not allow_existing and indexed != stats.chunks:
-        raise RuntimeError(
-            f"tenant {store.tenant!r} holds {indexed} chunk(s) after indexing but this run wrote "
-            f"{stats.chunks}. Another writer is in this table CONCURRENTLY — the pre-check cannot "
-            f"see one that arrives mid-index. Every hit@k from this corpus would be depressed "
-            f"without erroring. Drop the table and re-run alone; take a lock if two runs must "
-            f"share a host (see scripts/run_locomo_arms.sh)."
-        )
+    # One indexing path, shared with the head-to-head benchmark's `RecallSystem` adapter, so the
+    # double-index guard covers both — pre-condition AND post-condition. Two copies of this is how
+    # a benchmark and its eval drift, and one of the copies carrying the safety checks is how that
+    # drift stays invisible.
+    stats = index_conversation(
+        store, embedder, conversation, corpus_dir=corpus_dir, allow_existing=allow_existing
+    )
+    n_turns = stats.turns
+    indexed = stats.corpus_rows
 
     depths = _depths(ks, k)
     max_k = max(depths)
