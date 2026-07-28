@@ -811,6 +811,507 @@ the backends differ (Postgres vs in-process Qdrant).
 > Regenerate with `python -m benchmarks.run --arm {recall,mem0} --embedder router:openai/text-embedding-3-small --conversations 10`
 > (as-shipped arm) and `python -m benchmarks.latency` (timings).
 
+### 9e. BEAM: what Mem0's 2026-07 headline numbers actually are, and what it takes to sit beside them
+
+Mem0's "token-efficient memory algorithm" post reports LOCOMO 92.5, LongMemEval 94.4 and BEAM
+64.1 (1M) / 48.6 (10M). Before spending anything to answer them, we read the harness and the
+published artifacts (`mem0ai/memory-benchmarks`, Apache-2.0). Four facts change what a comparable
+reply has to look like — each one verifiable from files in that repo, and none of them stated in
+the blog post:
+
+1. **The algorithm is in the OSS package; the published numbers are not.** Single-pass ADD-only
+   extraction, multi-signal retrieval (semantic + BM25 + entity), and entity linking all landed in
+   the open-source SDK at **v2.0.0** — they are in `mem0/memory/main.py` today, and our arm has
+   been running them since. But the published cells come from `results/platform/`, i.e. Mem0
+   Cloud, which their own post says "includes proprietary optimizations" absent from the SDK. No
+   OSS BEAM results are published at all. So *no* `pip install mem0ai` at *any* version reproduces
+   64.1, and a number that claims to is measuring something else.
+2. **The answerer and judge are `gpt-5`, not gpt-4o.** The BEAM runner's CLI defaults to `gpt-5`
+   for both, and the published metadata records `gpt-5` on Azure. (The README's "default: GPT-4o"
+   describes the generic pipeline, not this benchmark.) A BEAM score is a property of the
+   (retrieval, answerer, judge) triple; changing the reader changes the number, as §3 of the
+   head-to-head shows in miniature.
+3. **64.1 is the mean rubric-nugget score, not a pass rate.** `avg_score` = 0.6409 at the `top_200`
+   cutoff; the pass rate (`accuracy`, nugget mean ≥ 0.5) for the same run is **70.14 %**. Quoting
+   the pass rate as the headline would inflate every system by ~6 points while looking like the
+   same metric.
+4. **The published artifact is per-question.** `beam_1m_results.json` carries all 700 question ids,
+   rubrics, generated answers and per-nugget scores. That is what makes a genuinely *paired*
+   comparison possible without paying for a Mem0 arm at all.
+
+**The design that follows from those four.** `benchmarks/beam/` runs RE-call over the same 700
+question ids with Mem0's answerer prompt and judge prompt vendored byte-for-byte, then scores
+**both** systems' answers with the *same judge instance in the same session* — ours on our answer,
+ours on their stored answer. Comparing our judge's verdict on our answer against their judge's
+verdict on their answer would fold judge drift into the headline and call it retrieval. The residual
+confound is stated rather than resolved: their *answers* are historical (Azure gpt-5, May 2026), so
+if their platform has moved since, this measures the platform as published, not as it is today.
+
+Two harness details exist because getting them wrong would have handicapped our own arm invisibly:
+
+- **Question ids are reconstructed, not invented.** `dataset.py` reproduces upstream's
+  `{size}_{conv}_q{qi}_{type}` numbering from the same `BEAM_QUESTION_TYPES` ordering, and the join
+  is asserted: for conversation 0 our 20 ids are set-identical to the published 20.
+- **BEAM dates one turn per batch, not every turn.** In the 1M bucket that is 10 dated turns out of
+  1,710. Upstream applies each batch's anchor to everything ingested from it, so every Mem0 memory
+  carries a date; reading the field per-turn would have left 99.4 % of *our* memories undated while
+  the vendored answerer prompt — which prints each memory's date and is told to reason about
+  ordering — graded us on `temporal_reasoning` and `event_ordering`. The anchor is propagated.
+
+BEAM's ten ability types include **abstention**, so this arm reports what the LOCOMO arm reports:
+the abstention rate on the questions where withholding is correct, *and* the false-abstain rate on
+the other nine categories, as two independent numbers. A system that refuses everything scores
+1.00 on the first; only the second catches it.
+
+```bash
+# $0 — index + retrieve only, no LLM call. Validate the arm before committing money.
+python -m benchmarks.beam.run --dry-run --data <beam_1M.parquet> --conversations 0
+# paid — RE-call over the 1M bucket, Mem0's answerer + judge
+python -m benchmarks.beam.run --data <beam_1M.parquet> --model openai/gpt-5
+# paid — the same judge, re-scoring Mem0's published answers
+python -m benchmarks.beam.run --rejudge-mem0 <beam_1m_results.json> --model openai/gpt-5
+# free — pair them: McNemar on accuracy, abstention and false-abstain, Holm across the three
+python -m benchmarks.beam.pair --a <recall.json> --b <mem0-rejudged.json>
+```
+
+Cells land here when the paid arms run. Provenance for every constant above:
+`benchmarks/beam/UPSTREAM.md`.
+
+### 9f. Why 92.5 and our 0.444 are not the same measurement
+
+The same harness read for §9e also explains the LOCOMO headline, and the explanation is entirely in
+the protocol rather than in either memory layer. Verified by reading `benchmarks/locomo/prompts.py`
+and the published `results/platform/locomo_results.json` in that repo:
+
+| Their published LOCOMO run | Our head-to-head |
+|---|---|
+| `CATEGORIES_TO_EVALUATE = [1, 2, 3, 4]` — **category 5 excluded entirely** | cat 5 is the axis §9b exists to measure |
+| Answerer told: *"COMMIT AND ANSWER … NEVER say 'not specified' … NEVER return an empty answer"* — abstention is **forbidden** | abstention is the measured behaviour |
+| `ANSWERER_MEMORY_LIMIT = 200` memories, chronological (~7k tokens — their "mean tokens per query") | k = 10/20, token-matched |
+| Judge: dates within **14 days** correct, durations within **50 %** correct, 1-of-N partial credit, and evidence used *"only to ACCEPT answers, never to reject them more strictly"* | strict single verdict |
+| Answerer and judge: **`gpt-5`** (Azure), n = 1,540 | gpt-4o-mini / gpt-4o |
+
+Every one of those moves the number the same way, and none of them is cheating — they are choices,
+documented in code. But they mean **92.5 and our 0.444 are not two values of one quantity**, and any
+table that stacks them is comparing a lenient judge over four categories with abstention forbidden
+against a strict judge over five with abstention scored.
+
+Note the model row in particular: their answerer and judge default to `gpt-5` on *both* benchmarks,
+not gpt-4o. A "reproduction" run configured on gpt-4o would differ from the published cells for that
+reason alone, before retrieval is considered.
+
+The genuinely comparable experiment is the reverse of what we ran: put RE-call through *their*
+unmodified harness. The seam is one call — `mem0.search(question, user_id, top_k)` returning
+`[{memory, created_at}]` — which is exactly the interface `benchmarks/beam/systems.py` already
+implements for BEAM. That is the natural next arm, and the adapter for it already exists.
+
+### 9g. The BEAM arm embeds through the hosted embedder — stated, not buried
+
+The LOCOMO arms in §9a-c run RE-call on local `bge-small` via fastembed. The BEAM arm does not:
+it uses `openai/text-embedding-3-small` through OpenRouter. That is a real methodological change
+and it belongs in the open, so:
+
+**Why.** BEAM's 1M bucket is **37.2 M tokens** of dialogue — 1.06 M per conversation, mean turn
+620 tokens, an order of magnitude denser than LOCOMO's chat lines. Through a 33 M-parameter model
+on CPU that is ~70 TFLOPs per conversation: measured at 12-20 minutes each and ~10 hours for the
+bucket, at 4.5 GB resident. The same tokens cost ~$0.75 hosted, at ~42 s per conversation.
+
+**Why it does not weaken the comparison — it strengthens it.** Mem0's published BEAM run embeds
+with `text-embedding-3-small` too. Running RE-call on `bge-small` against a Mem0 cell built on
+`text-embedding-3-small` would have handicapped our own arm on a dimension nobody asked about,
+and any deficit would have been reported as a retrieval result. Matching their embedder isolates
+what the arm is actually for: retrieval and answer construction, judged by their judge.
+
+**What it costs in comparability elsewhere.** A BEAM cell and a LOCOMO cell in this repo are now
+not embedder-matched to each other. They were never meant to be pooled — different corpora,
+different judges, different protocols (§9f) — but no table should imply otherwise.
+
+Vector width changes 384 -> 1536 with the embedder, so `bench_beam_chunks` is rebuilt for the run;
+nothing is carried over from a 384-wide index.
+
+### 9h. BEAM's abstention category is a hallucination test, and it is where the margin is
+
+Three questions were asked of this data: is the benchmark measuring something real, is it
+backfitted to Mem0, and is there room to improve. The answers are yes, no, and yes — with a
+concrete mechanism for the third.
+
+**The category is sharp.** Scoring Mem0's own published answers (n=70 abstention questions):
+
+| Mem0 did | n | mean score |
+|---|---|---|
+| abstained | 38 | **0.974** |
+| answered | 32 | **0.016** |
+
+Near-perfectly binary. The rubric nuggets read "there is no information related to X", so the
+judge is testing exactly one thing: does the system invent an answer when the evidence is absent.
+Mem0 invents one **46 % of the time** — e.g. answering "User testing showed a positive response:
+the dynamic language switching feature achieved a 90 % satisfaction rate" to a question whose
+gold answer is that no such feedback was ever recorded. The corpus does contain "achieving a 90 %
+satisfaction rate is a strong start" — the ASSISTANT speculating, which the retriever surfaced and
+the answerer read as fact.
+
+**It is not backfitted to Mem0.** A benchmark tuned to flatter them would not expose a 46 %
+fabrication rate on its own vendor, and would not score them 64.1 here against 92.5 on LOCOMO.
+The dataset is third-party (ICLR 2026), and the harness's leniency (§9f) runs the OTHER way — it
+is generous to whoever is being scored, including us.
+
+**The margin is the largest in the benchmark.** Mem0's abstention cell is 0.536. A system that
+withheld correctly every time would score ~0.97. No other category has a 0.43 gap sitting in it,
+and it is the one category whose claim is RE-call's own.
+
+**Why RE-call does not capture it yet, precisely.** `apply_entailment` abstains only when NO hit
+entails an answer — an `any()` over the trusted pool. With ~200 candidates, two false-positive
+entailments are enough to suppress the abstention, and two is what we measured. The judge itself
+is not the problem: it correctly rejected 8 of the top 10 on the question above. The AGGREGATION
+is.
+
+Measured on conversation 0, entailed-count in the top 10 by class:
+
+| class | counts | mean |
+|---|---|---|
+| unanswerable | `[0, 2]` | **1.00** |
+| answerable | `[0,0,0,2,3,3,3,4,5,6,7,7,8,8,9,10,10,10]` | **5.28** |
+
+| rule | correct-abstain | false-abstain |
+|---|---|---|
+| abstain if entailed < 1 (**current**) | 50 % | 17 % |
+| abstain if entailed < 3 | **100 %** | 22 % |
+
+Note the direction: this is the separation the COSINE threshold could not provide at any value
+(§9g showed unanswerable cosines run HIGHER than answerable ones, median 0.676 vs 0.641). Counting
+entailments recovers the ordering that similarity inverts.
+
+**⚠ n = 2 unanswerable questions in this sample.** This is a direction with a mechanism, not a
+result. It needs the full 30 abstention questions across conversations 0-14 before any claim is
+made — that validation is free (dry runs make no LLM call) and is the next thing to run.
+
+**The research item, stated as a change:** `recall.entailment.apply_entailment` currently exposes
+one abstention policy, "none entailed". The data says the policy should be a threshold on the
+count (or fraction) of entailed hits, and that the right value is not 1. That is a library change
+validated on adversarial held-out data, not a benchmark tweak — the abstention claim is what
+RE-call sells, and on the one public benchmark that tests it directly, the default policy is too
+permissive to collect.
+
+### 9i. RETRACTION of §9h's proposed fix — the count rule does not pay
+
+§9h reported, on ONE conversation, that counting entailed hits separates BEAM's unanswerable
+questions from its answerable ones, with "abstain if entailed < 3" giving 100 % correct-abstain
+at 22 % false-abstain. It flagged n = 2 unanswerable and called itself "a direction with a
+mechanism, not a result". The full probe (30 unanswerable, 270 answerable, conversations 0-14,
+$0) came back weaker and the conclusion does not survive:
+
+| entailed in top-10 | §9h pilot (n=2) | full probe (n=30) |
+|---|---|---|
+| mean, unanswerable | 1.00 | **3.57** |
+| mean, answerable | 5.28 | **5.93** |
+| "< 3" correct-abstain | 100 % | **43.3 %** |
+| "< 3" false-abstain | 22 % | 19.6 % |
+
+The separation is real but modest, and on BEAM's 9:1 answerable:unanswerable mix it never pays:
+
+| policy | correct-abstain | false-abstain | net vs shipped |
+|---|---|---|---|
+| answer if ≥1 entails (**ships today**) | 23.3 % | 9.3 % | — |
+| ≥2 | 26.7 % | 11.8 % | **−0.011** |
+| ≥3 | 43.3 % | 19.6 % | **−0.036** |
+| ≥5 | 66.7 % | 34.4 % | **−0.092** |
+
+Every stricter policy gains on 30 questions and loses on 270. **The shipped `any()` policy is
+already the best of the five on this benchmark**, which is the opposite of §9h's recommendation.
+
+Two things worth keeping from this:
+
+**The mechanism in §9h was right; its extrapolation was not.** `any()` over ~200 candidates IS
+maximally permissive, and entailment count DOES order the classes correctly where cosine inverts
+them (§9g). Neither of those claims is retracted. What is retracted is that changing the policy
+improves the cell — it does not, and the reason is arithmetic that was available before the probe
+ran: abstention is 10 % of BEAM, false-abstention risk is 90 %.
+
+**A benchmark whose payoff is 9:1 against withholding cannot be the venue for an
+abstention claim.** That is not a complaint about BEAM — its abstention category is well built
+(§9h's hallucination finding stands: Mem0 fabricates on 46 % of unanswerable questions). It means
+the abstention argument needs a metric that prices a false answer against a withheld one, and
+BEAM's aggregate does not. Reporting our abstention story through this aggregate would understate
+it no matter how good the policy got.
+
+### 9j. Newest-wins dedup: rejected on principle, and it does not fire anyway
+
+Proposed after §9's TTL diagnosis: collapse near-identical chunks, keep the newest, so a fact
+restated 24 times cannot outvote its own correction. Two independent findings kill it.
+
+**On principle.** Recency is not reliability, and this corpus contains the counter-example: the
+top-ranked chunk for the user-feedback question was *"Achieving a 90 % satisfaction rate is a
+strong start"* — the ASSISTANT speculating, not a recorded fact. Mem0 built a fabricated answer
+on it. A newest-wins rule promotes exactly that: recent, on-topic, and without authority. A
+memory layer that confuses the two is worse than one that does not order at all.
+
+**Empirically it barely fires** (58 questions, k=200, conversations 0-14, $0):
+
+| cosine threshold | survivors of 200 | gold value still present |
+|---|---|---|
+| 0.98 | 196 | 0.466 |
+| 0.95 | 193 | 0.466 |
+| 0.92 | 187 | 0.466 |
+| 0.90 | 183 | 0.466 |
+
+Four chunks collapse at the strict threshold, seventeen at the loose one, and the presence of the
+gold value does not move at any of them. The reason matters more than the numbers: the 24 stale
+restatements are **not textual near-duplicates**. They are paraphrases — "I set the TTL to 15
+minutes", "cache expiry is 900 seconds", "using a 15-minute TTL". The repetition is SEMANTIC and
+cosine does not group it, so no similarity threshold reaches it.
+
+That also retires the idea in its general form: any dedup keyed on embedding similarity will miss
+the repetition that actually causes the failure.
+
+**What survives.** The diagnosis in §9 stands and is causal — at k=5, where the stale copies fall
+outside the window, the same system answers the TTL question correctly and scores 1.00 against
+0.00 at k=200. Cutting context defeats stale repetition; deduplicating it does not. That is why
+the k sweep, not the dedup rule, is the result worth carrying forward.
+
+### 9k. The "wiped tables" were RLS working correctly — a false alarm, and a passed isolation test
+
+Reported mid-session: all five BEAM chunk tables found empty, no process running, no error, cause
+unknown. A guard was added and the next run was held pending investigation.
+
+**There was no deletion.** The tables carry row-level security (`relrowsecurity` and
+`relforcerowsecurity` both true) with the policy `tenant_id = current_setting('recall.tenant_id')`.
+Raw `psql` sessions do not set that variable, so RLS correctly returned nothing. With the context
+set, the data is untouched:
+
+| table | live tuples | rows deleted, all time |
+|---|---|---|
+| bench_beam_k45 | 107,902 | **0** |
+| bench_beam_fix | 108,015 | **0** |
+| bench_beam_probe | 107,880 | **0** |
+
+All 15 tenants present; `beam-1m-0` alone holds 6,998 chunks. The measuring instrument was wrong,
+not the system — the third time in one session that a conclusion was drawn from a bad probe
+(the 4-question abstention sample, the n=2 entailment pilot, and now this).
+
+**What it accidentally demonstrated.** A session holding a *valid login role* on the database saw
+**zero rows** because it lacked the tenant context. That is precisely the property Track E of the
+suite is meant to test, verified unintentionally against a live index. It is weak evidence — one
+observation, not an adversarial suite — but it is evidence, and it is the first time the isolation
+claim has been exercised outside its own unit tests.
+
+**What is retracted:** the wipe, its unknown cause, and the concern that a mid-run deletion could
+have corrupted the k=45 result. **What stands:** the empty-index guard, which is correct on its
+own terms — an ingest that consumes turns and stores no chunk is a broken run, not a low score.
+
+**What must be re-measured:** the five questions that returned cosine 0.0 in the threshold probe
+now have no explanation, since every tenant is populated. That probe is void; the thirteen
+questions measured between 0.418 and 0.498 remain plausible but should be confirmed.
+
+### 9l. `temporal_reasoning` — diagnosed, no cheap fix, documented as a limit
+
+Second-worst category (0.408 vs Mem0's 0.567). Unlike `instruction_following`, it is NOT a
+threshold artefact: of 7 badly-lost questions only 1 had empty retrieval, and 5 were answered
+confidently and wrongly.
+
+Every one is an interval question — "how many days between A and B" — and in every one the wrong
+INSTANCE of a date was used:
+
+| gold | our answer |
+|---|---|
+| 25 Mar → 1 Apr = 7 days | 14 days, using the *updated* deadline of 15 Apr |
+| 25 Mar → 10 Apr = 16 days | 26 days, using a *different* viewing on 15 Mar |
+| 15 Feb → 20 Feb = 5 days | 0 days, using 10 Jan — the date the deadline was *set* |
+
+The decisive detail: sometimes the correct instance is the OLDER one (the original deadline,
+not the revision). That rules out every recency heuristic, and is the third independent line of
+evidence against newest-wins (§9j).
+
+Mem0 answers these because its stored memory is one distilled line — "Sprint 1 deadline: February
+15, 2024" — while ours is the same date scattered across many raw turns in different roles
+(when set, when revised, when discussed). This is the one category where LLM distillation at
+ingest is genuinely the better architecture, and no retrieval-side change we can afford replicates
+it. Recorded as a known limit rather than an open task.
+
+### 9m. The absolute threshold is embedder-fragile — indicative, NOT yet established
+
+The shipped abstention gate is an absolute cosine, `DEFAULT_GAP_THRESHOLD = 0.50`. Measured
+top-1 distributions on the SAME three BEAM conversations, varying only the embedder:
+
+| embedder | min | q05 | median | max |
+|---|---|---|---|---|
+| bge-small (fastembed, the default) | 0.629 | 0.728 | **0.825** | 0.939 |
+| text-embedding-3-small | 0.403 | 0.498 | **0.635** | 0.852 |
+
+The medians differ by 0.19, and bge-small's MINIMUM (0.629) sits above the cloud embedder's
+median. What the one constant does in each regime:
+
+| threshold 0.50 | starves |
+|---|---|
+| bge-small | **0 of 54** (0 %) |
+| text-embedding-3-small | **19 of 270** (7 %) |
+
+On the default embedder 0.50 is not a threshold at all — it sits below the observed minimum and
+never fires. That is why the defect was invisible until an embedder swap: the gate only starts
+discarding answers on a model nobody had run it against. A corpus-quantile floor derived from the
+data produced 0.728 and 0.498 respectively — two very different numbers, comparable behaviour
+(4 % and 6 %) — which is the thing a constant cannot do.
+
+**Why this is filed as indicative rather than established.** The pattern of this session is that
+small samples reverse at scale: an n=2 entailment pilot promoted a policy that was net NEGATIVE at
+n=30 (§9i), and a k-sweep advantage of +0.029 at n=60 became +0.0007 at n=300. This measurement
+has the same profile — 54 answerable questions in one arm, and **one corpus**. Varying the embedder
+while holding the corpus fixed cannot separate an embedder effect from a property of those three
+conversations, because the top-1 distribution depends on both.
+
+**What would settle it:** 3 embedders x 3 corpora (BEAM, LOCOMO, and the curated memory corpus,
+which is the documental case RE-call actually targets), with the statistic being the VARIANCE of
+the starve rate across the nine conditions — large for the constant and small for the quantile, or
+the claim fails. ~6-10 h of VPS CPU, ~$1 of cloud embedding, no LLM spend at all.
+
+**It can fail.** If the three embedders turn out to live in similar cosine regimes, embedder
+independence is not a real problem, 0.50 is fine, and this line of work closes as unnecessary.
+
+**What is NOT claimed:** that a rate-based threshold improves the BEAM score. It does not. On BEAM
+`absolute@0.40` remains the best cell of everything tested (268 of 270 answerable served), because
+here the unanswerable questions score HIGHER than the answerable ones (§9g) and no function of the
+score separates them. The quantile's argument is robustness across deployments, not accuracy here.
+
+### 9n. The regime sweep settles the problem; four candidate fixes are now measured and dead
+
+**Established** (2 corpora x 3 embedders, n=100 and n=775 per cell, no LLM):
+
+| | median (memory) | median (BEAM) | range | starve @0.50 |
+|---|---|---|---|---|
+| bge-small | 0.852 | 0.819 | 0.284 / 0.300 | 0 % / 0 % |
+| bge-large | 0.827 | 0.782 | 0.316 / 0.344 | 0 % / 0 % |
+| text-embedding-3-small | 0.710 | 0.608 | 0.422 / 0.376 | 0.3 % / **16 %** |
+
+`DEFAULT_GAP_THRESHOLD = 0.50` sits at the **0th percentile of five distributions and the 16th of
+the sixth**; `absolute@0.40` starves nothing anywhere (spread 0.0000). The constant is not
+mis-tuned, it is inert everywhere except one cell. Model spread (0.142-0.211) exceeds corpus shift
+(+0.033 / +0.044 / +0.102), and the two INTERACT — the corpus effect is three times larger for one
+model than another — so no stored per-model constant can work.
+
+Predictions were committed before the run (`PREDICTIONS-regime-sweep.md`). The discriminating one
+held: bge-large landed at 0.782, inside the predicted 0.78-0.86 and far from the cloud model's
+0.608, so the split is a property of the model FAMILY and not of local-vs-cloud plumbing. Two were
+wrong: the memory-corpus levels were over-estimated (0.85 actual vs 0.88-0.93 predicted — the
+near-duplicate bias from `description:` queries is real but much smaller than assumed), and the
+spread of `absolute@0.50` was under-estimated at 0.05-0.09 against an actual **0.1600**.
+
+**Four candidate replacements, all measured, all dead:**
+
+| rule | why it fails |
+|---|---|
+| per-query percentile | vacuous — the top score clears its own distribution's percentile by construction; 268 vs 267 served from p=0.0 to p=0.5 |
+| gap (top vs median) | starves 64 of 270 answerable to gain 2 correct abstentions at 0.10; flattens exactly where a corpus restates one fact many ways |
+| corpus quantile on real queries | works, but **tautological** — the floor is computed from the scores it is applied to. Describes; not shown to generalise |
+| corpus quantile from self-queries (H4) | **fails on all three conditions**: derived floors 0.792 / 0.759 / 0.621 against real-query floors 0.766 / 0.744 / 0.590, starving ~10 % / ~9 % / >10 % against a 5 % target |
+
+H4's failure mode is the one written down before running it: a chunk is phrased in the corpus's own
+register, a user's question is not, so self-queries sit high and the derived floor is too strict.
+The gap is systematic (+0.026, +0.015, +0.031, always the same direction) and WORST on
+text-embedding-3-small — the model where the constant does damage and a replacement was most
+needed.
+
+**Why all four failed, in one sentence.** They are all monotone functions of the same score, and
+§9g established that on BEAM the unanswerable questions score HIGHER than the answerable ones. A
+monotone transform preserves order; the order is what is wrong. This decomposes the work into
+**Problem A** (cross-model comparability — solvable by rescaling) and **Problem B** (the score does
+not separate the classes — NOT solvable by any rescaling), and every negative result of the last
+two days was an attempt to solve B with an instrument that can only touch A. It also explains why
+the entailment guard is the only mechanism that moved the abstention number at all: it is the only
+one that introduces evidence of a different KIND.
+
+**Design defect to fix next time:** the sweep stored summary statistics rather than raw scores, so
+H4's starve rates had to be INTERPOLATED between the stored q05 and q10 rather than computed. The
+direction and order of magnitude hold; the second digit does not. Discarding the data the next
+question needs is the same error as the sampling mistakes earlier in the session.
+
+**Where this leaves the threshold.** The problem is established and no replacement is proven.
+`absolute@0.40` is the best measured configuration for this embedder and starves nothing in any of
+the six conditions, but it is still a constant and will be wrong for the next model. Shipping it as
+a new default would repeat the original mistake with a different number.
+
+### 9o. BEAM is the worst case, not the typical one — and the entailment guard does not discriminate
+
+Five signals had failed to separate BEAM's unanswerable questions from its answerable ones, the
+last one (lexical coverage, §9n) failing INVERTED — coverage 0.741 for unanswerable against 0.717
+for answerable, the same direction cosine shows. Two signals sharing no mathematics and no model,
+inverted identically, pointed at the questions rather than the retriever.
+
+So the ordinary case was built mechanically, with no labelling: hold out 120 memos from the
+787-memo curated corpus, index the other 657, and use each memo's own `description:` as its query.
+Descriptions of indexed memos are answerable; descriptions of held-out memos are unanswerable
+because the document is genuinely absent. Predictions were committed first (`e273c99`).
+
+| signal | answerable | unanswerable | mean separation | **AUC** |
+|---|---|---|---|---|
+| cosine | 0.7055 | 0.6250 | +0.0805 | **0.7802** |
+| entailment | 0.7715 | 0.6917 | +0.0798 | **0.5945** |
+
+**P1 held (predicted +0.05-0.15, actual +0.0805).** On a corpus whose unanswerable questions are
+about genuinely absent subjects, cosine separates in the RIGHT direction. **BEAM's inversion is a
+property of its adversarial construction, not of retrieval.** Every BEAM number in this repo is
+therefore an upper bound on difficulty, not an estimate of deployed behaviour, and must be
+presented that way.
+
+**P2 held.** The separation is real but narrow — the corpus is topically dense, so a held-out memo
+still finds plausible neighbours.
+
+**P3 failed, and failed BACKWARDS.** The prediction was that entailment would separate BETTER than
+cosine. It separates far WORSE: AUC 0.59 against 0.78, barely above the 0.50 of no signal at all.
+
+**A reading error of mine, worth recording.** The two mean separations are nearly identical
+(+0.0805 vs +0.0798) and I first read that as "equivalent". It is not: a difference of means says
+nothing about discrimination unless normalised by spread. Entailment shifts BOTH classes up by
+~0.07 while overlapping far more, which a mean cannot show and AUC does. The lesson is the same one
+as the n=2 and n=4 samples earlier — the statistic has to match the question being asked.
+
+**The tails are worse still.** To abstain on half the unanswerable questions:
+
+| signal | threshold | false-abstain cost |
+|---|---|---|
+| cosine | 0.6283 | **13.7 %** |
+| entailment | 0.7000 | **26.0 %** |
+
+Entailment costs twice as much for the same benefit — it does not help where a gate is most needed.
+
+**Consequence for the abstention lane.** The small movement the entailment guard produced on BEAM
+is not reproduced where the test is fair to both signals. At AUC 0.59 it is close to no
+discriminator at all, so that movement was plausibly noise or an artefact of the adversarial
+construction. The guard costs a cross-encoder — 4 hours of CPU for 777 queries here — and buys
+nothing measurable. **It should not be promoted toward a default, and the abstention lane has no
+remaining candidate with an empirical basis.**
+
+**The positive result, which is the one to carry forward.** On an ordinary corpus the plain cosine
+works: AUC 0.78, abstaining on half the unanswerable questions for a 13.7 % false-abstain cost.
+The retrieval signal was never the problem. The THRESHOLD was — an absolute constant that is not
+comparable across models (§9n: 0th percentile of five distributions, 16th of a sixth). That is the
+one thing two days of measurement established with certainty, and it is already shipping as a
+warning in PR #105.
+
+### 9p. Provenance note — which code produced the BEAM cells
+
+`/opt/recall-beam` on VPS2 is not a git checkout: it was unpacked from a tarball and then patched
+file-by-file over the session, so "which commit produced this number" cannot be read off it. At
+session close every file was md5-compared against `bench/beam-1m`:
+
+- `benchmarks/beam/{run,systems,dataset}.py` — **identical** to the committed branch.
+- `recall/{trust,calibration}.py` — **diverged**, and this is stated rather than quietly synced:
+  the VPS carried the FIRST version of the calibration auto-load (`load_for(embedder.name)` read
+  directly), while the branch carries the hardened one (defensive `getattr`, mtime-keyed cache).
+
+**The divergence does not affect the cells.** Both versions load the same calibration for a real
+embedder; the hardening guards against a stub without `.name` and removes a file read from the hot
+path — correctness and latency, not retrieval behaviour. The 0.594 stands.
+
+Both files were re-synced and re-verified at close, so a re-run from `/opt/recall-beam` now matches
+the branch exactly.
+
+**The process defect worth keeping:** a results directory that is not a checkout cannot answer
+"what code made this", and the answer had to be reconstructed by md5 at the end rather than being
+knowable throughout. The BEAM harness should be deployed as a `git clone` at a named commit, the
+way `scripts/deploy.sh` treats the sentiment project — the CLAUDE.md deploy recipe already says to
+verify md5 against master for exactly this reason, and that rule was applied here only at closing
+time instead of at each patch.
+
+
 ## 10. LongMemEval: the retrieval result, and the abstention failure underneath it
 
 §9 measured LOCOMO — the benchmark the vendors report. This section measures the *other* public one,

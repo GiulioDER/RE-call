@@ -425,11 +425,21 @@ repo hasn't already applied to itself:
    the paired runs used **mem0ai 2.0.13 (released 2026-07-22)**, twelve days *after* the
    announcement, which states the new algorithm was "available today on both the Mem0 platform and
    the open-source SDK". The version is recorded in every result artifact precisely so this
-   question is answerable. What the pairing has *not* covered: the **Mem0 platform** arm (if the
-   hosted service diverges from the SDK, that difference is unmeasured here), and **BEAM** — whose
-   published harness pins gpt-4o as answerer and judge, and which includes an **abstention**
-   category, the axis this library is built for. A paired BEAM run and a platform-parity check are
-   queued as follow-up work rather than asserted in advance.
+   question is answerable. What the pairing has *not* covered: the **Mem0 platform** arm — and the
+   published BEAM cells come from `results/platform/`, i.e. Mem0 Cloud, which their own post says
+   carries "proprietary optimizations" absent from the SDK, so no `pip install mem0ai` at any
+   version reproduces 64.1. **BEAM** — which includes an **abstention** category, the axis this
+   library is built for — now has a paired arm: `benchmarks/beam/` runs RE-call over the same 700
+   question ids with Mem0's answerer and judge prompts vendored byte-for-byte, scoring both systems'
+   answers with the same judge instance. Its protocol, disclosures and sub-findings are
+   [FINDINGS §9e–§9p](FINDINGS.md); the paired aggregate is **not reported here** and is not yet
+   in this repo. Two corrections that arm produced: the BEAM harness pins **gpt-5**, not gpt-4o, as
+   answerer and judge (its runner CLI defaults to gpt-5 and the published metadata records gpt-5 on
+   Azure — the README's "default: GPT-4o" describes the generic pipeline, not this benchmark), and
+   **64.1 is a mean rubric-nugget score, not a pass rate** (the pass rate for the same run is
+   70.14 %). BEAM's unanswerable questions are adversarially constructed, so every BEAM figure is an
+   upper bound on difficulty rather than an estimate of deployed behaviour (§9o). The
+   platform-parity check remains queued rather than asserted in advance.
 
 The honest status: **RE-call's measured edge is against Mem0's OSS SDK as shipped after the new
 algorithm's announcement** — vendor-published scores from unmatched pipelines remain on a
