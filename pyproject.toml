@@ -155,7 +155,11 @@ target-version = "py311"
 # The floor is checked where it is actually meaningful: the `floor` CI job RUNS the suite on
 # 3.11 with the declared minimum of every direct dependency.
 [tool.mypy]
-files = ["recall", "recall_mcp"]
+# `recall_interop` is repo-only scaffolding (it is deliberately absent from the wheel's `packages`
+# above), but it is type-checked anyway: it is the code path that produces PUBLISHED benchmark
+# numbers, and a shape mismatch against the third-party harness it feeds does not raise — it
+# degrades into a worse score that reads as a retrieval result.
+files = ["recall", "recall_mcp", "recall_interop"]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 warn_return_any = true
