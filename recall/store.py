@@ -1171,11 +1171,23 @@ class PgVectorStore:
         return self._rows_to_hits(rows)
 
     def query_sparse(
-        self, text: str, k: int, source: str | None = None, vec: list[float] | None = None
-    ) -> list[ScoredChunk]:
+        self,
+        text: str,
+        k: int,
+        source: str | None = None,
+        vec: list[float] | None = None,
+        *,
+        with_rank: bool = False,
+    ) -> list[ScoredChunk] | tuple[list[ScoredChunk], list[float]]:
         """Full-text search. Ranking is always ts_rank; when `vec` is given, each hit's `score`
         is its true dense cosine against `vec` instead of the ts_rank value, so lexical-only
         hits are comparable with dense hits downstream.
+
+        `with_rank=True` additionally returns each hit's `ts_rank` — the lexical leg's OWN
+        ranking score, which the `vec` branch otherwise computes in the subquery and discards
+        when the outer SELECT replaces `score` with the cosine. `score` is untouched either way:
+        the trust layer reads it as a cosine and must keep doing so. Opt-in because callers
+        (including duck-typed store doubles in the test suite) implement the 4-argument form.
 
         The query is a DISJUNCTION of the question's lexemes, not a conjunction. This used to
         build its tsquery with ``websearch_to_tsquery``, which implements web-search-box
@@ -1215,13 +1227,14 @@ class PgVectorStore:
                 )::tsquery AS tsq
             )
         """
+        rank_col = ", rank" if with_rank else ""
         if vec is not None:
             # cosine only for the k ts_rank winners — computed in the SELECT list of the flat
             # query it would run for EVERY tsquery-matching row before the sort discards them
             sql = f"""
                 {tsquery_cte}
                 SELECT id, source, text, metadata, indexed_at,
-                       1 - (embedding <=> %(vec)s) AS score
+                       1 - (embedding <=> %(vec)s) AS score{rank_col}
                 FROM (
                     SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.embedding,
                            ts_rank(c.tsv, q.tsq) AS rank
@@ -1252,7 +1265,12 @@ class PgVectorStore:
         if source:
             params["source"] = source
         rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
-        return self._rows_to_hits(rows)
+        if not with_rank:
+            return self._rows_to_hits(rows)
+        if vec is not None:
+            # `_rows_to_hits` unpacks exactly 6 columns; the rank rides in a 7th.
+            return self._rows_to_hits([r[:6] for r in rows]), [float(r[6]) for r in rows]
+        return self._rows_to_hits(rows), [float(r[5]) for r in rows]
 
 
     def replace_sources(
