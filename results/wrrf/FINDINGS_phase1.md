@@ -127,6 +127,14 @@ A different weighting scheme is a new hypothesis needing its own preregistration
 weaker motive than this one had, because the dilution it would target now measures −0.009 rather
 than −0.075.
 
-**Opened: §9a's pool-100 row needs re-measurement.** Not by this branch. It is a published number
-that a clean-apparatus run contradicts by 6.6 points, on a benchmark where the pool-depth control
-has already required one retraction.
+**RESOLVED same day: §9a's pool-100 number was measured on a DOUBLED corpus.** A deliberately
+doubled corpus reproduces the published pool-100 curve to within ±0.0013 at every depth and
+exactly at k=20; the clean corpus misses by up to +0.066. Control: doubling costs −0.0625 at
+pool 20, so it is not depth-specific — and pool-20 reproduces clean to 0.0000, so the two
+published artifacts came from different corpus states. Full writeup:
+[`FINDINGS_pool100_contamination.md`](FINDINGS_pool100_contamination.md).
+
+**Consequence for this phase:** the dilution weighted fusion was built to counter measures
+**−0.0091** clean, not the published −0.0749 — about one eighth. The no-ship verdict above is
+unchanged (it rests on B vs A at pool 20, whose apparatus reproduced exactly), but the motive
+for the work was far weaker than the preregistration claimed.

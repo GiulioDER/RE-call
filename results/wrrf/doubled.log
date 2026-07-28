@@ -1,0 +1,53 @@
+=== DOUBLED pool 100 ===
+pass 1/2: indexing a clean corpus
+  [1/10] conv-26: 419 turns, abstention n=47
+  [2/10] conv-30: 369 turns, abstention n=24
+  [3/10] conv-41: 663 turns, abstention n=41
+  [4/10] conv-42: 629 turns, abstention n=61
+  [5/10] conv-43: 680 turns, abstention n=64
+  [6/10] conv-44: 675 turns, abstention n=35
+  [7/10] conv-47: 689 turns, abstention n=40
+  [8/10] conv-48: 681 turns, abstention n=48
+  [9/10] conv-49: 509 turns, abstention n=40
+  [10/10] conv-50: 568 turns, abstention n=46
+pass 2/2: indexing the SAME tenants again -> doubled corpus
+  [1/10] conv-26: 419 turns, abstention n=47
+  [2/10] conv-30: 369 turns, abstention n=24
+  [3/10] conv-41: 663 turns, abstention n=41
+  [4/10] conv-42: 629 turns, abstention n=61
+  [5/10] conv-43: 680 turns, abstention n=64
+  [6/10] conv-44: 675 turns, abstention n=35
+  [7/10] conv-47: 689 turns, abstention n=40
+  [8/10] conv-48: 681 turns, abstention n=48
+  [9/10] conv-49: 509 turns, abstention n=40
+  [10/10] conv-50: 568 turns, abstention n=46
+
+DOUBLED corpus, pool 100: hit@5 0.5944  n=1536
+DBLDONE pool100 exit=0
+=== DOUBLED pool 20 ===
+pass 1/2: indexing a clean corpus
+  [1/10] conv-26: 419 turns, abstention n=47
+  [2/10] conv-30: 369 turns, abstention n=24
+  [3/10] conv-41: 663 turns, abstention n=41
+  [4/10] conv-42: 629 turns, abstention n=61
+  [5/10] conv-43: 680 turns, abstention n=64
+  [6/10] conv-44: 675 turns, abstention n=35
+  [7/10] conv-47: 689 turns, abstention n=40
+  [8/10] conv-48: 681 turns, abstention n=48
+  [9/10] conv-49: 509 turns, abstention n=40
+  [10/10] conv-50: 568 turns, abstention n=46
+pass 2/2: indexing the SAME tenants again -> doubled corpus
+  [1/10] conv-26: 419 turns, abstention n=47
+  [2/10] conv-30: 369 turns, abstention n=24
+  [3/10] conv-41: 663 turns, abstention n=41
+  [4/10] conv-42: 629 turns, abstention n=61
+  [5/10] conv-43: 680 turns, abstention n=64
+  [6/10] conv-44: 675 turns, abstention n=35
+  [7/10] conv-47: 689 turns, abstention n=40
+  [8/10] conv-48: 681 turns, abstention n=48
+  [9/10] conv-49: 509 turns, abstention n=40
+  [10/10] conv-50: 568 turns, abstention n=46
+
+DOUBLED corpus, pool 20: hit@5 0.6081  n=1536
+DBLDONE pool20 exit=0
+ALL_DONE artifacts=2
