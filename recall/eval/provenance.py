@@ -10,6 +10,7 @@ A verification that does not reach the artifact protects only the session that r
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from typing import Any
 
 
@@ -18,10 +19,16 @@ def _git_sha() -> str | None:
 
     Degrades to None rather than raising or inventing: a result file from a tarball is still a
     result, and a wrong sha is worse than an absent one.
+
+    Anchored to this file's own directory via `cwd`, not the caller's: without it, `git`
+    inherits the calling process's working directory, and a run launched from inside some OTHER
+    git repo would silently report THAT repo's HEAD — a wrong-but-plausible sha, which is
+    exactly the "worse than absent" case above.
     """
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
             capture_output=True, text=True, timeout=5, check=False,
         )
     except (OSError, subprocess.SubprocessError):
