@@ -1,4 +1,13 @@
 {
+  "_provenance": {
+    "generation": "pre-#81/#84",
+    "status": "superseded",
+    "superseded_by": "results/locomo/postfix_abstention.json",
+    "backs": [
+      "FINDINGS \u00a79b \u2014 the pre-fix half of 'calibration now catches 0.574 (was 0.527)', 'refuses 0.420 (was 0.370)' and 'discrimination 0.154 against a pre-fix 0.157'"
+    ],
+    "note": "Sparse leg inert (it ANDed every query term) and the unfiltered dense scan capped near hnsw.ef_search=40, so this run measured an effectively dense-only configuration. A correct measurement of THAT configuration, kept as its record \u2014 not comparable to a post-fix row."
+  },
   "benchmark": "LOCOMO \u2014 abstention ablation",
   "embedder": "fastembed",
   "k": 5,
