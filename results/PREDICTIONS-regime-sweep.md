@@ -2,7 +2,7 @@
 
 Committed while the sweep is running and before any condition has reported. The git timestamp
 against `regime_sweep.json`'s mtime is the evidence. The point is not to be right; it is that a
-wrong prediction here tells us the reasoning behind §9l was wrong, which is worth more than the
+wrong prediction here tells us the reasoning behind §9m was wrong, which is worth more than the
 sweep itself.
 
 ## What is already measured (the basis for predicting the rest)
@@ -23,7 +23,7 @@ but top-1 is the BEST match and should stay high.
 
 **This is the discriminating prediction of the whole sweep.** If the split were really "local vs
 cloud" — a plumbing artefact rather than a model property — bge-large would land near the cloud
-model. If it lands at ~0.65, §9l's reasoning is wrong and the embedder-family explanation dies.
+model. If it lands at ~0.65, §9m's reasoning is wrong and the embedder-family explanation dies.
 
 ## Prediction 2 — everything shifts UP on the memory corpus, order preserved
 
@@ -34,7 +34,7 @@ duplicates text inside its target. Near-duplicate matching saturates every model
 levels are therefore inflated and NOT comparable to BEAM — but the ordering between embedders
 should survive, because the inflation applies to all three equally.
 
-If the ordering flips on this corpus, then corpus dominates embedder and the framing of §9l
+If the ordering flips on this corpus, then corpus dominates embedder and the framing of §9m
 ("the constant is embedder-fragile") is the wrong frame — it would be corpus-fragile too, which
 is a different and larger problem.
 
@@ -62,7 +62,7 @@ fixed in advance and knows nothing about any of the six distributions.
 
 ## What would make me abandon the third intervention
 
-- bge-large lands near the cloud model → not an embedder-family effect, §9l reasoning wrong.
+- bge-large lands near the cloud model → not an embedder-family effect, §9m reasoning wrong.
 - All six conditions starve at similar rates under 0.50 → the constant is not fragile, and the
   problem exists only in the one cell we happened to hit.
 - The memory corpus reverses the ordering → corpus, not embedder, is the dominant variable.

@@ -54,12 +54,12 @@ or the calibrated logistic `Calibration.scale` already carries. Rescaling to a p
 thresholds portable because probabilities mean the same thing everywhere.
 
 **Problem B — the score does not separate answerable from unanswerable.** On BEAM the unanswerable
-questions score HIGHER than the answerable ones (§9f: median 0.676 vs 0.641). **No monotone
+questions score HIGHER than the answerable ones (§9h: median 0.676 vs 0.641). **No monotone
 transform can fix this**, because monotone transforms preserve order and the order is what is
 wrong. Calibration, quantiles, gaps — all preserve order, so all fail identically.
 
-That decomposition explains every negative result of the last two days: the count rule (§9h), the
-newest-wins dedup (§9i), the percentile and gap rules — each was an attempt to solve B with an
+That decomposition explains every negative result of the last two days: the count rule (§9i), the
+newest-wins dedup (§9j), the percentile and gap rules — each was an attempt to solve B with an
 instrument that can only solve A. Problem B needs evidence of a different KIND, which is what the
 entailment guard is and why it is the only mechanism that moved the abstention number at all.
 
