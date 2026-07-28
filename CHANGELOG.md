@@ -9,6 +9,24 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Fixed
+- **`mcp` is capped at `<2`. Its 2.0.0 release broke `master` with nothing in this repo changed.**
+  mcp 2.0.0 landed on 2026-07-28 at 13:45 UTC; `master`'s last green run was 13:23. The next CI run
+  after that — on an unrelated docs branch — failed `test` and `typecheck`, and the diff that
+  "caused" it touched only markdown.
+
+  Three incompatibilities, all of which `recall_mcp/server.py` depends on: `mcp.server.fastmcp` is
+  gone (`ModuleNotFoundError` in four test modules), `request_ctx` moved out of
+  `mcp.server.lowlevel.server`, and every `ToolAnnotations` field was renamed to snake_case
+  (`readOnlyHint` -> `read_only_hint`, ×4 per tool).
+
+  The floor on this dependency was researched in detail — the comment above it explains exactly why
+  1.10 was insufficient and 1.27.2 binds. The **ceiling was left unbounded**, so `>=1.27.2` silently
+  meant "and any future major". Both the `mcp` extra and the `dev` extra are now capped; capping
+  only the extra would still break `test` and `typecheck`, which install `.[dev]`.
+
+  This is the same policy the `ruff>=0.5,<0.16` pin already states: **raising the cap is a port, not
+  a bump**, and belongs in its own PR with the three call sites fixed. Supporting mcp 2.x is real
+  work and is not done here. (`pyproject.toml`, `uv.lock`)
 - **Every committed result artifact now says which configuration produced it, and the marker was
   on the wrong half of them.** `results/locomo_abstention.json` reads `calibrated: 0.5269`;
   `RESULTS.md` §7b publishes **0.574**. Both are correct — pre- and post-#81/#84 — and nothing in
