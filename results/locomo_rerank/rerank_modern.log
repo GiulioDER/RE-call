@@ -1,0 +1,42 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]Loading weights:  37%|###7      | 75/201 [00:00<00:00, 739.81it/s]Loading weights:  74%|#######4  | 149/201 [00:00<00:00, 738.14it/s]Loading weights: 100%|##########| 201/201 [00:00<00:00, 780.06it/s]
+  [1/10] conv-26: 419 turns, abstention n=47
+  [2/10] conv-30: 369 turns, abstention n=24
+  [3/10] conv-41: 663 turns, abstention n=41
+  [4/10] conv-42: 629 turns, abstention n=61
+  [5/10] conv-43: 680 turns, abstention n=64
+  [6/10] conv-44: 675 turns, abstention n=35
+  [7/10] conv-47: 689 turns, abstention n=40
+  [8/10] conv-48: 681 turns, abstention n=48
+  [9/10] conv-49: 509 turns, abstention n=40
+  [10/10] conv-50: 568 turns, abstention n=46
+
+========================================================================
+LOCOMO · 10 conversations · embedder=fastembed
+metric: evidence-turn hit@5 (retrieval only, no LLM judge)
+========================================================================
+
+RETRIEVAL — can the evidence turn be found at all?
+  cat1                 hit@5 0.741  [0.69, 0.79]  n=282
+  cat2-temporal        hit@5 0.801  [0.75, 0.84]  n=321
+  cat3                 hit@5 0.554  [0.45, 0.65]  n=92
+  cat4                 hit@5 0.798  [0.77, 0.82]  n=841
+  OVERALL              hit@5 0.773  [0.75, 0.79]  n=1536
+
+DEPTH — hit@k against retrieval depth, from ONE retrieval per question.
+  (candidate pool 20 per leg; the curve cannot exceed it)
+  k    OVERALL     cat1            cat2-temporal   cat3            cat4            
+  1    0.565       0.468           0.635           0.261           0.603           
+  3    0.723       0.677           0.751           0.446           0.757           
+  5    0.773       0.741           0.801           0.554           0.798           
+  10   0.834       0.819           0.835           0.609           0.863           
+  20   0.872       0.872           0.882           0.663           0.892           
+
+ABSTENTION — category 5, adversarial. No published LOCOMO result reports this.
+  abstain rate         0.000  [0.00, 0.01]  n=446
+  (1.00 = refused every unanswerable question; 0.00 = answered them all)
+
+NOT a J score. Not comparable to Mem0's 66.88 or Zep's 65.99 — those measure a
+generator this library does not ship. See the module docstring.
+
+full report -> results\locomo_rerank\rerank_modern.json

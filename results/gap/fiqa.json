@@ -1,0 +1,47 @@
+{
+  "status": "ok",
+  "dataset": "fiqa",
+  "manifest": {
+    "name": "fiqa",
+    "documents_requested": 20000,
+    "documents_written": 20000,
+    "questions": 648,
+    "questions_available": 6648,
+    "seed": 20260726
+  },
+  "scores": {
+    "local": {
+      "bm25": 0.4352,
+      "dense": 0.6481,
+      "sparse": 0.4105,
+      "hybrid": 0.6636,
+      "mrr_hybrid": 0.4988,
+      "held_out": 324
+    },
+    "cloud": {
+      "bm25": 0.4352,
+      "dense": 0.7654,
+      "sparse": 0.4074,
+      "hybrid": 0.716,
+      "mrr_hybrid": 0.5413,
+      "held_out": 324
+    }
+  },
+  "predictors": {
+    "oov_rate": 0.09595375722543352,
+    "query_overlap": 0.41013546828318226,
+    "crowding": 0.7749010166466722,
+    "code_density": NaN,
+    "n_documents": 20000,
+    "n_overlap_pairs": 1706
+  },
+  "primary_arm": "hybrid",
+  "seconds": 12982.8,
+  "params": {
+    "max_docs": 20000,
+    "token_budget": 2000,
+    "min_pieces": 2,
+    "crowding_sample": 500,
+    "seed": 20260726
+  }
+}

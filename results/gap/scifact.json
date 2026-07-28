@@ -1,0 +1,47 @@
+{
+  "status": "ok",
+  "dataset": "scifact",
+  "manifest": {
+    "name": "scifact",
+    "documents_requested": 20000,
+    "documents_written": 5183,
+    "questions": 300,
+    "questions_available": 1109,
+    "seed": 20260726
+  },
+  "scores": {
+    "local": {
+      "bm25": 0.7733,
+      "dense": 0.7733,
+      "sparse": 0.7,
+      "hybrid": 0.78,
+      "mrr_hybrid": 0.7013,
+      "held_out": 150
+    },
+    "cloud": {
+      "bm25": 0.7733,
+      "dense": 0.8,
+      "sparse": 0.6933,
+      "hybrid": 0.7933,
+      "mrr_hybrid": 0.6986,
+      "held_out": 150
+    }
+  },
+  "predictors": {
+    "oov_rate": 0.2554347826086957,
+    "query_overlap": 0.4999888284037671,
+    "crowding": 0.7962789900341727,
+    "code_density": 5.1795557753989226e-06,
+    "n_documents": 5183,
+    "n_overlap_pairs": 339
+  },
+  "primary_arm": "hybrid",
+  "seconds": 7588.9,
+  "params": {
+    "max_docs": 20000,
+    "token_budget": 2000,
+    "min_pieces": 2,
+    "crowding_sample": 500,
+    "seed": 20260726
+  }
+}

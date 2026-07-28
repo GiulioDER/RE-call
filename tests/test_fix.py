@@ -10,7 +10,11 @@ file. A bare "DEPRECATED" with no target is reported, never guessed.
 """
 from __future__ import annotations
 
-from recall.fix import apply_proposal, extract_edges, propose_fixes
+import os
+
+import pytest
+
+from recall.fix import Proposal, apply_proposal, extract_edges, propose_fixes
 from recall.frontmatter import parse_frontmatter
 
 
@@ -284,3 +288,45 @@ def test_an_unhedged_claim_is_still_accepted():
     assert extract_edges("This decision supersedes [[old_plan_2026-01-01]].")[0] == \
         ["old_plan_2026-01-01"]
     assert extract_edges("Superseded by [[new_plan_2026-02-02]].")[1] == ["new_plan_2026-02-02"]
+
+
+def test_apply_proposal_preserves_the_memo_when_the_write_fails(tmp_path, monkeypatch):
+    """A crash / disk-full mid-write must not corrupt the user's memo (DAT-001).
+
+    ``apply_proposal`` is the one path in the package that rewrites a user's own document in
+    place. The pre-fix code used ``Path.write_text``, which opens mode ``'w'`` and truncates the
+    file to zero bytes *before* the first byte of new content is written — there is no staging
+    step, so an interruption commits corruption and nothing can roll it back. The fix stages the
+    new content in a sibling temp file and swaps it in with a single ``os.replace``; if that
+    rename fails, the original is left untouched.
+
+    Injecting a failure at ``os.replace`` therefore separates the two: the fixed code raises and
+    leaves the memo byte-for-byte intact, while the pre-fix code has no ``os.replace`` in its
+    path at all — it writes in place and returns success, so this test's ``pytest.raises`` fails
+    with *DID NOT RAISE*. That absence of an atomic stage is exactly the defect.
+    """
+    memo = tmp_path / "note.md"
+    original = "---\ntitle: keep me\n---\n\nprecious body\n"
+    memo.write_text(original, encoding="utf-8")
+    proposal = Proposal(
+        edit_file="note.md",
+        target="new_decision_2026",
+        evidence_file="other.md",
+        evidence="This supersedes [[note]].",
+    )
+
+    real_replace = os.replace
+
+    def failing_replace(src, dst, *a, **k):
+        if os.fspath(dst).replace("\\", "/").endswith("/note.md"):
+            raise OSError(28, "simulated ENOSPC on atomic rename")  # errno 28 == ENOSPC
+        return real_replace(src, dst, *a, **k)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    with pytest.raises(OSError):
+        apply_proposal(tmp_path, proposal)
+
+    # The original memo must survive the failed write byte-for-byte, and no temp litter is left.
+    assert memo.read_text(encoding="utf-8") == original
+    assert list(tmp_path.iterdir()) == [memo], "no partial temp file should be left behind"

@@ -1,0 +1,47 @@
+{
+  "status": "ok",
+  "dataset": "scidocs",
+  "manifest": {
+    "name": "scidocs",
+    "documents_requested": 20000,
+    "documents_written": 20000,
+    "questions": 1000,
+    "questions_available": 1000,
+    "seed": 20260726
+  },
+  "scores": {
+    "local": {
+      "bm25": 0.366,
+      "dense": 0.498,
+      "sparse": 0.334,
+      "hybrid": 0.468,
+      "mrr_hybrid": 0.3277,
+      "held_out": 500
+    },
+    "cloud": {
+      "bm25": 0.366,
+      "dense": 0.538,
+      "sparse": 0.336,
+      "hybrid": 0.496,
+      "mrr_hybrid": 0.3398,
+      "held_out": 500
+    }
+  },
+  "predictors": {
+    "oov_rate": 0.13806327900287632,
+    "query_overlap": 0.23656797511741365,
+    "crowding": 0.7946573537247344,
+    "code_density": 0.00030748766387351075,
+    "n_documents": 20000,
+    "n_overlap_pairs": 4928
+  },
+  "primary_arm": "hybrid",
+  "seconds": 16174.3,
+  "params": {
+    "max_docs": 20000,
+    "token_budget": 2000,
+    "min_pieces": 2,
+    "crowding_sample": 500,
+    "seed": 20260726
+  }
+}
