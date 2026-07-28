@@ -48,54 +48,128 @@ Usage
 ::
 
     python -m scripts.probe_doubled_corpus --data locomo10.json --dsn "$RECALL_DSN" \
-        --candidate-k 100 --out results/wrrf/doubled_pool100.json
+        --candidate-k 100 --table dbl_c2 --out /tmp/doubled_pool100.json
+
+`--table` is REQUIRED (the table is indexed into twice, so it must be a dedicated one), and
+`--out` deliberately points at a scratch path: `results/wrrf/doubled_pool100.json` is a RETAINED
+artifact backing the §9a retraction, and `results/ARTIFACTS.md` forbids aiming `--out` at one.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 from recall.eval import locomo
 
+#: A bare SQL identifier. The table name reaches a `count(*)` that psycopg cannot parameterise
+#: (identifiers are not values), so it is validated rather than trusted.
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def corpus_rows(dsn: str, table: str) -> int:
+    """Total chunk rows in `table`, across every tenant.
+
+    Table-wide rather than per-tenant: LOCOMO indexes one tenant per conversation, and the
+    doubling this probe induces is a property of the whole table.
+    """
+    import psycopg
+
+    if not _IDENTIFIER.match(table):
+        raise SystemExit(f"refusing to interpolate {table!r} into SQL: not a bare identifier")
+    with psycopg.connect(dsn) as conn:
+        row = conn.execute(f"SELECT count(*) FROM {table}").fetchone()  # noqa: S608 - validated
+    return int(row[0]) if row else 0
+
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Measure a LOCOMO arm on a deliberately doubled corpus")
-    p.add_argument("--data", required=True, type=Path)
-    p.add_argument("--dsn", required=True)
-    p.add_argument("--embedder", default="fastembed")
-    p.add_argument("--k", type=int, default=5)
-    p.add_argument("--candidate-k", type=int, default=100)
-    p.add_argument("--table", required=True, help="dedicated table; it WILL be indexed into twice")
-    p.add_argument("--out", required=True, type=Path)
-    a = p.parse_args(argv)
+    parser = argparse.ArgumentParser(
+        description="Measure a LOCOMO arm on a deliberately doubled corpus"
+    )
+    parser.add_argument("--data", required=True, type=Path)
+    parser.add_argument("--dsn", required=True)
+    parser.add_argument("--embedder", default="fastembed")
+    parser.add_argument("--k", type=int, default=5)
+    parser.add_argument("--candidate-k", type=int, default=100)
+    parser.add_argument(
+        "--table", required=True, help="dedicated table; it WILL be indexed into twice"
+    )
+    parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument(
+        "--overwrite", action="store_true",
+        help="permit writing over an existing --out (retained artifacts are cited; see ARTIFACTS.md)",
+    )
+    args = parser.parse_args(argv)
+
+    if args.out.exists() and not args.overwrite:
+        raise SystemExit(
+            f"{args.out} exists. Retained artifacts back published claims and a re-run would "
+            f"replace one with numbers from a different config. Choose a scratch path, or pass "
+            f"--overwrite if you really mean to replace it."
+        )
 
     common = dict(
-        dsn=a.dsn,
-        embedder_name=a.embedder,
-        k=a.k,
+        dsn=args.dsn,
+        embedder_name=args.embedder,
+        k=args.k,
         limit=None,
         keep_corpus=None,
-        table=a.table,
+        table=args.table,
         ks=[1, 5, 10, 20],
-        candidate_k=a.candidate_k,
+        candidate_k=args.candidate_k,
     )
 
     # Pass 1 — a normal, clean index. Its report is discarded; only the side effect matters.
     print("pass 1/2: indexing a clean corpus", flush=True)
-    locomo.run(a.data, **common)
+    locomo.run(args.data, **common)
+    rows_pass1 = corpus_rows(args.dsn, args.table)
 
     # Pass 2 — index the SAME tenants again. `allow_existing` is the deliberate override for the
     # guard that now makes this impossible by accident; here it is the entire point of the probe.
     print("pass 2/2: indexing the SAME tenants again -> doubled corpus", flush=True)
-    report = locomo.run(a.data, allow_existing=True, **common)
+    report = locomo.run(args.data, allow_existing=True, **common)
+    rows_pass2 = corpus_rows(args.dsn, args.table)
+
+    # The probe's whole premise is "the corpus is now doubled", and until this check it was
+    # asserted rather than measured: nothing counted a row, and `locomo.run`'s report carries no
+    # countable field. So if pass 2 had failed to double — a guard change, a wrong --table, a
+    # `delete_sources` in between — the probe would have emitted a clean-looking number under the
+    # label DOUBLED and REFUTED the contamination hypothesis on an apparatus that never ran the
+    # treatment. That is precisely the failure this probe exists to document, reproduced by the
+    # probe itself. RESEARCH_PROTOCOL.md names this invariant, and records that only a row count
+    # ever caught it.
+    if rows_pass1 == 0:
+        # Checked separately, because `0 != 2 * 0` is False: an empty table would otherwise
+        # SATISFY the doubling invariant and ship an artifact stamped `doubling_verified: true`
+        # over a corpus that was never indexed at all. A guard whose degenerate case passes is
+        # the failure mode this probe exists to document.
+        raise SystemExit(
+            f"APPARATUS FAILURE: pass 1 left ZERO rows in {args.table!r}. Nothing was indexed, so "
+            f"there is no corpus to double and nothing here measures the doubled condition."
+        )
+    if rows_pass2 != 2 * rows_pass1:
+        raise SystemExit(
+            f"APPARATUS FAILURE: pass 1 left {rows_pass1} rows in {args.table!r}, pass 2 left "
+            f"{rows_pass2} — expected exactly {2 * rows_pass1}. The corpus was NOT doubled, so "
+            f"whatever this run measured is not the doubled condition. Refusing to write an "
+            f"artifact labelled 'doubled_corpus'."
+        )
 
     report["probe"] = "doubled_corpus"
-    a.out.parent.mkdir(parents=True, exist_ok=True)
-    a.out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    report["corpus"] = {
+        "table": args.table,
+        "rows_after_pass1": rows_pass1,
+        "rows_after_pass2": rows_pass2,
+        "doubling_verified": True,
+    }
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(report, indent=2), encoding="utf-8", newline="\n")
 
-    o = report["retrieval_overall"]
-    print(f"\nDOUBLED corpus, pool {a.candidate_k}: hit@5 {o['rate']:.4f}  n={o['n']}")
+    overall = report["retrieval_overall"]
+    print(f"\nrows: {rows_pass1} -> {rows_pass2} (doubling verified)")
+    print(f"DOUBLED corpus, pool {args.candidate_k}: "
+          f"hit@5 {overall['rate']:.4f}  n={overall['n']}")
     return 0
 
 

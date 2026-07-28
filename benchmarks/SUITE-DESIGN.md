@@ -71,10 +71,17 @@ If RE-call cannot beat a plain recency ordering here, the temporal machinery ear
 **Metric.** The full 2×2, reported over a **pre-fixed** cost ratio λ = cost(false answer) /
 cost(false abstention), λ ∈ {1, 3, 10}. λ=1 reproduces BEAM's implicit weighting. Fixing λ after
 seeing results is forbidden.
-**How we lose.** Our abstention is currently WORSE than Mem0's — 0.533 vs 0.533 on BEAM's
-category with a 9.6 % false-abstain rate against their 4.1 %, and the paired test on 300 questions
+**How we lose.** Our abstention is currently WORSE than Mem0's — **(ours: citation pending)**
+against Mem0's 0.536 on BEAM's category, with a 9.3 % false-abstain rate against their 4.1 %, and
+the paired test on 300 questions
 puts false-abstain against us at p_holm = 0.026. On today's evidence we lose this track at λ=1 and
 need λ≥3 to come out ahead. That must be stated, not discovered by a reader.
+
+> This sentence previously read "0.533 vs 0.533" — two identical numbers under the word WORSE, so
+> it disproved itself. Mem0's cell is **0.536**, derived from FINDINGS §9h's own n=70 table:
+> (38 × 0.974 + 32 × 0.016) / 70. Our own cell is quoted as 0.467 in
+> `PREREGISTRATION-currency.md` but is **not derivable from any committed artifact**, so it is
+> left as citation-pending here rather than propagated into a second planning document.
 
 ### D. Attribution
 

@@ -28,14 +28,41 @@ if ! mkdir "$LOCK" 2>/dev/null; then
 fi
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
+# The DSN and the table reach Python through the ENVIRONMENT, never pasted into the body of a
+# `python -c` source string. Two reasons, and the first is a live defect this replaces:
+#
+#   1. `psycopg.connect('$DSN')` placed the DSN inside a single-quoted Python literal. An
+#      apostrophe in the password — legal in a Postgres URI — closes that literal and the rest of
+#      the DSN is parsed as Python SOURCE. That is arbitrary code execution in a script that runs
+#      as root.
+#   2. The generated source, and `--dsn "$DSN"`, both put the password on a command line where any
+#      local user can read it from /proc/<pid>/cmdline for the hours an arm takes. The library
+#      already holds the opposite standard: `recall.store.redacted_dsn` exists so that a
+#      connection failure never writes a plaintext password to a log.
+#
+# The table name still cannot be parameterised — identifiers are not values in SQL — so it is
+# validated as a bare identifier inside Python before interpolation.
+_py_sql() {  # $1 = table, $2 = statement template using {t}
+  RECALL_ARM_TABLE="$1" RECALL_ARM_SQL="$2" RECALL_DSN="$DSN" python -c '
+import os, re, sys
+
+import psycopg
+
+table = os.environ["RECALL_ARM_TABLE"]
+if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
+    sys.exit(f"refusing to interpolate {table!r} into SQL: not a bare identifier")
+conn = psycopg.connect(os.environ["RECALL_DSN"], autocommit=True)
+cur = conn.execute(os.environ["RECALL_ARM_SQL"].format(t=table))
+# `cur.description` is None for a statement that returns no rows (DDL such as DROP TABLE).
+# Calling fetchone() there raises ProgrammingError, which would make every `drop table` exit
+# non-zero and abort the arm it was about to run.
+print(cur.fetchone()[0] if cur.description else "")
+'
+}
+
 verify_rows() {  # $1 = table, $2 = arm name
   local n
-  n=$(python -c "
-import psycopg,sys
-c=psycopg.connect('$DSN')
-try: print(c.execute('select count(*) from $1').fetchone()[0])
-except Exception: print(-1)
-")
+  n=$(_py_sql "$1" "select count(*) from {t}" 2>/dev/null) || n=-1
   if [ "$n" != "$EXPECTED_ROWS" ]; then
     echo "FATAL: $2 indexed $n rows, expected $EXPECTED_ROWS — result NOT trustworthy"
     return 1
@@ -46,10 +73,8 @@ except Exception: print(-1)
 run_arm() {  # $1 = name, $2 = table, $3.. = extra flags
   local name=$1 table=$2; shift 2
   echo "=== $name ==="
-  python -c "
-import psycopg
-c=psycopg.connect('$DSN', autocommit=True); c.execute('drop table if exists $table cascade')"
-  python -m recall.eval.locomo $COMMON --dsn "$DSN" --table "$table" \
+  _py_sql "$table" "drop table if exists {t} cascade" >/dev/null || return 1
+  RECALL_DSN="$DSN" python -m recall.eval.locomo $COMMON --table "$table" \
       --out "$OUT/$name.json" "$@" > "$OUT/$name.log" 2>&1
   local rc=$?
   [ $rc -ne 0 ] && { echo "FATAL: $name exited $rc — see $OUT/$name.log"; return 1; }

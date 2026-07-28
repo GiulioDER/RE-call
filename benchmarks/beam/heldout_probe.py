@@ -49,10 +49,13 @@ import argparse
 import json
 import random
 import re
+import shutil
 import statistics
+import tempfile
 from pathlib import Path
 from typing import Any
 
+from benchmarks.beam.systems import EMBED_BATCH
 from benchmarks.systems import resolve_embedder
 from recall.eval.locomo import DEFAULT_DSN
 from recall.index import Indexer
@@ -79,13 +82,29 @@ def _memos(root: Path) -> list[tuple[Path, str]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--memory", type=Path, default=Path("/opt/docs_rag_corpora/memory"))
+    # REQUIRED, not defaulted. The old default pointed at the operator's private memo
+    # corpus, so a bare `python -m benchmarks.beam.heldout_probe` indexed private prose —
+    # and with the old cloud `--embedder` default, shipped every chunk of it to a
+    # third-party embedding API without the caller having asked for the cloud path.
+    # SECURITY.md names that combination as in-scope and wanted-reported.
+    parser.add_argument("--memory", type=Path, required=True,
+                        help="corpus of memos to index (named explicitly: this probe reads "
+                             "whatever you point it at, verbatim, into the embedder)")
     parser.add_argument("--dsn", default=DEFAULT_DSN)
-    parser.add_argument("--embedder", default="router:openai/text-embedding-3-small")
+    # Local by default. Reaching a cloud embedder is an egress boundary and must be an
+    # explicit choice by the caller, never the path taken when no choice was made.
+    parser.add_argument("--embedder", default="fastembed",
+                        help="`fastembed` is local; `router:...`/`voyage:...` send every "
+                             "chunk to a third-party API")
     parser.add_argument("--table", default="heldout_chunks")
     parser.add_argument("--holdout", type=int, default=120)
     parser.add_argument("--k", type=int, default=10)
-    parser.add_argument("--entailment", action="store_true", default=True)
+    # BooleanOptionalAction, not `store_true` with `default=True` — the latter could only
+    # ever be True, so the cosine-only arm of this probe's own preregistered P3
+    # comparison was unrunnable and the `judge is None` branches below were dead code.
+    parser.add_argument("--entailment", action=argparse.BooleanOptionalAction, default=True,
+                        help="score entailment alongside cosine (--no-entailment to skip "
+                             "loading the cross-encoder)")
     parser.add_argument("--out", type=Path, default=Path("heldout_probe.json"))
     args = parser.parse_args()
 
@@ -102,23 +121,28 @@ def main() -> None:
     # what makes the holdout real. Pointing the indexer at the full directory and filtering later
     # would leave the held-out text in the store, and every "unanswerable" query would find its own
     # document sitting there.
-    workspace = Path("/tmp/heldout-corpus")
-    if workspace.exists():
-        for old in workspace.glob("*.md"):
-            old.unlink()
-    workspace.mkdir(parents=True, exist_ok=True)
-    for path, _ in indexed:
-        (workspace / path.name).write_text(
-            path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8"
-        )
+    # A private temp dir per run, cleaned up afterwards — NOT a fixed `/tmp/heldout-corpus`.
+    # The old path was predictable and world-writable, and the code unlinked files there BEFORE
+    # validating anything, so a pre-created symlink turned this into a delete primitive. It also
+    # meant two concurrent arms silently destroyed each other's corpus — the same shape as the
+    # incident `run_locomo_arms.sh` added its lock for. `BeamRecallSystem.ingest` already does
+    # this correctly; the pattern just was not carried over.
+    workspace = Path(tempfile.mkdtemp(prefix="heldout-"))
+    try:
+        for path, _ in indexed:
+            (workspace / path.name).write_text(
+                path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8"
+            )
 
-    with PgVectorStore(args.dsn, dim=embedder.dim, tenant=TENANT, table=args.table) as store:
-        store.ensure_schema()
-        existing = [c.source for c in store.iter_chunks()]
-        if existing:
-            store.delete_sources(sorted(set(existing)))
-        Indexer(store, embedder, batch_chunks=32).index_path(workspace)
-        n_chunks = sum(1 for _ in store.iter_chunks())
+        with PgVectorStore(args.dsn, dim=embedder.dim, tenant=TENANT, table=args.table) as store:
+            store.ensure_schema()
+            existing = [c.source for c in store.iter_chunks()]
+            if existing:
+                store.delete_sources(sorted(set(existing)))
+            Indexer(store, embedder, batch_chunks=EMBED_BATCH).index_path(workspace)
+            n_chunks = store.count()
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
     print(f"indexed {n_chunks} chunks from {len(indexed)} memos", flush=True)
 
     judge = None

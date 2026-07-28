@@ -41,8 +41,14 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.beam.dataset import iter_conversations
-from benchmarks.beam.systems import BEAM_TABLE, BeamRecallSystem
+from benchmarks.beam.systems import (
+    BEAM_TABLE,
+    BeamRecallSystem,
+    rebuild_dates,
+    require_indexed,
+)
 from recall.eval.locomo import DEFAULT_DSN
+from recall.store import PgVectorStore
 
 #: Cosine at or above which an embedded chunk counts as carrying the nugget. Deliberately high:
 #: this probe is looking for the chunk that ANSWERS, not one that is merely on-topic, and BEAM's
@@ -108,8 +114,16 @@ def main() -> None:
         if args.reindex:
             system.ingest(conv)
         else:
-            system._tenant = f"beam-{conv.chat_size}-{conv.index}".lower()  # noqa: SLF001
-            system._dates = {}  # noqa: SLF001
+            tenant = f"beam-{conv.chat_size}-{conv.index}".lower()
+            system._tenant = tenant  # noqa: SLF001
+            # Guarded: this probe does not index. Against an empty tenant every question would
+            # report "the answer was never retrieved at any depth" — a complete, publishable
+            # curve of zeros rather than an error.
+            with PgVectorStore(
+                args.dsn, dim=embedder.dim, tenant=tenant, table=args.table
+            ) as store:
+                require_indexed(store, tenant=tenant, table=args.table, what="rank_probe")
+                system._dates = rebuild_dates(store)  # noqa: SLF001
         for q in conv.questions:
             if not q.rubric or q.question_type == "abstention":
                 continue  # nothing to locate for an unanswerable question

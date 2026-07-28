@@ -146,10 +146,14 @@ same length and genre, unlike every other corpus here.
 ```bash
 python -c "
 import json, glob
+from pathlib import Path
 from recall.eval.gap_study import analyse_records
+from recall.eval.gap_run import write_json
 recs=[json.load(open(p)) for p in sorted(glob.glob('results/gap/*.json'))
       if 'summary' not in p and 'analysis' not in p]
-print(json.dumps(analyse_records(recs, arm='hybrid'), indent=2))"
+out = analyse_records(recs, arm='hybrid')
+write_json(Path('results/gap/analysis.json'), out)   # NaN -> null; a bare NaN is not valid JSON
+print(json.dumps(out, indent=2, default=str))"
 ```
 
 Regenerating the corpora and scores from scratch:

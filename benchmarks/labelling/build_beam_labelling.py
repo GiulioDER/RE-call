@@ -50,8 +50,26 @@ THEIR_CUTOFF = "top_200"
 
 
 def _their_cell(evaluation: dict[str, Any]) -> dict[str, Any]:
+    """Mem0's answer at the headline retrieval budget, or an error.
+
+    No insertion-order fallback. `next(iter(cutoffs.values()))` used to stand in whenever
+    `top_200` was missing OR merely falsy — so a structurally degraded upstream cell silently
+    became a `top_50` comparison, and this output is what the human blind-labelling CSV is built
+    from. `benchmarks.beam.run._load_published` had the same defect and now raises; leaving it
+    here would keep the two readers of the same third-party file disagreeing about which cell is
+    the comparator, which is the condition that makes the mismatch invisible.
+    """
     cutoffs = evaluation.get("cutoff_results") or {}
-    return cutoffs.get(THEIR_CUTOFF) or (next(iter(cutoffs.values()), {}) if cutoffs else {})
+    if not cutoffs:
+        return {}
+    cell = cutoffs.get(THEIR_CUTOFF)
+    if not cell:
+        raise SystemExit(
+            f"question {evaluation.get('question_id')!r} has no usable {THEIR_CUTOFF!r} cell "
+            f"(available: {sorted(cutoffs)}). Refusing to substitute another retrieval budget: "
+            f"the arms would then be compared at different depths with nothing recording it."
+        )
+    return cell
 
 
 def _gold(rubric: Any, ground_truth: str | None) -> str:

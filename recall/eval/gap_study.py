@@ -22,6 +22,32 @@ from collections.abc import Mapping, Sequence
 Number = float | int
 
 
+def _complete_pairs(*series: Sequence[Number]) -> tuple[list[float], ...]:
+    """The input series restricted to the indices where EVERY series is finite.
+
+    The predictors are allowed to be absent. `vocab.oov_rate`, `vocab.query_overlap` and
+    `vocab.crowding` each return NaN to mean "this corpus admits no measurement of this
+    quantity", and `headroom_capture` does the same at a saturated ceiling. Those are sentinels
+    for an absence, not values.
+
+    They have to be removed BEFORE ranking, and pairwise. NaN compares False against everything,
+    so `sorted()` leaves it wherever insertion order happened to put it and `_ranks` then hands
+    it an ordinary rank — at which point an absence has been scored as data and the correlation
+    is computed over a series that was never measured. Dropping only one side of a pair would be
+    worse still: it would shift every subsequent point against its partner.
+    """
+    if not series:
+        return ()
+    n = len(series[0])
+    keep = [
+        i
+        for i in range(n)
+        if all(len(s) == n and isinstance(s[i], (int, float)) and math.isfinite(s[i])
+               for s in series)
+    ]
+    return tuple([float(s[i]) for i in keep] for s in series)
+
+
 def _ranks(values: Sequence[Number]) -> list[float]:
     """Ranks of `values`, ties sharing their average rank.
 
@@ -68,7 +94,12 @@ def spearman(x: Sequence[Number], y: Sequence[Number]) -> float:
     """
     if len(x) != len(y) or len(x) < 2:
         return float("nan")
-    return _pearson(_ranks(x), _ranks(y))
+    xs, ys = _complete_pairs(x, y)
+    if len(xs) < 2:
+        # Fewer than two corpora measured both quantities. NaN is the honest answer; a number
+        # here would claim a relation established on one point or none.
+        return float("nan")
+    return _pearson(_ranks(xs), _ranks(ys))
 
 
 def partial_spearman(
@@ -81,9 +112,14 @@ def partial_spearman(
     the gap only because both track the local score collapses to ~0 here, which is the entire
     point of computing it.
     """
-    r_xy = spearman(x, y)
-    r_xz = spearman(x, control)
-    r_yz = spearman(y, control)
+    # Restrict to complete TRIPLES before any of the three correlations is taken. Letting each
+    # `spearman` call drop its own incomplete pairs would compute the three terms of one formula
+    # on three different corpus sets, and the partial would then be assembled from correlations
+    # that were never measured over the same data.
+    xs, ys, zs = _complete_pairs(x, y, control)
+    r_xy = spearman(xs, ys)
+    r_xz = spearman(xs, zs)
+    r_yz = spearman(ys, zs)
     if any(math.isnan(r) for r in (r_xy, r_xz, r_yz)):
         return float("nan")
     den = math.sqrt((1.0 - r_xz**2) * (1.0 - r_yz**2))
@@ -115,6 +151,12 @@ def permutation_p(
     Uses the (r+1)/(n+1) estimator, which cannot return 0. A reported p of exactly zero would
     claim more resolution than `n_perm` draws can support.
     """
+    # Restricted to complete triples ONCE, up front, so the observed statistic and its null
+    # distribution are computed over the same corpora. Permuting the raw `x` would shuffle its
+    # missing slots along with its values, so each of the 10,000 draws would land on a different
+    # subset of `(y, control)` — and the docstring's stated null ("`x` is permuted while `y` and
+    # `control` stay paired") would be false, because the SAMPLE would move too.
+    x, y, control = _complete_pairs(x, y, control)
     observed = partial_spearman(x, y, control)
     if math.isnan(observed):
         return float("nan")
@@ -140,12 +182,23 @@ def holm_adjust(pvalues: Sequence[float]) -> list[float]:
     The running maximum is carried forward so a later test can never be adjusted below an earlier
     one — without it, correction could invert the ordering and present the weakest result as the
     strongest.
+
+    A NaN p-value means the test could not be computed at all, and it is excluded from the family
+    rather than ranked. Two reasons, and the first is a defect this used to have: `min(1.0, nan)`
+    is `1.0` in Python, so a NaN sorted to the front, pinned the running maximum at 1.0, and the
+    carry-forward then reported every genuinely significant sibling as p = 1.0 — an order-dependent
+    erasure of a real finding, with nothing raised. The second is that `m` is a count of
+    comparisons actually made: correcting over a test that never ran spends correction budget on
+    a multiplicity that is not there.
     """
-    m = len(pvalues)
-    if m == 0:
+    if len(pvalues) == 0:
         return []
-    order = sorted(range(m), key=lambda i: pvalues[i])
-    adjusted = [0.0] * m
+    live = [i for i, p in enumerate(pvalues) if isinstance(p, (int, float)) and math.isfinite(p)]
+    m = len(live)
+    adjusted = [float("nan")] * len(pvalues)
+    if m == 0:
+        return adjusted
+    order = sorted(live, key=lambda i: pvalues[i])
     running = 0.0
     for rank, idx in enumerate(order):
         running = max(running, min(1.0, pvalues[idx] * (m - rank)))
@@ -205,6 +258,14 @@ PREDICTORS = ("oov_rate", "query_overlap", "crowding")
 #: Below this many usable corpora, a null result means "underpowered" rather than "no effect".
 POWER_FLOOR = 12
 
+#: The primary response arm — what §7/§8 published and what a user actually deploys.
+#:
+#: This module is the single home for both constants. `recall.eval.gap_run` imports them rather
+#: than restating them: they are preregistered, both feed the same `underpowered` verdict on the
+#: same n, and two independent copies could drift into the runner and the analyser reporting
+#: different power for one study without anything raising.
+PRIMARY_ARM = "hybrid"
+
 
 def _haystack_confound(usable: Sequence[dict], gap: Sequence[float],
                        local: Sequence[float]) -> dict:
@@ -220,7 +281,7 @@ def _haystack_confound(usable: Sequence[dict], gap: Sequence[float],
     }
 
 
-def analyse_records(records: Sequence[dict], *, arm: str = "hybrid") -> dict:
+def analyse_records(records: Sequence[dict], *, arm: str = PRIMARY_ARM) -> dict:
     """The preregistered analysis, over the run's per-corpus records.
 
     One function so that when the overnight job finishes there is nothing left to decide: the

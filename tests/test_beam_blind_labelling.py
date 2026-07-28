@@ -134,3 +134,40 @@ def test_mcnemar_uses_only_discordant_pairs() -> None:
     assert mcnemar_exact(0, 0) is None          # nothing to separate the systems
     assert mcnemar_exact(5, 0) == pytest.approx(2 / 32)
     assert mcnemar_exact(3, 3) == pytest.approx(1.0)
+
+
+# --- retrieval-budget selection (CCA audit 2026-07-28) -------------------------------------
+
+
+def test_the_labelling_set_uses_the_headline_cutoff_not_the_first_key() -> None:
+    """Mem0 ships more than one retrieval budget per question; only top_200 is the headline.
+
+    `_their_cell` used to fall back to `next(iter(cutoffs.values()))` whenever `top_200` was
+    missing OR merely falsy, so a degraded upstream cell silently became a top_50 comparison —
+    and this output is what a human annotator labels and what a disagreement analysis is
+    published from.
+    """
+    from benchmarks.labelling.build_beam_labelling import _their_cell
+
+    cell = _their_cell({
+        "question_id": "q1",
+        "cutoff_results": {
+            "top_50": {"generated_answer": "FIFTY", "score": 0.55},
+            "top_200": {"generated_answer": "TWO HUNDRED", "score": 0.64},
+        },
+    })
+    assert cell["generated_answer"] == "TWO HUNDRED"
+
+
+def test_a_missing_headline_cutoff_is_an_error_not_a_substitution() -> None:
+    from benchmarks.labelling.build_beam_labelling import _their_cell
+
+    with pytest.raises(SystemExit, match="top_200"):
+        _their_cell({"question_id": "q1", "cutoff_results": {"top_50": {"score": 0.55}}})
+
+
+def test_an_empty_cutoff_block_is_still_skipped_rather_than_raising() -> None:
+    # A question upstream never evaluated is a legitimate absence, not a budget mismatch.
+    from benchmarks.labelling.build_beam_labelling import _their_cell
+
+    assert _their_cell({"question_id": "q1", "cutoff_results": {}}) == {}

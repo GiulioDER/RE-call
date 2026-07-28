@@ -77,7 +77,9 @@ voyage = ["voyageai>=0.2"]
 # NB: rerank / entail / finetune pin the same sentence-transformers floor — bump all three together.
 rerank = ["sentence-transformers>=3.0"]
 entail = ["sentence-transformers>=3.0"]
-eval = ["matplotlib>=3.7"]
+# numpy is named explicitly, not left to arrive transitively through matplotlib: it is a
+# direct import of `recall/eval/vocab.py:crowding`, which SHIPS in the wheel.
+eval = ["matplotlib>=3.7", "numpy"]
 finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
 # langchain_core only (not the langchain meta-package): the retriever adapter
 # (recall/integrations/langchain.py) needs BaseRetriever + Document, nothing else. Floor 0.3 is the
@@ -100,7 +102,11 @@ llamaindex = ["llama-index-core>=0.11"]
 # (2026-07-22) and the version `benchmarks/systems.py` is written against; it is recorded into
 # every results artifact via `importlib.metadata.version("mem0ai")`. Bumping it is a deliberate
 # re-run, not a resolver decision.
-bench = ["mem0ai==2.0.13", "openai>=1.0"]
+# pyarrow: BEAM ships as parquet and `benchmarks/beam/dataset.py` reads it directly. It was
+# previously declared only as a MYPY override — i.e. the need was recorded for the type
+# checker and not for the installer, so provisioning a box with `.[bench]` raised
+# ModuleNotFoundError at the first parquet read rather than at install time.
+bench = ["mem0ai==2.0.13", "openai>=1.0", "pyarrow>=15"]
 # pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
 # failing it — a hung CI job reads as "still running", not as a regression.
 #

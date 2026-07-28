@@ -43,6 +43,45 @@ def _rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _cutoff(path: Path) -> int | None:
+    """The retrieval budget an artifact's summary records, if it records one.
+
+    `None` for a `.partial.jsonl` sidecar (which carries no summary) or for an artifact written
+    before the field existed.
+    """
+    if path.suffix == ".jsonl":
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return None
+    summary = payload.get("summary")
+    return summary.get("cutoff") if isinstance(summary, dict) else None
+
+
+def require_same_cutoff(a: Path, b: Path) -> None:
+    """Refuse to pair two arms measured at different retrieval budgets.
+
+    Selecting the right cell out of Mem0's published file is necessary and not sufficient: the
+    budgets have to be equal at the point the arms are COMPARED, which is here. Without this,
+    running with `--cutoff 50` against a stored k=200 artifact still aligns cleanly on question
+    id, produces a well-formed McNemar table and exits 0 — the original defect's effect, reached
+    by a different route.
+
+    A missing value means "not recorded", NOT "equal": artifacts predating the field would
+    otherwise pass the check they can say least about. That case is reported instead.
+    """
+    ca, cb = _cutoff(a), _cutoff(b)
+    if ca is not None and cb is not None and ca != cb:
+        raise SystemExit(
+            f"refusing to pair: {a} was measured at cutoff {ca} and {b} at cutoff {cb}. The suite "
+            f"holds the retrieval budget equal across arms; a paired test over two different "
+            f"depths measures the depth, not the systems."
+        )
+    if ca is None or cb is None:
+        missing = "A" if ca is None else "B"
+        print(f"note: arm {missing} records no retrieval cutoff — the budgets could not be checked")
+
+
 def _aligned(
     a_rows: Sequence[Mapping[str, Any]], b_rows: Sequence[Mapping[str, Any]]
 ) -> list[tuple[Mapping[str, Any], Mapping[str, Any]]]:
@@ -173,6 +212,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
+    require_same_cutoff(args.a, args.b)
     result = compare(_rows(args.a), _rows(args.b))
     result["a_artifact"] = str(args.a)
     result["b_artifact"] = str(args.b)
