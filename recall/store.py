@@ -5,7 +5,7 @@ import os
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Literal, TypeVar, overload
 from uuid import uuid4
 from ipaddress import ip_address
 from urllib.parse import unquote, urlsplit
@@ -1169,6 +1169,28 @@ class PgVectorStore:
         else:
             rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._rows_to_hits(rows)
+
+    @overload
+    def query_sparse(
+        self,
+        text: str,
+        k: int,
+        source: str | None = None,
+        vec: list[float] | None = None,
+        *,
+        with_rank: Literal[False] = False,
+    ) -> list[ScoredChunk]: ...
+
+    @overload
+    def query_sparse(
+        self,
+        text: str,
+        k: int,
+        source: str | None = None,
+        vec: list[float] | None = None,
+        *,
+        with_rank: Literal[True],
+    ) -> tuple[list[ScoredChunk], list[float]]: ...
 
     def query_sparse(
         self,

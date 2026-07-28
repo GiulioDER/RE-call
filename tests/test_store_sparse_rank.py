@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from recall.embeddings import HashingEmbedder
 from recall.index import Indexer
 from tests.conftest import requires_db
