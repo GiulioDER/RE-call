@@ -171,6 +171,8 @@ no_implicit_optional = true
 [[tool.mypy.overrides]]
 module = [
     "fastembed.*",
+    # Ships with fastembed; `recall.eval.vocab.bge_encoder` guards its import.
+    "tokenizers.*",
     "voyageai.*",
     "sentence_transformers.*",
     "matplotlib.*",

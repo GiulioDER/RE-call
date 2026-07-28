@@ -14,6 +14,7 @@ from recall.observability import METRICS, get_logger
 from recall.index import Indexer, candidate_files
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
+from recall.rerank import DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION, Reranker
 from recall.trust import trusted_search
 
 _log = get_logger("mcp.service")
@@ -193,6 +194,71 @@ class MemoryStatsResult(BaseModel):
     )
 
 
+#: Cross-encoder reranking, opt-in via `RECALL_RERANK`.
+#:
+#: Measured on LOCOMO at n=1,536 (FINDINGS §11): hit@5 **0.671 -> 0.777**, intervals disjoint from
+#: the baseline through k=10 — the largest single retrieval gain in this project, and roughly twice
+#: the best embedder effect. It closes 57% of the distance to the candidate pool's own ceiling.
+#:
+#: OFF by default because it costs ~1,050 ms per query on CPU. A memory server that silently
+#: quadrupled every query's latency to improve a benchmark would be choosing for the operator.
+#: Worth enabling when a human is waiting on the answer; leave it off for high-volume automated
+#: retrieval or constrained hardware.
+_RERANK_TRUE = frozenset({"1", "true", "yes", "on"})
+_RERANK_FALSE = frozenset({"", "0", "false", "no", "off"})
+
+
+def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str] | None:
+    """`(model, revision)` for the configured reranker, or None when it is off.
+
+    Returns a spec rather than an instance so the decision can be tested without importing torch.
+
+    `ms-marco-MiniLM-L-6-v2` is the default because it was *measured* to be the right choice, not
+    because it was already there: `bge-reranker-base`, with 12x the parameters and four years newer,
+    is statistically indistinguishable at **6.3x** the per-query cost. Reranker selection here is
+    about task match — short query against short passage — not model size.
+
+    An unparseable flag is REFUSED rather than read as "off". An operator who asked for reranking
+    and silently got an unreranked server would have no way to notice: the failure is fast, quiet
+    and looks exactly like success.
+    """
+    import os as _os
+
+    source = env if env is not None else _os.environ
+    raw = source.get("RECALL_RERANK", "").strip().lower()
+    if raw in _RERANK_FALSE:
+        return None
+    if raw not in _RERANK_TRUE:
+        raise ValueError(
+            f"RECALL_RERANK={raw!r} is not a boolean. Use one of {sorted(_RERANK_TRUE)} to enable "
+            f"or leave it unset. Refused rather than treated as off, because a server that quietly "
+            f"ignored the flag would look identical to one that honoured it."
+        )
+
+    model = source.get("RECALL_RERANK_MODEL")
+    if not model:
+        return (DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION)
+    revision = source.get("RECALL_RERANK_REVISION")
+    if not revision:
+        raise ValueError(
+            "RECALL_RERANK_MODEL requires RECALL_RERANK_REVISION. An unpinned Hub reference is "
+            "mutable, and the shipped revision pin belongs to the shipped weights only — reusing "
+            "it would name the wrong artifact in every trace."
+        )
+    return (model, revision)
+
+
+def _build_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pragma: no cover
+    """Instantiate the configured reranker, or None. Imports torch only when actually enabled."""
+    spec = resolve_reranker(env)
+    if spec is None:
+        return None
+    from recall.rerank import CrossEncoderReranker
+
+    model, revision = spec
+    return CrossEncoderReranker(model=model, revision=revision)
+
+
 def search_memory(
     store: PgVectorStore,
     embedder: Embedder,
@@ -219,7 +285,10 @@ def search_memory(
         )
     k = max(1, min(k, MAX_SEARCH_K))
     timed = TimedEmbedder(embedder)  # measure embedding latency without altering trusted_search
-    result = trusted_search(store, timed, query, k=k, source=source, calibration=calibration)
+    result = trusted_search(
+        store, timed, query, k=k, source=source, calibration=calibration,
+        reranker=_build_reranker(),
+    )
     hits = [
         SearchHit(
             source=h.provenance.file or h.chunk.source,

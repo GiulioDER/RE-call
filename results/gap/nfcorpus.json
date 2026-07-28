@@ -1,0 +1,47 @@
+{
+  "status": "ok",
+  "dataset": "nfcorpus",
+  "manifest": {
+    "name": "nfcorpus",
+    "documents_requested": 20000,
+    "documents_written": 3633,
+    "questions": 323,
+    "questions_available": 3237,
+    "seed": 20260726
+  },
+  "scores": {
+    "local": {
+      "bm25": 0.6025,
+      "dense": 0.6335,
+      "sparse": 0.6273,
+      "hybrid": 0.6957,
+      "mrr_hybrid": 0.5656,
+      "held_out": 161
+    },
+    "cloud": {
+      "bm25": 0.6025,
+      "dense": 0.6087,
+      "sparse": 0.6211,
+      "hybrid": 0.7143,
+      "mrr_hybrid": 0.5666,
+      "held_out": 161
+    }
+  },
+  "predictors": {
+    "oov_rate": 0.22044088176352705,
+    "query_overlap": 0.1491446086569323,
+    "crowding": 0.8769233509386625,
+    "code_density": 0.0,
+    "n_documents": 3633,
+    "n_overlap_pairs": 12334
+  },
+  "primary_arm": "hybrid",
+  "seconds": 1132.2,
+  "params": {
+    "max_docs": 20000,
+    "token_budget": 2000,
+    "min_pieces": 2,
+    "crowding_sample": 500,
+    "seed": 20260726
+  }
+}

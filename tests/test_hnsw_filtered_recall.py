@@ -12,31 +12,36 @@ These run against the REAL pgvector container (`@requires_db`) — the pathology
 planner/executor behaviour under an approximate index, not something a fake connection can
 reproduce.
 
-The whole module has a precondition that is easy to miss: the planner must actually CHOOSE the
-HNSW index. On a never-analyzed table it does not — with no statistics it estimates one matching
-row for the filtered query and takes an exact plan, which by construction measures recall 1.0000
-with 0 truncated and tests nothing here. `_build_corpus` therefore ANALYZEs, and
-`MAX_CORPUS_BUILD_ATTEMPTS` records what that changed.
+A note on the corpus construction, because one part of it IS load-bearing and the other is not.
 
-A note on the corpus construction, because it is NOT incidental: the same 20,000-row / dim-64 /
-10%-selective shape reliably shows the collapse ONLY when the rows are upserted in several
-separate calls (batches of 1,000 — as a real `recall index` run naturally does, file by file),
-not as one giant single-transaction upsert. That is itself a real (if separate) characteristic of
-pgvector's incremental HNSW build: a graph built across several committed transactions comes out
-measurably less well-connected under this exact filter/selectivity combination than one built in
-a single transaction, for reasons this fix does not attempt to explain further. Batching the
-corpus build below is therefore what makes this test representative of a REAL multi-file index
-run, not merely a way to force a failure.
+Load-bearing: the ANALYZE at the end of `_build_corpus`. Everything measured here is a property
+of the plan Postgres picks for the filtered query, and an unanalyzed table gets `Seq Scan + Sort`
+— an exact search that never consults the HNSW index and therefore reports recall 1.0000 under
+any `hnsw.ef_search` at all. `filtered_corpus` asserts the index is genuinely walked before any
+test runs.
+
+Not load-bearing: the batching. An earlier version of this docstring claimed the collapse
+reproduces only when the rows arrive in several separate upserts (batches of 1,000, as a real
+multi-file `recall index` run does) and attributed that to pgvector building a less well-connected
+graph across several committed transactions. That was wrong. Measured both ways with the ANALYZE
+in place, a single 20,000-row single-transaction upsert reproduces the pathology just as hard
+(recall 0.3625, 40/40 truncated). What the batching actually did was commit rows in the middle of
+the build, which let an autovacuum worker analyze the table before the tests ran — i.e. it was
+winning the statistics race, not shaping the graph. The batching is kept because it stays
+representative of a real index run, not because the measurement needs it.
 """
 from __future__ import annotations
 
-import os
 import random
 
 import pytest
 from pgvector import Vector
 
-from recall.store import PgVectorStore
+from recall.store import (
+    DEFAULT_HNSW_EF_SEARCH_FILTERED,
+    DEFAULT_HNSW_ITERATIVE_SCAN_FILTERED,
+    PgVectorStore,
+)
 from recall.types import Chunk
 
 from tests.conftest import TEST_DSN, requires_db
@@ -53,55 +58,16 @@ N_OTHER_SOURCES = 50
 K = 10
 N_QUERIES = 40
 QUERY_SEED = 8
-#: Up to this many independent corpus builds, before giving up (see `filtered_corpus`'s docstring
-#: for why a build can need a retry at all).
-#:
-#: **Most of the variance this cap was sized against was not pgvector's — it was the autovacuum
-#: launcher's.** `_build_corpus` now ANALYZEs, and with that in place the pathology reproduced on
-#: **10 of 10** independent builds (seeds 2000-2009, pgvector 0.8.5 / PostgreSQL 16.14): untuned
-#: recall 0.3400-0.4175 with 39-40/40 truncated, tuned 0.8825-0.9275 with 0 truncated. The
-#: history this cap was derived from looked like this instead:
-#:
-#:   - Locally the pathology reproduced on 11 of 14 builds (p ~= 0.79).
-#:   - On CI the fixture gave up TWICE in ~76 job-runs at 4 attempts (~2.6e-2), ~13x what the
-#:     local p predicts — run #136's `floor` job and run #151's `test` job, the latter turning
-#:     master red on a README-only commit.
-#:   - Sizing against the CI rate and squaring per doubling gave ~1.8e-5 at 12 attempts.
-#:
-#: All of those non-reproductions are explained by a single mechanism that has nothing to do with
-#: graph construction: a never-analyzed table makes the planner take an EXACT plan and skip the
-#: HNSW index entirely, which cannot truncate and cannot miss a neighbour, so it measures recall
-#: exactly 1.0000 / 0 truncated every time. The corpus build takes ~47s against a 60s
-#: `autovacuum_naptime`, so whether statistics existed by query time was close to a coin flip —
-#: and a machine whose autovacuum happened to be quicker to fire would look "less likely to
-#: produce the pathology", which is exactly how CI differed from the dev box.
-#:
-#: 12 -> 6, not -> 1. Ten for ten is a point estimate with a wide interval (a 95% lower bound on
-#: p from 0/10 failures is only ~0.74), so this does not establish that pgvector's graph
-#: construction contributes NO residual variance — only that it is not the dominant term. 6 is
-#: safe under both readings: at the newly measured p it is pure headroom, and even at the old
-#: local p = 0.79 it gives (1 - p) ** 6 ~= 8.5e-5, ~1 red per 12,000 pushes. Keeping a few
-#: attempts stays close to free because the loop stops at the FIRST build that reproduces, so
-#: the expected cost is ~1/p ~= 1 build either way; halving the cap only shortens the rare bad
-#: tail, which now matters more, because a give-up is much likelier to mean something real
-#: changed in pgvector than that the dice came up wrong.
-#:
-#: The measurement also settled which knob to turn. Outcomes are bimodal — a build either shows
-#: the pathology hard (recall 0.34-0.42, 39-40/40 truncated) or not at all (recall exactly 1.0000,
-#: 0 truncated), with nothing in between — so loosening TUNED_RECALL_FLOOR would buy nothing and
-#: would blunt a real regression. Note that the "exactly 1.0000" pole is the signature of the
-#: exact plan described above, not of a well-connected graph: an earlier version of this comment
-#: read the same seed producing both outcomes as proof that the variance was pgvector's, but
-#: varying only the statistics state on ONE fixed build produces both outcomes too.
-MAX_CORPUS_BUILD_ATTEMPTS = 6
 _ENV_EF = "RECALL_HNSW_EF_SEARCH_FILTERED"
 _ENV_SCAN = "RECALL_HNSW_ITERATIVE_SCAN_FILTERED"
 
-#: Recall threshold for the FIXED (tuned) path. Measured across several independent corpus builds
-#: with this exact shape: 0.92-0.93. 0.75 leaves real margin below every observed tuned value and
-#: real margin above every observed untuned value (0.36-0.41) -- HNSW's own graph construction is
-#: not seeded by anything this test controls, so the exact figure moves a little build to build;
-#: this margin is what keeps the assertion honest without being flaky.
+#: Recall threshold for the FIXED (tuned) path. Measured across independent corpus builds with
+#: this exact shape, all analyzed: tuned 0.8825-0.9400, untuned 0.3625-0.4250. 0.75 leaves real
+#: margin below every observed tuned value and above every observed untuned value -- HNSW's own
+#: graph construction is not seeded by anything this test controls, so the exact figure moves a
+#: little build to build; this margin is what keeps the assertion honest without being flaky.
+#: (The earlier 0.92-0.93 quoted here for the tuned path was measured over too few builds; the
+#: floor is unchanged, but the real spread reaches lower and a reader should know that.)
 TUNED_RECALL_FLOOR = 0.75
 
 
@@ -147,31 +113,37 @@ def _build_corpus(seed: int) -> PgVectorStore:
     return store
 
 
-def _measure_untuned(store: PgVectorStore) -> tuple[float, int]:
-    """Measure this build under the untuned defaults: `(mean recall@k, truncated count)`.
+def _filtered_dense_plan(store: PgVectorStore, *, ef_search: str, iterative_scan: str) -> str:
+    """The plan Postgres picks for `query_dense`'s filtered arm, flattened to one string.
 
-    The caller decides whether that clears the bar; returning the numbers rather than a bool is
-    what lets the fixture say *what it saw* when it gives up, instead of only that it did.
-
-    Runs the EXACT same `_run_queries` the real tests call, under the EXACT same forced-untuned
-    env `_measure(tuned=False, ...)` applies -- not a cheaper proxy. An earlier version of this
-    gate used a small 8-query truncation-only sample as a stand-in for speed, and that proxy could
-    accept a build the real 40-query recall-vs-exact measurement then failed on: the cheaper check
-    and the real assertion were not actually testing the same thing. There is no substitute for
-    asking the real question.
+    Mirrors that query exactly where it matters -- same WHERE, same ORDER BY, same LIMIT, same
+    two `SET LOCAL`s inside one transaction. Only the SELECT list is trimmed, which changes the
+    estimated row width and nothing about which plan wins. The duplication is unavoidable:
+    `EXPLAIN` has to prefix the statement, and `query_dense` does not expose one.
     """
-    old_ef, old_scan = os.environ.get(_ENV_EF), os.environ.get(_ENV_SCAN)
-    os.environ[_ENV_EF] = "40"
-    os.environ[_ENV_SCAN] = "off"
-    try:
-        recall, truncated = _run_queries(store)
-    finally:
-        for key, old in ((_ENV_EF, old_ef), (_ENV_SCAN, old_scan)):
-            if old is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = old
-    return recall, truncated
+
+    def _op(conn: "object") -> list[tuple]:
+        with conn.transaction():  # type: ignore[attr-defined]
+            conn.execute(f"SET LOCAL hnsw.ef_search = {ef_search}")  # type: ignore[attr-defined]
+            conn.execute(  # type: ignore[attr-defined]
+                f"SET LOCAL hnsw.iterative_scan = {iterative_scan}"
+            )
+            return conn.execute(  # type: ignore[attr-defined]
+                f"""
+                EXPLAIN SELECT id FROM {store.table}
+                WHERE tenant_id = %(tenant)s AND source = %(source)s
+                ORDER BY embedding <=> %(vec)s
+                LIMIT %(k)s
+                """,
+                {
+                    "tenant": store._tenant,
+                    "source": "target",
+                    "vec": Vector(_random_vector(random.Random(QUERY_SEED))),
+                    "k": K,
+                },
+            ).fetchall()
+
+    return " | ".join(r[0].strip() for r in store._with_retry(_op))
 
 
 @pytest.fixture(scope="module")
@@ -183,50 +155,49 @@ def filtered_corpus():
     conftest because that one is function-scoped (a fresh table per test) -- exactly what this
     module deliberately avoids.
 
-    Retries the build (fresh seed, fresh table) up to `MAX_CORPUS_BUILD_ATTEMPTS` times. The
-    pathology this module exists to test is real and now reproduces on every build measured
-    (10/10 -- see `MAX_CORPUS_BUILD_ATTEMPTS`), but pgvector's HNSW graph construction carries
-    internal randomness (graph-level assignment) that nothing here controls, and it has not been
-    established that it contributes none at all. Retrying a fresh build is a truthful fix for
-    that residue -- loosening the threshold instead would just as easily paper over a genuine
-    regression that weakens the pathology rather than removes it.
+    Verifies before yielding that the filtered dense query actually WALKS the HNSW index, under
+    both the tuned and the untuned settings the tests below measure. That check is the whole
+    precondition of this module: on a plan that does not consult the index, `query_dense` is an
+    exact search, and every assertion here passes or fails for a reason that has nothing to do
+    with `hnsw.ef_search` -- the untuned test reads recall 1.0000 and fails, while the two tuned
+    tests pass VACUOUSLY, reporting a fix that was never exercised. `_build_corpus`'s ANALYZE is
+    what pins the plan (see the comment there); this asserts the pin actually held, so that an
+    environment where it does not says so in one line instead of surfacing as a flake.
 
-    The retry loop used to absorb something else as well, silently: a build whose statistics had
-    not landed yet measured recall 1.0000 / 0 truncated because the planner never touched the
-    HNSW index, and the fixture read that as "unlucky graph, try again". `_build_corpus` now
-    ANALYZEs, so that no longer happens -- and if this fixture starts giving up again, the cause
-    is far more likely to be a real change in pgvector than luck.
+    ONE build, no retry loop, and no "did this build reproduce the pathology?" recall gate in
+    front of the tests. All three existed because the outcome looked random per build -- a build
+    either showed the pathology hard (recall 0.34-0.42, 39-40/40 truncated) or not at all (recall
+    exactly 1.0000, 0 truncated), with nothing in between, and the same data seed produced both.
+    That was read as pgvector's HNSW graph construction being unseeded, and two commits (73888b0,
+    50cc57a) sized a retry margin against it. It was not graph construction: the two outcomes are
+    two PLANS, and which one Postgres picks was racing the build. Retrying resampled the corpus,
+    and the corpus was never the variable -- which is why raising the cap twice left master red on
+    roughly 1 in 4 runs. With the plan pinned the pathology reproduces on every build measured, so
+    one build is enough, and a failure now means the pathology itself changed. That is a finding
+    to read, not a flake to re-run.
     """
-    store: PgVectorStore | None = None
-    observed: list[str] = []
-    for attempt in range(MAX_CORPUS_BUILD_ATTEMPTS):
-        if store is not None:
+    store = _build_corpus(seed=1000)
+    for label, ef_search, iterative_scan in (
+        ("untuned", "40", "off"),
+        (
+            "tuned",
+            str(DEFAULT_HNSW_EF_SEARCH_FILTERED),
+            DEFAULT_HNSW_ITERATIVE_SCAN_FILTERED,
+        ),
+    ):
+        plan = _filtered_dense_plan(store, ef_search=ef_search, iterative_scan=iterative_scan)
+        if f"{store.table}_emb_idx" not in plan:
+            # Drop before failing: `pytest.fail` raises, so the teardown below never runs and the
+            # 20,000-row table would leak -- invisible in ephemeral CI, cumulative locally.
             store.drop_table()
             store.close()
-        store = _build_corpus(seed=1000 + attempt)
-        recall, truncated = _measure_untuned(store)
-        observed.append(f"seed {1000 + attempt}: recall={recall:.4f} truncated={truncated}")
-        if recall < TUNED_RECALL_FLOOR and truncated > 0:
-            break
-    else:
-        # Drop the last corpus before failing. `pytest.fail` raises, so without this the teardown
-        # below never runs and every give-up leaks a 20,000-row table into the test database --
-        # invisible in ephemeral CI, cumulative for anyone running the suite locally.
-        if store is not None:
-            store.drop_table()
-            store.close()
-        # Report what was actually measured. The outcome is bimodal, so these numbers separate the
-        # two causes on sight: values near recall=1.0000 / truncated=0 mean the pathology did not
-        # occur at all (bad luck, or pgvector no longer exhibits it), whereas values just above
-        # the floor would mean it has genuinely weakened. Without them a reader cannot tell which,
-        # and the only recourse is to re-run and hope.
-        pytest.fail(
-            f"could not build a corpus reproducing the untuned HNSW recall pathology in "
-            f"{MAX_CORPUS_BUILD_ATTEMPTS} attempts -- either the environment's pgvector build "
-            f"differs materially from the one this test was written against, or the pathology "
-            f"itself has changed. Wanted recall < {TUNED_RECALL_FLOOR} and truncated > 0; "
-            f"measured per attempt:\n  " + "\n  ".join(observed)
-        )
+            pytest.fail(
+                f"the planner declined the HNSW index for the {label} filtered query, so this "
+                f"module cannot measure what it exists to measure (a plan without the index is "
+                f"an exact search: recall 1.0000, 0 truncated, whatever hnsw.ef_search says). "
+                f"Statistics are the usual cause -- see `_build_corpus`'s ANALYZE. Plan was:\n"
+                f"  {plan}"
+            )
 
     yield store
 
@@ -326,8 +297,11 @@ def test_filtered_recall_collapses_without_the_tuning(filtered_corpus, monkeypat
     recall, truncated = _measure(filtered_corpus, tuned=False, monkeypatch=monkeypatch)
     assert recall < TUNED_RECALL_FLOOR, (
         f"expected the untuned defaults to collapse recall@{K} well below "
-        f"{TUNED_RECALL_FLOOR}, got {recall:.4f} -- the corpus may no longer reproduce the "
-        f"pathology this fix addresses"
+        f"{TUNED_RECALL_FLOOR}, got {recall:.4f} -- the pathology this fix addresses has "
+        f"weakened or gone. Note what this is NOT: `filtered_corpus` has already verified that "
+        f"this query walks the HNSW index, so this is not the planner quietly running an exact "
+        f"scan (which is what a reading of exactly 1.0000 used to mean). Re-running will not "
+        f"change it"
     )
     assert truncated > 0, "expected the untuned defaults to truncate at least one query"
 
