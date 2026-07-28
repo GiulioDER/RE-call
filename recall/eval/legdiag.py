@@ -12,6 +12,15 @@ Answers three questions, each with a decision rule fixed in advance:
         a_misranked   in the fused pool, below k        -> weighted fusion's job (Phase 1)
         b_unretrieved in neither leg's pool             -> PRF's job (Phase 2); its ceiling
         c_absent      no gold labelled                  -> labelling defect, excluded
+
+Note on Q3 / c_absent via the CLI: `run_conversation` already skips any category-1-4 question
+with empty evidence before it reaches `per_question` or gets probed, so the CLI's `answerable`
+filter (`"evidence" in q`) never hands `classify_gold` an empty-evidence question. Structurally,
+`n_excluded_unlabelled` in the published report is therefore always 0 when produced via this
+CLI — that is NOT evidence the label set is clean, only that the harness filters unlabelled
+questions upstream before this diagnostic ever sees them. `classify_gold` can still return
+"c_absent" when called directly (see its unit tests); the branch is correct, just unreachable
+from `main()`.
 """
 from __future__ import annotations
 
@@ -116,7 +125,16 @@ def _split_rates(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """Q1/Q2/Q3 from per-question records. Pure — every figure traces to `records`."""
+    """Q1/Q2/Q3 from per-question records. Pure — every figure traces to `records`.
+
+    `n_excluded_unlabelled` counts `records` with `bucket == "c_absent"`. Via the `main()` CLI
+    path this is structurally always 0: `run_conversation` filters out any category-1-4 question
+    with empty evidence before it is probed, so no `c_absent` record can ever reach `records` in
+    the first place. A published 0 here is therefore not evidence the label set is clean — it is
+    an artefact of upstream filtering, not a check that ran and passed. `classify_gold` can still
+    return "c_absent" when exercised directly (its own unit tests do this); the branch is correct
+    defensive behaviour, just unreachable from this CLI.
+    """
     scored = [r for r in records if r["bucket"] != "c_absent"]
     firing = [r for r in scored if r["trigger"]]
     not_firing = [r for r in scored if not r["trigger"]]
@@ -152,6 +170,40 @@ def build_report(records: list[dict[str, Any]]) -> dict[str, Any]:
             for b in ("a_misranked", "b_unretrieved")
         },
     }
+
+
+def _assert_hit_agrees(
+    sample_id: str,
+    question: str,
+    bucket: str,
+    harness_hit: bool,
+    evidence: Sequence[str],
+    retrieved_dia_ids: Sequence[str],
+) -> None:
+    """Differential oracle: `classify_gold`'s bucket and the harness's `hit` are two
+    INDEPENDENT computations of the same fact ("is the gold evidence inside the top-k
+    retrieval?") — `classify_gold` slices `probe.fused[:k]` (pre-rerank, pre-truncation),
+    while the harness's `q["hit"]` comes from `_hit_by_depth(retrieval.hits, ...)` on the
+    post-rerank, truncated list. Today the CLI never passes a reranker, so the two lists are
+    identical and this never fires. But that is an accident of today's CLI arguments, not a
+    guarantee — the sibling `locomo.py` CLI already has a `--rerank` flag, and the day this
+    module grows one too, a mismatch here would mean bucket and hit silently diverge for every
+    question.
+
+    This is not a redundant assertion: it is a differential oracle. Two independently-computed
+    answers to the same question, checked against each other on every row, catch the exact
+    defect class that would otherwise slip through as a plausible-looking number instead of an
+    error — a broken dia-id mapping, a probe/question mis-pairing, a slicing bug. A disagreement
+    means one of the two computations is wrong; the run must stop rather than publish, because
+    neither figure can be trusted until it is known which one is broken.
+    """
+    if (bucket == "hit") != bool(harness_hit):
+        raise RuntimeError(
+            f"{sample_id}: classify_gold/harness disagree on hit — bucket={bucket!r} "
+            f"(hit={bucket == 'hit'}) vs harness hit={bool(harness_hit)}. "
+            f"question={question!r} evidence={list(evidence)!r} "
+            f"retrieved_dia_ids(top-k)={list(retrieved_dia_ids)!r}"
+        )
 
 
 def check_apparatus(hit_at_5: float, hit_at_20: float, answerable_n: int) -> None:
@@ -265,6 +317,19 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
             for q, probe in zip(answerable, probes, strict=True):
+                bucket = classify_gold(probe, q["evidence"], a.k)
+                # Differential oracle — see `_assert_hit_agrees` docstring. Comparing
+                # classify_gold's bucket against the harness's independently-computed `hit` on
+                # every question catches a broken dia-id mapping, a probe/question mis-pairing,
+                # or a slicing error before it becomes a silently-wrong published number.
+                _assert_hit_agrees(
+                    sample_id=str(sample_id),
+                    question=q["question"],
+                    bucket=bucket,
+                    harness_hit=q["hit"],
+                    evidence=q["evidence"],
+                    retrieved_dia_ids=_retrieved_dia_ids(probe.fused[: a.k]),
+                )
                 records.append(
                     {
                         "sample_id": str(sample_id),
@@ -277,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
                         "n_sparse": len(probe.sparse),
                         "hit": q["hit"],
                         "hit_by_k": {str(d): q["hit_by_k"][d] for d in depths},
-                        "bucket": classify_gold(probe, q["evidence"], a.k),
+                        "bucket": bucket,
                     }
                 )
             print(
@@ -287,8 +352,18 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
         if a.table is None:  # only ever drops the table this run created and named
-            with psycopg.connect(a.dsn, autocommit=True) as conn:
-                conn.execute(f"DROP TABLE IF EXISTS {table}")
+            # Guarded: if the original failure IS DB connectivity, letting this raise too would
+            # replace the real exception with a confusing one from cleanup. Warn and leave the
+            # scratch table for manual cleanup instead of masking the root cause.
+            try:
+                with psycopg.connect(a.dsn, autocommit=True) as conn:
+                    conn.execute(f"DROP TABLE IF EXISTS {table}")
+            except Exception as cleanup_exc:  # deliberately broad — see comment above
+                print(
+                    f"warning: failed to drop scratch table {table!r} during cleanup "
+                    f"({cleanup_exc!r}); drop it manually",
+                    flush=True,
+                )
 
     if not a.skip_apparatus_check:
         # Computed from the SAME records the diagnostic buckets, so the check validates the data

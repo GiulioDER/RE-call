@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from recall.eval.legdiag import build_report, classify_gold
+from recall.eval.legdiag import _assert_hit_agrees, build_report, classify_gold
 from recall.retriever import LegProbe
 from recall.types import Chunk, ScoredChunk
 
@@ -105,3 +105,20 @@ def test_report_stratifies_q1_by_sparse_depth():
     assert strata["n_sparse_0-4"]["delta"] == -1.0
     # both hits in the deep bin, so the trigger separates nothing there
     assert strata["n_sparse_20+"]["delta"] == 0.0
+
+
+def test_assert_hit_agrees_is_silent_when_bucket_and_harness_agree():
+    # bucket == "hit" and harness_hit == True: agree.
+    _assert_hit_agrees("s1", "q", "hit", True, ["D1:1"], ["D1:1"])
+    # bucket != "hit" and harness_hit == False: also agree.
+    _assert_hit_agrees("s1", "q", "a_misranked", False, ["D1:8"], ["D1:1"])
+
+
+def test_assert_hit_agrees_raises_when_classify_gold_says_hit_but_harness_says_miss():
+    with pytest.raises(RuntimeError, match="classify_gold/harness disagree"):
+        _assert_hit_agrees("s1", "q", "hit", False, ["D1:1"], ["D1:1"])
+
+
+def test_assert_hit_agrees_raises_when_harness_says_hit_but_classify_gold_says_miss():
+    with pytest.raises(RuntimeError, match="classify_gold/harness disagree"):
+        _assert_hit_agrees("s1", "q", "b_unretrieved", True, ["D1:99"], ["D1:1"])
