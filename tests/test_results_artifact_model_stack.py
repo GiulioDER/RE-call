@@ -117,8 +117,18 @@ def test_the_grandfather_list_matches_the_tree() -> None:
     assert not stale, f"grandfathered names with no artifact: {sorted(stale)}"
 
 
-def test_model_stack_reports_something_here() -> None:
-    """The helper must actually resolve versions in the dev environment, not return {}."""
-    stack = model_stack()
-    assert stack, "model_stack() found none of the tracked packages installed"
-    assert all(isinstance(v, str) and v for v in stack.values())
+def test_model_stack_resolves_installed_and_skips_absent() -> None:
+    """Behaviour of the helper, not a claim about what happens to be installed.
+
+    An earlier version asserted `model_stack()` was non-empty. That passed locally, where the
+    torch stack is present, and failed in CI, which installs `.[dev]` and none of the tracked
+    packages — so it was testing the environment and calling it a code test. `pytest` is installed
+    wherever this runs, by construction.
+    """
+    assert model_stack(("pytest",)).get("pytest"), "an installed package must resolve"
+    assert model_stack(("recall-no-such-package",)) == {}, "an absent package must be omitted"
+
+
+def test_tracked_is_not_silently_empty() -> None:
+    """`TRACKED` going empty would make every stack `{}` and every check above vacuous."""
+    assert TRACKED and all(isinstance(name, str) and name for name in TRACKED)
