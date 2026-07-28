@@ -614,7 +614,7 @@ not from `FINDINGS.md`'s account of itself.
 
 | claim | status | artifact | notes |
 |---|---|---|---|
-| §9b LOCOMO abstention, 4 modes | current | `locomo/postfix_abstention.json` | post-#81/#84. `locomo_abstention.py:168` passes `calibration=cal` explicitly, so #101's auto-load bug never reached it |
+| §9b LOCOMO abstention, 4 modes | current | `locomo/postfix_abstention.json` | post-#81/#84. `locomo_abstention.py:160` (line numbers are against `9eb3bc1`, this document's baseline — line numbers in a working tree with later commits will not match) passes `calibration=cal` explicitly, so #101's auto-load bug never reached it |
 | §9b abstention with rerank on | **unmeasured** | — | #103 measured the default mode only (0.00, unchanged). The calibrated and judge modes have never been crossed with a reranker |
 | §9c entailment ROC sweep | stale | `locomo/postfix_entailment_sweep.log` | the re-run died after 9 conversations; no JSON was written and nothing noticed |
 | §10 LongMemEval, all rows | **unfalsifiable** | — | pre-#81/#84; indexes and output discarded. 6h39m to rebuild the merged index alone |
