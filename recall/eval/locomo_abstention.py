@@ -27,7 +27,12 @@ conversation) — no re-index. Run the main runner first if the tables are absen
 ::
 
     python -m recall.eval.locomo_abstention --data locomo10.json \\
-        --answerable-sample 40 --out results/locomo_abstention.json
+        --answerable-sample 40 --out results/locomo/my_abstention_run.json
+
+`results/locomo_abstention.json` is NOT that path on purpose: it is the retained pre-#81/#84 run,
+and it is the only evidence for the "(was 0.527)" / "(was 0.370)" figures FINDINGS §9b quotes.
+Overwriting it would delete the earlier half of a published before/after comparison, silently.
+See `results/ARTIFACTS.md`.
 """
 from __future__ import annotations
 

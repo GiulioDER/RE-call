@@ -172,10 +172,15 @@ A previous version of this file published each of these. They did not survive re
   upsert reproduces the collapse just as hard once the table is analyzed. The batching was winning
   the race, not shaping the graph. → [#98](https://github.com/GiulioDER/RE-call/pull/98)
 - **LOCOMO "hit@5 0.615"** — published as the pre-fix retrieval anchor, and as one of two runs whose
-  spread was read as HNSW build noise. Its result artifact was never retained, so it cannot be
-  checked against anything in this repo and has been **removed rather than restated**. The pre-fix
-  anchor is now the run that *does* have an artifact: **0.624** at k=5, 0.798 at k=20.
-  → [FINDINGS §9a](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)
+  spread was read as HNSW build noise. **Still withdrawn, but no longer for the original reason.**
+  It was removed because its result artifact had never been retained; that artifact was committed in
+  [#111](https://github.com/GiulioDER/RE-call/pull/111) and records **0.6152** at k=5
+  (`results/locomo_fastembed_k5.json`). What the artifact does not repair is the claim it was used
+  for: reading its spread against 0.624 as HNSW build noise, when the two runs differ in *candidate
+  pool*, not in index build. So it is now checkable and still not evidence for that claim. The
+  pre-fix anchor remains **0.624** at k=5, 0.798 at k=20.
+  → [FINDINGS §9a](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md),
+  [`results/ARTIFACTS.md`](https://github.com/GiulioDER/RE-call/blob/master/results/ARTIFACTS.md)
 - **"Per-question raw dumps are published"** — said of the Mem0 head-to-head. They are not:
   `benchmarks/results/` is gitignored, so each run writes them locally only. The harness, the
   pre-registration, the blind human labels, the corrupt-key list and an independent adversarial

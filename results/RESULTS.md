@@ -9,7 +9,7 @@ published here that falls outside them.
 
 | tier | means | sections |
 |---|---|---|
-| **📦 artifact** | a committed JSON/markdown result file in `results/` you can diff against the table | §6, §7 |
+| **📦 artifact** | a committed JSON/markdown result file in `results/` you can diff against the table | §6, §7, §11, §12 |
 | **▶️ reproducible** | no committed artifact, but the corpus is public or ships here and one command regenerates it | §1, §2, §3, §4 (PEPs), §7, §9 |
 | **🔒 private** | measured on a corpus that cannot be published; the aggregates are all that exist | §4 (memory corpus), §5, §8 |
 
@@ -500,3 +500,43 @@ Cost, same machine, same session:
 
 **Abstention is unchanged at 0.00 on all three arms** (n=446 adversarial). Reranking reorders
 retrieved candidates; it does not touch the trust layer, and these numbers confirm it did not.
+
+## 12. Cosine distributions — the artifact under §7b's rates and §10c's boundary 📦
+
+§7b reports abstention as *rates* and §10c states the boundary in words ("far gaps yes,
+near-misses no"). Both claims are about the shape of two **distributions**, and no artifact here
+retained the values — §8 says so outright for LongMemEval, and §7/§11's artifacts keep summary
+rates only. Under this file's own rule that is a figure that could not be drawn, only asserted.
+
+`results/cosine/distributions.json` retains them. It measures the same quantity the abstention
+decision reads — `locomo_abstention._top_cosine`, the max cosine over the hits returned at `k`,
+which is exactly what `trust.evaluate` thresholds — on the same seed-0 sample (40 answerable per
+conversation) the published rates were scored on.
+
+| pair | n | separability | 95% CI |
+|---|---|---|---|
+| LOCOMO answerable vs adversarial | 400 / 446 | **0.598** | [0.559, 0.636] |
+| 14-doc answerable vs far-gap | 14 / 5 | **1.000** | [1.000, 1.000] |
+| 14-doc answerable vs near-miss | 14 / 10 | 0.850 | [0.695, 1.000] |
+
+LOCOMO's two classes have medians 0.738 and 0.721 and cover the same range: there is no threshold,
+which is §7b's 0.000 in distribution form. The reference corpus separates its **far-gap** class
+completely — a 0.060-wide gap with nothing in it — and that is the bounded domain §10c names.
+
+**The third row carries no conclusion.** At n=10 its interval reaches 1.000, so it cannot show the
+near-miss class fails to separate; it is reported because it was measured, not because it
+establishes anything. The near-miss exclusion rests on row 1, where n puts the interval clear of
+the 0.90 bar. (A prediction registered before this run said row 3 would come in well below 0.90.
+It did not, and the interval is why that prediction was not answerable at this n in the first
+place.)
+
+Independent checks this run also produced: the §7a depth curve reproduced exactly on a fresh
+database and index (0.398 / 0.577 / 0.671 / 0.778 / 0.855; cat3 0.478; abstention 0.000), and the
+14-doc ranges — answerable **0.702–0.900**, far-gap **0.507–0.641** — reproduce the figures
+FINDINGS §10c quotes as 0.70–0.90 against 0.51–0.64.
+
+```bash
+python -m recall.eval.locomo      --data locomo10.json          # indexes locomo_chunks
+python -m recall.eval.cosine_dump --data locomo10.json \
+    --out results/cosine/distributions.json --chart-dir results/cosine
+```
