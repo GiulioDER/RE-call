@@ -1,20 +1,16 @@
 """Per-query, per-leg decisiveness — the quantity the Phase 0 diagnostic measures.
 
-A retrieval leg either found a clear winner or handed back a flat, undifferentiated list.
-`leg_confidence` reports which, as the z-score of the leg's top candidate within that leg's
-OWN candidate scores.
+`leg_confidence` moved to `recall.fusion` (Phase 1 graduated it to the serving path — see that
+module's docstring for the corrected provenance). It is re-exported here so `legdiag` and its
+tests are untouched.
 
-Why a z-score and not a normalized max: the dense leg scores in cosine (bounded, ~[0, 1]) and
-the sparse leg scores in `ts_rank` (unbounded, corpus-dependent). Any statistic that survives
-being compared across those two must be invariant to an affine change of units, and a z-score
-is. That invariance is asserted in `tests/test_leg_confidence.py`, not assumed here.
-
-This lives under `recall/eval/` deliberately. Nothing in the serving path consumes it.
+`more_decisive` stays here: it is diagnostic-only, and it is the thing that was falsified, not
+`leg_confidence` itself.
 
 FALSIFIED 2026-07-28 -> results/legdiag/FINDINGS_phase0.md. The trigger this module supports did
 not clear its Q1 gate: firing-group hit@5 (0.7081) was HIGHER than non-firing (0.6164), not lower
--- leg disagreement selects for retrieval successes, not failures. Phase 1 does not consume this.
-Read that finding before treating this module as a live path to production.
+-- leg disagreement selects for retrieval successes, not failures. `more_decisive` does not
+consume this. Read that finding before treating `more_decisive` as a live path to production.
 
 Being under `recall/eval/` does not keep it out of the installed package, either: `pyproject.toml`
 packages `recall` as a whole (`[tool.hatch.build.targets.wheel]` -> `packages = ["recall",
@@ -23,29 +19,11 @@ calls it.
 """
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 
+from recall.fusion import leg_confidence  # re-exported: Phase 1 moved it to the serving path
 
-def leg_confidence(scores: Sequence[float]) -> float:
-    """z-score of the top candidate within `scores`. 0.0 when there is no spread to measure.
-
-    Returns 0.0 for an empty leg, a single candidate, or a perfectly flat leg — all three mean
-    "this leg expressed no preference". Never negative: the maximum of a sample is always at
-    least its mean.
-
-    Not comparable across inputs of different length — the expected value of a sample maximum
-    grows with sample size on its own, even under pure noise. Use `more_decisive` to compare two
-    legs.
-    """
-    n = len(scores)
-    if n < 2:
-        return 0.0
-    mu = sum(scores) / n
-    sd = math.sqrt(sum((s - mu) ** 2 for s in scores) / n)
-    if sd == 0.0:
-        return 0.0
-    return (max(scores) - mu) / sd
+__all__ = ["leg_confidence", "more_decisive"]
 
 
 def more_decisive(sparse_scores: Sequence[float], dense_scores: Sequence[float]) -> bool:

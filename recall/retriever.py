@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from recall.embeddings import Embedder
+from recall.fusion import weighted_rrf
 from recall.guards import DEFAULT_GAP_THRESHOLD, gap_warning, staleness
 from recall.rerank import Reranker
 from recall.store import PgVectorStore
@@ -21,17 +22,13 @@ DEFAULT_CANDIDATE_K = 20
 def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
     """Fuse several best-first ID rankings into one score map (Reciprocal Rank Fusion).
 
-    Each input list is an independent ranking, best first. Every id accrues
-    ``1 / (k + rank)`` from each list it appears in; `k` (default 60, the standard RRF
-    damping constant — unrelated to the caller's result-count `k`) softens the weight of
-    top ranks so no single ranking dominates. The returned dict is UNSORTED; callers sort
-    by value descending.
+    The plain, equal-weight case of `recall.fusion.weighted_rrf` — kept as a thin wrapper
+    (rather than inlining the formula here again) because `tests/test_hybrid_fusion_contract.py`
+    imports this name directly and pins its behaviour. Uniform weights reproduce the shipped
+    ORDER exactly: every score is scaled by the same constant, which cannot reorder anything.
+    The returned dict is UNSORTED; callers sort by value descending.
     """
-    scores: dict[str, float] = {}
-    for ranking in rankings:
-        for rank, cid in enumerate(ranking):
-            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank + 1)
-    return scores
+    return weighted_rrf(rankings, k=k)
 
 
 @dataclass(frozen=True)
