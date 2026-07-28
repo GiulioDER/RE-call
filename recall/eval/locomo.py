@@ -81,6 +81,7 @@ from typing import Any
 from recall.embeddings import Embedder
 from recall.eval.labelled import _make_embedder
 from recall.eval.metrics import wilson_ci
+from recall.eval.provenance import provenance_block
 from recall.index import Indexer
 from recall.rerank import DEFAULT_RERANKER_MODEL, Reranker
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
@@ -474,8 +475,15 @@ def run(
             f"{_rate(all_hits)['rate']}: q['hit'] is not scored at k"
         )
 
+    # Summed from what each conversation actually measured (Task 1's post-condition), never
+    # from a configured expectation: an expectation copied into a result proves nothing.
+    corpus_rows = sum(int(res.get("corpus_rows", 0)) for res in per_conversation)
+    tenants = [f"locomo-{c.get('sample_id') or f'conv{i}'}"
+               for i, c in enumerate(conversations)]
+
     return {
         "benchmark": "LOCOMO",
+        **provenance_block(corpus_rows, table, tenants),
         "metric": f"evidence-turn hit@{k} (retrieval only, no LLM judge)",
         "embedder": embedder_name,
         "k": k,
