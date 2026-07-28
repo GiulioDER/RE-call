@@ -27,7 +27,11 @@ one tenant per conversation); run that first.
 ::
 
     python -m recall.eval.locomo_entailment_sweep --data locomo10.json \\
-        --answerable-sample 40 --out results/locomo_entailment_sweep.json
+        --answerable-sample 40 --out results/locomo/my_entailment_sweep.json
+
+`results/locomo_entailment_sweep.json` is NOT that path on purpose: it is the retained pre-#81/#84
+run, and unlike the other pre-fix artifacts it has **no successor** — §9c has not been re-measured,
+so it is currently the only measurement of the judge ROC. See `results/ARTIFACTS.md`.
 """
 from __future__ import annotations
 
