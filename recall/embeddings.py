@@ -324,3 +324,67 @@ class VoyageEmbedder:
             return [[float(x) for x in v] for v in result.embeddings]
 
         return batched_embed(texts, _embed_batch, batch_size=self._batch_size)
+
+
+class OpenAICompatEmbedder:
+    """OpenAI-compatible cloud embeddings via any ``base_url`` (OpenRouter, OpenAI, Azure, vLLM).
+
+    Defaults to OpenRouter so the exact ``openai/text-embedding-3-small`` model is reachable on the
+    same key the benchmark already uses for its generator and judge — no separate OpenAI billing,
+    which is the whole reason this backend exists. The request/response shape is OpenAI's
+    ``/v1/embeddings``, so the stock ``openai`` SDK works unchanged against OpenRouter's endpoint.
+
+    ``dimensions`` is deliberately never sent: ``text-embedding-3-small`` returns its native
+    1536-wide vector, and some OpenAI-compatible proxies reject the parameter. Both arms of the
+    benchmark therefore compare at the model's native width.
+    """
+
+    def __init__(
+        self,
+        model: str = "openai/text-embedding-3-small",
+        api_key: str | None = None,
+        base_url: str = "https://openrouter.ai/api/v1",
+        batch_size: int = 128,
+        max_retries: int = 3,
+    ) -> None:
+        key = api_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        if not key:
+            raise RuntimeError(
+                "OpenAICompatEmbedder needs an API key (OPENROUTER_API_KEY or OPENAI_API_KEY in "
+                "the environment, or an explicit api_key)"
+            )
+        try:
+            from openai import OpenAI
+        except ImportError as exc:  # pragma: no cover - exercised only without the SDK
+            raise ImportError("OpenAICompatEmbedder requires: pip install openai") from exc
+        self._client = OpenAI(api_key=key, base_url=base_url)
+        self._model = model
+        self._name = f"openai:{model}"
+        self._batch_size = batch_size
+        self._max_retries = max_retries
+        # Probe the width once, the same way the other cloud embedder does, so a store can be built
+        # at the matching ``dim`` before the first real batch is embedded.
+        self._dim = len(self._embed_one_batch(["probe"])[0])
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def _embed_one_batch(self, batch: list[str]) -> list[list[float]]:
+        result = retry_with_backoff(
+            lambda: self._client.embeddings.create(
+                model=self._model, input=batch, encoding_format="float"
+            ),
+            attempts=self._max_retries,
+        )
+        return [[float(x) for x in item.embedding] for item in result.data]
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed in provider-safe batches with exponential-backoff retry per batch — the same
+        contract as ``VoyageEmbedder.embed``, so this is a drop-in cloud embedder on the RE-call
+        arm."""
+        return batched_embed(texts, self._embed_one_batch, batch_size=self._batch_size)
