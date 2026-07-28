@@ -8,7 +8,95 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Fixed
+- **`mcp` is capped at `<2`. Its 2.0.0 release broke `master` with nothing in this repo changed.**
+  mcp 2.0.0 landed on 2026-07-28 at 13:45 UTC; `master`'s last green run was 13:23. The next CI run
+  after that — on an unrelated docs branch — failed `test` and `typecheck`, and the diff that
+  "caused" it touched only markdown.
+
+  Three incompatibilities, all of which `recall_mcp/server.py` depends on: `mcp.server.fastmcp` is
+  gone (`ModuleNotFoundError` in four test modules), `request_ctx` moved out of
+  `mcp.server.lowlevel.server`, and every `ToolAnnotations` field was renamed to snake_case
+  (`readOnlyHint` -> `read_only_hint`, ×4 per tool).
+
+  The floor on this dependency was researched in detail — the comment above it explains exactly why
+  1.10 was insufficient and 1.27.2 binds. The **ceiling was left unbounded**, so `>=1.27.2` silently
+  meant "and any future major". Both the `mcp` extra and the `dev` extra are now capped; capping
+  only the extra would still break `test` and `typecheck`, which install `.[dev]`.
+
+  This is the same policy the `ruff>=0.5,<0.16` pin already states: **raising the cap is a port, not
+  a bump**, and belongs in its own PR with the three call sites fixed. Supporting mcp 2.x is real
+  work and is not done here. (`pyproject.toml`, `uv.lock`)
+- **Every committed result artifact now says which configuration produced it, and the marker was
+  on the wrong half of them.** `results/locomo_abstention.json` reads `calibrated: 0.5269`;
+  `RESULTS.md` §7b publishes **0.574**. Both are correct — pre- and post-#81/#84 — and nothing in
+  the filename said so. The marker was on the *post*-fix files (`postfix_`), so the absence of a
+  marker read as "the result" when it meant "the older one", and `locomo_abstention.json` is about
+  as authoritative a name as that file could have. Same failure shape as a threshold that returns a
+  plausible number on data that cannot support it: nothing errors, the reader just gets the wrong
+  answer.
+
+  All twelve LOCOMO artifacts now carry a leading `_provenance` block — generation, status,
+  successor, and which published figures the artifact backs — so a file that is opened, copied or
+  linked on its own still says what it is. **No measured value was touched**: the migration
+  asserted byte-equality of every artifact minus the inserted key before writing.
+  `results/ARTIFACTS.md` is the index, and `tests/test_results_artifact_provenance.py` fails if a
+  new artifact arrives without a block, if a superseded one names a missing successor, if a live
+  one names a successor at all, or if an artifact is absent from the index.
+
+  A pre-fix artifact is **not** wrong — it is a correct measurement of a configuration this library
+  no longer ships, and in two cases the only evidence for a "was X" figure the current documents
+  quote (§9b's "(was 0.527)" / "(was 0.370)"). Two of them are singular: `locomo_entailment_sweep`
+  has **no successor** because §9c has not been re-measured, and `depth_curve_pool100` records a
+  control §9a **retracted**. Both are stated in the block rather than inferable from the name.
+
+  The clobber hazard is closed too: `locomo_abstention.py` and `locomo_entailment_sweep.py` told
+  you to write `--out` straight onto those retained records, which would have deleted the earlier
+  half of a published before/after comparison with no error. They now suggest a fresh path and say
+  why. (`results/*.json`, `results/ARTIFACTS.md`, `recall/eval/locomo_abstention.py`,
+  `recall/eval/locomo_entailment_sweep.py`, `tests/test_results_artifact_provenance.py`)
+- **The "hit@5 0.615" withdrawal cited a reason that stopped being true.** README's withdrawn list
+  and FINDINGS §9a both removed that figure on the ground that its result artifact *was never
+  retained*. [#111](https://github.com/GiulioDER/RE-call/pull/111) committed it —
+  `results/locomo_fastembed_k5.json` records **0.6152** at k=5 — so the repo holds **five** pre-fix
+  artifacts, not the "two" §9a still claimed. Both statements corrected, and the count is now
+  pinned by a test rather than restated in prose.
+
+  **The figure stays withdrawn**, because retaining the artifact does not repair the claim it was
+  used for: the runs whose spread was read as HNSW build noise differ in *candidate pool*, not in
+  index build. It is now checkable and still not evidence for that. (README, `results/FINDINGS.md`)
+
 ### Added
+- **The cosine distributions behind the abstention results are now a retained artifact
+  (`results/cosine/distributions.json`), not an assertion.** §7b reported abstention as *rates*
+  and §10c stated the boundary in prose; both are claims about the shape of two distributions,
+  and nothing here kept the values — `RESULTS.md` §8 says so outright for LongMemEval, and §7/§11
+  retained summary rates only. Under this repo's own evidence-tier rule that made the obvious
+  chart undrawable except from published quantiles, i.e. by inventing shape.
+
+  `recall.eval.cosine_dump` regenerates and retains them, measuring the same quantity the
+  abstention decision reads (`locomo_abstention._top_cosine` — max cosine over hits at `k`, which
+  is what `trust.evaluate` thresholds) on the same seed-0 sample the published rates were scored
+  on. LOCOMO answerable vs adversarial: separability **0.598** [0.559, 0.636], medians 0.738
+  against 0.721 — §7b's 0.000 in distribution form. The 14-doc reference corpus separates its
+  far-gap class completely (**1.000**, a 0.060-wide empty gap) and carries its near-miss class on
+  the same corpus, so §10c's boundary is visible without a corpus change confounding it.
+
+  **The near-miss row is reported and explicitly carries no conclusion**: at n=10 its interval
+  reaches 1.000. A prediction registered before the run said it would land well below the 0.90
+  bar; it measured 0.850, and the interval is why that prediction was not answerable at this n.
+  The near-miss exclusion rests on the LOCOMO row, where n supports it.
+
+  Two reuse decisions rather than new paths: indexing goes through `harness._throwaway_store`
+  (uuid-named, dropped on exit) instead of a second index call with a fixed table name, which is
+  the failure the double-index guard exists to prevent; and the reference-corpus class split
+  mirrors `calibrate.measure_top_cosines`, which already owned that rule. The shortcut it avoids
+  is pinned by a test: bucketing on a falsy `entry.get("answerable")` puts all six `trust`
+  entries into the unanswerable class — a far-gap class of **11** against a true **5** — and
+  returns a plausible wrong distribution rather than raising. Reproduced on a fresh database as a
+  side effect: §7a's depth curve exactly, and §10c's quoted 0.70–0.90 / 0.51–0.64 ranges.
+  (`recall/eval/cosine_dump.py`, `tests/test_eval_cosine_dump.py`, `results/cosine/`,
+  `results/RESULTS.md` §12)
 - **`RECALL_RERANK=1` turns on cross-encoder reranking in the MCP server.** The server is how an
   agent actually consumes this library, and it had no way to enable the largest retrieval gain the
   project has measured: `service.py` called `trusted_search` without the `reranker` argument that
