@@ -16,6 +16,8 @@ from typing import Any
 
 import pytest
 
+from tests.conftest import requires_fastembed
+
 from benchmarks.systems import (
     BENCH_TABLE,
     MemorySystem,
@@ -89,6 +91,7 @@ def test_fake_records_ingested_conversations() -> None:
     assert [c["sample_id"] for c in system.ingested] == ["c1", "c2"]
 
 
+@requires_fastembed
 @pytest.mark.skipif(not os.environ.get("RECALL_TEST_DSN"), reason="needs Postgres")
 def test_recall_system_indexes_and_retrieves() -> None:
     """A distinctive fact ingested in one turn must come back out of retrieve().
@@ -126,6 +129,7 @@ def test_recall_system_indexes_and_retrieves() -> None:
     assert "quokka-telemetry-4417" in ctx
 
 
+@requires_fastembed
 @pytest.mark.skipif(not os.environ.get("RECALL_TEST_DSN"), reason="needs Postgres")
 def test_recall_system_returns_empty_string_on_abstention() -> None:
     """Retrieving a question with no relevant indexed content must abstain to an empty string.
@@ -153,6 +157,7 @@ def test_recall_system_returns_empty_string_on_abstention() -> None:
     assert ctx == ""
 
 
+@requires_fastembed
 @pytest.mark.skipif(not os.environ.get("RECALL_TEST_DSN"), reason="needs Postgres")
 def test_recall_system_reingest_does_not_duplicate_the_corpus() -> None:
     """Ingesting the same conversation twice must REPLACE its rows, never accumulate them.
