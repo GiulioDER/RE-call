@@ -70,3 +70,38 @@ Near-miss = a high-similarity memory that does NOT answer the query — the clas
 | BAAI/bge-small-en-v1.5 | threshold | 1.00 | 0.00 | 0.07 | 0.929 | 0 | 41 |
 | BAAI/bge-small-en-v1.5 | threshold+entail | 0.50 | 0.00 | 0.14 | 0.857 | 1791 | 1486 |
 | BAAI/bge-small-en-v1.5 | entail-only | 0.80 | 0.20 | 0.07 | 0.929 | 2225 | 2287 |
+
+## BEAM 1M — head-to-head, one judge, shipped defaults
+
+Full detail and every negative result in `FINDINGS.md` §9d-§9n. Artifacts in `benchmarks/results/`.
+
+| 300 questions | RE-call | Mem0 |
+|---|---|---|
+| avg_score | 0.594 | 0.650 |
+| accuracy | 66.7 % | 71.0 % |
+| false-abstain | 3.3 % | 4.1 % |
+| retrieval empty | 0.0 % | 0.0 % |
+
+Paired McNemar, Holm across three families: none significant against us (accuracy p 0.39,
+false-abstain 1.00, abstention 1.00). We lose the aggregate.
+
+**Validation of the harness before the comparison:** re-scoring Mem0's *published* per-question
+answers with this judge reproduces their released BEAM 1M cell to **0.0005** (0.6414 vs 0.6409,
+pass rate identical). The judge is faithful, which is what licenses the paired design.
+
+**Provenance.** Embedder `openai/text-embedding-3-small` for both arms (Mem0's own default, and
+the reason the §9f embedder change is stated rather than buried); answerer and judge
+`openai/gpt-5`, which is what Mem0's harness defaults to — not gpt-4o; k = 45 after the sweep in
+§9m; conversations 0-14 of the 1M bucket; run on VPS2 2026-07-26/28.
+
+**Two caveats that belong next to the numbers.** BEAM's unanswerable questions are adversarial by
+construction — every overlap measure scores *highest* where there is no answer (§9n), so these
+cells are an upper bound on difficulty, not deployed behaviour; on an ordinary corpus cosine
+separates the right way at AUC 0.78. And BEAM's aggregate weights abstention at 10 % of questions
+against false-abstention risk on the other 90 %, so it cannot price an abstention claim in either
+direction.
+
+**The finding worth quoting, measured on Mem0's own published answers:** on the abstention
+category it abstained on 38 of 70 (mean 0.974) and answered on 32 (mean 0.016) — an answer
+constructed on **46 %** of questions whose gold answer is that the information was never present.
+Our own abstention on that category is 0.533 against their 0.533; we are not ahead here.

@@ -172,6 +172,77 @@ auditable memory** — calibrated abstention, per-hit provenance, validity/super
 data, and no LLM in the retrieval path. Whether that's worth more than a few accuracy points is a
 choice about your application — but you can only make it if someone reports the honest numbers.
 
+## We also ran BEAM, and we lose it
+
+LOCOMO is one benchmark. In July 2026 Mem0 published numbers on a second one — BEAM, from ICLR
+2026 — so we ran that too, on their harness, with their prompts, at both systems' shipped defaults.
+
+**Before the result, a check that matters more than the result.** BEAM's harness stores every
+per-question answer Mem0 produced. We re-scored *their* published answers with our own judge
+instance, and got **avg_score 0.6414 against their published 0.6409**, pass rate identical at
+70.14%. Their number reproduces. Anyone claiming these vendors publish fabricated results should
+try reproducing them first; we did, and it held.
+
+Then the same judge scored our arm on the same 300 questions:
+
+| BEAM 1M, 300 questions, one judge | RE-call | Mem0 |
+|---|---|---|
+| avg_score | **0.594** | **0.650** |
+| accuracy | 66.7 % | 71.0 % |
+| false-abstain | 3.3 % | 4.1 % |
+
+We lose the aggregate. Paired McNemar with Holm across three families: **no family is significant
+against us** (accuracy p = 0.39, false-abstain 1.00, abstention 1.00) — but the raw gap is real and
+we are not going to round it away.
+
+### What BEAM can and cannot measure
+
+Its unanswerable questions ask for details never stated about topics discussed *at length*. That
+construction is right for a hallucination test and it has a consequence: **every overlap measure
+scores highest exactly where there is no answer.** Cosine inverts (0.676 for unanswerable against
+0.641 for answerable), and so does simple lexical coverage (0.741 vs 0.717) — two signals sharing
+no mathematics and no model, wrong in the same direction.
+
+We checked whether that generalises by building the ordinary case mechanically: hold out 120 of 787
+curated memos, index the rest, query each by its own description. Held-out descriptions are
+unanswerable because the document is genuinely absent — no adversarial design. There, cosine
+separates the right way, **AUC 0.78**. So BEAM's inversion is a property of BEAM, and our numbers
+on it are an upper bound on difficulty rather than a picture of deployed behaviour.
+
+There is a second structural point. Abstention is 10 % of BEAM's questions while false-abstention
+risk applies to the other 90 %, so **every abstention policy we tested came out net negative on its
+aggregate**. A system that declines to invent cannot win that average. That is not a flaw in BEAM —
+it is a reason the abstention claim has to be measured somewhere else, and we say so rather than
+quietly reporting the category we happen to win.
+
+### The number from BEAM we would actually quote
+
+Scoring Mem0's own published answers on the abstention category: when it abstained (38 of 70) it
+averaged **0.974**; when it answered (32 of 70) it averaged **0.016**. So on **46 % of questions
+whose gold answer is "this was never discussed", an answer was constructed anyway.** One instance:
+asked about user feedback on a feature, the stored answer reports "a 90 % satisfaction rate" — the
+conversation contains only the assistant *speculating* that such a rate would be a strong start.
+
+We are not better here. Our own abstention on that category scores 0.533 against their 0.533, and
+we false-abstain more than they do on nine of ten categories. The point is not that we win it. It
+is that the axis exists, that it is measurable on published artifacts, and that nobody's headline
+reports it.
+
+### What we changed because of BEAM
+
+Two library defects, both merged, neither of them a benchmark tweak:
+
+1. `trusted_search` never actually **read** the calibration from disk — `load_for()` was called only
+   by the CLI, so a user who ran `recall calibrate` and then used the library API silently got the
+   default. On `text-embedding-3-small` that default returned *empty retrieval* for 18 of 300
+   questions: a guaranteed zero with no error anywhere.
+2. The default abstention floor is an **absolute cosine**, and cosine levels are not comparable
+   across models. Measured over 2 corpora × 3 embedders, it sits at the 0th percentile of five
+   distributions and the 16th of the sixth — inert for most models, discarding a sixth of queries
+   for one. It now warns instead of guessing. We deliberately did **not** ship a different constant:
+   four rate-based replacements were measured and all failed, and a new number would repeat the
+   original mistake.
+
 ## The cost gap nobody prints
 
 Accuracy is one column; **cost per memory is the other**, and it's a *category* difference, not a
