@@ -15,6 +15,11 @@
 - **The default code path stays byte-identical.** `with_rank` defaults `False`; `probe` defaults `None`. A duck-typed store double in `tests/test_advice_injection.py:123` defines `query_sparse(self, query, k, source=None, vec=None)` with no `with_rank`, so the retriever must pass that keyword **only when a probe is attached**.
 - **Test DSN:** `RECALL_TEST_DSN="postgresql://recall:recall@localhost:5434/recall"`. Never `:5432` — that container belongs to another worktree and this suite DROPs tables.
 - **Run tests with:** `RECALL_TEST_DSN="postgresql://recall:recall@localhost:5434/recall" uv run pytest ...`
+- **Every task must end green on all three CI gates, not just pytest.** `.github/workflows/ci.yml` runs `ruff check .` (line 48), `pytest` (line 60) and bare `mypy` (line 83). Run all three before committing:
+  ```
+  cd /c/Users/gde00/Documents/recall-fusion-prf && uv run ruff check . && uv run mypy && RECALL_TEST_DSN="postgresql://recall:recall@localhost:5434/recall" uv run pytest -q
+  ```
+  This was learned the expensive way: Task 1 shipped with both `ruff` and `mypy` red and it went unnoticed for two tasks, because an earlier draft of this plan only checked pytest per task and deferred the linters to Task 5.
 - **Baseline before starting:** 871 passed, 5 skipped. The absolute counts quoted per task are informational — the binding check is **zero failures and no previously-passing test broken**. If your count differs from the quoted one but nothing fails, say so in your report and continue.
 - **`locomo10.json` is present in the worktree root** and is gitignored (`.gitignore:21`). Do not commit it.
 - **Predictions are already committed** (`ef68bb1`). Do not edit them after seeing any output.
