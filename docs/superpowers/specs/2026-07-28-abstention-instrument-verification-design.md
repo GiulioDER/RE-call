@@ -54,7 +54,9 @@ Recorded so this cycle does not redo work that landed while it was being scoped.
 | #103 rerank result | **merged** (`9eb3bc1`), hit@5 0.671 → 0.777, verified at 5,882 rows |
 | #101 calibration auto-load | **merged** (`8748df0`) |
 
-**#101 does not invalidate the §9b tables.** `recall/eval/locomo_abstention.py:168` passes
+**#101 does not invalidate the §9b tables.** `recall/eval/locomo_abstention.py:160` (line numbers
+are against `9eb3bc1`, this document's baseline — see line 4; this branch later inserted 8 lines
+above it, which is the only reason a higher number looks right in the current working tree) passes
 `calibration=cal` **explicitly** to `trusted_search`, so the auto-load bug never touched that
 harness. #101's blast radius was on library users, not on published results.
 
