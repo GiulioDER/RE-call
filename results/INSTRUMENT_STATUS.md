@@ -125,3 +125,16 @@ Recorded here so they stay visible in the artifact itself, not only in a review 
   row added 2026-07-28 is `unmeasured` or `current, unretained` and stays that way structurally,
   not just by omission. Confirmed 2026-07-28: `git log --all --full-history` finds zero commits
   ever touching a `results/beam*` or `results/**/bench_beam*` path.
+- **The two provenance mechanisms are not integrated, and `results/locomo/prereq_index.json` is the
+  concrete instance, not a hypothetical.** The "note on provenance" above (this document, ~line 29)
+  already flags that master's `_provenance` block and this branch's `provenance_block()` are
+  separate and neither implies the other. On 2026-07-28 that stopped being abstract:
+  `recall/eval/locomo.py` produced `prereq_index.json` as the apparatus check ahead of the §9c
+  re-measurement, and because the runner only calls `provenance_block()`
+  (`corpus_rows`/`table`/`tenants`/`git_sha`/`git_dirty`), the file carried no master `_provenance`
+  block at all — it sat committed-but-untracked, failing all four of
+  `tests/test_results_artifact_provenance.py`'s per-file checks, until it was hand-stamped (see
+  `results/ARTIFACTS.md`'s row for it). **Every artifact any of the three wired LOCOMO runners
+  produces from here on will fail the same guard the same way** until either a runner is changed to
+  also emit `_provenance` — a design change, out of scope for that fix and not attempted — or
+  whoever commits the artifact stamps it by hand, as was done here.

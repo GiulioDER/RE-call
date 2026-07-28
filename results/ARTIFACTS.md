@@ -41,6 +41,16 @@ when it meant "the older one".
 | `locomo_rerank/rerank_shipped.json` | §11 *ms-marco-MiniLM-L-6-v2* |
 | `locomo_rerank/rerank_modern.json` | §11 *bge-reranker-base* |
 | `cosine/distributions.json` | §12 cosine distributions |
+| `locomo/prereq_index.json` | apparatus check for the (in-progress) §9c re-measurement — reproduces `postfix_pool20` to four decimals, not itself a published result |
+
+**`locomo/prereq_index.json` deserves its own note.** Unlike the rows above it, it does not back a
+numbered `RESULTS.md`/`FINDINGS.md` section — it is the apparatus check that ran *before* the §9c
+re-measurement (see [`locomo/PREDICTION-9c-rerun.md`](locomo/PREDICTION-9c-rerun.md)), confirming
+the corpus (5882 rows in `locomo_chunks`, 10 tenants) and retrieval substrate reproduce
+`postfix_pool20.json`'s `retrieval_overall.rate` of 0.6706 (n=1536) to four decimals before the
+longer two-judge sweep that reads them runs. It **corroborates** `postfix_pool20.json`; it does
+**not** supersede it — its `_provenance.superseded_by` is `null` for the ordinary reason (nothing
+has replaced it), not because it is itself unmeasured.
 
 ### Pre-#81/#84 — kept as the record of that configuration
 
