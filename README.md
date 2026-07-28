@@ -242,6 +242,40 @@ headings, on the **same** held-out split throughout. Two corpora, one embedder s
 > Full study, per-corpus table, confounds and limits →
 > [`results/gap/FINDINGS-embedder-gap.md`](results/gap/FINDINGS-embedder-gap.md)
 
+### So which configuration should you actually run?
+
+Two, and the honest answer is that most people should start with the first.
+
+**Default — free, local, offline, nothing leaves your machine.** No flags. `bge-small` via
+fastembed, hybrid dense+sparse, no reranker. $0 per memory at any scale, and the configuration
+every number in this README was measured on unless stated otherwise.
+
+**Best measured quality** — when retrieval accuracy is worth an API dependency and ~1 s per query:
+
+```bash
+--embedder voyage:voyage-4-large --candidate-k 250 --reranker local
+```
+
+| knob | why | measured |
+|---|---|---|
+| `voyage-4-large` | best embedder we have measured | wins **16/17** corpora, median **+0.059** hit@5; **+0.282** on a jargon-heavy corpus; gap **grows with corpus size** (+0.013 under 10k docs → **+0.062** at 17k+) |
+| `--reranker local` | largest single retrieval gain in this project | hit@5 **0.671 → 0.777** (n=1,536). Costs ~1,050 ms/query, which is why it is off by default |
+| `--candidate-k` **above** `--k` | **without this the reranker does nothing** | at `candidate_k == k` the pool, the returned set and your context are the same memories, so reranking reorders a list you were going to get anyway. Widening it changed the returned set on **100%** of questions (mean Jaccard 0.372) |
+
+Two things worth knowing before you copy that line:
+
+- **`voyage-3` is legacy.** It is still `VoyageEmbedder`'s default, has no free tier, and is
+  superseded by `voyage-4-large` — which carries a **200M tokens/month free tier**, so for most
+  corpora the cloud embedder costs nothing.
+- **`--candidate-k` tops out near 250.** The HNSW scan is widened to `candidate_k × 4` and pgvector
+  caps `hnsw.ef_search` at 1000. Past that the pool is still honoured, a `RuntimeWarning` says the
+  over-fetch margin was reduced, and retrieval still covers your `k`.
+
+**If you change the embedder, recalibrate the abstention gate.** The shipped `0.50` floor is not
+comparable across models — measured, it sits at the 0th percentile of five score distributions and
+the 16th of a sixth, so on one model it never fires and on another it discards ~7% of queries as
+empty retrieval. `recall calibrate` measures it for **$0** (embeddings only, no LLM call).
+
 **On this corpus the pipeline was not the cap.** Three other levers were tested one at a time on the
 same questions and none moved it: cross-encoder rerank +0.065 *(n.s., 57× latency)*, chunk size
 400/800/1600 **+0.000**, candidate pool 20 → 100 *(n.s.)*. Abstention accuracy held at 0.89–1.00
