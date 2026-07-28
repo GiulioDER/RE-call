@@ -977,8 +977,25 @@ Measured on conversation 0, entailed-count in the top 10 by class:
 | abstain if entailed < 1 (**current**) | 50 % | 17 % |
 | abstain if entailed < 3 | **100 %** | 22 % |
 
-Note the direction: this is the separation the COSINE threshold could not provide at any value
-(§9g showed unanswerable cosines run HIGHER than answerable ones, median 0.676 vs 0.641). Counting
+Note the direction: this is the separation the COSINE threshold could not provide at any value,
+because on BEAM the two classes are ordered **the wrong way round**:
+
+| BEAM 1M, top-1 cosine | median |
+|---|---|
+| unanswerable (the `abstention` category) | **0.676** |
+| answerable (the other nine categories) | 0.641 |
+
+That is the raw top-1 cosine per class under BEAM's own labels, collected by
+`benchmarks/beam/calibrate.py` — embeddings and cosines only, no answerer and no judge. The
+calibration JSON is written by `--out` and is not committed, so this is a reproducible figure
+rather than an artifact-backed one:
+
+```bash
+python -m benchmarks.beam.calibrate --data <beam_1M.parquet> --out beam_calibration.json
+```
+
+A threshold is a monotone rule on that column, so no value of it can separate two classes that are
+already in the wrong order — the argument §9n generalises to every rule of that shape. Counting
 entailments recovers the ordering that similarity inverts.
 
 **⚠ n = 2 unanswerable questions in this sample.** This is a direction with a mechanism, not a
@@ -1023,7 +1040,7 @@ Two things worth keeping from this:
 
 **The mechanism in §9h was right; its extrapolation was not.** `any()` over ~200 candidates IS
 maximally permissive, and entailment count DOES order the classes correctly where cosine inverts
-them (§9g). Neither of those claims is retracted. What is retracted is that changing the policy
+them (§9h). Neither of those claims is retracted. What is retracted is that changing the policy
 improves the cell — it does not, and the reason is arithmetic that was available before the probe
 ran: abstention is 10 % of BEAM, false-abstention risk is 90 %.
 
@@ -1168,7 +1185,7 @@ independence is not a real problem, 0.50 is fine, and this line of work closes a
 
 **What is NOT claimed:** that a rate-based threshold improves the BEAM score. It does not. On BEAM
 `absolute@0.40` remains the best cell of everything tested (268 of 270 answerable served), because
-here the unanswerable questions score HIGHER than the answerable ones (§9g) and no function of the
+here the unanswerable questions score HIGHER than the answerable ones (§9h) and no function of the
 score separates them. The quantile's argument is robustness across deployments, not accuracy here.
 
 ### 9n. The regime sweep settles the problem; four candidate fixes are now measured and dead
@@ -1210,7 +1227,7 @@ text-embedding-3-small — the model where the constant does damage and a replac
 needed.
 
 **Why all four failed, in one sentence.** They are all monotone functions of the same score, and
-§9g established that on BEAM the unanswerable questions score HIGHER than the answerable ones. A
+§9h established that on BEAM the unanswerable questions score HIGHER than the answerable ones. A
 monotone transform preserves order; the order is what is wrong. This decomposes the work into
 **Problem A** (cross-model comparability — solvable by rescaling) and **Problem B** (the score does
 not separate the classes — NOT solvable by any rescaling), and every negative result of the last
