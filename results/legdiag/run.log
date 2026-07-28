@@ -1,0 +1,167 @@
+  [1/10] conv-26: 150 scored
+  [2/10] conv-30: 81 scored
+  [3/10] conv-41: 152 scored
+  [4/10] conv-42: 199 scored
+  [5/10] conv-43: 178 scored
+  [6/10] conv-44: 123 scored
+  [7/10] conv-47: 150 scored
+  [8/10] conv-48: 191 scored
+  [9/10] conv-49: 156 scored
+  [10/10] conv-50: 156 scored
+{
+  "n_scored": 1536,
+  "n_excluded_unlabelled": 0,
+  "q1_hit_at_k": {
+    "firing": {
+      "rate": 0.7080890973036342,
+      "n": 853,
+      "ci": [
+        0.6767,
+        0.7376
+      ]
+    },
+    "not_firing": {
+      "rate": 0.616398243045388,
+      "n": 683,
+      "ci": [
+        0.5794,
+        0.6521
+      ]
+    },
+    "delta": 0.09169085425824619
+  },
+  "q1_stratified_by_sparse_depth": {
+    "n_sparse_0-4": {
+      "n": 4,
+      "firing": {
+        "rate": 1.0,
+        "n": 1,
+        "ci": [
+          0.2065,
+          1.0
+        ]
+      },
+      "not_firing": {
+        "rate": 1.0,
+        "n": 3,
+        "ci": [
+          0.4385,
+          1.0
+        ]
+      },
+      "delta": 0.0
+    },
+    "n_sparse_10-19": {
+      "n": 4,
+      "firing": {
+        "rate": 1.0,
+        "n": 4,
+        "ci": [
+          0.5101,
+          1.0
+        ]
+      },
+      "not_firing": {
+        "rate": 0.0,
+        "n": 0,
+        "ci": [
+          null,
+          null
+        ]
+      },
+      "delta": null
+    },
+    "n_sparse_20+": {
+      "n": 1527,
+      "firing": {
+        "rate": 0.706021251475797,
+        "n": 847,
+        "ci": [
+          0.6745,
+          0.7357
+        ]
+      },
+      "not_firing": {
+        "rate": 0.6147058823529412,
+        "n": 680,
+        "ci": [
+          0.5776,
+          0.6505
+        ]
+      },
+      "delta": 0.09131536912285576
+    },
+    "n_sparse_5-9": {
+      "n": 1,
+      "firing": {
+        "rate": 1.0,
+        "n": 1,
+        "ci": [
+          0.2065,
+          1.0
+        ]
+      },
+      "not_firing": {
+        "rate": 0.0,
+        "n": 0,
+        "ci": [
+          null,
+          null
+        ]
+      },
+      "delta": null
+    }
+  },
+  "q2_firing_rate": {
+    "rate": 0.5553385416666666,
+    "n": 1536,
+    "ci": [
+      0.5304,
+      0.58
+    ]
+  },
+  "q2_firing_rate_by_category": {
+    "1": {
+      "rate": 0.4397163120567376,
+      "n": 282,
+      "ci": [
+        0.383,
+        0.4981
+      ]
+    },
+    "2": {
+      "rate": 0.5669781931464174,
+      "n": 321,
+      "ci": [
+        0.5123,
+        0.6201
+      ]
+    },
+    "3": {
+      "rate": 0.4673913043478261,
+      "n": 92,
+      "ci": [
+        0.3688,
+        0.5686
+      ]
+    },
+    "4": {
+      "rate": 0.5992865636147443,
+      "n": 841,
+      "ci": [
+        0.5658,
+        0.6319
+      ]
+    }
+  },
+  "q3_buckets": {
+    "hit": 1025,
+    "a_misranked": 349,
+    "b_unretrieved": 162
+  },
+  "q3_buckets_firing_misses": {
+    "a_misranked": 180,
+    "b_unretrieved": 69
+  }
+}
+EXIT=0
