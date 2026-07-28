@@ -66,10 +66,18 @@ def resolve_embedder(name: str) -> Any:
 def resolve_reranker(name: str) -> Any:
     """The RE-call arm's optional second-stage reranker, or None.
 
-    ``none`` (default) -> no reranker. ``voyage:<model>`` -> Voyage cross-encoder, e.g.
-    ``voyage:rerank-2.5``. RE-call's retriever reranks the WHOLE fused candidate pool before
-    truncating to k, so a reranker can rescue an answer that ranked below the cutoff — the cat1
-    failure the benchmark exposed. See benchmarks/VOYAGE_REFERENCE.md.
+    ``none`` (default) -> no reranker. ``local`` -> the cross-encoder this library actually ships
+    (`ms-marco-MiniLM-L-6-v2`, pinned revision), ``local:<model>`` for a different one.
+    ``voyage:<model>`` -> Voyage cross-encoder, e.g. ``voyage:rerank-2.5``. RE-call's retriever
+    reranks the WHOLE fused candidate pool before truncating to k, so a reranker can rescue an
+    answer that ranked below the cutoff — the cat1 failure the benchmark exposed. See
+    benchmarks/VOYAGE_REFERENCE.md.
+
+    ``local`` exists because until it did, the only reachable reranker was a cloud API: a harness
+    for a library whose stated property is that data never leaves your infrastructure could not
+    measure its own shipped reranker without sending every query and every candidate to a third
+    party. FINDINGS §11 also measured `ms-marco-MiniLM-L-6-v2` as the right model for this task —
+    `bge-reranker-base`, 12x the parameters, is statistically indistinguishable at 6.3x the cost.
     """
     if not name or name == "none":
         return None
@@ -78,7 +86,19 @@ def resolve_reranker(name: str) -> Any:
         from benchmarks.voyage_rerank import VoyageReranker
 
         return VoyageReranker(model=name[len(voyage_prefix):])
-    raise ValueError(f"unknown reranker {name!r} (use 'none' or 'voyage:<model>')")
+    local_prefix = "local:"
+    if name == "local" or name.startswith(local_prefix):
+        from recall.rerank import CrossEncoderReranker
+
+        if name == "local":
+            return CrossEncoderReranker()
+        # A custom model drops the default revision pin inside CrossEncoderReranker: the pin
+        # belongs to the default weights, and reusing it for different ones would name the wrong
+        # artifact in every trace.
+        return CrossEncoderReranker(model=name[len(local_prefix):])
+    raise ValueError(
+        f"unknown reranker {name!r} (use 'none', 'local', 'local:<model>' or 'voyage:<model>')"
+    )
 
 
 def sample_id_of(conversation: dict[str, Any]) -> str:
