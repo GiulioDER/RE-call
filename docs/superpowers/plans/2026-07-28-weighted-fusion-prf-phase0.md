@@ -15,7 +15,8 @@
 - **The default code path stays byte-identical.** `with_rank` defaults `False`; `probe` defaults `None`. A duck-typed store double in `tests/test_advice_injection.py:123` defines `query_sparse(self, query, k, source=None, vec=None)` with no `with_rank`, so the retriever must pass that keyword **only when a probe is attached**.
 - **Test DSN:** `RECALL_TEST_DSN="postgresql://recall:recall@localhost:5434/recall"`. Never `:5432` — that container belongs to another worktree and this suite DROPs tables.
 - **Run tests with:** `RECALL_TEST_DSN="postgresql://recall:recall@localhost:5434/recall" uv run pytest ...`
-- **Baseline before starting:** 871 passed, 5 skipped.
+- **Baseline before starting:** 871 passed, 5 skipped. The absolute counts quoted per task are informational — the binding check is **zero failures and no previously-passing test broken**. If your count differs from the quoted one but nothing fails, say so in your report and continue.
+- **`locomo10.json` is present in the worktree root** and is gitignored (`.gitignore:21`). Do not commit it.
 - **Predictions are already committed** (`ef68bb1`). Do not edit them after seeing any output.
 
 ---
@@ -310,7 +311,7 @@ def leg_confidence(scores: Sequence[float]) -> float:
 ```bash
 cd /c/Users/gde00/Documents/recall-fusion-prf && uv run pytest tests/test_leg_confidence.py -v
 ```
-Expected: 8 passed (the parametrized case counts twice).
+Expected: 6 passed (5 functions; the parametrized one counts twice).
 
 - [ ] **Step 5: Commit**
 
@@ -502,7 +503,7 @@ Expected: 3 passed.
 ```bash
 cd /c/Users/gde00/Documents/recall-fusion-prf && RECALL_TEST_DSN="postgresql://recall:recall@localhost:5434/recall" uv run pytest -q
 ```
-Expected: 877 passed, 5 skipped. `tests/test_advice_injection.py` in particular must still pass — its fake store has no `with_rank`, which is why the keyword is conditional.
+Expected: 883 passed, 5 skipped. `tests/test_advice_injection.py` in particular must still pass — its fake store has no `with_rank`, which is why the keyword is conditional.
 
 - [ ] **Step 5: Commit**
 
@@ -519,55 +520,99 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 4: Thread the probe through the LOCOMO harness
+### Task 4: Thread the probe through `run_conversation`
 
 `run_conversation` builds its own `HybridRetriever` at `recall/eval/locomo.py:288`. Follow the pattern `reranker` already uses.
 
+**`run()` is deliberately NOT changed.** Task 5's CLI calls `run_conversation` per conversation — it has to, because `run()`'s report strips the per-question records the diagnostic needs. So a `probe` parameter on `run()` would have no caller: dead code, and untested dead code at that.
+
 **Files:**
-- Modify: `recall/eval/locomo.py` (`run_conversation` ~line 237, its retriever construction at ~288, and `run` ~line 352)
+- Modify: `recall/eval/locomo.py` (`run_conversation` ~line 237 and its retriever construction at ~288)
 - Test: `tests/test_eval_locomo_probe.py` (create)
 
 **Interfaces:**
 - Consumes: `LegProbe` and the `probe` keyword from Task 3.
-- Produces: `probe: Callable[[LegProbe], None] | None = None` keyword on both `run_conversation` and `run`, forwarded to `HybridRetriever`.
+- Produces: `probe: Callable[[LegProbe], None] | None = None` keyword on `run_conversation`, forwarded to `HybridRetriever`.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/test_eval_locomo_probe.py`:
+Create `tests/test_eval_locomo_probe.py`. This is behavioural on purpose: a `probe` parameter that is accepted and then dropped would leave the diagnostic silently collecting nothing, and a signature check cannot tell the difference.
 
 ```python
 from __future__ import annotations
 
-import inspect
-
+from recall.embeddings import HashingEmbedder
 from recall.eval import locomo
+from recall.retriever import LegProbe
+from tests.conftest import requires_db
+
+#: Minimal LOCOMO-shaped conversation. Real payloads carry `speaker_a`/`speaker_b`,
+#: one `session_N_date_time` string per session, and `session_N` lists of
+#: {speaker, dia_id, text} — see locomo10.json.
+CONVERSATION = {
+    "speaker_a": "Ann",
+    "speaker_b": "Bob",
+    "session_1_date_time": "1:00 pm on 8 May, 2023",
+    "session_1": [
+        {"speaker": "Ann", "dia_id": "D1:1", "text": "I adopted a tabby cat named Mochi."},
+        {"speaker": "Bob", "dia_id": "D1:2", "text": "I started a pottery class on Tuesdays."},
+        {"speaker": "Ann", "dia_id": "D1:3", "text": "My flight to Lisbon leaves on 12 June."},
+    ],
+}
+
+QA = [
+    {"question": "What is the name of Ann's cat?", "answer": "Mochi",
+     "evidence": ["D1:1"], "category": 2},
+    {"question": "When does Ann fly to Lisbon?", "answer": "12 June",
+     "evidence": ["D1:3"], "category": 2},
+]
 
 
-def test_run_conversation_accepts_and_forwards_a_probe():
-    sig = inspect.signature(locomo.run_conversation)
-    assert "probe" in sig.parameters
-    assert sig.parameters["probe"].default is None
+@requires_db
+def test_run_conversation_forwards_the_probe_and_fires_once_per_question(tmp_path, make_store):
+    emb = HashingEmbedder(dim=64)
+    store = make_store(64)
+    seen: list[LegProbe] = []
+
+    res = locomo.run_conversation(
+        CONVERSATION,
+        QA,
+        store=store,
+        embedder=emb,
+        k=5,
+        corpus_dir=tmp_path / "corpus",
+        ks=[1, 5],
+        probe=seen.append,
+    )
+
+    answerable = [q for q in res["questions"] if "evidence" in q]
+    assert len(answerable) == 2
+    # One probe per probed search, in question order. Task 5's CLI pairs these two lists with
+    # zip(strict=True), so this ordering IS the contract that makes its records trustworthy.
+    assert len(seen) == 2
+    assert [p.query for p in seen] == [q["question"] for q in answerable]
+    assert all(p.dense for p in seen)
 
 
-def test_run_accepts_a_probe():
-    sig = inspect.signature(locomo.run)
-    assert "probe" in sig.parameters
-    assert sig.parameters["probe"].default is None
+@requires_db
+def test_run_conversation_without_a_probe_still_scores(tmp_path, make_store):
+    emb = HashingEmbedder(dim=64)
+    store = make_store(64)
 
+    res = locomo.run_conversation(
+        CONVERSATION, QA, store=store, embedder=emb, k=5,
+        corpus_dir=tmp_path / "corpus", ks=[1, 5],
+    )
 
-def test_run_conversation_passes_probe_to_the_retriever():
-    """Guards the wiring itself: a parameter that is accepted and then dropped would leave the
-    diagnostic silently collecting nothing."""
-    src = inspect.getsource(locomo.run_conversation)
-    assert "probe=probe" in src
+    assert len([q for q in res["questions"] if "evidence" in q]) == 2
 ```
 
 - [ ] **Step 2: Run it and confirm it fails**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-fusion-prf && uv run pytest tests/test_eval_locomo_probe.py -v
+cd /c/Users/gde00/Documents/recall-fusion-prf && RECALL_TEST_DSN="postgresql://recall:recall@localhost:5434/recall" uv run pytest tests/test_eval_locomo_probe.py -v
 ```
-Expected: FAIL — `AssertionError` on `"probe" in sig.parameters`.
+Expected: FAIL — `TypeError: run_conversation() got an unexpected keyword argument 'probe'`.
 
 - [ ] **Step 3: Implement**
 
@@ -597,36 +642,34 @@ Change the retriever construction (line ~288) to:
     )
 ```
 
-Add the same parameter to `run`'s signature after its `reranker` parameter, and forward it at the `run_conversation(...)` call site inside `run`:
+Do **not** add the parameter to `run()` — see the note at the top of this task.
 
-```python
-    probe: Callable[[LegProbe], None] | None = None,
-```
-```python
-        probe=probe,
-```
-
-Note the adversarial arm inside `run_conversation` calls `trusted_search`, not the probed retriever — category 5 is deliberately out of this diagnostic's scope (it has no `evidence` to bucket against).
+Note the adversarial arm inside `run_conversation` calls `trusted_search`, not the probed retriever — category 5 is deliberately out of this diagnostic's scope (it has no `evidence` to bucket against), and that is exactly why one probe per *answerable* question is the right count.
 
 - [ ] **Step 4: Run the new tests, then the full suite**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-fusion-prf && uv run pytest tests/test_eval_locomo_probe.py -v
+cd /c/Users/gde00/Documents/recall-fusion-prf && RECALL_TEST_DSN="postgresql://recall:recall@localhost:5434/recall" uv run pytest tests/test_eval_locomo_probe.py -v
 ```
-Expected: 3 passed.
+Expected: 2 passed.
 
 ```bash
 cd /c/Users/gde00/Documents/recall-fusion-prf && RECALL_TEST_DSN="postgresql://recall:recall@localhost:5434/recall" uv run pytest -q
 ```
-Expected: 880 passed, 5 skipped.
+Expected: 885 passed, 5 skipped.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-fusion-prf && git add recall/eval/locomo.py tests/test_eval_locomo_probe.py && git commit -m "feat(eval): thread an optional probe through the LOCOMO harness
+cd /c/Users/gde00/Documents/recall-fusion-prf && git add recall/eval/locomo.py tests/test_eval_locomo_probe.py && git commit -m "feat(eval): thread an optional probe through run_conversation
 
-Same pattern reranker already uses. Category 5 stays on trusted_search
-and out of scope — it carries no evidence to bucket against.
+Same pattern reranker already uses. Not added to run(): the diagnostic
+calls run_conversation directly (run's report strips the per-question
+records it needs), so a probe on run() would have no caller.
+
+The behavioural test asserts one probe per answerable question IN ORDER
+— that ordering is the contract the diagnostic's zip(strict=True) pairing
+depends on, and a signature check cannot see it.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
@@ -715,9 +758,11 @@ def test_report_splits_hit_rate_by_trigger_and_reports_firing_rate():
 
     assert r["q2_firing_rate"]["rate"] == 0.6
     assert r["q2_firing_rate"]["n"] == 5
-    assert r["q1_hit_at_k"]["firing"]["rate"] == 1 / 3
+    assert r["q1_hit_at_k"]["firing"]["rate"] == pytest.approx(1 / 3)
     assert r["q1_hit_at_k"]["not_firing"]["rate"] == 1.0
-    assert r["q1_hit_at_k"]["delta"] == -2 / 3
+    # approx, not ==: the computed delta is (1/3 - 1.0) == -0.6666666666666667, while the
+    # literal -2/3 is -0.6666666666666666. Exact equality here fails on float representation.
+    assert r["q1_hit_at_k"]["delta"] == pytest.approx(-2 / 3)
     assert r["q3_buckets"]["a_misranked"] == 1
     assert r["q3_buckets"]["b_unretrieved"] == 1
     # every published rate carries an interval
@@ -1061,7 +1106,7 @@ if __name__ == "__main__":
 ```bash
 cd /c/Users/gde00/Documents/recall-fusion-prf && RECALL_TEST_DSN="postgresql://recall:recall@localhost:5434/recall" uv run pytest -q && uv run ruff check .
 ```
-Expected: 886 passed, 5 skipped; ruff clean.
+Expected: 891 passed, 5 skipped; ruff clean.
 
 ```bash
 cd /c/Users/gde00/Documents/recall-fusion-prf && git add recall/eval/legdiag.py && git commit -m "feat(eval): legdiag CLI
