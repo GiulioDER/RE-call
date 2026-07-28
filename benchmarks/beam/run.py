@@ -419,8 +419,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fused candidate pool the reranker ranks within, before the top --k are kept. "
         "Defaults to --k, which makes a reranker INERT: pool, returned set and answerer context "
         "are then the same memories, so reranking reorders a prompt instead of selecting what "
-        "goes into it. Set it ABOVE --k (e.g. --k 45 --candidate-k 600) for reranking to change "
-        "WHICH memories the answerer sees.",
+        "goes into it. Set it ABOVE --k (e.g. --k 45 --candidate-k 250) for reranking to change "
+        "WHICH memories the answerer sees. Past ~250 the HNSW scan stops widening proportionally "
+        "(pgvector caps hnsw.ef_search at 1000, derived here as candidate_k x 4): the pool is "
+        "still honoured and a RuntimeWarning says so, but the over-fetch margin shrinks.",
     )
     parser.add_argument("--dsn", default=os.environ.get("RECALL_DSN", DEFAULT_DSN))
     parser.add_argument("--out-dir", type=Path, default=Path("benchmarks/results"))
