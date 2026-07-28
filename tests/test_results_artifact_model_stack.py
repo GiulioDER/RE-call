@@ -45,6 +45,7 @@ PREDATES_THE_CONVENTION = {
     "distributions.json",
     "doubled_pool100.json",
     "doubled_pool20.json",
+    "ksweep.json",
     "locomo_abstention.json",
     "locomo_entailment_sweep.json",
     "locomo_fastembed_k5.json",
@@ -62,6 +63,7 @@ def _artifacts() -> list[Path]:
         *(RESULTS / "locomo_rerank").glob("*.json"),
         *(RESULTS / "cosine").glob("*.json"),
         *(RESULTS / "wrrf").glob("*.json"),
+        *(RESULTS / "beam_voyage").glob("*.json"),
     ]
     return sorted(p for p in paths if p.is_file())
 
