@@ -46,7 +46,7 @@ from recall.eval.locomo import DEFAULT_DSN
 
 #: Cosine at or above which an embedded chunk counts as carrying the nugget. Deliberately high:
 #: this probe is looking for the chunk that ANSWERS, not one that is merely on-topic, and BEAM's
-#: whole difficulty (§9f) is that on-topic and answering come apart.
+#: whole difficulty (§9h) is that on-topic and answering come apart.
 NUGGET_MATCH_COSINE = 0.75
 
 #: Ranks reported as a cumulative curve. These are the candidate k values a sweep would test.
