@@ -324,6 +324,7 @@ A verification that does not reach the artifact protects only the session that r
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from typing import Any
 
 
@@ -332,10 +333,16 @@ def _git_sha() -> str | None:
 
     Degrades to None rather than raising or inventing: a result file from a tarball is still a
     result, and a wrong sha is worse than an absent one.
+
+    Anchored to this file's own directory via `cwd`, not the caller's: without it, `git`
+    inherits the calling process's working directory, and a run launched from inside some OTHER
+    git repo would silently report THAT repo's HEAD — a wrong-but-plausible sha, which is
+    exactly the "worse than absent" case above.
     """
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
             capture_output=True, text=True, timeout=5, check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -374,14 +381,35 @@ In `recall/eval/locomo.py`, add to the imports near the other `recall.eval` impo
 from recall.eval.provenance import provenance_block
 ```
 
-In `run()`, the loop already appends each conversation's result to `per_conversation` and each store is opened with `tenant = f"locomo-{sample_id}"`. Immediately before the `return {` at line ~456, add:
+In `run()`, initialise a `tenants` accumulator alongside `per_conversation`:
+
+```python
+    per_conversation: list[dict[str, Any]] = []
+    # Captured once per conversation, from the same f-string that opens its PgVectorStore below —
+    # not re-derived from `conversations` after the loop. Two independent copies of one formula
+    # drift the moment the naming scheme changes in only one of them, and the artifact would
+    # silently misreport what was actually measured.
+    tenants: list[str] = []
+```
+
+The loop already opens each store with `tenant = f"locomo-{sample_id}"`; append it to the accumulator right there instead of re-deriving it later:
+
+```python
+            tenant = f"locomo-{sample_id}"
+            tenants.append(tenant)
+            corpus_dir = workspace / str(sample_id)
+```
+
+Immediately before the `return {` at line ~456, add:
 
 ```python
     # Summed from what each conversation actually measured (Task 1's post-condition), never
-    # from a configured expectation: an expectation copied into a result proves nothing.
-    corpus_rows = sum(int(res.get("corpus_rows", 0)) for res in per_conversation)
-    tenants = [f"locomo-{c.get('sample_id') or f'conv{i}'}"
-               for i, c in enumerate(conversations)]
+    # from a configured expectation: an expectation copied into a result proves nothing. Hard
+    # subscript, not .get(): run_conversation always sets this key, and a silent 0 default would
+    # understate the corpus the moment a per-conversation try/except is added and stops raising —
+    # exactly the "plausible-but-wrong number" class this module exists to prevent. `tenants` is
+    # not re-derived here; it was captured above, in the loop that computed it the first time.
+    corpus_rows = sum(res["corpus_rows"] for res in per_conversation)
 ```
 
 Then add to the returned dict, immediately after the `"benchmark": "LOCOMO",` line:
