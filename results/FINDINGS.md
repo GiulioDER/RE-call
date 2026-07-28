@@ -1135,3 +1135,61 @@ question needs is the same error as the sampling mistakes earlier in the session
 `absolute@0.40` is the best measured configuration for this embedder and starves nothing in any of
 the six conditions, but it is still a constant and will be wrong for the next model. Shipping it as
 a new default would repeat the original mistake with a different number.
+
+### 9n. BEAM is the worst case, not the typical one — and the entailment guard does not discriminate
+
+Five signals had failed to separate BEAM's unanswerable questions from its answerable ones, the
+last one (lexical coverage, §9m) failing INVERTED — coverage 0.741 for unanswerable against 0.717
+for answerable, the same direction cosine shows. Two signals sharing no mathematics and no model,
+inverted identically, pointed at the questions rather than the retriever.
+
+So the ordinary case was built mechanically, with no labelling: hold out 120 memos from the
+787-memo curated corpus, index the other 657, and use each memo's own `description:` as its query.
+Descriptions of indexed memos are answerable; descriptions of held-out memos are unanswerable
+because the document is genuinely absent. Predictions were committed first (`e273c99`).
+
+| signal | answerable | unanswerable | mean separation | **AUC** |
+|---|---|---|---|---|
+| cosine | 0.7055 | 0.6250 | +0.0805 | **0.7802** |
+| entailment | 0.7715 | 0.6917 | +0.0798 | **0.5945** |
+
+**P1 held (predicted +0.05-0.15, actual +0.0805).** On a corpus whose unanswerable questions are
+about genuinely absent subjects, cosine separates in the RIGHT direction. **BEAM's inversion is a
+property of its adversarial construction, not of retrieval.** Every BEAM number in this repo is
+therefore an upper bound on difficulty, not an estimate of deployed behaviour, and must be
+presented that way.
+
+**P2 held.** The separation is real but narrow — the corpus is topically dense, so a held-out memo
+still finds plausible neighbours.
+
+**P3 failed, and failed BACKWARDS.** The prediction was that entailment would separate BETTER than
+cosine. It separates far WORSE: AUC 0.59 against 0.78, barely above the 0.50 of no signal at all.
+
+**A reading error of mine, worth recording.** The two mean separations are nearly identical
+(+0.0805 vs +0.0798) and I first read that as "equivalent". It is not: a difference of means says
+nothing about discrimination unless normalised by spread. Entailment shifts BOTH classes up by
+~0.07 while overlapping far more, which a mean cannot show and AUC does. The lesson is the same one
+as the n=2 and n=4 samples earlier — the statistic has to match the question being asked.
+
+**The tails are worse still.** To abstain on half the unanswerable questions:
+
+| signal | threshold | false-abstain cost |
+|---|---|---|
+| cosine | 0.6283 | **13.7 %** |
+| entailment | 0.7000 | **26.0 %** |
+
+Entailment costs twice as much for the same benefit — it does not help where a gate is most needed.
+
+**Consequence for the abstention lane.** The small movement the entailment guard produced on BEAM
+is not reproduced where the test is fair to both signals. At AUC 0.59 it is close to no
+discriminator at all, so that movement was plausibly noise or an artefact of the adversarial
+construction. The guard costs a cross-encoder — 4 hours of CPU for 777 queries here — and buys
+nothing measurable. **It should not be promoted toward a default, and the abstention lane has no
+remaining candidate with an empirical basis.**
+
+**The positive result, which is the one to carry forward.** On an ordinary corpus the plain cosine
+works: AUC 0.78, abstaining on half the unanswerable questions for a 13.7 % false-abstain cost.
+The retrieval signal was never the problem. The THRESHOLD was — an absolute constant that is not
+comparable across models (§9m: 0th percentile of five distributions, 16th of a sixth). That is the
+one thing two days of measurement established with certainty, and it is already shipping as a
+warning in PR #105.
