@@ -23,12 +23,19 @@ STATUSES = {"current", "superseded", "not re-measured"}
 
 
 def _artifacts() -> list[Path]:
-    """Committed LOCOMO/cosine result artifacts — the ones a reader could mistake for each other."""
+    """Committed LOCOMO/cosine result artifacts — the ones a reader could mistake for each other.
+
+    This is an allowlist of directories, not a sweep, so a NEW results subdirectory escapes the
+    guard until someone adds it here — which is exactly what happened to `results/wrrf/`. Making it
+    `RESULTS.rglob("*.json")` is the robust shape, but `results/gap/` (20 BEIR artifacts) predates
+    the convention and would fail immediately; stamping that family is separate work.
+    """
     paths = [
         *RESULTS.glob("locomo*.json"),
         *(RESULTS / "locomo").glob("*.json"),
         *(RESULTS / "locomo_rerank").glob("*.json"),
         *(RESULTS / "cosine").glob("*.json"),
+        *(RESULTS / "wrrf").glob("*.json"),
     ]
     return sorted(p for p in paths if p.is_file())
 

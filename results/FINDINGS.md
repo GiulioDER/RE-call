@@ -641,22 +641,46 @@ at this control found the k ≤ 20 rows identical and concluded "the pool was no
 a quantity that could not move the metric. Re-run with both defects fixed (2026-07-26, one run per
 arm):
 
-| k | pool 20 | pool 100 |
-|---|---|---|
-| 1 | 0.398 | 0.390 |
-| 5 | **0.671** | 0.596 |
-| 10 | 0.778 | 0.690 |
-| 20 | 0.855 | 0.782 |
-| 50 | — (beyond the pool) | **0.877** [0.860, 0.892] |
+> ### ⚠️ RETRACTED 2026-07-28 — the pool-100 column was measured on a DOUBLED corpus
+>
+> **This is the second retraction of this control, and it invalidates the replacement produced by
+> the first.** The pool-100 arm below was run against a corpus in which every document appeared
+> twice, so a fixed-size candidate pool held roughly half as many *distinct* documents. Every
+> pool-100 figure here — including the k=50 row published as the legitimate replacement for the
+> withdrawn 0.872 — comes from that run and is withdrawn.
+>
+> **Evidence.** A deliberately doubled corpus reproduces the retracted column to **±0.0013 at every
+> depth, and exactly at k=20**; a clean corpus does not, missing by up to +0.066. Control: doubling
+> costs **−0.0625** at pool 20, so the defect is not depth-specific — and the pool-20 column
+> reproduces clean to **0.0000**, so the two columns came from different corpus states. That was
+> possible because the guard refusing to index over an existing corpus landed 2026-07-28, *after*
+> these artifacts were produced on 07-26. Writeup and artifacts:
+> [`results/wrrf/FINDINGS_pool100_contamination.md`](wrrf/FINDINGS_pool100_contamination.md).
+>
+> `results/locomo/postfix_pool100.json` is **deleted**, not annotated — an annotated wrong number in
+> `results/` is still a number someone can read off a table.
 
-- **A deeper pool measurably *dilutes* a fused prefix** — −0.075 at k=5, −0.073 at k=20 — which is
-  §7's mechanism showing up on cue: RRF gives `dense[r]` and `sparse[r]` identical scores, so a
-  five-fold deeper pool interleaves five times as many low-rank candidates into every prefix.
-  Raising `--candidate-k` is a **different fusion configuration**, not a deeper look at the
-  published one.
-- **The k=50 row now exists legitimately**: **0.877** with ≥50 real fused candidates behind it,
-  cat3 at 0.707. Its closeness to the withdrawn 0.872 is a coincidence of the dense-only
-  configuration it replaced, not a vindication of it.
+| k | pool 20 | ~~pool 100 (retracted)~~ | pool 100 — clean re-run |
+|---|---|---|---|
+| 1 | 0.398 | ~~0.390~~ | 0.394 |
+| 5 | **0.671** | ~~0.596~~ | **0.662** |
+| 10 | 0.778 | ~~0.690~~ | 0.753 |
+| 20 | 0.855 | ~~0.782~~ | 0.821 |
+| 50 | — (beyond the pool) | ~~0.877 [0.860, 0.892]~~ | **not measured** |
+
+- **A deeper pool dilutes a fused prefix, but by roughly one eighth of what this section claimed.**
+  Corrected: **−0.009 at k=5** (0.671 → 0.662), not −0.075; **−0.034 at k=20**, not −0.073.
+  n=1,536, clean corpus, `results/wrrf/arm_C_rrf_pool100.json`. The *direction* survives, and §7's
+  mechanism — RRF scoring `dense[r]` and `sparse[r]` identically — remains a plausible cause; this
+  measurement simply no longer evidences it at the published magnitude. Raising `--candidate-k` is
+  still a **different fusion configuration**, not a deeper look at the published one.
+- **There is currently no valid k=50 row.** The clean re-run used `--k-curve 1,5,10,20`, so depth
+  past the 20-per-leg edge is unmeasured. Both the original 0.872 and its replacement 0.877 are
+  withdrawn and nothing has replaced them.
+- **A downstream consequence, recorded so it is not repeated:** the retracted −0.075 was the
+  motivating premise for a weighted-fusion experiment. That work was built to counter a defect about
+  eight times smaller than published. It failed on its own terms too, so its conclusion is
+  unaffected — but the *motive* was not what this record said it was.
 
 The headline table publishes pool-20 throughout, and its shape through k=20 is not an artifact of
 the pool's edge — a 20-per-leg pool supplies more than 20 fused candidates.

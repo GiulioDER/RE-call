@@ -1,59 +1,63 @@
 {
   "_provenance": {
-    "generation": "pre-#81/#84",
-    "status": "superseded",
-    "superseded_by": "results/wrrf/arm_C_rrf_pool100.json",
+    "generation": "post-#81/#84",
+    "status": "current",
+    "superseded_by": null,
     "backs": [
-      "the pool-100 control RETRACTED in FINDINGS \u00a79a \u2014 with the sparse leg inert the two runs could differ only by index-build noise, so their agreement could not show the pool was non-binding. Kept as the record of the retracted control, not as evidence."
+      "FINDINGS §9a pool control — the CLEAN pool-100 column (0.662 at k=5)",
+      "RESULTS §7a pool control — clean column",
+      "results/wrrf/FINDINGS_pool100_contamination.md"
     ],
-    "note": "Sparse leg inert (it ANDed every query term) and the unfiltered dense scan capped near hnsw.ef_search=40, so this run measured an effectively dense-only configuration. A correct measurement of THAT configuration, kept as its record \u2014 not comparable to a post-fix row. Its successor was locomo/postfix_pool100.json until 2026-07-28, when that file was withdrawn for having been measured on a doubled corpus; the successor is now the clean re-run wrrf/arm_C_rrf_pool100.json."
+    "note": "Clean corpus, n=1536, one run. Replaces the withdrawn locomo/postfix_pool100.json, which was measured on a corpus indexed twice. Uses --k-curve 1,5,10,20, so there is no k=50 row here and none is published."
   },
   "benchmark": "LOCOMO",
   "metric": "evidence-turn hit@5 (retrieval only, no LLM judge)",
   "embedder": "fastembed",
   "k": 5,
   "candidate_k": 100,
+  "fusion": "rrf",
+  "reranker": null,
   "depth_curve": {
     "1": {
       "overall": {
         "n": 1536,
-        "rate": 0.373,
+        "rate": 0.3939,
         "ci95": [
-          0.3492,
-          0.3975
+          0.3697,
+          0.4186
         ]
       },
       "by_category": {
         "cat1": {
           "n": 282,
-          "rate": 0.266,
+          "rate": 0.3121,
           "ci95": [
-            0.2178,
-            0.3204
+            0.2608,
+            0.3684
           ]
         },
         "cat2-temporal": {
           "n": 321,
-          "rate": 0.5109,
+          "rate": 0.4673,
           "ci95": [
-            0.4564,
-            0.5651
+            0.4134,
+            0.5219
           ]
         },
         "cat3": {
           "n": 92,
-          "rate": 0.163,
+          "rate": 0.2065,
           "ci95": [
-            0.1014,
-            0.2517
+            0.1364,
+            0.3002
           ]
         },
         "cat4": {
           "n": 841,
-          "rate": 0.3793,
+          "rate": 0.4138,
           "ci95": [
-            0.3471,
-            0.4126
+            0.381,
+            0.4474
           ]
         }
       }
@@ -61,43 +65,43 @@
     "5": {
       "overall": {
         "n": 1536,
-        "rate": 0.6237,
+        "rate": 0.6615,
         "ci95": [
-          0.5992,
-          0.6476
+          0.6374,
+          0.6847
         ]
       },
       "by_category": {
         "cat1": {
           "n": 282,
-          "rate": 0.6028,
+          "rate": 0.6277,
           "ci95": [
-            0.5447,
-            0.6582
+            0.5699,
+            0.682
           ]
         },
         "cat2-temporal": {
           "n": 321,
-          "rate": 0.6698,
+          "rate": 0.7259,
           "ci95": [
-            0.6166,
-            0.719
+            0.6746,
+            0.7718
           ]
         },
         "cat3": {
           "n": 92,
-          "rate": 0.3804,
+          "rate": 0.4348,
           "ci95": [
-            0.2879,
-            0.4825
+            0.3381,
+            0.5367
           ]
         },
         "cat4": {
           "n": 841,
-          "rate": 0.6397,
+          "rate": 0.673,
           "ci95": [
-            0.6067,
-            0.6715
+            0.6406,
+            0.7039
           ]
         }
       }
@@ -105,43 +109,43 @@
     "10": {
       "overall": {
         "n": 1536,
-        "rate": 0.7168,
+        "rate": 0.7533,
         "ci95": [
-          0.6937,
-          0.7388
+          0.7311,
+          0.7742
         ]
       },
       "by_category": {
         "cat1": {
           "n": 282,
-          "rate": 0.7234,
+          "rate": 0.7305,
           "ci95": [
-            0.6685,
-            0.7723
+            0.6759,
+            0.7789
           ]
         },
         "cat2-temporal": {
           "n": 321,
-          "rate": 0.757,
+          "rate": 0.8131,
           "ci95": [
-            0.7072,
-            0.8007
+            0.7668,
+            0.8519
           ]
         },
         "cat3": {
           "n": 92,
-          "rate": 0.5,
+          "rate": 0.4674,
           "ci95": [
-            0.3999,
-            0.6001
+            0.3688,
+            0.5686
           ]
         },
         "cat4": {
           "n": 841,
-          "rate": 0.7229,
+          "rate": 0.7693,
           "ci95": [
-            0.6917,
-            0.7521
+            0.7397,
+            0.7965
           ]
         }
       }
@@ -149,134 +153,90 @@
     "20": {
       "overall": {
         "n": 1536,
-        "rate": 0.7982,
+        "rate": 0.821,
         "ci95": [
-          0.7774,
-          0.8175
+          0.801,
+          0.8393
         ]
       },
       "by_category": {
         "cat1": {
           "n": 282,
-          "rate": 0.8156,
+          "rate": 0.8121,
           "ci95": [
-            0.7662,
-            0.8565
+            0.7624,
+            0.8533
           ]
         },
         "cat2-temporal": {
           "n": 321,
-          "rate": 0.8069,
+          "rate": 0.866,
           "ci95": [
-            0.7601,
-            0.8463
+            0.8244,
+            0.899
           ]
         },
         "cat3": {
           "n": 92,
-          "rate": 0.6196,
+          "rate": 0.5435,
           "ci95": [
-            0.5175,
-            0.7121
+            0.442,
+            0.6415
           ]
         },
         "cat4": {
           "n": 841,
-          "rate": 0.8086,
+          "rate": 0.8371,
           "ci95": [
-            0.7806,
-            0.8337
-          ]
-        }
-      }
-    },
-    "50": {
-      "overall": {
-        "n": 1536,
-        "rate": 0.8717,
-        "ci95": [
-          0.8541,
-          0.8875
-        ]
-      },
-      "by_category": {
-        "cat1": {
-          "n": 282,
-          "rate": 0.8901,
-          "ci95": [
-            0.8482,
-            0.9215
-          ]
-        },
-        "cat2-temporal": {
-          "n": 321,
-          "rate": 0.8723,
-          "ci95": [
-            0.8313,
-            0.9044
-          ]
-        },
-        "cat3": {
-          "n": 92,
-          "rate": 0.7283,
-          "ci95": [
-            0.6296,
-            0.8086
-          ]
-        },
-        "cat4": {
-          "n": 841,
-          "rate": 0.8811,
-          "ci95": [
-            0.8575,
-            0.9013
+            0.8106,
+            0.8605
           ]
         }
       }
     }
   },
   "conversations": 10,
-  "elapsed_s": 745.4,
+  "elapsed_s": 695.4,
   "retrieval_by_category": {
     "cat1": {
       "n": 282,
-      "rate": 0.6028,
+      "rate": 0.6277,
       "ci95": [
-        0.5447,
-        0.6582
+        0.5699,
+        0.682
       ]
     },
     "cat2-temporal": {
       "n": 321,
-      "rate": 0.6698,
+      "rate": 0.7259,
       "ci95": [
-        0.6166,
-        0.719
+        0.6746,
+        0.7718
       ]
     },
     "cat3": {
       "n": 92,
-      "rate": 0.3804,
+      "rate": 0.4348,
       "ci95": [
-        0.2879,
-        0.4825
+        0.3381,
+        0.5367
       ]
     },
     "cat4": {
       "n": 841,
-      "rate": 0.6397,
+      "rate": 0.673,
       "ci95": [
-        0.6067,
-        0.6715
+        0.6406,
+        0.7039
       ]
     }
   },
   "retrieval_overall": {
     "n": 1536,
-    "rate": 0.6237,
+    "rate": 0.6615,
     "ci95": [
-      0.5992,
-      0.6476
+      0.6374,
+      0.6847
     ]
   },
   "abstention_adversarial": {
@@ -294,18 +254,18 @@
       "retrieval": {
         "cat1": {
           "n": 32,
-          "rate": 0.625,
+          "rate": 0.5625,
           "ci95": [
-            0.4525,
-            0.7707
+            0.3933,
+            0.7183
           ]
         },
         "cat2-temporal": {
           "n": 37,
-          "rate": 0.8649,
+          "rate": 0.9189,
           "ci95": [
-            0.7202,
-            0.9409
+            0.787,
+            0.972
           ]
         },
         "cat3": {
@@ -318,10 +278,10 @@
         },
         "cat4": {
           "n": 70,
-          "rate": 0.6286,
+          "rate": 0.5714,
           "ci95": [
-            0.5115,
-            0.7323
+            0.4548,
+            0.6806
           ]
         }
       },
@@ -348,18 +308,18 @@
         },
         "cat2-temporal": {
           "n": 26,
-          "rate": 0.8462,
+          "rate": 0.8077,
           "ci95": [
-            0.6647,
-            0.9385
+            0.6212,
+            0.9149
           ]
         },
         "cat4": {
           "n": 44,
-          "rate": 0.6591,
+          "rate": 0.6364,
           "ci95": [
-            0.5114,
-            0.7812
+            0.4887,
+            0.7622
           ]
         }
       },
@@ -378,18 +338,18 @@
       "retrieval": {
         "cat1": {
           "n": 31,
-          "rate": 0.7742,
+          "rate": 0.8065,
           "ci95": [
-            0.6019,
-            0.886
+            0.6372,
+            0.9081
           ]
         },
         "cat2-temporal": {
           "n": 27,
-          "rate": 0.7778,
+          "rate": 0.8519,
           "ci95": [
-            0.5924,
-            0.8939
+            0.6752,
+            0.9408
           ]
         },
         "cat3": {
@@ -402,10 +362,10 @@
         },
         "cat4": {
           "n": 86,
-          "rate": 0.5814,
+          "rate": 0.6512,
           "ci95": [
-            0.4758,
-            0.68
+            0.5459,
+            0.7435
           ]
         }
       },
@@ -424,18 +384,18 @@
       "retrieval": {
         "cat1": {
           "n": 37,
-          "rate": 0.4865,
+          "rate": 0.5946,
           "ci95": [
-            0.3345,
-            0.6411
+            0.4349,
+            0.7365
           ]
         },
         "cat2-temporal": {
           "n": 40,
-          "rate": 0.625,
+          "rate": 0.7,
           "ci95": [
-            0.4703,
-            0.7578
+            0.5457,
+            0.8193
           ]
         },
         "cat3": {
@@ -448,10 +408,10 @@
         },
         "cat4": {
           "n": 111,
-          "rate": 0.5495,
+          "rate": 0.6577,
           "ci95": [
-            0.4569,
-            0.6389
+            0.5654,
+            0.7393
           ]
         }
       },
@@ -470,34 +430,34 @@
       "retrieval": {
         "cat1": {
           "n": 31,
-          "rate": 0.5484,
+          "rate": 0.6129,
           "ci95": [
-            0.3777,
-            0.7084
+            0.4382,
+            0.7627
           ]
         },
         "cat2-temporal": {
           "n": 26,
-          "rate": 0.8077,
+          "rate": 0.8846,
           "ci95": [
-            0.6212,
-            0.9149
+            0.7102,
+            0.96
           ]
         },
         "cat3": {
           "n": 14,
-          "rate": 0.5714,
+          "rate": 0.6429,
           "ci95": [
-            0.3259,
-            0.7862
+            0.3876,
+            0.8366
           ]
         },
         "cat4": {
           "n": 107,
-          "rate": 0.6822,
+          "rate": 0.7103,
           "ci95": [
-            0.589,
-            0.7628
+            0.6182,
+            0.7878
           ]
         }
       },
@@ -516,18 +476,18 @@
       "retrieval": {
         "cat1": {
           "n": 30,
-          "rate": 0.6,
+          "rate": 0.4333,
           "ci95": [
-            0.4232,
-            0.7541
+            0.2738,
+            0.608
           ]
         },
         "cat2-temporal": {
           "n": 24,
-          "rate": 0.375,
+          "rate": 0.4583,
           "ci95": [
-            0.2116,
-            0.5729
+            0.2789,
+            0.6493
           ]
         },
         "cat3": {
@@ -540,10 +500,10 @@
         },
         "cat4": {
           "n": 62,
-          "rate": 0.7903,
+          "rate": 0.8387,
           "ci95": [
-            0.6736,
-            0.8732
+            0.7279,
+            0.91
           ]
         }
       },
@@ -562,18 +522,18 @@
       "retrieval": {
         "cat1": {
           "n": 20,
-          "rate": 0.35,
+          "rate": 0.5,
           "ci95": [
-            0.1812,
-            0.5671
+            0.2993,
+            0.7007
           ]
         },
         "cat2-temporal": {
           "n": 34,
-          "rate": 0.6471,
+          "rate": 0.7059,
           "ci95": [
-            0.4791,
-            0.7851
+            0.5383,
+            0.8317
           ]
         },
         "cat3": {
@@ -608,34 +568,34 @@
       "retrieval": {
         "cat1": {
           "n": 21,
-          "rate": 0.8095,
+          "rate": 0.7619,
           "ci95": [
-            0.6,
-            0.9233
+            0.5491,
+            0.8937
           ]
         },
         "cat2-temporal": {
           "n": 42,
-          "rate": 0.6667,
+          "rate": 0.619,
           "ci95": [
-            0.5155,
-            0.7899
+            0.4681,
+            0.75
           ]
         },
         "cat3": {
           "n": 10,
-          "rate": 0.4,
+          "rate": 0.6,
           "ci95": [
-            0.1682,
-            0.6873
+            0.3127,
+            0.8318
           ]
         },
         "cat4": {
           "n": 118,
-          "rate": 0.678,
+          "rate": 0.6864,
           "ci95": [
-            0.5892,
-            0.7555
+            0.598,
+            0.7632
           ]
         }
       },
@@ -654,34 +614,34 @@
       "retrieval": {
         "cat1": {
           "n": 37,
-          "rate": 0.6757,
+          "rate": 0.7838,
           "ci95": [
-            0.5146,
-            0.8037
+            0.628,
+            0.8861
           ]
         },
         "cat2-temporal": {
           "n": 33,
-          "rate": 0.5455,
+          "rate": 0.6667,
           "ci95": [
-            0.3799,
-            0.7016
+            0.4961,
+            0.8025
           ]
         },
         "cat3": {
           "n": 13,
-          "rate": 0.2308,
+          "rate": 0.3846,
           "ci95": [
-            0.0818,
-            0.5026
+            0.1771,
+            0.6448
           ]
         },
         "cat4": {
           "n": 73,
-          "rate": 0.6438,
+          "rate": 0.6712,
           "ci95": [
-            0.5293,
-            0.744
+            0.5573,
+            0.7681
           ]
         }
       },
@@ -700,18 +660,18 @@
       "retrieval": {
         "cat1": {
           "n": 32,
-          "rate": 0.625,
+          "rate": 0.6562,
           "ci95": [
-            0.4525,
-            0.7707
+            0.4831,
+            0.7959
           ]
         },
         "cat2-temporal": {
           "n": 32,
-          "rate": 0.5312,
+          "rate": 0.6562,
           "ci95": [
-            0.3645,
-            0.6913
+            0.4831,
+            0.7959
           ]
         },
         "cat3": {
@@ -724,10 +684,10 @@
         },
         "cat4": {
           "n": 87,
-          "rate": 0.5747,
+          "rate": 0.6437,
           "ci95": [
-            0.4698,
-            0.6733
+            0.5389,
+            0.7363
           ]
         }
       },
