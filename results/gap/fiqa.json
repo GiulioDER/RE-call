@@ -31,7 +31,7 @@
     "oov_rate": 0.09595375722543352,
     "query_overlap": 0.41013546828318226,
     "crowding": 0.7749010166466722,
-    "code_density": NaN,
+    "code_density": null,
     "n_documents": 20000,
     "n_overlap_pairs": 1706
   },

@@ -3,7 +3,8 @@
 ::
 
     # $0 — retrieval only, no LLM call is made. Run this first, always.
-    python -m benchmarks.beam.run --dry-run --conversations 0
+    # --data is required here too: a dry run still indexes and retrieves, it just never pays.
+    python -m benchmarks.beam.run --data <beam_1M.parquet> --dry-run --conversations 0
 
     # paid: RE-call over the full 1M bucket (35 conversations, 700 questions)
     python -m benchmarks.beam.run --data <beam_1M.parquet> --model openai/gpt-5
@@ -355,15 +356,36 @@ def _run_pool(tasks: list[Any], work: Any, workers: int) -> list[Any]:
     return results
 
 
-def _load_published(path: Path) -> dict[str, dict[str, Any]]:
-    """Mem0's published per-question evaluations, keyed by question id."""
+def _load_published(path: Path, cutoff: int = DEFAULT_TOP_K) -> dict[str, dict[str, Any]]:
+    """Mem0's published per-question evaluations, keyed by question id.
+
+    The cutoff cell is selected BY NAME. Mem0's file nests each answer under a retrieval-budget
+    key and ships more than one — `UPSTREAM.md` records `top_200` as the headline with a `top_50`
+    variant alongside. This previously took `next(iter(cutoffs))`, i.e. whichever key upstream
+    happened to serialise first, and then paired the result against our own k=200 arm: a silent
+    four-fold retrieval-budget mismatch on the one axis the suite exists to hold equal.
+
+    The tell was already in the tree — `benchmarks/labelling/build_beam_labelling.py` pins
+    `THEIR_CUTOFF = "top_200"`. Two readers of the same third-party file disagreed about which
+    cell was the comparator, and only one of them could be right.
+
+    Missing is an error, not a fallback. A quiet substitution here is exactly what made the
+    original defect invisible.
+    """
     data = json.loads(path.read_text(encoding="utf-8"))
+    wanted = f"top_{cutoff}"
     out: dict[str, dict[str, Any]] = {}
     for row in data.get("evaluations", []):
         cutoffs = row.get("cutoff_results", {})
-        label = next(iter(cutoffs), None)
-        if label is None:
+        if not cutoffs:
             continue
+        if wanted not in cutoffs:
+            raise SystemExit(
+                f"{path}: question {row.get('question_id')!r} has no {wanted!r} cell "
+                f"(available: {sorted(cutoffs)}). Pass --cutoff to name the retrieval budget "
+                f"to compare against; picking one implicitly is how the arms drift apart."
+            )
+        label = wanted
         out[row["question_id"]] = {
             "question": row.get("question", ""),
             "question_type": row.get("question_type", "unknown"),
@@ -508,7 +530,7 @@ def _main() -> None:
         install_openai_meter()
         reset_usage()
         judge_llm = OpenRouterLLM(model=args.judge_model or args.model, api_key=key)
-        published = _load_published(args.rejudge_mem0)
+        published = _load_published(args.rejudge_mem0, args.cutoff)
         if indices is not None:
             published = {
                 qid: row
@@ -568,6 +590,10 @@ def _main() -> None:
             "source_artifact": str(args.rejudge_mem0),
             "judge_model": args.judge_model or args.model,
             "chat_size": args.chat_size,
+            # The retrieval budget this arm's answers were taken at. Recorded so `pair.compare`
+            # can REFUSE to align two arms measured at different depths — selecting the right
+            # cell is not enough on its own if nothing downstream checks that both sides agree.
+            "cutoff": args.cutoff,
             "metrics": aggregate(rows),
             "published_avg_score": round(statistics.mean(published_scores), 4)
             if published_scores
@@ -677,14 +703,21 @@ def _main() -> None:
         write(scored)
         return scored
 
+    # Every question this run was supposed to score, accumulated as the conversations are walked
+    # and narrowed by exactly the same filters as `pending`. This is what `coverage` is measured
+    # against below; deriving it here is the only place it is knowable.
+    expected: set[str] = set()
+
     try:
         wanted_types = (
             {s.strip() for s in args.question_types.split(",")} if args.question_types else None
         )
         for conv in conversations:
-            pending = [q for q in conv.questions if q.question_id not in done]
+            in_scope = conv.questions
             if wanted_types is not None:
-                pending = [q for q in pending if q.question_type in wanted_types]
+                in_scope = [q for q in in_scope if q.question_type in wanted_types]
+            expected.update(str(q.question_id) for q in in_scope)
+            pending = [q for q in in_scope if q.question_id not in done]
             if not pending:
                 print(f"  conversation {conv.index}: all {len(conv.questions)} scored, skipping")
                 continue
@@ -719,6 +752,12 @@ def _main() -> None:
             },
         },
         "n": len(rows),
+        # The same guard the re-judge arm carries, on the arm that publishes OUR numbers.
+        # `_run_pool` drops a question it could not score and keeps going, which is right — but
+        # it means a short run exits 0 and looks complete, with `n` as its only trace. That is
+        # the failure this field was written for (101 of 700 lost to one outage window), and it
+        # was emitted for the comparator arm and not for this one.
+        "coverage": _coverage(expected, {str(r["question_id"]) for r in rows}),
     }
     out_base.with_suffix(".json").write_text(
         json.dumps({"summary": summary, "rows": rows}, ensure_ascii=False, indent=1),

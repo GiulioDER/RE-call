@@ -31,18 +31,28 @@ DOCS = {
     "RESULTS": ROOT / "results" / "RESULTS.md",
 }
 
-#: Directories whose prose cites the two result documents. `results/` itself is excluded: a
-#: cross-reference inside FINDINGS.md moves together with the section it names.
+#: Directories whose prose cites the two result documents.
 SCAN_ROOTS = ("benchmarks", "recall", "scripts", "tests", "docs")
+
+#: Everything under `results/` EXCEPT the two documents that define the labels. The exclusion used
+#: to cover the whole directory, on the rationale that "a cross-reference inside FINDINGS.md moves
+#: together with the section it names" — true of FINDINGS.md and RESULTS.md, and false of the five
+#: other markdown files that live beside them and cite those sections from outside.
+SCAN_RESULTS_EXCEPT = {ROOT / "results" / "FINDINGS.md", ROOT / "results" / "RESULTS.md"}
 
 #: label -> (document, substring that must appear in that section's title).
 #: Add an entry when you add a citation — `test_every_cited_label_is_registered` enforces it.
 EXPECTED: dict[str, tuple[str, str]] = {
     "2b": ("FINDINGS", "the old fitting rule was replaced"),
+    # 5b, 7a and 9d were cited only from README.md, CHANGELOG.md and results/ARTIFACTS.md — all
+    # three outside the old scan roots, so nothing could have caught them being re-lettered.
+    "5b": ("FINDINGS", "the headline rate holds at full coverage"),
+    "7a": ("RESULTS", "Retrieval depth curve"),
     "7b": ("RESULTS", "Abstention on the adversarial"),
     "9a": ("FINDINGS", "0.671 at k=5"),
     "9b": ("FINDINGS", "0.00 out of the box"),
     "9c": ("FINDINGS", "stronger entailment judge"),
+    "9d": ("FINDINGS", "the paired head-to-head vs Mem0"),
     "9g": ("FINDINGS", "hosted embedder"),
     "9h": ("FINDINGS", "abstention category is a hallucination test"),
     "9i": ("FINDINGS", "the count rule does not pay"),
@@ -63,23 +73,41 @@ def _titles(doc: str) -> dict[str, str]:
     return {m.group(1): m.group(2).strip() for m in _HEADER.finditer(text)}
 
 
-def _cited() -> dict[str, set[str]]:
-    """label -> files citing it, over every scanned .py/.md outside `results/`."""
-    hits: dict[str, set[str]] = {}
+def _scanned() -> list[Path]:
+    """Every file whose lettered citations this suite is responsible for.
+
+    Three sources, and the last two were previously blind spots: the repo-root markdown
+    (README.md and CHANGELOG.md carry more §-citations than anything else in the tree, README's
+    among them), and the non-FINDINGS/RESULTS markdown under `results/`.
+    """
+    paths: list[Path] = []
     for root in SCAN_ROOTS:
         base = ROOT / root
-        if not base.is_dir():
+        if base.is_dir():
+            paths.extend(base.rglob("*"))
+    paths.extend(ROOT.glob("*.md"))
+    paths.extend(p for p in (ROOT / "results").rglob("*.md")
+                 if p.resolve() not in {q.resolve() for q in SCAN_RESULTS_EXCEPT})
+    return paths
+
+
+def _cited() -> dict[str, set[str]]:
+    """label -> files citing it."""
+    hits: dict[str, set[str]] = {}
+    seen: set[Path] = set()
+    for path in _scanned():
+        if path.suffix not in {".py", ".md"} or not path.is_file():
             continue
-        for path in base.rglob("*"):
-            if path.suffix not in {".py", ".md"} or not path.is_file():
-                continue
-            # This file names §9f and §9p to explain the failure it exists to catch. Those are
-            # examples, not citations, and registering them would make the dead-entry check pass
-            # for the wrong reason.
-            if path.resolve() == Path(__file__).resolve():
-                continue
-            for match in _LABEL.finditer(path.read_text(encoding="utf-8")):
-                hits.setdefault(match.group(1), set()).add(str(path.relative_to(ROOT)))
+        if path.resolve() in seen:
+            continue
+        seen.add(path.resolve())
+        # This file names §9f and §9p to explain the failure it exists to catch. Those are
+        # examples, not citations, and registering them would make the dead-entry check pass
+        # for the wrong reason.
+        if path.resolve() == Path(__file__).resolve():
+            continue
+        for match in _LABEL.finditer(path.read_text(encoding="utf-8")):
+            hits.setdefault(match.group(1), set()).add(str(path.relative_to(ROOT)))
     return hits
 
 

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from recall.embeddings import HashingEmbedder
 from recall.eval.locomo import run_conversation
 from recall.store import PgVectorStore
@@ -76,15 +78,37 @@ def _qa() -> list[dict]:
 
 
 @requires_db
-def test_run_conversation_without_a_reranker_leaves_the_ranking_untouched(tmp_path: Path) -> None:
-    """The baseline arm must not silently acquire a reranker."""
-    recorder = RecordingReranker()
+def test_run_conversation_without_a_reranker_leaves_the_ranking_untouched(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    """The baseline arm must not silently acquire a reranker.
+
+    Asserted against what `run_conversation` actually passes DOWN the retrieval path. The
+    previous version of this test constructed a `RecordingReranker`, never handed it to
+    anything, and then asserted its call list was empty — which is true of any object given to
+    nobody, whatever the code under test does. It was the only guard on this property and it
+    could not fail.
+    """
+    import recall.eval.locomo as locomo_module
+
+    # Intercept the object the retriever is actually CONSTRUCTED with — that is where a reranker
+    # would leak into the baseline arm, and it is reached on every question rather than only on
+    # the abstention path.
+    seen: list[object] = []
+    original = locomo_module.HybridRetriever
+
+    def _spy(*args: object, **kwargs: object):
+        seen.append(kwargs.get("reranker"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(locomo_module, "HybridRetriever", _spy)
     with _fresh("lab_rr_none") as store:
         run_conversation(
             _conversation(), _qa(), store=store, embedder=HashingEmbedder(dim=64),
             k=5, corpus_dir=tmp_path / "corpus", ks=[1, 5], candidate_k=20,
         )
-    assert recorder.calls == []
+    assert seen, "the retrieval path was never reached — this test would prove nothing"
+    assert all(r is None for r in seen), f"baseline arm acquired a reranker: {seen}"
 
 
 @requires_db

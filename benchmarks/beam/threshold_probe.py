@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.beam.dataset import iter_conversations
-from benchmarks.beam.systems import BEAM_TABLE, BeamRecallSystem
+from benchmarks.beam.systems import BEAM_TABLE, BeamRecallSystem, require_indexed
 from recall.eval.locomo import DEFAULT_DSN
 from recall.store import PgVectorStore
 
@@ -56,7 +56,16 @@ PERCENTILES = (0.0, 0.10, 0.25, 0.50)
 #: cosines cluster at 0.9 and one clustered at 0.5 are judged on separation, not level.
 GAP_RATIOS = (0.0, 0.02, 0.05, 0.10)
 
-#: The shipped absolute floor, kept as the baseline every candidate must beat.
+#: The shipped absolute floor, kept as the baseline every candidate must beat, plus one lower
+#: candidate.
+#:
+#: Deliberately a LITERAL, with the coupling to the library enforced by a test
+#: (`tests/test_bench_threshold_probe_floor.py`) rather than by an import. Importing
+#: `DEFAULT_GAP_THRESHOLD` here looks tidier and is worse: this is a candidate GRID, results are
+#: keyed `f"{rule}@{param}"`, and if the library default ever moved to 0.40 the tuple would become
+#: `(0.4, 0.4)` — two grid points silently collapsing onto one key, taking the baseline row with
+#: them and raising nothing. Lowering that default is a live proposal, so this is not hypothetical.
+#: A test can say "these drifted apart"; a shared reference can only make them agree by erasing one.
 ABSOLUTE_FLOORS = (0.50, 0.40)
 
 #: Corpus-quantile candidates. The floor is the q-th quantile of the TOP-1 scores observed across
@@ -120,8 +129,16 @@ def main() -> None:
     embedder = system._embedder  # noqa: SLF001 - probe
     rows: list[dict[str, Any]] = []
 
+    chunks_per_tenant: dict[str, int] = {}
     for conv in iter_conversations(args.data, args.chat_size, sorted(set(indices))):
         tenant = f"beam-{conv.chat_size}-{conv.index}".lower()
+        # Fail BEFORE scoring, not after. This probe does not index; on an empty tenant every
+        # candidate rule below "correctly starves" every unanswerable question and serves none of
+        # the answerable ones, and the resulting table is complete enough to publish.
+        with PgVectorStore(args.dsn, dim=embedder.dim, tenant=tenant, table=args.table) as store:
+            chunks_per_tenant[tenant] = require_indexed(
+                store, tenant=tenant, table=args.table, what="threshold_probe"
+            )
         for q in conv.questions:
             vector = embedder.embed([q.question])[0]
             # RAW candidate scores, before any threshold: a probe that sampled through the live
@@ -177,6 +194,9 @@ def main() -> None:
 
     report = {
         "candidates_per_query": args.candidates,
+        # Recorded so an empty or half-built tenant is visible in the artifact, not
+        # only in the guard that refused to run against one.
+        "chunks_per_tenant": chunks_per_tenant,
         "conversations": args.conversations,
         "embedder": embedder.name,
         # The regime itself — the thing an absolute floor cannot adapt to, published so two runs

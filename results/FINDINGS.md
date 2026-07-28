@@ -1014,13 +1014,20 @@ because on BEAM the two classes are ordered **the wrong way round**:
 | answerable (the other nine categories) | 0.641 |
 
 That is the raw top-1 cosine per class under BEAM's own labels, collected by
-`benchmarks/beam/calibrate.py` — embeddings and cosines only, no answerer and no judge. The
-calibration JSON is written by `--out` and is not committed, so this is a reproducible figure
-rather than an artifact-backed one:
+`benchmarks/beam/calibrate.py` — embeddings and cosines only, no answerer and no judge. The two
+medians above come from the `*_report.json` sidecar, which records the per-question cosines; the
+calibration JSON itself is not committed, so this is a reproducible figure rather than an
+artifact-backed one:
 
 ```bash
-python -m benchmarks.beam.calibrate --data <beam_1M.parquet> --out beam_calibration.json
+python -m benchmarks.beam.calibrate --data <beam_1M.parquet> \
+    --out beam_calibration.json --save-uncertified
 ```
+
+`--save-uncertified` is required here because the fit this produces on BEAM is **0.617 and does
+not certify**, and `calibrate` now refuses to write an uncertified threshold by default — it used
+to write one straight to the process-global `calibration.json` that `trusted_search` autoloads.
+The sidecar report, which is what carries the cosines quoted above, is written either way.
 
 A threshold is a monotone rule on that column, so no value of it can separate two classes that are
 already in the wrong order — the argument §9n generalises to every rule of that shape. Counting
