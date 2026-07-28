@@ -25,6 +25,10 @@ def leg_confidence(scores: Sequence[float]) -> float:
     Returns 0.0 for an empty leg, a single candidate, or a perfectly flat leg — all three mean
     "this leg expressed no preference". Never negative: the maximum of a sample is always at
     least its mean.
+
+    Not comparable across inputs of different length — the expected value of a sample maximum
+    grows with sample size on its own, even under pure noise. Use `more_decisive` to compare two
+    legs.
     """
     n = len(scores)
     if n < 2:
@@ -34,3 +38,24 @@ def leg_confidence(scores: Sequence[float]) -> float:
     if sd == 0.0:
         return 0.0
     return (max(scores) - mu) / sd
+
+
+def more_decisive(sparse_scores: Sequence[float], dense_scores: Sequence[float]) -> bool:
+    """True when the sparse leg was more decisive than the dense leg on this query.
+
+    Both legs are scored over their top `min(len(sparse), len(dense))` candidates. That
+    truncation is the point: `leg_confidence` is the z-score of a sample maximum, which grows
+    with sample size on its own (E[conf] on iid noise runs 1.39/1.67/1.95 at n=5/10/20). The
+    dense leg always returns exactly `candidate_k` candidates while the sparse leg returns only
+    tsquery matches, so comparing them at their natural depths would measure how many chunks
+    matched the query text rather than which leg was more decisive.
+
+    Returns False when the common depth is below 2 — there is no spread to compare, and the
+    caller treats "no information" as "do not fire".
+    """
+    m = min(len(sparse_scores), len(dense_scores))
+    if m < 2:
+        return False
+    sparse_top = sorted(sparse_scores, reverse=True)[:m]
+    dense_top = sorted(dense_scores, reverse=True)[:m]
+    return leg_confidence(sparse_top) > leg_confidence(dense_top)
