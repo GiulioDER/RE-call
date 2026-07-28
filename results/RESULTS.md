@@ -230,18 +230,20 @@ dense-only configuration the pre-fix run measured (0.624 → 0.671; 0.798 → 0.
 `locomo/depth_curve_pool20.json`). cat3 is the floor at every depth. Default-configuration
 adversarial abstention on the same run: 0.000 [0.00, 0.01], n=446 (§7b).
 
-Pool control (same code path, `--candidate-k 100`; 1,038 s): a deeper pool **dilutes** the fused
-prefix — RRF interleaves five times as many low-rank candidates — while enabling depth past the
-20-per-leg edge:
+Pool control (same code path, `--candidate-k 100`). ⚠️ **The pool-100 column published here was
+RETRACTED 2026-07-28** — it was measured on a doubled corpus, which a deliberate replication
+reproduces to ±0.0013 at every depth. Corrected figures below; full account in FINDINGS §9a and
+[`wrrf/FINDINGS_pool100_contamination.md`](wrrf/FINDINGS_pool100_contamination.md).
 
-| k | pool 20 | pool 100 |
-|---|---|---|
-| 5 | **0.671** | 0.596 |
-| 20 | 0.855 | 0.782 |
-| 50 | — (beyond the pool) | **0.877** [0.860, 0.892] |
+| k | pool 20 | ~~pool 100 (retracted)~~ | pool 100 — clean |
+|---|---|---|---|
+| 5 | **0.671** | ~~0.596~~ | **0.662** |
+| 20 | 0.855 | ~~0.782~~ | 0.821 |
+| 50 | — (beyond the pool) | ~~0.877 [0.860, 0.892]~~ | **not measured** |
 
-Raising `--candidate-k` is a different fusion configuration, not a deeper look at the published
-one. Why the pre-fix pool control was retracted: FINDINGS §9a.
+A deeper pool still dilutes the fused prefix, but by **−0.009 at k=5**, not the −0.075 this table
+previously reported. Raising `--candidate-k` is a different fusion configuration, not a deeper look
+at the published one. Why the pre-fix pool control was retracted the *first* time: FINDINGS §9a.
 
 ```bash
 python -m recall.eval.locomo --data locomo10.json --k-curve 1,3,5,10,20
