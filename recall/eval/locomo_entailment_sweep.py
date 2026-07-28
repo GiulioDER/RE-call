@@ -48,6 +48,7 @@ from recall.embeddings import Embedder
 from recall.eval.locomo import _make_embedder, _rate
 from recall.eval.locomo_abstention import _partition_questions
 from recall.eval.provenance import provenance_block
+from recall.eval.tenant_guard import check_tenants_populated
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
 
@@ -241,19 +242,25 @@ def run(
     # sum it once per judge and report corpus_rows inflated by the judge count — the same class of
     # plausible-but-wrong number this block exists to catch, just self-inflicted instead of from a
     # concurrent writer.
-    corpus_rows = 0
-    tenants: list[str] = []
+    #
+    # Also the tenant-guard preflight (see recall.eval.tenant_guard): a tenant this run is about
+    # to score that holds zero rows means the corpus build died partway through, and checking
+    # here — before `judges` below loads its first cross-encoder — fails before that cost is
+    # paid rather than after.
+    tenant_counts: dict[str, int] = {}
     for i, conv in enumerate(conversations):
         sample_id = conv.get("sample_id") or f"conv{i}"
         tenant = _tenant_for(sample_id)
-        # Appended only after count() succeeds — a confirmed real read, not the tenant this loop
+        # Recorded only after count() succeeds — a confirmed real read, not the tenant this loop
         # merely intended to read. Matches locomo_abstention.py's ordering (and locomo.py's, one
         # step further up in the same store-opening block): a store that failed to open, or a
         # count() that raised, must not leave its tenant in the provenance block as if it had been
         # measured.
         with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table=TABLE) as store:
-            corpus_rows += store.count()
-            tenants.append(tenant)
+            tenant_counts[tenant] = store.count()
+    check_tenants_populated(tenant_counts, table=TABLE)
+    corpus_rows = sum(tenant_counts.values())
+    tenants = list(tenant_counts.keys())
 
     per_judge: dict[str, Any] = {}
     for label, model_id in judges:
