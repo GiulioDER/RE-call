@@ -1052,3 +1052,43 @@ two concurrent runs (11 764 rows against a correct 5 882). Every depth came in ~
 appeared unmoved at +0.011, which would have published a false limitation. `run_conversation` now
 refuses to index over an existing tenant, and the runner asserts the row count before any result is
 read. See `docs/RESEARCH_PROTOCOL.md`._
+
+## 12. A Phase 0 diagnostic: the proposed PRF trigger selects for successes, not failures
+
+§2 established that a fitted cosine threshold does not transfer across embedders. §7 found the
+retrieval bottleneck is candidate recall, not ranking — a reranker converted only 3 of 31 misses.
+§8 confirmed the local embedder is not the bottleneck on ordinary prose. §9a measured that a 5×
+deeper candidate pool *lowers* hit@5 (0.671 → 0.596) and diagnosed the mechanism: RRF scores
+`dense[r]` and `sparse[r]` identically, so a deeper pool interleaves five times as many low-rank
+candidates into every prefix. Two levers were proposed on top of those findings: **weighted
+fusion** (reweight RRF so it stops diluting) and **PRF**, a second retrieval pass gated on a
+trigger — fire only when the lexical leg was more decisive than the dense leg — on the theory that
+leg disagreement marks a query retrieval is struggling with. Before building either, a Phase 0
+diagnostic measured that trigger's one load-bearing, previously-unmeasured assumption.
+
+**The preregistered kill gate:** firing-group hit@5 ≥ non-firing group → stop, no PRF gated on this
+trigger.
+
+**Measured** (LOCOMO, n=1,536 answerable, bge-small, hybrid, pool 20, no rerank — the §9a
+configuration exactly): firing-group hit@5 **0.7081** [0.6767, 0.7376] against non-firing-group
+**0.6164** [0.5794, 0.6521] — **delta +0.0917**, intervals disjoint, two-proportion z=3.79,
+p=1.5×10⁻⁴. Two independent confounds were checked and cleared: sparse-leg depth (the effect holds
+at +0.0913 in the 1,527-question bin where neither leg is truncated) and LOCOMO category (the
+category-adjusted delta is +0.0841 against +0.0917 pooled, and the direction never inverts —
+positive in 8 of 10 conversations, with the two exceptions flat at −0.004 and −0.002, not
+reversed).
+
+**The gate fired, with the sign reversed.** Leg disagreement does not select for retrieval
+failures; it selects for questions that are already *easy* — a decisive lexical leg means a sharp,
+rare-term match, and firing there spends a second retrieval pass on queries that did not need one
+while staying silent on the ones that did.
+
+**Verdict: PRF gated on this trigger is closed.** It inverts the entire latency argument the design
+rested on — that the second pass would cost nothing on confident queries. **Weighted fusion (Phase
+1) is untouched** — it never depended on the trigger — and its target is now measured directly:
+**349 of 1,536 questions (22.7%)** have the gold chunk inside the fused candidate pool but ranked
+below k=5, which is what a reweighted RRF would have to fix.
+
+Full write-up, apparatus check, confound controls and prediction scorecard:
+[`results/legdiag/FINDINGS_phase0.md`](legdiag/FINDINGS_phase0.md), backed by
+[`results/legdiag/locomo_phase0.json`](legdiag/locomo_phase0.json).
