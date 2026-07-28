@@ -7,12 +7,12 @@
 
 The claim under test
 --------------------
-`DEFAULT_GAP_THRESHOLD = 0.50` is an ABSOLUTE cosine. §9l measured it doing nothing on bge-small
+`DEFAULT_GAP_THRESHOLD = 0.50` is an ABSOLUTE cosine. §9m measured it doing nothing on bge-small
 (0 of 54 answerable starved — it sits below that model's observed minimum) and discarding 7 % on
 text-embedding-3-small. If that holds, the constant is not a tuned value but an untested one, and
 a rate-based floor is the fix.
 
-But §9l is one corpus and 54 questions in one arm, which is the exact profile of two measurements
+But §9m is one corpus and 54 questions in one arm, which is the exact profile of two measurements
 that reversed at scale earlier in the same session: an n=2 entailment pilot whose policy was net
 NEGATIVE at n=30, and a +0.029 k-sweep advantage that became +0.0007 at n=300. Varying the
 embedder while holding the corpus fixed also cannot separate an embedder effect from a property of

@@ -34,7 +34,7 @@ wins.** The BEAM result — we lose, p_holm = 0.026 — ships alongside this sui
 BEAM is well built and we keep it in the suite as an external cross-check. But its aggregate
 cannot price this library's central claim, and we can now show why rather than assert it:
 abstention is 10 % of its questions while false-abstention risk applies to the other 90 %, so
-every abstention policy we tested came out net negative on its average (§9h). A system that
+every abstention policy we tested came out net negative on its average (§9i). A system that
 declines to invent cannot win that mean by construction. That is a reason to measure the claim
 elsewhere — not a reason to dismiss BEAM, and not a licence to build a benchmark we win.
 
@@ -60,7 +60,7 @@ unannotated text. If ANNOTATED shows little gain, the thesis is weak and the wri
 **Corpus.** The same RFC series, queried at historical dates the obsoletes chain makes unambiguous.
 **Metric.** Accuracy at T, split by whether the correct answer is the current document or a
 retired one. The second half is the interesting one: a system biased to recency fails it, which
-is precisely the failure mode we rejected in §9i.
+is precisely the failure mode we rejected in §9j.
 **How we lose.** We have `valid_until` but have never tested point-in-time retrieval end to end.
 If RE-call cannot beat a plain recency ordering here, the temporal machinery earns nothing.
 
