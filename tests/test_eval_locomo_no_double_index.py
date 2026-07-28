@@ -87,3 +87,41 @@ def test_the_refusal_can_be_overridden_deliberately(tmp_path: Path) -> None:
         first = store.count()
         _run(store, tmp_path / "c2", allow_existing=True)
         assert store.count() > first, "the override must actually permit the write"
+
+
+@requires_db
+def test_index_conversation_is_guarded_too_not_just_run_conversation(tmp_path: Path) -> None:
+    """The guard has to live on the shared path, not on one caller.
+
+    `index_conversation` was extracted so the head-to-head benchmark's `RecallSystem` adapter would
+    reuse the eval's exact indexing path. But the double-index guard was written inline in
+    `run_conversation`, so the benchmark ingested through the UNGUARDED copy — able to double a
+    corpus in precisely the way that produced a wrong published LOCOMO number, with nothing
+    erroring. Two copies of an indexing path is how a benchmark and its eval drift apart; one of
+    them carrying the safety check is how the drift stays invisible.
+    """
+    from recall.eval.locomo import index_conversation
+
+    with _fresh("t-idxconv", "lab_dbl_idxconv") as store:
+        index_conversation(store, HashingEmbedder(dim=64), _CONV, corpus_dir=tmp_path / "c1")
+        first = store.count()
+        assert first > 0
+
+        with pytest.raises(RuntimeError) as exc:
+            index_conversation(store, HashingEmbedder(dim=64), _CONV, corpus_dir=tmp_path / "c2")
+
+        assert store.count() == first, "the refused call must not have written anything"
+    assert "already" in str(exc.value).lower()
+    assert "t-idxconv" in str(exc.value)
+
+
+@requires_db
+def test_index_conversation_override_still_permits_a_deliberate_add(tmp_path: Path) -> None:
+    with _fresh("t-idxovr", "lab_dbl_idxovr") as store:
+        from recall.eval.locomo import index_conversation
+
+        index_conversation(store, HashingEmbedder(dim=64), _CONV, corpus_dir=tmp_path / "c1")
+        first = store.count()
+        index_conversation(store, HashingEmbedder(dim=64), _CONV,
+                           corpus_dir=tmp_path / "c2", allow_existing=True)
+        assert store.count() > first
