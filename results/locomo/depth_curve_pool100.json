@@ -3,6 +3,7 @@
     "generation": "pre-#81/#84",
     "status": "superseded",
     "stack": "unrecorded",
+    "generated_at": "unrecorded",
     "superseded_by": "results/wrrf/arm_C_rrf_pool100.json",
     "backs": [
       "the pool-100 control RETRACTED in FINDINGS \u00a79a \u2014 with the sparse leg inert the two runs could differ only by index-build noise, so their agreement could not show the pool was non-binding. Kept as the record of the retracted control, not as evidence."

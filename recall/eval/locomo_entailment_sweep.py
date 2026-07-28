@@ -46,7 +46,7 @@ from typing import Any, Callable
 
 from recall.embeddings import Embedder
 from recall.eval.locomo import _make_embedder, _rate
-from recall.eval.provenance import model_stack
+from recall.eval.provenance import generated_at, model_stack
 from recall.eval.locomo_abstention import _partition_questions
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
@@ -243,6 +243,7 @@ def run(
         "conversations": len(conversations),
         "elapsed_s": round(time.time() - started, 1),
         "stack": model_stack(),
+        "generated_at": generated_at(),
         "judges": per_judge,
     }
 

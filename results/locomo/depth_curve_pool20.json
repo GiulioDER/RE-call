@@ -3,6 +3,7 @@
     "generation": "pre-#81/#84",
     "status": "superseded",
     "stack": "unrecorded",
+    "generated_at": "unrecorded",
     "superseded_by": "results/locomo/postfix_pool20.json",
     "backs": [
       "FINDINGS \u00a79a \u2014 the retained pre-fix anchor, 0.624 at k=5 and 0.798 at k=20"
