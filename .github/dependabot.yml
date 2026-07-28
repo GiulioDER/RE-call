@@ -15,6 +15,43 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
+    # Three dependencies in `pyproject.toml` are capped ON PURPOSE, each with its reasoning
+    # written next to the pin. Dependabot cannot read that reasoning, so left alone it reopens
+    # the same three PRs every week — and the resolver's opinion slowly becomes the repo's.
+    #
+    # These are NOT "we haven't got round to it" caps. Lifting any of them is a deliberate piece
+    # of work with its own PR, and that is exactly what an ignore rule preserves: it removes the
+    # weekly nag, not the option.
+    #
+    # A rule here is a claim about a cap that exists. If a cap is ever lifted in pyproject.toml,
+    # delete its rule in the SAME change — a stale ignore silently withholds real updates, which
+    # is the worse failure of the two.
+    ignore:
+      # mcp: capped `<2`. 2.0.0 (2026-07-28) removes `mcp.server.fastmcp`, moves `request_ctx`,
+      # and renames every `ToolAnnotations` field to snake_case. `recall_mcp/server.py` is written
+      # against 1.x, so 2.0 is a PORT, not a bump — see #118, which added the cap after 2.0.0
+      # broke master with nothing in this repo changed, and #129, the PR this rule prevents.
+      # Major only: 1.x patches still arrive.
+      - dependency-name: "mcp"
+        update-types: ["version-update:semver-major"]
+
+      # mem0ai: pinned EXACTLY, and the only one of the three whose bump PR goes GREEN — the
+      # competitive benchmark is never installed in CI, so no test can fail on it. That is what
+      # makes it dangerous: mem0ai is the competitor being measured, its version is recorded into
+      # every results artifact via importlib.metadata, and its extraction prompt and retrieval
+      # defaults move between releases. A merged bump would silently change what "Mem0" means in
+      # already-published comparisons. Bumping it is a re-run, not a resolver decision.
+      # No update-types: every version is ignored, because the pin is `==`.
+      - dependency-name: "mem0ai"
+
+      # ruff: capped `<0.16` because a linter is the one dependency where resolving "newest"
+      # makes CI non-reproducible — 0.16.0 stabilised new rules and put 131 findings on unchanged
+      # code. Adopting them is a repo-wide sweep in its own PR. Patches within 0.15.x still
+      # arrive; minor and major do not.
+      - dependency-name: "ruff"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
 
   # This half is proven: the first batch (#41-#43) bumped checkout, setup-python and setup-uv,
   # and merged green.
