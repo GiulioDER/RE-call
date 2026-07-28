@@ -8,9 +8,9 @@
 
 What this tests and why it is not the benchmark
 -----------------------------------------------
-§9f established that a cosine threshold CANNOT gate abstention on BEAM: its unanswerable questions
+§9h established that a cosine threshold CANNOT gate abstention on BEAM: its unanswerable questions
 score HIGHER than its answerable ones (median 0.676 vs 0.641), so every threshold abstains on the
-wrong class first. §9g found, on a single conversation, that the count of ENTAILED hits recovers
+wrong class first. §9h also found, on a single conversation, that the count of ENTAILED hits recovers
 the ordering that similarity inverts — but on n=2 unanswerable questions, which is a direction,
 not a result.
 

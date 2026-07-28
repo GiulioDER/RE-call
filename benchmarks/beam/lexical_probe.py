@@ -9,8 +9,8 @@
 Why this and not another threshold
 ----------------------------------
 Four rules have now been measured and killed: per-query percentile, score gap, corpus quantile on
-real queries, corpus quantile from self-queries (§9m). They failed for one shared reason — each is
-a MONOTONE function of the dense score, and §9f established that on BEAM the unanswerable questions
+real queries, corpus quantile from self-queries (§9n). They failed for one shared reason — each is
+a MONOTONE function of the dense score, and §9h established that on BEAM the unanswerable questions
 score HIGHER than the answerable ones. A monotone transform preserves order, and the order is what
 is wrong.
 
@@ -164,7 +164,7 @@ def main() -> None:
             "n": len(una), "mean": round(statistics.mean(una), 4),
             "median": round(statistics.median(una), 4),
         },
-        # The comparison that matters: cosine put the unanswerable HIGHER (§9f). Does coverage
+        # The comparison that matters: cosine put the unanswerable HIGHER (§9h). Does coverage
         # put them lower? If the gap has the same sign as cosine's, this signal is no better.
         "separation": round(statistics.mean(ans) - statistics.mean(una), 4),
         "rules": {

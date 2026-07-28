@@ -33,7 +33,7 @@ What this measures, and what it cannot
 For every question: would the rule have retrieved anything, and was the question answerable? That
 yields recovered-answerable and lost-abstentions per rule per parameter — the two quantities whose
 difference decided the last change. It does NOT produce a score: converting a retrieval rule into
-a BEAM cell needs the paid arm, and §9g/§9h are the standing record of what happens when a
+a BEAM cell needs the paid arm, and §9h/§9i are the standing record of what happens when a
 mechanism measured on a proxy is promoted to a recommendation before the cell is run.
 """
 from __future__ import annotations
@@ -65,7 +65,7 @@ ABSOLUTE_FLOORS = (0.50, 0.40)
 #:
 #: Its structural cost is visible before running: a quantile of the top-1 distribution abstains on
 #: ~q of queries BY CONSTRUCTION. That is a defensible policy only if the worst q% really are the
-#: unanswerable ones. On BEAM they are not (§9f: unanswerable questions score HIGHER), so this is
+#: unanswerable ones. On BEAM they are not (§9h: unanswerable questions score HIGHER), so this is
 #: expected to fail HERE while possibly being right on a corpus that is not adversarial by design.
 CORPUS_QUANTILES = (0.02, 0.05, 0.10)
 

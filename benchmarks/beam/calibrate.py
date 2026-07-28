@@ -13,7 +13,7 @@ Why this step exists
 regime". With no calibration on disk the library falls back to `DEFAULT_GAP_THRESHOLD = 0.50` and
 flags every result `calibrated=False`.
 
-The BEAM arm runs on `text-embedding-3-small` (see FINDINGS §9f) — an embedder this repo has never
+The BEAM arm runs on `text-embedding-3-small` (see FINDINGS §9g) — an embedder this repo has never
 calibrated. Measured on conversation 0, its top-1 cosines run 0.41-0.76 against a 0.50 floor, so
 the default is not absurd, but it is still a CONSTANT rather than a measurement: a cell produced
 under it reports the constant as much as the retriever. Since abstention is the axis this whole
