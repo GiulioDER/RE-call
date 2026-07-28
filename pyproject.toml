@@ -100,7 +100,7 @@ llamaindex = ["llama-index-core>=0.11"]
 # (2026-07-22) and the version `benchmarks/systems.py` is written against; it is recorded into
 # every results artifact via `importlib.metadata.version("mem0ai")`. Bumping it is a deliberate
 # re-run, not a resolver decision.
-bench = ["mem0ai==2.0.13", "openai>=1.0"]
+bench = ["mem0ai==2.0.14", "openai>=1.0"]
 # pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
 # failing it — a hung CI job reads as "still running", not as a regression.
 #
