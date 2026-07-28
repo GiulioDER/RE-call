@@ -165,6 +165,10 @@ INSECURE_DSN_OPT_OUT = "RECALL_ALLOW_INSECURE_DSN"
 #: test can `monkeypatch.setenv` per-case and a long-lived process can pick up a changed value
 #: without restarting.
 DEFAULT_HNSW_EF_SEARCH_FILTERED = 200
+#: pgvector's accepted range for `hnsw.ef_search` is 1..1000; a value outside it is rejected at
+#: config time rather than being interpolated into `SET LOCAL hnsw.ef_search` and erroring on
+#: every filtered search.
+_HNSW_EF_SEARCH_MAX = 1000
 DEFAULT_HNSW_ITERATIVE_SCAN_FILTERED = "relaxed_order"
 #: pgvector's own default for `hnsw.ef_search`, and therefore the point at which an UNFILTERED
 #: query starts silently returning fewer rows than it asked for.
@@ -577,6 +581,16 @@ class PgVectorStore:
     @property
     def table(self) -> str:
         return self._table
+
+    @property
+    def tenant(self) -> str:
+        """The tenant this store reads and writes as.
+
+        Exposed so a caller can NAME it in an error. A guard that reports "this tenant already
+        holds data" without saying which tenant sends the reader hunting through config for a
+        value the store already knows.
+        """
+        return self._tenant
 
     def close(self) -> None:
         """Close the connection (or pool) for good.
@@ -1054,9 +1068,23 @@ class PgVectorStore:
         `monkeypatch.setenv` per-case and a long-lived process can pick up a changed value without
         restarting — the same convention `index_memory()` uses for `RECALL_INDEX_MAX_FILES`.
         """
-        ef_search = int(
-            os.environ.get("RECALL_HNSW_EF_SEARCH_FILTERED", str(DEFAULT_HNSW_EF_SEARCH_FILTERED))
+        raw_ef = os.environ.get(
+            "RECALL_HNSW_EF_SEARCH_FILTERED", str(DEFAULT_HNSW_EF_SEARCH_FILTERED)
         )
+        try:
+            ef_search = int(raw_ef)
+        except ValueError:
+            raise ValueError(
+                f"RECALL_HNSW_EF_SEARCH_FILTERED={raw_ef!r} is not an integer"
+            ) from None
+        if not 1 <= ef_search <= _HNSW_EF_SEARCH_MAX:
+            # Interpolated into `SET LOCAL hnsw.ef_search` below, never bound — an out-of-range
+            # value would only surface as a query-time error on every filtered search. Catch it
+            # here, naming the variable, exactly as iterative_scan and the multiplier do.
+            raise ValueError(
+                f"RECALL_HNSW_EF_SEARCH_FILTERED={ef_search} is out of range; "
+                f"pgvector accepts 1..{_HNSW_EF_SEARCH_MAX}"
+            )
         iterative_scan = os.environ.get(
             "RECALL_HNSW_ITERATIVE_SCAN_FILTERED", DEFAULT_HNSW_ITERATIVE_SCAN_FILTERED
         )
@@ -1073,7 +1101,11 @@ class PgVectorStore:
         if k <= 0:
             raise ValueError("k must be a positive int")
         t = self._table
-        where = "AND source = %(source)s" if source else ""
+        # Match the caller-facing identifier: recall_search surfaces the root-relative
+        # `metadata->>'file'` (never the absolute `source` column), so a `source=` filter passed
+        # back from a hit must resolve against `file` — falling back to `source` keeps legacy rows
+        # (no `file` metadata) and any absolute-path caller working. Same rule as recall_forget.
+        where = "AND (metadata->>'file' = %(source)s OR source = %(source)s)" if source else ""
         sql = f"""
             SELECT id, source, text, metadata, indexed_at, 1 - (embedding <=> %(vec)s) AS score
             FROM {t}
@@ -1168,7 +1200,11 @@ class PgVectorStore:
         if k <= 0:
             raise ValueError("k must be a positive int")
         t = self._table
-        where = "AND c.source = %(source)s" if source else ""
+        # See query_dense: the caller-facing identifier is the relative `file`, so match it (with
+        # a `source` fall-back for legacy rows). Aliased `c.` here.
+        where = (
+            "AND (c.metadata->>'file' = %(source)s OR c.source = %(source)s)" if source else ""
+        )
         # One CTE so the tsquery is built once and both the filter and the ranking see the
         # identical value; repeating the expression risked them drifting apart under edits.
         tsquery_cte = """
@@ -1301,7 +1337,11 @@ class PgVectorStore:
         file that bears it: an AMBIGUOUS target (a basename shared by two files) is skipped
         rather than mis-mapped — the same refusal `recall lint` makes when it flags
         ``ambiguous-supersedes-target`` — so a stray sibling can never be silently marked
-        superseded. A dangling target (no such basename in the corpus) is skipped too. The
+        superseded. Only the ambiguous case is skipped. A DANGLING target (no such basename in
+        the corpus) is instead kept, as an edge keyed on the raw basename it was written as:
+        harmless, because that key matches no indexed file, and dropping it would silently
+        discard a valid supersession claim (e.g. a memo superseding a doc since removed).
+
         The result is cached, but the cache is VALIDATED against the table on every call rather
         than trusted. It previously was not: it was invalidated only by this instance's own
         writes, so a long-lived reader (an MCP server holds one store for its lifetime) never saw
@@ -1346,6 +1386,37 @@ class PgVectorStore:
 
         edges, unresolved = self._with_retry(_op)
         return dict(edges), unresolved
+
+    def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+        """Resolve caller-facing identifiers to the DB `source` value(s) to delete, this tenant only.
+
+        A ``recall_search`` hit's ``source`` field is the root-relative ``metadata['file']`` for an
+        indexed chunk (or the raw ``source`` for a legacy row that predates ``file`` metadata),
+        while deletion keys on the absolute ``source`` column. So a caller-supplied identifier
+        matches a row by EITHER its ``file`` metadata or its ``source``. Returns
+        ``{identifier: [source, ...]}`` for the identifiers that resolved to at least one row;
+        identifiers that matched nothing are simply absent (the caller reports them not-found).
+        """
+        if not identifiers:
+            return {}
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"""
+                SELECT DISTINCT source, metadata->>'file' AS file
+                FROM {self._table}
+                WHERE tenant_id = %s AND (metadata->>'file' = ANY(%s) OR source = ANY(%s))
+                """,
+                (self._tenant, identifiers, identifiers),
+            ).fetchall()
+        )
+        requested = set(identifiers)
+        resolved: dict[str, list[str]] = {}
+        for source, file in rows:
+            for ident in {file, source} & requested:
+                bucket = resolved.setdefault(ident, [])
+                if source not in bucket:
+                    bucket.append(source)
+        return resolved
 
     def source_content_hashes(self) -> dict[str, str]:
         """`{source: content_hash}` for this tenant — what the indexer compares against.

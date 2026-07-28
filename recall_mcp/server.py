@@ -61,6 +61,25 @@ def _read_transport() -> Transport:
     return value  # narrowed to Transport by the membership test above
 
 
+def _read_int_env(name: str, default: int, *, min_value: int, max_value: int | None = None) -> int:
+    """An integer knob from the environment, validated — the numeric analogue of `_read_transport`.
+
+    A bare ``int()`` crashes with ``invalid literal for int()`` that names no variable, and never
+    bounds-checks, so an out-of-range value is accepted at import and only surfaces later (a
+    negative RECALL_STATEMENT_TIMEOUT_MS reaches ``SET statement_timeout``; 0 silently disables the
+    cap). Fail here, naming the variable and the expected range.
+    """
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name}={raw!r} is not an integer") from None
+    if value < min_value or (max_value is not None and value > max_value):
+        bound = f"{min_value}..{max_value}" if max_value is not None else f">= {min_value}"
+        raise ValueError(f"{name}={value} is out of range; expected {bound}")
+    return value
+
+
 TRANSPORT: Transport = _read_transport()
 #: Bind address for the HTTP transports. Exposed as RECALL_* because the SDK's own FASTMCP_HOST /
 #: FASTMCP_PORT are read when the FastMCP object is constructed at import time, which makes them
@@ -68,18 +87,20 @@ TRANSPORT: Transport = _read_transport()
 #: Default is loopback, NOT 0.0.0.0: binding every interface should be a decision someone makes,
 #: not something they inherit.
 HTTP_HOST = os.environ.get("RECALL_HOST", "127.0.0.1")
-HTTP_PORT = int(os.environ.get("RECALL_PORT", "8000"))
+HTTP_PORT = _read_int_env("RECALL_PORT", 8000, min_value=1, max_value=65535)
 EMBEDDER_NAME = os.environ.get("RECALL_EMBEDDER", "fastembed")
 #: Connections the server keeps open. This bounds concurrent in-flight tool calls at the database,
 #: which is where the real limit is — more worker threads than connections just queue on the pool.
-POOL_SIZE = int(os.environ.get("RECALL_POOL_SIZE", "8"))
+POOL_SIZE = _read_int_env("RECALL_POOL_SIZE", 8, min_value=1)
 #: Tenant this server instance serves. One store is bound to one tenant, so a
 #: multi-tenant deployment runs a server (or a store) per tenant rather than switching
 #: tenants on a shared connection — see PgVectorStore._prepare.
 TENANT = os.environ.get("RECALL_TENANT", DEFAULT_TENANT)
 #: Server-side cap on any single statement. A runaway query otherwise holds its connection until
 #: the process dies, and a few of those exhaust the pool while the server still looks healthy.
-STATEMENT_TIMEOUT_MS = int(os.environ.get("RECALL_STATEMENT_TIMEOUT_MS", "15000"))
+# min_value=1: 0 is a valid Postgres statement_timeout meaning "no limit", but here it would
+# disable the very cap this exists to enforce — a fail-open we refuse rather than accept silently.
+STATEMENT_TIMEOUT_MS = _read_int_env("RECALL_STATEMENT_TIMEOUT_MS", 15000, min_value=1)
 
 _T = TypeVar("_T")
 
