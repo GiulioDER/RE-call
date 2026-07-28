@@ -245,6 +245,7 @@ def run_conversation(
     ks: Sequence[int] | None = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
     reranker: Reranker | None = None,
+    fusion: str = "rrf",
     probe: Callable[[LegProbe], None] | None = None,
     allow_existing: bool = False,
 ) -> dict[str, Any]:
@@ -287,7 +288,7 @@ def run_conversation(
     depths = _depths(ks, k)
     max_k = max(depths)
     retriever = HybridRetriever(
-        store, embedder, candidate_k=candidate_k, reranker=reranker, probe=probe
+        store, embedder, candidate_k=candidate_k, reranker=reranker, fusion=fusion, probe=probe
     )
     hits_by_cat: dict[int, list[bool]] = {c: [] for c in ANSWERABLE_CATEGORIES}
     abstained: list[bool] = []
@@ -364,6 +365,7 @@ def run(
     ks: Sequence[int] | None = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
     reranker: Reranker | None = None,
+    fusion: str = "rrf",
     allow_existing: bool = False,
 ) -> dict[str, Any]:
     conversations = json.loads(data_path.read_text(encoding="utf-8"))
@@ -397,6 +399,7 @@ def run(
                     ks=depths,
                     candidate_k=candidate_k,
                     reranker=reranker,
+                    fusion=fusion,
                     allow_existing=allow_existing,
                 )
             per_conversation.append(res)
@@ -462,6 +465,7 @@ def run(
         "embedder": embedder_name,
         "k": k,
         "candidate_k": candidate_k,
+        "fusion": fusion,
         "reranker": getattr(reranker, "name", None) or type(reranker).__name__
         if reranker is not None else None,
         "depth_curve": curve,
@@ -539,6 +543,10 @@ def main(argv: list[str] | None = None) -> int:
         help=f"candidates per retrieval leg before fusion (default {DEFAULT_CANDIDATE_K}). Raise "
              "it to score depths past the default pool — but that changes the fusion, so the "
              "result is a different configuration, not a deeper look at the published one",
+    )
+    p.add_argument(
+        "--fusion", default="rrf", choices=["rrf", "wrrf"],
+        help="rrf = shipped equal-weight fusion; wrrf = weighted by per-query leg decisiveness",
     )
     p.add_argument(
         "--rerank", action="store_true",
@@ -629,6 +637,7 @@ def main(argv: list[str] | None = None) -> int:
         ks=ks,
         candidate_k=args.candidate_k,
         reranker=reranker,
+        fusion=args.fusion,
     )
     _print_report(report)
     if args.out:

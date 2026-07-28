@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from recall.embeddings import Embedder
-from recall.fusion import weighted_rrf
+from recall.fusion import leg_confidence, weighted_rrf
 from recall.guards import DEFAULT_GAP_THRESHOLD, gap_warning, staleness
 from recall.rerank import Reranker
 from recall.store import PgVectorStore
@@ -63,6 +63,9 @@ class HybridRetriever:
       candidate_k:   how many candidates each of dense/sparse contributes before fusion.
       use_sparse:    include the sparse full-text leg in fusion; False = dense-only (ablations).
       use_dense:     include the dense vector leg in fusion; False = sparse-only (ablations).
+      fusion:        'rrf' (default, shipped) weights both legs equally; 'wrrf' weights each leg
+                     by its per-query decisiveness (recall.fusion.leg_confidence). Equal
+                     decisiveness makes the two identical.
       probe:         optional observer called once per search with the raw per-leg candidates.
                      Diagnostics only — it cannot influence the result, and the default (None)
                      leaves the query path byte-identical.
@@ -87,10 +90,13 @@ class HybridRetriever:
         candidate_k: int = DEFAULT_CANDIDATE_K,
         use_sparse: bool = True,
         use_dense: bool = True,
+        fusion: str = "rrf",
         probe: Callable[[LegProbe], None] | None = None,
     ) -> None:
         if not (use_dense or use_sparse):
             raise ValueError("at least one of use_dense / use_sparse must be True")
+        if fusion not in ("rrf", "wrrf"):
+            raise ValueError(f"fusion must be 'rrf' or 'wrrf', got {fusion!r}")
         self._store = store
         self._embedder = embedder
         self._reranker = reranker
@@ -99,6 +105,7 @@ class HybridRetriever:
         self._candidate_k = candidate_k
         self._use_sparse = use_sparse
         self._use_dense = use_dense
+        self._fusion = fusion
         self._probe = probe
 
     def search(self, query: str, k: int = 5, source: str | None = None) -> RetrievalResult:
@@ -134,7 +141,22 @@ class HybridRetriever:
         else:
             sparse = []
 
-        fused = _rrf([[h.chunk.id for h in dense], [h.chunk.id for h in sparse]])
+        dense_ranking = [h.chunk.id for h in dense]
+        sparse_ranking = [h.chunk.id for h in sparse]
+        if self._fusion == "wrrf":
+            # Each leg is scored on its OWN units; `leg_confidence` is affine-invariant, which is
+            # what makes a cosine leg and a ts_rank leg comparable. `sparse_ranks` is only
+            # populated when probing, so fall back to the sparse hits' cosines otherwise — both
+            # are that leg's ordering evidence, and the z-score is scale-free either way.
+            c_dense = leg_confidence([h.score for h in dense])
+            c_sparse = leg_confidence(sparse_ranks or [h.score for h in sparse])
+            total = max(c_dense, 0.0) + max(c_sparse, 0.0)
+            weights = (
+                [max(c_dense, 0.0) / total, max(c_sparse, 0.0) / total] if total > 0 else [0.5, 0.5]
+            )
+        else:
+            weights = [0.5, 0.5]
+        fused = weighted_rrf([dense_ranking, sparse_ranking], weights=weights)
         by_id = {h.chunk.id: h for h in dense}
         for h in sparse:
             by_id.setdefault(h.chunk.id, h)  # sparse hits carry their true cosine (vec=qvec)
