@@ -63,12 +63,36 @@ That is the property that makes cosine and `ts_rank` comparable without normaliz
 scales, and it is asserted as a property test, not assumed.
 
 ```
-trigger(query) ≡ conf(sparse) > conf(dense)
+m = min(len(sparse_scores), len(dense_scores))          # common candidate depth
+trigger(query) ≡ conf(sparse[:m]) > conf(dense[:m])     # both legs scored at depth m
+trigger(query) ≡ False                                   when m < 2
 ```
 
 Zero constants: a comparison between two scale-free quantities, not a threshold. This is
 deliberate — §2 established that a fitted cosine threshold does not transfer across embedders, and
 a trigger built on one would inherit that failure.
+
+> **Amendment, 2026-07-28, before any run.** The definition first committed here was
+> `conf(sparse) > conf(dense)` at each leg's natural depth. That is biased, and the bias was
+> caught by the review loop while implementing, with **no data in existence** — which is the only
+> point at which a preregistered definition may be changed.
+>
+> `conf` is the z-score of a sample *maximum*, and the expected maximum grows with sample size.
+> Measured on pure iid Gaussian noise, 4,000 trials, no signal at all: **E[conf] = 1.389 (n=5),
+> 1.669 (n=10), 1.945 (n=20)**. The dense leg always returns exactly `candidate_k` candidates — it
+> is a top-k vector scan — while the sparse leg returns only chunks whose `tsv` matched the
+> tsquery, often far fewer. At natural depths the comparison would therefore have measured **how
+> many chunks matched the query text**, not which leg was more decisive: a query with 5 sparse hits
+> starts ~0.55 z-units behind before any evidence is weighed. Q1 and Q2 — the two answers this
+> phase exists to produce — would both have been confounded by tsquery match count.
+>
+> Scoring both legs at the common depth `m` removes it by construction, at the cost of ignoring
+> the deeper leg's tail. Nothing else changed: not the predictions, not the decision rules, not the
+> kill gates. Implemented as `recall.eval.legconf.more_decisive`, with
+> `test_more_decisive_is_not_fooled_by_leg_length` as the regression guard.
+>
+> The diagnostic records `n_dense` and `n_sparse` per question so the residual relationship between
+> firing and sparse-leg depth is **reported rather than assumed away**.
 
 ## What Phase 0 measures
 
