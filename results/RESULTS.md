@@ -339,9 +339,9 @@ embedder, no LLM in the memory layer); Mem0 as shipped (LLM extraction per memor
 
 > **What is published, precisely.** The harness (`benchmarks/`), the pre-registration, the blind
 > human labels, the corrupt-key list and an adversarial independent recompute of every cell
-> (`benchmarks/REVIEW.md`) live on the **`bench/head-to-head`** branch. The **per-question raw
+> (`benchmarks/REVIEW.md`) live in **`benchmarks/` on master**. The **per-question raw
 > dumps do not** — `benchmarks/results/` is gitignored, so each run writes them locally only.
-> Every figure below is reproducible with the commands in that branch, and every one of them was
+> Every figure below is reproducible with the commands in `benchmarks/`, and every one of them was
 > re-derived from the dumps by a second, independent script; none is currently checkable from a
 > committed artifact.
 

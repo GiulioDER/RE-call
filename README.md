@@ -179,7 +179,7 @@ A previous version of this file published each of these. They did not survive re
 - **"Per-question raw dumps are published"** — said of the Mem0 head-to-head. They are not:
   `benchmarks/results/` is gitignored, so each run writes them locally only. The harness, the
   pre-registration, the blind human labels, the corrupt-key list and an independent adversarial
-  recompute of every cell *are* published, on the `bench/head-to-head` branch. Corrected in
+  recompute of every cell *are* published, in `benchmarks/` on master. Corrected in
   [RESULTS §9](https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md) and FINDINGS §9d.
 
 ## Production posture
