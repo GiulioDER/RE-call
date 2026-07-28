@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from recall.eval.legconf import leg_confidence, more_decisive
@@ -50,16 +52,47 @@ def test_more_decisive_compares_at_a_common_depth():
     assert more_decisive(sparse, dense) is True
 
 
+def test_more_decisive_truncates_from_the_top_not_the_bottom():
+    """Pins the direction of the `sorted(..., reverse=True)[:m]` truncation. `sparse` is the
+    shorter leg (len 3), so `m == 3` and the WHOLE of `sparse` is used regardless of which end
+    the slice is taken from — only `dense`'s truncation direction is actually exercised here.
+
+    `dense`'s top 3 candidates are an exact tie (leg_confidence == 0.0, maximally undecisive);
+    its bottom 3 are a sharp single-winner spike ([0.0, 0.0, 1.0], leg_confidence ==
+    sqrt(2) ~= 1.4142, the theoretical ceiling for n=3 per Samuelson's inequality). `sparse`'s
+    confidence (~1.3887) sits strictly between those two: above dense's top-3 confidence, below
+    dense's bottom-3 confidence. So the correct (top) truncation must yield True, and the wrong
+    (bottom) truncation must yield False — a full verdict flip, not a marginal wobble.
+
+    This test fails if the slice is taken from the wrong end.
+    """
+    sparse = [0.9, 0.5, 0.4]
+    dense = [50.0, 50.0, 50.0, 0.0, 0.0, 1.0]
+
+    assert leg_confidence(sorted(dense, reverse=True)[:3]) == 0.0
+    assert leg_confidence(sorted(dense)[:3]) == pytest.approx(math.sqrt(2))
+    assert leg_confidence(sparse) == pytest.approx(1.3887301496588274)
+
+    assert more_decisive(sparse, dense) is True
+
+
 def test_more_decisive_is_not_fooled_by_leg_length():
-    """Regression guard for the defect itself: two legs drawn from the SAME distribution but at
-    different lengths must compare the same as their equal-length prefixes, once truncated to a
-    common depth."""
-    dense = [i / 20 for i in range(20)]
-    sparse = [i / 20 for i in range(5)]
-    assert more_decisive(sparse, dense) == (
-        leg_confidence(sorted(sparse, reverse=True)[:5])
-        > leg_confidence(sorted(dense, reverse=True)[:5])
-    )
+    """Length independence: the common-depth truncation must never let extra candidates on the
+    longer leg move the verdict, no matter how many are appended — as long as they are LOW
+    enough to never enter that leg's top-m slice.
+
+    `sparse` (peaked, n=4) is unambiguously more decisive than `dense` (tightly clustered
+    around 0.5, n=4) with a comfortable margin (~1.687 vs ~1.342, not a float-level tie).
+    Appending a pile of very-low-scoring candidates to `dense` must not change that verdict,
+    because `m = min(len(sparse), len(dense))` stays pinned to `len(sparse) == 4` and the top-4
+    of the extended dense leg is identical to the top-4 of the original.
+    """
+    sparse = [0.9, 0.6, 0.55, 0.5]
+    dense = [0.52, 0.50, 0.49, 0.51]
+    dense_padded = dense + [-1000.0, -2000.0, -3000.0, -50.0, -75.0]
+
+    assert more_decisive(sparse, dense) is True
+    assert more_decisive(sparse, dense) == more_decisive(sparse, dense_padded)
 
 
 @pytest.mark.parametrize(
