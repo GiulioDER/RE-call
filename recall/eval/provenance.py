@@ -36,6 +36,7 @@ Absent packages are omitted rather than recorded as null: a run that never impor
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 
 #: Packages whose version can change a number this repo publishes. Embedders and cross-encoders
@@ -60,3 +61,18 @@ def model_stack(packages: tuple[str, ...] = TRACKED) -> dict[str, str]:
         except PackageNotFoundError:
             continue
     return found
+
+
+def generated_at() -> str:
+    """When this run happened, in UTC.
+
+    The companion question to `model_stack`, and the one that cost the most to answer without it.
+    Deciding whether `postfix_abstention.json` predated the double-index guard meant reading git
+    for the commit that ADDED the file — and a commit date is when someone committed, not when the
+    run happened. For `3ee36ed` those differ by an unknown amount, which is precisely the gap that
+    let a 07-26 run and a 07-28 guard pass each other unnoticed.
+
+    Seconds resolution: a result is not identified by its milliseconds, and a shorter string is one
+    a reader actually compares against a commit date.
+    """
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")

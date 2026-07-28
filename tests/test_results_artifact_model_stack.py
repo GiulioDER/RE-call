@@ -19,11 +19,19 @@ is **pinned by name** below — a new artifact cannot join them by omission.
 Note what is already pinned and is therefore NOT the gap: `recall.entailment.DEFAULT_QNLI_REVISION`
 fixes the judge's Hub commit, so the weights are immutable. `git log -S` puts that pin at 2026-07-18,
 before the artifact above. The gap is the stack that runs the model, not the model.
+
+`generated_at` is checked here too, and shares the sentinel and the grandfather list rather than
+getting a second copy of both. It answers the companion question, and the one that cost the most to
+answer without it: deciding whether that artifact predated the double-index guard meant reading git
+for the commit that ADDED it — and a commit date is when someone committed, not when the run
+happened. For `3ee36ed` those differ by an unknown amount, which is the gap that let a 07-26 run and
+a 07-28 guard pass each other. Two facts identify a run: which stack, and when.
 """
 
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -111,6 +119,47 @@ def test_a_recorded_stack_names_versions(path: Path) -> None:
     assert not unknown, f"{path.name} records untracked packages {sorted(unknown)}"
     for name, ver in declared.items():
         assert isinstance(ver, str) and ver, f"{path.name}: {name} has no version string"
+
+
+def _declared_time(payload: dict) -> object | None:
+    if "generated_at" in payload:
+        return payload["generated_at"]
+    return payload.get("_provenance", {}).get("generated_at")
+
+
+@pytest.mark.parametrize("path", _artifacts(), ids=lambda p: p.name)
+def test_artifact_declares_when_it_ran(path: Path) -> None:
+    declared = _declared_time(json.loads(path.read_text(encoding="utf-8")))
+    assert declared is not None, (
+        f"{path.name} does not say when it ran. Without it, 'did this predate guard X?' has to be "
+        f"answered from git — which records when a file was COMMITTED, not when the run happened. "
+        f"Emit `generated_at()` from the runner, or record {UNRECORDED!r}."
+    )
+
+
+@pytest.mark.parametrize("path", _artifacts(), ids=lambda p: p.name)
+def test_only_grandfathered_artifacts_may_not_know_when_they_ran(path: Path) -> None:
+    declared = _declared_time(json.loads(path.read_text(encoding="utf-8")))
+    if declared != UNRECORDED:
+        return
+    assert path.name in PREDATES_THE_CONVENTION, (
+        f"{path.name} is new but does not say when it ran. A run knows its own clock — call "
+        f"`recall.eval.provenance.generated_at()`."
+    )
+
+
+@pytest.mark.parametrize("path", _artifacts(), ids=lambda p: p.name)
+def test_a_recorded_time_is_an_utc_timestamp(path: Path) -> None:
+    """A date nobody can parse is the same as no date, and reads as if it were one."""
+    declared = _declared_time(json.loads(path.read_text(encoding="utf-8")))
+    if declared == UNRECORDED or declared is None:
+        return
+    assert isinstance(declared, str), f"{path.name}: generated_at is not a string"
+    parsed = datetime.fromisoformat(declared)  # raises on anything non-ISO-8601
+    assert parsed.tzinfo is not None, (
+        f"{path.name}: {declared!r} has no timezone. A naive stamp cannot be compared against a "
+        f"commit date without guessing which machine produced it."
+    )
 
 
 def test_the_grandfather_list_matches_the_tree() -> None:
