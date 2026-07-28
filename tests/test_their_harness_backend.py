@@ -32,7 +32,7 @@ from recall_interop.memory_benchmarks import (
     _resolve_epoch,
     resolve_embedder,
 )
-from tests.conftest import TEST_DSN, requires_db
+from tests.conftest import TEST_DSN, requires_db, requires_fastembed
 
 #: Two LOCOMO session dates as their runner would supply them (`locomo_date_to_epoch`).
 MAY_2023 = 1683554160     # 2023-05-08 13:56:00Z
@@ -138,6 +138,7 @@ def test_paid_embedders_are_refused():
 # ===========================================================================
 
 
+@requires_fastembed
 @requires_db
 def test_search_returns_memory_and_created_at(table, tmp_path):
     """Their answerer reads exactly these two keys (`benchmarks/locomo/prompts.py`). A result
@@ -169,6 +170,7 @@ def test_add_returns_their_results_shape(table, tmp_path):
     assert empty == {"results": []}
 
 
+@requires_fastembed
 @requires_db
 def test_add_without_timestamp_omits_created_at(table, tmp_path):
     async def scenario():
@@ -181,6 +183,7 @@ def test_add_without_timestamp_omits_created_at(table, tmp_path):
     assert "created_at" not in hits[0]
 
 
+@requires_fastembed
 @requires_db
 def test_top_k_is_respected_and_the_candidate_pool_is_widened_to_match(table, tmp_path):
     """The number this protects is the top_200 cell.
@@ -211,6 +214,7 @@ def test_top_k_is_respected_and_the_candidate_pool_is_widened_to_match(table, tm
     )
 
 
+@requires_fastembed
 @requires_db
 def test_score_preserves_recalls_ranking_under_their_sort(table, tmp_path):
     """Their harness re-sorts by `score` descending and then slices `[:cutoff]`, so whatever is in
@@ -248,6 +252,7 @@ def test_unknown_user_returns_empty_not_an_error(table, tmp_path):
     assert asyncio.run(scenario()) == []
 
 
+@requires_fastembed
 @requires_db
 def test_abstention_propagates_as_an_empty_result_list(table, tmp_path, monkeypatch):
     """RE-call abstaining must reach their answerer as "(No relevant memories found)".
@@ -299,6 +304,7 @@ def test_rerank_is_refused_rather_than_ignored(table, tmp_path):
     asyncio.run(scenario())
 
 
+@requires_fastembed
 @requires_db
 def test_a_second_run_measures_the_same_corpus_not_a_doubled_one(table, tmp_path):
     """Two runs against the same table+user must not accumulate.
@@ -321,6 +327,7 @@ def test_a_second_run_measures_the_same_corpus_not_a_doubled_one(table, tmp_path
     assert sorted(h["memory"] for h in first) == sorted(h["memory"] for h in second)
 
 
+@requires_fastembed
 @requires_db
 def test_users_are_isolated_from_each_other(table, tmp_path):
     """Their harness gives each conversation its own `user_id`. One conversation answering
