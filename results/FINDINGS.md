@@ -1078,3 +1078,60 @@ independence is not a real problem, 0.50 is fine, and this line of work closes a
 `absolute@0.40` remains the best cell of everything tested (268 of 270 answerable served), because
 here the unanswerable questions score HIGHER than the answerable ones (§9f) and no function of the
 score separates them. The quantile's argument is robustness across deployments, not accuracy here.
+
+### 9m. The regime sweep settles the problem; four candidate fixes are now measured and dead
+
+**Established** (2 corpora x 3 embedders, n=100 and n=775 per cell, no LLM):
+
+| | median (memory) | median (BEAM) | range | starve @0.50 |
+|---|---|---|---|---|
+| bge-small | 0.852 | 0.819 | 0.284 / 0.300 | 0 % / 0 % |
+| bge-large | 0.827 | 0.782 | 0.316 / 0.344 | 0 % / 0 % |
+| text-embedding-3-small | 0.710 | 0.608 | 0.422 / 0.376 | 0.3 % / **16 %** |
+
+`DEFAULT_GAP_THRESHOLD = 0.50` sits at the **0th percentile of five distributions and the 16th of
+the sixth**; `absolute@0.40` starves nothing anywhere (spread 0.0000). The constant is not
+mis-tuned, it is inert everywhere except one cell. Model spread (0.142-0.211) exceeds corpus shift
+(+0.033 / +0.044 / +0.102), and the two INTERACT — the corpus effect is three times larger for one
+model than another — so no stored per-model constant can work.
+
+Predictions were committed before the run (`PREDICTIONS-regime-sweep.md`). The discriminating one
+held: bge-large landed at 0.782, inside the predicted 0.78-0.86 and far from the cloud model's
+0.608, so the split is a property of the model FAMILY and not of local-vs-cloud plumbing. Two were
+wrong: the memory-corpus levels were over-estimated (0.85 actual vs 0.88-0.93 predicted — the
+near-duplicate bias from `description:` queries is real but much smaller than assumed), and the
+spread of `absolute@0.50` was under-estimated at 0.05-0.09 against an actual **0.1600**.
+
+**Four candidate replacements, all measured, all dead:**
+
+| rule | why it fails |
+|---|---|
+| per-query percentile | vacuous — the top score clears its own distribution's percentile by construction; 268 vs 267 served from p=0.0 to p=0.5 |
+| gap (top vs median) | starves 64 of 270 answerable to gain 2 correct abstentions at 0.10; flattens exactly where a corpus restates one fact many ways |
+| corpus quantile on real queries | works, but **tautological** — the floor is computed from the scores it is applied to. Describes; not shown to generalise |
+| corpus quantile from self-queries (H4) | **fails on all three conditions**: derived floors 0.792 / 0.759 / 0.621 against real-query floors 0.766 / 0.744 / 0.590, starving ~10 % / ~9 % / >10 % against a 5 % target |
+
+H4's failure mode is the one written down before running it: a chunk is phrased in the corpus's own
+register, a user's question is not, so self-queries sit high and the derived floor is too strict.
+The gap is systematic (+0.026, +0.015, +0.031, always the same direction) and WORST on
+text-embedding-3-small — the model where the constant does damage and a replacement was most
+needed.
+
+**Why all four failed, in one sentence.** They are all monotone functions of the same score, and
+§9f established that on BEAM the unanswerable questions score HIGHER than the answerable ones. A
+monotone transform preserves order; the order is what is wrong. This decomposes the work into
+**Problem A** (cross-model comparability — solvable by rescaling) and **Problem B** (the score does
+not separate the classes — NOT solvable by any rescaling), and every negative result of the last
+two days was an attempt to solve B with an instrument that can only touch A. It also explains why
+the entailment guard is the only mechanism that moved the abstention number at all: it is the only
+one that introduces evidence of a different KIND.
+
+**Design defect to fix next time:** the sweep stored summary statistics rather than raw scores, so
+H4's starve rates had to be INTERPOLATED between the stored q05 and q10 rather than computed. The
+direction and order of magnitude hold; the second digit does not. Discarding the data the next
+question needs is the same error as the sampling mistakes earlier in the session.
+
+**Where this leaves the threshold.** The problem is established and no replacement is proven.
+`absolute@0.40` is the best measured configuration for this embedder and starves nothing in any of
+the six conditions, but it is still a constant and will be wrong for the next model. Shipping it as
+a new default would repeat the original mistake with a different number.
