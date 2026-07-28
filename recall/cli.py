@@ -11,7 +11,7 @@ from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
 from recall.store import DEFAULT_TENANT, PgVectorStore, warn_if_insecure_dsn
-from recall.trust import trusted_search
+from recall.trust import terminal_safe, trusted_search
 from recall.types import TrustedResult
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
@@ -39,9 +39,17 @@ def _print_result(result: TrustedResult) -> None:
     if result.reason:
         print(f"  reason: {result.reason}")
     for h in result.hits:
-        preview = h.chunk.text.replace("\n", " ")[:52]
-        name = h.provenance.file or h.chunk.source
-        redirect = f" -> use {h.validity.superseded_by}" if h.validity.superseded_by else ""
+        # All three are corpus-controlled and all three are printed to a terminal, which
+        # INTERPRETS ANSI escapes rather than showing them — a file name carrying `\x1b[2K\r`
+        # erases the line it was printed on. Same class as the `advice` injection, different
+        # interpreter. `terminal_safe` filters, so ordinary names render exactly as authored.
+        preview = terminal_safe(h.chunk.text).replace("\n", " ")[:52]
+        name = terminal_safe(h.provenance.file or h.chunk.source)
+        redirect = (
+            f" -> use {terminal_safe(h.validity.superseded_by)}"
+            if h.validity.superseded_by
+            else ""
+        )
         print(
             f"  {h.verdict:<14} conf={h.confidence:.2f} cos={h.cosine:.3f}  "
             f"{name}{redirect}  {preview!r}"
@@ -365,12 +373,33 @@ def main(argv: list[str] | None = None) -> None:
         path = save(cal, args.out)
         print(f"embedder:  {embedder.name}")
         print(f"threshold: {cal.threshold} (scale {cal.scale})")
+        sep = "n/a" if cal.separability is None else f"{cal.separability:.3f}"
+        ci = cal.separability_ci
+        # The interval, not just the point, because the bar is applied to its lower bound — a
+        # reader who sees only "0.95" cannot reconstruct why a certification failed.
+        sep_ci = "" if ci is None else f" [{ci[0]:.3f}, {ci[1]:.3f}]"
+        print(f"separability (AUC): {sep}{sep_ci} over {cal.n_answerable} answerable / "
+              f"{cal.n_unanswerable} unanswerable")
         print(f"FCR at default 0.50: {measured.fcr_at_050:.2f} -> at calibrated: "
               f"{measured.fcr_at_suggested:.2f}")
         print(f"saved: {path}")
         if args.out and Path(args.out).resolve() != _resolve_path(None).resolve():
             print(f"note: searches load {_resolve_path(None)} by default — set "
                   f"{ENV_VAR}={path} for this file to be used")
+
+        # Exit non-zero on a threshold the data does not support. The file is still written: the
+        # artifact records `certified: false` and the reason, and refusing to write would destroy
+        # the evidence of WHY. What changes is that a calibration step can now fail — measured on
+        # LongMemEval, an uncertified threshold refused 44% of the questions retrieval had just
+        # answered correctly, and neither the API nor the file said anything was wrong.
+        if cal.certified is False:
+            print(f"\nNOT CERTIFIED: {cal.certification_reason}", file=sys.stderr)
+            print("Saved anyway — there is no better threshold for this data — but abstention on "
+                  "this corpus is not trustworthy. Do NOT read an abstention as evidence that the "
+                  "answer is absent.", file=sys.stderr)
+            raise SystemExit(1)
+        if cal.certified is None:
+            print(f"\nnot judged: {cal.certification_reason}", file=sys.stderr)
 
 
 if __name__ == "__main__":

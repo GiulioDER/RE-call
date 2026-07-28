@@ -66,6 +66,24 @@ requires_db = pytest.mark.skipif(
 )
 
 
+def _fastembed_available() -> bool:
+    try:
+        import fastembed  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+#: The `floor` and `test` CI jobs install WITHOUT the optional extras, deliberately — their absence
+#: is what proves the import guards work (see pyproject's mypy overrides for the same reasoning).
+#: A test that needs a real local embedder must therefore skip rather than fail, or it turns an
+#: intentional CI condition into a red build.
+requires_fastembed = pytest.mark.skipif(
+    not _fastembed_available(),
+    reason="needs the fastembed extra (pip install recall[fastembed])",
+)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_recall_logger():
     """Restore the `recall` logger around every test.

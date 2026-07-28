@@ -1,0 +1,47 @@
+{
+  "status": "ok",
+  "dataset": "cqadupstack-gaming",
+  "manifest": {
+    "name": "cqadupstack-gaming",
+    "documents_requested": 20000,
+    "documents_written": 20000,
+    "questions": 1595,
+    "questions_available": 1595,
+    "seed": 20260726
+  },
+  "scores": {
+    "local": {
+      "bm25": 0.611,
+      "dense": 0.6688,
+      "sparse": 0.5332,
+      "hybrid": 0.6876,
+      "mrr_hybrid": 0.5522,
+      "held_out": 797
+    },
+    "cloud": {
+      "bm25": 0.611,
+      "dense": 0.7516,
+      "sparse": 0.5345,
+      "hybrid": 0.7302,
+      "mrr_hybrid": 0.5888,
+      "held_out": 797
+    }
+  },
+  "predictors": {
+    "oov_rate": 0.1334867663981588,
+    "query_overlap": 0.5437617594268058,
+    "crowding": 0.73866270799526,
+    "code_density": 0.0016173413419846134,
+    "n_documents": 20000,
+    "n_overlap_pairs": 2263
+  },
+  "primary_arm": "hybrid",
+  "seconds": 11304.3,
+  "params": {
+    "max_docs": 20000,
+    "token_budget": 2000,
+    "min_pieces": 2,
+    "crowding_sample": 500,
+    "seed": 20260726
+  }
+}

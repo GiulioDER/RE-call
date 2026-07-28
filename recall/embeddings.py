@@ -170,6 +170,39 @@ class HashingEmbedder:
         return [v / norm for v in vec]
 
 
+def resolve_thread_budget(
+    env: dict[str, str] | None = None, cpu_count: int | None = None
+) -> int | None:
+    """Threads for the local embedder, or None to leave fastembed's default alone.
+
+    Exists for one situation: several embedding processes sharing a CPU budget. In an unprivileged
+    container `os.cpu_count()` reports the HOST's cores while a cgroup quota caps real runtime, and
+    fastembed sizes its pool from the former — so N workers each request N x (host cores). Measured
+    on a box showing 256 CPUs against a ~61-CPU quota, seven workers spawned ~945 threads and
+    aggregate throughput fell to roughly what a single process managed alone.
+
+    Returns None when unset, deliberately. One process is FASTER with the default: measured
+    2.2 / 5.7 / 9.0 / 10.3 docs/s at 1 / 8 / 32 / default threads, monotonically increasing. A cap
+    must therefore never be the default — it fixes a multi-process regime and pessimises every
+    other one.
+
+    Junk is ignored rather than raised: a typo'd variable must not kill hour eight of a long run.
+    """
+    import os as _os
+
+    raw = (env if env is not None else _os.environ).get("RECALL_EMBED_THREADS")
+    if not raw:
+        return None
+    try:
+        want = int(raw)
+    except ValueError:
+        return None
+    if want < 1:
+        return None
+    ceiling = cpu_count if cpu_count is not None else (_os.cpu_count() or want)
+    return min(want, ceiling)
+
+
 class FastEmbedEmbedder:
     """Real local embeddings (no API key). Requires `pip install recall[fastembed]`."""
 
@@ -180,7 +213,12 @@ class FastEmbedEmbedder:
             raise ImportError(
                 "FastEmbedEmbedder requires the fastembed extra: pip install recall[fastembed]"
             ) from exc
-        self._model = TextEmbedding(model_name=model_name)
+        threads = resolve_thread_budget()
+        self._model = (
+            TextEmbedding(model_name=model_name, threads=threads)
+            if threads is not None
+            else TextEmbedding(model_name=model_name)
+        )
         self._name = model_name
         self._dim = len(next(iter(self._model.embed(["probe"]))))
 

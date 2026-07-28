@@ -34,6 +34,7 @@ class _RecordingStore:
         self.known = known or {}
         self.chunks = []
         self.deleted = []
+        self.analyzed = []
 
     def source_content_hashes(self):
         return dict(self.known)
@@ -45,6 +46,10 @@ class _RecordingStore:
     def replace_sources(self, sources, chunks, embeddings):
         self.chunks.extend(chunks)
         return len(chunks)
+
+    def analyze_if_stale(self, modified):
+        self.analyzed.append(modified)
+        return True
 
 
 def _unstattable_source(root: Path) -> str:
