@@ -175,3 +175,146 @@ def check_apparatus(hit_at_5: float, hit_at_20: float, answerable_n: int) -> Non
                 f"(tolerance {HIT_RATE_TOLERANCE}). Instrumentation changed the retrieved set; "
                 f"the diagnostic below would be measuring something else."
             )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the LOCOMO diagnostic.
+
+    Calls `run_conversation` per conversation rather than `run`, mirroring `run`'s own loop.
+    Not a stylistic choice: `run`'s returned report STRIPS the per-question records
+    (``{kk: vv for kk, vv in res.items() if kk != "questions"}``), and this diagnostic needs
+    each question's `evidence`, `category` and `hit_by_k` to bucket against. Per-conversation
+    probe lists also make the probe/record pairing checkable, which one global list would not.
+    """
+    import argparse
+    import json
+    import shutil
+    import tempfile
+    import uuid
+    from pathlib import Path
+
+    import psycopg
+
+    from recall.eval import locomo
+    from recall.store import PgVectorStore
+
+    p = argparse.ArgumentParser(description="Phase 0 leg-disagreement diagnostic (LOCOMO)")
+    p.add_argument("--data", required=True, type=Path, help="path to locomo10.json")
+    p.add_argument("--dsn", default=locomo.DEFAULT_DSN)
+    p.add_argument("--embedder", default="fastembed")
+    p.add_argument("--k", type=int, default=5)
+    p.add_argument("--candidate-k", type=int, default=20)
+    p.add_argument("--limit", type=int, default=None, help="first N conversations only")
+    p.add_argument(
+        "--table",
+        default=None,
+        help="table to index into. Default: a uuid-named table, dropped afterwards — so a "
+             "rerun never trips run_conversation's existing-rows refusal and never touches a "
+             "table anyone else owns.",
+    )
+    p.add_argument("--out", required=True, type=Path, help="write the JSON report + dump here")
+    p.add_argument(
+        "--skip-apparatus-check",
+        action="store_true",
+        help="run without asserting §9a's rates. For debugging only — a report produced with "
+             "this flag is not evidence and must not be published.",
+    )
+    a = p.parse_args(argv)
+
+    depths = [1, 5, 10, 20]
+    embedder = locomo._make_embedder(a.embedder)
+    conversations = json.loads(a.data.read_text(encoding="utf-8"))
+    if a.limit is not None:
+        conversations = conversations[: a.limit]
+
+    table = a.table or ("legdiag_" + uuid.uuid4().hex[:8])
+    records: list[dict[str, Any]] = []
+    workspace = Path(tempfile.mkdtemp(prefix="legdiag-"))
+    try:
+        for i, conv in enumerate(conversations):
+            sample_id = conv.get("sample_id") or f"conv{i}"
+            # One tenant per conversation, exactly as `run` does: LOCOMO's conversations are
+            # unrelated worlds and dia ids are only unique WITHIN one, so a shared tenant would
+            # let a cross-conversation "D1:3" score as a hit.
+            probes: list[LegProbe] = []
+            with PgVectorStore(
+                a.dsn, dim=embedder.dim, tenant=f"locomo-{sample_id}", table=table
+            ) as store:
+                res = locomo.run_conversation(
+                    conv["conversation"],
+                    conv.get("qa") or [],
+                    store=store,
+                    embedder=embedder,
+                    k=a.k,
+                    corpus_dir=workspace / str(sample_id),
+                    ks=depths,
+                    candidate_k=a.candidate_k,
+                    probe=probes.append,
+                )
+
+            # Only answerable, labelled questions reach the probed retriever: category 5 goes to
+            # `trusted_search`, and an unlabelled question `continue`s before the search. So these
+            # two lists must be equal in length and in order. If they ever diverge, every record
+            # below is mis-paired with someone else's legs — fail loudly rather than zip a silent
+            # off-by-one into the finding.
+            answerable = [q for q in res["questions"] if "evidence" in q]
+            if len(answerable) != len(probes):
+                raise RuntimeError(
+                    f"{sample_id}: {len(answerable)} answerable questions but {len(probes)} "
+                    f"probes — records would be mis-paired, refusing to continue"
+                )
+
+            for q, probe in zip(answerable, probes, strict=True):
+                records.append(
+                    {
+                        "sample_id": str(sample_id),
+                        "question": q["question"],
+                        "category": q["category"],
+                        "trigger": triggered(probe),
+                        "conf_dense": round(leg_confidence([h.score for h in probe.dense]), 4),
+                        "conf_sparse": round(leg_confidence(probe.sparse_ranks), 4),
+                        "n_dense": len(probe.dense),
+                        "n_sparse": len(probe.sparse),
+                        "hit": q["hit"],
+                        "hit_by_k": {str(d): q["hit_by_k"][d] for d in depths},
+                        "bucket": classify_gold(probe, q["evidence"], a.k),
+                    }
+                )
+            print(
+                f"  [{i + 1}/{len(conversations)}] {sample_id}: {len(answerable)} scored",
+                flush=True,
+            )
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+        if a.table is None:  # only ever drops the table this run created and named
+            with psycopg.connect(a.dsn, autocommit=True) as conn:
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
+
+    if not a.skip_apparatus_check:
+        # Computed from the SAME records the diagnostic buckets, so the check validates the data
+        # actually used rather than a parallel aggregate that could agree while these diverge.
+        check_apparatus(
+            hit_at_5=_mean([r["hit_by_k"]["5"] for r in records]),
+            hit_at_20=_mean([r["hit_by_k"]["20"] for r in records]),
+            answerable_n=len(records),
+        )
+
+    out = {
+        "config": {
+            "embedder": a.embedder,
+            "k": a.k,
+            "candidate_k": a.candidate_k,
+            "reranker": None,
+            "conversations": len(conversations),
+        },
+        "diagnostic": build_report(records),
+        "records": records,
+    }
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    a.out.write_text(json.dumps(out, indent=2), encoding="utf-8")
+    print(json.dumps(out["diagnostic"], indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
