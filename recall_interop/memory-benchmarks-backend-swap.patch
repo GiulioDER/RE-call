@@ -1,0 +1,126 @@
+diff --git a/benchmarks/beam/run.py b/benchmarks/beam/run.py
+index b277261..0b10193 100644
+--- a/benchmarks/beam/run.py
++++ b/benchmarks/beam/run.py
+@@ -961,6 +961,20 @@ def parse_args() -> argparse.Namespace:
+                         help="Mem0 server URL")
+     parser.add_argument("--mem0-api-key", default=None,
+                         help="Mem0 API key (cloud mode only)")
++    # --- RE-call interop: added by the RE-call repo (recall_interop/memory_benchmarks.py). ---
++    # Nothing above or below this block is modified: the answerer prompt, judge prompt, cutoffs
++    # and metrics are this harness's own and are what make the resulting number comparable.
++    parser.add_argument("--memory-backend", default="mem0", choices=["mem0", "recall"],
++                        help="Memory system under test: 'mem0' (default) or 'recall' (RE-call)")
++    parser.add_argument("--recall-dsn", default=None,
++                        help="RE-call pgvector DSN (falls back to $RECALL_DSN)")
++    parser.add_argument("--recall-embedder", default="fastembed",
++                        help="RE-call embedder: fastembed (local bge-small, free) by default")
++    parser.add_argument("--recall-table", default=None,
++                        help="RE-call benchmark table (default: their_bench_chunks)")
++    parser.add_argument("--recall-workspace", default=None,
++                        help="Keep the documents RE-call indexed here (default: temp, deleted)")
++    # --- end RE-call interop ---
+     return parser.parse_args()
+ 
+ 
+@@ -1021,12 +1035,31 @@ async def async_main() -> None:
+ 
+     # Init clients
+     backend = os.getenv("MEM0_BACKEND", args.backend)
+-    mem0 = Mem0Client(
+-        mode=backend,
+-        host=args.mem0_host,
+-        api_key=args.mem0_api_key if backend == "cloud" else None,
+-        rpm=args.rpm,
+-    )
++    # --- RE-call interop: one constructor swap, nothing else. ---
++    if args.memory_backend == "recall":
++        from recall_interop import RecallBackend
++
++        recall_dsn = args.recall_dsn or os.getenv("RECALL_DSN")
++        if not recall_dsn:
++            raise SystemExit(
++                "--memory-backend recall needs --recall-dsn or the RECALL_DSN environment variable"
++            )
++        recall_kwargs = {"table": args.recall_table} if args.recall_table else {}
++        mem0 = RecallBackend(
++            recall_dsn,
++            embedder_name=args.recall_embedder,
++            workspace_root=args.recall_workspace,
++            keep_workspace=bool(args.recall_workspace),
++            **recall_kwargs,
++        )
++    else:
++        mem0 = Mem0Client(
++            mode=backend,
++            host=args.mem0_host,
++            api_key=args.mem0_api_key if backend == "cloud" else None,
++            rpm=args.rpm,
++        )
++    # --- end RE-call interop ---
+     answerer = LLMClient(
+         model=args.answerer_model, provider=args.provider, rpm=args.rpm
+     )
+diff --git a/benchmarks/locomo/run.py b/benchmarks/locomo/run.py
+index 8e4bdb9..b8ed18a 100644
+--- a/benchmarks/locomo/run.py
++++ b/benchmarks/locomo/run.py
+@@ -715,6 +715,20 @@ def parse_args() -> argparse.Namespace:
+                         help="Mem0 server URL (default: http://localhost:8888 for oss, https://api.mem0.ai for cloud)")
+     parser.add_argument("--mem0-api-key", default=None,
+                         help="Mem0 API key (cloud mode only)")
++    # --- RE-call interop: added by the RE-call repo (recall_interop/memory_benchmarks.py). ---
++    # Nothing above or below this block is modified: the answerer prompt, judge prompt, cutoffs
++    # and metrics are this harness's own and are what make the resulting number comparable.
++    parser.add_argument("--memory-backend", default="mem0", choices=["mem0", "recall"],
++                        help="Memory system under test: 'mem0' (default) or 'recall' (RE-call)")
++    parser.add_argument("--recall-dsn", default=None,
++                        help="RE-call pgvector DSN (falls back to $RECALL_DSN)")
++    parser.add_argument("--recall-embedder", default="fastembed",
++                        help="RE-call embedder: fastembed (local bge-small, free) by default")
++    parser.add_argument("--recall-table", default=None,
++                        help="RE-call benchmark table (default: their_bench_chunks)")
++    parser.add_argument("--recall-workspace", default=None,
++                        help="Keep the documents RE-call indexed here (default: temp, deleted)")
++    # --- end RE-call interop ---
+     return parser.parse_args()
+ 
+ 
+@@ -829,12 +843,31 @@ async def async_main() -> None:
+ 
+     # Init Mem0 (not used for --evaluate-only)
+     backend = os.getenv("MEM0_BACKEND", args.backend)
+-    mem0 = Mem0Client(
+-        mode=backend,
+-        host=args.mem0_host,
+-        api_key=args.mem0_api_key if backend == "cloud" else None,
+-        rpm=args.rpm,
+-    )
++    # --- RE-call interop: one constructor swap, nothing else. ---
++    if args.memory_backend == "recall":
++        from recall_interop import RecallBackend
++
++        recall_dsn = args.recall_dsn or os.getenv("RECALL_DSN")
++        if not recall_dsn:
++            raise SystemExit(
++                "--memory-backend recall needs --recall-dsn or the RECALL_DSN environment variable"
++            )
++        recall_kwargs = {"table": args.recall_table} if args.recall_table else {}
++        mem0 = RecallBackend(
++            recall_dsn,
++            embedder_name=args.recall_embedder,
++            workspace_root=args.recall_workspace,
++            keep_workspace=bool(args.recall_workspace),
++            **recall_kwargs,
++        )
++    else:
++        mem0 = Mem0Client(
++            mode=backend,
++            host=args.mem0_host,
++            api_key=args.mem0_api_key if backend == "cloud" else None,
++            rpm=args.rpm,
++        )
++    # --- end RE-call interop ---
+     shutdown = GracefulShutdown()
+     checkpoint = Checkpoint(output_dir)
+ 

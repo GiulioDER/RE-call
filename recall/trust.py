@@ -26,6 +26,7 @@ if TYPE_CHECKING:  # avoid a runtime import cycle: entailment imports trust's ab
     from recall.entailment import EntailmentJudge
 
 from recall.calibration import Calibration
+from recall.observability import get_logger
 from recall.embeddings import Embedder
 from recall.frontmatter import validity_bounds
 from recall.guards import DEFAULT_GAP_THRESHOLD
@@ -42,7 +43,50 @@ from recall.types import (
     Verdict,
 )
 
+_log = get_logger("trust")
+
 _UNCALIBRATED = Calibration(embedder="uncalibrated", threshold=DEFAULT_GAP_THRESHOLD)
+
+#: Embedder names already warned about, so a long-running process says this once per model rather
+#: than once per query. Not thread-guarded: a duplicate warning under a race is harmless, a lock in
+#: the retrieval hot path is not.
+_WARNED_UNCALIBRATED: set[str] = set()
+
+
+def _warn_uncalibrated(embedder_name: str) -> None:
+    """Say plainly that an untuned constant is about to gate abstention for this model.
+
+    `DEFAULT_GAP_THRESHOLD` is an ABSOLUTE cosine, and cosine levels are a property of how a model
+    was trained, not a comparable quantity across models. Measured over two corpora and three
+    embedders (2 x 3 conditions, n=100 and n=775): the default sits at the **0th percentile** of
+    five of those six top-1 distributions and at the **16th** of the sixth. It is therefore inert
+    for most models and, for one, discards roughly a sixth of all queries into empty retrieval —
+    which the answerer turns into a refusal and the caller reads as a wrong answer, with nothing
+    anywhere reporting a misconfiguration.
+
+    Worse, the failure is invisible on the DEFAULT embedder: bge-small's observed minimum is 0.63,
+    well above the 0.50 floor, so the shipped combination never trips it. Only a user who changes
+    embedder is exposed, and they get no signal at all.
+
+    Four replacements were measured and none survived (per-query percentile, score gap, corpus
+    quantile on real queries, corpus quantile derived from self-queries at index time). Every one
+    is a monotone function of the same score, and the score does not always order the classes
+    correctly. So this does not silently pick a different constant — it says which model is
+    unmeasured and points at `recall calibrate`, and lets the caller decide.
+    """
+    if embedder_name in _WARNED_UNCALIBRATED:
+        return
+    _WARNED_UNCALIBRATED.add(embedder_name)
+    _log.warning(
+        "no calibration found for embedder %r — abstention will use the UNTUNED default cosine "
+        "floor %.2f. That constant is not comparable across embedders (measured: 0th percentile "
+        "of five top-1 distributions, 16th of a sixth), so on some models it never fires and on "
+        "others it discards a sixth of queries as empty retrieval. Run `recall calibrate` for "
+        "this embedder, or pass calibration= explicitly, to replace the guess with a measurement.",
+        embedder_name,
+        DEFAULT_GAP_THRESHOLD,
+    )
+
 
 #: ANSI escape sequences a terminal ACTS on: CSI (`\x1b[…`), OSC (`\x1b]…` up to BEL or ST), and
 #: the two-character forms. Matched as whole sequences so nothing is left behind to re-arm.
@@ -377,6 +421,8 @@ def trusted_search(
         name = getattr(embedder, "name", None)
         if isinstance(name, str):
             calibration = load_for(name)
+            if calibration is None:
+                _warn_uncalibrated(name)
     cal = calibration or _UNCALIBRATED
     retriever = HybridRetriever(
         store, embedder, reranker=reranker, gap_threshold=cal.threshold, candidate_k=candidate_k
