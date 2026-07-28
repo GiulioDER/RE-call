@@ -107,6 +107,12 @@ noise is not it either). What remains is most consistent with an **independent H
 and that is now unfalsifiable: the 07-26 index is gone. The record that could have settled it is
 the one nobody wrote.
 
+`generated_at` travels with it, for the companion question — and the one that cost the most to
+answer without it. Deciding whether `postfix_abstention.json` predated the double-index guard meant
+reading git for the commit that *added* the file, and a commit date is when someone committed, not
+when the run happened. For `3ee36ed` those differ by an unknown amount: exactly the gap that let a
+07-26 run and a 07-28 guard pass each other. **Two facts identify a run — which stack, and when.**
+
 Runs now emit `stack` alongside `elapsed_s`, from `recall.eval.provenance.model_stack()`. Artifacts
 that predate this carry `"stack": "unrecorded"` — **the honest value, not a guess**: inventing
 plausible versions would make an unreproducible row look reproducible. The set allowed to say
