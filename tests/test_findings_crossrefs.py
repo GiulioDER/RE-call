@@ -40,6 +40,7 @@ SCAN_ROOTS = ("benchmarks", "recall", "scripts", "tests", "docs")
 EXPECTED: dict[str, tuple[str, str]] = {
     "2b": ("FINDINGS", "the old fitting rule was replaced"),
     "5b": ("FINDINGS", "the headline rate holds at full coverage"),
+    "7a": ("RESULTS", "Retrieval depth curve"),
     "7b": ("RESULTS", "Abstention on the adversarial"),
     "9a": ("FINDINGS", "0.671 at k=5"),
     "9b": ("FINDINGS", "0.00 out of the box"),
