@@ -40,6 +40,7 @@ when it meant "the older one".
 | `locomo_rerank/rerank_shipped.json` | §11 *ms-marco-MiniLM-L-6-v2* |
 | `locomo_rerank/rerank_modern.json` | §11 *bge-reranker-base* |
 | `cosine/distributions.json` | §12 cosine distributions |
+| `beam_voyage/ksweep.json` | the `k` choice for voyage-4-large — a **proxy** (nugget coverage), not a judged score; see its `_provenance.note` |
 | `wrrf/arm_C_rrf_pool100.json` | §9a's pool-100 column, **clean corpus** — 0.6615 at k=5. Replaces the withdrawn `locomo/postfix_pool100.json` |
 | `wrrf/arm_A_rrf_pool20.json` | §9a's apparatus check — reproduces the published pool-20 column to Δ 0.0000 |
 
