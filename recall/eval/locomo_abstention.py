@@ -53,6 +53,7 @@ from recall.eval.locomo import (
     _rate,
 )
 from recall.eval.provenance import provenance_block
+from recall.eval.tenant_guard import check_tenants_populated
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
@@ -60,6 +61,12 @@ from recall.trust import trusted_search
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 
 MODES = ("default", "calibrated", "entail", "both")
+
+#: Table this runner reads from — indexed by `recall.eval.locomo`. A module constant (mirrors
+#: `recall.eval.locomo_entailment_sweep.TABLE`) rather than a literal typed at each
+#: `PgVectorStore(...)` call and again at the `provenance_block(...)` call: two independent
+#: copies of one name is how one drifts from the other with nothing to catch it.
+TABLE = "locomo_chunks"
 
 
 def _top_cosine(retriever: HybridRetriever, query: str, k: int) -> float | None:
@@ -133,7 +140,24 @@ def run(
 
     embedder: Embedder = _make_embedder(embedder_name)
 
+    # Preflight: refuse to score against a tenant this run is about to read that holds zero
+    # rows (see recall.eval.tenant_guard). Scoped to exactly the conversations THIS run
+    # iterates — built from `conversations` after `limit` was applied above, never from a
+    # hardcoded roster — so a `--conversations 3` run checks only those 3 tenants. This is also
+    # now the "confirmed real read" `corpus_rows`/`tenants` below are built from: a per-tenant
+    # count taken BEFORE any calibration fitting or judge cost is paid, not a second pass that
+    # could silently disagree with what was actually checked.
+    tenant_counts: dict[str, int] = {}
+    for i, conv in enumerate(conversations):
+        sample_id = conv.get("sample_id") or f"conv{i}"
+        tenant = f"locomo-{sample_id}"
+        with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table=TABLE) as store:
+            tenant_counts[tenant] = store.count()
+    check_tenants_populated(tenant_counts, table=TABLE)
+
     # The judge loads a cross-encoder once and is reused across every question and conversation.
+    # Deliberately AFTER the preflight check above: an empty tenant should fail before this run
+    # pays for a model load, not after.
     from recall.entailment import QnliEntailmentJudge
 
     print("loading entailment judge (first run downloads the cross-encoder)...", flush=True)
@@ -145,10 +169,12 @@ def run(
     thresholds: list[float] = []
     started = time.time()
 
-    # Counted per tenant as each store is opened. This runner READS an index it did not build,
-    # so the count is the only evidence in the artifact of what it actually scored against.
-    corpus_rows = 0
-    tenants: list[str] = []
+    # Summed/keyed from the preflight pass above, not recomputed here: that pass already
+    # performed the confirmed real read (store.count() succeeded) for every tenant this run
+    # scores against, so re-deriving it a second time could only either agree (redundant) or
+    # disagree (worse — two counts of the same table claiming different things).
+    corpus_rows = sum(tenant_counts.values())
+    tenants = list(tenant_counts.keys())
 
     for i, conv in enumerate(conversations):
         sample_id = conv.get("sample_id") or f"conv{i}"
@@ -156,10 +182,8 @@ def run(
         qa = conv.get("qa") or []
         answerable, adversarial = _partition_questions(qa, answerable_sample, rng)
 
-        with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table="locomo_chunks") as store:
+        with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table=TABLE) as store:
             retriever = HybridRetriever(store, embedder)
-            corpus_rows += store.count()
-            tenants.append(tenant)
             cal = _fit_calibration(retriever, embedder_name, answerable, adversarial, k)
             thresholds.append(cal.threshold)
 
@@ -194,7 +218,7 @@ def run(
 
     return {
         "benchmark": "LOCOMO — abstention ablation",
-        **provenance_block(corpus_rows, "locomo_chunks", tenants),
+        **provenance_block(corpus_rows, TABLE, tenants),
         "embedder": embedder_name,
         "k": k,
         "answerable_sample_per_conv": answerable_sample,
