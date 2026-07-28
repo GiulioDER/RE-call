@@ -77,7 +77,7 @@ def test_a_concurrent_writer_fails_the_run_instead_of_depressing_it(
 
     monkeypatch.setattr(Indexer, "index_path", racing_index_path)
 
-    with pytest.raises(RuntimeError, match="corpus_rows|row count|indexing"):
+    with pytest.raises(RuntimeError, match="CONCURRENTLY"):
         run_conversation(
             _CONVERSATION, _QA,
             store=store, embedder=embedder, k=5, corpus_dir=tmp_path / "corpus",
