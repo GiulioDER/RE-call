@@ -281,7 +281,27 @@ def run_conversation(
             f"if you genuinely mean to add to it."
         )
 
-    Indexer(store, embedder).index_path(corpus_dir)
+    stats = Indexer(store, embedder).index_path(corpus_dir)
+
+    # Post-condition, and NOT a restatement of the pre-check above.
+    #
+    # The pre-check reads the table BEFORE indexing, so it catches a sequential re-run and
+    # nothing else. On 2026-07-27 the failure was two CONCURRENT launchers: the second passed
+    # the pre-check on an empty table and wrote while the first was still indexing. Both
+    # finished, every tenant held its corpus twice, and nothing errored.
+    #
+    # `stats.chunks` is how many chunks THIS call wrote. On a tenant the pre-check just proved
+    # empty, the tenant-scoped count must equal it. A larger count means another writer is in
+    # this tenant, and the run is measuring a corpus nobody described.
+    indexed = store.count()
+    if not allow_existing and indexed != stats.chunks:
+        raise RuntimeError(
+            f"tenant {store.tenant!r} holds {indexed} chunk(s) after indexing but this run wrote "
+            f"{stats.chunks}. Another writer is in this table CONCURRENTLY — the pre-check cannot "
+            f"see one that arrives mid-index. Every hit@k from this corpus would be depressed "
+            f"without erroring. Drop the table and re-run alone; take a lock if two runs must "
+            f"share a host (see scripts/run_locomo_arms.sh)."
+        )
 
     depths = _depths(ks, k)
     max_k = max(depths)
@@ -339,6 +359,7 @@ def run_conversation(
         )
 
     return {
+        "corpus_rows": indexed,
         "sample_id": conversation.get("sample_id"),
         "turns": n_turns,
         "retrieval": {
