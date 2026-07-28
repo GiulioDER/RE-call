@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from recall.embeddings import Embedder
@@ -32,6 +34,25 @@ def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
     return scores
 
 
+@dataclass(frozen=True)
+class LegProbe:
+    """One search's raw per-leg evidence, handed to an optional observer.
+
+    Exists so a diagnostic can read the legs the REAL pipeline produced. Reconstructing them
+    in an eval harness would measure a copy of the retriever rather than the retriever.
+
+    `sparse_ranks` carries `ts_rank` — the sparse leg's own ranking score. It is NOT
+    `[h.score for h in sparse]`: those are dense cosines, because `query_sparse` rescores its
+    hits against the query vector so lexical-only hits stay comparable downstream.
+    """
+
+    query: str
+    dense: list[ScoredChunk]        # dense candidates, best-first; score = cosine
+    sparse: list[ScoredChunk]       # sparse candidates, best-first by ts_rank; score = cosine
+    sparse_ranks: list[float]       # ts_rank per sparse hit, same order as `sparse`
+    fused: list[ScoredChunk]        # post-fusion, pre-rerank, pre-truncation
+
+
 class HybridRetriever:
     """Hybrid dense + sparse retrieval with the self-recall honesty guards.
 
@@ -45,6 +66,9 @@ class HybridRetriever:
       candidate_k:   how many candidates each of dense/sparse contributes before fusion.
       use_sparse:    include the sparse full-text leg in fusion; False = dense-only (ablations).
       use_dense:     include the dense vector leg in fusion; False = sparse-only (ablations).
+      probe:         optional observer called once per search with the raw per-leg candidates.
+                     Diagnostics only — it cannot influence the result, and the default (None)
+                     leaves the query path byte-identical.
 
     ``use_dense=False`` is an ABLATION SWITCH, not a serving mode. The query is still embedded
     (the sparse leg reports each hit's true cosine), but `gap_warning` is computed from the
@@ -66,6 +90,7 @@ class HybridRetriever:
         candidate_k: int = DEFAULT_CANDIDATE_K,
         use_sparse: bool = True,
         use_dense: bool = True,
+        probe: Callable[[LegProbe], None] | None = None,
     ) -> None:
         if not (use_dense or use_sparse):
             raise ValueError("at least one of use_dense / use_sparse must be True")
@@ -77,6 +102,7 @@ class HybridRetriever:
         self._candidate_k = candidate_k
         self._use_sparse = use_sparse
         self._use_dense = use_dense
+        self._probe = probe
 
     def search(self, query: str, k: int = 5, source: str | None = None) -> RetrievalResult:
         """Retrieve the top-`k` chunks for `query` (optionally filtered to one `source`).
@@ -96,11 +122,20 @@ class HybridRetriever:
             if self._use_dense
             else []
         )
-        sparse = (
-            self._store.query_sparse(query, k=self._candidate_k, source=source, vec=qvec)
-            if self._use_sparse
-            else []
-        )
+        sparse_ranks: list[float] = []
+        if self._use_sparse:
+            if self._probe is not None:
+                # `with_rank` is passed ONLY when probing: store doubles in the test suite (and
+                # any third-party PgVectorStore-shaped object) implement the 4-argument form.
+                sparse, sparse_ranks = self._store.query_sparse(
+                    query, k=self._candidate_k, source=source, vec=qvec, with_rank=True
+                )
+            else:
+                sparse = self._store.query_sparse(
+                    query, k=self._candidate_k, source=source, vec=qvec
+                )
+        else:
+            sparse = []
 
         fused = _rrf([[h.chunk.id for h in dense], [h.chunk.id for h in sparse]])
         by_id = {h.chunk.id: h for h in dense}
@@ -120,6 +155,16 @@ class HybridRetriever:
             )
             for cid in ranked_ids
         ]
+        if self._probe is not None:
+            self._probe(
+                LegProbe(
+                    query=query,
+                    dense=list(dense),
+                    sparse=list(sparse),
+                    sparse_ranks=list(sparse_ranks),
+                    fused=list(hits),
+                )
+            )
         if self._reranker is not None:
             hits = self._reranker.rerank(query, hits)
         hits = hits[:k]
