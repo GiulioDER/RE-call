@@ -36,6 +36,7 @@ def _artifacts() -> list[Path]:
         *(RESULTS / "locomo_rerank").glob("*.json"),
         *(RESULTS / "cosine").glob("*.json"),
         *(RESULTS / "wrrf").glob("*.json"),
+        *(RESULTS / "beam_voyage").glob("*.json"),
     ]
     return sorted(p for p in paths if p.is_file())
 
