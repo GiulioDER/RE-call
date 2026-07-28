@@ -1193,3 +1193,28 @@ The retrieval signal was never the problem. The THRESHOLD was — an absolute co
 comparable across models (§9m: 0th percentile of five distributions, 16th of a sixth). That is the
 one thing two days of measurement established with certainty, and it is already shipping as a
 warning in PR #105.
+
+### 9o. Provenance note — which code produced the BEAM cells
+
+`/opt/recall-beam` on VPS2 is not a git checkout: it was unpacked from a tarball and then patched
+file-by-file over the session, so "which commit produced this number" cannot be read off it. At
+session close every file was md5-compared against `bench/beam-1m`:
+
+- `benchmarks/beam/{run,systems,dataset}.py` — **identical** to the committed branch.
+- `recall/{trust,calibration}.py` — **diverged**, and this is stated rather than quietly synced:
+  the VPS carried the FIRST version of the calibration auto-load (`load_for(embedder.name)` read
+  directly), while the branch carries the hardened one (defensive `getattr`, mtime-keyed cache).
+
+**The divergence does not affect the cells.** Both versions load the same calibration for a real
+embedder; the hardening guards against a stub without `.name` and removes a file read from the hot
+path — correctness and latency, not retrieval behaviour. The 0.594 stands.
+
+Both files were re-synced and re-verified at close, so a re-run from `/opt/recall-beam` now matches
+the branch exactly.
+
+**The process defect worth keeping:** a results directory that is not a checkout cannot answer
+"what code made this", and the answer had to be reconstructed by md5 at the end rather than being
+knowable throughout. The BEAM harness should be deployed as a `git clone` at a named commit, the
+way `scripts/deploy.sh` treats the sentiment project — the CLAUDE.md deploy recipe already says to
+verify md5 against master for exactly this reason, and that rule was applied here only at closing
+time instead of at each patch.
