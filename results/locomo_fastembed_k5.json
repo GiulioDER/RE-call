@@ -2,6 +2,7 @@
   "_provenance": {
     "generation": "pre-#81/#84",
     "status": "superseded",
+    "stack": "unrecorded",
     "superseded_by": "results/locomo/postfix_pool20.json",
     "backs": [
       "the withdrawn 'hit@5 0.615' figure \u2014 this artifact records 0.6152 at k=5. README's withdrawn list and FINDINGS \u00a79a said that figure's artifact was never retained; it was committed in #111, and both statements were corrected alongside this stamp."
