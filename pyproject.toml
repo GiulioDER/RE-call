@@ -208,6 +208,10 @@ module = [
     # type-checks without it.
     "openai.*",
     "mem0.*",
+    # BEAM ships as parquet, so `benchmarks/beam/dataset.py` reads it with pyarrow. `files` above
+    # includes `benchmarks`, and the typecheck job installs `.[dev]` only, so without this the job
+    # fails on a dependency it deliberately does not install.
+    "pyarrow.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
