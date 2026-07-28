@@ -11,6 +11,9 @@
 python -m recall.eval.legdiag --data locomo10.json --dsn "$RECALL_DSN" --out results/legdiag/locomo_phase0.json
 ```
 
+`locomo10.json` is gitignored and fetched on demand — see the `curl` command in
+`recall/eval/locomo.py`'s module docstring for the exact source URL.
+
 LOCOMO, 10 conversations, `bge-small`, hybrid, pool 20 per leg, no rerank — the §9a configuration.
 
 ## The apparatus check passed
@@ -36,13 +39,24 @@ verified to bite — inverting its comparison aborts a run on the first question
 | trigger did not fire | **0.6164** | [0.5794, 0.6521] | 683 |
 | **delta** | **+0.0917** | intervals disjoint | 1536 |
 
+Two-proportion z-test across the two groups (pooled proportion, the test the design preregistered):
+**z = 3.79, p = 1.5×10⁻⁴**.
+
 **The gate:** *firing-group hit@5 ≥ non-firing group → stop, no PRF.* It fired, with the sign
 reversed and the confidence intervals disjoint.
 
-### The confound control clears it
+### The confound controls clear it
 
-The binding control from the design amendment — a gap that exists only pooled and vanishes inside
-every depth bin would be sparse-leg depth talking, not the trigger:
+Two confounds could produce a spurious pooled delta without the trigger meaning anything: sparse-leg
+depth (the residual bias the design amendment measured) and LOCOMO category (a much stronger
+difficulty proxy than either). Both are checked directly against the artifact.
+
+**Sparse-leg depth: not merely controlled for, structurally absent in the bin that carries the
+finding.** `more_decisive`'s residual bias comes from truncating a *larger* pool to its top `m` —
+order statistics from a truncated draw cluster more tightly near the maximum than a fresh
+`m`-sized draw (design amendment). Every record has `n_dense == 20` (all 1536) and `n_sparse == 20`
+(1527 of 1536), so in that dominant bin `m = min(20, 20) = 20` and **neither leg is truncated** —
+both legs are scored over their full native depth, not a truncated one:
 
 | sparse-leg depth | n | firing | not firing | delta |
 |---|---|---|---|---|
@@ -51,13 +65,37 @@ every depth bin would be sparse-leg depth talking, not the trigger:
 | n_sparse 5–9 | 1 | 1.000 (n=1) | — | n/a |
 | n_sparse 0–4 | 4 | 1.000 (n=1) | 1.000 (n=3) | +0.0000 |
 
-**+0.0913 within the dominant bin against +0.0917 pooled.** The effect is not the sample-size
-residual. It is real.
+_A reading note for anyone querying `locomo_phase0.json` directly rather than reading this table:
+`_rate` returns `{"rate": 0.0, "n": 0}` for an empty group, so an empty not-firing cell (the "—"
+above, e.g. `n_sparse 10–19` and `n_sparse 5–9`) shows up in the raw JSON as `"rate": 0.0` — that is
+"no data", not a measured 0% hit rate. Always read `rate` together with `n`._
 
-Incidentally the control turned out to be nearly moot *on this corpus*: 1527 of 1536 questions
-have a full 20-candidate sparse leg, so the depths barely varied. That is a property of LOCOMO —
-its documents are single conversational turns and its questions share common vocabulary — and
-should not be assumed on a corpus with rarer terms. The control stays.
+**+0.0913 within the dominant bin against +0.0917 pooled.** In the bin holding 99.4% of the data
+the truncation mechanism that produces the residual bias cannot fire at all — the delta there is
+not a controlled-for confound, it is measured with the confound structurally absent. That is a
+stronger claim than "the control clears it", and it is the strongest defence available for this
+result, not a weakness to apologize for.
+
+**Category: a second, independent confound, also checked.** cat4 is 841/1536 (54.8%) of the corpus
+and both the easiest-scoring category on average and the highest-firing one (0.599) — a setup where
+a pooled effect could be entirely "the trigger fires more on the easy category" rather than leg
+disagreement doing anything. Per-category deltas, computed from the artifact:
+
+| category | n | firing hit@5 | not-firing hit@5 | delta |
+|---|---|---|---|---|
+| cat1 | 282 | 0.653 (n=124) | 0.608 (n=158) | +0.046 |
+| cat2 | 321 | 0.747 (n=182) | 0.669 (n=139) | +0.078 |
+| cat3 | 92 | 0.535 (n=43) | 0.449 (n=49) | +0.086 |
+| cat4 | 841 | 0.722 (n=504) | 0.623 (n=337) | +0.099 |
+| **category-adjusted (n-weighted)** | 1536 | — | — | **+0.0841** |
+| pooled | 1536 | 0.708 (n=853) | 0.616 (n=683) | +0.0917 |
+
+Holding category fixed, the delta is **+0.0841** against **+0.0917** pooled — most of the pooled
+effect survives, so category is not driving it either. Per conversation (n=10) the delta is
+positive in **8**, and the two exceptions are flat rather than reversed: conv-41 at **−0.004** and
+conv-49 at **−0.002**. **The direction never inverts anywhere in the data** — not across sparse-depth
+bins with enough data to read, not across categories, not in all but two of ten conversations, and
+those two sit at zero within noise, not on the other side of it.
 
 ## Q2 — firing rate: **0.5553** [0.5304, 0.5800], n=1536
 
@@ -111,6 +149,11 @@ measured here and is substantial: **349 questions (22.7%) have the gold chunk in
 candidate pool but ranked below 5.** §9a's mechanism — symmetric RRF diluting a deeper pool —
 remains diagnosed and unaddressed.
 
+**Not run: the private-46 arm.** It is in the design's measurement set (`design.md`, "What Phase 0
+measures") and does not appear above. That is correct sequencing, not an omission: the design
+sequences it **after** the LOCOMO arm clears its gates, because LOCOMO is public, n=1,536, and
+decides. The LOCOMO gate fired, so the private-46 arm was correctly not run.
+
 **Not tested: rank disagreement.** An honest limitation, stated without using it to rescue the
 result. The design's *concept* was "sparse found something dense buried" — a statement about the
 two legs ranking **different documents**. What shipped, `more_decisive`, compares how **peaked**
@@ -120,6 +163,14 @@ preregistration**, not a second chance for this one — and Q3 bounds what it co
 `b_unretrieved` = **162/1536 (10.5%)**, since anything already in the pool is fusion's job, not a
 second retrieval's. The retained records carry per-leg counts and confidences but not the leg id
 lists, so this cannot be answered from this artifact; it would need another run.
+
+Part of that gap is not an inherent limit of what was measured. The design (`design.md:140`)
+specified that bucket (a) be **sub-split by which leg held it** — dense-only, sparse-only, or both.
+That sub-split was never implemented: `classify_gold` pools `_retrieved_dia_ids(probe.dense)` and
+`_retrieved_dia_ids(probe.sparse)` into one undifferentiated `pool` set before checking membership,
+so a misranked gold chunk's per-leg origin is discarded, not merely unrecorded. Stated plainly: the
+inability to answer the rank-disagreement question from this artifact is **partly a dropped
+deliverable**, not purely an inherent limit of the design.
 
 ## Cost
 

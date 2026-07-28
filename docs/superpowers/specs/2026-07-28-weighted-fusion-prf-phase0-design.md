@@ -158,9 +158,10 @@ the retrieved set has broken the thing it was measuring, and this assert is what
 Two further invariants, as tests:
 
 - `conf()` is affine-invariant: scaling/shifting a leg's scores does not move the weights.
-- `trigger` cannot fire when `use_sparse=False` or the sparse leg returns nothing (`conf(sparse)=0`
-  and the comparison is strict), so ablation arms degrade to today's behaviour rather than
-  silently entering a different code path.
+- `trigger` cannot fire when `use_sparse=False` or the sparse leg returns nothing: `more_decisive`'s
+  common depth `m = min(len(sparse), len(dense))` is then 0, and the `m < 2` guard returns `False`
+  before either leg's confidence is even computed — so ablation arms degrade to today's behaviour
+  rather than silently entering a different code path.
 
 ## Preregistered before running
 

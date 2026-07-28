@@ -1192,6 +1192,24 @@ class PgVectorStore:
         with_rank: Literal[True],
     ) -> tuple[list[ScoredChunk], list[float]]: ...
 
+    # A caller passing a plain `bool` (not a `True`/`False` literal — e.g. a variable typed
+    # `bool`, or `with_rank=some_flag`) matches NEITHER overload above: `bool` is a supertype of
+    # `Literal[True]`/`Literal[False]`, not a subtype, so mypy rejects it as "no overload variant
+    # matches" even though this is public, shipped API and that call is perfectly legal at
+    # runtime. This third, most-general overload is the fallback: mypy tries overloads top to
+    # bottom and the two literal ones above still win — and still narrow to their precise return
+    # type — whenever the argument's inferred type is the literal itself.
+    @overload
+    def query_sparse(
+        self,
+        text: str,
+        k: int,
+        source: str | None = None,
+        vec: list[float] | None = None,
+        *,
+        with_rank: bool,
+    ) -> list[ScoredChunk] | tuple[list[ScoredChunk], list[float]]: ...
+
     def query_sparse(
         self,
         text: str,

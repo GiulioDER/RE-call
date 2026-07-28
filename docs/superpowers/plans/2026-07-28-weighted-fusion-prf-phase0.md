@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Measure whether leg disagreement (`conf(sparse) > conf(dense)`) selects for retrieval failures, at what rate it fires, and where the gold chunk sits when it does — so the weighted-fusion and PRF phases are built on a measured premise or killed.
+**Goal:** Measure whether leg disagreement (`conf(sparse[:m]) > conf(dense[:m])` at the common candidate depth `m = min(len(sparse), len(dense))` — `more_decisive`) selects for retrieval failures, at what rate it fires, and where the gold chunk sits when it does — so the weighted-fusion and PRF phases are built on a measured premise or killed. (The natural-depth form `conf(sparse) > conf(dense)` was the pre-amendment definition and is biased — see the design's amendment note, `design.md:75-106`.)
 
 **Architecture:** An additive observer. `PgVectorStore.query_sparse` gains an opt-in `ts_rank` return (it currently computes and discards it); `HybridRetriever` gains an optional `probe` callback that fires once per search with both legs' native candidates; the LOCOMO harness threads that probe through the way it already threads `reranker`. All diagnostic logic lives in `recall/eval/`. No fusion change, no second retrieval pass.
 
@@ -1206,7 +1206,7 @@ Read them off the spec's table, in this order:
 | gate | rule | if it fires |
 |---|---|---|
 | Q1 | firing-group hit@5 ≥ non-firing | **Stop.** No Phase 2. Write the closure note. |
-| Q2 | firing rate outside 5–50% | Redesign the trigger; do not proceed to Phase 1 on this trigger. |
+| Q2 | firing rate outside 5–50% | Redesign the trigger (`design.md:192` — the design's rule stops there; Phase 1, weighted fusion, never used the trigger and is not blocked by this gate). |
 | Q3 | `b_unretrieved` ≈ 0 among firing misses | No Phase 2; the work reduces to weighted fusion alone. |
 | Q3 | `a_misranked` ≈ 0 | No measurable Phase 1 gain on this corpus; report it. |
 

@@ -9,9 +9,17 @@ the sparse leg scores in `ts_rank` (unbounded, corpus-dependent). Any statistic 
 being compared across those two must be invariant to an affine change of units, and a z-score
 is. That invariance is asserted in `tests/test_leg_confidence.py`, not assumed here.
 
-This lives under `recall/eval/` deliberately. Nothing in the serving path consumes it yet —
-Phase 1 would, if the diagnostic clears its gates. Shipping it into `recall/` before then would
-be dead code in the installed package.
+This lives under `recall/eval/` deliberately. Nothing in the serving path consumes it.
+
+FALSIFIED 2026-07-28 -> results/legdiag/FINDINGS_phase0.md. The trigger this module supports did
+not clear its Q1 gate: firing-group hit@5 (0.7081) was HIGHER than non-firing (0.6164), not lower
+-- leg disagreement selects for retrieval successes, not failures. Phase 1 does not consume this.
+Read that finding before treating this module as a live path to production.
+
+Being under `recall/eval/` does not keep it out of the installed package, either: `pyproject.toml`
+packages `recall` as a whole (`[tool.hatch.build.targets.wheel]` -> `packages = ["recall",
+"recall_mcp"]`), so `recall/eval/` ships in the wheel regardless of whether anything in `recall/`
+calls it.
 """
 from __future__ import annotations
 
