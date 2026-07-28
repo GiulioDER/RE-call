@@ -47,6 +47,7 @@ from recall.eval.locomo import (
     _make_embedder,
     _rate,
 )
+from recall.eval.provenance import provenance_block
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
@@ -139,6 +140,11 @@ def run(
     thresholds: list[float] = []
     started = time.time()
 
+    # Counted per tenant as each store is opened. This runner READS an index it did not build,
+    # so the count is the only evidence in the artifact of what it actually scored against.
+    corpus_rows = 0
+    tenants: list[str] = []
+
     for i, conv in enumerate(conversations):
         sample_id = conv.get("sample_id") or f"conv{i}"
         tenant = f"locomo-{sample_id}"
@@ -147,6 +153,8 @@ def run(
 
         with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table="locomo_chunks") as store:
             retriever = HybridRetriever(store, embedder)
+            corpus_rows += store.count()
+            tenants.append(tenant)
             cal = _fit_calibration(retriever, embedder_name, answerable, adversarial, k)
             thresholds.append(cal.threshold)
 
@@ -181,6 +189,7 @@ def run(
 
     return {
         "benchmark": "LOCOMO — abstention ablation",
+        **provenance_block(corpus_rows, "locomo_chunks", tenants),
         "embedder": embedder_name,
         "k": k,
         "answerable_sample_per_conv": answerable_sample,

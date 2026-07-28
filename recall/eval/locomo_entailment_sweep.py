@@ -43,6 +43,7 @@ from typing import Any, Callable
 from recall.embeddings import Embedder
 from recall.eval.locomo import _make_embedder, _rate
 from recall.eval.locomo_abstention import _partition_questions
+from recall.eval.provenance import provenance_block
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
 
@@ -209,6 +210,21 @@ def run(
     embedder = _make_embedder(embedder_name)
     started = time.time()
 
+    # Counted once, per tenant, BEFORE the per-judge loop below — deliberately NOT inside
+    # `gather_scores`, which runs once per judge (`judges` below). This runner never writes, so
+    # every judge reads the identical indexed corpus; folding the count into `gather_scores` would
+    # sum it once per judge and report corpus_rows inflated by the judge count — the same class of
+    # plausible-but-wrong number this block exists to catch, just self-inflicted instead of from a
+    # concurrent writer.
+    corpus_rows = 0
+    tenants: list[str] = []
+    for i, conv in enumerate(conversations):
+        sample_id = conv.get("sample_id") or f"conv{i}"
+        tenant = f"locomo-{sample_id}"
+        tenants.append(tenant)
+        with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table="locomo_chunks") as store:
+            corpus_rows += store.count()
+
     per_judge: dict[str, Any] = {}
     for label, model_id in judges:
         print(f"[judge] {label} ({model_id})", flush=True)
@@ -231,6 +247,7 @@ def run(
 
     return {
         "benchmark": "LOCOMO — entailment judge sweep",
+        **provenance_block(corpus_rows, "locomo_chunks", tenants),
         "embedder": embedder_name,
         "k": k,
         "answerable_sample_per_conv": answerable_sample,

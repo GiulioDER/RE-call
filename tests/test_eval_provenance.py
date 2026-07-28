@@ -37,3 +37,23 @@ def test_a_zero_row_corpus_is_representable_not_swallowed():
     """0 is a real, alarming value. It must not be dropped as falsy."""
     b = provenance_block(corpus_rows=0, table="t", tenants=[])
     assert b["corpus_rows"] == 0
+
+
+def test_every_locomo_runner_embeds_the_provenance_block():
+    """A runner that writes a result JSON must embed the block.
+
+    Checked by import rather than by running the benchmark: each run costs tens of minutes, so
+    a test that ran one would never be run. This catches the realistic regression — a new
+    runner, or a refactor that drops the call — which is exactly how the count failed to reach
+    #103's artifacts in the first place.
+    """
+    import inspect
+
+    from recall.eval import locomo, locomo_abstention, locomo_entailment_sweep
+
+    for mod in (locomo, locomo_abstention, locomo_entailment_sweep):
+        src = inspect.getsource(mod)
+        assert "provenance_block(" in src, (
+            f"{mod.__name__} writes a result artifact but does not embed provenance_block — "
+            f"its output could not be told apart from a doubled-corpus run"
+        )
