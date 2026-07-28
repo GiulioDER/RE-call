@@ -1014,12 +1014,39 @@ because on BEAM the two classes are ordered **the wrong way round**:
 | answerable (the other nine categories) | 0.641 |
 
 That is the raw top-1 cosine per class under BEAM's own labels, collected by
-`benchmarks/beam/calibrate.py` — embeddings and cosines only, no answerer and no judge. The
-calibration JSON is written by `--out` and is not committed, so this is a reproducible figure
-rather than an artifact-backed one:
+`benchmarks/beam/calibrate.py` — embeddings and cosines only, no answerer and no judge.
+
+> **Evidence tier: ▶️ reproducible, not 📦 artifact — and that is a decision, not an omission.**
+>
+> No calibration JSON is committed for this pair. [`RESULTS.md`](RESULTS.md) publishes three tiers
+> and this figure sits squarely in the middle one: *"no committed artifact, but the corpus is
+> public or ships here and one command regenerates it."* BEAM loads from its HuggingFace parquet
+> (`benchmarks/beam/dataset.py`), so the corpus is public and the command below is the whole
+> recipe. Several sections of `RESULTS.md` already publish at this tier, including ones that need
+> a paid API key to regenerate.
+>
+> Raised as [#102](https://github.com/GiulioDER/RE-call/issues/102) on the ground that the figure
+> has no retained artifact. That is true and is why this note exists — but the acceptance it
+> proposed (an artifact under `benchmarks/results/`) asked for a stricter standard than this repo
+> publishes under, against a directory the tree has never had. Retaining one is not free: it means
+> re-ingesting conversations 0-14 through the hosted embedder. **Closed as a standards decision**:
+> the tier is stated rather than the figure upgraded or struck.
+>
+> What that costs the reader is real and should be said plainly: this pair cannot be diffed against
+> a committed file the way a 📦 row can. What it does not cost is checkability — one command
+> regenerates it, and `--out` writes a `_report.json` whose `per_question` block carries the whole
+> distribution these two medians collapse from. Anyone who wants the artifact can make it.
+>
+> ⚠️ If you run it: pass `--out` explicitly. Without it the fitted threshold falls through to the
+> default calibration path — the same path `load_for()` reads — and a threshold fitted on 0-14
+> would silently become live for `text-embedding-3-small`, in-sample on the conversations the BEAM
+> cells are scored over. And empty `bench_beam_chunks` first: `calibrate.py` ingests, and indexing
+> over an existing corpus is the defect §9a was retracted for.
 
 ```bash
-python -m benchmarks.beam.calibrate --data <beam_1M.parquet> --out beam_calibration.json
+python -m benchmarks.beam.calibrate --data <beam_1M.parquet> --chat-size 1M \
+    --conversations 0-14 --embedder router:openai/text-embedding-3-small \
+    --out results/beam/calibration_0_14.json
 ```
 
 A threshold is a monotone rule on that column, so no value of it can separate two classes that are
