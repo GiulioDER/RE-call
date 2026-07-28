@@ -9,6 +9,36 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
+- **The cosine distributions behind the abstention results are now a retained artifact
+  (`results/cosine/distributions.json`), not an assertion.** §7b reported abstention as *rates*
+  and §10c stated the boundary in prose; both are claims about the shape of two distributions,
+  and nothing here kept the values — `RESULTS.md` §8 says so outright for LongMemEval, and §7/§11
+  retained summary rates only. Under this repo's own evidence-tier rule that made the obvious
+  chart undrawable except from published quantiles, i.e. by inventing shape.
+
+  `recall.eval.cosine_dump` regenerates and retains them, measuring the same quantity the
+  abstention decision reads (`locomo_abstention._top_cosine` — max cosine over hits at `k`, which
+  is what `trust.evaluate` thresholds) on the same seed-0 sample the published rates were scored
+  on. LOCOMO answerable vs adversarial: separability **0.598** [0.559, 0.636], medians 0.738
+  against 0.721 — §7b's 0.000 in distribution form. The 14-doc reference corpus separates its
+  far-gap class completely (**1.000**, a 0.060-wide empty gap) and carries its near-miss class on
+  the same corpus, so §10c's boundary is visible without a corpus change confounding it.
+
+  **The near-miss row is reported and explicitly carries no conclusion**: at n=10 its interval
+  reaches 1.000. A prediction registered before the run said it would land well below the 0.90
+  bar; it measured 0.850, and the interval is why that prediction was not answerable at this n.
+  The near-miss exclusion rests on the LOCOMO row, where n supports it.
+
+  Two reuse decisions rather than new paths: indexing goes through `harness._throwaway_store`
+  (uuid-named, dropped on exit) instead of a second index call with a fixed table name, which is
+  the failure the double-index guard exists to prevent; and the reference-corpus class split
+  mirrors `calibrate.measure_top_cosines`, which already owned that rule. The shortcut it avoids
+  is pinned by a test: bucketing on a falsy `entry.get("answerable")` puts all six `trust`
+  entries into the unanswerable class — a far-gap class of **11** against a true **5** — and
+  returns a plausible wrong distribution rather than raising. Reproduced on a fresh database as a
+  side effect: §7a's depth curve exactly, and §10c's quoted 0.70–0.90 / 0.51–0.64 ranges.
+  (`recall/eval/cosine_dump.py`, `tests/test_eval_cosine_dump.py`, `results/cosine/`,
+  `results/RESULTS.md` §12)
 - **`RECALL_RERANK=1` turns on cross-encoder reranking in the MCP server.** The server is how an
   agent actually consumes this library, and it had no way to enable the largest retrieval gain the
   project has measured: `service.py` called `trusted_search` without the `reranker` argument that
