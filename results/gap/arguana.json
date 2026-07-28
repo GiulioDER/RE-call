@@ -1,0 +1,47 @@
+{
+  "status": "ok",
+  "dataset": "arguana",
+  "manifest": {
+    "name": "arguana",
+    "documents_requested": 20000,
+    "documents_written": 8674,
+    "questions": 1401,
+    "questions_available": 1406,
+    "seed": 20260726
+  },
+  "scores": {
+    "local": {
+      "bm25": 0.5,
+      "dense": 0.6257,
+      "sparse": 0.3757,
+      "hybrid": 0.5671,
+      "mrr_hybrid": 0.2348,
+      "held_out": 700
+    },
+    "cloud": {
+      "bm25": 0.5,
+      "dense": 0.6186,
+      "sparse": 0.3771,
+      "hybrid": 0.5343,
+      "mrr_hybrid": 0.2211,
+      "held_out": 700
+    }
+  },
+  "predictors": {
+    "oov_rate": 0.08102564102564103,
+    "query_overlap": 0.17011357405016167,
+    "crowding": 0.8544062010709295,
+    "code_density": NaN,
+    "n_documents": 8674,
+    "n_overlap_pairs": 1401
+  },
+  "primary_arm": "hybrid",
+  "seconds": 8702.5,
+  "params": {
+    "max_docs": 20000,
+    "token_budget": 2000,
+    "min_pieces": 2,
+    "crowding_sample": 500,
+    "seed": 20260726
+  }
+}

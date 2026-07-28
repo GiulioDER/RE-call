@@ -18,7 +18,7 @@ build-backend = "hatchling.build"
 # so installing both into one environment gives two distributions writing the same import path, and
 # whichever installed last wins. Nothing detects it. Install `recall-rag`, never `recall`.
 name = "recall-rag"
-version = "0.5.2"
+version = "0.6.0"
 description = "Trustworthy retrieval for an AI agent's own memory — verdict, confidence and provenance per hit, or an explicit abstention"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -167,7 +167,11 @@ target-version = "py311"
 # The floor is checked where it is actually meaningful: the `floor` CI job RUNS the suite on
 # 3.11 with the declared minimum of every direct dependency.
 [tool.mypy]
-files = ["recall", "recall_mcp", "benchmarks"]
+# `recall_interop` is repo-only scaffolding (it is deliberately absent from the wheel's `packages`
+# above), but it is type-checked anyway: it is the code path that produces PUBLISHED benchmark
+# numbers, and a shape mismatch against the third-party harness it feeds does not raise — it
+# degrades into a worse score that reads as a retrieval result.
+files = ["recall", "recall_mcp", "recall_interop", "benchmarks"]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 warn_return_any = true
@@ -183,6 +187,8 @@ no_implicit_optional = true
 [[tool.mypy.overrides]]
 module = [
     "fastembed.*",
+    # Ships with fastembed; `recall.eval.vocab.bge_encoder` guards its import.
+    "tokenizers.*",
     "voyageai.*",
     "sentence_transformers.*",
     "matplotlib.*",

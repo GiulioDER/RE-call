@@ -1,0 +1,47 @@
+{
+  "status": "ok",
+  "dataset": "cqadupstack-gis",
+  "manifest": {
+    "name": "cqadupstack-gis",
+    "documents_requested": 20000,
+    "documents_written": 20000,
+    "questions": 885,
+    "questions_available": 885,
+    "seed": 20260726
+  },
+  "scores": {
+    "local": {
+      "bm25": 0.4231,
+      "dense": 0.3801,
+      "sparse": 0.3439,
+      "hybrid": 0.4683,
+      "mrr_hybrid": 0.3555,
+      "held_out": 442
+    },
+    "cloud": {
+      "bm25": 0.4231,
+      "dense": 0.5385,
+      "sparse": 0.3439,
+      "hybrid": 0.543,
+      "mrr_hybrid": 0.4232,
+      "held_out": 442
+    }
+  },
+  "predictors": {
+    "oov_rate": 0.2966457023060797,
+    "query_overlap": 0.4888138342806206,
+    "crowding": 0.7581941296307803,
+    "code_density": 0.006378793700088802,
+    "n_documents": 20000,
+    "n_overlap_pairs": 1114
+  },
+  "primary_arm": "hybrid",
+  "seconds": 17568.7,
+  "params": {
+    "max_docs": 20000,
+    "token_budget": 2000,
+    "min_pieces": 2,
+    "crowding_sample": 500,
+    "seed": 20260726
+  }
+}

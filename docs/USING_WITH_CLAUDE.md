@@ -45,6 +45,35 @@ Optional env: `RECALL_EMBEDDER=hashing` for the fully-offline embedder (default 
 **absolute path** in the MCP `env` block, because the server's working directory is chosen by the
 MCP client, so a cwd-relative file will silently not be found (results then say `calibrated: false`).
 
+### `RECALL_RERANK=1` — the single biggest quality lever
+
+Set it and every `recall_search` reranks its candidate pool with a cross-encoder before truncating
+to `k`. Measured on LOCOMO at n=1 536 ([`FINDINGS.md` §11](../results/FINDINGS.md)):
+
+| hit@k | off | **on** |
+|---|---|---|
+| 1 | 0.398 | **0.553** |
+| 5 | 0.671 | **0.777** |
+
+Intervals disjoint from the baseline through k=10 — the largest single retrieval gain measured in
+this project, roughly twice the best embedder effect, and it lifts every question category
+including multi-hop.
+
+**Off by default because it costs ~1 050 ms per query on CPU** (needs `pip install recall[rerank]`).
+For an agent answering a person that is usually invisible next to the model call which follows, and
+the answer is materially better. For high-volume automated retrieval, or constrained hardware,
+leave it off.
+
+`ms-marco-MiniLM-L-6-v2` is the default because it was *measured* to be right, not because it was
+already there: `bge-reranker-base`, 12× the parameters and four years newer, is statistically
+**indistinguishable** at 6.3× the cost. Override with `RECALL_RERANK_MODEL`, which then **requires**
+`RECALL_RERANK_REVISION` — an unpinned Hub reference is mutable and the shipped pin belongs to the
+shipped weights only.
+
+⚠️ A value that is neither truthy nor falsey (`RECALL_RERANK=treu`) is **refused** rather than read
+as "off". A server that quietly ignored the flag would be fast, silent, and indistinguishable from
+one that honoured it.
+
 ## 3. The three tools
 
 | Tool | When the agent calls it |
