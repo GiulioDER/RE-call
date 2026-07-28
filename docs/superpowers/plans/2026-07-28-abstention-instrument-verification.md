@@ -201,19 +201,20 @@ Expected: PASS, 2 passed, 0 failed, 0 skipped.
 
 - [ ] **Step 5: Verify the guard is not vacuous**
 
-The second test already exercises the detection path — but confirm the *first* one would notice a wrong value. Temporarily change `"corpus_rows": indexed,` to `"corpus_rows": 999,` and re-run:
+The second test already exercises the detection path — but confirm the *first* one would notice a wrong value.
+
+⚠️ **Use an editor for both edits. Do not `git checkout` this file** — Step 3's implementation is uncommitted, so a checkout would discard it and you would silently re-run Step 4 against the original code.
+
+1. Edit `recall/eval/locomo.py` and change `"corpus_rows": indexed,` to `"corpus_rows": 999,`.
+2. Run:
 
 ```bash
 python -m pytest tests/test_locomo_corpus_postcondition.py -v
 ```
 
-Expected: `test_run_conversation_reports_the_rows_it_indexed` FAILS. Then revert:
+Expected: `test_run_conversation_reports_the_rows_it_indexed` FAILS on the `== store.count()` assertion. If it PASSES, the test is not reading the field it claims to and must be fixed before continuing.
 
-```bash
-git checkout recall/eval/locomo.py && git stash list
-```
-
-⚠️ `git checkout` discards Step 3 too. Re-apply Step 3 after reverting, or use an editor to change `999` back to `indexed` instead. Prefer the editor.
+3. Edit the same line back to `"corpus_rows": indexed,` and re-run the command above. Expected: PASS, 2 passed.
 
 - [ ] **Step 6: Confirm nothing else broke**
 
