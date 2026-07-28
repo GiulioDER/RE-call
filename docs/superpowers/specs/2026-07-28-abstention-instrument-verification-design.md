@@ -25,9 +25,12 @@ Three defects found while scoping this, each verified rather than assumed:
   `grep` over `results/**/*.json` returns nothing. This includes `postfix_abstention.json` and
   `postfix_pool20.json`, the current headline artifacts. The 2026-07-27 failure is therefore
   **undetectable retroactively** on every published number.
-- **The §9c re-run died silently.** `results/locomo/postfix_entailment_sweep.log` stops after 9
-  conversations with no summary and no JSON. `FINDINGS.md` records §9c as "not re-measured",
-  which is true and undersells it: it *was* attempted, it died, and nothing noticed.
+- **The §9c re-run left no retained evidence at all.** This repo's own `.gitignore` calls
+  `results/locomo/*.log` transient and says the JSON beside it is the artifact — and for §9c, no
+  JSON was ever written. The only trace, a `postfix_entailment_sweep.log` that stops after 9
+  conversations with no summary, is untracked and gitignored by design, so it isn't part of this
+  repository. `FINDINGS.md` records §9c as "not re-measured", which is true and undersells it: it
+  *was* attempted, it died, and left nothing this repo can check.
 - **#103 verified its run and the verification evaporated.** `scripts/run_locomo_arms.sh` holds
   `EXPECTED_ROWS=5882`, takes a lock, drops each table and checks the count after every arm. That
   discipline was real. It reached the runner's stdout and stopped there — `baseline_verified.json`,
@@ -51,7 +54,7 @@ Recorded so this cycle does not redo work that landed while it was being scoped.
 | #103 rerank result | **merged** (`9eb3bc1`), hit@5 0.671 → 0.777, verified at 5,882 rows |
 | #101 calibration auto-load | **merged** (`8748df0`) |
 
-**#101 does not invalidate the §9b tables.** `recall/eval/locomo_abstention.py:160` passes
+**#101 does not invalidate the §9b tables.** `recall/eval/locomo_abstention.py:168` passes
 `calibration=cal` **explicitly** to `trusted_search`, so the auto-load bug never touched that
 harness. #101's blast radius was on library users, not on published results.
 
@@ -93,7 +96,7 @@ Starting state, verified while scoping:
 |---|---|---|
 | §9b LOCOMO abstention, 4 modes | **current** | `postfix_abstention.json`, post-#81/#84, calibration passed explicitly |
 | §9b abstention **with rerank on** | **unmeasured** for the calibrated and judge modes | #103 measured only the default mode (0.00, unchanged) |
-| §9c entailment ROC sweep | **stale**, re-run died at 9/10 with no artifact | `postfix_entailment_sweep.log` |
+| §9c entailment ROC sweep | **stale, no retained artifact** — re-run died at 9/10, no JSON ever written | §2 |
 | §10 LongMemEval, all rows | **stale and unfalsifiable** — pre-#81/#84, no artifact retained | `FINDINGS.md` §10 note |
 | §7 private-corpus abstention | current, but not independently checkable (private corpus) | — |
 | §8 PEP abstention | current, cheap and public to re-establish | — |
