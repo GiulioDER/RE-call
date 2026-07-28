@@ -1,4 +1,13 @@
 {
+  "_provenance": {
+    "generation": "post-#81/#84",
+    "status": "current",
+    "superseded_by": null,
+    "backs": [
+      "RESULTS \u00a711 'ms-marco-MiniLM-L-6-v2 (shipped)' column"
+    ],
+    "note": "Sparse leg firing (#81/#82) and the dense scan widened (#84). This is the configuration the published tables describe."
+  },
   "benchmark": "LOCOMO",
   "metric": "evidence-turn hit@5 (retrieval only, no LLM judge)",
   "embedder": "fastembed",

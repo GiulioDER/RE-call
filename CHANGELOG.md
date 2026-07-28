@@ -8,6 +8,46 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Fixed
+- **Every committed result artifact now says which configuration produced it, and the marker was
+  on the wrong half of them.** `results/locomo_abstention.json` reads `calibrated: 0.5269`;
+  `RESULTS.md` §7b publishes **0.574**. Both are correct — pre- and post-#81/#84 — and nothing in
+  the filename said so. The marker was on the *post*-fix files (`postfix_`), so the absence of a
+  marker read as "the result" when it meant "the older one", and `locomo_abstention.json` is about
+  as authoritative a name as that file could have. Same failure shape as a threshold that returns a
+  plausible number on data that cannot support it: nothing errors, the reader just gets the wrong
+  answer.
+
+  All twelve LOCOMO artifacts now carry a leading `_provenance` block — generation, status,
+  successor, and which published figures the artifact backs — so a file that is opened, copied or
+  linked on its own still says what it is. **No measured value was touched**: the migration
+  asserted byte-equality of every artifact minus the inserted key before writing.
+  `results/ARTIFACTS.md` is the index, and `tests/test_results_artifact_provenance.py` fails if a
+  new artifact arrives without a block, if a superseded one names a missing successor, if a live
+  one names a successor at all, or if an artifact is absent from the index.
+
+  A pre-fix artifact is **not** wrong — it is a correct measurement of a configuration this library
+  no longer ships, and in two cases the only evidence for a "was X" figure the current documents
+  quote (§9b's "(was 0.527)" / "(was 0.370)"). Two of them are singular: `locomo_entailment_sweep`
+  has **no successor** because §9c has not been re-measured, and `depth_curve_pool100` records a
+  control §9a **retracted**. Both are stated in the block rather than inferable from the name.
+
+  The clobber hazard is closed too: `locomo_abstention.py` and `locomo_entailment_sweep.py` told
+  you to write `--out` straight onto those retained records, which would have deleted the earlier
+  half of a published before/after comparison with no error. They now suggest a fresh path and say
+  why. (`results/*.json`, `results/ARTIFACTS.md`, `recall/eval/locomo_abstention.py`,
+  `recall/eval/locomo_entailment_sweep.py`, `tests/test_results_artifact_provenance.py`)
+- **The "hit@5 0.615" withdrawal cited a reason that stopped being true.** README's withdrawn list
+  and FINDINGS §9a both removed that figure on the ground that its result artifact *was never
+  retained*. [#111](https://github.com/GiulioDER/RE-call/pull/111) committed it —
+  `results/locomo_fastembed_k5.json` records **0.6152** at k=5 — so the repo holds **five** pre-fix
+  artifacts, not the "two" §9a still claimed. Both statements corrected, and the count is now
+  pinned by a test rather than restated in prose.
+
+  **The figure stays withdrawn**, because retaining the artifact does not repair the claim it was
+  used for: the runs whose spread was read as HNSW build noise differ in *candidate pool*, not in
+  index build. It is now checkable and still not evidence for that. (README, `results/FINDINGS.md`)
+
 ### Added
 - **The cosine distributions behind the abstention results are now a retained artifact
   (`results/cosine/distributions.json`), not an assertion.** §7b reported abstention as *rates*

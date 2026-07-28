@@ -1,4 +1,13 @@
 {
+  "_provenance": {
+    "generation": "pre-#81/#84",
+    "status": "superseded",
+    "superseded_by": "results/locomo/postfix_pool100.json",
+    "backs": [
+      "the pool-100 control RETRACTED in FINDINGS \u00a79a \u2014 with the sparse leg inert the two runs could differ only by index-build noise, so their agreement could not show the pool was non-binding. Kept as the record of the retracted control, not as evidence."
+    ],
+    "note": "Sparse leg inert (it ANDed every query term) and the unfiltered dense scan capped near hnsw.ef_search=40, so this run measured an effectively dense-only configuration. A correct measurement of THAT configuration, kept as its record \u2014 not comparable to a post-fix row."
+  },
   "benchmark": "LOCOMO",
   "metric": "evidence-turn hit@5 (retrieval only, no LLM judge)",
   "embedder": "fastembed",
