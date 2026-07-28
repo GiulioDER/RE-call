@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -1152,9 +1153,36 @@ class PgVectorStore:
                 "COALESCE(NULLIF(current_setting('hnsw.ef_search', true), ''), %(default_ef)s)"
                 "::int, %(k)s)::text, true)"
             )
+            # Bound the DERIVED value the way the filtered path bounds its configured one.
+            #
+            # `k * multiplier` is over-fetch margin, not a requirement: correctness needs only
+            # `ef_search >= k`, or the walk returns fewer than k rows and the caller never learns
+            # — the silent truncation #84 exists to prevent. So past pgvector's 1..1000 range the
+            # MARGIN is what gives way, and the request still succeeds at the widest legal scan.
+            #
+            # Unbounded, this reached Postgres as ef_search=2400 for a 600-candidate pool and
+            # failed the query with a message naming `hnsw.ef_search` — a knob the caller never
+            # set — instead of the `k` they did. The filtered arm has validated this since it was
+            # written; the unfiltered arm computes the same quantity and checked nothing: one
+            # derivation with the guard on only one of its two paths.
+            desired_ef = k * _ef_search_multiplier()
+            if k > _HNSW_EF_SEARCH_MAX:
+                raise ValueError(
+                    f"k={k} exceeds pgvector's maximum hnsw.ef_search of {_HNSW_EF_SEARCH_MAX}, "
+                    f"so an unfiltered HNSW scan cannot be widened far enough to return k rows "
+                    f"and would silently truncate. Ask for fewer candidates."
+                )
+            if desired_ef > _HNSW_EF_SEARCH_MAX:
+                warnings.warn(
+                    f"hnsw.ef_search capped at {_HNSW_EF_SEARCH_MAX}: k={k} x multiplier "
+                    f"{_ef_search_multiplier()} = {desired_ef}, above pgvector's maximum. The "
+                    f"scan still covers k={k}, so only the over-fetch margin is reduced.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
             widen_params = {
                 "default_ef": str(_PGVECTOR_DEFAULT_EF_SEARCH),
-                "k": k * _ef_search_multiplier(),
+                "k": min(desired_ef, _HNSW_EF_SEARCH_MAX),
             }
 
             def _op_unfiltered(conn: "psycopg.Connection") -> list[tuple]:
