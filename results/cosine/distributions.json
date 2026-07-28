@@ -1,4 +1,13 @@
 {
+  "_provenance": {
+    "generation": "post-#81/#84",
+    "status": "current",
+    "superseded_by": null,
+    "backs": [
+      "RESULTS §12 — cosine distributions"
+    ],
+    "note": "Sparse leg firing (#81/#82) and the dense scan widened (#84). This is the configuration the published tables describe."
+  },
   "artifact": "top-cosine distributions behind the abstention results",
   "generated_at": "2026-07-28T12:07:08+00:00",
   "embedder": "fastembed",
@@ -6,7 +15,7 @@
   "answerable_sample_per_conv": 40,
   "seed": 0,
   "elapsed_s": 81.1,
-  "quantity": "max cosine over the hits returned at k \u2014 exactly what trust.evaluate thresholds, via locomo_abstention._top_cosine",
+  "quantity": "max cosine over the hits returned at k — exactly what trust.evaluate thresholds, via locomo_abstention._top_cosine",
   "separability": [
     {
       "pair": "locomo_answerable_vs_adversarial",

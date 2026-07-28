@@ -292,6 +292,19 @@ def run(
     )
 
     return {
+        # Emitted, not stamped on afterwards: a regenerated artifact must carry its own
+        # provenance, or the next `--out` silently produces an unlabelled file. Schema and the
+        # index it feeds: `results/ARTIFACTS.md`.
+        "_provenance": {
+            "generation": "post-#81/#84",
+            "status": "current",
+            "superseded_by": None,
+            "backs": ["RESULTS §12 — cosine distributions"],
+            "note": (
+                "Sparse leg firing (#81/#82) and the dense scan widened (#84). This is the "
+                "configuration the published tables describe."
+            ),
+        },
         "artifact": "top-cosine distributions behind the abstention results",
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "embedder": embedder_name,
