@@ -217,6 +217,86 @@ def test_recall_system_reingest_does_not_duplicate_the_corpus() -> None:
     assert system.retrieve("What is the name of the new monitoring code?").count(marker) == 1
 
 
+@pytest.mark.skipif(not os.environ.get("RECALL_TEST_DSN"), reason="needs Postgres")
+def test_recall_system_ingest_fails_on_a_concurrent_writer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`RecallSystem.ingest` itself must inherit the concurrent-writer guard, not just its helper.
+
+    `tests/test_locomo_corpus_postcondition.py` already pins the post-condition, through
+    `test_index_conversation_itself_fails_on_a_concurrent_writer` — but that test calls
+    `index_conversation(...)` directly, with an explicit `corpus_dir` and no `allow_existing`.
+    `RecallSystem.ingest` (benchmarks/systems.py) calls `index_conversation` POSITIONALLY, with
+    neither of those kwargs, through a `PgVectorStore` it opens and owns internally — nobody has
+    driven THAT exact call with a racing writer. If a later change passed `allow_existing=True` on
+    the benchmark path, or wrapped the call some other way, both guards would go silent for every
+    benchmark run and the whole suite would stay green: the exact silent-corpus-doubling class this
+    branch exists to prevent. This test closes that gap by racing `RecallSystem.ingest()` itself,
+    rather than the helper it delegates to.
+
+    `embedder_name="hashing"` (not the `fastembed` default) so this needs no downloaded model, and
+    `table` is a dedicated name so it cannot collide with `bench_locomo_chunks`, which the other
+    integration tests in this file share.
+
+    `ingest` opens its OWN store and calls `self._clear(store)` before indexing, so the tenant is
+    always empty when `index_conversation`'s PRE-check runs here — that check cannot be made to
+    fire through this path. That is not a gap in this test; it is exactly why the POST-condition,
+    not the pre-condition, is the one under test.
+    """
+    from recall.index import Indexer
+    from recall.store import PgVectorStore
+    from recall.types import Chunk
+
+    from benchmarks.systems import RecallSystem
+
+    dsn = os.environ["RECALL_TEST_DSN"]
+    table = "bench_locomo_chunks_racing_writer"
+    # The OUTER LOCOMO item — sample_id alongside the nested `conversation` object — matching what
+    # `RecallSystem.ingest` actually takes. The inner object alone would index nothing and this
+    # test would pass for the wrong reason (no rows for either "writer" to race over).
+    conv = {
+        "sample_id": "itest-racing-writer",
+        "conversation": {
+            "speaker_a": "Alice",
+            "speaker_b": "Bob",
+            "session_1_date_time": "1 January 2024",
+            "session_1": [
+                {"speaker": "Alice", "dia_id": "D1:1", "text": "The launch window opens at dawn."},
+                {"speaker": "Bob", "dia_id": "D1:2", "text": "Copy that, prepping the checklist."},
+            ],
+        },
+    }
+    system = RecallSystem(dsn, embedder_name="hashing", table=table)
+    dim = system.embedder.dim
+    # Same derivation `RecallSystem.ingest` uses internally for its own tenant — not a hardcoded
+    # string that could drift out of step with it.
+    tenant = tenant_for(conv)
+
+    real_index_path = Indexer.index_path
+
+    def racing_index_path(self, *args, **kwargs):
+        stats = real_index_path(self, *args, **kwargs)
+        # The "other launcher": a SEPARATE connection, because `ingest` never hands out the store
+        # it opened internally — reusing one handle here would not simulate a second process, it
+        # would just be this same process writing twice through the one connection it already had.
+        with PgVectorStore(dsn, dim=dim, tenant=tenant, table=table) as intruder:
+            intruder.upsert(
+                [
+                    Chunk(
+                        id="intruder",
+                        source="intruder.md",
+                        text="a racing writer wrote this",
+                        metadata={},
+                    )
+                ],
+                [[0.1] * dim],
+            )
+        return stats
+
+    monkeypatch.setattr(Indexer, "index_path", racing_index_path)
+
+    with pytest.raises(RuntimeError, match="CONCURRENTLY"):
+        system.ingest(conv)
+
+
 def test_mem0_config_points_llm_at_openrouter_and_local_embedder() -> None:
     from benchmarks.systems import mem0_config
 
