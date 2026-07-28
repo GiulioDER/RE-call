@@ -1,0 +1,124 @@
+"""Every result artifact must say which MODEL STACK produced it, or admit it does not know.
+
+`_provenance` records which CODE produced an artifact — the `#81`/`#84` generation. For anything
+that passes through a model that is not enough, and `results/locomo/postfix_abstention.json` is the
+proof: it publishes four abstention modes, two of them route through a QNLI cross-encoder, and it
+names no `sentence-transformers`, `transformers` or `torch` version at all.
+
+Re-running it on a corpus asserted clean by row count moved the `entail` row by **0.0525** while
+the calibrated thresholds — fit directly on the distribution a doubled corpus would move —
+reproduced *exactly*. So the corpus was not the variable, and nothing recorded in the artifact says
+what was. Two of its four published rows cannot be reproduced by anyone, on any machine, and the
+file gives no signal that this is so.
+
+The sentinel is deliberate. Artifacts produced before this convention genuinely do not know their
+stack, and inventing plausible versions for them would be worse than the gap: it would make an
+unreproducible row look reproducible. So they carry `"unrecorded"`, and the set allowed to carry it
+is **pinned by name** below — a new artifact cannot join them by omission.
+
+Note what is already pinned and is therefore NOT the gap: `recall.entailment.DEFAULT_QNLI_REVISION`
+fixes the judge's Hub commit, so the weights are immutable. `git log -S` puts that pin at 2026-07-18,
+before the artifact above. The gap is the stack that runs the model, not the model.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from recall.eval.provenance import TRACKED, model_stack
+
+RESULTS = Path(__file__).resolve().parent.parent / "results"
+UNRECORDED = "unrecorded"
+
+#: Artifacts that predate the convention. They may declare `"unrecorded"`; nothing else may.
+#: Shrinks when one is re-run and re-stamped. It must never grow.
+PREDATES_THE_CONVENTION = {
+    "arm_A_rrf_pool20.json",
+    "arm_C_rrf_pool100.json",
+    "baseline.json",
+    "baseline_verified.json",
+    "depth_curve_pool100.json",
+    "depth_curve_pool20.json",
+    "distributions.json",
+    "doubled_pool100.json",
+    "doubled_pool20.json",
+    "locomo_abstention.json",
+    "locomo_entailment_sweep.json",
+    "locomo_fastembed_k5.json",
+    "postfix_abstention.json",
+    "postfix_pool20.json",
+    "rerank_modern.json",
+    "rerank_shipped.json",
+}
+
+
+def _artifacts() -> list[Path]:
+    paths = [
+        *RESULTS.glob("locomo*.json"),
+        *(RESULTS / "locomo").glob("*.json"),
+        *(RESULTS / "locomo_rerank").glob("*.json"),
+        *(RESULTS / "cosine").glob("*.json"),
+        *(RESULTS / "wrrf").glob("*.json"),
+    ]
+    return sorted(p for p in paths if p.is_file())
+
+
+def _declared_stack(payload: dict) -> object | None:
+    """The stack, from either place it can live.
+
+    Runners emit it top-level alongside `elapsed_s`, because it is runtime fact. The
+    hand-written sentinel sits inside `_provenance` with the other status fields.
+    """
+    if "stack" in payload:
+        return payload["stack"]
+    return payload.get("_provenance", {}).get("stack")
+
+
+@pytest.mark.parametrize("path", _artifacts(), ids=lambda p: p.name)
+def test_artifact_declares_its_model_stack(path: Path) -> None:
+    declared = _declared_stack(json.loads(path.read_text(encoding="utf-8")))
+    assert declared is not None, (
+        f"{path.name} declares no model stack. Every number here passes through an embedder, a "
+        f"cross-encoder, or both, and their versions decide it. Emit `model_stack()` from the "
+        f"runner, or record {UNRECORDED!r} if the run genuinely predates this."
+    )
+
+
+@pytest.mark.parametrize("path", _artifacts(), ids=lambda p: p.name)
+def test_only_grandfathered_artifacts_may_say_unrecorded(path: Path) -> None:
+    declared = _declared_stack(json.loads(path.read_text(encoding="utf-8")))
+    if declared != UNRECORDED:
+        return
+    assert path.name in PREDATES_THE_CONVENTION, (
+        f"{path.name} is new but declares its stack {UNRECORDED!r}. A new run knows its own "
+        f"versions — call `recall.eval.provenance.model_stack()`. The sentinel exists for runs "
+        f"that cannot know, not as a way to skip recording."
+    )
+
+
+@pytest.mark.parametrize("path", _artifacts(), ids=lambda p: p.name)
+def test_a_recorded_stack_names_versions(path: Path) -> None:
+    declared = _declared_stack(json.loads(path.read_text(encoding="utf-8")))
+    if declared == UNRECORDED or declared is None:
+        return
+    assert isinstance(declared, dict) and declared, f"{path.name}: stack is not a version mapping"
+    unknown = set(declared) - set(TRACKED)
+    assert not unknown, f"{path.name} records untracked packages {sorted(unknown)}"
+    for name, ver in declared.items():
+        assert isinstance(ver, str) and ver, f"{path.name}: {name} has no version string"
+
+
+def test_the_grandfather_list_matches_the_tree() -> None:
+    """A name left here after its artifact is gone silently re-permits the sentinel."""
+    stale = PREDATES_THE_CONVENTION - {p.name for p in _artifacts()}
+    assert not stale, f"grandfathered names with no artifact: {sorted(stale)}"
+
+
+def test_model_stack_reports_something_here() -> None:
+    """The helper must actually resolve versions in the dev environment, not return {}."""
+    stack = model_stack()
+    assert stack, "model_stack() found none of the tracked packages installed"
+    assert all(isinstance(v, str) and v for v in stack.values())

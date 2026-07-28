@@ -2,6 +2,7 @@
   "_provenance": {
     "generation": "pre-#81/#84",
     "status": "superseded",
+    "stack": "unrecorded",
     "superseded_by": "results/locomo/postfix_abstention.json",
     "backs": [
       "FINDINGS \u00a79b \u2014 the pre-fix half of 'calibration now catches 0.574 (was 0.527)', 'refuses 0.420 (was 0.370)' and 'discrimination 0.154 against a pre-fix 0.157'"

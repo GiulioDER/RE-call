@@ -81,6 +81,7 @@ from typing import Any
 from recall.embeddings import Embedder
 from recall.eval.labelled import _make_embedder
 from recall.eval.metrics import wilson_ci
+from recall.eval.provenance import model_stack
 from recall.index import Indexer
 from recall.rerank import DEFAULT_RERANKER_MODEL, Reranker
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
@@ -496,6 +497,7 @@ def run(
         "depth_curve": curve,
         "conversations": len(conversations),
         "elapsed_s": round(time.time() - started, 1),
+        "stack": model_stack(),
         "retrieval_by_category": {c: _rate(f) for c, f in sorted(pooled_retrieval.items())},
         "retrieval_overall": _rate(all_hits),
         "abstention_adversarial": _rate(pooled_abstain),

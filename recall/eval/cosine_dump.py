@@ -45,6 +45,7 @@ from typing import Any
 from recall.calibration import separability, separability_interval
 from recall.embeddings import Embedder
 from recall.eval.harness import EVAL_DIR, _throwaway_store
+from recall.eval.provenance import model_stack
 from recall.eval.locomo import _make_embedder
 from recall.eval.locomo_abstention import _partition_questions, _top_cosine
 from recall.retriever import HybridRetriever
@@ -312,6 +313,7 @@ def run(
         "answerable_sample_per_conv": answerable_sample,
         "seed": seed,
         "elapsed_s": round(time.time() - started, 1),
+        "stack": model_stack(),
         "quantity": (
             "max cosine over the hits returned at k — exactly what trust.evaluate thresholds, "
             "via locomo_abstention._top_cosine"
