@@ -610,11 +610,15 @@ configuration*, not a better sample of the same one. §10 (LongMemEval) remains 
 configuration note.
 
 > An earlier revision of this paragraph also cited a **0.615** from a still-earlier build and read
-> the spread against 0.624 as HNSW build noise. That figure's result artifact was never retained,
-> so it has been removed rather than restated: the two pre-fix artifacts this repo still holds
-> differ by 0.0006 and differ in *candidate pool*, not in index build, and cannot support a
-> build-noise claim. HNSW build nondeterminism is real and is evidenced where it was actually
-> measured — §5b and §6.
+> the spread against 0.624 as HNSW build noise. The figure stays withdrawn; the *reason* has
+> changed. It was removed because its result artifact had never been retained — that artifact was
+> committed in [#111](https://github.com/GiulioDER/RE-call/pull/111) and records **0.6152** at k=5
+> (`locomo_fastembed_k5.json`), so this repo now holds five pre-fix artifacts, not two. Retaining
+> it does not repair the claim: the runs whose spread was read as build noise differ by 0.0006 and
+> differ in *candidate pool*, not in index build, so they still cannot support a build-noise claim.
+> The figure is now checkable and still not evidence for what it was used for. HNSW build
+> nondeterminism is real and is evidenced where it was actually measured — §5b and §6. Which
+> artifact belongs to which configuration: [`ARTIFACTS.md`](ARTIFACTS.md).
 
 #### Why quoting one depth was a mistake
 

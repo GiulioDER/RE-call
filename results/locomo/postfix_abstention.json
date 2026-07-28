@@ -1,4 +1,14 @@
 {
+  "_provenance": {
+    "generation": "post-#81/#84",
+    "status": "current",
+    "superseded_by": null,
+    "backs": [
+      "RESULTS \u00a77b four-mode ablation",
+      "FINDINGS \u00a79b"
+    ],
+    "note": "Sparse leg firing (#81/#82) and the dense scan widened (#84). This is the configuration the published tables describe."
+  },
   "benchmark": "LOCOMO \u2014 abstention ablation",
   "embedder": "fastembed",
   "k": 5,
