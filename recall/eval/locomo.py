@@ -393,6 +393,11 @@ def run(
     embedder = _make_embedder(embedder_name)
     started = time.time()
     per_conversation: list[dict[str, Any]] = []
+    # Captured once per conversation, from the same f-string that opens its PgVectorStore below —
+    # not re-derived from `conversations` after the loop. Two independent copies of one formula
+    # drift the moment the naming scheme changes in only one of them, and the artifact would
+    # silently misreport what was actually measured.
+    tenants: list[str] = []
 
     workspace = Path(keep_corpus) if keep_corpus else Path(tempfile.mkdtemp(prefix="locomo-"))
     try:
@@ -404,6 +409,7 @@ def run(
             # evidence-id check would not catch it (ids are only unique WITHIN a conversation,
             # so a cross-conversation "D1:3" would score as a hit).
             tenant = f"locomo-{sample_id}"
+            tenants.append(tenant)
             corpus_dir = workspace / str(sample_id)
             with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table=table) as store:
                 res = run_conversation(
@@ -476,10 +482,12 @@ def run(
         )
 
     # Summed from what each conversation actually measured (Task 1's post-condition), never
-    # from a configured expectation: an expectation copied into a result proves nothing.
-    corpus_rows = sum(int(res.get("corpus_rows", 0)) for res in per_conversation)
-    tenants = [f"locomo-{c.get('sample_id') or f'conv{i}'}"
-               for i, c in enumerate(conversations)]
+    # from a configured expectation: an expectation copied into a result proves nothing. Hard
+    # subscript, not .get(): run_conversation always sets this key, and a silent 0 default would
+    # understate the corpus the moment a per-conversation try/except is added and stops raising —
+    # exactly the "plausible-but-wrong number" class this module exists to prevent. `tenants` is
+    # not re-derived here; it was captured above, in the loop that computed it the first time.
+    corpus_rows = sum(res["corpus_rows"] for res in per_conversation)
 
     return {
         "benchmark": "LOCOMO",
