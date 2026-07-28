@@ -614,7 +614,7 @@ not from `FINDINGS.md`'s account of itself.
 
 | claim | status | artifact | notes |
 |---|---|---|---|
-| §9b LOCOMO abstention, 4 modes | current | `locomo/postfix_abstention.json` | post-#81/#84. `locomo_abstention.py:160` passes `calibration=cal` explicitly, so #101's auto-load bug never reached it |
+| §9b LOCOMO abstention, 4 modes | current | `locomo/postfix_abstention.json` | post-#81/#84. `locomo_abstention.py:168` passes `calibration=cal` explicitly, so #101's auto-load bug never reached it |
 | §9b abstention with rerank on | **unmeasured** | — | #103 measured the default mode only (0.00, unchanged). The calibrated and judge modes have never been crossed with a reranker |
 | §9c entailment ROC sweep | stale | `locomo/postfix_entailment_sweep.log` | the re-run died after 9 conversations; no JSON was written and nothing noticed |
 | §10 LongMemEval, all rows | **unfalsifiable** | — | pre-#81/#84; indexes and output discarded. 6h39m to rebuild the merged index alone |
@@ -639,7 +639,7 @@ git commit -m "docs(eval): inventory which abstention claims are checkable"
 
 ### Task 5: Phase 2 — re-measure §9c, and find out why the last attempt died
 
-`results/locomo/postfix_entailment_sweep.log` stops after nine conversations with no summary and no JSON. `FINDINGS.md` records §9c as "not re-measured", which is true and undersells it: it was attempted, it died, and nothing noticed.
+This repo's own `.gitignore` calls `results/locomo/*.log` transient and says the JSON beside it is the artifact — and for §9c, no JSON was ever written. The only trace, `postfix_entailment_sweep.log`, stops after nine conversations with no summary, but that file is untracked and gitignored by design, so it isn't part of this repository. `FINDINGS.md` records §9c as "not re-measured", which is true and undersells it: it was attempted, it died, and left nothing this repo can check.
 
 **The first question is not the ROC.** A harness that can stop nine tenths of the way through and leave a plausible-looking log is a defect independent of its output.
 
