@@ -517,8 +517,32 @@ def test_mem0_retrieve_before_ingest_is_an_error() -> None:
         system.retrieve("q")
 
 
+#: A 402 says the ACCOUNT is out of credit. It says nothing about the code under test, so failing
+#: on it reports a billing state as a regression — the same shape as the DeepSeek PR-review job
+#: that was disabled for returning a red check when its credits ran out: infrastructure dressed as
+#: a verdict.
+#:
+#: Deliberately narrow. Skipping on any exception would turn a real `Mem0System` regression into
+#: silence, which is worse than the noise it removes. Only "the account cannot pay" qualifies —
+#: a rate limit, a bad response, or a changed API still fail.
+_CANNOT_PAY = ("insufficient credits", "error code: 402", "'code': 402")
+
+
+def _skip_if_the_account_cannot_pay(exc: BaseException) -> None:
+    """`pytest.skip` iff `exc` is a billing refusal. Returns normally otherwise, so callers re-raise.
+
+    The skip is loud on purpose: `pytest -rs` names it, and the reason says to top up rather than
+    to debug. A silent pass would let this smoke test rot unnoticed the day the balance runs out.
+    """
+    text = str(exc).lower()
+    if any(marker in text for marker in _CANNOT_PAY):
+        pytest.skip(f"OpenRouter account is out of credit, not a code failure: {exc}")
+
+
 @pytest.mark.skipif(
     not (os.environ.get("OPENROUTER_API_KEY") and _mem0_installed()),
+    # NB: this checks the key EXISTS, not that it can pay — and it cannot check that without
+    # spending money. The billing case is handled inside the test instead.
     reason="needs mem0ai + OPENROUTER_API_KEY",
 )
 def test_mem0_system_smoke() -> None:
@@ -551,9 +575,40 @@ def test_mem0_system_smoke() -> None:
         },
     }
     system = Mem0System(os.environ["OPENROUTER_API_KEY"], model="openai/gpt-4o-mini")
-    system.ingest(conv)
-    ctx = system.retrieve("What is the name of the new monitoring code?")
+    try:
+        system.ingest(conv)
+        ctx = system.retrieve("What is the name of the new monitoring code?")
+    except Exception as exc:  # noqa: BLE001 - re-raised below unless it is a billing refusal
+        _skip_if_the_account_cannot_pay(exc)
+        raise
     assert "quokka-telemetry-4417" in ctx
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "LLM extraction failed: Error code: 402 - {'error': {'message': 'Insufficient credits.'}}",
+        "insufficient credits, add more at openrouter.ai",
+        "{'code': 402, 'metadata': {'limit_source': 'openrouter_credits'}}",
+    ],
+)
+def test_a_billing_refusal_skips_rather_than_fails(message: str) -> None:
+    with pytest.raises(pytest.skip.Exception):
+        _skip_if_the_account_cannot_pay(RuntimeError(message))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Error code: 429 - rate limited",          # environmental, but NOT a billing refusal
+        "Error code: 500 - upstream exploded",
+        "KeyError: 'results'",                     # a real Mem0System regression
+        "assertion failed: quokka-telemetry-4417 not in context",
+    ],
+)
+def test_everything_else_still_fails(message: str) -> None:
+    """The guard must not become a catch-all: that trades noise for silence."""
+    _skip_if_the_account_cannot_pay(RuntimeError(message))  # returns, so the caller re-raises
 
 
 def test_resolve_embedder_routes_fastembed_prefix_to_a_named_model(monkeypatch: pytest.MonkeyPatch) -> None:
