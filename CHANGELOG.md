@@ -8,6 +8,79 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Added
+- **`RECALL_RERANK=1` turns on cross-encoder reranking in the MCP server.** The server is how an
+  agent actually consumes this library, and it had no way to enable the largest retrieval gain the
+  project has measured: `service.py` called `trusted_search` without the `reranker` argument that
+  call has accepted since 0.2. On LOCOMO at n=1,536 that flag is hit@5 **0.671 -> 0.777**, intervals
+  disjoint from the baseline through k=10.
+
+  Off by default at ~1,050 ms/query — a memory server that silently quadrupled every query's latency
+  to improve a benchmark would be choosing for the operator. `ms-marco-MiniLM-L-6-v2` is the default
+  because it was measured to be right, not because it was incumbent: `bge-reranker-base` (12x the
+  parameters) is statistically indistinguishable at 6.3x the cost.
+
+  `RECALL_RERANK_MODEL` requires `RECALL_RERANK_REVISION` — the shipped pin belongs to the shipped
+  weights, and reusing it for different weights would name the wrong artifact in every trace. An
+  unparseable flag is REFUSED rather than read as "off": an operator who asked for reranking and got
+  a fast, quiet, unreranked server would have no way to notice, because that failure looks exactly
+  like success. (`recall_mcp/service.py`, `tests/test_mcp_rerank_opt_in.py`, `docs/USING_WITH_CLAUDE.md`)
+- **A measured rerank arm for the LOCOMO harness (`--rerank`), and the numbers that make the case
+  for using it.** §9a reported hit@5 0.671 against hit@20 0.855 without drawing the obvious
+  conclusion: for **85.5%** of questions the correct turn was already retrieved and merely ranked
+  below position 5. That is a ranking failure, not a retrieval one, and this library has shipped a
+  cross-encoder since 0.2 without any LOCOMO figure ever being measured with it.
+
+  Turning it on moves **hit@5 from 0.671 to 0.777** (n = 1 536, intervals disjoint from the baseline
+  through k=10) — **57%** of the distance to the pool's own ceiling, and roughly **twice** the
+  largest embedder effect this project has measured. Every category gains, including the multi-hop
+  floor (cat3 0.478 → 0.533).
+
+  Three checks make it credible rather than merely large: hit@20 barely moves (0.855 → 0.870), as it
+  must when a fixed pool is reordered; the gain decays with depth exactly as the mechanism predicts
+  (+0.155 at k=1 → +0.016 at k=20); and a second, unrelated cross-encoder reproduces it —
+  `bge-reranker-base`, 12× the parameters and four years newer, lands *within noise* at every depth
+  (0.7734 vs 0.7767 at k=5) for **6.3×** the per-query cost. The effect belongs to reranking, not to
+  a model choice.
+
+  **It stays off by default** and costs ~**1 050 ms/query** on CPU. A library that silently made
+  every query four times slower to improve a benchmark would be optimising for the benchmark. The
+  README, `RESULTS.md` §11 and `FINDINGS.md` §11 state the trade and when each side of it wins.
+  `ms-marco-MiniLM-L-6-v2` remains the default, now measured rather than assumed.
+
+  Abstention is unchanged at 0.00 across all three arms (n=446): reranking reorders what retrieval
+  returned and does not touch the trust layer.
+  (`recall/eval/locomo.py`, `scripts/run_locomo_arms.sh`, `tests/test_eval_locomo_rerank.py`)
+
+### Restated
+- **The README's "cross-encoder rerank +0.065 *(n.s.)*" null did not generalise.** That figure came
+  from 110 questions on one corpus and was correctly reported as non-significant *there*; the
+  surrounding claim that "the pipeline was never the cap" was the part that over-reached. At
+  n = 1 536 on LOCOMO the same lever is the largest retrieval gain measured in this project. The
+  original numbers stand and their scope is now stated. (README, `results/FINDINGS.md` §11)
+- **"Pay for a cloud embedder only when your corpus vocabulary is unusual" does not hold.** That rule
+  (README, FINDINGS §8, RESULTS §10) came from two corpora, and its "buys nothing measurable on
+  ordinary technical English" half rested on the PEP corpus — **746 documents**. Measured on **17
+  held-out BEIR / CQADupStack corpora**, preregistered before any gap was computed and excluding both
+  corpora that generated the hypothesis: voyage-3 beats bge-small on **16 of 17**, median **+0.059**
+  hit@5 hybrid and **+0.105** dense, sign test **p = 0.00027**, 95% CI **[+0.038, +0.068]**.
+
+  What predicts the gap is **corpus size**, not vocabulary: median **+0.013** below 10 000 documents
+  against **+0.062** at 17 000+ (Spearman +0.509; +0.436 with the local score partialled out). The
+  PEP number sits exactly where the small-corpus regime predicts — `nfcorpus` (3 633 docs) +0.019,
+  `scifact` (5 183) +0.013 — so the measurement stands and only its **scope** was wrong.
+
+  §7's proposed mechanism is separately falsified: an out-of-vocabulary rate against bge-small's own
+  tokenizer predicts the gap at Holm-adjusted **p = 0.65**, and that null is clean (`oov_rate`
+  correlates −0.015 with corpus size). No corpus statistic tested beat simply measuring the local
+  embedder, whose score alone carries **−0.512** of the signal. A `crowding` statistic passed the
+  significance test and then failed the preregistered confound check — it is −0.613 correlated with
+  corpus size, and neither survives once the other is held fixed.
+
+  New rule: *little on a few hundred documents, about **+0.06 hit@5** at twenty thousand; to predict
+  your own case, measure your local embedder on ~30 labelled questions.*
+  → `results/gap/FINDINGS-embedder-gap.md`
+
 ### Security
 - **The LangChain and LlamaIndex adapters no longer hand a chain a memory the trust layer
   refused.** Both returned `result.hits` wholesale, and `trust.evaluate` builds that list as
@@ -133,6 +206,28 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   silently disabled the pool-exhaustion cap the knob exists to enforce; set a large value if you
   intend an effectively-unlimited timeout. (`recall_mcp/server.py`,
   `tests/test_server_env_validation.py`)
+- **`recall.eval.labelled` can keep its index: `--table NAME`.** The harness built into
+  `lab_<uuid>` and dropped it in `finally`, unconditionally. For a 14-document corpus that is
+  correct hygiene; for LongMemEval it made the benchmark practically unrepeatable — the merged-S
+  index costs hours to embed, and FINDINGS §10 had to record that a post-#81 re-score could not
+  be run *because the index had not been retained*. A named table is kept, so one build now
+  serves the merged `labelled` arm, `longmemeval_perq --master`, and any later re-score;
+  `Indexer` already skips by stored content hash, so re-running against a kept table resumes
+  instead of re-embedding, which also makes a multi-hour build survive a crash. The anonymous
+  default still drops, and the report names the table only when it survives the run.
+  (`recall/eval/labelled.py`, `tests/test_eval_labelled_table.py`)
+- **A kept index now has to prove it is complete before anything scores against it.** Keeping a
+  table introduced a failure mode that dropping every table had hidden. Postgres is crash-safe, so
+  a reset mid-build never yields corrupt rows — it yields *fewer* rows, each committed and valid.
+  `labelled` repairs that on a re-run (a source with no stored content hash is re-indexed) but
+  `longmemeval_perq` cannot: it never indexes, it copies rows out of `--master`, and
+  `populate_haystack` matches on `metadata->>'file'`, so a missing session silently shrinks that
+  question's haystack and the run reports a hit rate for a corpus that was never searched. `perq`
+  now refuses a master missing any referenced session, naming the table and the shortfall, and
+  records `master_coverage` in its report; `labelled` records `sources_expected` /
+  `sources_indexed` so completeness is a visible pair in the results JSON rather than an
+  assumption. (`recall/eval/longmemeval_perq.py`, `recall/eval/labelled.py`,
+  `tests/test_eval_index_completeness.py`)
 
 ## [0.6.0] — 2026-07-25
 

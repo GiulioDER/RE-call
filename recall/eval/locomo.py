@@ -82,6 +82,7 @@ from recall.embeddings import Embedder
 from recall.eval.labelled import _make_embedder
 from recall.eval.metrics import wilson_ci
 from recall.index import Indexer
+from recall.rerank import DEFAULT_RERANKER_MODEL, Reranker
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
@@ -243,6 +244,8 @@ def run_conversation(
     corpus_dir: Path,
     ks: Sequence[int] | None = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
+    reranker: Reranker | None = None,
+    allow_existing: bool = False,
 ) -> dict[str, Any]:
     """Index one conversation and score every question against it.
 
@@ -257,11 +260,32 @@ def run_conversation(
     """
     n_turns = write_conversation_corpus(conversation, corpus_dir)
     store.ensure_schema()
+
+    # Refuse to index on top of an existing corpus for this tenant.
+    #
+    # This is a post-condition the run never had, and its absence produced a wrong published
+    # number: two copies of a launcher wrote into one table, every tenant held its corpus twice
+    # (11,764 rows against a correct 5,882), and nothing errored. The candidate pool is a fixed
+    # size, so duplicates halve the DISTINCT documents it can hold and every depth of the curve
+    # came in ~0.05 low — plausible, self-consistent and wrong.
+    #
+    # Refused rather than de-duplicated: a table in that state is evidence that something ran
+    # twice, and silently repairing it would hide the fact worth knowing.
+    existing = store.count()
+    if existing and not allow_existing:
+        raise RuntimeError(
+            f"tenant {store.tenant!r} already holds {existing} chunk(s) in table "
+            f"{store.table!r}. A benchmark run indexes a fresh corpus, so this means a previous "
+            f"run wrote here — indexing again would DOUBLE the corpus and depress every hit@k "
+            f"without erroring. Use a new --table, drop this one, or pass allow_existing=True "
+            f"if you genuinely mean to add to it."
+        )
+
     Indexer(store, embedder).index_path(corpus_dir)
 
     depths = _depths(ks, k)
     max_k = max(depths)
-    retriever = HybridRetriever(store, embedder, candidate_k=candidate_k)
+    retriever = HybridRetriever(store, embedder, candidate_k=candidate_k, reranker=reranker)
     hits_by_cat: dict[int, list[bool]] = {c: [] for c in ANSWERABLE_CATEGORIES}
     abstained: list[bool] = []
     per_question: list[dict[str, Any]] = []
@@ -275,8 +299,10 @@ def run_conversation(
         if cat == ADVERSARIAL_CATEGORY:
             # The abstention arm. `trusted_search` is the agent-facing entry point, and its
             # `abstained` flag is the whole answer: the correct behaviour on an unanswerable
-            # question is to refuse, regardless of what came back underneath.
-            result = trusted_search(store, embedder, question, k=k)
+            # question is to refuse, regardless of what came back underneath. Pass candidate_k so
+            # this arm shares the same fused pool as the depth-curve arm above and the report's
+            # top-level `candidate_k` — not silently the retriever's default.
+            result = trusted_search(store, embedder, question, k=k, candidate_k=candidate_k)
             abstained.append(result.abstained)
             per_question.append(
                 {
@@ -334,6 +360,8 @@ def run(
     table: str,
     ks: Sequence[int] | None = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
+    reranker: Reranker | None = None,
+    allow_existing: bool = False,
 ) -> dict[str, Any]:
     conversations = json.loads(data_path.read_text(encoding="utf-8"))
     if limit is not None:
@@ -365,6 +393,8 @@ def run(
                     corpus_dir=corpus_dir,
                     ks=depths,
                     candidate_k=candidate_k,
+                    reranker=reranker,
+                    allow_existing=allow_existing,
                 )
             per_conversation.append(res)
             print(
@@ -429,6 +459,8 @@ def run(
         "embedder": embedder_name,
         "k": k,
         "candidate_k": candidate_k,
+        "reranker": getattr(reranker, "name", None) or type(reranker).__name__
+        if reranker is not None else None,
         "depth_curve": curve,
         "conversations": len(conversations),
         "elapsed_s": round(time.time() - started, 1),
@@ -506,6 +538,25 @@ def main(argv: list[str] | None = None) -> int:
              "result is a different configuration, not a deeper look at the published one",
     )
     p.add_argument(
+        "--rerank", action="store_true",
+        help="rerank the fused candidate pool with a cross-encoder before truncating to k. "
+             "§9a measures hit@5 0.671 against hit@20 0.855, so for most misses the evidence turn "
+             "IS retrieved and merely ranked too low; this is the arm that tests whether a "
+             "cross-encoder recovers it. Costs a forward pass per candidate per question",
+    )
+    p.add_argument(
+        "--reranker-model", default=None,
+        help="cross-encoder to use with --rerank (default: the shipped "
+             f"{DEFAULT_RERANKER_MODEL}). Supplying your own model REQUIRES --reranker-revision: "
+             "the shipped revision pin belongs to the shipped model only",
+    )
+    p.add_argument(
+        "--reranker-revision", default=None,
+        help="Hub revision for --reranker-model. Required when that flag is used, because an "
+             "unpinned Hub reference is mutable and a silently swapped model would make two runs "
+             "of this benchmark incomparable",
+    )
+    p.add_argument(
         "--conversations", type=int, default=None, help="score only the first N conversations"
     )
     p.add_argument("--out", type=Path, default=None, help="write the full JSON report here")
@@ -546,6 +597,23 @@ def main(argv: list[str] | None = None) -> int:
         p.error("--k must be >= 1")
     if args.candidate_k < 1:
         p.error("--candidate-k must be >= 1")
+    if (args.reranker_model or args.reranker_revision) and not args.rerank:
+        p.error("--reranker-model/--reranker-revision have no effect without --rerank")
+    if args.reranker_model and not args.reranker_revision:
+        # Refused rather than defaulted: the shipped pin belongs to the shipped weights, and
+        # silently reusing it for a different model would name the wrong artifact in the report.
+        p.error("--reranker-model requires --reranker-revision (an unpinned Hub ref is mutable)")
+
+    reranker = None
+    if args.rerank:
+        from recall.rerank import CrossEncoderReranker
+
+        if args.reranker_model:
+            reranker = CrossEncoderReranker(
+                model=args.reranker_model, revision=args.reranker_revision
+            )
+        else:
+            reranker = CrossEncoderReranker()
 
     report = run(
         args.data,
@@ -557,6 +625,7 @@ def main(argv: list[str] | None = None) -> int:
         table=args.table,
         ks=ks,
         candidate_k=args.candidate_k,
+        reranker=reranker,
     )
     _print_report(report)
     if args.out:

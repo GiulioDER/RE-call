@@ -1,0 +1,47 @@
+{
+  "status": "ok",
+  "dataset": "cqadupstack-webmasters",
+  "manifest": {
+    "name": "cqadupstack-webmasters",
+    "documents_requested": 20000,
+    "documents_written": 17405,
+    "questions": 506,
+    "questions_available": 506,
+    "seed": 20260726
+  },
+  "scores": {
+    "local": {
+      "bm25": 0.4229,
+      "dense": 0.4071,
+      "sparse": 0.3478,
+      "hybrid": 0.4506,
+      "mrr_hybrid": 0.3329,
+      "held_out": 253
+    },
+    "cloud": {
+      "bm25": 0.4229,
+      "dense": 0.5375,
+      "sparse": 0.3518,
+      "hybrid": 0.5099,
+      "mrr_hybrid": 0.3993,
+      "held_out": 253
+    }
+  },
+  "predictors": {
+    "oov_rate": 0.19176470588235295,
+    "query_overlap": 0.398107573430154,
+    "crowding": 0.758946448703661,
+    "code_density": 0.01662101914516822,
+    "n_documents": 17405,
+    "n_overlap_pairs": 1395
+  },
+  "primary_arm": "hybrid",
+  "seconds": 13292.1,
+  "params": {
+    "max_docs": 20000,
+    "token_budget": 2000,
+    "min_pieces": 2,
+    "crowding_sample": 500,
+    "seed": 20260726
+  }
+}
