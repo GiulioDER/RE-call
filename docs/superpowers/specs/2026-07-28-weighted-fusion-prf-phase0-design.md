@@ -77,6 +77,12 @@ Instrument `HybridRetriever.search` to dump, per query: each leg's native candid
 **LOCOMO** (n=1,536 answerable, 10 conversations, pool 20, bge-small, no rerank — the §9a
 configuration exactly) and on the **private 46** (`recall.eval.labelled`).
 
+**Sequencing:** the LOCOMO arm runs first and is the arm that decides, because it is public,
+n=1,536, and has a published baseline to check the apparatus against. The private-46 arm needs a
+second probe threading and the corpus owner's data; it follows once LOCOMO has cleared its gates,
+and its role is replication in the opposite regime (§7's low-cosine, jargon-heavy corpus), not
+adjudication.
+
 ### Q1 — does leg disagreement select for failures?
 
 Split queries on `trigger`, compare hit@5 in each group. Wilson CIs per group; two-proportion test
@@ -101,7 +107,13 @@ Bucket (a) is sub-split by which leg held it. **(b) is the ceiling on what PRF c
 ## The apparatus check — asserted in code, not eyeballed
 
 The instrumented run **must reproduce hit@5 = 0.671 and hit@20 = 0.855** on pool 20, matching
-`results/locomo/postfix_pool20.json`. Asserted in the harness; a mismatch fails the run.
+`results/locomo/postfix_pool20.json`, and must score **exactly 1,536 answerable questions**.
+Asserted in the harness; a mismatch fails the run.
+
+The two rate asserts carry a **±0.01 tolerance**, the answerable count **none**. HNSW index builds
+are nondeterministic (§5b, §6), so demanding equality on a rate would fail an honest rerun — while
+±0.01 is far too tight to absorb a structural defect, since a doubled corpus moves a headline rate
+by very much more than that. The count is the doubled-corpus check and is exact.
 
 This is not ceremony. A corrupted apparatus does not raise — it returns plausible numbers and a
 manufactured finding, which is exactly how a doubled corpus (11,764 vs 5,882 rows) produced a
