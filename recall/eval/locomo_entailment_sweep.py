@@ -49,6 +49,27 @@ from recall.trust import trusted_search
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 
+#: Table this runner reads from — indexed by `recall.eval.locomo`, shared with
+#: `locomo_abstention`. A module constant, not a literal typed at each `PgVectorStore(...)` call
+#: and again at the `provenance_block(...)` call: three independent copies of one name would let
+#: one drift from the others with nothing to catch it.
+TABLE = "locomo_chunks"
+
+
+def _tenant_for(sample_id: str) -> str:
+    """The tenant-naming formula, in one place.
+
+    `gather_scores` and the corpus-counting loop in `run()` each open a `PgVectorStore` for the
+    same conversation independently of each other. Before this helper, each inlined its own copy
+    of the f-string below; if that formula ever changed in one copy and not the other, the
+    provenance block would report tenants that `gather_scores` never actually scored against —
+    the exact failure `provenance_block` exists to catch (see `recall.eval.locomo`, ~line 396,
+    where the same class of bug was fixed by capturing a value instead of re-deriving it). Matches
+    the naming scheme `locomo.py` and `locomo_abstention.py` also use, so the tables line up.
+    """
+    return f"locomo-{sample_id}"
+
+
 #: (label, model_id). Order is baseline first.
 #
 # `cross-encoder/nli-deberta-v3-large` — the strongest available entailment model — was tried and
@@ -153,9 +174,9 @@ def gather_scores(
 
     for i, conv in enumerate(conversations):
         sample_id = conv.get("sample_id") or f"conv{i}"
-        tenant = f"locomo-{sample_id}"
+        tenant = _tenant_for(sample_id)
         answerable, adversarial = _partition_questions(conv.get("qa") or [], answerable_sample, rng)
-        with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table="locomo_chunks") as store:
+        with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table=TABLE) as store:
             for q, is_adv in [(q, True) for q in adversarial] + [(q, False) for q in answerable]:
                 # Default path (no calibration, no judge) to get the ok hits the judge would see.
                 res = trusted_search(store, embedder, q["question"], k=k)
@@ -220,10 +241,15 @@ def run(
     tenants: list[str] = []
     for i, conv in enumerate(conversations):
         sample_id = conv.get("sample_id") or f"conv{i}"
-        tenant = f"locomo-{sample_id}"
-        tenants.append(tenant)
-        with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table="locomo_chunks") as store:
+        tenant = _tenant_for(sample_id)
+        # Appended only after count() succeeds — a confirmed real read, not the tenant this loop
+        # merely intended to read. Matches locomo_abstention.py's ordering (and locomo.py's, one
+        # step further up in the same store-opening block): a store that failed to open, or a
+        # count() that raised, must not leave its tenant in the provenance block as if it had been
+        # measured.
+        with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table=TABLE) as store:
             corpus_rows += store.count()
+            tenants.append(tenant)
 
     per_judge: dict[str, Any] = {}
     for label, model_id in judges:
@@ -247,7 +273,7 @@ def run(
 
     return {
         "benchmark": "LOCOMO — entailment judge sweep",
-        **provenance_block(corpus_rows, "locomo_chunks", tenants),
+        **provenance_block(corpus_rows, TABLE, tenants),
         "embedder": embedder_name,
         "k": k,
         "answerable_sample_per_conv": answerable_sample,

@@ -10,10 +10,12 @@ from __future__ import annotations
 import pytest
 
 from recall.eval.locomo_entailment_sweep import (
+    TABLE,
     THRESHOLD_GRID,
     QuestionScores,
     _abstains_at,
     _entailment_index,
+    _tenant_for,
     sweep,
 )
 
@@ -72,3 +74,19 @@ def test_entailment_index_reads_label_not_position() -> None:
 def test_entailment_index_raises_when_absent() -> None:
     with pytest.raises(ValueError, match="no entailment label"):
         _entailment_index({0: "LABEL_0", 1: "LABEL_1"})
+
+
+def test_tenant_for_is_the_one_place_the_naming_formula_lives() -> None:
+    # gather_scores and run()'s corpus-counting loop both derive a tenant from a conversation's
+    # sample_id through this function. Pinning its output pins both call sites at once: if either
+    # one drifted back to inlining its own f-string, this would not catch that directly, but a
+    # changed formula here — the only place it can now change — is exercised by both.
+    assert _tenant_for("conv-26") == "locomo-conv-26"
+    assert _tenant_for("0") == "locomo-0"
+
+
+def test_table_is_a_single_module_constant() -> None:
+    # Read by both PgVectorStore(...) call sites and the provenance_block(...) call — pinned so a
+    # future edit that reintroduces a typed-out literal at one of them is at least visible as a
+    # value that no longer matches this constant.
+    assert TABLE == "locomo_chunks"
