@@ -390,7 +390,14 @@ def main() -> None:
         ) from exc
 
 
-def _main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI, as its own function so the flags can be asserted without running a benchmark.
+
+    `--candidate-k` was accepted by `BeamRecallSystem` and unreachable from here for the whole
+    BEAM arm, which made every published cell a no-rerank cell by construction. A flag that
+    exists in the adapter and not in the parser fails silently — the run works, it just measures
+    a configuration nobody chose.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, help="BEAM split parquet (or converted JSON)")
     parser.add_argument("--chat-size", default="1M", choices=["100K", "500K", "1M", "10M"])
@@ -405,6 +412,16 @@ def _main() -> None:
     parser.add_argument("--cutoff", type=int, default=DEFAULT_TOP_K, help="Memories shown to the answerer")
     parser.add_argument("--embedder", default="fastembed")
     parser.add_argument("--reranker", default="none")
+    parser.add_argument(
+        "--candidate-k",
+        type=int,
+        default=None,
+        help="Fused candidate pool the reranker ranks within, before the top --k are kept. "
+        "Defaults to --k, which makes a reranker INERT: pool, returned set and answerer context "
+        "are then the same memories, so reranking reorders a prompt instead of selecting what "
+        "goes into it. Set it ABOVE --k (e.g. --k 45 --candidate-k 600) for reranking to change "
+        "WHICH memories the answerer sees.",
+    )
     parser.add_argument("--dsn", default=os.environ.get("RECALL_DSN", DEFAULT_DSN))
     parser.add_argument("--out-dir", type=Path, default=Path("benchmarks/results"))
     parser.add_argument(
@@ -460,7 +477,11 @@ def _main() -> None:
         "their rows are carried into this run's artifact, so a restart never re-pays for scored "
         "questions. Pass every sidecar from every attempt — an interrupted run leaves one each.",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def _main() -> None:
+    args = build_parser().parse_args()
 
     indices: list[int] | None = None
     if args.conversations:
@@ -581,7 +602,8 @@ def _main() -> None:
         k=args.k,
         table=args.table,
         entailment_top_n=args.entailment,
-        reranker_name=args.reranker
+        reranker_name=args.reranker,
+        candidate_k=args.candidate_k,
     )
 
     if args.dry_run:
