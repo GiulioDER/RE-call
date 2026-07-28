@@ -809,7 +809,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from recall.eval.legconf import leg_confidence
+from recall.eval.legconf import leg_confidence, more_decisive
 # Reused, not reimplemented. The mapping from a hit to a LOCOMO dialog id lives in
 # `_filename_to_dia_id` (stem, first underscore -> colon) and reads `metadata["file"]`. There is
 # no `dia_id` key. A local copy of that rule would silently match nothing on drift, which here
@@ -831,12 +831,15 @@ HIT_RATE_TOLERANCE = 0.01
 
 
 def triggered(probe: LegProbe) -> bool:
-    """`conf(sparse) > conf(dense)` — the lexical leg was the more decisive one.
+    """The lexical leg was the more decisive one on this query.
 
-    Strict `>`, so a leg with no spread (empty, single candidate, flat) can never fire it:
-    `leg_confidence` returns 0.0 there and `conf(dense)` is never negative.
+    Delegates to `more_decisive`, which scores BOTH legs at their common candidate depth.
+    Comparing them at their natural depths would measure how many chunks matched the tsquery
+    rather than which leg was decisive: the dense leg always returns exactly `candidate_k`
+    candidates, the sparse leg only its tsquery matches, and the z-score of a sample maximum
+    grows with sample size on its own. See the amendment note in the design doc.
     """
-    return leg_confidence(probe.sparse_ranks) > leg_confidence([h.score for h in probe.dense])
+    return more_decisive(probe.sparse_ranks, [h.score for h in probe.dense])
 
 
 def classify_gold(probe: LegProbe, evidence: Sequence[str], k: int) -> str:
