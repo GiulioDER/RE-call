@@ -34,26 +34,46 @@ when it meant "the older one".
 | artifact | backs |
 |---|---|
 | `locomo/postfix_pool20.json` | §7a depth curve; §7b `default` row |
-| `locomo/postfix_pool100.json` | §9a pool control, measured properly — pool 100 is **worse** (0.596) |
 | `locomo/postfix_abstention.json` | §7b four-mode ablation; FINDINGS §9b |
 | `locomo_rerank/baseline.json` | §11 *no rerank* — reproduces `postfix_pool20` to four decimals |
 | `locomo_rerank/baseline_verified.json` | §11 — the row-count-verified baseline re-run |
 | `locomo_rerank/rerank_shipped.json` | §11 *ms-marco-MiniLM-L-6-v2* |
 | `locomo_rerank/rerank_modern.json` | §11 *bge-reranker-base* |
 | `cosine/distributions.json` | §12 cosine distributions |
+| `wrrf/arm_C_rrf_pool100.json` | §9a's pool-100 column, **clean corpus** — 0.6615 at k=5. Replaces the withdrawn `locomo/postfix_pool100.json` |
+| `wrrf/arm_A_rrf_pool20.json` | §9a's apparatus check — reproduces the published pool-20 column to Δ 0.0000 |
+
+### Deliberately contaminated — evidence for the §9a retraction, never results
+
+These two exist to be *wrong in a known way*. A doubled corpus reproduces the withdrawn pool-100
+column to ±0.0013 at every depth; the same doubling is plainly visible at pool 20, where the
+published column does not show it. That pair is what establishes the two published columns came from
+different corpus states. **No number in either file describes what this library does.** Full account:
+[`wrrf/FINDINGS_pool100_contamination.md`](wrrf/FINDINGS_pool100_contamination.md).
+
+| artifact | k=5 | shows |
+|---|---|---|
+| `wrrf/doubled_pool100.json` | 0.5944 | reproduces the withdrawn 0.5957 — ±0.0013 at every depth, exact at k=20 |
+| `wrrf/doubled_pool20.json` | 0.6081 | doubling costs −0.0625 at pool 20, so the defect is not depth-specific |
 
 ### Pre-#81/#84 — kept as the record of that configuration
 
 | artifact | k=5 | backs | superseded by |
 |---|---|---|---|
 | `locomo/depth_curve_pool20.json` | 0.6243 | FINDINGS §9a's retained pre-fix anchor (0.624 / 0.798) | `locomo/postfix_pool20.json` |
-| `locomo/depth_curve_pool100.json` | 0.6237 | the pool-100 control **retracted** in §9a — kept as the record of a retracted control, not as evidence | `locomo/postfix_pool100.json` |
+| `locomo/depth_curve_pool100.json` | 0.6237 | the pool-100 control **retracted** in §9a — kept as the record of a retracted control, not as evidence | `wrrf/arm_C_rrf_pool100.json` |
 | `locomo_fastembed_k5.json` | 0.6152 | the **withdrawn "hit@5 0.615"** figure — see below | `locomo/postfix_pool20.json` |
 | `locomo_abstention.json` | — | FINDINGS §9b's *"(was 0.527)"*, *"(was 0.370)"* and *"pre-fix 0.157"* | `locomo/postfix_abstention.json` |
 | `locomo_entailment_sweep.json` | — | §7b judge sweep / FINDINGS §9c | **nothing — not re-measured** |
 
 Two of those rows deserve the emphasis:
 
+- **`locomo/postfix_pool100.json` is gone, not moved.** It was withdrawn 2026-07-28 for having been
+  measured on a doubled corpus (FINDINGS §9a's retraction notice), and **deleted rather than
+  annotated** — an annotated wrong number in `results/` is still a number someone can read off a
+  table. Anything that pointed at it now points at `wrrf/arm_C_rrf_pool100.json`, the clean re-run.
+  Note this makes `depth_curve_pool100.json` a pre-fix record whose *immediate* successor was itself
+  retracted; the chain skips it deliberately.
 - **`locomo_entailment_sweep.json` has no successor.** FINDINGS §9c states the sweep is the pre-fix
   run and has not been re-measured, which is why that section rests on a *within-sweep* comparison
   of two judges rather than on a cross-harness check. Re-running it is open work, not a gap in this
