@@ -19,7 +19,6 @@ import pytest
 from benchmarks.ladder.build_v2 import build_v2_instances, main, select_distractors
 from benchmarks.ladder.manifest import (
     LABEL_ANSWERABLE,
-    LABEL_UNANSWERABLE,
     MANIFEST_VERSION_V2,
     RING_ORIGINAL,
     manifest_digest,
