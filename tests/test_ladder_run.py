@@ -24,7 +24,7 @@ from benchmarks.ladder.manifest import (
     Instance,
     write_manifest,
 )
-from benchmarks.ladder.run import run
+from benchmarks.ladder.run import AdapterSmokeCheckFailed, run
 
 DOCS = {f"c/D1:{i}": f"turn {i} about the support group" for i in range(1, 5)}
 
@@ -180,3 +180,39 @@ def test_smoke_check_passes_for_a_well_shaped_system():
     from benchmarks.ladder.run import smoke_check
 
     smoke_check(_Fake())  # must not raise
+
+
+def test_run_rejects_an_adapter_whose_query_signature_is_wrong(tmp_path: Path):
+    """runtime_checkable passes this class — it has all three method NAMES. Only a signature
+    check catches it, and catching it here beats catching it forty minutes in."""
+
+    class _WrongArity(_Fake):
+        def query(self):  # missing `question`
+            return Response(answer=None)
+
+    with pytest.raises(AdapterSmokeCheckFailed, match="query"):
+        run(_manifest(tmp_path), _WrongArity(), tmp_path / "r.jsonl",
+            documents=DOCS, cluster_members={"c": tuple(DOCS)})
+
+
+def test_run_rejects_an_adapter_missing_a_method_entirely(tmp_path: Path):
+    class _NoIndexedIds:
+        name = "broken"
+
+        def ingest(self, docs):
+            return None
+
+        def query(self, question):
+            return Response(answer=None)
+
+    with pytest.raises(AdapterSmokeCheckFailed, match="indexed_doc_ids"):
+        run(_manifest(tmp_path), _NoIndexedIds(), tmp_path / "r.jsonl",
+            documents=DOCS, cluster_members={"c": tuple(DOCS)})
+
+
+def test_the_signature_check_does_not_disturb_the_ingest_counters(tmp_path: Path):
+    """The reason this is a signature check and not a functional smoke call."""
+    system = _Fake()
+    run(_manifest(tmp_path), system, tmp_path / "r.jsonl",
+        documents=DOCS, cluster_members={"c": tuple(DOCS)})
+    assert system.ingest_calls == 2
