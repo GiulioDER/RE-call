@@ -1309,22 +1309,58 @@ from benchmarks.ladder.manifest import (
 )
 from benchmarks.ladder.rings import RingSpec
 from benchmarks.ladder.sources.locomo import load_locomo
-from tests.test_ladder_source_locomo import SAMPLE
 
-SPEC = RingSpec(widths=(0, 1))
+# A WIDER fixture than Task 5's SAMPLE, on purpose. Task 5's conversations have 2 and 1 turns, so
+# a question there has at most ONE non-gold neighbour — and a shuffle of a one-element list equals
+# its BM25 order, which would make `test_the_random_arm_differs_from_the_bm25_arm` fail every time
+# rather than flakily. Eight turns gives the two orderings room to disagree.
+WIDE_SAMPLE = [
+    {
+        "sample_id": "conv-0",
+        "conversation": {
+            "session_1_date_time": "7 May 2023",
+            "session_1": [
+                {"dia_id": "D1:1", "speaker": "Caroline", "text": "I went to the support group."},
+                {"dia_id": "D1:2", "speaker": "Melanie", "text": "How was the support group?"},
+                {"dia_id": "D1:3", "speaker": "Caroline", "text": "We talked about the group."},
+                {"dia_id": "D1:4", "speaker": "Melanie", "text": "I ran a charity race."},
+                {"dia_id": "D1:5", "speaker": "Caroline", "text": "The weather was cold."},
+                {"dia_id": "D1:6", "speaker": "Melanie", "text": "Dinner plans for Friday."},
+                {"dia_id": "D1:7", "speaker": "Caroline", "text": "A new job application."},
+                {"dia_id": "D1:8", "speaker": "Melanie", "text": "The cat needed a vet."},
+            ],
+        },
+        "qa": [
+            {
+                "question": "When did Caroline go to the support group?",
+                "answer": "7 May 2023",
+                "evidence": ["D1:1"],
+                "category": 2,
+            },
+            {
+                "question": "What did Melanie run?",
+                "answer": "a charity race",
+                "evidence": ["D1:4"],
+                "category": 1,
+            },
+        ],
+    }
+]
+
+SPEC = RingSpec(widths=(0, 1, 2, 3))
 
 
 def _corpus(tmp_path: Path):
     path = tmp_path / "locomo.json"
-    path.write_text(json.dumps(SAMPLE), encoding="utf-8")
+    path.write_text(json.dumps(WIDE_SAMPLE), encoding="utf-8")
     return load_locomo(path)
 
 
 def test_every_question_yields_one_answerable_original_plus_one_per_rung(tmp_path: Path):
     corpus = _corpus(tmp_path)
     instances = build_instances(corpus, SPEC, corpus_name="locomo")
-    # 2 widths + RING_MAX + 1 answerable original = 4 per question
-    assert len(instances) == len(corpus.questions) * 4
+    # 4 widths + RING_MAX + 1 answerable original = 6 per question
+    assert len(instances) == len(corpus.questions) * 6
 
 
 def test_the_answerable_original_excises_nothing(tmp_path: Path):
@@ -1369,16 +1405,25 @@ def test_two_builds_of_the_same_corpus_produce_the_same_digest(tmp_path: Path):
     assert manifest_digest(a) == manifest_digest(b)
 
 
+def test_the_random_seed_is_threaded_through_to_the_rings(tmp_path: Path):
+    corpus = _corpus(tmp_path)
+    a = build_instances(corpus, SPEC, corpus_name="locomo", random_seed=7)
+    b = build_instances(corpus, SPEC, corpus_name="locomo", random_seed=7)
+    c = build_instances(corpus, SPEC, corpus_name="locomo", random_seed=8)
+    assert manifest_digest(a) == manifest_digest(b)
+    assert manifest_digest(a) != manifest_digest(c)
+
+
 def test_the_random_arm_differs_from_the_bm25_arm(tmp_path: Path):
     corpus = _corpus(tmp_path)
-    bm25 = build_instances(corpus, RingSpec(widths=(0, 1)), corpus_name="locomo")
-    rand = build_instances(corpus, RingSpec(widths=(0, 1)), corpus_name="locomo", random_seed=7)
+    bm25 = build_instances(corpus, SPEC, corpus_name="locomo")
+    rand = build_instances(corpus, SPEC, corpus_name="locomo", random_seed=7)
     assert manifest_digest(bm25) != manifest_digest(rand)
 
 
 def test_cli_writes_a_readable_manifest(tmp_path: Path):
     src = tmp_path / "locomo.json"
-    src.write_text(json.dumps(SAMPLE), encoding="utf-8")
+    src.write_text(json.dumps(WIDE_SAMPLE), encoding="utf-8")
     out = tmp_path / "manifest.jsonl"
     assert main(["--locomo", str(src), "--out", str(out), "--widths", "0,1"]) == 0
     instances, header = read_manifest(out)
@@ -1387,10 +1432,10 @@ def test_cli_writes_a_readable_manifest(tmp_path: Path):
     assert "locomo" in header["corpus_hashes"]
 ```
 
-Note: `test_the_random_arm_differs_from_the_bm25_arm` can fail spuriously on a corpus where the
-random shuffle happens to reproduce the BM25 order. `SAMPLE` has a 2-turn and a 1-turn
-conversation, so if it does fail, widen `SAMPLE`'s first conversation to four turns rather than
-weakening the assertion.
+⚠️ **If either random-arm test collides** (a seeded shuffle happening to reproduce the BM25 order
+over 7 neighbours, or two seeds producing the same ordering), change the **seed** and re-run.
+Do **not** weaken the assertion to `>=` or delete it — the property being tested is that
+`random_seed` actually reaches `random_rings`, and a test that cannot fail does not test it.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1531,7 +1576,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_ladder_build.py -q`
-Expected: PASS (9 tests)
+Expected: PASS (10 tests)
 
 - [ ] **Step 5: Build the real manifest and prove it is deterministic**
 
@@ -2085,6 +2130,21 @@ def test_resume_skips_instances_already_written(tmp_path: Path):
     system = _Fake()
     run(manifest, system, out, documents=DOCS, cluster_members={"c": tuple(DOCS)}, resume=True)
     assert system.ingest_calls == 0
+
+
+def test_invariant_three_still_fires_on_a_fully_resumed_run(tmp_path: Path):
+    """A resume where every original was already scored must not skip the check silently."""
+    out = tmp_path / "r.jsonl"
+    manifest = _manifest(tmp_path)
+    # Hand-write a completed run in which the answerable original was ABSTAINED on.
+    rows = [
+        {"instance_id": "p1#original", "system": "fake", "abstained": True, "cited_ids": [], "tokens": 0},
+        {"instance_id": "p1#d0", "system": "fake", "abstained": True, "cited_ids": [], "tokens": 0},
+        {"instance_id": "p2#d0", "system": "fake", "abstained": True, "cited_ids": [], "tokens": 0},
+    ]
+    out.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    with pytest.raises(InvariantViolation, match="broken"):
+        run(manifest, _Fake(), out, documents=DOCS, cluster_members={"c": tuple(DOCS)}, resume=True)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2125,14 +2185,22 @@ from benchmarks.ladder.invariants import (
 from benchmarks.ladder.manifest import RING_ORIGINAL, Instance, read_manifest
 
 
-def _already_done(out_path: Path) -> set[str]:
+def _recorded(out_path: Path) -> dict[str, bool]:
+    """instance_id -> abstained, for every row already written.
+
+    Returns the flags, not just the ids, because invariant 3 must still fire on a RESUMED run. A
+    resume where every answerable original was already scored would otherwise leave
+    `answered_originals` empty and skip the check silently — the failure shape where grepping for
+    success turns a failure into no output at all.
+    """
     if not out_path.exists():
-        return set()
-    done: set[str] = set()
+        return {}
+    recorded: dict[str, bool] = {}
     for line in out_path.read_text(encoding="utf-8").splitlines():
         if line.strip():
-            done.add(json.loads(line)["instance_id"])
-    return done
+            row = json.loads(line)
+            recorded[row["instance_id"]] = bool(row["abstained"])
+    return recorded
 
 
 def _cluster_of(instance: Instance, cluster_members: Mapping[str, Sequence[str]]) -> Sequence[str]:
@@ -2154,15 +2222,21 @@ def run(
 ) -> int:
     """Returns the number of instances scored in this invocation."""
     instances, _header = read_manifest(manifest_path)
-    done = _already_done(out_path) if resume else set()
+    recorded = _recorded(out_path) if resume else {}
 
     by_state: dict[tuple[str, ...], list[Instance]] = {}
     for inst in instances:
-        if inst.instance_id in done:
+        if inst.instance_id in recorded:
             continue
         by_state.setdefault(tuple(sorted(inst.excised_doc_ids)), []).append(inst)
 
-    answered_originals: dict[str, bool] = {}
+    # Seeded from what is already on disk, so invariant 3 sees the WHOLE artifact rather than only
+    # this invocation's slice.
+    answered_originals: dict[str, bool] = {
+        inst.instance_id: not recorded[inst.instance_id]
+        for inst in instances
+        if inst.ring == RING_ORIGINAL and inst.instance_id in recorded
+    }
     written = 0
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("a", encoding="utf-8") as fh:
@@ -2231,7 +2305,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_ladder_run.py -q`
-Expected: PASS (5 tests)
+Expected: PASS (6 tests)
 
 - [ ] **Step 5: Write the RE-call adapter**
 
