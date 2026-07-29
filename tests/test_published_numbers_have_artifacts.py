@@ -17,11 +17,14 @@ from benchmarks.claim_gate import (
     Claim,
     ClaimError,
     Marker,
+    build_baseline,
     check_withdrawn,
+    load_baseline,
     load_withdrawn,
     matches,
     resolve,
     scan_text,
+    unmarked_counts,
 )
 
 
@@ -211,3 +214,39 @@ def test_the_registry_holds_literal_digit_strings_not_floats() -> None:
     retracted figure with a live one at a different precision."""
     for value in load_withdrawn(RESULTS_ROOT):
         assert isinstance(value, str)
+
+
+#: The ratchet. This number may only ever go DOWN. Lower it when you mark a number; a change that
+#: raises it is a change that added an uncited number to a published document.
+MAX_BASELINE_ENTRIES = 2432  # generated 2026-07-29: 2432 unmarked occurrences across 4 documents
+#: (2438 before marking 6 bare withdrawn-figure occurrences — see WITHDRAWN.json — with
+#: `<!--@ withdrawn: ... -->` in FINDINGS.md and README.md.)
+
+
+def test_unmarked_counts_ignores_marked_numbers() -> None:
+    claims = [
+        Claim("x.md", 1, "0.33", None),
+        Claim("x.md", 2, "0.33", None),
+        Claim("x.md", 3, "0.77", Marker("citation-pending", note="why")),
+    ]
+    assert unmarked_counts(claims) == {"0.33": 2}
+
+
+def test_every_baseline_entry_is_still_present_and_still_unmarked() -> None:
+    """Dead-entry test. Marking a number forces deleting its baseline row, so the file shrinks."""
+    assert load_baseline(RESULTS_ROOT) == build_baseline(), (
+        "CLAIMS_BASELINE.json no longer matches the documents. If you MARKED a number, remove its "
+        "row here and lower MAX_BASELINE_ENTRIES. If you ADDED an unmarked number, mark it instead."
+    )
+
+
+def test_the_baseline_never_grows() -> None:
+    total = sum(sum(counts.values()) for counts in load_baseline(RESULTS_ROOT).values())
+    assert total <= MAX_BASELINE_ENTRIES
+
+
+def test_no_withdrawn_value_hides_in_the_baseline() -> None:
+    """The known-bad figures may not sit in the ratchet — that is where they would be invisible."""
+    withdrawn = set(load_withdrawn(RESULTS_ROOT))
+    for doc, counts in load_baseline(RESULTS_ROOT).items():
+        assert not (withdrawn & set(counts)), f"{doc} baselines a withdrawn figure"
