@@ -243,6 +243,15 @@ def test_match_rule_rejects_the_suite_design_defect() -> None:
     assert not matches("0.533", 0.536)
 
 
+def test_match_rule_rounds_half_to_even_not_half_away_from_zero() -> None:
+    """F-07: pin the documented rounding convention. `f"{0.625:.2f}"` is `"0.62"` (2 is already
+    even), not the `"0.63"` hand-rounding would produce — behaviour, not a bug; this test exists
+    so a future "fix" to the more intuitive convention shows up as a failing test, not a silent
+    change to which boundary values this gate accepts."""
+    assert matches("0.62", 0.625)
+    assert not matches("0.63", 0.625)
+
+
 def test_match_rule_rejects_a_non_number() -> None:
     assert not matches("17", "17")
     assert not matches("1", True)
