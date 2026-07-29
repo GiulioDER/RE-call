@@ -378,6 +378,18 @@ run RE-call inside a third party's benchmark harness, and its own module docstri
   used for: the runs whose spread was read as HNSW build noise differ in *candidate pool*, not in
   index build. It is now checkable and still not evidence for that. (README, `results/FINDINGS.md`)
 
+### Changed
+- **BM25 scoring is now a DB-free core with one formula and two callers.** The answerability
+  ladder builder must rank documents with no Postgres running, and `BM25Retriever` previously
+  scored only over a live store's chunks — a second copy of the formula is how a baseline and the
+  thing it anchors quietly stop agreeing. The scoring logic is extracted into `BM25Index`, built
+  from plain `(doc_id, text)` pairs with no store dependency; `BM25Retriever`'s public constructor,
+  `__len__`, `score`, and `search` signatures are unchanged and it now delegates to `BM25Index`
+  internally. `BM25Index.rank()` breaks ties by `doc_id` ascending, because its output is frozen
+  into a released manifest and a tie broken by insertion order would make two builds of the same
+  corpus into two different benchmarks. Behaviour-preserving for every existing caller.
+  (`recall/eval/bm25.py`)
+
 ### Added
 - **The cosine distributions behind the abstention results are now a retained artifact
   (`results/cosine/distributions.json`), not an assertion.** §7b reported abstention as *rates*
