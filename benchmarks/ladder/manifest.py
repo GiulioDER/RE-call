@@ -103,12 +103,36 @@ def _canonical(inst: Instance) -> str:
     return json.dumps(instance_to_dict(inst), sort_keys=True, ensure_ascii=False)
 
 
-def manifest_digest(instances: Sequence[Instance]) -> str:
-    """SHA-256 over the canonical rendering of every instance, order-independent."""
+def manifest_digest(
+    instances: Sequence[Instance],
+    *,
+    ring_widths: Sequence[int],
+    corpus_hashes: Mapping[str, str],
+) -> str:
+    """SHA-256 over every instance AND the provenance saying what corpus they came from.
+
+    The header is covered, not only the bodies. `corpus_hashes` identifies WHICH corpus this
+    manifest was built from and `ring_widths` says how its x-axis was constructed — precisely the
+    fields a tamperer edits to make a manifest claim a provenance it does not have. A digest over
+    instance bodies alone accepts that edit silently; that was measured on this file, not assumed.
+
+    A digest cannot cover itself, so the header's own `digest` field is excluded by construction.
+    Instances are sorted, so the result does not depend on the order the builder emitted them.
+    """
     h = hashlib.sha256()
+    h.update(b"ladder-manifest-v1\n")
     for line in sorted(_canonical(i) for i in instances):
         h.update(line.encode("utf-8"))
         h.update(b"\n")
+    h.update(b"--provenance--\n")
+    h.update(
+        json.dumps(
+            {"ring_widths": list(ring_widths), "corpus_hashes": dict(corpus_hashes)},
+            sort_keys=True,
+            ensure_ascii=False,
+        ).encode("utf-8")
+    )
+    h.update(b"\n")
     return h.hexdigest()
 
 
@@ -120,7 +144,7 @@ def write_manifest(
     corpus_hashes: Mapping[str, str],
 ) -> str:
     """Write header line + one JSON object per instance. Returns the digest."""
-    digest = manifest_digest(instances)
+    digest = manifest_digest(instances, ring_widths=ring_widths, corpus_hashes=corpus_hashes)
     header = {
         "manifest_version": MANIFEST_VERSION,
         "digest": digest,
@@ -141,9 +165,23 @@ def read_manifest(path: Path) -> tuple[list[Instance], dict]:
     lines = path.read_text(encoding="utf-8").splitlines()
     if not lines:
         raise ValueError(f"{path} is empty")
-    header = json.loads(lines[0])
-    instances = [instance_from_dict(json.loads(line)) for line in lines[1:] if line.strip()]
-    actual = manifest_digest(instances)
+    try:
+        header = json.loads(lines[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{path}: could not parse the header line — the file is truncated or not a manifest."
+        ) from exc
+    try:
+        instances = [instance_from_dict(json.loads(line)) for line in lines[1:] if line.strip()]
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        raise ValueError(
+            f"{path}: could not parse an instance line — the file is truncated or not a manifest."
+        ) from exc
+    actual = manifest_digest(
+        instances,
+        ring_widths=header.get("ring_widths", []),
+        corpus_hashes=header.get("corpus_hashes", {}),
+    )
     if actual != header.get("digest"):
         raise ValueError(
             f"{path}: body digest {actual} does not match header digest {header.get('digest')}. "
