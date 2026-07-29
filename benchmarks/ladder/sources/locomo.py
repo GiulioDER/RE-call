@@ -28,6 +28,24 @@ from typing import Any
 
 _ADVERSARIAL_CATEGORY = 5
 
+#: `D<int>:<int>`, no leading zeros on either integer — `D30:05` is a zero-padded annotation typo,
+#: not a valid id, and must fail this match rather than be silently accepted as `D30:5`'s neighbor.
+_TURN_ID = re.compile(r"^D(?:0|[1-9]\d*):(?:0|[1-9]\d*)$")
+
+
+def _split_evidence(raw: str) -> list[str]:
+    """LOCOMO packs several turn ids into one string in a handful of entries.
+
+    `"D9:1 D4:4 D4:6"` is three ids that were never split, and the turns they name exist. Treating
+    the whole string as one id makes the question structurally unanswerable — permanently a miss,
+    for a parsing reason rather than a retrieval one.
+
+    Only fragments matching `D<int>:<int>` survive. Deliberately NOT normalised: `D:11:26`,
+    `D30:05` and a bare `D` are annotation typos, and guessing what an annotator meant would put
+    our invention into a corpus chosen precisely because we did not make it.
+    """
+    return [frag for frag in re.split(r"[;\s]+", raw.strip()) if _TURN_ID.fullmatch(frag)]
+
 
 @dataclass(frozen=True)
 class SourceQuestion:
@@ -103,7 +121,8 @@ def load_locomo(path: Path) -> SourceCorpus:
             if not qa.get("question"):
                 dropped["no_question_text"] = dropped.get("no_question_text", 0) + 1
                 continue
-            evidence = [e for e in (qa.get("evidence") or []) if isinstance(e, str)]
+            raw_evidence = [e for e in (qa.get("evidence") or []) if isinstance(e, str)]
+            evidence = [frag for raw in raw_evidence for frag in _split_evidence(raw)]
             if not evidence:
                 dropped["no_evidence"] = dropped.get("no_evidence", 0) + 1
                 continue
