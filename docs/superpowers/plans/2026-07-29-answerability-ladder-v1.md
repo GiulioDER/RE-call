@@ -166,6 +166,23 @@ Design: `docs/superpowers/specs/2026-07-29-answerability-ladder-design.md`.
   file.
 - **Tie-breaking:** equal BM25 scores rank by `doc_id` ascending.
 - **Instances per question:** one per ring level, all paired to the same answerable original.
+- **Question sample: 300, seed 0**, drawn from the 1 536 usable questions (non-category-5, with
+  `evidence`) after sorting by `question_id`. Fixed here, before any curve is visible.
+- **Ingest scope: one conversation.** A question is scored against its own conversation only, not
+  all ten. This matches `recall/eval/locomo.py`, which indexes one conversation at a time, and
+  LOCOMO's own protocol.
+
+  **Why the sample exists, stated because it bounds every number below.** The full set is 1 536
+  questions × 5 rungs ≈ **7 680 distinct corpus states**, and a state must be indexed before it can
+  be queried. Against the whole 5 882-turn corpus that is ~45 million document-indexings. This is
+  not merely expensive for us: it is what every third party adopting the benchmark would pay, and
+  a benchmark nobody can afford to run is not adopted. 300 questions × 5 rungs ≈ 1 500 states,
+  each scoped to one conversation (median 646 turns), is a run an adopter can finish.
+
+  Power was checked **before** the number was chosen, not after: with 300 pairs the standard error
+  of a paired mean over deltas in {−1, 0, +1} is at most 1/sqrt(300) ≈ 0.058, so the
+  pre-registered 0.15 effect sits at roughly 2.6 SE. BEAM's own head-to-head used 300 questions.
+  **The H1 verdict rests on 300 questions, not 1 536, and every write-up must say so.**
 
 ## Predictions, committed now
 
@@ -1430,6 +1447,31 @@ def test_cli_writes_a_readable_manifest(tmp_path: Path):
     assert instances
     assert header["ring_widths"] == [0, 1]
     assert "locomo" in header["corpus_hashes"]
+
+
+def test_sampling_is_deterministic_and_seed_dependent(tmp_path: Path):
+    corpus = _corpus(tmp_path)
+    a = build_instances(corpus, SPEC, corpus_name="locomo", sample=1, sample_seed=0)
+    b = build_instances(corpus, SPEC, corpus_name="locomo", sample=1, sample_seed=0)
+    assert manifest_digest(a) == manifest_digest(b)
+    assert len({i.source_question_id for i in a}) == 1
+
+
+def test_a_sample_larger_than_the_corpus_keeps_every_question(tmp_path: Path):
+    corpus = _corpus(tmp_path)
+    everything = build_instances(corpus, SPEC, corpus_name="locomo")
+    huge = build_instances(corpus, SPEC, corpus_name="locomo", sample=9999)
+    assert manifest_digest(huge) == manifest_digest(everything)
+
+
+def test_sampling_does_not_change_the_rings_of_the_questions_it_keeps(tmp_path: Path):
+    """The BM25 index spans the whole corpus, so drawing a subset must not reshape the x-axis."""
+    corpus = _corpus(tmp_path)
+    full = {i.instance_id: i.excised_doc_ids for i in build_instances(corpus, SPEC, corpus_name="locomo")}
+    drawn = build_instances(corpus, SPEC, corpus_name="locomo", sample=1, sample_seed=0)
+    assert drawn
+    for inst in drawn:
+        assert inst.excised_doc_ids == full[inst.instance_id]
 ```
 
 ⚠️ **If either random-arm test collides** (a seeded shuffle happening to reproduce the BM25 order
@@ -1468,6 +1510,8 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import random
+from collections.abc import Sequence
 from pathlib import Path
 
 from benchmarks.ladder.manifest import (
@@ -1479,8 +1523,24 @@ from benchmarks.ladder.manifest import (
     write_manifest,
 )
 from benchmarks.ladder.rings import RingSpec, build_rings, random_rings
-from benchmarks.ladder.sources.locomo import SourceCorpus, load_locomo
+from benchmarks.ladder.sources.locomo import SourceCorpus, SourceQuestion, load_locomo
 from recall.eval.bm25 import BM25Index
+
+
+def sample_questions(
+    questions: Sequence[SourceQuestion], sample: int | None, seed: int
+) -> list[SourceQuestion]:
+    """A deterministic subset, or all of them when `sample` is None.
+
+    Sorted by `question_id` BEFORE sampling, so the subset depends on the seed and not on the
+    order `load_locomo` happened to walk the file. Sorted again afterwards so two builds emit
+    identical manifests, not merely equal ones.
+    """
+    ordered = sorted(questions, key=lambda q: q.question_id)
+    if sample is None or sample >= len(ordered):
+        return ordered
+    chosen = random.Random(seed).sample(ordered, sample)
+    return sorted(chosen, key=lambda q: q.question_id)
 
 
 def build_instances(
@@ -1489,12 +1549,22 @@ def build_instances(
     *,
     corpus_name: str,
     random_seed: int | None = None,
+    sample: int | None = None,
+    sample_seed: int = 0,
 ) -> list[Instance]:
-    """One family per question: the answerable original, each rung, and RING_MAX."""
+    """One family per question: the answerable original, each rung, and RING_MAX.
+
+    `sample` is the pre-registered question subset (300, seed 0). Its reason is a cost the
+    ADOPTER pays, not only us: the full set is ~7 680 corpus states, each of which must be indexed
+    before it can be queried.
+
+    The BM25 index is built over the WHOLE corpus even when sampling, because ring order must not
+    depend on which questions were drawn — otherwise the sample silently reshapes the x-axis.
+    """
     index = BM25Index(corpus.documents)
     instances: list[Instance] = []
 
-    for question in corpus.questions:
+    for question in sample_questions(corpus.questions, sample, sample_seed):
         pair_id = f"{corpus_name}/{question.question_id}"
         cluster = corpus.cluster_members.get(question.cluster_id, ())
 
@@ -1552,11 +1622,25 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="build the P4 robustness arm with random-within-cluster neighbours instead of BM25",
     )
+    parser.add_argument(
+        "--sample-questions",
+        type=int,
+        default=300,
+        help="pre-registered question sample size; 0 means all",
+    )
+    parser.add_argument("--sample-seed", type=int, default=0)
     args = parser.parse_args(argv)
 
     spec = RingSpec(widths=tuple(int(w) for w in args.widths.split(",")))
     corpus = load_locomo(args.locomo)
-    instances = build_instances(corpus, spec, corpus_name="locomo", random_seed=args.random_seed)
+    instances = build_instances(
+        corpus,
+        spec,
+        corpus_name="locomo",
+        random_seed=args.random_seed,
+        sample=args.sample_questions or None,
+        sample_seed=args.sample_seed,
+    )
     digest = write_manifest(
         args.out,
         instances,
@@ -1576,16 +1660,16 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_ladder_build.py -q`
-Expected: PASS (10 tests)
+Expected: PASS (13 tests)
 
 - [ ] **Step 5: Build the real manifest and prove it is deterministic**
 
 Run:
-`python -m benchmarks.ladder.build --locomo locomo10.json --out results/ladder/manifest.jsonl --widths 0,4,16,64`
+`python -m benchmarks.ladder.build --locomo locomo10.json --out results/ladder/manifest.jsonl --widths 0,4,16,64 --sample-questions 300 --sample-seed 0`
 Expected: `wrote N instances`, a digest, and a corpus hash. Record all three in the commit message.
 
 Then:
-`python -m benchmarks.ladder.build --locomo locomo10.json --out /tmp/m2.jsonl --widths 0,4,16,64`
+`python -m benchmarks.ladder.build --locomo locomo10.json --out /tmp/m2.jsonl --widths 0,4,16,64 --sample-questions 300 --sample-seed 0`
 Expected: **the same digest line.** If it differs, stop — a nondeterministic builder cannot ship a
 manifest, and the cause must be found before any arm is run.
 
@@ -2132,6 +2216,25 @@ def test_resume_skips_instances_already_written(tmp_path: Path):
     assert system.ingest_calls == 0
 
 
+def test_ingest_is_scoped_to_the_questions_own_conversation(tmp_path: Path):
+    """A question is scored against its own conversation, not the whole corpus.
+
+    This is the difference between indexing 646 turns per state and 5 882 — at ~1 500 states, the
+    difference between a run an adopter can finish and one nobody will.
+    """
+    two_clusters = dict(DOCS)
+    two_clusters.update({f"other/D1:{i}": f"unrelated turn {i}" for i in range(1, 4)})
+    system = _Fake()
+    run(
+        _manifest(tmp_path),
+        system,
+        tmp_path / "r.jsonl",
+        documents=two_clusters,
+        cluster_members={"c": tuple(DOCS), "other": ("other/D1:1", "other/D1:2", "other/D1:3")},
+    )
+    assert all(not d.startswith("other/") for d in system.indexed_doc_ids())
+
+
 def test_invariant_three_still_fires_on_a_fully_resumed_run(tmp_path: Path):
     """A resume where every original was already scored must not skip the check silently."""
     out = tmp_path / "r.jsonl"
@@ -2203,12 +2306,11 @@ def _recorded(out_path: Path) -> dict[str, bool]:
     return recorded
 
 
-def _cluster_of(instance: Instance, cluster_members: Mapping[str, Sequence[str]]) -> Sequence[str]:
+def _cluster_id_of(instance: Instance) -> str:
     # Doc ids are "{cluster_id}/{dia_id}", so the gold id names its own cluster.
     if not instance.gold_doc_ids:
-        return ()
-    cluster_id = instance.gold_doc_ids[0].split("/", 1)[0]
-    return cluster_members.get(cluster_id, ())
+        return ""
+    return instance.gold_doc_ids[0].split("/", 1)[0]
 
 
 def run(
@@ -2224,11 +2326,16 @@ def run(
     instances, _header = read_manifest(manifest_path)
     recorded = _recorded(out_path) if resume else {}
 
-    by_state: dict[tuple[str, ...], list[Instance]] = {}
+    # Keyed by (cluster, excised) — a question is scored against its OWN conversation only, which
+    # is what recall/eval/locomo.py already does and what LOCOMO's protocol assumes. It is also
+    # the difference between indexing 646 turns per state and 5 882: at ~1 500 states that is the
+    # difference between a run an adopter can finish and one nobody will.
+    by_state: dict[tuple[str, tuple[str, ...]], list[Instance]] = {}
     for inst in instances:
         if inst.instance_id in recorded:
             continue
-        by_state.setdefault(tuple(sorted(inst.excised_doc_ids)), []).append(inst)
+        key = (_cluster_id_of(inst), tuple(sorted(inst.excised_doc_ids)))
+        by_state.setdefault(key, []).append(inst)
 
     # Seeded from what is already on disk, so invariant 3 sees the WHOLE artifact rather than only
     # this invocation's slice.
@@ -2240,14 +2347,15 @@ def run(
     written = 0
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("a", encoding="utf-8") as fh:
-        for excised, group in sorted(by_state.items()):
+        for (cluster_id, excised), group in sorted(by_state.items()):
+            members = cluster_members.get(cluster_id, ())
             dropped = set(excised)
-            keep = [Document(d, t) for d, t in sorted(documents.items()) if d not in dropped]
+            keep = [Document(d, documents[d]) for d in sorted(members) if d not in dropped]
             system.ingest(keep)
             indexed = system.indexed_doc_ids()
             for inst in sorted(group, key=lambda i: i.instance_id):
                 assert_excised_absent(inst, indexed)
-                assert_ring_zero_has_survivors(inst, indexed, _cluster_of(inst, cluster_members))
+                assert_ring_zero_has_survivors(inst, indexed, members)
                 response = system.query(inst.question)
                 if inst.ring == RING_ORIGINAL:
                     answered_originals[inst.instance_id] = not response.abstained
@@ -2305,7 +2413,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_ladder_run.py -q`
-Expected: PASS (6 tests)
+Expected: PASS (7 tests)
 
 - [ ] **Step 5: Write the RE-call adapter**
 
@@ -2324,6 +2432,14 @@ adapter must:
 1. **Replace, not merge.** Each `ingest` call starts from an empty store (drop/recreate or truncate
    the table namespace) so invariant 1 can pass. If it merges, Task 8's assertion will stop the run
    at the first rung — that is the assertion working, not a bug to route around.
+
+1b. **Cache embeddings by document text, keyed across `ingest` calls.** ~1 500 corpus states each
+   re-index a ~646-turn conversation, but there are only 5 882 distinct turns in the whole corpus.
+   Embedding each state from scratch would compute the same vectors ~250 times over. Embed once
+   per unique text, reuse thereafter, so a re-ingest costs database writes and not model calls.
+   **Verify the cache actually fires** — log or assert the embed count on the second state is zero;
+   a cache that silently misses looks exactly like a slow run, and this is the difference between
+   a night and a week.
 2. Write each `Document` to a temp directory as `<sanitised doc_id>.md` and route it through
    `Indexer.index_path`, matching `write_conversation_corpus`'s reasoning. Keep the doc_id ↔
    filename mapping invertible; `_dia_id_to_filename` / `_filename_to_dia_id` in
@@ -2849,7 +2965,7 @@ missed.** A prediction that missed is the most informative line in the file.
 
 ```bash
 cd ~/Documents/recall
-python -m benchmarks.ladder.build --locomo locomo10.json --out results/ladder/manifest_random.jsonl --widths 0,4,16,64 --random-seed 7
+python -m benchmarks.ladder.build --locomo locomo10.json --out results/ladder/manifest_random.jsonl --widths 0,4,16,64 --sample-questions 300 --sample-seed 0 --random-seed 7
 python -m benchmarks.ladder.run --manifest results/ladder/manifest_random.jsonl --locomo locomo10.json --out results/ladder/responses_recall_random.jsonl --dsn "$RECALL_DSN"
 python -m benchmarks.ladder.report --manifest results/ladder/manifest_random.jsonl --responses results/ladder/responses_recall_random.jsonl | tee results/ladder/H1_VERDICT_random.txt
 ```
