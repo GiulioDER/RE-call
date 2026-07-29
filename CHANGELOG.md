@@ -8,6 +8,15 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-29
+
+A minor bump, not a patch: `recall/eval/vocab.py`, `recall/eval/provenance.py` and
+`recall/integrations/__init__.py` are new, and `recall/trust.py`, `recall/store.py` and
+`recall_mcp/service.py` all changed substantially. 151 commits since 0.6.0.
+
+`recall_interop/` also landed in this window and is **deliberately not in the wheel** — it exists to
+run RE-call inside a third party's benchmark harness, and its own module docstring says so.
+
 ### Fixed
 - **`mcp` is capped at `<2`. Its 2.0.0 release broke `master` with nothing in this repo changed.**
   mcp 2.0.0 landed on 2026-07-28 at 13:45 UTC; `master`'s last green run was 13:23. The next CI run
