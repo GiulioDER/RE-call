@@ -51,3 +51,18 @@ def test_query_returns_an_abstention_when_nothing_matches():
     system = _Fake()
     system.ingest([Document("d1", "alpha text")])
     assert system.query("zulu something").abstained is True
+
+
+def test_top_cosine_defaults_to_none_so_an_adapter_may_ignore_it():
+    assert Response(answer="x").top_cosine is None
+
+
+def test_top_cosine_is_carried_on_an_ABSTAINED_response_too():
+    """The threshold sweep needs the score precisely on the rows where the system declined.
+
+    Recording it only on the answered path would make the sweep blind to exactly the decisions it
+    exists to re-price, while still looking like it worked.
+    """
+    r = Response(answer=None, top_cosine=0.42)
+    assert r.abstained is True
+    assert r.top_cosine == 0.42
