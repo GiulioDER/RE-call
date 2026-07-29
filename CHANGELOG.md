@@ -68,6 +68,20 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   fails the suite's own Rule 5 (*per-question artifacts published, not summary statistics*). Noted
   in `SUITE-DESIGN.md` under known defects rather than left for a reader to discover.
 
+- **Nine tests turned an absent database into a red build instead of a skip.** The suite guards
+  DB-dependent tests with `conftest.requires_db`, and two files had simply not been given it:
+  `test_eval_longmemeval_perq.py` (all seven — one connecting directly, six through the `master`
+  fixture) and the two fixture-backed tests in `test_store_ef_search_ceiling.py`. On a host with no
+  pgvector container that produced **1 failure and 8 errors**; it now produces 9 skips, while the
+  four tests in `test_store_ef_search_ceiling.py` that derive the cap arithmetically keep running
+  without a container. Verified both ways: with the database present all 17 still execute.
+
+  🔑 This is what a 0.7.0 full-suite run looked like on a machine without the test database —
+  `2 failed, 1196 passed, 228 skipped, 8 errors` — and only *one* of those two failures was a real
+  defect (the calibration loader cache, #157). A red build whose redness is routine is not a
+  signal; it is a place to hide one. The way it got here is ordinary: the guard is a per-file
+  convention, so a new file inherits it only if somebody remembers.
+
 ## [0.7.0] — 2026-07-29
 
 A minor bump, not a patch: `recall/eval/vocab.py`, `recall/eval/provenance.py` and
