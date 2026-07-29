@@ -39,6 +39,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Iterable
 from datetime import timedelta
 
 from recall.store import PgVectorStore
@@ -61,6 +62,70 @@ def tokenize(text: str) -> list[str]:
     return _TOKEN.findall(text.lower())
 
 
+class BM25Index:
+    """Okapi BM25 over `(doc_id, text)` pairs, with no database and no store type.
+
+    The formula lives here and `BM25Retriever` delegates to it. Two copies of a scoring function
+    is how a baseline and the thing it anchors quietly stop agreeing — see this module's docstring
+    on why the formula is written out rather than imported from a package.
+
+    Ties break by `doc_id` ascending. That is not tidiness: `rank()` output is frozen into a
+    released benchmark manifest, and a tie broken by insertion order would make two builds of the
+    same corpus into two different benchmarks.
+    """
+
+    def __init__(self, docs: Iterable[tuple[str, str]], k1: float = K1, b: float = B) -> None:
+        self._k1 = k1
+        self._b = b
+        self._doc_ids: list[str] = []
+        self._len: list[int] = []
+        self._postings: dict[str, list[tuple[int, int]]] = {}
+        df: Counter[str] = Counter()
+
+        for doc_id, text in docs:
+            tokens = tokenize(text)
+            tf = Counter(tokens)
+            i = len(self._doc_ids)
+            self._doc_ids.append(doc_id)
+            self._len.append(len(tokens))
+            df.update(tf.keys())
+            for term, freq in tf.items():
+                self._postings.setdefault(term, []).append((i, freq))
+
+        n = len(self._doc_ids)
+        self._avgdl = (sum(self._len) / n) if n else 0.0
+        self._idf = {
+            term: math.log(1.0 + (n - freq + 0.5) / (freq + 0.5)) for term, freq in df.items()
+        }
+
+    def __len__(self) -> int:
+        return len(self._doc_ids)
+
+    @property
+    def doc_ids(self) -> list[str]:
+        return list(self._doc_ids)
+
+    def score(self, query: str) -> list[float]:
+        """Per-document BM25 score for `query`, in corpus order."""
+        terms = tokenize(query)
+        scores = [0.0] * len(self._doc_ids)
+        if not terms or not self._avgdl:
+            return scores
+        for term in terms:
+            idf = self._idf.get(term)
+            if idf is None:
+                continue
+            for i, f in self._postings.get(term, ()):
+                norm = 1.0 - self._b + self._b * (self._len[i] / self._avgdl)
+                scores[i] += idf * (f * (self._k1 + 1.0)) / (f + self._k1 * norm)
+        return scores
+
+    def rank(self, query: str) -> list[tuple[str, float]]:
+        """Every document, best first. Ties by `doc_id` ascending — see the class docstring."""
+        scored = list(zip(self._doc_ids, self.score(query)))
+        return sorted(scored, key=lambda ds: (-ds[1], ds[0]))
+
+
 class BM25Retriever:
     """Lexical-only retrieval over an in-memory index of the store's chunks.
 
@@ -73,51 +138,19 @@ class BM25Retriever:
     """
 
     def __init__(self, store: PgVectorStore, k1: float = K1, b: float = B) -> None:
-        self._k1 = k1
-        self._b = b
-        self._chunks: list[Chunk] = []
-        self._len: list[int] = []
-        #: term -> list of (chunk index, term frequency in that chunk). An inverted index, so
-        #: `score` touches only the documents that actually contain each query term instead of
-        #: walking the whole corpus per term.
-        self._postings: dict[str, list[tuple[int, int]]] = {}
-        #: term -> number of documents containing it
-        df: Counter[str] = Counter()
-
-        for i, chunk in enumerate(store.iter_chunks()):
-            tokens = tokenize(chunk.text)
-            tf = Counter(tokens)
-            self._chunks.append(chunk)
-            self._len.append(len(tokens))
-            df.update(tf.keys())
-            for term, freq in tf.items():
-                self._postings.setdefault(term, []).append((i, freq))
-
-        n = len(self._chunks)
-        # An empty corpus has no average length to divide by. Guard here rather than at query
-        # time so the failure is "you indexed nothing", not a ZeroDivisionError per search.
-        self._avgdl = (sum(self._len) / n) if n else 0.0
-        self._idf = {
-            term: math.log(1.0 + (n - freq + 0.5) / (freq + 0.5)) for term, freq in df.items()
-        }
+        self._chunks: list[Chunk] = list(store.iter_chunks())
+        # One formula, two callers. The chunk id is positional here because `search` maps back by
+        # index; `BM25Index` only needs the ids to be unique and orderable.
+        self._index = BM25Index(
+            ((str(i), chunk.text) for i, chunk in enumerate(self._chunks)), k1=k1, b=b
+        )
 
     def __len__(self) -> int:
         return len(self._chunks)
 
     def score(self, query: str) -> list[float]:
         """Per-chunk BM25 score for `query`, in corpus order."""
-        terms = tokenize(query)
-        scores = [0.0] * len(self._chunks)
-        if not terms or not self._avgdl:
-            return scores
-        for term in terms:
-            idf = self._idf.get(term)
-            if idf is None:  # not in the corpus: contributes nothing, and has no IDF to look up
-                continue
-            for i, f in self._postings.get(term, ()):
-                norm = 1.0 - self._b + self._b * (self._len[i] / self._avgdl)
-                scores[i] += idf * (f * (self._k1 + 1.0)) / (f + self._k1 * norm)
-        return scores
+        return self._index.score(query)
 
     def search(self, query: str, k: int = 5, source: str | None = None) -> RetrievalResult:
         """Top-`k` chunks by BM25.
