@@ -7,7 +7,12 @@ published as a tie, a figure derivable from nothing, and a count that contradict
 """
 from __future__ import annotations
 
-from benchmarks.claim_gate import scan_text
+import json
+from pathlib import Path
+
+import pytest
+
+from benchmarks.claim_gate import Claim, ClaimError, Marker, matches, resolve, scan_text
 
 
 def test_a_bare_decimal_is_an_unmarked_claim() -> None:
@@ -75,3 +80,81 @@ def test_a_marker_binds_only_to_the_nearest_preceding_number() -> None:
     assert second.marker.kind == "artifact"
     assert second.marker.artifact == "f.json"
     assert second.marker.key == "k"
+
+
+def test_match_rule_rounds_to_the_published_precision() -> None:
+    assert matches("0.777", 0.77714)
+    assert matches("0.78", 0.7771)
+    assert matches("17", 17)
+
+
+def test_match_rule_rejects_the_suite_design_defect() -> None:
+    """SUITE-DESIGN published 0.533 where the cell is 0.536 — a loss printed as a tie."""
+    assert not matches("0.533", 0.536)
+
+
+def test_match_rule_rejects_a_non_number() -> None:
+    assert not matches("17", "17")
+    assert not matches("1", True)
+
+
+def _write_artifact(root: Path, payload: dict) -> None:
+    (root / "sub").mkdir(parents=True, exist_ok=True)
+    (root / "sub" / "a.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_resolve_accepts_a_matching_artifact(tmp_path: Path) -> None:
+    _write_artifact(tmp_path, {"depth": {"5": {"hit": 0.7771}}})
+    claim = Claim("x.md", 1, "0.777", Marker("artifact", artifact="sub/a.json", key="depth.5.hit"))
+    resolve(claim, tmp_path)  # does not raise
+
+
+def test_resolve_rejects_a_mismatching_artifact(tmp_path: Path) -> None:
+    _write_artifact(tmp_path, {"depth": {"5": {"hit": 0.536}}})
+    claim = Claim("x.md", 1, "0.533", Marker("artifact", artifact="sub/a.json", key="depth.5.hit"))
+    with pytest.raises(ClaimError, match="0.536"):
+        resolve(claim, tmp_path)
+
+
+def test_resolve_rejects_a_missing_artifact(tmp_path: Path) -> None:
+    claim = Claim("x.md", 1, "0.777", Marker("artifact", artifact="sub/missing.json", key="a"))
+    with pytest.raises(ClaimError, match="no such artifact"):
+        resolve(claim, tmp_path)
+
+
+def test_resolve_rejects_a_missing_key(tmp_path: Path) -> None:
+    _write_artifact(tmp_path, {"depth": {}})
+    claim = Claim("x.md", 1, "0.777", Marker("artifact", artifact="sub/a.json", key="depth.5.hit"))
+    with pytest.raises(ClaimError, match="no key"):
+        resolve(claim, tmp_path)
+
+
+def test_citation_pending_needs_a_reason(tmp_path: Path) -> None:
+    resolve(Claim("x.md", 1, "0.467", Marker("citation-pending", note="no artifact")), tmp_path)
+    with pytest.raises(ClaimError, match="reason"):
+        resolve(Claim("x.md", 1, "0.467", Marker("citation-pending", note="")), tmp_path)
+
+
+def test_withdrawn_needs_a_retraction_reference(tmp_path: Path) -> None:
+    resolve(Claim("x.md", 1, "0.945", Marker("withdrawn", note="README list")), tmp_path)
+    with pytest.raises(ClaimError, match="retraction"):
+        resolve(Claim("x.md", 1, "0.945", Marker("withdrawn", note="")), tmp_path)
+
+
+def test_derived_checks_the_arithmetic(tmp_path: Path) -> None:
+    resolve(Claim("x.md", 1, "0.106", Marker("derived", note="0.777 - 0.671")), tmp_path)
+    with pytest.raises(ClaimError, match="derived"):
+        resolve(Claim("x.md", 1, "0.200", Marker("derived", note="0.777 - 0.671")), tmp_path)
+
+
+def test_derived_refuses_anything_that_is_not_literal_arithmetic(tmp_path: Path) -> None:
+    """The evaluator walks the AST and applies `operator` functions. It must not reach names,
+    calls, attributes or subscripts — a documentation gate is not a place to execute code."""
+    for hostile in ("__import__('os').getcwd()", "open('x')", "a + 1", "[1][0]"):
+        with pytest.raises(ClaimError, match="literal arithmetic|does not parse"):
+            resolve(Claim("x.md", 1, "1.0", Marker("derived", note=hostile)), tmp_path)
+
+
+def test_an_unmarked_claim_does_not_resolve(tmp_path: Path) -> None:
+    with pytest.raises(ClaimError, match="unmarked"):
+        resolve(Claim("x.md", 1, "0.777", None), tmp_path)
