@@ -53,6 +53,9 @@ EXPECTED: dict[str, tuple[str, str]] = {
     "9b": ("FINDINGS", "0.00 out of the box"),
     "9c": ("FINDINGS", "stronger entailment judge"),
     "9d": ("FINDINGS", "the paired head-to-head vs Mem0"),
+    # Cited by SUITE-DESIGN.md and CHANGELOG.md as the source of the BEAM reproduce commands —
+    # the evidence tier those documents now rest on, since the per-question dumps are gitignored.
+    "9e": ("FINDINGS", "headline numbers actually are"),
     "9g": ("FINDINGS", "hosted embedder"),
     "9h": ("FINDINGS", "abstention category is a hallucination test"),
     "9i": ("FINDINGS", "the count rule does not pay"),
