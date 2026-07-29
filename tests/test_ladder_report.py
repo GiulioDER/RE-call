@@ -24,6 +24,8 @@ from benchmarks.ladder.build import build_instances
 from benchmarks.ladder.manifest import (
     LABEL_ANSWERABLE,
     LABEL_UNANSWERABLE,
+    MANIFEST_VERSION_V1,
+    MANIFEST_VERSION_V2,
     RING_MAX,
     RING_ORIGINAL,
     Instance,
@@ -81,7 +83,9 @@ def _setup(tmp_path: Path, *, flat: bool) -> tuple[Path, Path]:
             rows.append({"instance_id": iid, "system": "recall", "abstained": abstained,
                          "cited_ids": [], "tokens": 0})
     manifest = tmp_path / "manifest.jsonl"
-    write_manifest(manifest, instances, ring_widths=[0], corpus_hashes={})
+    write_manifest(
+        manifest, instances, ring_widths=[0], corpus_hashes={}, manifest_version=MANIFEST_VERSION_V1
+    )
     responses = tmp_path / "responses.jsonl"
     responses.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
     return manifest, responses
@@ -95,7 +99,10 @@ def _write_responses(tmp_path: Path, name: str, rows: list[dict]) -> Path:
 
 def _write_manifest_from_instances(tmp_path: Path, name: str, instances) -> Path:
     path = tmp_path / name
-    write_manifest(path, instances, ring_widths=[0, 4, 16, 64], corpus_hashes={"locomo": "x"})
+    write_manifest(
+        path, instances, ring_widths=[0, 4, 16, 64], corpus_hashes={"locomo": "x"},
+        manifest_version=MANIFEST_VERSION_V1,
+    )
     return path
 
 
@@ -226,7 +233,10 @@ def test_a_pair_with_no_overlap_prints_n_equals_zero_instead_of_aborting(tmp_pat
                      "cited_ids": [], "tokens": 0})
 
     manifest = tmp_path / "manifest.jsonl"
-    write_manifest(manifest, instances, ring_widths=[0, 4], corpus_hashes={})
+    write_manifest(
+        manifest, instances, ring_widths=[0, 4], corpus_hashes={},
+        manifest_version=MANIFEST_VERSION_V1,
+    )
     responses = _write_responses(tmp_path, "responses.jsonl", rows)
 
     rc = main(["--manifest", str(manifest), "--responses", str(responses)])
@@ -249,7 +259,9 @@ def test_the_headline_contrast_with_no_shared_data_propagates_instead_of_printin
                  excised_doc_ids=("g",), gold_doc_ids=("g",), pair_id="p2"),
     ]
     manifest = tmp_path / "manifest.jsonl"
-    write_manifest(manifest, instances, ring_widths=[0], corpus_hashes={})
+    write_manifest(
+        manifest, instances, ring_widths=[0], corpus_hashes={}, manifest_version=MANIFEST_VERSION_V1
+    )
     rows = [
         {"instance_id": "p1#d0", "system": "recall", "abstained": False, "cited_ids": [], "tokens": 0},
         {"instance_id": "p2#dmax", "system": "recall", "abstained": True, "cited_ids": [], "tokens": 0},
@@ -290,7 +302,10 @@ def _confound_setup(tmp_path: Path) -> tuple[Path, Path]:
             rows.append({"instance_id": iid, "system": "recall", "abstained": abstained,
                          "cited_ids": [], "tokens": 0})
     manifest = tmp_path / "manifest.jsonl"
-    write_manifest(manifest, instances, ring_widths=[0, 64], corpus_hashes={})
+    write_manifest(
+        manifest, instances, ring_widths=[0, 64], corpus_hashes={},
+        manifest_version=MANIFEST_VERSION_V1,
+    )
     responses = _write_responses(tmp_path, "responses.jsonl", rows)
     return manifest, responses
 
@@ -326,7 +341,10 @@ def test_the_qualification_line_is_absent_when_the_widest_contrast_also_separate
             rows.append({"instance_id": iid, "system": "recall", "abstained": abstained,
                          "cited_ids": [], "tokens": 0})
     manifest = tmp_path / "manifest.jsonl"
-    write_manifest(manifest, instances, ring_widths=[0, 64], corpus_hashes={})
+    write_manifest(
+        manifest, instances, ring_widths=[0, 64], corpus_hashes={},
+        manifest_version=MANIFEST_VERSION_V1,
+    )
     responses = _write_responses(tmp_path, "responses.jsonl", rows)
 
     main(["--manifest", str(manifest), "--responses", str(responses)])
@@ -367,3 +385,133 @@ def test_the_report_discloses_the_uncalibrated_bge_small_floor(tmp_path: Path, c
     assert "bge-small" in out
     assert "0.50" in out
     assert "calibrat" in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# FIX-A / FIX-STAKES2 / FIX-ENV4: the headline label must name the contrast that
+# actually ran, v2's basis-point rungs must not borrow v1's `d=` notation, and a
+# v2 manifest under v1's default flags must fail with a message that names the fix.
+# ---------------------------------------------------------------------------
+
+
+def _write_manifest_with_version(
+    path: Path, instances, ring_widths: list[int], corpus_hashes: dict, version: str
+) -> Path:
+    """Thin wrapper so the v2-shaped fixtures below read `manifest_version="2.0"` at the call
+    site rather than a bare literal. `write_manifest` itself requires `manifest_version` with no
+    default (a concurrent fix on this branch, mirroring how `build.py`/`build_v2.py` each pass
+    their own literal) — this wrapper does not insulate against that, it just names the intent.
+    """
+    write_manifest(
+        path, instances, ring_widths=ring_widths, corpus_hashes=corpus_hashes,
+        manifest_version=version,
+    )
+    return path
+
+
+def _v2_shaped_setup(tmp_path: Path, *, flat: bool) -> tuple[Path, Path]:
+    """40 synthetic paired questions across v2's basis-point rungs (0/2500/5000/7500/10000).
+
+    Mirrors `_setup`'s shape (paired, `flat` toggles whether abstention separates) but on v2's
+    rung system, so the v1-vs-v2 labelling and headline-mismatch fixes have a manifest to exercise
+    without touching real LOCOMO data or anything under `results/`.
+    """
+    instances = []
+    rows = []
+    for i in range(40):
+        for ring in (0, 2500, 5000, 7500, 10000):
+            iid = f"p{i}#r{ring}"
+            instances.append(
+                Instance(
+                    instance_id=iid, corpus="locomo", source_question_id=f"q{i}",
+                    question="q", label=LABEL_UNANSWERABLE, ring=ring,
+                    excised_doc_ids=("g",), gold_doc_ids=("g",), pair_id=f"p{i}",
+                )
+            )
+            abstained = False if flat else (ring == 10000)
+            rows.append({"instance_id": iid, "system": "recall", "abstained": abstained,
+                         "cited_ids": [], "tokens": 0})
+    manifest = tmp_path / "manifest_v2.jsonl"
+    _write_manifest_with_version(
+        manifest, instances, ring_widths=[0, 2500, 5000, 7500, 10000], corpus_hashes={},
+        version=MANIFEST_VERSION_V2,
+    )
+    responses = tmp_path / "responses_v2.jsonl"
+    responses.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    return manifest, responses
+
+
+def test_the_headline_label_on_a_v1_manifest_is_unchanged(tmp_path: Path, capsys):
+    """Regression guard: the v1 wording (and therefore the v1 numbers already published in
+    results/ladder/H1_VERDICT.txt) must not move while FIX-A/FIX-STAKES2 land."""
+    manifest, responses = _setup(tmp_path, flat=False)
+    main(["--manifest", str(manifest), "--responses", str(responses)])
+    out = capsys.readouterr().out
+    h1_lines = [line for line in out.splitlines() if line.startswith("H1 (pre-registered)")]
+    assert h1_lines
+    assert "d=max - d=0" in h1_lines[0]
+
+
+def test_the_headline_label_on_a_v2_manifest_names_the_rungs_actually_used(tmp_path: Path, capsys):
+    """FIX-A: the headline must name the contrast that ran (r=0.00 vs r=1.00 on a basis-point
+    manifest), not the hardcoded v1 wording `d=max - d=0` — that pair never appears in a v2
+    manifest at all."""
+    manifest, responses = _v2_shaped_setup(tmp_path, flat=False)
+    rc = main(
+        ["--manifest", str(manifest), "--responses", str(responses), "--low", "0", "--high", "10000"]
+    )
+    out = capsys.readouterr().out
+    h1_lines = [line for line in out.splitlines() if line.startswith("H1 (pre-registered)")]
+    assert h1_lines
+    assert "r=1.00" in h1_lines[0]
+    assert "r=0.00" in h1_lines[0]
+    assert "d=max" not in h1_lines[0]
+    assert rc == 0
+
+
+def test_v2_rungs_render_with_fraction_notation_not_v1_d_notation(tmp_path: Path, capsys):
+    """FIX-STAKES2: v2's basis-point rungs must render as `r=0.25` etc. via
+    `rings.ring_to_fraction`, never reusing v1's `d=<count>` notation for a number that means a
+    fraction of the cluster, not a count of excised neighbours."""
+    manifest, responses = _v2_shaped_setup(tmp_path, flat=False)
+    main(
+        ["--manifest", str(manifest), "--responses", str(responses), "--low", "0", "--high", "10000"]
+    )
+    out = capsys.readouterr().out
+    assert "r=0.25" in out
+    assert "r=0.50" in out
+    assert "r=0.75" in out
+    assert "r=1.00" in out
+    assert "d=2500" not in out
+    assert "d=5000" not in out
+    assert "d=7500" not in out
+    assert "d=10000" not in out
+
+
+def test_a_manifest_with_no_manifest_version_key_falls_back_to_v1_labelling(
+    tmp_path: Path, capsys
+):
+    """A manifest predating the `manifest_version` header key must still render with v1's `d=`
+    notation rather than crashing or guessing — the fallback FIX-STAKES2 requires."""
+    manifest, responses = _setup(tmp_path, flat=False)
+    lines = manifest.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    del header["manifest_version"]
+    lines[0] = json.dumps(header, sort_keys=True, ensure_ascii=False)
+    manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    main(["--manifest", str(manifest), "--responses", str(responses)])
+    out = capsys.readouterr().out
+    assert "d=max" in out
+
+
+def test_running_report_on_a_v2_manifest_with_default_flags_names_the_mismatch(
+    tmp_path: Path, capsys
+):
+    """FIX-ENV4: `--high` defaults to RING_MAX (-1), v1's sentinel. A v2 manifest has no such
+    rung, and the old failure was a generic 'no question appears at BOTH rung 0 and rung -1' that
+    never mentioned the v1/v2 mismatch. This is currently-uncovered: no existing test runs a v2
+    manifest through main() without explicit --low/--high."""
+    manifest, responses = _v2_shaped_setup(tmp_path, flat=False)
+    with pytest.raises(ValueError, match="--high 10000"):
+        main(["--manifest", str(manifest), "--responses", str(responses)])
