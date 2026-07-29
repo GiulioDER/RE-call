@@ -30,14 +30,26 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   retrieval budget) stays excluded; `n=` (a sample size, a claim about the data) is now gated.
   Comma-grouped integers (`n=1,536`) now scan as one token instead of shredding into `1` / `536`
   at each comma, and `matches()` strips commas before comparing digits to an artifact.
-  `results/CLAIMS_BASELINE.json` was regenerated — **2431 -> 2444 unmarked numbers** — and
-  `MAX_BASELINE_ENTRIES` raised to match: a deliberate coverage expansion (roughly 60
-  previously-invisible `n=` integers becoming visible, partially offset by comma-grouped pairs
-  merging into one token), not the ratchet slipping. `resolve()` also now rejects an artifact
-  marker whose path resolves outside `results_root` — `MARKER_RE`'s `[\w./-]+\.json` permits
-  `../`, which could otherwise cite a real file that was never committed as a result.
-  (`benchmarks/claim_gate.py`, `tests/test_published_numbers_have_artifacts.py`,
+  `results/CLAIMS_BASELINE.json` was regenerated — **2431 -> 2444 unmarked numbers** at the time
+  of THIS change — and `MAX_BASELINE_ENTRIES` raised to match: a deliberate coverage expansion
+  (roughly 60 previously-invisible `n=` integers becoming visible, partially offset by
+  comma-grouped pairs merging into one token), not the ratchet slipping. `resolve()` also now
+  rejects an artifact marker whose path resolves outside `results_root` — `MARKER_RE`'s
+  `[\w./-]+\.json` permits `../`, which could otherwise cite a real file that was never committed
+  as a result. (`benchmarks/claim_gate.py`, `tests/test_published_numbers_have_artifacts.py`,
   `results/CLAIMS_BASELINE.json`)
+
+  **Correction, added later rather than left to drift again:** the `2444` figure above is a
+  point-in-time delta for this one bullet, not the file's current total, and two more
+  regenerations landed after it without this entry being revisited — first +37 to **2481**
+  merging `origin/master` (PR #154 introduced 21 new uncited numbers in `SUITE-DESIGN.md`'s
+  Track C rewrite), then a net-zero relabeling to **2481** when `benchmarks/claim_gate.py`
+  started capturing a leading sign (unsigned digit strings moved to their signed key; nothing was
+  added or removed). **2481 is what `results/CLAIMS_BASELINE.json` actually holds as committed
+  here.** Treat `MAX_BASELINE_ENTRIES`'s comment block in
+  `tests/test_published_numbers_have_artifacts.py` as the authoritative running history from now
+  on — it is updated at every regeneration by construction (the test fails otherwise) — rather
+  than this changelog bullet, which has no such guarantee.
 ### Fixed
 - **The planning documents compared two different false-abstain measurements, and quoted a stale
   significance test.** `SUITE-DESIGN.md` (Track C) and `PREREGISTRATION-currency.md` both asserted
