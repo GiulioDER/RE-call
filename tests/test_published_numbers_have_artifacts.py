@@ -190,6 +190,47 @@ def test_a_marker_binds_only_to_the_nearest_preceding_number() -> None:
     assert second.marker.key == "k"
 
 
+# --- P1-B: markers inside code spans must not bind ----------------------------------------
+
+
+def test_a_marker_inside_backticks_does_not_bind_to_a_preceding_bare_number() -> None:
+    """Reproduction: documenting marker syntax in backticks must not launder a real number.
+
+    Before the fix, `scan_text` extracted NUMBERS from the masked text but MARKERS from the raw
+    text, so a marker written inside inline code still bound to whatever real number preceded it
+    in prose on the same line — and the number never landed in `unmarked_counts`, so the ratchet
+    could not see it either.
+    """
+    claims = scan_text(
+        "Our score improved to 0.884 this week, e.g. write markers like "
+        "`<!--@ citation-pending: example -->`.",
+        doc="x.md",
+    )
+    assert len(claims) == 1
+    assert claims[0].text == "0.884"
+    assert claims[0].marker is None  # unmarked: the marker was inside code, so it doesn't count
+    with pytest.raises(ClaimError, match="unmarked"):
+        resolve(claims[0], RESULTS_ROOT)
+
+
+def test_a_marker_inside_a_fenced_block_does_not_bind() -> None:
+    """Same line, so a different-line skip in `_marker_for` cannot be what blocks the bind — only
+    the fenced-code mask can be."""
+    text = "The headline is 0.777 today. ```<!--@ citation-pending: example -->``` more text"
+    claims = scan_text(text, doc="x.md")
+    assert len(claims) == 1
+    assert claims[0].text == "0.777"
+    assert claims[0].marker is None
+
+
+def test_a_marker_outside_code_still_binds_normally() -> None:
+    """The fix must not blind the scanner to REAL markers — only ones sitting inside code."""
+    claims = scan_text("reaches 0.777 <!--@ f.json # k -->", doc="x.md")
+    assert len(claims) == 1
+    assert claims[0].marker is not None
+    assert claims[0].marker.kind == "artifact"
+
+
 def test_match_rule_rounds_to_the_published_precision() -> None:
     assert matches("0.777", 0.77714)
     assert matches("0.78", 0.7771)
