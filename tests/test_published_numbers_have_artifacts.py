@@ -102,6 +102,74 @@ def test_line_numbers_are_one_based() -> None:
     assert [c.line for c in claims] == [2]
 
 
+# --- P1-A: sign-aware NUMBER_RE ------------------------------------------------------------
+
+
+def test_a_correctly_cited_negative_claim_resolves() -> None:
+    """0.671 - 0.736 is genuinely -0.065; a correctly-signed claim must not be rejected."""
+    claims = scan_text(
+        "Delta was -0.065 <!--@ derived: 0.671 - 0.736 --> after the fix.", doc="x.md"
+    )
+    assert len(claims) == 1
+    assert claims[0].text == "-0.065"
+    resolve(claims[0], RESULTS_ROOT)  # does not raise
+
+
+def test_a_sign_flipped_claim_is_rejected() -> None:
+    """Reproduction: the document prints -0.065 but the derived value is +0.065 — a wrong sign
+    must not read as verified. Before the fix, `Claim.text` dropped the minus entirely and this
+    ACCEPTED."""
+    claims = scan_text(
+        "Delta was -0.065 <!--@ derived: 0.736 - 0.671 --> after the fix.", doc="x.md"
+    )
+    assert len(claims) == 1
+    assert claims[0].text == "-0.065"
+    with pytest.raises(ClaimError, match="derived"):
+        resolve(claims[0], RESULTS_ROOT)
+
+
+def test_a_hyphenated_range_is_not_read_as_negative() -> None:
+    """The hyphen in `0.36-0.43` is preceded by a digit, so it is a range separator, not a sign."""
+    claims = scan_text("the estimate spans 0.36-0.43 across runs.", doc="x.md")
+    assert [c.text for c in claims] == ["0.36", "0.43"]
+
+
+def test_a_leading_hyphen_after_a_word_boundary_is_a_sign() -> None:
+    """Adjacent to the digits and preceded by non-alnum (a space here) -> genuinely a sign."""
+    claims = scan_text("score change: -5 points", doc="x.md")
+    assert [c.text for c in claims] == ["-5"]
+
+
+def test_a_bullet_hyphen_with_a_space_is_not_a_sign() -> None:
+    """`- 5` (list marker, space before the digit) must not be read as `-5`: the sign must be
+    IMMEDIATELY adjacent to the digits, with nothing in between."""
+    claims = scan_text("- 5 items were dropped\n", doc="x.md")
+    assert [c.text for c in claims] == ["5"]
+
+
+def test_a_hyphen_after_an_identifier_is_not_a_sign() -> None:
+    """`a-1` and `5-3`: a hyphen preceded by an alphanumeric character is never a sign."""
+    claims = scan_text("run a-1 scored 5-3 on the rubric.", doc="x.md")
+    assert [c.text for c in claims] == ["1", "5", "3"]
+
+
+def test_unicode_minus_is_captured_as_a_sign() -> None:
+    """`results/FINDINGS.md` prints negative deltas with U+2212 (−), not ASCII `-`."""
+    claims = scan_text("oov_rate correlates −0.512 with corpus size", doc="x.md")
+    assert claims[0].text == "−0.512"
+
+
+def test_match_rule_normalises_unicode_minus() -> None:
+    assert matches("−0.512", -0.512)
+    assert not matches("−0.512", 0.512)
+
+
+def test_derived_subtraction_inside_the_marker_still_parses() -> None:
+    """The `derived:` expression itself lives inside an HTML comment, already masked from
+    NUMBER_RE — the sign-capture change must not disturb evaluating it."""
+    resolve(Claim("x.md", 1, "-0.065", Marker("derived", note="0.671 - 0.736")), RESULTS_ROOT)
+
+
 def test_a_marker_binds_only_to_the_nearest_preceding_number() -> None:
     """Two numbers before one marker must not both read as backed by it.
 
@@ -287,7 +355,20 @@ MAX_BASELINE_ENTRIES = 2481  # generated 2026-07-29: 2481 unmarked occurrences a
 #: 0.594, 0.650, ...). The gate caught them on the merge, which is the guard working; they are
 #: baselined rather than cited because they landed on master BEFORE this gate existed, the same
 #: reasoning that froze the original 2431. Numbers written into these documents from here on must
-#: carry a marker.)
+#: carry a marker.
+#:
+#: 2481 -> 2481 (net 0) after P1-A: `NUMBER_RE`/`Claim.text` now capture a leading sign (ASCII `-`
+#: or Unicode minus `−`), so `matches()` can catch a sign-flipped claim instead of silently
+#: accepting one — see the note on `NUMBER_RE` in `benchmarks/claim_gate.py`. This RELABELS
+#: entries, it does not add or remove any: every occurrence that used to sit under its unsigned
+#: digit string (`"0.065"`) now sits under its signed one (`"-0.065"`) if the document actually
+#: printed the sign — the per-document and grand totals are identical before and after (RESULTS
+#: 826, FINDINGS 1274, README 303, SUITE-DESIGN 78; 2481 throughout). Two effects are visible in
+#: the regenerated file: (1) FINDINGS.md and RESULTS.md's negative deltas (`−0.009`, `−0.512`,
+#: ...) move from their unsigned to their signed key; (2) README.md's Quickstart anchor slug
+#: `#quickstart--2-minutes...` — a `-` preceded by another `-`, which the stated sign rule counts
+#: as real — relabels 2 occurrences of `"2"` to `"-2"`. Neither is a real claim in either form;
+#: see the stated-limit paragraph on `NUMBER_RE`.)
 
 
 def test_unmarked_counts_ignores_marked_numbers() -> None:

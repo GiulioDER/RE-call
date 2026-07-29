@@ -93,7 +93,58 @@ MARKER_RE = re.compile(
 #: comma-grouped ones — and the SAME figure appears both ways in all three, `1 536` beside
 #: `1,536`. So one published sample size is a single claim in one sentence and `1` + `536` in
 #: another. That is the size of what this branch chose not to solve.
-NUMBER_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
+#:
+#: An optional leading sign is captured into the token: `results/FINDINGS.md` and
+#: `results/RESULTS.md` print negative deltas as `−0.512` (Unicode minus, U+2212), never ASCII
+#: `-`; the reproduction that motivated this fix used ASCII `-`. Both are handled here — handling
+#: only one would leave the other silently unmarked.
+#:
+#: The regex itself just consumes an optional `-`/`−` immediately ahead of the digits, exactly
+#: like the comma-grouping and decimal parts beside it — no lookbehind, no context. Whether a
+#: consumed sign is a REAL sign (and not, say, the `-` in a hyphenated range or a hyphenated
+#: identifier) is decided AFTER matching, in `scan_text`, against the ORIGINAL unmasked `text` —
+#: not against `masked`, and not in this pattern. That split is load-bearing, not a style choice:
+#: an earlier version of this fix put the disqualifying lookbehind directly in the regex, run
+#: against `masked`. `EXCLUSIONS`'s year row replaces `2026` with four spaces, so in `masked`
+#: `2026-07` becomes `    -07` — the character immediately before that `-` is now a SPACE, not
+#: the digit `6` it actually is in the document, and a lookbehind checked against `masked` reads
+#: the exposed `-` as a genuine sign, turning a bare year-month fragment into a fabricated
+#: negative claim. Masking replaces characters, it does not remove them, so `text[start - 1]` — the
+#: ORIGINAL character, checked in `scan_text` — still sees the `6` and correctly disqualifies it.
+#: The rule itself: a sign is real when the character immediately before it is neither an ASCII
+#: digit nor an ASCII letter. That is what tells `-0.065` (preceded by a space) apart from
+#: `0.36-0.43` (preceded by the digit `6` — a hyphenated range, not a sign) and from `gpt-4` or
+#: `a-1` (preceded by a letter). A disqualified sign is not dropped silently: the claim keeps the
+#: digits, unsigned, starting one character later — exactly the token this regex would have
+#: produced before this fix existed.
+#:
+#: Stated limit: a `-` preceded by ANOTHER `-` still qualifies as a sign under this rule (the
+#: character before it is punctuation, not alnum) — a markdown anchor slug like
+#: `#quickstart--2-minutes...` (rendered from an em dash in the source heading) reads as `-2`.
+#: `EXCLUSIONS` has no row for bare `<a href="#...">` fragments (only `https?://` URLs are
+#: excluded), so this was already an unmasked, uncited digit before this fix — sign capture only
+#: changes its REPRESENTATION, from an unsigned baseline entry to a signed one. It is not a real
+#: claim in either form, and both read as inert once baselined.
+NUMBER_RE = re.compile(r"[-−]?\d{1,3}(?:,\d{3})+(?:\.\d+)?|[-−]?\d+(?:\.\d+)?")
+
+#: Characters `NUMBER_RE` may consume as a leading sign. Kept alongside the pattern so
+#: `_disqualify_sign`'s ASCII-alnum lookback rule (see `scan_text`) stays visibly paired with what
+#: the regex actually treats as a sign.
+_SIGN_CHARS = "-−"
+
+
+def _sign_is_real(text: str, start: int) -> bool:
+    """True when the sign character `NUMBER_RE` consumed at `start` is a genuine sign.
+
+    Checked against the ORIGINAL `text`, never `masked` — see the note on `NUMBER_RE` for why
+    that distinction is load-bearing. Nothing before `start` (start of document or start of line,
+    since a newline is not alnum either) counts as a qualifying predecessor, so a sign at the very
+    top of a line is real.
+    """
+    if start == 0:
+        return True
+    before = text[start - 1]
+    return not (before.isascii() and before.isalnum())
 
 
 @dataclass(frozen=True)
@@ -108,7 +159,12 @@ class Marker:
 
 @dataclass(frozen=True)
 class Claim:
-    """One number as it appears in a document. `text` is the LITERAL digit string as published."""
+    """One number as it appears in a document. `text` is the LITERAL digit string as published,
+
+    including a leading sign when the document prints one (`-0.065` or `−0.065` — see the sign
+    rule documented on `NUMBER_RE`). An unsigned claim has no leading sign character at all;
+    there is no separate "positive" marker.
+    """
 
     doc: str
     line: int
@@ -187,18 +243,26 @@ def scan_text(text: str, doc: str) -> list[Claim]:
     markers: list[tuple[int, Marker]] = [
         (m.start(), _marker_from(m)) for m in MARKER_RE.finditer(text)
     ]
-    numbers = list(NUMBER_RE.finditer(masked))
-    number_starts = [number.start() for number in numbers]
+    # (start, end, literal claim text) — `start`/`text` are adjusted below when a consumed sign
+    # turns out not to be real; `end` never changes, since a disqualified sign is dropped from the
+    # FRONT of the token, not the back.
+    numbers: list[tuple[int, int, str]] = []
+    for number in NUMBER_RE.finditer(masked):
+        start, end, value = number.start(), number.end(), number.group(0)
+        if value[0] in _SIGN_CHARS and not _sign_is_real(text, start):
+            start, value = start + 1, value[1:]
+        numbers.append((start, end, value))
+    number_starts = [start for start, _end, _value in numbers]
     claims: list[Claim] = []
-    for number in numbers:
-        line = _line_of(number.start(), line_starts)
-        other_starts = [start for start in number_starts if start != number.start()]
+    for start, end, value in numbers:
+        line = _line_of(start, line_starts)
+        other_starts = [s for s in number_starts if s != start]
         claims.append(
             Claim(
                 doc=doc,
                 line=line,
-                text=number.group(0),
-                marker=_marker_for(number.end(), line, markers, line_starts, other_starts),
+                text=value,
+                marker=_marker_for(end, line, markers, line_starts, other_starts),
             )
         )
     return claims
@@ -236,8 +300,10 @@ def matches(published: str, actual: object) -> bool:
         return False
     # Comma grouping is a formatting choice ("1,536" vs "1536"), not part of the published
     # precision — strip it before comparing digits so a comma-grouped sample size matches the
-    # plain int an artifact holds.
-    normalized = published.replace(",", "")
+    # plain int an artifact holds. The Unicode minus is likewise a formatting choice for the same
+    # sign ("−0.512" vs "-0.512") — normalise it to ASCII so it lines up with the "-" that
+    # `f"{float(actual):...}"` always produces for a negative Python float below.
+    normalized = published.replace(",", "").replace("−", "-")
     if "." in normalized:
         decimals = len(normalized.split(".", 1)[1])
         return f"{float(actual):.{decimals}f}" == normalized
