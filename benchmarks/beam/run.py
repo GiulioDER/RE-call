@@ -721,7 +721,7 @@ def _main() -> None:
     # against below; deriving it here is the only place it is knowable.
     expected: set[str] = set()
     ablation: list[dict[str, Any]] = []
-    ablation_run = False
+    ablation_ran = False
 
     try:
         wanted_types = (
@@ -738,7 +738,7 @@ def _main() -> None:
                 continue
             n_turns = system.ingest(conv)
             print(f"  conversation {conv.index}: {n_turns} turns indexed, {len(pending)} questions")
-            if not ablation_run:
+            if not ablation_ran:
                 # After index build, before the FIRST generator call: retrieval-only, so an inert
                 # arm is caught before a single token is spent. Fires on whichever conversation is
                 # ingested FIRST in this run's loop — not necessarily conv.index 0 — because
@@ -751,7 +751,7 @@ def _main() -> None:
                     metric_class="set",
                     allow_inert=args.allow_inert_arm,
                 )
-                ablation_run = True
+                ablation_ran = True
                 print(f"ablation preflight: {ablation}", flush=True)
             rows.extend(_run_pool(pending, _score, args.workers))
     finally:
@@ -795,7 +795,7 @@ def _main() -> None:
             "verdicts": ablation,
             "allow_inert_arm": bool(args.allow_inert_arm),
             "sample": args.ablation_sample,
-            "ran": ablation_run,
+            "ran": ablation_ran,
         },
     }
     out_base.with_suffix(".json").write_text(
