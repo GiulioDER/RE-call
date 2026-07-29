@@ -334,11 +334,28 @@ def main(argv: list[str] | None = None) -> int:
             "silently skipping it."
         ),
     )
+    parser.add_argument(
+        "--embedder",
+        default=None,
+        help=(
+            "fastembed model name for the RE-call arm. Default: the adapter's own shipped default "
+            "(BAAI/bge-small-en-v1.5). A different embedder is a SEPARATELY LABELLED ARM and never "
+            "the headline (SUITE-DESIGN rule 4); its vector dimension also differs, so it needs "
+            "its own --table -- pointing two dimensions at one table is a hard error, not a subtle "
+            "one, but the table is yours to choose."
+        ),
+    )
     parser.add_argument("--no-resume", action="store_true")
     args = parser.parse_args(argv)
 
     corpus = load_locomo(args.locomo)
-    system = RecallSystem(args.dsn, table=args.table, tenant=args.tenant)
+    embedder = None
+    if args.embedder is not None:
+        from recall.embeddings import FastEmbedEmbedder
+
+        embedder = FastEmbedEmbedder(args.embedder)
+        print(f"embedder: {args.embedder} (dim {embedder.dim}) — separately labelled arm")
+    system = RecallSystem(args.dsn, table=args.table, tenant=args.tenant, embedder=embedder)
     # Fail in the first second, not the fortieth minute: see `smoke_check`'s docstring. Run against
     # the REAL adapter instance before it ever touches the manifest, so a broken signature never
     # gets to burn even one real corpus state.

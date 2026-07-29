@@ -238,10 +238,11 @@ def test_main_threads_table_and_tenant_flags_into_recall_system(tmp_path: Path, 
     class _StubRecallSystem:
         name = "recall"
 
-        def __init__(self, dsn, *, table, tenant):
+        def __init__(self, dsn, *, table, tenant, embedder=None):
             captured["dsn"] = dsn
             captured["table"] = table
             captured["tenant"] = tenant
+            captured["embedder"] = embedder
             self._docs: dict[str, str] = {}
 
         def ingest(self, docs: Iterable[Document]) -> None:
@@ -290,9 +291,10 @@ def test_main_defaults_table_and_tenant_when_flags_are_omitted(tmp_path: Path, m
     class _StubRecallSystem:
         name = "recall"
 
-        def __init__(self, dsn, *, table, tenant):
+        def __init__(self, dsn, *, table, tenant, embedder=None):
             captured["table"] = table
             captured["tenant"] = tenant
+            captured["embedder"] = embedder
             self._docs: dict[str, str] = {}
 
         def ingest(self, docs: Iterable[Document]) -> None:
@@ -532,3 +534,55 @@ def test_a_malformed_line_in_the_middle_of_the_file_stays_loud(tmp_path: Path):
     with pytest.raises(ValueError, match="not valid JSON"):
         run(_manifest(tmp_path), _Fake(), out, documents=DOCS, cluster_members={"c": tuple(DOCS)},
             resume=True)
+
+
+def test_omitting_the_embedder_flag_leaves_the_arm_on_the_shipped_default(tmp_path: Path, monkeypatch):
+    """A different embedder is a separately labelled arm (SUITE-DESIGN rule 4).
+
+    So the absence of `--embedder` must reach RecallSystem as None — letting it default inside the
+    adapter — rather than this layer picking a model. If main() ever started naming a default here,
+    an arm could change identity without its label changing, which is the same defect class as a
+    headline naming a contrast that never ran.
+    """
+    import benchmarks.ladder.sources.locomo as locomo_mod
+    import benchmarks.ladder.systems.recall_system as recall_system_mod
+    from benchmarks.ladder.sources.locomo import SourceCorpus
+
+    captured: dict[str, object] = {}
+
+    class _Stub:
+        name = "recall"
+
+        def __init__(self, dsn, *, table, tenant, embedder=None):
+            captured["embedder"] = embedder
+            self._docs: dict[str, str] = {}
+
+        def ingest(self, docs: Iterable[Document]) -> None:
+            self._docs = {d.doc_id: d.text for d in docs}
+
+        def indexed_doc_ids(self) -> frozenset[str]:
+            return frozenset(self._docs)
+
+        def query(self, question: str) -> Response:
+            # Must ANSWER, not abstain: invariant 3 rejects a run where every answerable original
+            # was declined, on the grounds that such questions are broken rather than hard. A stub
+            # that abstained unconditionally would trip that guard and this test would be measuring
+            # the guard instead of the flag. (It did, on the first draft.)
+            first = sorted(self._docs)[0] if self._docs else None
+            return Response(answer=None) if first is None else Response(answer=self._docs[first])
+
+    monkeypatch.setattr(recall_system_mod, "RecallSystem", _Stub)
+    monkeypatch.setattr(
+        locomo_mod,
+        "load_locomo",
+        lambda _p: SourceCorpus(
+            documents=tuple(DOCS.items()),
+            questions=(),
+            cluster_members={"c": tuple(DOCS)},
+            content_hash="x",
+        ),
+    )
+    manifest = _manifest(tmp_path)
+    out = tmp_path / "r.jsonl"
+    main(["--manifest", str(manifest), "--locomo", "x.json", "--out", str(out), "--dsn", "d"])
+    assert captured["embedder"] is None
