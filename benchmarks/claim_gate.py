@@ -180,6 +180,31 @@ def mask_excluded(text: str) -> str:
     return masked
 
 
+#: The `EXCLUSIONS` rows that mask CODE, not prose — the only ones relevant to deciding whether a
+#: `MARKER_RE` match sits inside a code span (P1-B). Selected by identity, not by re-deriving a
+#: pattern: `EXCLUSIONS` is the one place those regexes live, and duplicating them here would let
+#: the two silently drift. Deliberately NOT the html-comment row: that row exists to mask the
+#: marker's OWN citation text out of number-scanning, and masking it here too would make every
+#: marker invisible to `mask_code_only`, defeating the very check this mask exists to run.
+_CODE_EXCLUSIONS = tuple(
+    row for row in EXCLUSIONS if row[0] in ("fenced code — code, not prose", "inline code — code, not prose")
+)
+
+
+def mask_code_only(text: str) -> str:
+    """Replace fenced and inline code spans with spaces, preserving all offsets.
+
+    A marker documenting its own syntax is naturally written inside backticks — that is the
+    normal way to show markdown source rather than have it render. Without this mask, `scan_text`
+    would let such a marker bind to whatever real, uncited number happens to precede it in prose
+    on the same line, laundering a fabricated figure as cited.
+    """
+    masked = text
+    for _reason, pattern, flags in _CODE_EXCLUSIONS:
+        masked = re.sub(pattern, lambda m: " " * (m.end() - m.start()), masked, flags=flags)
+    return masked
+
+
 def _marker_from(match: re.Match[str]) -> Marker:
     if match.group("pending"):
         return Marker(kind="citation-pending", note=(match.group("pending_note") or "").strip())
@@ -237,11 +262,19 @@ def scan_text(text: str, doc: str) -> list[Claim]:
     A marker binds to the NEAREST PRECEDING number on the same line. Two numbers on one line need
     two markers; that is deliberate, because a single marker covering both would let one of them
     drift unchecked.
+
+    A marker match is dropped entirely when its start falls inside a fenced or inline code span
+    (P1-B) — `code_masked[start]` is a space there instead of the `<!--@` the raw text always has
+    at a real marker's start, exactly the same "did masking touch this position" test the sign
+    check above runs against `text`.
     """
     masked = mask_excluded(text)
+    code_masked = mask_code_only(text)
     line_starts = _line_starts(text)
     markers: list[tuple[int, Marker]] = [
-        (m.start(), _marker_from(m)) for m in MARKER_RE.finditer(text)
+        (m.start(), _marker_from(m))
+        for m in MARKER_RE.finditer(text)
+        if code_masked[m.start()] == text[m.start()]
     ]
     # (start, end, literal claim text) — `start`/`text` are adjusted below when a consumed sign
     # turns out not to be real; `end` never changes, since a disqualified sign is dropped from the
