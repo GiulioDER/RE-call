@@ -37,6 +37,7 @@ from benchmarks.ladder.build import sample_questions
 from benchmarks.ladder.manifest import (
     LABEL_ANSWERABLE,
     LABEL_UNANSWERABLE,
+    MANIFEST_VERSION_V2,
     RING_ORIGINAL,
     Instance,
     write_manifest,
@@ -173,10 +174,15 @@ def main(argv: list[str] | None = None) -> int:
         help="comma-separated rung fractions, fixed in PREREGISTRATION-ladder-v2.md",
     )
     parser.add_argument(
+        "--sample-questions",
         "--sample",
+        dest="sample_questions",
         type=int,
         default=200,
-        help="pre-registered question sample size; 0 means all",
+        help=(
+            "pre-registered question sample size; 0 means all "
+            "(same concept as build.py's --sample-questions; --sample is kept as an alias)"
+        ),
     )
     parser.add_argument("--sample-seed", type=int, default=0)
     parser.add_argument(
@@ -194,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         corpus,
         spec,
         corpus_name="locomo",
-        sample=args.sample or None,
+        sample=args.sample_questions or None,
         sample_seed=args.sample_seed,
         distractors=args.distractors,
         distractor_seed=args.distractor_seed,
@@ -204,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
         instances,
         ring_widths=[fraction_to_ring(f) for f in spec.fractions],
         corpus_hashes={"locomo": corpus.content_hash},
+        manifest_version=MANIFEST_VERSION_V2,
     )
     print(f"wrote {len(instances)} instances to {args.out}")
     print(f"digest {digest}")
