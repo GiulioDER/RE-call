@@ -20,11 +20,24 @@ def test_ranks_the_document_containing_the_query_terms_first():
     assert index.rank("backoff")[0][0] == "d2"
 
 
-def test_a_term_in_every_document_cannot_decide_the_ranking():
-    """IDF drives a term appearing in every document to near-zero weight."""
-    index = BM25Index([("a", "shared term"), ("b", "shared term"), ("c", "shared term")])
-    scores = index.score("shared")
-    assert len(set(scores)) == 1
+def test_a_term_in_every_document_scores_far_below_a_rare_one():
+    """IDF drives a term appearing in every document to near-zero weight.
+
+    The discriminating comparison is a universal term against a RARE one in the same corpus.
+    Three identical documents scoring identically proves nothing — that holds by symmetry even
+    with IDF removed, which is what the assertion this replaces actually tested.
+    """
+    index = BM25Index(
+        [
+            ("a", "shared shared shared rare"),
+            ("b", "shared shared shared"),
+            ("c", "shared shared shared"),
+        ]
+    )
+    universal = max(index.score("shared"))
+    rare = max(index.score("rare"))
+    assert rare > universal
+    assert universal < 0.35 * rare
 
 
 def test_ties_break_by_doc_id_ascending_not_insertion_order():
