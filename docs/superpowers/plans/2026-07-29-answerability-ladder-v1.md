@@ -2856,6 +2856,52 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
+### Task 11 AMENDMENT (2026-07-29, written before the verdict was computed)
+
+Measured during the RE-call arm, from the manifest and the corpus — not from any result:
+
+| rung | median surviving documents in the ingested slice |
+|---|---|
+| original | 629 |
+| d=0 | 628 |
+| d=4 | 624 |
+| d=16 | 612 |
+| d=64 | 564 |
+| **d=max** | **0** |
+
+Two consequences the report must carry, because the pre-registered contrast alone would mislead:
+
+1. **`d=max` ingests an EMPTY corpus.** A system abstaining there has not recognised an
+   unanswerable question; it has nothing indexed. The pre-registered H1 contrast is `d=0` vs
+   `d=max`, so it is **confounded**: it can report PASS on a system that only ever abstains when
+   its index is empty. That is the mirror of the failure this plan has twice guarded against —
+   a verdict driven by the harness rather than the phenomenon.
+2. **The non-degenerate rungs are near-duplicates.** Widths 0/4/16/64 against a median cluster of
+   629 turns remove at most ~10 % of the topic. The powers-of-four ladder fixed in the
+   pre-registration was calibrated for clusters an order of magnitude smaller. This is a design
+   error in the ladder, not in the system under test.
+
+**The pre-registered verdict is still computed and reported exactly as pre-registered** — it is not
+edited, softened, or replaced, and no threshold moves. What changes is that it is reported
+*alongside* the evidence that qualifies it. Specifically, `report.py` must additionally print:
+
+- **`n` for every comparison.** A 2-of-300 overlap computes silently with a maximally wide CI and
+  no signal distinguishing it from a healthy sample.
+- **surviving-document counts per rung**, so the `d=max` confound is visible in the output itself
+  rather than only in prose.
+- **every adjacent pairwise contrast**, and explicitly `d=0` vs `d=64` — the widest contrast whose
+  corpus is not empty. If that one is flat while `d=0` vs `d=max` is large, the honest reading is
+  that the axis as built prices "is anything indexed at all", not answerability, and the report
+  must say so in those words.
+- **a disclosure that the arm ran with no calibration for `bge-small`**, so abstention used the
+  untuned 0.50 cosine floor. That is the correct configuration under the suite's shipped-defaults
+  rule, and it is also the exact constant already measured as embedder-fragile.
+
+`H1_VERDICT.md` states the pre-registered verdict first, then this qualification, then what a v2
+ladder would need — widths scaled as a *fraction of cluster size* rather than absolute counts, and
+a `d=max` that leaves the topic present. A v2 requires its own pre-registration; it is not an edit
+to this one.
+
 ### Task 11: The H1 verdict, published whichever way it falls
 
 **Files:**
