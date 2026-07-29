@@ -114,3 +114,27 @@ def test_questions_without_evidence_are_dropped_not_silently_ungolded(tmp_path: 
     corpus = load_locomo(path)
     assert all(q.gold_doc_ids for q in corpus.questions)
     assert len(corpus.questions) == 1
+
+
+def test_category_five_drops_are_counted_not_merely_excluded(tmp_path: Path):
+    """The `dropped` field documents itself as 'reported, never silent', and on real LOCOMO this
+    branch discards 22.5% of the raw questions."""
+    corpus = load_locomo(_write(tmp_path))
+    assert corpus.dropped["category_5_adversarial"] == 1
+
+
+def test_a_qa_entry_with_no_question_text_is_dropped_and_counted(tmp_path: Path):
+    altered = json.loads(json.dumps(SAMPLE))
+    altered[0]["qa"].append({"answer": "x", "evidence": ["D1:1"], "category": 1})
+    path = tmp_path / "noquestion.json"
+    path.write_text(json.dumps(altered), encoding="utf-8")
+    corpus = load_locomo(path)
+    assert corpus.dropped["no_question_text"] == 1
+
+
+def test_every_dropped_question_is_accounted_for(tmp_path: Path):
+    """raw qa == retained + every drop reason. A drop path that forgets its counter makes this
+    arithmetic fail, which is the only way to catch the NEXT uncounted branch."""
+    corpus = load_locomo(_write(tmp_path))
+    raw = sum(len(s["qa"]) for s in SAMPLE)
+    assert raw == len(corpus.questions) + sum(corpus.dropped.values())

@@ -98,6 +98,10 @@ def load_locomo(path: Path) -> SourceCorpus:
 
         for i, qa in enumerate(sample.get("qa", [])):
             if qa.get("category") == _ADVERSARIAL_CATEGORY:
+                dropped["category_5_adversarial"] = dropped.get("category_5_adversarial", 0) + 1
+                continue
+            if not qa.get("question"):
+                dropped["no_question_text"] = dropped.get("no_question_text", 0) + 1
                 continue
             evidence = [e for e in (qa.get("evidence") or []) if isinstance(e, str)]
             if not evidence:
