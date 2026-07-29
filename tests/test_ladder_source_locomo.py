@@ -132,6 +132,45 @@ def test_a_qa_entry_with_no_question_text_is_dropped_and_counted(tmp_path: Path)
     assert corpus.dropped["no_question_text"] == 1
 
 
+def test_evidence_packing_several_ids_into_one_string_is_split(tmp_path: Path):
+    """LOCOMO does this in a handful of entries; the turns exist and the question is recoverable."""
+    altered = json.loads(json.dumps(SAMPLE))
+    altered[0]["qa"][0]["evidence"] = ["D1:1; D1:2"]
+    path = tmp_path / "packed.json"
+    path.write_text(json.dumps(altered), encoding="utf-8")
+    corpus = load_locomo(path)
+    q = next(q for q in corpus.questions if q.question_id == "conv-0/qa0")
+    assert q.gold_doc_ids == ("conv-0/D1:1", "conv-0/D1:2")
+
+
+def test_space_separated_packing_is_split_too(tmp_path: Path):
+    altered = json.loads(json.dumps(SAMPLE))
+    altered[0]["qa"][0]["evidence"] = ["D1:1 D1:2"]
+    path = tmp_path / "spaced.json"
+    path.write_text(json.dumps(altered), encoding="utf-8")
+    corpus = load_locomo(path)
+    q = next(q for q in corpus.questions if q.question_id == "conv-0/qa0")
+    assert q.gold_doc_ids == ("conv-0/D1:1", "conv-0/D1:2")
+
+
+def test_annotation_typos_are_not_guessed_at(tmp_path: Path):
+    """`D:11:26` and `D30:05` are typos. Repairing them would put OUR invention into a corpus
+    chosen precisely because we did not make it."""
+    altered = json.loads(json.dumps(SAMPLE))
+    altered[0]["qa"][0]["evidence"] = ["D:1:1", "D30:05", "D"]
+    path = tmp_path / "typos.json"
+    path.write_text(json.dumps(altered), encoding="utf-8")
+    corpus = load_locomo(path)
+    assert all(q.question_id != "conv-0/qa0" for q in corpus.questions)
+    assert corpus.dropped["no_evidence"] == 1
+
+
+def test_a_well_formed_single_id_is_unchanged(tmp_path: Path):
+    corpus = load_locomo(_write(tmp_path))
+    q = next(q for q in corpus.questions if q.question_id == "conv-0/qa0")
+    assert q.gold_doc_ids == ("conv-0/D1:1",)
+
+
 def test_every_dropped_question_is_accounted_for(tmp_path: Path):
     """raw qa == retained + every drop reason. A drop path that forgets its counter makes this
     arithmetic fail, which is the only way to catch the NEXT uncounted branch."""
