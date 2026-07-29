@@ -17,9 +17,13 @@ experiment.
 """
 from __future__ import annotations
 
+import ast
+import json
+import operator
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_ROOT = REPO_ROOT / "results"
@@ -181,3 +185,114 @@ def scan_document(path: Path) -> list[Claim]:
     """Scan a repo-relative document. Newlines are normalised so Windows and Linux agree."""
     text = (REPO_ROOT / path).read_text(encoding="utf-8").replace("\r\n", "\n")
     return scan_text(text, doc=str(path).replace("\\", "/"))
+
+
+class ClaimError(Exception):
+    """A published number that does not resolve. The gate raises this and reports every one."""
+
+
+def lookup(payload: Any, key: str) -> Any:
+    """Walk a dotted path into a decoded JSON payload. JSON object keys are always strings, so a
+    numeric level like `depth_curve.5` works without special-casing."""
+    node = payload
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            raise ClaimError(f"no key {key!r} in artifact")
+        node = node[part]
+    return node
+
+
+def matches(published: str, actual: object) -> bool:
+    """True when `actual` rounds to exactly the digits published.
+
+    Rounding to the PUBLISHED precision, rather than comparing floats within a tolerance, is what
+    catches a cell printed as 0.533 when the artifact holds 0.536: the published string says how
+    precisely the author claimed to know it.
+    """
+    if isinstance(actual, bool) or not isinstance(actual, (int, float)):
+        return False
+    if "." in published:
+        decimals = len(published.split(".", 1)[1])
+        return f"{float(actual):.{decimals}f}" == published
+    return float(actual).is_integer() and str(int(actual)) == published
+
+
+#: Binary operators the `derived:` marker may use. Anything else is refused.
+_BINOPS: dict[type, Callable[[float, float], float]] = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+}
+
+
+def _eval_node(node: ast.AST, expression: str) -> float:
+    """Evaluate one literal-arithmetic AST node.
+
+    Deliberately NOT `eval`/`compile`: this walks the tree and applies `operator` functions, so
+    there is no code-execution path at all — not a validated one, none. A documentation gate that
+    can run arbitrary code is a worse problem than the one it solves.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        if isinstance(node.value, bool):
+            raise ClaimError(f"derived expression {expression!r} is not literal arithmetic")
+        return float(node.value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        return -_eval_node(node.operand, expression)
+    if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
+        return _BINOPS[type(node.op)](
+            _eval_node(node.left, expression), _eval_node(node.right, expression)
+        )
+    raise ClaimError(f"derived expression {expression!r} is not literal arithmetic")
+
+
+def _evaluate(expression: str) -> float:
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError as exc:
+        raise ClaimError(f"derived expression {expression!r} does not parse") from exc
+    return _eval_node(tree.body, expression)
+
+
+def resolve(claim: Claim, results_root: Path) -> None:
+    """Raise `ClaimError` unless this claim is backed as its marker promises."""
+    marker = claim.marker
+    if marker is None:
+        raise ClaimError(f"{claim.doc}:{claim.line} {claim.text} is unmarked")
+
+    if marker.kind == "citation-pending":
+        if not (marker.note or "").strip():
+            raise ClaimError(
+                f"{claim.doc}:{claim.line} citation-pending needs a reason — a figure with no "
+                f"artifact AND no stated reason is just an unmarked number"
+            )
+        return
+
+    if marker.kind == "withdrawn":
+        if not (marker.note or "").strip():
+            raise ClaimError(
+                f"{claim.doc}:{claim.line} withdrawn needs a retraction reference — a retracted "
+                f"number with no pointer to its retraction is just a wrong number"
+            )
+        return
+
+    if marker.kind == "derived":
+        value = _evaluate(marker.note or "")
+        if not matches(claim.text, value):
+            raise ClaimError(
+                f"{claim.doc}:{claim.line} {claim.text} is not the derived value of "
+                f"{marker.note!r} ({value})"
+            )
+        return
+
+    if marker.artifact is None or marker.key is None:
+        raise ClaimError(f"{claim.doc}:{claim.line} artifact marker is missing its path or key")
+    path = results_root / marker.artifact
+    if not path.is_file():
+        raise ClaimError(f"{claim.doc}:{claim.line} no such artifact: {marker.artifact}")
+    actual = lookup(json.loads(path.read_text(encoding="utf-8")), marker.key)
+    if not matches(claim.text, actual):
+        raise ClaimError(
+            f"{claim.doc}:{claim.line} published {claim.text} but "
+            f"{marker.artifact}#{marker.key} holds {actual}"
+        )
