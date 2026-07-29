@@ -58,7 +58,10 @@ EXCLUSIONS: tuple[tuple[str, str, int], ...] = (
     # configuration — the design spec's motivating defect was exactly a `results/gap/summary.json`
     # reading `usable: 1` beside a published `n=17` that this table's old combined `[kn]` pattern
     # made invisible to the gate. Only `k=` (a retrieval budget the caller chose) is excluded here.
-    ("retrieval budget — configuration, e.g. k=5", r"\bk\s*=\s*\d+", 0),
+    # The `(?:,\d{3})*` tail matters: without it `k=1,536` masks only `k=1` and leaves `,536` for
+    # NUMBER_RE, which then publishes `536` as a claim — the mask leaking a fragment of the number
+    # it exists to hide. No gated document writes a grouped `k=` today; the tail keeps it that way.
+    ("retrieval budget — configuration, e.g. k=5", r"\bk\s*=\s*\d+(?:,\d{3})*", 0),
     ("year — timestamp", r"\b(?:19|20)\d{2}\b", 0),
     ("ordered list marker — structure", r"^\s{0,3}\d+\.\s", re.MULTILINE),
     ("table rule — structure", r"^\s*\|[\s:|-]+\|\s*$", re.MULTILINE),
@@ -84,6 +87,12 @@ MARKER_RE = re.compile(
 #: Space-grouped numbers (`n=1 982`) are NOT recognised as one token — deliberately punted rather
 #: than guessed at, because a space also separates two genuinely distinct numbers and there is no
 #: local rule that tells the two cases apart.
+#:
+#: Measure the hole rather than describing it as hypothetical: **21 space-grouped numbers** are
+#: published across the gated documents today (RESULTS 9, FINDINGS 8, README 4) against 47
+#: comma-grouped ones — and the SAME figure appears both ways in all three, `1 536` beside
+#: `1,536`. So one published sample size is a single claim in one sentence and `1` + `536` in
+#: another. That is the size of what this branch chose not to solve.
 NUMBER_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
 
 
