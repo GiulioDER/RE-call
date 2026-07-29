@@ -21,7 +21,8 @@ shared idea is not "check more carefully". It is:
   prose only.
 - `results/gap/summary.json` recorded `usable: 1` beside a published `n=17`.
 
-The third is an integer defect and is **out of scope** for guard 1 (see Limits).
+All three are in scope for guard 1. The third is an integer claim, which is why integers are gated
+rather than deferred.
 
 ## What already exists, and what is missing
 
@@ -47,12 +48,33 @@ hit@5 rises to **0.777** <!--@ locomo_rerank/rerank_shipped.json # depth_curve.5
 The path is relative to `results/`. The key is a dotted path into the JSON; numeric levels work
 because JSON object keys are strings.
 
-Two further forms:
+Three further forms:
 
 | Form | Meaning |
 |---|---|
 | `<!--@ citation-pending: <reason> -->` | A figure with no artifact yet. A first-class state, not an exemption. **The 0.467 gets this.** |
 | `<!--@ derived: <expression> -->` | A number computed from other cited numbers (a delta, a percentage lift). The test checks the arithmetic against the cited operands instead of looking the value up. |
+| `<!--@ withdrawn: <retraction-ref> -->` | A figure published **because** it is wrong — the README's withdrawn list, FINDINGS §9a's retracted control. The reference is required and non-empty: a retracted number with no pointer to its retraction is just a wrong number. |
+
+### The withdrawn registry
+
+`results/WITHDRAWN.json` lists every retracted figure: `{value, figure, retraction_ref}` — the
+withdrawn `0.615` (hit@5), the withdrawn pool-100 `0.5957`, and any later addition.
+
+`value` is the **literal digit string as it was published**, not a float. `0.615` and its artifact's
+`0.6152` are different strings and the registry holds the one a reader would see in a table; float
+comparison would silently conflate a retracted figure with a live one at a different precision.
+
+The rule it enforces: **a withdrawn value may never appear bare, and may never sit in the legacy
+baseline.** In a gated document it must carry either
+
+- a `withdrawn:` marker — it is being discussed *as* a retraction, or
+- a normal artifact marker that **resolves** — the same digits arrived legitimately from a committed
+  artifact, and are therefore a different figure that happens to read the same.
+
+This is what stops a retracted number from quietly re-entering a table as a live result. It is the
+document-side counterpart of `ARTIFACTS.md`'s reason for deleting `postfix_pool100.json` outright:
+"an annotated wrong number in `results/` is still a number someone can read off a table."
 
 ### Match rule
 
@@ -65,8 +87,28 @@ That second case is the SUITE-DESIGN defect.
 
 ### Scope of "a number"
 
-Decimals only: `\d+\.\d+`, excluding fenced code blocks, inline code spans, URLs, version strings,
-ISO dates, and `#`-prefixed issue/PR references.
+**Decimals and integers.** `\d+\.\d+` and bare `\d+`.
+
+Integers are gated because the `usable: 1` beside a published `n=17` defect *was* an integer — a
+guard that skipped them would miss one of the three cases that motivated it.
+
+Excluded, because these are not claims:
+
+| Excluded | Why |
+|---|---|
+| fenced code blocks, inline code spans | code, not prose |
+| URLs | path and query components |
+| semver version strings (`0.7.0`) | identifiers |
+| ISO dates and bare years (`19xx`/`20xx`) | timestamps |
+| `#`-prefixed issue/PR references | identifiers |
+| `§`-prefixed section numbers | identifiers |
+| markdown ordered-list numbering, heading levels, table alignment rows, footnote markers | structure |
+| digits inside a marker comment itself | the marker is the citation, not a claim |
+
+**Stated consequence.** Gating integers makes the launch baseline substantially larger, and prose
+edits that introduce a count ("3 of 12 deferred") will need a marker. That burden is the price of
+covering the `n=` class, and it falls almost entirely on the frozen baseline at launch rather than
+on new writing.
 
 ### Gated documents
 
@@ -97,9 +139,10 @@ no API keys.
 
 ### Limits, stated rather than buried
 
-**Integers are not gated.** The `n=17` vs `n=18` defect was an integer, and this guard would not
-have caught it. Integers cannot be scoped without a large exclusion list (k values, years, PR
-numbers, sample sizes). Gating them is separate work.
+**The exclusion list is the guard's soft spot.** Every exclusion above is a place a real claim could
+hide — a count written inside a code span is invisible to this gate. The exclusions are pinned in
+one module-level table so they can be audited as a set, and each one is justified in the row above
+rather than accumulating silently.
 
 **A green gate means derivable, not correct.** The guard proves a published number matches a
 committed artifact. It says nothing about whether the artifact measured the right thing. CCA works
@@ -187,6 +230,12 @@ Both guards exercise the **detection** path, not only the green path:
 - A fixture document containing a deliberately wrong number must **fail** the claim gate.
 - A fixture document with a correct number and a valid marker must pass.
 - A `citation-pending` marker must pass; a bare unmarked new number must fail.
+- A bare unmarked new **integer** must fail; an integer inside a code span must pass (exclusion).
+- A `withdrawn:` marker with an empty retraction reference must fail.
+- A value listed in `WITHDRAWN.json` appearing bare in a gated document must fail.
+- The same value appearing with a *resolving* artifact marker must pass (legitimately re-measured).
+- A value listed in `WITHDRAWN.json` that is also present in `CLAIMS_BASELINE.json` must fail —
+  the known-bad figures may not hide in the ratchet.
 - A baseline entry that no longer appears unmarked in its document must fail (dead-entry test).
 - A stub retriever with a dense-only arm at `candidate_k == k` must produce `IDENTICAL`.
 - A stub retriever whose reranker genuinely reorders a wider pool must produce `DIFFERS`.
@@ -194,6 +243,5 @@ Both guards exercise the **detection** path, not only the green path:
 
 ## Out of scope
 
-- Integer claims (see Limits).
 - The wiki, which lives in a separate repository and cannot be gated by this repo's test suite.
 - Any judgement about whether a benchmark result is *right* — only whether it is *derivable*.
