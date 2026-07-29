@@ -144,3 +144,52 @@ the write-up must state their relationship rather than the first alone.
 Whether an *answered* question was answered **correctly** — v2 still has no judge, so every
 accuracy is an upper bound. Also unchanged: extraction quality, multi-hop reasoning, currency,
 attribution, cost and latency.
+
+---
+
+## Addendum, 2026-07-29 — a pre-run diagnostic, and one recorded field
+
+Appended before the v2 arm ran. **No prediction, threshold, rung, sample or λ above is changed.**
+The headline remains shipped defaults. What follows is a diagnostic run on 3 questions and a
+decision about what the harness *records*.
+
+### The diagnostic
+
+The v2 smoke run answered **every** question at every rung, including `r = 1.00` where the
+question's whole conversation is gone and only distractors remain. Probing the underlying scores:
+
+| rung | top-1 cosine (min / median / max) | shipped 0.50 floor fires |
+|---|---|---|
+| `r = 0.00` — topic intact, one turn removed | 0.6494 / **0.7319** / 0.7370 | 0 / 3 |
+| `r = 1.00` — own conversation gone, distractors only | 0.5752 / **0.5997** / 0.6359 | 0 / 3 |
+
+Two things follow, and they point in opposite directions:
+
+1. **The signal is real.** Removing the entire topic moves top-1 cosine by ≈ 0.13 in the correct
+   direction. The axis this benchmark was built to price *does* exist in the underlying scores.
+2. **The shipped threshold cannot express it.** At `r = 1.00` the top-1 cosine is still ~0.60,
+   comfortably above the 0.50 floor. The floor fires nowhere, at any rung. This is
+   [[project-recall-threshold-embedder-fragile-2026-07-28]] exactly: 0.50 sits at the 0th
+   percentile of five of six embedder distributions.
+
+**So P1's outcome is predetermined, and this file says so before the run rather than after.** The
+shipped-defaults arm will abstain essentially nowhere, and P1 — already demoted to a positive
+control — will FAIL. Its pre-registered reading was "a FAIL means the harness is broken". That
+reading is now **corrected in advance**: the harness is fine and the axis is fine; the *shipped
+threshold* is below the entire score distribution on this embedder.
+
+### The one change: record `top_cosine`
+
+The harness now records each response's top-1 cosine alongside its abstain/answer decision.
+Nothing about the pre-registered metric changes — abstention is still RE-call's own shipped
+verdict, and the headline is still computed from it.
+
+The reason is that abstention at any threshold *t* is exactly `top_cosine < t`. Recording the
+score makes **the entire threshold sweep computable from one arm**, post hoc and free, instead of
+requiring a separate multi-hour run per candidate threshold. A run whose outcome is already known
+becomes a run that measures the whole family.
+
+**Guard against the obvious abuse:** a threshold chosen after seeing which one maximises the
+effect is not a result. The sweep is reported as a **curve over all thresholds**, never as a
+best-threshold headline, and the shipped 0.50 is always marked on it. Any specific alternative
+threshold would need its own pre-registration and its own held-out arm.
