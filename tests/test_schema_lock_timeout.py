@@ -86,8 +86,14 @@ def test_ensure_schema_gives_up_rather_than_queueing_behind_a_held_lock(table_na
     under test is that THIS function applies it, so `ensure_schema()` has to be the thing called
     while the lock is held.
     """
-    monkeypatch.setenv("RECALL_SCHEMA_LOCK_TIMEOUT_MS", "400")
     with PgVectorStore(TEST_DSN, dim=4, table=table_name, statement_timeout_ms=15000) as store:
+        # Setup, cleanup and the idempotency re-run all run at the DEFAULT 5 s bound. Only the
+        # blocked call below wants 400 ms, and scoping it there is not tidiness: this line used to
+        # sit above, so the setup DDL ran under the 400 ms bound too and any transient lock
+        # contention on the database — a concurrent test process, autovacuum — raised
+        # LockNotAvailable from `ensure_schema()` on the line below. The test then failed with the
+        # exact exception it exists to assert, thrown from the wrong call, before reaching what it
+        # measures. Reproduced at 1-in-12 with a second pytest running against the same Postgres.
         store.ensure_schema()  # table + indexes exist, so a re-run is otherwise a no-op
         # Drop one index so the next ensure_schema has real DDL to do and must take a lock.
         with store._connect() as conn:
@@ -97,10 +103,12 @@ def test_ensure_schema_gives_up_rather_than_queueing_behind_a_held_lock(table_na
         try:
             with blocker.transaction():
                 blocker.execute(f"LOCK TABLE {table_name} IN ACCESS EXCLUSIVE MODE")
+                monkeypatch.setenv("RECALL_SCHEMA_LOCK_TIMEOUT_MS", "400")
                 start = time.monotonic()
                 with pytest.raises(psycopg.errors.LockNotAvailable):
                     store.ensure_schema()
                 waited = time.monotonic() - start
+                monkeypatch.delenv("RECALL_SCHEMA_LOCK_TIMEOUT_MS")
         finally:
             blocker.close()
 
