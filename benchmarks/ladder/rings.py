@@ -47,6 +47,15 @@ def _assemble(
     cluster: Sequence[str],
 ) -> dict[int, tuple[str, ...]]:
     gold_set = set(gold)
+    if not gold_set:
+        raise ValueError("a question with no gold evidence has nothing to excise")
+    outside = sorted(gold_set - set(cluster))
+    if outside:
+        raise ValueError(
+            f"gold evidence {outside} is not in its own cluster. Excising it would produce an "
+            f"instance labelled unanswerable whose answer never lived in the ingested slice — a "
+            f"question that is broken upstream, not hard."
+        )
     rings: dict[int, tuple[str, ...]] = {}
     for width in spec.widths:
         # Saturates rather than erroring: a width wider than the cluster is d=max under another
@@ -72,6 +81,13 @@ def build_rings(
         for doc_id, _ in index.rank(question)
         if doc_id in cluster_set and doc_id not in gold_set
     ]
+    missing = sorted(cluster_set - set(index.doc_ids))
+    if missing:
+        raise ValueError(
+            f"{len(missing)} cluster documents are absent from the BM25 index ({missing[:5]}). "
+            f"Ring widths are drawn from the index, so a saturating width would not reach them and "
+            f"would silently disagree with d=max. Build the index over the whole corpus."
+        )
     return _assemble(gold_doc_ids, ordered, spec, cluster_doc_ids)
 
 

@@ -9,6 +9,8 @@ or "distance" is not a distance. And gold must always be excised at every level,
 """
 from __future__ import annotations
 
+import pytest
+
 from benchmarks.ladder.manifest import RING_MAX
 from benchmarks.ladder.rings import RingSpec, build_rings, random_rings
 from recall.eval.bm25 import BM25Index
@@ -85,3 +87,26 @@ def test_random_rings_obey_the_same_nesting_and_gold_rules():
     rings = random_rings(QUESTION, ["d0"], CLUSTER, SPEC, seed=7)
     assert set(rings[0]) <= set(rings[2]) <= set(rings[4])
     assert all("d0" in ids for ids in rings.values())
+
+
+def test_an_index_that_does_not_cover_the_cluster_is_refused():
+    """Otherwise a saturating width silently disagrees with d=max."""
+    partial = BM25Index([(d, t) for d, t in DOCS if d != "d2"])
+    with pytest.raises(ValueError, match="absent from the BM25 index"):
+        build_rings(partial, QUESTION, ["d0"], CLUSTER, SPEC)
+
+
+def test_gold_outside_its_own_cluster_is_refused():
+    with pytest.raises(ValueError, match="not in its own cluster"):
+        build_rings(BM25Index(DOCS), QUESTION, ["dGHOST"], CLUSTER, SPEC)
+
+
+def test_a_question_with_no_gold_is_refused():
+    with pytest.raises(ValueError, match="nothing to excise"):
+        build_rings(BM25Index(DOCS), QUESTION, [], CLUSTER, SPEC)
+
+
+def test_random_rings_refuse_the_same_malformed_gold():
+    """The two ring functions are drop-in for each other, so they must reject the same inputs."""
+    with pytest.raises(ValueError, match="not in its own cluster"):
+        random_rings(QUESTION, ["dGHOST"], CLUSTER, SPEC, seed=7)
