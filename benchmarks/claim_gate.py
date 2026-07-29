@@ -331,3 +331,23 @@ def check_withdrawn(
             )
         )
     return errors
+
+
+def unmarked_counts(claims: list[Claim]) -> dict[str, int]:
+    """How many times each unmarked number appears. Keyed by the literal digit string, NOT by line
+    number — line numbers drift under any prose edit and would make the baseline unmaintainable."""
+    counts: dict[str, int] = {}
+    for claim in claims:
+        if claim.marker is None:
+            counts[claim.text] = counts.get(claim.text, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def build_baseline() -> dict[str, dict[str, int]]:
+    """The current unmarked-number multiset across every gated document."""
+    return {doc: unmarked_counts(scan_document(Path(doc))) for doc in GATED_DOCS}
+
+
+def load_baseline(results_root: Path) -> dict[str, dict[str, int]]:
+    payload = json.loads((results_root / "CLAIMS_BASELINE.json").read_text(encoding="utf-8"))
+    return {key: value for key, value in payload.items() if not key.startswith("_")}
