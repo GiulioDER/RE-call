@@ -61,7 +61,7 @@ def require_indexed(store: Any, *, tenant: str, table: str, what: str) -> int:
     Uses `store.count()` rather than walking `iter_chunks()`: the count is one SQL aggregate,
     where the walk streams every row and builds a Chunk object per row to reach the same integer.
     """
-    n = store.count()
+    n = int(store.count())  # `store` is Any here; keep the declared int honest
     if n == 0:
         raise SystemExit(
             f"{what}: tenant {tenant!r} in table {table!r} holds ZERO chunks. This probe does not "
