@@ -168,6 +168,24 @@ def test_resolve_rejects_a_missing_artifact(tmp_path: Path) -> None:
         resolve(claim, tmp_path)
 
 
+def test_resolve_rejects_an_artifact_path_that_escapes_results_root(tmp_path: Path) -> None:
+    """`MARKER_RE`'s artifact path is `[\\w./-]+\\.json`, which permits `../`. A marker can still
+    only CITE something — it cannot fabricate a claim, because the value must match too — but it
+    could cite a file outside `results/` that was never committed as a result. Write a real,
+    matching file just outside `results_root` to prove the containment check (not the missing-file
+    branch above) is what rejects the traversal."""
+    results_root = tmp_path / "results"
+    results_root.mkdir()
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "escape.json").write_text(json.dumps({"a": 0.777}), encoding="utf-8")
+    claim = Claim(
+        "x.md", 1, "0.777", Marker("artifact", artifact="../outside/escape.json", key="a")
+    )
+    with pytest.raises(ClaimError, match="outside|escapes|results_root|containment"):
+        resolve(claim, results_root)
+
+
 def test_resolve_rejects_a_missing_key(tmp_path: Path) -> None:
     _write_artifact(tmp_path, {"depth": {}})
     claim = Claim("x.md", 1, "0.777", Marker("artifact", artifact="sub/a.json", key="depth.5.hit"))
