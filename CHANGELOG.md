@@ -11,13 +11,17 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ### Added
 - **`recall.eval.arm_check` — the self-ablation preflight — ships in the wheel
   (`pyproject.toml`'s `packages = ["recall", "recall_mcp"]`) with no prior changelog entry.**
-  `ablation_verdicts`, `enforce`, `Verdict`, `InertArmError` and `DEFAULT_SAMPLE` are its public
-  surface: `ablation_verdicts` re-runs a `HybridRetriever` with each configured mechanism
-  (reranker, sparse leg) switched off and classifies the result `DIFFERS` / `SET_IDENTICAL` /
-  `IDENTICAL`; `enforce` raises `InertArmError` when a mechanism measured nothing for the
-  `metric_class` the caller declared, refusing a run that would otherwise publish numbers over an
-  arm that changed nothing. `DEFAULT_SAMPLE` (25) is the deterministic head-of-list sample both
-  harnesses use. Both `benchmarks/run.py` (LOCOMO) and `benchmarks/beam/run.py` (BEAM) wire it in
+  `ablation_verdicts`, `enforce`, `Verdict`, `InertArmError`, `EmptySampleError` and
+  `DEFAULT_SAMPLE` are its public surface: `ablation_verdicts` re-runs a `HybridRetriever` with
+  each configured mechanism (reranker, sparse leg) switched off and classifies the result
+  `DIFFERS` / `SET_IDENTICAL` / `IDENTICAL`; `enforce` raises `InertArmError` when a mechanism
+  measured nothing for the `metric_class` the caller declared, refusing a run that would otherwise
+  publish numbers over an arm that changed nothing. `EmptySampleError` guards the comparison
+  itself: called over zero questions it raises rather than returning the vacuous `IDENTICAL`
+  verdict an empty `zip` would otherwise produce, which would read as "tested, found inert"
+  instead of "never tested" — every caller of `ablation_verdicts` must be able to catch it.
+  `DEFAULT_SAMPLE` (25) is the deterministic head-of-list sample both harnesses use. Both
+  `benchmarks/run.py` (LOCOMO) and `benchmarks/beam/run.py` (BEAM) wire it in
   retrieval-only, before the first generator call — and now also stamp a `"ran": bool` field
   alongside `verdicts` in `ablation_preflight`, so a preflight that never ran (e.g. `--resume`
   covering every conversation on BEAM) cannot be read as one that ran and found nothing
@@ -46,10 +50,28 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   Track C rewrite), then a net-zero relabeling to **2481** when `benchmarks/claim_gate.py`
   started capturing a leading sign (unsigned digit strings moved to their signed key; nothing was
   added or removed). **2481 is what `results/CLAIMS_BASELINE.json` actually holds as committed
-  here.** Treat `MAX_BASELINE_ENTRIES`'s comment block in
-  `tests/test_published_numbers_have_artifacts.py` as the authoritative running history from now
-  on — it is updated at every regeneration by construction (the test fails otherwise) — rather
-  than this changelog bullet, which has no such guarantee.
+  here.** Treat the historical ratchet-log comment in
+  `tests/test_published_numbers_have_artifacts.py` (immediately above
+  `test_every_baseline_entry_is_still_present_and_still_unmarked` — formerly attached to the
+  `MAX_BASELINE_ENTRIES` constant, removed 2026-07-29 as a redundant hand-maintained duplicate of
+  what that equality test already enforces) as the authoritative running history from now on,
+  rather than this changelog bullet, which has no such guarantee.
+
+  **Removed, deferred CCA second-pass audit, 2026-07-29: the `derived:` marker form**
+  (`<!--@ derived: <expression> -->`). It had zero production uses — 7 markers across the four
+  gated documents, 6 `withdrawn` and 1 `citation-pending`, 0 `artifact`, 0 `derived` — yet its
+  author-typed operands were never checked against anything, so `<!--@ derived: 0.999 - 0.5 -->`
+  would publish `0.499` and the gate would report it **resolved**: it read as verified while
+  proving nothing about either operand, which is worse than `citation-pending`, the state that at
+  least announces doubt. Removed: the `derived` alternative from `MARKER_RE`, the `derived`
+  branches in `_marker_from`/`resolve`, `_BINOPS`/`_eval_node`/`_evaluate`/
+  `_MAX_DERIVED_EXPRESSION_LENGTH`, and their now-unused `ast`/`operator` imports. This also moots
+  the `ZeroDivisionError`-vs-`ClaimError` gap and the `RecursionError`/`MemoryError` catch that had
+  been deferred against `derived:` — there is no evaluator left to guard. `matches()` is
+  unaffected; it still backs `artifact:` claims, including the sign-aware coverage `derived:` used
+  to also exercise (moved onto `artifact:` fixtures instead of deleted). (`benchmarks/claim_gate.py`,
+  `tests/test_published_numbers_have_artifacts.py`,
+  `docs/superpowers/specs/2026-07-29-claim-artifact-and-arm-differs-guards-design.md`)
 ### Fixed
 - **The one `load_for` branch that already knew the file was broken was the one that re-read it
   every query.** An embedder mismatch and a malformed file both record their verdict in the loader
