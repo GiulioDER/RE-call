@@ -102,12 +102,20 @@ arithmetic once both sides are measured, and nobody has published it.
 - **`Obsoletes:` is coarse** — a whole document supersedes a whole document, where a memory layer
   usually deals with a fact superseding a fact. This favours us by making the relation easier
   than the general case, and the write-up must say so.
-- **Our abstention is currently worse than Mem0's**: 0.467 against 0.536 on BEAM's abstention
-  category, and we false-abstain at 9.3 % against their 4.1 %. C2 is not a lap of honour; on
-  today's evidence we may lose it.
+- **We cannot yet say whether our abstention beats Mem0's.** Their cell on BEAM's abstention
+  category is 0.536; ours is quoted as 0.467 but is citation-pending (below), so the comparison is
+  **undetermined**, not lost. On the matched full-run measurement we false-abstain at **3.3 %
+  against their 4.1 %**, and no paired family is significant against us. C2 is not a lap of honour
+  — we lose BEAM's aggregate, 0.594 to 0.650 — but it must not be pre-registered as a defeat we
+  have already measured, because we have not.
   <!-- Mem0's cell is 0.536, not the 0.533 previously written here and in SUITE-DESIGN.md: it is
   (38 x 0.974 + 32 x 0.016) / 70 from FINDINGS.md §9h's own n=70 table. Both documents are now
   stated to three places from that arithmetic rather than from each other. -->
+  <!-- Corrected 2026-07-29: this read "we false-abstain at 9.3 % against their 4.1 %". Those are
+  two different measurements. 9.3 % is the shipped policy's rate in FINDINGS §9i's entailment
+  sweep (30 unanswerable / 270 answerable, conversations 0-14); 4.1 % is Mem0's rate in the full
+  300-question head-to-head, where our comparable figure is 3.3 %. The matched pair runs the other
+  way. Full correction note in SUITE-DESIGN.md Track C. -->
 
   **Not yet reconciled:** our own 0.467 is asserted in both planning documents and is not derivable
   from any committed artifact — unlike Mem0's cell, which is. It needs an artifact citation or a
