@@ -11,6 +11,7 @@ the calibration sets are small.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -345,8 +346,13 @@ def save(cal: Calibration, path: str | Path | None = None) -> Path:
     return p
 
 
-#: (path, embedder) -> (mtime_ns, Calibration|None). See `load_for` for why this exists.
-_LOAD_CACHE: dict[tuple[str, str], tuple[int, "Calibration | None"]] = {}
+#: (path, embedder) -> (content digest, Calibration|None). See `load_for` for why this exists,
+#: and why the digest is of the CONTENT rather than of the file's metadata.
+_LOAD_CACHE: dict[tuple[str, str], tuple[bytes, "Calibration | None"]] = {}
+
+#: Cache key for "present but unreadable", which has no content to digest. Cannot be mistaken for
+#: a real entry: a blake2b digest below is always exactly 16 bytes, and this is not.
+_UNREADABLE = b"<unreadable>"
 
 
 def load_for(embedder: str, path: str | Path | None = None) -> Calibration | None:
@@ -359,32 +365,61 @@ def load_for(embedder: str, path: str | Path | None = None) -> Calibration | Non
     every search (zero/negative scale).
     """
     p = _resolve_path(path)
+    key = (str(p), embedder)
     try:
-        mtime = p.stat().st_mtime_ns
+        raw = p.read_bytes()
+    except FileNotFoundError:
+        return None  # never calibrated: the ordinary case, not worth a warning
     except OSError:
+        # Warned once per failure rather than once per call: this runs on EVERY query, so a file
+        # that is present but unreadable would otherwise log at query rate.
+        if _LOAD_CACHE.get(key, (b"", None))[0] != _UNREADABLE:
+            _log.warning("ignoring unreadable calibration file %s (uncalibrated fallback)", p)
+        _LOAD_CACHE[key] = (_UNREADABLE, None)
         return None
-    # Cached by (path, embedder) and invalidated on mtime. `trusted_search` calls this on EVERY
-    # query, so an uncached read would put a file open + JSON parse in the hot retrieval path of a
-    # library whose measured advantage is latency (median 77 ms against a competitor's 104 ms).
-    # A stat is orders of magnitude cheaper than a read+parse and still picks up a re-calibration
-    # written by a concurrent `recall calibrate`, which a load-once cache would miss until restart.
+    # Cached by (path, embedder) and invalidated on a digest of the file's CONTENT.
+    # `trusted_search` calls this on EVERY query, so an uncached load would put a JSON parse and
+    # full validation in the hot retrieval path of a library whose measured advantage is latency
+    # (median 77 ms against a competitor's 104 ms). The digest skips that while still picking up
+    # a re-calibration written by a concurrent `recall calibrate`, which a load-once cache would
+    # miss until restart.
+    #
+    # This used to be invalidated on `st_mtime_ns` and that was WRONG, not merely imprecise: an
+    # mtime is a timestamp, not a version. Effective timestamp granularity is ~1 ms — the smallest
+    # non-zero delta between consecutive writes measured on ext4 is 1,000,001 ns — so two writes
+    # inside one tick carry the SAME mtime and the second was never seen. The stale threshold was
+    # then served indefinitely, because nothing re-checks until the mtime changes again, and a
+    # threshold gates abstention: retrieval behaviour changed with nothing logged anywhere.
+    #
+    # Rare it was not. Rewrite-then-reload, which is exactly what `recall calibrate` does, served
+    # the STALE threshold on 223 of 300 trials (74 %) on ext4 and 0 of 300 with the digest. The
+    # bug reached CI as a flake instead of a red build only because a same-tick collision needs
+    # the two writes close together, which depended on which test file warmed the imports first.
+    #
+    # Neither size nor mtime+size fixes it: a threshold edit (0.42 -> 0.31) is byte-for-byte the
+    # same length. Only the content distinguishes the two files.
+    #
+    # Cost of the correctness, measured on VPS2 ext4 against a 308-byte calibration written by
+    # `recall calibrate`: the cached call goes from 13.8 us (stat) to 38.4 us (read + digest),
+    # against 62 us for the uncached parse. So the cache still earns its place — it saves ~24 us
+    # per query rather than ~48 — and the 24 us it gives up is 0.03 % of a 77 ms query.
     #
     # Races are benign: two threads may both load and both store, and the value is identical
     # because it derives from the same bytes. No lock, therefore no lock in the hot path either.
-    key = (str(p), embedder)
+    digest = hashlib.blake2b(raw, digest_size=16).digest()
     hit = _LOAD_CACHE.get(key)
-    if hit is not None and hit[0] == mtime:
+    if hit is not None and hit[0] == digest:
         return hit[1]
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(raw.decode("utf-8"))
         if data.get("embedder") != embedder:
-            _LOAD_CACHE[key] = (mtime, None)
+            _LOAD_CACHE[key] = (digest, None)
             return None
         threshold = float(data["threshold"])
         scale = float(data["scale"])
-    except (OSError, json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
+    except (json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
         _log.warning("ignoring unreadable calibration file %s (uncalibrated fallback)", p)
-        _LOAD_CACHE[key] = (mtime, None)
+        _LOAD_CACHE[key] = (digest, None)
         return None
     if not (math.isfinite(threshold) and -1.0 <= threshold <= 1.0
             and math.isfinite(scale) and scale > 0.0):
@@ -415,5 +450,5 @@ def load_for(embedder: str, path: str | Path | None = None) -> Calibration | Non
         _log.warning(
             "loaded calibration %s is NOT certified — %s", p, cal.certification_reason
         )
-    _LOAD_CACHE[key] = (mtime, cal)
+    _LOAD_CACHE[key] = (digest, cal)
     return cal

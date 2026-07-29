@@ -109,6 +109,37 @@ def test_warns_once_per_embedder_not_once_per_query(tmp_path, make_store, caplog
     assert len(hits) == 1, f"expected exactly one warning across five queries, got {len(hits)}"
 
 
+def test_an_unreadable_calibration_is_announced_once_not_once_per_query(
+    tmp_path, monkeypatch, caplog
+):
+    """Same rule one layer down: `load_for` runs per query, so its own warning must not repeat.
+
+    A file that is present but unreadable (EACCES, a dropped mount) has no content to key a cache
+    entry on, so the loader records a sentinel instead. Without it, keying the cache on the file's
+    bytes means the bytes are never obtained, nothing is ever cached, and the warning fires on
+    every search — the exact noise `test_warns_once_per_embedder_not_once_per_query` forbids one
+    layer up. This test fails against a loader that returns early on OSError without recording it.
+    """
+    from pathlib import Path
+
+    from recall.calibration import load_for
+
+    path = tmp_path / "calibration.json"
+    save(Calibration(embedder="e1", threshold=0.42, scale=0.05), path)
+
+    def _denied(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "read_bytes", _denied)
+
+    with caplog.at_level(logging.WARNING):
+        results = [load_for("e1", path) for _ in range(5)]
+
+    assert results == [None] * 5, "an unreadable file must degrade to the uncalibrated fallback"
+    hits = [r for r in caplog.records if "unreadable calibration file" in r.message]
+    assert len(hits) == 1, f"expected exactly one warning across five loads, got {len(hits)}"
+
+
 @requires_db
 def test_the_warning_names_the_embedder_and_the_remedy(tmp_path, make_store, caplog):
     """A warning that does not say WHICH model is unmeasured, or what to do, is a nuisance rather
