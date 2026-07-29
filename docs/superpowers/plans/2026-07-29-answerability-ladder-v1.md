@@ -1381,6 +1381,15 @@ WIDE_SAMPLE = [
 SPEC = RingSpec(widths=(0, 1, 2, 3))
 
 
+def _digest(instances) -> str:
+    """The digest covers provenance as well as bodies, so every call must supply it.
+
+    Held constant here on purpose: these tests compare manifests that differ in their INSTANCES,
+    so varying the provenance too would let a test pass for the wrong reason.
+    """
+    return manifest_digest(instances, ring_widths=list(SPEC.widths), corpus_hashes={"locomo": "x"})
+
+
 def _corpus(tmp_path: Path):
     path = tmp_path / "locomo.json"
     path.write_text(json.dumps(WIDE_SAMPLE), encoding="utf-8")
@@ -1433,7 +1442,7 @@ def test_two_builds_of_the_same_corpus_produce_the_same_digest(tmp_path: Path):
     corpus = _corpus(tmp_path)
     a = build_instances(corpus, SPEC, corpus_name="locomo")
     b = build_instances(corpus, SPEC, corpus_name="locomo")
-    assert manifest_digest(a) == manifest_digest(b)
+    assert _digest(a) == _digest(b)
 
 
 def test_the_random_seed_is_threaded_through_to_the_rings(tmp_path: Path):
@@ -1441,15 +1450,15 @@ def test_the_random_seed_is_threaded_through_to_the_rings(tmp_path: Path):
     a = build_instances(corpus, SPEC, corpus_name="locomo", random_seed=7)
     b = build_instances(corpus, SPEC, corpus_name="locomo", random_seed=7)
     c = build_instances(corpus, SPEC, corpus_name="locomo", random_seed=8)
-    assert manifest_digest(a) == manifest_digest(b)
-    assert manifest_digest(a) != manifest_digest(c)
+    assert _digest(a) == _digest(b)
+    assert _digest(a) != _digest(c)
 
 
 def test_the_random_arm_differs_from_the_bm25_arm(tmp_path: Path):
     corpus = _corpus(tmp_path)
     bm25 = build_instances(corpus, SPEC, corpus_name="locomo")
     rand = build_instances(corpus, SPEC, corpus_name="locomo", random_seed=7)
-    assert manifest_digest(bm25) != manifest_digest(rand)
+    assert _digest(bm25) != _digest(rand)
 
 
 def test_cli_writes_a_readable_manifest(tmp_path: Path):
@@ -1467,7 +1476,7 @@ def test_sampling_is_deterministic_and_seed_dependent(tmp_path: Path):
     corpus = _corpus(tmp_path)
     a = build_instances(corpus, SPEC, corpus_name="locomo", sample=1, sample_seed=0)
     b = build_instances(corpus, SPEC, corpus_name="locomo", sample=1, sample_seed=0)
-    assert manifest_digest(a) == manifest_digest(b)
+    assert _digest(a) == _digest(b)
     assert len({i.source_question_id for i in a}) == 1
 
 
@@ -1475,7 +1484,7 @@ def test_a_sample_larger_than_the_corpus_keeps_every_question(tmp_path: Path):
     corpus = _corpus(tmp_path)
     everything = build_instances(corpus, SPEC, corpus_name="locomo")
     huge = build_instances(corpus, SPEC, corpus_name="locomo", sample=9999)
-    assert manifest_digest(huge) == manifest_digest(everything)
+    assert _digest(huge) == _digest(everything)
 
 
 def test_sampling_does_not_change_the_rings_of_the_questions_it_keeps(tmp_path: Path):
@@ -1884,7 +1893,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
   - `assert_excised_absent(instance: Instance, indexed: frozenset[str]) -> None`
   - `assert_ring_zero_has_survivors(instance: Instance, indexed: frozenset[str], cluster: Sequence[str]) -> None`
   - `assert_originals_were_answered(answered: Mapping[str, bool], instances: Sequence[Instance]) -> None`
-  - `assert_manifest_digest(instances: Sequence[Instance], expected: str) -> None`
+  - `assert_manifest_digest(instances: Sequence[Instance], header: Mapping) -> None`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1976,11 +1985,27 @@ def test_originals_all_abstained_means_the_questions_are_broken_not_hard():
         assert_originals_were_answered({"o1": False}, [_original()])
 
 
+def _header(instances) -> dict:
+    return {
+        "digest": manifest_digest(instances, ring_widths=[0], corpus_hashes={"locomo": "x"}),
+        "ring_widths": [0],
+        "corpus_hashes": {"locomo": "x"},
+    }
+
+
 def test_manifest_digest_mismatch_is_refused():
     instances = [_inst()]
-    assert_manifest_digest(instances, manifest_digest(instances))
+    assert_manifest_digest(instances, _header(instances))
     with pytest.raises(InvariantViolation, match="digest"):
-        assert_manifest_digest(instances, "deadbeef")
+        assert_manifest_digest(instances, {**_header(instances), "digest": "deadbeef"})
+
+
+def test_a_forged_corpus_hash_is_refused_even_with_the_right_bodies():
+    """The digest covers provenance, so editing which corpus these came from must not pass."""
+    instances = [_inst()]
+    forged = {**_header(instances), "corpus_hashes": {"locomo": "forged"}}
+    with pytest.raises(InvariantViolation, match="digest"):
+        assert_manifest_digest(instances, forged)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2056,9 +2081,19 @@ def assert_originals_were_answered(
         )
 
 
-def assert_manifest_digest(instances: Sequence[Instance], expected: str) -> None:
-    """Invariant 4: the instances being scored are the instances that were published."""
-    actual = manifest_digest(instances)
+def assert_manifest_digest(instances: Sequence[Instance], header: Mapping) -> None:
+    """Invariant 4: the instances being scored are the instances that were published.
+
+    Takes the whole header, not just its digest string, because the digest covers PROVENANCE as
+    well as bodies — `corpus_hashes` says which corpus these instances came from, and a review
+    demonstrated that a digest over bodies alone accepts a forged one silently.
+    """
+    expected = header.get("digest")
+    actual = manifest_digest(
+        instances,
+        ring_widths=header.get("ring_widths", []),
+        corpus_hashes=header.get("corpus_hashes", {}),
+    )
     if actual != expected:
         raise InvariantViolation(
             f"manifest digest {actual} != expected {expected}. The manifest changed between build "
@@ -2069,7 +2104,7 @@ def assert_manifest_digest(instances: Sequence[Instance], expected: str) -> None
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_ladder_invariants.py -q`
-Expected: PASS (8 tests)
+Expected: PASS (9 tests)
 
 - [ ] **Step 5: Commit**
 
