@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from benchmarks.claim_gate import (
+    GATED_DOCS,
     RESULTS_ROOT,
     Claim,
     ClaimError,
@@ -23,6 +24,7 @@ from benchmarks.claim_gate import (
     load_withdrawn,
     matches,
     resolve,
+    scan_document,
     scan_text,
     unmarked_counts,
 )
@@ -218,9 +220,11 @@ def test_the_registry_holds_literal_digit_strings_not_floats() -> None:
 
 #: The ratchet. This number may only ever go DOWN. Lower it when you mark a number; a change that
 #: raises it is a change that added an uncited number to a published document.
-MAX_BASELINE_ENTRIES = 2432  # generated 2026-07-29: 2432 unmarked occurrences across 4 documents
+MAX_BASELINE_ENTRIES = 2431  # generated 2026-07-29: 2431 unmarked occurrences across 4 documents
 #: (2438 before marking 6 bare withdrawn-figure occurrences — see WITHDRAWN.json — with
-#: `<!--@ withdrawn: ... -->` in FINDINGS.md and README.md.)
+#: `<!--@ withdrawn: ... -->` in FINDINGS.md and README.md; 2432 before marking `0.467`
+#: citation-pending in benchmarks/SUITE-DESIGN.md — see Task 5 — with
+#: `<!--@ citation-pending: ... -->`.)
 
 
 def test_unmarked_counts_ignores_marked_numbers() -> None:
@@ -263,3 +267,69 @@ def test_the_committed_baseline_has_no_crlf() -> None:
     assertion would pass vacuously."""
     raw = (RESULTS_ROOT / "CLAIMS_BASELINE.json").read_bytes()
     assert b"\r\n" not in raw
+
+
+# --- The gate, armed over the four published documents -----------------------------------------
+
+
+@pytest.mark.parametrize("doc", GATED_DOCS)
+def test_every_marked_claim_resolves(doc: str) -> None:
+    """A marker that does not resolve is worse than no marker: it reads as verified."""
+    failures: list[str] = []
+    for claim in scan_document(Path(doc)):
+        if claim.marker is None:
+            continue
+        try:
+            resolve(claim, RESULTS_ROOT)
+        except ClaimError as exc:
+            failures.append(str(exc))
+    assert not failures, "\n".join(failures)
+
+
+@pytest.mark.parametrize("doc", GATED_DOCS)
+def test_no_new_unmarked_numbers(doc: str) -> None:
+    baseline = load_baseline(RESULTS_ROOT).get(doc, {})
+    current = unmarked_counts(scan_document(Path(doc)))
+    changed = {
+        value: count for value, count in current.items() if count != baseline.get(value, 0)
+    }
+    assert not changed, (
+        f"{doc}: these numbers are new or changed since the baseline: {changed}. Add a marker — "
+        f"`<!--@ <artifact>.json # <key> -->`, or `<!--@ citation-pending: <reason> -->` if no "
+        f"artifact retains it — and lower MAX_BASELINE_ENTRIES."
+    )
+
+
+@pytest.mark.parametrize("doc", GATED_DOCS)
+def test_no_bare_withdrawn_figures(doc: str) -> None:
+    errors = check_withdrawn(scan_document(Path(doc)), load_withdrawn(RESULTS_ROOT))
+    assert not errors, "\n".join(str(e) for e in errors)
+
+
+def test_composition_check_withdrawn_and_resolve_must_both_run_over_the_same_claims(
+    tmp_path: Path,
+) -> None:
+    """Pins the two-test composition that makes the withdrawn rule actually safe.
+
+    `check_withdrawn` passes any claim whose marker KIND is `artifact` without opening the
+    artifact file — it only checks that *some* citation exists, not that the citation is real. On
+    its own that would let a document exempt a retracted figure with a fabricated `artifact:`
+    marker pointing at a file that does not exist. The only thing that catches the fabrication is
+    `resolve()`, run over the SAME claim, because `resolve()` is the one that actually opens the
+    artifact. `test_no_bare_withdrawn_figures` and `test_every_marked_claim_resolves` must both
+    stay in this suite, over the same `GATED_DOCS`, for a withdrawn figure to be genuinely closed
+    off — either one alone looks sufficient and is not. If a future edit drops one of the pair,
+    this test fails and says why.
+    """
+    withdrawn = {"0.945": {"figure": "real-corpus recall@5", "retraction_ref": "README"}}
+    claim = Claim(
+        "x.md", 3, "0.945", Marker("artifact", artifact="sub/does-not-exist.json", key="hit")
+    )
+
+    # check_withdrawn alone: a fabricated artifact marker is enough to pass — it never opens the
+    # file. This is the gap; without the second check below, this line would be "the" answer.
+    assert check_withdrawn([claim], withdrawn) == []
+
+    # resolve alone closes it: it actually opens the artifact, and there is nothing at that path.
+    with pytest.raises(ClaimError, match="no such artifact"):
+        resolve(claim, tmp_path)
