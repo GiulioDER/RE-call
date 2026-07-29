@@ -9,6 +9,8 @@ therefore an upper bound, and the field name is where that is enforced.
 """
 from __future__ import annotations
 
+import pytest
+
 from benchmarks.ladder.manifest import (
     LABEL_ANSWERABLE,
     LABEL_UNANSWERABLE,
@@ -94,3 +96,35 @@ def test_paired_difference_uses_only_questions_present_at_both_rungs():
     diff, low, high = paired_difference_ci(instances, abstained, 0, RING_MAX, iterations=200)
     assert diff == 1.0  # the one paired question flips 0 -> 1
     assert low <= diff <= high
+
+
+def test_no_shared_questions_raises_instead_of_returning_a_fake_null():
+    """(0.0, 0.0, 0.0) is bit-identical to a tightly-measured null, and h1_verdict reads it as
+    FAIL — the kill condition. Absent data must never be publishable as a result."""
+    instances = [
+        _i("p1#d0", LABEL_UNANSWERABLE, 0, "p1"),
+        _i("p2#dmax", LABEL_UNANSWERABLE, RING_MAX, "p2"),  # different pair_id: no overlap
+    ]
+    abstained = {"p1#d0": False, "p2#dmax": True}
+    with pytest.raises(ValueError, match="no question appears at BOTH"):
+        paired_difference_ci(instances, abstained, 0, RING_MAX, iterations=50)
+
+
+def test_an_empty_response_map_raises_rather_than_reporting_a_verdict():
+    instances = [
+        _i("p1#d0", LABEL_UNANSWERABLE, 0, "p1"),
+        _i("p1#dmax", LABEL_UNANSWERABLE, RING_MAX, "p1"),
+    ]
+    with pytest.raises(ValueError, match="no question appears at BOTH"):
+        paired_difference_ci(instances, {}, 0, RING_MAX, iterations=50)
+
+
+def test_a_single_shared_question_still_computes(tmp_path=None):
+    """The guard must reject EMPTY, not merely small — n=1 is weak evidence, not absent data."""
+    instances = [
+        _i("p1#d0", LABEL_UNANSWERABLE, 0, "p1"),
+        _i("p1#dmax", LABEL_UNANSWERABLE, RING_MAX, "p1"),
+    ]
+    abstained = {"p1#d0": False, "p1#dmax": True}
+    diff, low, high = paired_difference_ci(instances, abstained, 0, RING_MAX, iterations=50)
+    assert diff == 1.0

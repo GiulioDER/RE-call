@@ -88,11 +88,22 @@ def paired_difference_ci(
 
     Paired because the same question appears at both rungs; an unpaired test would attribute
     question difficulty to the rung.
+
+    Raises ValueError when no question appears at both rungs, instead of returning (0.0, 0.0,
+    0.0). That triple is bit-identical to a genuine, tightly-measured null effect, and
+    h1_verdict would read it as FAIL — the pre-registered kill condition — on the strength of
+    absent data rather than evidence. An empty or mis-keyed response file must not be publishable
+    as a scientific result.
     """
     lo_flags, hi_flags = _paired_flags(instances, abstained, low, high)
     n = len(lo_flags)
     if n == 0:
-        return 0.0, 0.0, 0.0
+        raise ValueError(
+            f"no question appears at BOTH rung {low} and rung {high}, so there is no paired "
+            f"difference to compute. Returning zero here would be indistinguishable from a "
+            f"tightly-measured null, and h1_verdict would read it as FAIL — the pre-registered "
+            f"kill condition — on the strength of absent data rather than evidence."
+        )
     deltas = [h - lo for lo, h in zip(lo_flags, hi_flags)]
     observed = sum(deltas) / n
     rng = random.Random(seed)
