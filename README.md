@@ -12,7 +12,7 @@
   <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-890%20·%20real%20pgvector-brightgreen" alt="890 tests">
+  <img src="https://img.shields.io/badge/tests-1300%2B%20·%20real%20pgvector-brightgreen" alt="1300+ tests">
 </p>
 
 <p align="center">
@@ -43,7 +43,8 @@ paired questions (full table, losses and caveats included →
 
 - 🎯 **More accurate** on both OpenAI reader models the field benchmarks with (paired
   p = 0.0002–0.0065, Holm-corrected), and it refuses fewer legitimate questions — the lead holds
-  even on **Mem0's own default embedder** (`text-embedding-3-small`): **0.42 vs 0.366**, n=1,540.
+  even on **Mem0's own default embedder** (`text-embedding-3-small`): judged answer accuracy
+  **0.42 vs 0.366**, n=1,540.
 - 💸 **$0 to build, at any scale** — no LLM anywhere in the ingest or retrieval path. Writing a
   memory is an embedding; searching is Postgres. Building the benchmark's memory cost Mem0
   **$7.29** in metered API calls; RE-call **$0.00**.
@@ -246,13 +247,14 @@ every number in this README was measured on unless stated otherwise.
 **Best measured quality** — when retrieval accuracy is worth an API dependency and ~1 s per query:
 
 ```bash
---embedder voyage:voyage-4-large --candidate-k 250 --reranker local
+python -m recall.eval.locomo --data locomo10.json \
+    --embedder voyage:voyage-4-large --candidate-k 250 --rerank
 ```
 
 | knob | why | measured |
 |---|---|---|
 | `voyage-4-large` | best embedder we have measured | wins **16/17** corpora, median **+0.059** hit@5; **+0.282** on a jargon-heavy corpus; gap **grows with corpus size** (+0.013 under 10k docs → **+0.062** at 17k+) |
-| `--reranker local` | largest single retrieval gain in this project | hit@5 **0.671 → 0.777** (n=1,536). Costs ~1,050 ms/query, which is why it is off by default |
+| `--rerank` | largest single retrieval gain in this project | hit@5 **0.671 → 0.777** (n=1,536). Costs ~1,050 ms/query, which is why it is off by default |
 | `--candidate-k` **above** `--k` | **without this the reranker does nothing** | at `candidate_k == k` the pool, the returned set and your context are the same memories, so reranking reorders a list you were going to get anyway. Widening it changed the returned set on **100%** of questions (mean Jaccard 0.372) |
 
 Two things worth knowing before you copy that line:
@@ -567,7 +569,7 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 
 ## Engineering
 
-**890 tests, 4 skipped.** The database-touching ones run against a real pgvector container — no mock
+**1,300+ tests.** The database-touching ones run against a real pgvector container — no mock
 DB. CI runs `ruff`, `mypy`, the suite against PostgreSQL under coverage, the suite *again* at the
 declared dependency floor, and `pip-audit` over a checked-in `uv.lock` — each as a gate rather than
 a report.
