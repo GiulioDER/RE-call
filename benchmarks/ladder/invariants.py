@@ -56,8 +56,35 @@ def assert_originals_were_answered(
     unanswered = [i.instance_id for i in originals if not answered.get(i.instance_id, False)]
     if len(unanswered) == len(originals):
         raise InvariantViolation(
-            f"all {len(originals)} answerable originals were abstained on. Those questions are "
-            f"broken, not hard, and cannot anchor a pair. Check ingest before reading any curve."
+            f"all {len(originals)} answerable originals were abstained on, e.g. {unanswered[:5]}. "
+            f"Those questions are broken, not hard, and cannot anchor a pair. Check ingest before "
+            f"reading any curve."
+        )
+
+
+def assert_survivors_present(
+    instance: Instance, indexed: frozenset[str], cluster: Sequence[str]
+) -> None:
+    """Invariant 5: everything this rung did NOT excise must actually be indexed.
+
+    Every other check here is negative — it confirms that what should be gone is gone. Absence
+    alone cannot distinguish a correct excision from an ingest that silently did nothing, and a
+    PARTIAL ingest failure passes all of them: the system then abstains on nearly everything, the
+    curve comes out flat, and H1 is recorded as FAIL. H1 FAIL retires the benchmark. Losing the
+    benchmark to a harness bug is the most expensive failure this project can have, so the check
+    that prevents it is positive, not negative.
+
+    At d=max the expected survivor set is empty and this passes trivially — correctly, because
+    that rung is defined by removing the whole cluster.
+    """
+    expected = set(cluster) - set(instance.excised_doc_ids)
+    absent = sorted(expected - indexed)
+    if absent:
+        raise InvariantViolation(
+            f"{instance.instance_id}: {len(absent)} of {len(expected)} documents this rung did "
+            f"NOT excise are missing from the index ({absent[:5]}). Ingest dropped more than the "
+            f"excision asked for; a partial ingest looks like a well-behaved abstention and would "
+            f"flatten the curve into a false H1 FAIL."
         )
 
 
