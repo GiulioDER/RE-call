@@ -75,3 +75,46 @@ fiction, and no comparative arm (Mem0, BEIR) is run. Money is spent only after P
 Whether an *answered* question was answered **correctly**. v1 has no judge, by design and by
 budget. On the answerable arm, "answered" is scored as success, which makes every v1 accuracy
 figure an **upper bound**. The write-up must say so wherever a number appears.
+
+---
+
+## Addendum, 2026-07-29 — the usable-question count is 1 533, not 1 536
+
+Appended rather than edited in place. A pre-registration that is quietly corrected once
+measurement has begun is worth nothing, so the original number stays above and this records what
+changed, when, and why. **No prediction, parameter or threshold in this file is altered** — the
+sample is still 300 at seed 0, sorted by `question_id`, and P1–P4 are untouched. Recorded before
+any manifest was built and before any curve was visible.
+
+**What happened.** Building the loader surfaced that 9 of LOCOMO's questions cite evidence turns
+their own conversation does not contain. They fall into two kinds, and only one is a defect of
+ours to fix:
+
+- **6 were a parsing failure on our side.** LOCOMO packs several turn ids into a single evidence
+  string in a handful of entries — `"D8:6; D9:17"`, `"D9:1 D4:4 D4:6"`, `"D22:1 D22:2 D9:10
+  D9:11"`. The turns exist; the annotation was simply never split. These are now split on `;` and
+  whitespace and are **recovered**.
+- **3 are annotation typos in the corpus**: `D:11:26` (stray colon), `D30:05` (zero-padded),
+  and ids naming turns that genuinely do not exist (`D10:19`, `D4:36`). These stay dropped and
+  counted. **We do not repair them.** Guessing what an annotator meant would put our own invention
+  into a corpus chosen precisely because we did not author it.
+
+**Final composition of the ladder corpus**, arithmetic closed and asserted by test
+(`raw == retained + sum(dropped)`):
+
+| | count |
+|---|---|
+| raw QA entries | 1 986 |
+| dropped, category-5 adversarial (unanswerable by annotation, not excision) | 446 |
+| dropped, no usable evidence | 5 |
+| dropped, evidence names a turn the conversation lacks | 2 |
+| **retained** | **1 533** |
+| documents (turns) across 10 conversations | 5 882 |
+
+**A consequence for numbers this repo has already published, flagged not fixed.** `results/`
+reports LOCOMO retrieval on n=1 536. By inspection of `recall/eval/locomo.py:353-367`, evidence is
+matched by string equality against retrieved `dia_id`s — so an unsplit `"D8:6; D9:17"` matches
+nothing and the question is a **permanent miss for a parsing reason rather than a retrieval one**.
+Five questions are structurally unhittable that way, an understatement of at most 5/1 536 ≈
+**0.33 pp** on hit@5. That is small, it moves our own number in our own favour once corrected,
+and it is **out of scope for this benchmark** — recorded here so it is not rediscovered as new.
