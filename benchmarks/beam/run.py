@@ -793,6 +793,7 @@ def _main() -> None:
             "verdicts": ablation,
             "allow_inert_arm": bool(args.allow_inert_arm),
             "sample": args.ablation_sample,
+            "ran": ablation_run,
         },
     }
     out_base.with_suffix(".json").write_text(
