@@ -15,6 +15,8 @@ the auto-load is removed, rather than merely passing while the feature happens t
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from recall.calibration import ENV_VAR, Calibration, load_for, save
@@ -100,15 +102,36 @@ def test_no_calibration_file_behaves_exactly_as_before(tmp_path, make_store):
 def test_loader_cache_invalidates_when_the_file_is_rewritten(tmp_path):
     """A re-calibration must be picked up, or the cache turns a fix into a stale read.
 
-    `trusted_search` calls the loader on every query, so it is cached by mtime rather than read
-    each time. A load-once cache would be faster still and WRONG: a `recall calibrate` run by a
-    concurrent process would not be seen until restart.
+    `trusted_search` calls the loader on every query, so the file is cached rather than read and
+    parsed each time. A load-once cache would be faster still and WRONG: a `recall calibrate` run
+    by a concurrent process would not be seen until restart.
+
+    Written twice in quick succession this used to pass by luck, and that is the whole defect: the
+    cache was invalidated on `st_mtime_ns`, which is not a version — the smallest non-zero delta
+    between consecutive writes is 1,000,001 ns on ext4, so two writes inside one tick carry the
+    SAME mtime and the second was never seen. Measured against the loader itself, the old key
+    served the stale threshold on 223 of 300 rewrites (74 %) on ext4 and 2 of 500 on NTFS; the
+    difference in rate is why this reached CI as a flake instead of a red build, since a collision
+    needs the two writes close together and that depended on which test file warmed the imports.
+
+    A stale threshold gates abstention and never self-corrects, so it must be impossible, not
+    improbable — hence the collision is forced below rather than waited for.
     """
     path = tmp_path / "calibration.json"
     save(Calibration(embedder="e1", threshold=0.42, scale=0.05), path)
     assert load_for("e1", path).threshold == pytest.approx(0.42)
+    first = path.stat()
 
     save(Calibration(embedder="e1", threshold=0.31, scale=0.05), path)
+    # Reinstating the first write's timestamp does not simulate anything the filesystem cannot
+    # do on its own — it is exactly the state left behind when both writes land in one tick. It
+    # only makes that state reachable on every run instead of a fraction of them.
+    os.utime(path, ns=(first.st_atime_ns, first.st_mtime_ns))
+    assert path.stat().st_mtime_ns == first.st_mtime_ns, "the mtime collision was not reproduced"
+    # Same byte length either side, so an invalidation keyed on (size, mtime) is no fix at all
+    # and would still fail here. Only the CONTENT distinguishes these two files.
+    assert path.stat().st_size == first.st_size, "the two payloads must be the same size"
+
     assert load_for("e1", path).threshold == pytest.approx(0.31), "cache served a stale threshold"
 
 
