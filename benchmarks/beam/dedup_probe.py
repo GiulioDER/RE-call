@@ -43,7 +43,7 @@ import statistics
 from pathlib import Path
 from typing import Any
 
-from benchmarks.beam.dataset import iter_conversations
+from benchmarks.beam.dataset import iter_conversations, parse_conversation_indices
 from benchmarks.beam.systems import (
     BEAM_TABLE,
     BeamRecallSystem,
@@ -60,15 +60,36 @@ from recall.store import PgVectorStore
 DEDUP_COSINES = (0.98, 0.95, 0.92, 0.90)
 
 
-def _cosine(a: list[float], b: list[float]) -> float:
-    num = sum(x * y for x, y in zip(a, b))
-    na = sum(x * x for x in a) ** 0.5
-    nb = sum(x * x for x in b) ** 0.5
-    return num / (na * nb) if na and nb else 0.0
+def similarity_matrix(vectors: list[list[float]]) -> Any:
+    """All pairwise cosines at once, as an (n, n) array.
+
+    Built ONCE per question and reused across every threshold. The previous shape recomputed a
+    pure-Python cosine inside the inner loop — including both norms on every call, so each
+    vector's norm was recomputed up to `k` times — and then rebuilt the identical matrix once per
+    entry in `DEDUP_COSINES`. At the defaults (k=200, 1536 dims, 4 thresholds) that is ~80,000
+    interpreter-level dot products per question, in a probe whose header advertises `$0` and
+    "embeddings and cosines only", i.e. one expected to be cheap.
+
+    Normalising the rows first turns the whole job into one matrix multiply: the cosine of two
+    unit vectors is their dot product.
+    """
+    import numpy as np
+
+    # `Any`: numpy is an optional extra here, so the module must typecheck without its stubs —
+    # the same reason `recall/eval/vocab.py:crowding` annotates its array this way.
+    matrix: Any = np.asarray(vectors, dtype=np.float64)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    # A zero vector has no direction; leave its row at zero rather than dividing by zero, which
+    # matches the old `if na and nb else 0.0` guard exactly.
+    np.divide(matrix, norms, out=matrix, where=norms != 0)
+    return matrix @ matrix.T
 
 
 def collapse(
-    chunks: list[dict[str, str]], vectors: list[list[float]], threshold: float
+    chunks: list[dict[str, str]],
+    vectors: list[list[float]],
+    threshold: float,
+    sims: Any | None = None,
 ) -> list[int]:
     """Indices surviving a greedy newest-wins collapse, in original retrieval order.
 
@@ -79,12 +100,18 @@ def collapse(
 
     Undated chunks never displace a dated keeper: an empty date is unknown, not old, and letting
     it win would silently promote whatever the harness failed to stamp.
+
+    `sims` is the precomputed pairwise-cosine matrix. Pass it when sweeping several thresholds
+    over one question — the matrix does not depend on the threshold, so rebuilding it per
+    threshold is pure waste. Omitted, it is computed here, so the function still works standalone.
     """
+    if sims is None:
+        sims = similarity_matrix(vectors)
     kept: list[int] = []
     for i in range(len(chunks)):
         dup_of = None
         for slot, j in enumerate(kept):
-            if _cosine(vectors[i], vectors[j]) >= threshold:
+            if sims[i][j] >= threshold:
                 dup_of = slot
                 break
         if dup_of is None:
@@ -111,20 +138,14 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
-    indices: list[int] = []
-    for part in args.conversations.split(","):
-        if "-" in part:
-            lo, hi = part.split("-", 1)
-            indices.extend(range(int(lo), int(hi) + 1))
-        elif part.strip():
-            indices.append(int(part))
+    indices = parse_conversation_indices(args.conversations)
     wanted = {t.strip() for t in args.types.split(",")}
 
     system = BeamRecallSystem(args.dsn, embedder_name=args.embedder, k=args.k, table=args.table)
     embedder = system._embedder  # noqa: SLF001 - probe
     rows: list[dict[str, Any]] = []
 
-    for conv in iter_conversations(args.data, args.chat_size, sorted(set(indices))):
+    for conv in iter_conversations(args.data, args.chat_size, indices):
         if args.reindex:
             system.ingest(conv)
         else:
@@ -162,8 +183,9 @@ def main() -> None:
                 "gold_terms": gold[:3],
                 "by_threshold": {},
             }
+            sims = similarity_matrix(vecs)  # threshold-independent: built once per question
             for thr in DEDUP_COSINES:
-                keep = collapse(mems, vecs, thr)
+                keep = collapse(mems, vecs, thr, sims)
                 texts = " ".join(mems[i]["memory"].lower() for i in keep)
                 row["by_threshold"][str(thr)] = {
                     "survivors": len(keep),
@@ -180,7 +202,12 @@ def main() -> None:
             "mean_survivors": round(statistics.mean(r["survivors"] for r in s), 1),
             "gold_still_present": round(sum(1 for r in s if r["gold_present"]) / len(s), 4),
         }
-    report["baseline_gold_present"] = round(
+    # Named for what it is. This was `baseline_gold_present`, but it is the tightest COLLAPSE
+    # threshold, not the un-collapsed condition — so a reader differencing "baseline" against the
+    # swept thresholds was comparing dedup against dedup, and the report contained no measurement
+    # of the no-treatment arm at all. The real baseline is now computed below, from the full
+    # retrieved set before any collapse.
+    report[f"gold_present_at_{DEDUP_COSINES[0]}"] = round(
         sum(1 for r in rows if r["by_threshold"][str(DEDUP_COSINES[0])]["gold_present"]) / len(rows), 4
     )
     report["per_question"] = rows
