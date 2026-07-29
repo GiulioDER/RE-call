@@ -38,13 +38,13 @@ import argparse
 import json
 import random
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from recall.calibration import separability, separability_interval
 from recall.embeddings import Embedder
 from recall.eval.harness import EVAL_DIR, _throwaway_store
+from recall.eval.provenance import generated_at, model_stack
 from recall.eval.locomo import _make_embedder
 from recall.eval.locomo_abstention import _partition_questions, _top_cosine
 from recall.retriever import HybridRetriever
@@ -306,12 +306,13 @@ def run(
             ),
         },
         "artifact": "top-cosine distributions behind the abstention results",
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_at": generated_at(),
         "embedder": embedder_name,
         "k": k,
         "answerable_sample_per_conv": answerable_sample,
         "seed": seed,
         "elapsed_s": round(time.time() - started, 1),
+        "stack": model_stack(),
         "quantity": (
             "max cosine over the hits returned at k — exactly what trust.evaluate thresholds, "
             "via locomo_abstention._top_cosine"

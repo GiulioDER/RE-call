@@ -40,6 +40,7 @@ when it meant "the older one".
 | `locomo_rerank/rerank_shipped.json` | §11 *ms-marco-MiniLM-L-6-v2* |
 | `locomo_rerank/rerank_modern.json` | §11 *bge-reranker-base* |
 | `cosine/distributions.json` | §12 cosine distributions |
+| `beam_voyage/ksweep.json` | the `k` choice for voyage-4-large — a **proxy** (nugget coverage), not a judged score; see its `_provenance.note` |
 | `wrrf/arm_C_rrf_pool100.json` | §9a's pool-100 column, **clean corpus** — 0.6615 at k=5. Replaces the withdrawn `locomo/postfix_pool100.json` |
 | `wrrf/arm_A_rrf_pool20.json` | §9a's apparatus check — reproduces the published pool-20 column to Δ 0.0000 |
 
@@ -85,6 +86,42 @@ Two of those rows deserve the emphasis:
   claim it was used for (reading its spread against 0.624 as HNSW build noise) is a *different*
   defect, and having the artifact does not repair it. What changed is the reason: it is no longer
   "uncheckable", it is "checkable and still not evidence for that claim".
+
+## The model stack — why every artifact now carries one
+
+`_provenance` says which **code** produced an artifact. For anything that passes through a model
+that is not enough, and `locomo/postfix_abstention.json` is the proof: it publishes four abstention
+modes, two of them route through a QNLI cross-encoder, and it named no `sentence-transformers`,
+`transformers` or `torch` version at all.
+
+Re-running it on a corpus asserted clean by row count moved the `entail` row by **0.0525**, while
+the calibrated thresholds — fit directly on the distribution a doubled corpus would move —
+reproduced *exactly*. So the corpus was not the variable, and nothing recorded said what was. Two
+of four published rows could not be reproduced by anyone.
+
+Three causes were then eliminated **by measurement, not argument**: corpus doubling (the thresholds
+reproduce exactly), the judge's weights (`DEFAULT_QNLI_REVISION` predates the artifact), and
+`sentence-transformers` (a run pinned back to 5.6.0 returned every mode identical to four decimals
+— which also shows this pipeline is deterministic across independent environments, so run-to-run
+noise is not it either). What remains is most consistent with an **independent HNSW index build**,
+and that is now unfalsifiable: the 07-26 index is gone. The record that could have settled it is
+the one nobody wrote.
+
+`generated_at` travels with it, for the companion question — and the one that cost the most to
+answer without it. Deciding whether `postfix_abstention.json` predated the double-index guard meant
+reading git for the commit that *added* the file, and a commit date is when someone committed, not
+when the run happened. For `3ee36ed` those differ by an unknown amount: exactly the gap that let a
+07-26 run and a 07-28 guard pass each other. **Two facts identify a run — which stack, and when.**
+
+Runs now emit `stack` alongside `elapsed_s`, from `recall.eval.provenance.model_stack()`. Artifacts
+that predate this carry `"stack": "unrecorded"` — **the honest value, not a guess**: inventing
+plausible versions would make an unreproducible row look reproducible. The set allowed to say
+`"unrecorded"` is pinned by name in `tests/test_results_artifact_model_stack.py`, so a new artifact
+cannot join it by omission. That list shrinks when a run is redone; it never grows.
+
+What is *not* the gap: `recall.entailment.DEFAULT_QNLI_REVISION` pins the judge's Hub commit, so
+the weights are immutable, and that pin predates every artifact here. The gap was the stack running
+the model.
 
 ## Writing a new run
 
