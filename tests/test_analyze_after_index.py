@@ -36,7 +36,10 @@ DIM = 64
 
 
 def _stats(store: PgVectorStore) -> tuple[float, int]:
-    """`(reltuples, number of pg_stats rows for the `source` column)` for this store's table."""
+    """`(reltuples, number of pg_stats rows for the `source` column)` for this store's table.
+
+    ⚠️ The second element is meaningful only when `_pg_stats_visible` is true — see `_analyzed`.
+    """
     return store._with_retry(
         lambda conn: (
             conn.execute(
@@ -47,6 +50,40 @@ def _stats(store: PgVectorStore) -> tuple[float, int]:
                 (store.table,),
             ).fetchone()[0],
         )
+    )
+
+
+def _analyzed(store: PgVectorStore) -> bool:
+    """Whether an ANALYZE has been recorded for this table, read where RLS cannot hide it.
+
+    `pg_stats` is the natural place to look and the wrong thing to depend on. `ensure_schema`
+    issues `ALTER TABLE ... FORCE ROW LEVEL SECURITY`, and PostgreSQL suppresses `pg_stats` rows
+    whenever row-level security is active for the querying role — which FORCE extends to the
+    table's own owner. Only a superuser bypasses it. A suite that asserts on `pg_stats` alone
+    therefore passes under `docker compose up -d` (which connects as `postgres`) and fails
+    against any ordinary owner role, reporting "no statistics" for statistics that were in fact
+    refreshed and are merely invisible. Measured, not assumed: `SET row_security = off` does not
+    lift it either — `row_security_active()` stays true for the owner under FORCE. See #156.
+
+    `pg_stat_user_tables` is not filtered that way, so this is the signal the invariant hangs on.
+    `last_autoanalyze` is folded in for completeness; the `store` fixture disables autovacuum, so
+    in these tests only `last_analyze` can fire.
+    """
+    return store._with_retry(
+        lambda conn: conn.execute(
+            "SELECT last_analyze IS NOT NULL OR last_autoanalyze IS NOT NULL "
+            "FROM pg_stat_user_tables WHERE relid = %s::regclass",
+            (store.table,),
+        ).fetchone()[0]
+    )
+
+
+def _pg_stats_visible(store: PgVectorStore) -> bool:
+    """Whether this role can see `pg_stats` rows for the table at all (see `_analyzed`)."""
+    return not store._with_retry(
+        lambda conn: conn.execute(
+            "SELECT row_security_active(%s::regclass)", (store.table,)
+        ).fetchone()[0]
     )
 
 
@@ -78,16 +115,40 @@ def store(make_store):
 
 
 def test_a_fresh_table_has_no_statistics_before_an_index_run(store):
-    """Guards the guard: without this, the assertion below could pass vacuously."""
+    """Guards the guard: without this, the assertion below could pass vacuously.
+
+    Note the `source_stats == 0` half was ALSO vacuous for any non-superuser role, which sees
+    zero rows in `pg_stats` whatever the table's state (#156). The `_analyzed` check is the one
+    that means something for every role.
+    """
     reltuples, source_stats = _stats(store)
     assert reltuples == -1.0
-    assert source_stats == 0
+    assert not _analyzed(store), "the table was already analyzed before the index run"
+    if _pg_stats_visible(store):
+        assert source_stats == 0
 
 
 def test_index_run_leaves_the_planner_with_statistics(store, tmp_path):
     Indexer(store, HashingEmbedder(dim=DIM)).index_path(_corpus(tmp_path, 60))
-    reltuples, source_stats = _stats(store)
+    reltuples, _ = _stats(store)
     assert reltuples >= 0, "the table is still never-analyzed after a bulk index run"
+    assert _analyzed(store), "no ANALYZE recorded for the table after a bulk index run"
+
+
+def test_index_run_records_column_statistics_for_source(store, tmp_path):
+    """The column-level half of the invariant, split out because only a superuser can see it.
+
+    Kept as its own test rather than folded into an `if` above so that a run which cannot check
+    it says so — `pytest -rs` names the skip and its cause, instead of the coverage quietly
+    disappearing inside a passing test.
+    """
+    if not _pg_stats_visible(store):
+        pytest.skip(
+            "pg_stats is filtered by FORCE ROW LEVEL SECURITY for this non-superuser role; "
+            "the statistics exist but cannot be read here (#156)"
+        )
+    Indexer(store, HashingEmbedder(dim=DIM)).index_path(_corpus(tmp_path, 60))
+    _, source_stats = _stats(store)
     assert source_stats == 1, "no pg_stats row for `source` — the filtered arm's selectivity " \
                               "estimate is still a guess"
 
