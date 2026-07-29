@@ -58,6 +58,7 @@ from benchmarks.systems import (
     mem0ai_version,
     sample_id_of,
 )
+from recall.eval.arm_check import DEFAULT_SAMPLE
 from recall.eval.locomo import (
     ADVERSARIAL_CATEGORY,
     ANSWERABLE_CATEGORIES,
@@ -429,6 +430,24 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
             "the results config."
         ),
     )
+    p.add_argument(
+        "--ablation-sample",
+        type=_positive_int,
+        default=DEFAULT_SAMPLE,
+        help=(
+            f"questions sampled by the inert-arm preflight (default {DEFAULT_SAMPLE}). Taken "
+            "deterministically from the head of the question list, so the verdict is "
+            "reproducible for a slice."
+        ),
+    )
+    p.add_argument(
+        "--allow-inert-arm",
+        action="store_true",
+        help=(
+            "record an inert mechanism instead of refusing the run. The override AND every verdict "
+            "are stamped into the artifact, so a run let through cannot read as clean afterwards."
+        ),
+    )
     p.add_argument("--out", type=Path, default=Path("benchmarks/results"))
     args = p.parse_args(argv)
 
@@ -472,6 +491,10 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         print(f"skipped {skipped['total']} unscoreable qa rows: {skipped['by_reason']}", flush=True)
 
     outcomes: list[Outcome] = []
+    ablation: list[dict[str, Any]] = []
+    # Distinguishes "the preflight ran and found nothing configured" from "the preflight never
+    # ran" — both stamp `verdicts: []` otherwise, and the second case would read as clean.
+    ablation_ran = False
     for position, conv in enumerate(convs):
         sample_id = sample_id_of(conv)
         conv_questions = [q for q in questions if q["sample_id"] == sample_id]
@@ -479,6 +502,30 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         # conversation ingested, so ingesting all of them up front would answer every question out
         # of the final conversation's memory.
         system.ingest(conv)
+        if position == 0 and args.arm == "recall":
+            # `_build_system` always returns a `RecallSystem` for `arm == "recall"` today, so this
+            # is unreachable — but if that ever changed silently, falling through here would skip
+            # the preflight with zero trace: the artifact would stamp `verdicts: []`, indistinguishable
+            # from a preflight that ran and found nothing configured, and the run would read as
+            # clean. Asserting keeps mypy able to see `ablation_preflight` (it is on the
+            # `RecallSystem` adapter, not the shared `MemorySystem` protocol — it is retrieval-only
+            # and has no meaning on the Mem0 arms) while making that failure mode loud instead of
+            # silent.
+            assert isinstance(system, RecallSystem), (
+                f"arm='recall' but _build_system returned {type(system).__name__}; the ablation "
+                f"preflight cannot run and would silently stamp verdicts: []"
+            )
+            # After index build, before the FIRST generator call: retrieval-only, so an inert arm
+            # is caught before a single token is spent. BEAM best-config ran out of credits at
+            # 5/60; a post-hoc check would have spent them first.
+            ablation = system.ablation_preflight(
+                [str(q["question"]) for q in conv_questions],
+                sample=args.ablation_sample,
+                metric_class="set",
+                allow_inert=args.allow_inert_arm,
+            )
+            ablation_ran = True
+            print(f"ablation preflight: {ablation}", flush=True)
         conv_outcomes, _ = run_arm(system, completer, conv_questions)
         outcomes.extend(conv_outcomes)
         # Persist BEFORE the next conversation is touched: everything scored above has already
@@ -517,6 +564,12 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         skipped,
         usage_block,
     )
+    payload["ablation_preflight"] = {
+        "verdicts": ablation,
+        "allow_inert_arm": bool(args.allow_inert_arm),
+        "sample": args.ablation_sample,
+        "ran": ablation_ran,
+    }
     path = args.out / f"{stamp}.json"
     # `aggregate` already sanitises its empty rate blocks to None, so this never emits the bare
     # `NaN` token that no non-Python JSON parser accepts.

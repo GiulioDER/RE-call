@@ -406,7 +406,7 @@ two sets are **not** a clean before/after and are never differenced.
 
 Every retrieval figure before this section was measured on a corpus this repo ships or generates —
 or, for the real corpus, with document **headings** as queries. That is *known-item retrieval*:
-finding a document you can already name. It scored **recall@5 0.945**.
+finding a document you can already name. It scored **recall@5 0.945**. <!--@ withdrawn: README.md 'Claims that were withdrawn' -->
 
 Re-asked as **110 hand-labelled questions** phrased the way a person actually asks (half fit the
 threshold, half score), the same corpus and pipeline scored:
@@ -418,10 +418,10 @@ threshold, half score), the same corpus and pipeline scored:
 | abstention accuracy | 0.89 | [0.57, 0.98] | 9 |
 | false-abstain | 0.04 | [0.01, 0.15] | 46 |
 
-**0.945 → 0.33.** Eight sampled misses were inspected rather than assumed: one was a *labelling*
+**0.945<!--@ withdrawn: README.md 'Claims that were withdrawn' --> → 0.33.** Eight sampled misses were inspected rather than assumed: one was a *labelling*
 error (two memos answer the question; the label named one file) and seven were genuine, several
 landing in the right topic family but the wrong document. So 0.33 is a mild under-estimate — call
-it ~0.35–0.40 once labels are widened — and nowhere near 0.945. The abstention layer was never the
+it ~0.35–0.40 once labels are widened — and nowhere near 0.945 <!--@ withdrawn: README.md 'Claims that were withdrawn' -->. The abstention layer was never the
 bottleneck: 89% of unanswerable questions correctly refused, 4% of answerable ones wrongly refused.
 
 ### Four levers tested; one moved it
@@ -609,7 +609,7 @@ lexical leg is worth **+0.05 at k=5** and **+0.06 at k=20**; the post-fix 0.671 
 configuration*, not a better sample of the same one. §10 (LongMemEval) remains pre-fix — see its
 configuration note.
 
-> An earlier revision of this paragraph also cited a **0.615** from a still-earlier build and read
+> An earlier revision of this paragraph also cited a **0.615**<!--@ withdrawn: README.md 'Claims that were withdrawn'; results/FINDINGS.md 9a --> from a still-earlier build and read
 > the spread against 0.624 as HNSW build noise. The figure stays withdrawn; the *reason* has
 > changed. It was removed because its result artifact had never been retained — that artifact was
 > committed in [#111](https://github.com/GiulioDER/RE-call/pull/111) and records **0.6152** at k=5

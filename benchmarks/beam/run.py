@@ -62,9 +62,11 @@ from benchmarks.beam.prompts import (
 )
 from benchmarks.beam.systems import BEAM_TABLE, DEFAULT_TOP_K, BeamRecallSystem
 from benchmarks.llm import Completer, OpenRouterLLM
+from benchmarks.run import _positive_int
 from benchmarks.usage import install_openai_meter
 from benchmarks.usage import reset as reset_usage
 from benchmarks.usage import snapshot as usage_snapshot
+from recall.eval.arm_check import DEFAULT_SAMPLE
 from recall.eval.locomo import DEFAULT_DSN
 
 #: The exact string the vendored answerer prompt instructs the model to emit when the retrieved
@@ -446,6 +448,24 @@ def build_parser() -> argparse.ArgumentParser:
         "(pgvector caps hnsw.ef_search at 1000, derived here as candidate_k x 4): the pool is "
         "still honoured and a RuntimeWarning says so, but the over-fetch margin shrinks.",
     )
+    parser.add_argument(
+        "--ablation-sample",
+        type=_positive_int,
+        default=DEFAULT_SAMPLE,
+        help=(
+            f"questions sampled by the inert-arm preflight (default {DEFAULT_SAMPLE}). Taken "
+            "deterministically from the head of the question list, so the verdict is "
+            "reproducible for a slice."
+        ),
+    )
+    parser.add_argument(
+        "--allow-inert-arm",
+        action="store_true",
+        help=(
+            "record an inert mechanism instead of refusing the run. The override AND every verdict "
+            "are stamped into the artifact, so a run let through cannot read as clean afterwards."
+        ),
+    )
     parser.add_argument("--dsn", default=os.environ.get("RECALL_DSN", DEFAULT_DSN))
     parser.add_argument("--out-dir", type=Path, default=Path("benchmarks/results"))
     parser.add_argument(
@@ -700,6 +720,8 @@ def _main() -> None:
     # and narrowed by exactly the same filters as `pending`. This is what `coverage` is measured
     # against below; deriving it here is the only place it is knowable.
     expected: set[str] = set()
+    ablation: list[dict[str, Any]] = []
+    ablation_ran = False
 
     try:
         wanted_types = (
@@ -716,6 +738,21 @@ def _main() -> None:
                 continue
             n_turns = system.ingest(conv)
             print(f"  conversation {conv.index}: {n_turns} turns indexed, {len(pending)} questions")
+            if not ablation_ran:
+                # After index build, before the FIRST generator call: retrieval-only, so an inert
+                # arm is caught before a single token is spent. Fires on whichever conversation is
+                # ingested FIRST in this run's loop — not necessarily conv.index 0 — because
+                # --resume can skip an already-fully-scored earlier conversation without ever
+                # calling ingest() on it, and the preflight needs an index that has actually been
+                # built to query.
+                ablation = system.ablation_preflight(
+                    [q.question for q in in_scope],
+                    sample=args.ablation_sample,
+                    metric_class="set",
+                    allow_inert=args.allow_inert_arm,
+                )
+                ablation_ran = True
+                print(f"ablation preflight: {ablation}", flush=True)
             rows.extend(_run_pool(pending, _score, args.workers))
     finally:
         handle.close()
@@ -751,6 +788,15 @@ def _main() -> None:
         # the failure this field was written for (101 of 700 lost to one outage window), and it
         # was emitted for the comparator arm and not for this one.
         "coverage": _coverage(expected, {str(r["question_id"]) for r in rows}),
+        # The override AND every verdict, stamped here so a run let through with
+        # `--allow-inert-arm` cannot read as clean afterwards — this is the only artifact payload
+        # the RE-call arm produces, so it is where the preflight's outcome has to land.
+        "ablation_preflight": {
+            "verdicts": ablation,
+            "allow_inert_arm": bool(args.allow_inert_arm),
+            "sample": args.ablation_sample,
+            "ran": ablation_ran,
+        },
     }
     out_base.with_suffix(".json").write_text(
         json.dumps({"summary": summary, "rows": rows}, ensure_ascii=False, indent=1),

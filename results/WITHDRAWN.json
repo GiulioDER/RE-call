@@ -1,0 +1,15 @@
+{
+  "_note": "Retracted figures. A value here may never appear bare in a gated document and may never sit in CLAIMS_BASELINE.json. Values are the LITERAL digit string as published, not floats.",
+  "0.945": {
+    "figure": "real-corpus recall@5 — used document headings as queries, which is known-item retrieval",
+    "retraction_ref": "README.md 'Claims that were withdrawn'"
+  },
+  "0.615": {
+    "figure": "LOCOMO hit@5 pre-fix anchor — checkable since #111, still not evidence for the HNSW-build-noise claim it was used for",
+    "retraction_ref": "README.md 'Claims that were withdrawn'; results/FINDINGS.md 9a"
+  },
+  "0.5957": {
+    "figure": "pool-100 depth column — measured on a doubled corpus",
+    "retraction_ref": "results/FINDINGS.md 9a retraction notice; results/wrrf/FINDINGS_pool100_contamination.md"
+  }
+}
