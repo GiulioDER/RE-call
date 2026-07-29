@@ -128,3 +128,45 @@ def test_a_truncated_file_reports_this_file_rather_than_a_raw_json_error(tmp_pat
     path.write_text(path.read_text(encoding="utf-8")[:40], encoding="utf-8")
     with pytest.raises(ValueError, match="truncated|not a manifest"):
         read_manifest(path)
+
+
+# --- v2: scope_cluster_ids ------------------------------------------------------------------
+
+
+def test_scope_cluster_ids_defaults_to_empty_tuple():
+    inst = _inst()
+    assert inst.scope_cluster_ids == ()
+
+
+def test_scope_cluster_ids_round_trips_through_dict():
+    inst = _inst(scope_cluster_ids=("conv-1", "conv-2"))
+    assert instance_from_dict(instance_to_dict(inst)) == inst
+
+
+def test_a_v1_shaped_dict_with_no_scope_cluster_ids_key_still_deserialises():
+    d = instance_to_dict(_inst())
+    del d["scope_cluster_ids"]
+    inst = instance_from_dict(d)
+    assert inst.scope_cluster_ids == ()
+
+
+def test_the_frozen_v1_manifest_still_reads_with_its_digest_intact():
+    path = Path("results/ladder/manifest.jsonl")
+    instances, header = read_manifest(path)
+    assert header["digest"] == "6bfe2d2b094eefaf64409a3eddbb26d62b9e7709346540b2d068a4be300632b1"
+    assert header["manifest_version"] == "1.0"
+    assert len(instances) == 1800
+    assert all(inst.scope_cluster_ids == () for inst in instances)
+
+
+def test_read_manifest_accepts_a_2_0_header(tmp_path: Path):
+    path = tmp_path / "manifest.jsonl"
+    write_manifest(path, [_inst("i1")], ring_widths=[0], corpus_hashes={})
+    lines = path.read_text(encoding="utf-8").splitlines()
+    header = __import__("json").loads(lines[0])
+    header["manifest_version"] = "2.0"
+    lines[0] = __import__("json").dumps(header, sort_keys=True, ensure_ascii=False)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    instances, header_back = read_manifest(path)
+    assert header_back["manifest_version"] == "2.0"
+    assert len(instances) == 1

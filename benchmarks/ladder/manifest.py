@@ -21,7 +21,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-MANIFEST_VERSION = "1.0"
+MANIFEST_VERSION = "2.0"
+
+#: Versions `read_manifest` accepts. v1's frozen manifest (`results/ladder/manifest.jsonl`) has
+#: no `scope_cluster_ids` on any instance and must keep reading forever — that's the point of
+#: `instance_from_dict` tolerating the key's absence. v2 adds `scope_cluster_ids` but otherwise
+#: reuses the same digest machinery, so both versions are accepted by the same reader.
+_SUPPORTED_MANIFEST_VERSIONS = frozenset({"1.0", "2.0"})
 
 LABEL_ANSWERABLE = "answerable"
 LABEL_UNANSWERABLE = "unanswerable"
@@ -60,11 +66,20 @@ class Instance:
     excised_doc_ids: tuple[str, ...]
     gold_doc_ids: tuple[str, ...]
     pair_id: str
+    #: v2: the cluster ids the ingested slice was drawn from (the question's own conversation
+    #: plus its distractors). Last field, defaulted, so every v1 call site keeps working
+    #: unchanged. `()` keeps v1's meaning: "inferred from the gold id's own cluster" — v2 states
+    #: it explicitly only when the ingest scope is wider than that.
+    scope_cluster_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.label not in _LABELS:
             raise ValueError(f"label must be one of {sorted(_LABELS)}, got {self.label!r}")
-        if not isinstance(self.excised_doc_ids, tuple) or not isinstance(self.gold_doc_ids, tuple):
+        if (
+            not isinstance(self.excised_doc_ids, tuple)
+            or not isinstance(self.gold_doc_ids, tuple)
+            or not isinstance(self.scope_cluster_ids, tuple)
+        ):
             raise TypeError("doc-id collections must be tuples — they are hashed and frozen")
 
 
@@ -79,6 +94,7 @@ def instance_to_dict(inst: Instance) -> dict:
         "excised_doc_ids": list(inst.excised_doc_ids),
         "gold_doc_ids": list(inst.gold_doc_ids),
         "pair_id": inst.pair_id,
+        "scope_cluster_ids": list(inst.scope_cluster_ids),
     }
 
 
@@ -96,11 +112,29 @@ def instance_from_dict(d: Mapping) -> Instance:
         excised_doc_ids=tuple(d["excised_doc_ids"]),
         gold_doc_ids=tuple(d["gold_doc_ids"]),
         pair_id=d["pair_id"],
+        # v1 files predate this field entirely — tolerate its absence rather than requiring it,
+        # so the frozen v1 manifest keeps reading under v2 code.
+        scope_cluster_ids=tuple(d.get("scope_cluster_ids", ())),
     )
 
 
 def _canonical(inst: Instance) -> str:
-    return json.dumps(instance_to_dict(inst), sort_keys=True, ensure_ascii=False)
+    """Canonical rendering used for both the digest and the persisted body line.
+
+    `scope_cluster_ids` is omitted here when empty (v1's meaning: "inferred from the gold id's
+    own cluster"), rather than always rendered as `[]`. That is not cosmetic: every v1 instance
+    has an empty `scope_cluster_ids`, so if this dict always included the key, EVERY v1 canonical
+    line would gain a `"scope_cluster_ids": []` it never had, and `manifest_digest` would compute
+    a different digest for the already-published `results/ladder/manifest.jsonl` than the one in
+    its own header — silently invalidating a frozen, released artifact. Omitting the key when
+    empty makes a v2-code canonical rendering of a v1-shaped instance byte-identical to what v1
+    itself produced, so the frozen manifest's digest is provably unchanged (see
+    `tests/test_ladder_manifest.py::test_the_frozen_v1_manifest_still_reads_with_its_digest_intact`).
+    """
+    d = instance_to_dict(inst)
+    if not d["scope_cluster_ids"]:
+        del d["scope_cluster_ids"]
+    return json.dumps(d, sort_keys=True, ensure_ascii=False)
 
 
 def manifest_digest(
@@ -171,6 +205,12 @@ def read_manifest(path: Path) -> tuple[list[Instance], dict]:
         raise ValueError(
             f"{path}: could not parse the header line — the file is truncated or not a manifest."
         ) from exc
+    version = header.get("manifest_version")
+    if version is not None and version not in _SUPPORTED_MANIFEST_VERSIONS:
+        raise ValueError(
+            f"{path}: manifest_version {version!r} is not one of "
+            f"{sorted(_SUPPORTED_MANIFEST_VERSIONS)}. Refusing to guess how to read it."
+        )
     try:
         instances = [instance_from_dict(json.loads(line)) for line in lines[1:] if line.strip()]
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
