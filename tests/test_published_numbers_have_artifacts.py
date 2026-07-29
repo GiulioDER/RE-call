@@ -250,3 +250,16 @@ def test_no_withdrawn_value_hides_in_the_baseline() -> None:
     withdrawn = set(load_withdrawn(RESULTS_ROOT))
     for doc, counts in load_baseline(RESULTS_ROOT).items():
         assert not (withdrawn & set(counts)), f"{doc} baselines a withdrawn figure"
+
+
+def test_the_committed_baseline_has_no_crlf() -> None:
+    """`scripts/generate_claims_baseline.py` must write LF only, so the file it produces is
+    byte-identical whether it was generated on Windows or Linux. Without an explicit `newline`
+    argument, `Path.write_text` applies universal-newline translation and emits `os.linesep` —
+    on Windows that turns every `\n` `json.dumps(indent=2)` embeds into `\r\n`. A generated
+    artifact that comes out different on the OS that produced it than on the OS that consumes it
+    is exactly how a ratchet like this one silently diverges. Read as bytes: reading with
+    universal newlines would translate away the very bytes this test exists to check, and the
+    assertion would pass vacuously."""
+    raw = (RESULTS_ROOT / "CLAIMS_BASELINE.json").read_bytes()
+    assert b"\r\n" not in raw
