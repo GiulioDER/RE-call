@@ -56,15 +56,25 @@ thing measurable. Paired change in top-1 cosine against each question's own `r=0
 | `r=0.75` | **−0.0837** | [−0.0903, −0.0772] |
 | `r=1.00` | **−0.1100** | [−0.1172, −0.1028] |
 
-Monotone, every CI excluding zero, and monotone **per question** far more often than chance:
+Monotone, every CI excluding zero, and non-increasing **per question** far more often than chance.
+**Correction, 2026-07-29 (post-publication audit):** the original text of this section reported
+these four per-step counts as "decreases" — they are **non-increases** (`<=`), which is not the
+same claim: a flat top-1 cosine between two rungs counts toward "non-increase" but is not a
+decrease. Both columns, recomputed from `results/ladder/manifest_v2.jsonl` +
+`responses_v2.jsonl`, n=200:
 
 ```
-step r=0.00 -> 0.25: decreases in 191/200 = 0.955
-step r=0.25 -> 0.50: decreases in 192/200 = 0.960
-step r=0.50 -> 0.75: decreases in 193/200 = 0.965
-step r=0.75 -> 1.00: decreases in 196/200 = 0.980
-monotone across ALL FIVE rungs: 173/200 = 0.865
+step             strict decrease   ties   non-increase (<=)
+r=0.00 -> 0.25         161          30          191 = 0.955
+r=0.25 -> 0.50         114          78          192 = 0.960
+r=0.50 -> 0.75         144          49          193 = 0.965
+r=0.75 -> 1.00         109          87          196 = 0.980
+monotone (non-increasing) across ALL FIVE rungs: 173/200 = 0.865
 ```
+
+The tie rate is itself informative: at deeper rungs the top-1 retrieved document frequently does
+not change at all — at the last step, 87 of the 196 non-increases (44 %) are flat ties, not actual
+decreases, so the "0.980" figure overstates how often the score is still moving by that point.
 
 **This is the benchmark's central claim, and it holds.** Answerability is not binary and not a
 step: it is a graded function of how far the question sits from what the corpus contains. Existing

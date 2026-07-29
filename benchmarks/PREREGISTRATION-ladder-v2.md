@@ -193,3 +193,22 @@ becomes a run that measures the whole family.
 effect is not a result. The sweep is reported as a **curve over all thresholds**, never as a
 best-threshold headline, and the shipped 0.50 is always marked on it. Any specific alternative
 threshold would need its own pre-registration and its own held-out arm.
+
+### Note, 2026-07-29 (post-publication audit) — the 3-question probe figures are not reproducible
+
+The min/median/max top-1 cosine table above (0.6494 / 0.7319 / 0.7370 at `r = 0.00`; 0.5752 /
+0.5997 / 0.6359 at `r = 1.00`) came from a 3-question smoke run whose artifacts were never
+committed — `git log --all` has no history for `results/ladder/manifest_v2_smoke.jsonl` or
+`results/ladder/responses_v2_smoke.jsonl`, and the copies of those files present locally predate
+the `top_cosine` field entirely (they carry no such key). By this repo's own convention, no figure
+ships without either a retained artifact or a reproduction command, and this table has neither.
+**Appended, not rewritten** — the addendum's timing is the point, and the prediction it made was
+correct when written; this note only marks that its specific numbers cannot be checked against
+anything in the repository.
+
+The figures that **are** reproducible say the same thing, at the full arm's n=200 rather than a
+3-question probe: from `results/ladder/manifest_v2.jsonl` + `results/ladder/responses_v2.jsonl`,
+median top-1 cosine is **0.7165** at `r = 0.00` and **0.6071** at `r = 1.00` — both computed and
+recorded in `results/ladder/H1_VERDICT_v2.md` §2/§3. The addendum's **conclusion is unaffected**:
+the shipped 0.50 abstention floor sits below the entire distribution at both endpoints either way,
+which the full arm independently confirms rather than merely repeats.
