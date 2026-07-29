@@ -62,6 +62,7 @@ from benchmarks.beam.prompts import (
 )
 from benchmarks.beam.systems import BEAM_TABLE, DEFAULT_TOP_K, BeamRecallSystem
 from benchmarks.llm import Completer, OpenRouterLLM
+from benchmarks.run import _positive_int
 from benchmarks.usage import install_openai_meter
 from benchmarks.usage import reset as reset_usage
 from benchmarks.usage import snapshot as usage_snapshot
@@ -448,7 +449,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ablation-sample",
-        type=int,
+        type=_positive_int,
         default=25,
         help=(
             "questions sampled by the inert-arm preflight (default 25). Taken deterministically "
