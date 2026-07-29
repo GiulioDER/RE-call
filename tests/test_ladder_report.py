@@ -22,12 +22,10 @@ import pytest
 
 from benchmarks.ladder.build import build_instances
 from benchmarks.ladder.manifest import (
-    LABEL_ANSWERABLE,
     LABEL_UNANSWERABLE,
     MANIFEST_VERSION_V1,
     MANIFEST_VERSION_V2,
     RING_MAX,
-    RING_ORIGINAL,
     Instance,
     write_manifest,
 )
@@ -515,3 +513,17 @@ def test_running_report_on_a_v2_manifest_with_default_flags_names_the_mismatch(
     manifest, responses = _v2_shaped_setup(tmp_path, flat=False)
     with pytest.raises(ValueError, match="--high 10000"):
         main(["--manifest", str(manifest), "--responses", str(responses)])
+
+
+def test_the_v2_version_literal_matches_what_the_writer_stamps():
+    """report.py spells "2.0" out itself rather than importing the writer's constant.
+
+    That decoupling is deliberate — labelling must follow the header a manifest actually declares,
+    not the value the writing module happens to hold — but it costs a second copy of the literal.
+    If the two ever drift, every v2 rung silently renders with v1's `d=` notation, which is the
+    exact defect the derived-headline fix removed. Pin them so drift is loud rather than cosmetic.
+    """
+    from benchmarks.ladder.manifest import MANIFEST_VERSION_V2
+    from benchmarks.ladder.report import _V2_MANIFEST_VERSION
+
+    assert _V2_MANIFEST_VERSION == MANIFEST_VERSION_V2

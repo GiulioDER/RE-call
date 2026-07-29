@@ -47,13 +47,19 @@ from benchmarks.ladder.score import (
     paired_difference_ci,
 )
 
-#: The literal value `write_manifest` stamps for a v2 manifest today (`manifest.py:MANIFEST_VERSION`
-#: at the time this was written). Deliberately NOT imported from `manifest.py` — another change in
-#: flight on this branch is threading v1/v2 through the builders so they stamp "1.0"/"2.0"
-#: themselves, and importing the module constant would make this module's labelling silently track
-#: whatever that constant happens to equal at import time rather than what a *given manifest file*
-#: actually declares. `main()` always decides `is_v2` from the manifest header it just read, never
-#: from this constant; it exists only as the one place that literal string is spelled out.
+#: The version string a v2 manifest declares in its own header.
+#:
+#: Deliberately NOT imported from `manifest.py`. Labelling must follow what a *given manifest file*
+#: declares, not whatever the writing module's constant happens to equal at import time — `main()`
+#: always decides `is_v2` from the header it just read. Importing the writer's constant would
+#: couple how a manifest is READ to how new ones are WRITTEN, so bumping the writer would silently
+#: relabel already-frozen artifacts.
+#:
+#: The cost of that decoupling is a second place the literal "2.0" is spelled out, and a drift
+#: between the two would relabel every v2 rung with v1's `d=` notation — exactly the defect the
+#: derived-headline fix removed, reintroduced silently. So the two are pinned equal by
+#: `test_ladder_report.py::test_the_v2_version_literal_matches_what_the_writer_stamps`, which
+#: fails loudly if the writer's value ever moves without this one.
 _V2_MANIFEST_VERSION = "2.0"
 
 LAMBDAS = (1.0, 3.0, 10.0)

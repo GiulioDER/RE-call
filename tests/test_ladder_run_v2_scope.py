@@ -11,7 +11,6 @@ logic, not a real Postgres-backed adapter.
 """
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -20,10 +19,8 @@ import pytest
 from benchmarks.ladder.adapter import Document, Response
 from benchmarks.ladder.invariants import InvariantViolation
 from benchmarks.ladder.manifest import (
-    LABEL_ANSWERABLE,
     LABEL_UNANSWERABLE,
     MANIFEST_VERSION_V2,
-    RING_ORIGINAL,
     Instance,
     write_manifest,
 )
