@@ -2,7 +2,8 @@
 
 Run this ONLY when deliberately re-freezing the baseline, and LOOK AT THE SIZE OF THE DIFF before
 committing: a regeneration that silently drops entries turns the ratchet into a rubber stamp. The
-generator normalises newlines, so it produces an identical file on Windows and Linux.
+generator writes the file with an explicit `\n` newline, so it produces an identical file on
+Windows and Linux regardless of the platform default line ending or any git checkout filter.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ def main() -> int:
     }
     payload.update(baseline)
     path = RESULTS_ROOT / "CLAIMS_BASELINE.json"
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"wrote {path} - {total} unmarked numbers across {len(baseline)} documents")
     return 0
 
