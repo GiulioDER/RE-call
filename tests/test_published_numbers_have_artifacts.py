@@ -267,13 +267,20 @@ def test_the_registry_holds_literal_digit_strings_not_floats() -> None:
         assert isinstance(value, str)
 
 
-#: The ratchet. This number may only ever go DOWN. Lower it when you mark a number; a change that
-#: raises it is a change that added an uncited number to a published document.
-MAX_BASELINE_ENTRIES = 2431  # generated 2026-07-29: 2431 unmarked occurrences across 4 documents
+#: The ratchet. This number may only ever go DOWN — EXCEPT for the one deliberate jump recorded
+#: below, which was a coverage expansion, not the ratchet slipping: a future reader diffing this
+#: constant against git blame should read the comment before assuming a regression.
+MAX_BASELINE_ENTRIES = 2444  # generated 2026-07-29: 2444 unmarked occurrences across 4 documents
 #: (2438 before marking 6 bare withdrawn-figure occurrences — see WITHDRAWN.json — with
 #: `<!--@ withdrawn: ... -->` in FINDINGS.md and README.md; 2432 before marking `0.467`
 #: citation-pending in benchmarks/SUITE-DESIGN.md — see Task 5 — with
-#: `<!--@ citation-pending: ... -->`.)
+#: `<!--@ citation-pending: ... -->`; 2431 -> 2444 (+13) in the final-review pass: `EXCLUSIONS`
+#: stopped masking `n=` alongside `k=` (a sample size is a claim, not configuration — the exact
+#: defect class the design spec cites, `usable: 1` beside a published `n=17`) and `NUMBER_RE`
+#: stopped shredding comma-grouped integers like `1,536` into `1` + `536`. The `n=` change alone
+#: made roughly 60 previously-invisible integers visible; the comma-grouping change partially
+#: offsets it by merging pairs of digit fragments back into one token. Net +13 unmarked numbers
+#: is the correct, larger, more honest baseline — not a regression to chase back down.)
 
 
 def test_unmarked_counts_ignores_marked_numbers() -> None:
