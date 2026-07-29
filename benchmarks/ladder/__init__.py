@@ -6,3 +6,4 @@ measured, all failed; this measures the axis they were measured on, not a sevent
 Design: docs/superpowers/specs/2026-07-29-answerability-ladder-design.md
 Pre-registration: benchmarks/PREREGISTRATION-ladder.md
 """
+from __future__ import annotations

@@ -49,18 +49,21 @@ def test_round_trips_through_dict_unchanged():
 
 def test_digest_is_stable_across_instance_order():
     a, b = _inst("i1"), _inst("i2", ring=4)
-    assert manifest_digest([a, b]) == manifest_digest([b, a])
+    kw = dict(ring_widths=[0, 4], corpus_hashes={"locomo": "abc123"})
+    assert manifest_digest([a, b], **kw) == manifest_digest([b, a], **kw)
 
 
 def test_digest_changes_when_an_excised_id_changes():
-    before = manifest_digest([_inst()])
-    after = manifest_digest([_inst(excised_doc_ids=("D1:4",))])
+    kw = dict(ring_widths=[0], corpus_hashes={"locomo": "abc123"})
+    before = manifest_digest([_inst()], **kw)
+    after = manifest_digest([_inst(excised_doc_ids=("D1:4",))], **kw)
     assert before != after
 
 
 def test_digest_changes_when_the_label_changes():
-    before = manifest_digest([_inst()])
-    after = manifest_digest([_inst(label=LABEL_ANSWERABLE)])
+    kw = dict(ring_widths=[0], corpus_hashes={"locomo": "abc123"})
+    before = manifest_digest([_inst()], **kw)
+    after = manifest_digest([_inst(label=LABEL_ANSWERABLE)], **kw)
     assert before != after
 
 
@@ -91,3 +94,37 @@ def test_read_rejects_a_manifest_whose_digest_does_not_match_its_body(tmp_path: 
 def test_an_unknown_label_is_refused_at_construction():
     with pytest.raises(ValueError, match="label"):
         _inst(label="maybe")
+
+
+def test_a_list_of_doc_ids_is_refused_because_a_released_artifact_cannot_be_mutable():
+    with pytest.raises(TypeError, match="tuples"):
+        _inst(excised_doc_ids=["D1:3"])
+
+
+def test_editing_the_corpus_hash_in_the_header_is_refused(tmp_path: Path):
+    """corpus_hashes says WHICH corpus this manifest came from — forging it is the attack."""
+    path = tmp_path / "manifest.jsonl"
+    write_manifest(path, [_inst("i1")], ring_widths=[0], corpus_hashes={"locomo": "abc123"})
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[0] = lines[0].replace("abc123", "deadbeef")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="digest"):
+        read_manifest(path)
+
+
+def test_editing_the_ring_widths_in_the_header_is_refused(tmp_path: Path):
+    path = tmp_path / "manifest.jsonl"
+    write_manifest(path, [_inst("i1")], ring_widths=[0, 4], corpus_hashes={})
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[0] = lines[0].replace("[0, 4]", "[0, 999]")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="digest"):
+        read_manifest(path)
+
+
+def test_a_truncated_file_reports_this_file_rather_than_a_raw_json_error(tmp_path: Path):
+    path = tmp_path / "manifest.jsonl"
+    write_manifest(path, [_inst("i1")], ring_widths=[0], corpus_hashes={})
+    path.write_text(path.read_text(encoding="utf-8")[:40], encoding="utf-8")
+    with pytest.raises(ValueError, match="truncated|not a manifest"):
+        read_manifest(path)
