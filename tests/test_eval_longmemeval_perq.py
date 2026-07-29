@@ -3,6 +3,12 @@
 These tests hit the real pgvector container (`conftest.TEST_DSN`), because the thing under test
 is a SQL copy between two tables with a generated column and a vector column in them. A mock
 would assert that the code calls the functions it calls.
+
+Every test here therefore needs the database, and the module-level `requires_db` says so. Without
+it the file was the loudest thing in the suite on a host with no container: one test connected
+directly and FAILED, six went through the `master` fixture and ERRORED. An absent optional
+dependency has to skip, or it turns an intentional environment into a red build and trains the
+reader to ignore the colour.
 """
 from __future__ import annotations
 
@@ -15,7 +21,11 @@ from recall.embeddings import HashingEmbedder
 from recall.index import Indexer
 from recall.store import PgVectorStore
 
-from .conftest import TEST_DSN
+from .conftest import TEST_DSN, requires_db
+
+#: Applies to the fixture-backed tests too: a skipif mark is evaluated before fixtures are set up,
+#: so `master` never tries to connect.
+pytestmark = requires_db
 
 
 @pytest.fixture()

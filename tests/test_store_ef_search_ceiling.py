@@ -23,6 +23,8 @@ from recall.embeddings import HashingEmbedder
 from recall.index import Indexer
 from recall.store import _HNSW_EF_SEARCH_MAX, _ef_search_multiplier
 
+from .conftest import requires_db
+
 
 def test_the_max_matches_pgvectors_documented_range() -> None:
     assert _HNSW_EF_SEARCH_MAX == 1000
@@ -63,6 +65,8 @@ def test_a_capped_scan_still_covers_k() -> None:
 # --- module. These two run the query that actually failed.
 
 
+# Only the two tests below need a database; the four above derive the cap arithmetically and must
+# keep running without a container, so the guard goes per-test rather than on the module.
 @pytest.fixture
 def populated(make_store):
     store = make_store(64)
@@ -73,6 +77,7 @@ def populated(make_store):
     return store
 
 
+@requires_db
 def test_a_pool_past_the_ceiling_queries_successfully_and_warns(populated) -> None:
     """Before the cap this raised `InvalidParameterValue: 2400 is outside the valid range`."""
     vector = HashingEmbedder(dim=64).embed(["topic 3"])[0]
@@ -81,6 +86,7 @@ def test_a_pool_past_the_ceiling_queries_successfully_and_warns(populated) -> No
     assert hits, "the query must still return rows, not merely avoid raising"
 
 
+@requires_db
 def test_a_pool_under_the_ceiling_does_not_warn(populated) -> None:
     """Guards the guard: without this the warning above could fire on every query."""
     vector = HashingEmbedder(dim=64).embed(["topic 3"])[0]
