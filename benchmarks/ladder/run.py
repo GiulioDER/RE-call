@@ -13,6 +13,7 @@ change silently mixes two arms into one artifact.
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -77,6 +78,38 @@ def smoke_check(system: MemorySystem) -> None:
         ) from exc
 
 
+def _assert_adapter_signatures(system: MemorySystem) -> None:
+    """`runtime_checkable` validates method NAMES only, never signatures.
+
+    So an adapter with `query(self)` instead of `query(self, question)` satisfies `isinstance`
+    and then fails forty minutes into a run. This inspects the signatures without calling
+    anything — a functional smoke call would move the ingest counters the tests pin.
+    """
+    required = {"ingest": 1, "indexed_doc_ids": 0, "query": 1}
+    for name, arity in required.items():
+        method = getattr(system, name, None)
+        if method is None or not callable(method):
+            raise AdapterSmokeCheckFailed(
+                f"{type(system).__name__} has no callable {name!r}; a MemorySystem needs "
+                f"ingest, indexed_doc_ids and query."
+            )
+        try:
+            params = [
+                p
+                for p in inspect.signature(method).parameters.values()
+                if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+                and p.default is p.empty
+            ]
+        except (TypeError, ValueError):  # builtins and C callables have no signature
+            continue
+        if len(params) != arity:
+            raise AdapterSmokeCheckFailed(
+                f"{type(system).__name__}.{name} takes {len(params)} required positional "
+                f"argument(s), expected {arity}. runtime_checkable does not catch this, so it "
+                f"would otherwise surface deep inside a long run."
+            )
+
+
 def _recorded(out_path: Path) -> dict[str, bool]:
     """instance_id -> abstained, for every row already written.
 
@@ -111,7 +144,15 @@ def run(
     cluster_members: Mapping[str, Sequence[str]],
     resume: bool = True,
 ) -> int:
-    """Returns the number of instances scored in this invocation."""
+    """Returns the number of instances scored in this invocation.
+
+    Validates the adapter's method SIGNATURES (`_assert_adapter_signatures`) before doing
+    anything else, since `run()` — not just `main()` — is what a third-party integration or the
+    test suite calls directly. This does NOT functionally smoke-call the adapter: a real
+    `ingest`/`query` round trip here would perturb the pinned `ingest_calls` counters. `main()`
+    still performs that functional check via `smoke_check()` before ever calling `run()`.
+    """
+    _assert_adapter_signatures(system)
     instances, _header = read_manifest(manifest_path)
     recorded = _recorded(out_path) if resume else {}
 
