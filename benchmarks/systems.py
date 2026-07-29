@@ -259,6 +259,45 @@ class RecallSystem:
                 return ""
             return "\n".join(hit.chunk.text for hit in result.hits)
 
+    def ablation_preflight(
+        self,
+        questions: list[str],
+        *,
+        sample: int,
+        metric_class: str,
+        allow_inert: bool,
+    ) -> list[dict[str, Any]]:
+        """Refuse the run if a configured mechanism changes nothing. Retrieval only — no LLM spend.
+
+        Opens its own store exactly as `retrieve` does, because the store is per-call here and the
+        preflight must query the index this arm will actually use.
+        """
+        from recall.eval.arm_check import DEFAULT_SAMPLE, ablation_verdicts, enforce
+        from recall.retriever import DEFAULT_CANDIDATE_K
+        from recall.store import PgVectorStore
+
+        if self._tenant is None:
+            raise RuntimeError("RecallSystem.ablation_preflight() called before ingest()")
+        sampled = questions[: sample or DEFAULT_SAMPLE]
+        with PgVectorStore(
+            self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=self._table
+        ) as store:
+            # DEFAULT_CANDIDATE_K, not self._k or a separately-tunable value: `retrieve` above calls
+            # `trusted_search` without passing `candidate_k`, so that is the pool this arm actually
+            # retrieves at. Measuring a different pool size here would produce a verdict about a
+            # configuration the run never uses.
+            verdicts = ablation_verdicts(
+                store,
+                self._embedder,
+                sampled,
+                k=self._k,
+                candidate_k=DEFAULT_CANDIDATE_K,
+                reranker=self._reranker,
+                use_sparse=True,
+            )
+        enforce(verdicts, metric_class=metric_class, allow_inert=allow_inert)
+        return [v.as_dict() for v in verdicts]
+
 
 def mem0ai_version() -> str | None:
     """The installed `mem0ai` version, or None when the `bench` extra is absent.

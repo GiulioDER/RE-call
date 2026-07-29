@@ -372,6 +372,137 @@ def test_main_ingests_each_conversation_before_scoring_its_own_questions(
     assert [json.loads(line) for line in lines] == payload["outcomes"]
 
 
+def test_main_runs_the_ablation_preflight_once_before_the_first_retrieve_and_stamps_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The preflight must fire exactly once — right after conv #1's ingest, strictly before its
+    first `retrieve` — and its verdicts, the sample size and `--allow-inert-arm` must all land in
+    the artifact, so a run that was let through with an inert mechanism cannot read as clean
+    afterwards. `RecallSystem`'s own `ingest`/`retrieve`/`ablation_preflight` are monkeypatched off
+    the class (no DB, no network) so this is offline like every other `main` test here; the
+    `isinstance(system, RecallSystem)` guard in `main` is exactly why a REAL `RecallSystem` has to
+    be built rather than the plain `_StubSys` fake the other tests use.
+    """
+    from benchmarks.systems import RecallSystem
+
+    events: list[str] = []
+    calls: list[tuple[list[str], int, str, bool]] = []
+
+    def _fake_ingest(self: RecallSystem, conversation: dict[str, Any]) -> None:
+        self._tenant = f"bench-{conversation['sample_id']}"
+        events.append(f"ingest:{conversation['sample_id']}")
+
+    def _fake_retrieve(self: RecallSystem, question: str) -> str:
+        events.append(f"retrieve:{question}")
+        return "ctx"
+
+    def _fake_preflight(
+        self: RecallSystem,
+        questions: list[str],
+        *,
+        sample: int,
+        metric_class: str,
+        allow_inert: bool,
+    ) -> list[dict[str, Any]]:
+        calls.append((questions, sample, metric_class, allow_inert))
+        events.append("preflight")
+        return [{"mechanism": "sparse", "verdict": "DIFFERS", "sampled": len(questions), "differing": 1}]
+
+    def _fake_build(
+        arm: str,
+        model: str,
+        openrouter_key: str,
+        k: int,
+        run_id: str,
+        embedder: str = "fastembed",
+        **_extra: object,
+    ) -> MemorySystem:
+        return RecallSystem("postgresql://x/y", embedder_name="hashing", k=k)
+
+    monkeypatch.setattr(RecallSystem, "ingest", _fake_ingest)
+    monkeypatch.setattr(RecallSystem, "retrieve", _fake_retrieve)
+    monkeypatch.setattr(RecallSystem, "ablation_preflight", _fake_preflight)
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    out = tmp_path / "results"
+    code = main(
+        [
+            "--arm", "recall",
+            "--data", str(_write_fixture(tmp_path)),
+            "--conversations", "2",
+            "--ablation-sample", "3",
+            "--out", str(out),
+        ],
+        now=_NOW,
+    )
+    assert code == 0
+
+    # exactly one preflight call: after conv-a's ingest, before conv-a's first retrieve — and
+    # never again for conv-b
+    assert events[:2] == ["ingest:conv-a", "preflight"]
+    assert events.count("preflight") == 1
+    assert events.index("preflight") < events.index("retrieve:What did Alice research?")
+
+    assert len(calls) == 1
+    questions, sample, metric_class, allow_inert = calls[0]
+    # conv-a's surviving questions ONLY (not conv-b's), --ablation-sample threaded through, "set"
+    # DECLARED (LOCOMO reports hit@k) rather than inferred, and the default --allow-inert-arm is
+    # False
+    assert questions == [
+        "What did Alice research?",
+        "How many siblings?",
+        "What did Bob realise after his charity race?",
+        "Did Bob make the black and white bowl in the photo?",
+    ]
+    assert sample == 3
+    assert metric_class == "set"
+    assert allow_inert is False
+
+    payload = json.loads((out / f"{_STAMP_2CONV}.json").read_text(encoding="utf-8"))
+    assert payload["ablation_preflight"] == {
+        "verdicts": [
+            {"mechanism": "sparse", "verdict": "DIFFERS", "sampled": 4, "differing": 1},
+        ],
+        "allow_inert_arm": False,
+        "sample": 3,
+    }
+
+
+def test_main_stamps_allow_inert_arm_even_when_the_preflight_never_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mem0 arm never calls `ablation_preflight` (it is RE-call-only), but the artifact must
+    still carry the key — an empty `verdicts` list plus the flag values — so a reader never has to
+    guess whether a preflight ran from its absence.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    out = tmp_path / "results"
+    code = main(
+        [
+            "--arm", "mem0",
+            "--data", str(_write_fixture(tmp_path)),
+            "--conversations", "1",
+            "--allow-inert-arm",
+            "--out", str(out),
+        ],
+        now=_NOW,
+    )
+    assert code == 0
+
+    [artifact] = out.glob("mem0_*.json")
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert payload["ablation_preflight"] == {
+        "verdicts": [],
+        "allow_inert_arm": True,
+        "sample": 25,  # the documented default
+    }
+
+
 def test_main_records_the_configuration_that_produced_the_numbers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
