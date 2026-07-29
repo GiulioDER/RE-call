@@ -994,7 +994,7 @@ def random_rings(
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_ladder_rings.py -q`
-Expected: PASS (10 tests)
+Expected: PASS (14 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1134,6 +1134,18 @@ def test_content_hash_changes_when_a_turn_changes(tmp_path: Path):
     assert load_locomo(path).content_hash != before
 
 
+def test_evidence_naming_a_turn_the_conversation_does_not_have_is_dropped_and_counted(tmp_path: Path):
+    """rings.build_rings refuses such gold, so it must never reach the builder — and the drop is
+    counted, because a corpus that quietly discards questions still yields a clean-looking curve."""
+    altered = json.loads(json.dumps(SAMPLE))
+    altered[0]["qa"][0]["evidence"] = ["D9:9"]
+    path = tmp_path / "ghost.json"
+    path.write_text(json.dumps(altered), encoding="utf-8")
+    corpus = load_locomo(path)
+    assert all(q.question_id != "conv-0/qa0" for q in corpus.questions)
+    assert corpus.dropped["evidence_not_in_conversation"] == 1
+
+
 def test_questions_without_evidence_are_dropped_not_silently_ungolded(tmp_path: Path):
     altered = json.loads(json.dumps(SAMPLE))
     altered[1]["qa"][0].pop("evidence")
@@ -1184,7 +1196,7 @@ import hashlib
 import json
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -1205,6 +1217,9 @@ class SourceCorpus:
     questions: tuple[SourceQuestion, ...]
     cluster_members: dict[str, tuple[str, ...]]
     content_hash: str
+    #: why questions were dropped -> how many. Reported, never silent: a corpus that quietly
+    #: discards a third of its questions still produces a clean-looking curve.
+    dropped: dict[str, int] = field(default_factory=dict)
 
 
 def _turn_text(turn: dict[str, Any], session_date: str) -> str:
@@ -1235,6 +1250,7 @@ def load_locomo(path: Path) -> SourceCorpus:
     documents: list[tuple[str, str]] = []
     questions: list[SourceQuestion] = []
     cluster_members: dict[str, tuple[str, ...]] = {}
+    dropped: dict[str, int] = {}
 
     for sample in data:
         sample_id = sample["sample_id"]
@@ -1259,12 +1275,23 @@ def load_locomo(path: Path) -> SourceCorpus:
                 continue
             evidence = [e for e in (qa.get("evidence") or []) if isinstance(e, str)]
             if not evidence:
+                dropped["no_evidence"] = dropped.get("no_evidence", 0) + 1
+                continue
+            gold = tuple(f"{sample_id}/{e}" for e in evidence)
+            # `rings.build_rings` REFUSES gold that is not in its own cluster — such a question is
+            # broken upstream, not hard. Drop it HERE, where the data is, and count it: letting it
+            # through would crash the builder on live LOCOMO, and dropping it silently would shrink
+            # the corpus without anyone noticing.
+            if not set(gold) <= set(members):
+                dropped["evidence_not_in_conversation"] = (
+                    dropped.get("evidence_not_in_conversation", 0) + 1
+                )
                 continue
             questions.append(
                 SourceQuestion(
                     question_id=f"{sample_id}/qa{i}",
                     question=qa["question"],
-                    gold_doc_ids=tuple(f"{sample_id}/{e}" for e in evidence),
+                    gold_doc_ids=gold,
                     cluster_id=sample_id,
                 )
             )
@@ -1274,13 +1301,14 @@ def load_locomo(path: Path) -> SourceCorpus:
         questions=tuple(questions),
         cluster_members=cluster_members,
         content_hash=_hash(documents),
+        dropped=dropped,
     )
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_ladder_source_locomo.py -q`
-Expected: PASS (7 tests)
+Expected: PASS (8 tests)
 
 - [ ] **Step 5: Commit**
 
