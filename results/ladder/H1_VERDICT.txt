@@ -1,0 +1,25 @@
+manifest digest 6bfe2d2b094eefaf64409a3eddbb26d62b9e7709346540b2d068a4be300632b1  n_instances=1800
+scored responses: 1800
+
+rung           n  corr-abst  false-ans  false-abst     L=1     L=3    L=10  surv-docs
+original     300      0.000          0           0     0.0     0.0     0.0        629
+d=0          300      0.000        300           0   300.0   900.0  3000.0        628
+d=4          300      0.003        299           0   299.0   897.0  2990.0        624
+d=16         300      0.003        299           0   299.0   897.0  2990.0        612
+d=64         300      0.003        299           0   299.0   897.0  2990.0        564
+d=max        300      1.000          0           0     0.0     0.0     0.0          0
+
+H1 (pre-registered) paired delta(correct-abstain), d=max - d=0: +1.000 [+1.000, +1.000]  n=300
+H1: PASS
+
+Supplementary pairwise contrasts (diagnostic - not the pre-registered verdict):
+  original vs d=0          delta=+0.000 [+0.000, +0.000]  n=300  FAIL
+  d=0 vs d=4               delta=+0.003 [+0.000, +0.010]  n=300  FAIL
+  d=4 vs d=16              delta=+0.000 [+0.000, +0.000]  n=300  FAIL
+  d=16 vs d=64             delta=+0.000 [+0.000, +0.000]  n=300  FAIL
+  d=64 vs d=max            delta=+0.997 [+0.990, +1.000]  n=300  PASS
+  d=0 vs d=64              delta=+0.003 [+0.000, +0.010]  n=300  FAIL
+
+the axis as built prices "is anything indexed at all", not answerability
+
+Disclosure: this arm ran with NO calibration for bge-small, so abstention used the untuned 0.50 cosine floor. That is the correct configuration under the suite's shipped-defaults rule, and it is also the exact constant already measured as embedder-fragile ([[project-recall-threshold-embedder-fragile-2026-07-28]]).
