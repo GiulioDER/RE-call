@@ -16,7 +16,8 @@ import pytest
 from benchmarks.ladder.manifest import (
     LABEL_ANSWERABLE,
     LABEL_UNANSWERABLE,
-    MANIFEST_VERSION,
+    MANIFEST_VERSION_V1,
+    MANIFEST_VERSION_V2,
     Instance,
     instance_from_dict,
     instance_to_dict,
@@ -71,19 +72,51 @@ def test_write_then_read_preserves_instances_and_digest(tmp_path: Path):
     instances = [_inst("i1"), _inst("i2", ring=4)]
     path = tmp_path / "manifest.jsonl"
     digest = write_manifest(
-        path, instances, ring_widths=[0, 4], corpus_hashes={"locomo": "abc123"}
+        path,
+        instances,
+        ring_widths=[0, 4],
+        corpus_hashes={"locomo": "abc123"},
+        manifest_version=MANIFEST_VERSION_V1,
     )
     read_back, header = read_manifest(path)
     assert read_back == instances
     assert header["digest"] == digest
-    assert header["manifest_version"] == MANIFEST_VERSION
+    # Pins the VALUE PASSED IN, not a module-level default — a default is exactly how a v1
+    # rebuild came to be stamped "2.0" (FIX-D). Written with V1 above; must read back as V1.
+    assert header["manifest_version"] == MANIFEST_VERSION_V1
     assert header["ring_widths"] == [0, 4]
     assert header["corpus_hashes"] == {"locomo": "abc123"}
 
 
+def test_write_manifest_requires_manifest_version_with_no_default(tmp_path: Path):
+    """A default is how FIX-D regressed: `write_manifest` must refuse to guess the version."""
+    path = tmp_path / "manifest.jsonl"
+    with pytest.raises(TypeError):
+        write_manifest(path, [_inst("i1")], ring_widths=[0], corpus_hashes={})
+
+
+def test_write_manifest_writes_unix_newlines_even_on_windows(tmp_path: Path):
+    """FIX-CRLF: the artifact is frozen and cited, so its bytes must not depend on the OS that
+    built it. Default text-mode newline translation turns every \\n into \\r\\n on Windows while
+    the digest is computed over \\n-joined lines — same content, different bytes. Assert directly
+    on the bytes written to disk, not on the in-memory digest, since the bug is byte-level."""
+    path = tmp_path / "manifest.jsonl"
+    write_manifest(
+        path,
+        [_inst("i1")],
+        ring_widths=[0],
+        corpus_hashes={},
+        manifest_version=MANIFEST_VERSION_V1,
+    )
+    raw = path.read_bytes()
+    assert b"\r" not in raw
+
+
 def test_read_rejects_a_manifest_whose_digest_does_not_match_its_body(tmp_path: Path):
     path = tmp_path / "manifest.jsonl"
-    write_manifest(path, [_inst("i1")], ring_widths=[0], corpus_hashes={})
+    write_manifest(
+        path, [_inst("i1")], ring_widths=[0], corpus_hashes={}, manifest_version=MANIFEST_VERSION_V1
+    )
     lines = path.read_text(encoding="utf-8").splitlines()
     lines[1] = lines[1].replace('"D1:3"', '"D9:9"')
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -104,7 +137,13 @@ def test_a_list_of_doc_ids_is_refused_because_a_released_artifact_cannot_be_muta
 def test_editing_the_corpus_hash_in_the_header_is_refused(tmp_path: Path):
     """corpus_hashes says WHICH corpus this manifest came from — forging it is the attack."""
     path = tmp_path / "manifest.jsonl"
-    write_manifest(path, [_inst("i1")], ring_widths=[0], corpus_hashes={"locomo": "abc123"})
+    write_manifest(
+        path,
+        [_inst("i1")],
+        ring_widths=[0],
+        corpus_hashes={"locomo": "abc123"},
+        manifest_version=MANIFEST_VERSION_V1,
+    )
     lines = path.read_text(encoding="utf-8").splitlines()
     lines[0] = lines[0].replace("abc123", "deadbeef")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -114,7 +153,13 @@ def test_editing_the_corpus_hash_in_the_header_is_refused(tmp_path: Path):
 
 def test_editing_the_ring_widths_in_the_header_is_refused(tmp_path: Path):
     path = tmp_path / "manifest.jsonl"
-    write_manifest(path, [_inst("i1")], ring_widths=[0, 4], corpus_hashes={})
+    write_manifest(
+        path,
+        [_inst("i1")],
+        ring_widths=[0, 4],
+        corpus_hashes={},
+        manifest_version=MANIFEST_VERSION_V1,
+    )
     lines = path.read_text(encoding="utf-8").splitlines()
     lines[0] = lines[0].replace("[0, 4]", "[0, 999]")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -124,7 +169,9 @@ def test_editing_the_ring_widths_in_the_header_is_refused(tmp_path: Path):
 
 def test_a_truncated_file_reports_this_file_rather_than_a_raw_json_error(tmp_path: Path):
     path = tmp_path / "manifest.jsonl"
-    write_manifest(path, [_inst("i1")], ring_widths=[0], corpus_hashes={})
+    write_manifest(
+        path, [_inst("i1")], ring_widths=[0], corpus_hashes={}, manifest_version=MANIFEST_VERSION_V1
+    )
     path.write_text(path.read_text(encoding="utf-8")[:40], encoding="utf-8")
     with pytest.raises(ValueError, match="truncated|not a manifest"):
         read_manifest(path)
@@ -154,19 +201,21 @@ def test_the_frozen_v1_manifest_still_reads_with_its_digest_intact():
     path = Path("results/ladder/manifest.jsonl")
     instances, header = read_manifest(path)
     assert header["digest"] == "6bfe2d2b094eefaf64409a3eddbb26d62b9e7709346540b2d068a4be300632b1"
-    assert header["manifest_version"] == "1.0"
+    assert header["manifest_version"] == MANIFEST_VERSION_V1
     assert len(instances) == 1800
     assert all(inst.scope_cluster_ids == () for inst in instances)
 
 
 def test_read_manifest_accepts_a_2_0_header(tmp_path: Path):
     path = tmp_path / "manifest.jsonl"
-    write_manifest(path, [_inst("i1")], ring_widths=[0], corpus_hashes={})
+    write_manifest(
+        path, [_inst("i1")], ring_widths=[0], corpus_hashes={}, manifest_version=MANIFEST_VERSION_V1
+    )
     lines = path.read_text(encoding="utf-8").splitlines()
     header = __import__("json").loads(lines[0])
-    header["manifest_version"] = "2.0"
+    header["manifest_version"] = MANIFEST_VERSION_V2
     lines[0] = __import__("json").dumps(header, sort_keys=True, ensure_ascii=False)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     instances, header_back = read_manifest(path)
-    assert header_back["manifest_version"] == "2.0"
+    assert header_back["manifest_version"] == MANIFEST_VERSION_V2
     assert len(instances) == 1

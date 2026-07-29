@@ -20,6 +20,7 @@ from benchmarks.ladder.build_v2 import build_v2_instances, main, select_distract
 from benchmarks.ladder.manifest import (
     LABEL_ANSWERABLE,
     LABEL_UNANSWERABLE,
+    MANIFEST_VERSION_V2,
     RING_ORIGINAL,
     manifest_digest,
     read_manifest,
@@ -359,3 +360,93 @@ def test_cli_defaults_match_the_preregistration(tmp_path: Path):
     instances, _header = read_manifest(out)
     corpus = load_locomo(src)
     assert len(instances) == len(corpus.questions) * 6
+
+
+def test_cli_stamps_the_manifest_v2_not_v1(tmp_path: Path):
+    """FIX-D companion: `build_v2.py` IS the v2 builder, so its header must say so explicitly —
+    this pins the value it actually passes, not the module default it happened to share before
+    the fix (see `test_ladder_build.py::test_cli_stamps_the_manifest_v1_not_v2` for the arm that
+    was actually wrong)."""
+    src = tmp_path / "locomo.json"
+    src.write_text(json.dumps(FOUR_CONVERSATIONS), encoding="utf-8")
+    out = tmp_path / "manifest.jsonl"
+    assert main(["--locomo", str(src), "--out", str(out), "--sample", "0"]) == 0
+    _instances, header = read_manifest(out)
+    assert header["manifest_version"] == MANIFEST_VERSION_V2 == "2.0"
+
+
+# --- FIX-ENV2: --sample-questions is the canonical flag name (matches build.py's) -----------
+
+
+def test_sample_questions_is_the_canonical_flag_name(tmp_path: Path):
+    """`build.py` uses `--sample-questions` for this exact pre-registered concept; `build_v2.py`
+    used to call it `--sample` with identical help text — two names for one thing. The canonical
+    name must now work here too, and select the pre-registered subset size."""
+    src = tmp_path / "locomo.json"
+    src.write_text(json.dumps(FOUR_CONVERSATIONS), encoding="utf-8")
+    out = tmp_path / "manifest.jsonl"
+    rc = main(
+        [
+            "--locomo",
+            str(src),
+            "--out",
+            str(out),
+            "--fractions",
+            "0.00,1.00",
+            "--sample-questions",
+            "1",
+            "--sample-seed",
+            "0",
+        ]
+    )
+    assert rc == 0
+    instances, _header = read_manifest(out)
+    assert len({i.source_question_id for i in instances}) == 1
+
+
+def test_sample_alias_still_works_and_matches_sample_questions(tmp_path: Path):
+    """`--sample` must keep working as an explicit alias, not be silently dropped — it is not a
+    concept anyone renamed on purpose, it was the flag every prior invocation used."""
+    src = tmp_path / "locomo.json"
+    src.write_text(json.dumps(FOUR_CONVERSATIONS), encoding="utf-8")
+    out_canonical = tmp_path / "canonical.jsonl"
+    out_alias = tmp_path / "alias.jsonl"
+    common = [
+        "--locomo",
+        str(src),
+        "--fractions",
+        "0.00,1.00",
+        "--sample-seed",
+        "0",
+    ]
+    assert main([*common, "--out", str(out_canonical), "--sample-questions", "1"]) == 0
+    assert main([*common, "--out", str(out_alias), "--sample", "1"]) == 0
+    _canonical_instances, canonical_header = read_manifest(out_canonical)
+    _alias_instances, alias_header = read_manifest(out_alias)
+    assert canonical_header["digest"] == alias_header["digest"]
+
+
+def test_sample_questions_default_is_still_200(tmp_path: Path):
+    """The v2 pre-registration fixes 200 for this arm — renaming the flag must not change the
+    value. Spies on `build_v2_instances` (via a monkeypatched module attribute, restored in a
+    `finally`) to capture the `sample=` the CLI actually threads through when neither
+    `--sample-questions` nor `--sample` is given."""
+    import benchmarks.ladder.build_v2 as build_v2_module
+
+    src = tmp_path / "locomo.json"
+    src.write_text(json.dumps(FOUR_CONVERSATIONS), encoding="utf-8")
+
+    captured = {}
+    orig_build = build_v2_module.build_v2_instances
+
+    def _spy(*args, **kwargs):
+        captured["sample"] = kwargs.get("sample")
+        return orig_build(*args, **kwargs)
+
+    build_v2_module.build_v2_instances = _spy
+    try:
+        out = tmp_path / "manifest.jsonl"
+        assert main(["--locomo", str(src), "--out", str(out)]) == 0
+    finally:
+        build_v2_module.build_v2_instances = orig_build
+    assert captured["sample"] == 200

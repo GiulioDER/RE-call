@@ -26,6 +26,7 @@ from pathlib import Path
 from benchmarks.ladder.manifest import (
     LABEL_ANSWERABLE,
     LABEL_UNANSWERABLE,
+    MANIFEST_VERSION_V1,
     RING_MAX,
     RING_ORIGINAL,
     Instance,
@@ -155,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         instances,
         ring_widths=list(spec.widths),
         corpus_hashes={"locomo": corpus.content_hash},
+        manifest_version=MANIFEST_VERSION_V1,
     )
     print(f"wrote {len(instances)} instances to {args.out}")
     print(f"digest {digest}")

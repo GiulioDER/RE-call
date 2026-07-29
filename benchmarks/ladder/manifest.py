@@ -21,13 +21,19 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-MANIFEST_VERSION = "2.0"
+#: Stamped by `build.py` — the v1 builder. v1-shaped instances: absolute-width rings, empty
+#: `scope_cluster_ids` on every instance.
+MANIFEST_VERSION_V1 = "1.0"
+
+#: Stamped by `build_v2.py` — the v2 builder. v2-shaped instances: fractional rings,
+#: non-empty `scope_cluster_ids` (own cluster + distractors) on every instance.
+MANIFEST_VERSION_V2 = "2.0"
 
 #: Versions `read_manifest` accepts. v1's frozen manifest (`results/ladder/manifest.jsonl`) has
 #: no `scope_cluster_ids` on any instance and must keep reading forever — that's the point of
 #: `instance_from_dict` tolerating the key's absence. v2 adds `scope_cluster_ids` but otherwise
 #: reuses the same digest machinery, so both versions are accepted by the same reader.
-_SUPPORTED_MANIFEST_VERSIONS = frozenset({"1.0", "2.0"})
+_SUPPORTED_MANIFEST_VERSIONS = frozenset({MANIFEST_VERSION_V1, MANIFEST_VERSION_V2})
 
 LABEL_ANSWERABLE = "answerable"
 LABEL_UNANSWERABLE = "unanswerable"
@@ -176,18 +182,29 @@ def write_manifest(
     *,
     ring_widths: Sequence[int],
     corpus_hashes: Mapping[str, str],
+    manifest_version: str,
 ) -> str:
-    """Write header line + one JSON object per instance. Returns the digest."""
+    """Write header line + one JSON object per instance. Returns the digest.
+
+    `manifest_version` is required, with NO default. The digest covers `(instances, ring_widths,
+    corpus_hashes)` but not the version, so a default here is a silent way to stamp a v1-shaped
+    body (absolute rings, empty `scope_cluster_ids`) with v2's label, or vice versa — the caller
+    (`build.py` for v1, `build_v2.py` for v2) must say which builder it is, every time (FIX-D).
+    """
     digest = manifest_digest(instances, ring_widths=ring_widths, corpus_hashes=corpus_hashes)
     header = {
-        "manifest_version": MANIFEST_VERSION,
+        "manifest_version": manifest_version,
         "digest": digest,
         "n_instances": len(instances),
         "ring_widths": list(ring_widths),
         "corpus_hashes": dict(corpus_hashes),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as fh:
+    # newline="\n": without it, Python's default text-mode newline translation turns every "\n"
+    # into "\r\n" on Windows, while the digest above is computed over "\n"-joined lines — same
+    # content, different bytes. This artifact is frozen and cited, so its raw bytes must not
+    # depend on the OS that built it (FIX-CRLF).
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps(header, sort_keys=True, ensure_ascii=False) + "\n")
         for inst in instances:
             fh.write(_canonical(inst) + "\n")
