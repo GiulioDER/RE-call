@@ -27,7 +27,8 @@ Five rules, binding on every track:
    questions we lost and read our answers.
 
 And one rule about writing it up: **every track publishes its losses in the same document as its
-wins.** The BEAM result — we lose, p_holm = 0.026 — ships alongside this suite, not instead of it.
+wins.** The BEAM result — we lose the aggregate, 0.594 against 0.650 — ships alongside this suite,
+not instead of it.
 
 ## Why not just use BEAM
 
@@ -71,17 +72,50 @@ If RE-call cannot beat a plain recency ordering here, the temporal machinery ear
 **Metric.** The full 2×2, reported over a **pre-fixed** cost ratio λ = cost(false answer) /
 cost(false abstention), λ ∈ {1, 3, 10}. λ=1 reproduces BEAM's implicit weighting. Fixing λ after
 seeing results is forbidden.
-**How we lose.** Our abstention is currently WORSE than Mem0's — **(ours: citation pending)**
-against Mem0's 0.536 on BEAM's category, with a 9.3 % false-abstain rate against their 4.1 %, and
-the paired test on 300 questions
-puts false-abstain against us at p_holm = 0.026. On today's evidence we lose this track at λ=1 and
-need λ≥3 to come out ahead. That must be stated, not discovered by a reader.
+**How we lose.** On BEAM's abstention category Mem0 scores **0.536**; our own cell is
+**citation-pending**, so the single comparison this track exists to make cannot yet be stated in
+either direction. What can be stated is the aggregate, and we lose it: **0.594 against 0.650** over
+300 questions. On the matched full-run measurement we false-abstain at **3.3 % against their
+4.1 %** — not worse — and the paired McNemar with Holm across three families finds **none
+significant against us** (accuracy 0.39, false-abstain 1.00, abstention 1.00).
 
-> This sentence previously read "0.533 vs 0.533" — two identical numbers under the word WORSE, so
-> it disproved itself. Mem0's cell is **0.536**, derived from FINDINGS §9h's own n=70 table:
-> (38 × 0.974 + 32 × 0.016) / 70. Our own cell is quoted as 0.467 <!--@ citation-pending: no committed artifact retains this cell; re-derive or retract --> in `PREREGISTRATION-currency.md`
-> but is **not derivable from any committed artifact**, so it is left as citation-pending here
-> rather than propagated into a second planning document.
+So the honest position going in is that this track is **undetermined**, not lost. It must not be
+written up as a loss we bravely disclosed, and it must not be written up as a win: the abstention
+cell that would settle it does not exist yet. What is structurally true in advance is that λ=1
+reproduces BEAM's own weighting, under which a system that declines to invent cannot win the mean
+by construction (10 % of questions reward abstention, 90 % punish false abstention) — so a λ=1
+deficit would be a property of the weighting as much as of the system, and this track may not
+present it as the latter.
+
+**What counts as losing it**, fixed now rather than after the numbers land: our abstention cell
+below Mem0's 0.536 on a held-out corpus at λ=1, or a false-abstain rate above theirs at any λ in
+{1, 3, 10}. Both are measurable the moment our own cell has an artifact behind it. Neither is
+measured today, and "undetermined" is not a result this track may ship — it is the reason the
+track is not yet runnable.
+
+> **Corrected 2026-07-29 — a mismatched pair and a stale test.** This passage previously asserted
+> "a 9.3 % false-abstain rate against their 4.1 %, and the paired test on 300 questions puts
+> false-abstain against us at p_holm = 0.026". Both halves were wrong, and both in the direction
+> that flattered the disclosure.
+>
+> **9.3 % and 4.1 % are not the same measurement.** 9.3 % is the shipped policy's false-abstain
+> rate in §9i's entailment sweep (30 unanswerable / 270 answerable, conversations 0-14); 4.1 % is
+> Mem0's rate in the full 300-question head-to-head, where our comparable figure is **3.3 %**. The
+> matched pair runs the *other way* than the sentence claimed.
+>
+> **p_holm = 0.026 was the pre-calibration-fix state.** After the fix, no family is significant
+> against us. Quoting it as the current false-abstain result stated a defeat that the run does not
+> show.
+>
+> An earlier pass corrected 9.6 % → 9.3 % in this same sentence (CHANGELOG, *"published a loss as
+> a tie"*). That made the digit internally right and left the comparison mismatched — **the defect
+> was never the digit.** A number can be verified against its own source and still be the wrong
+> number to put on that side of the word "against".
+>
+> Unchanged from the earlier correction: Mem0's cell is **0.536**, derived from FINDINGS §9h's own
+> n=70 table as (38 × 0.974 + 32 × 0.016) / 70. Our own cell is quoted as 0.467 <!--@ citation-pending: no committed artifact retains this cell; re-derive or retract --> in
+> `PREREGISTRATION-currency.md` but is **not derivable from any committed artifact**, so it stays
+> citation-pending here rather than propagating into a second planning document.
 
 ### D. Attribution
 
@@ -133,3 +167,11 @@ Then D, then C, then B. E can land any time; it is independent and cheap.
 - **The date-format fix is a null result** (p=0.727) and stays in on correctness grounds only. No
   track may claim a benefit from it.
 - **Retrieval budgets must be matched on tokens, not memory count**, in every track.
+- **The BEAM arm violates this suite's own Rule 5.** Every BEAM figure quoted in this document —
+  the head-to-head cells (0.594/0.650, 66.7/71.0 %, 3.3/4.1 %) and the three Holm-adjusted
+  p-values — is reported in `results/RESULTS.md` on branch `bench/beam-1m` and regenerates from
+  the commands in FINDINGS §9e, but `benchmarks/results/` is gitignored, so the per-question dumps
+  behind those cells are committed **nowhere**. That is reproduce-command tier, not
+  retained-artifact tier, and Rule 5 requires per-question artifacts. Either the dumps ship or the
+  rule is amended in the open — the one thing the suite cannot do is hold other people's
+  benchmarks to a rule its own cross-check track fails. (Reproducing them is a paid run, ~$45.)

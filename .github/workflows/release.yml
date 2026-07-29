@@ -125,3 +125,56 @@ jobs:
         with:
           # A tag push always goes to PyPI. A manual run goes wherever it was asked to.
           repository-url: ${{ (github.event_name == 'push' || inputs.target == 'pypi') && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+
+  # A tag is not a release. Five tags were pushed and published to PyPI before anyone noticed the
+  # repository sidebar still read v0.5.0 — the only GitHub Release that existed, hand-made months
+  # of versions earlier. Nothing was broken and nothing reported it, because creating the Release
+  # had always been a manual habit and habits do not fail loudly when they lapse.
+  #
+  # `needs: publish` is the ordering that matters: a Release announces something that shipped, so
+  # it must not exist for a version PyPI rejected. The `if` keeps it to tag pushes — a
+  # workflow_dispatch has no tag to attach one to.
+  github-release:
+    needs: publish
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # the only thing in this workflow that needs it: creating the Release
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0  # the tag object, so `git tag -l --format` can read its subject
+
+      - name: Extract this version's CHANGELOG section
+        id: notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # Everything between this version's heading and the next `## [` heading. Falls back to
+          # generated notes rather than shipping an empty release body.
+          # `index(...) == 1` rather than a built regex: a dynamic awk regex would need the
+          # brackets escaped, and getting that wrong turns "[0.7.0]" into a character class that
+          # matches nothing — silently, falling back to generated notes on every release.
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 {inside=1; next}
+            inside && index($0, "## [") == 1 {exit}
+            inside {print}
+          ' CHANGELOG.md > notes.md
+          if [ -s notes.md ]; then
+            echo "have_notes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::no CHANGELOG section for $version — falling back to generated notes"
+            echo "have_notes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          subject=$(git tag -l --format='%(contents:subject)' "$GITHUB_REF_NAME")
+          if [ "${{ steps.notes.outputs.have_notes }}" = "true" ]; then
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME — $subject" \
+              --notes-file notes.md --latest --verify-tag
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME — $subject" \
+              --generate-notes --latest --verify-tag
+          fi
