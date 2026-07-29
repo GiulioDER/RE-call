@@ -145,7 +145,7 @@ A previous version of this file published each of these. They did not survive re
   answerable query plus a nonsense suffix, so nothing could separate them. Rebuilt as genuinely
   off-topic questions; the *document*-level degeneracy remains and is stated as unmeasured.
 - **"6× faster incremental re-index"** — understated. Measured on a Linux server it is **33×**.
-- **Real-corpus recall@5 of 0.945** — that used document *headings* as queries, which is known-item
+- **Real-corpus recall@5 of 0.945**<!--@ withdrawn: README.md 'Claims that were withdrawn' --> — that used document *headings* as queries, which is known-item
   retrieval. Against 110 hand-labelled questions phrased the way a person actually asks, hit@5 is
   **0.33** on that corpus. → [FINDINGS §7](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)
 - **"Retrieval is the weakest part of this system"** — the sentence this file carried after that
@@ -165,7 +165,7 @@ A previous version of this file published each of these. They did not survive re
   the HNSW index, and reports recall 1.0000 under any `ef_search`. A single-transaction 20,000-row
   upsert reproduces the collapse just as hard once the table is analyzed. The batching was winning
   the race, not shaping the graph. → [#98](https://github.com/GiulioDER/RE-call/pull/98)
-- **LOCOMO "hit@5 0.615"** — published as the pre-fix retrieval anchor, and as one of two runs whose
+- **LOCOMO "hit@5 0.615"**<!--@ withdrawn: README.md 'Claims that were withdrawn'; results/FINDINGS.md 9a --> — published as the pre-fix retrieval anchor, and as one of two runs whose
   spread was read as HNSW build noise. **Still withdrawn, but no longer for the original reason.**
   It was removed because its result artifact had never been retained; that artifact was committed in
   [#111](https://github.com/GiulioDER/RE-call/pull/111) and records **0.6152** at k=5

@@ -8,6 +8,48 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Added
+- **`recall.eval.arm_check` — the self-ablation preflight — ships in the wheel
+  (`pyproject.toml`'s `packages = ["recall", "recall_mcp"]`) with no prior changelog entry.**
+  `ablation_verdicts`, `enforce`, `Verdict`, `InertArmError` and `DEFAULT_SAMPLE` are its public
+  surface: `ablation_verdicts` re-runs a `HybridRetriever` with each configured mechanism
+  (reranker, sparse leg) switched off and classifies the result `DIFFERS` / `SET_IDENTICAL` /
+  `IDENTICAL`; `enforce` raises `InertArmError` when a mechanism measured nothing for the
+  `metric_class` the caller declared, refusing a run that would otherwise publish numbers over an
+  arm that changed nothing. `DEFAULT_SAMPLE` (25) is the deterministic head-of-list sample both
+  harnesses use. Both `benchmarks/run.py` (LOCOMO) and `benchmarks/beam/run.py` (BEAM) wire it in
+  retrieval-only, before the first generator call — and now also stamp a `"ran": bool` field
+  alongside `verdicts` in `ablation_preflight`, so a preflight that never ran (e.g. `--resume`
+  covering every conversation on BEAM) cannot be read as one that ran and found nothing
+  configured. (`recall/eval/arm_check.py`, `benchmarks/run.py`, `benchmarks/beam/run.py`,
+  `tests/test_arm_check.py`, `tests/test_bench_run.py`, `tests/test_bench_beam_ablation_wiring.py`)
+- **`benchmarks/claim_gate.py`'s numeric-claim scanner no longer masks sample sizes as
+  configuration.** The old combined exclusion `\b[kn]\s*=\s*\d+` treated `n=17` the same as
+  `k=5`, hiding exactly the defect class the gate exists to catch — the design spec's motivating
+  case is a `results/gap/summary.json` reading `usable: 1` beside a published `n=17`. `k=` (a
+  retrieval budget) stays excluded; `n=` (a sample size, a claim about the data) is now gated.
+  Comma-grouped integers (`n=1,536`) now scan as one token instead of shredding into `1` / `536`
+  at each comma, and `matches()` strips commas before comparing digits to an artifact.
+  `results/CLAIMS_BASELINE.json` was regenerated — **2431 -> 2444 unmarked numbers** at the time
+  of THIS change — and `MAX_BASELINE_ENTRIES` raised to match: a deliberate coverage expansion
+  (roughly 60 previously-invisible `n=` integers becoming visible, partially offset by
+  comma-grouped pairs merging into one token), not the ratchet slipping. `resolve()` also now
+  rejects an artifact marker whose path resolves outside `results_root` — `MARKER_RE`'s
+  `[\w./-]+\.json` permits `../`, which could otherwise cite a real file that was never committed
+  as a result. (`benchmarks/claim_gate.py`, `tests/test_published_numbers_have_artifacts.py`,
+  `results/CLAIMS_BASELINE.json`)
+
+  **Correction, added later rather than left to drift again:** the `2444` figure above is a
+  point-in-time delta for this one bullet, not the file's current total, and two more
+  regenerations landed after it without this entry being revisited — first +37 to **2481**
+  merging `origin/master` (PR #154 introduced 21 new uncited numbers in `SUITE-DESIGN.md`'s
+  Track C rewrite), then a net-zero relabeling to **2481** when `benchmarks/claim_gate.py`
+  started capturing a leading sign (unsigned digit strings moved to their signed key; nothing was
+  added or removed). **2481 is what `results/CLAIMS_BASELINE.json` actually holds as committed
+  here.** Treat `MAX_BASELINE_ENTRIES`'s comment block in
+  `tests/test_published_numbers_have_artifacts.py` as the authoritative running history from now
+  on — it is updated at every regeneration by construction (the test fails otherwise) — rather
+  than this changelog bullet, which has no such guarantee.
 ### Fixed
 - **The calibration cache was invalidated on `st_mtime_ns`, so a re-calibration written inside one
   filesystem timestamp tick was never seen.** `load_for` caches `(path, embedder) -> Calibration`

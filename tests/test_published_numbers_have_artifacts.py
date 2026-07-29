@@ -1,0 +1,553 @@
+"""The claim gate: a number in a published document must resolve to a committed artifact.
+
+`results/ARTIFACTS.md` and `test_results_artifact_provenance.py` already enforce the other
+direction — an artifact must declare what it is. Nothing stopped a number appearing in a document
+that no artifact contains, which is how three defects reached publication on 2026-07-29: a loss
+published as a tie, a figure derivable from nothing, and a count that contradicted its own summary.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+import benchmarks.claim_gate as claim_gate
+from benchmarks.claim_gate import (
+    GATED_DOCS,
+    RESULTS_ROOT,
+    Claim,
+    ClaimError,
+    Marker,
+    build_baseline,
+    check_withdrawn,
+    load_baseline,
+    load_withdrawn,
+    matches,
+    resolve,
+    scan_document,
+    scan_text,
+    unmarked_counts,
+)
+
+
+def test_a_bare_decimal_is_an_unmarked_claim() -> None:
+    claims = scan_text("the shipped reranker reaches 0.777 overall.", doc="x.md")
+    assert [(c.text, c.marker) for c in claims] == [("0.777", None)]
+
+
+def test_a_bare_integer_is_an_unmarked_claim() -> None:
+    """The `usable: 1` beside a published `n=17` defect was an integer."""
+    claims = scan_text("The clean subset holds 17 records.", doc="x.md")
+    assert [c.text for c in claims] == ["17"]
+
+
+def test_an_artifact_marker_binds_to_the_number_before_it() -> None:
+    claims = scan_text(
+        "reaches **0.777** <!--@ locomo_rerank/rerank_shipped.json # depth_curve.5.overall.hit -->",
+        doc="x.md",
+    )
+    assert len(claims) == 1
+    marker = claims[0].marker
+    assert marker is not None
+    assert marker.kind == "artifact"
+    assert marker.artifact == "locomo_rerank/rerank_shipped.json"
+    assert marker.key == "depth_curve.5.overall.hit"
+
+
+def test_citation_pending_derived_and_withdrawn_markers_parse() -> None:
+    text = (
+        "a 0.467 <!--@ citation-pending: no artifact retains this -->\n"
+        "b 0.106 <!--@ derived: 0.777 - 0.671 -->\n"
+        "c 0.945 <!--@ withdrawn: README withdrawn list -->\n"
+    )
+    kinds = [c.marker.kind for c in scan_text(text, doc="x.md") if c.marker]
+    assert kinds == ["citation-pending", "derived", "withdrawn"]
+
+
+def test_excluded_spans_hide_their_digits() -> None:
+    text = (
+        "code `k = 5` and ```\nblock 3.14\n``` and https://example.com/9.9 and "
+        "v0.7.0 and 2026-07-29 and #1987 and hit@5 and bge-large-en-v1.5 and 2026"
+    )
+    assert scan_text(text, doc="x.md") == []
+
+
+def test_k_equals_configuration_remains_excluded() -> None:
+    """`k=5` is retrieval-budget configuration, not a claim about the data."""
+    assert scan_text("retrieval budget k=5", doc="x.md") == []
+
+
+def test_n_equals_is_no_longer_masked_a_sample_size_is_gated() -> None:
+    """The design's stated defect: `results/gap/summary.json` read `usable: 1` beside a published
+    `n=17` — and masking `n=` together with `k=` made this exact claim invisible to the gate.
+    `n=` is a claim about the data (a sample size); only `k=` is configuration."""
+    claims = scan_text("The clean subset holds n=17 records.", doc="x.md")
+    assert [c.text for c in claims] == ["17"]
+
+
+def test_comma_grouped_sample_size_is_one_claim() -> None:
+    """`n=1,536` must scan as the single token `1,536`, not shred into `1` and `536` — a document
+    edit from `n=1,536` to `n=2,536` must be visible to the gate as a changed claim."""
+    claims = scan_text("n=1,536 answerable", doc="x.md")
+    assert [c.text for c in claims] == ["1,536"]
+
+
+def test_comma_grouped_number_with_decimals() -> None:
+    claims = scan_text("total 1,536.25 units", doc="x.md")
+    assert [c.text for c in claims] == ["1,536.25"]
+
+
+def test_line_numbers_are_one_based() -> None:
+    claims = scan_text("nothing here\nbut 0.33 here\n", doc="x.md")
+    assert [c.line for c in claims] == [2]
+
+
+# --- P1-A: sign-aware NUMBER_RE ------------------------------------------------------------
+
+
+def test_a_correctly_cited_negative_claim_resolves() -> None:
+    """0.671 - 0.736 is genuinely -0.065; a correctly-signed claim must not be rejected."""
+    claims = scan_text(
+        "Delta was -0.065 <!--@ derived: 0.671 - 0.736 --> after the fix.", doc="x.md"
+    )
+    assert len(claims) == 1
+    assert claims[0].text == "-0.065"
+    resolve(claims[0], RESULTS_ROOT)  # does not raise
+
+
+def test_a_sign_flipped_claim_is_rejected() -> None:
+    """Reproduction: the document prints -0.065 but the derived value is +0.065 — a wrong sign
+    must not read as verified. Before the fix, `Claim.text` dropped the minus entirely and this
+    ACCEPTED."""
+    claims = scan_text(
+        "Delta was -0.065 <!--@ derived: 0.736 - 0.671 --> after the fix.", doc="x.md"
+    )
+    assert len(claims) == 1
+    assert claims[0].text == "-0.065"
+    with pytest.raises(ClaimError, match="derived"):
+        resolve(claims[0], RESULTS_ROOT)
+
+
+def test_a_hyphenated_range_is_not_read_as_negative() -> None:
+    """The hyphen in `0.36-0.43` is preceded by a digit, so it is a range separator, not a sign."""
+    claims = scan_text("the estimate spans 0.36-0.43 across runs.", doc="x.md")
+    assert [c.text for c in claims] == ["0.36", "0.43"]
+
+
+def test_a_leading_hyphen_after_a_word_boundary_is_a_sign() -> None:
+    """Adjacent to the digits and preceded by non-alnum (a space here) -> genuinely a sign."""
+    claims = scan_text("score change: -5 points", doc="x.md")
+    assert [c.text for c in claims] == ["-5"]
+
+
+def test_a_bullet_hyphen_with_a_space_is_not_a_sign() -> None:
+    """`- 5` (list marker, space before the digit) must not be read as `-5`: the sign must be
+    IMMEDIATELY adjacent to the digits, with nothing in between."""
+    claims = scan_text("- 5 items were dropped\n", doc="x.md")
+    assert [c.text for c in claims] == ["5"]
+
+
+def test_a_hyphen_after_an_identifier_is_not_a_sign() -> None:
+    """`a-1` and `5-3`: a hyphen preceded by an alphanumeric character is never a sign."""
+    claims = scan_text("run a-1 scored 5-3 on the rubric.", doc="x.md")
+    assert [c.text for c in claims] == ["1", "5", "3"]
+
+
+def test_unicode_minus_is_captured_as_a_sign() -> None:
+    """`results/FINDINGS.md` prints negative deltas with U+2212 (−), not ASCII `-`."""
+    claims = scan_text("oov_rate correlates −0.512 with corpus size", doc="x.md")
+    assert claims[0].text == "−0.512"
+
+
+def test_match_rule_normalises_unicode_minus() -> None:
+    assert matches("−0.512", -0.512)
+    assert not matches("−0.512", 0.512)
+
+
+def test_derived_subtraction_inside_the_marker_still_parses() -> None:
+    """The `derived:` expression itself lives inside an HTML comment, already masked from
+    NUMBER_RE — the sign-capture change must not disturb evaluating it."""
+    resolve(Claim("x.md", 1, "-0.065", Marker("derived", note="0.671 - 0.736")), RESULTS_ROOT)
+
+
+def test_a_marker_binds_only_to_the_nearest_preceding_number() -> None:
+    """Two numbers before one marker must not both read as backed by it.
+
+    A single marker covering both would let one of them drift unchecked — if a document reports
+    `hit@5 improves 0.671 -> 0.777 <!--@ f.json # k -->`, only 0.777 (the nearest preceding
+    number) may resolve to the artifact key; 0.671 must come back as an unmarked claim, not a
+    second claim silently backed by the same evidence.
+    """
+    claims = scan_text("a 1 and 2 <!--@ f.json # k -->", doc="x.md")
+    assert len(claims) == 2
+    first, second = claims
+    assert first.text == "1"
+    assert first.marker is None
+    assert second.text == "2"
+    assert second.marker is not None
+    assert second.marker.kind == "artifact"
+    assert second.marker.artifact == "f.json"
+    assert second.marker.key == "k"
+
+
+# --- P1-B: markers inside code spans must not bind ----------------------------------------
+
+
+def test_a_marker_inside_backticks_does_not_bind_to_a_preceding_bare_number() -> None:
+    """Reproduction: documenting marker syntax in backticks must not launder a real number.
+
+    Before the fix, `scan_text` extracted NUMBERS from the masked text but MARKERS from the raw
+    text, so a marker written inside inline code still bound to whatever real number preceded it
+    in prose on the same line — and the number never landed in `unmarked_counts`, so the ratchet
+    could not see it either.
+    """
+    claims = scan_text(
+        "Our score improved to 0.884 this week, e.g. write markers like "
+        "`<!--@ citation-pending: example -->`.",
+        doc="x.md",
+    )
+    assert len(claims) == 1
+    assert claims[0].text == "0.884"
+    assert claims[0].marker is None  # unmarked: the marker was inside code, so it doesn't count
+    with pytest.raises(ClaimError, match="unmarked"):
+        resolve(claims[0], RESULTS_ROOT)
+
+
+def test_a_marker_inside_a_fenced_block_does_not_bind() -> None:
+    """Same line, so a different-line skip in `_marker_for` cannot be what blocks the bind — only
+    the fenced-code mask can be."""
+    text = "The headline is 0.777 today. ```<!--@ citation-pending: example -->``` more text"
+    claims = scan_text(text, doc="x.md")
+    assert len(claims) == 1
+    assert claims[0].text == "0.777"
+    assert claims[0].marker is None
+
+
+def test_a_marker_outside_code_still_binds_normally() -> None:
+    """The fix must not blind the scanner to REAL markers — only ones sitting inside code."""
+    claims = scan_text("reaches 0.777 <!--@ f.json # k -->", doc="x.md")
+    assert len(claims) == 1
+    assert claims[0].marker is not None
+    assert claims[0].marker.kind == "artifact"
+
+
+def test_match_rule_rounds_to_the_published_precision() -> None:
+    assert matches("0.777", 0.77714)
+    assert matches("0.78", 0.7771)
+    assert matches("17", 17)
+
+
+def test_match_rule_rejects_the_suite_design_defect() -> None:
+    """SUITE-DESIGN published 0.533 where the cell is 0.536 — a loss printed as a tie."""
+    assert not matches("0.533", 0.536)
+
+
+def test_match_rule_rounds_half_to_even_not_half_away_from_zero() -> None:
+    """F-07: pin the documented rounding convention. `f"{0.625:.2f}"` is `"0.62"` (2 is already
+    even), not the `"0.63"` hand-rounding would produce — behaviour, not a bug; this test exists
+    so a future "fix" to the more intuitive convention shows up as a failing test, not a silent
+    change to which boundary values this gate accepts."""
+    assert matches("0.62", 0.625)
+    assert not matches("0.63", 0.625)
+
+
+def test_match_rule_rejects_a_non_number() -> None:
+    assert not matches("17", "17")
+    assert not matches("1", True)
+
+
+def test_match_rule_strips_commas_from_the_published_string() -> None:
+    """`n=1,536` in the document must match an artifact holding the plain int `1536`."""
+    assert matches("1,536", 1536)
+    assert not matches("1,536", 1537)
+
+
+def _write_artifact(root: Path, payload: dict) -> None:
+    (root / "sub").mkdir(parents=True, exist_ok=True)
+    (root / "sub" / "a.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_resolve_accepts_a_matching_artifact(tmp_path: Path) -> None:
+    _write_artifact(tmp_path, {"depth": {"5": {"hit": 0.7771}}})
+    claim = Claim("x.md", 1, "0.777", Marker("artifact", artifact="sub/a.json", key="depth.5.hit"))
+    resolve(claim, tmp_path)  # does not raise
+
+
+def test_resolve_rejects_a_mismatching_artifact(tmp_path: Path) -> None:
+    _write_artifact(tmp_path, {"depth": {"5": {"hit": 0.536}}})
+    claim = Claim("x.md", 1, "0.533", Marker("artifact", artifact="sub/a.json", key="depth.5.hit"))
+    with pytest.raises(ClaimError, match="0.536"):
+        resolve(claim, tmp_path)
+
+
+def test_resolve_rejects_a_missing_artifact(tmp_path: Path) -> None:
+    claim = Claim("x.md", 1, "0.777", Marker("artifact", artifact="sub/missing.json", key="a"))
+    with pytest.raises(ClaimError, match="no such artifact"):
+        resolve(claim, tmp_path)
+
+
+def test_resolve_rejects_an_artifact_path_that_escapes_results_root(tmp_path: Path) -> None:
+    """`MARKER_RE`'s artifact path is `[\\w./-]+\\.json`, which permits `../`. A marker can still
+    only CITE something — it cannot fabricate a claim, because the value must match too — but it
+    could cite a file outside `results/` that was never committed as a result. Write a real,
+    matching file just outside `results_root` to prove the containment check (not the missing-file
+    branch above) is what rejects the traversal."""
+    results_root = tmp_path / "results"
+    results_root.mkdir()
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "escape.json").write_text(json.dumps({"a": 0.777}), encoding="utf-8")
+    claim = Claim(
+        "x.md", 1, "0.777", Marker("artifact", artifact="../outside/escape.json", key="a")
+    )
+    with pytest.raises(ClaimError, match="outside|escapes|results_root|containment"):
+        resolve(claim, results_root)
+
+
+def test_resolve_rejects_a_missing_key(tmp_path: Path) -> None:
+    _write_artifact(tmp_path, {"depth": {}})
+    claim = Claim("x.md", 1, "0.777", Marker("artifact", artifact="sub/a.json", key="depth.5.hit"))
+    with pytest.raises(ClaimError, match="no key"):
+        resolve(claim, tmp_path)
+
+
+def test_citation_pending_needs_a_reason(tmp_path: Path) -> None:
+    resolve(Claim("x.md", 1, "0.467", Marker("citation-pending", note="no artifact")), tmp_path)
+    with pytest.raises(ClaimError, match="reason"):
+        resolve(Claim("x.md", 1, "0.467", Marker("citation-pending", note="")), tmp_path)
+
+
+def test_withdrawn_needs_a_retraction_reference(tmp_path: Path) -> None:
+    resolve(Claim("x.md", 1, "0.945", Marker("withdrawn", note="README list")), tmp_path)
+    with pytest.raises(ClaimError, match="retraction"):
+        resolve(Claim("x.md", 1, "0.945", Marker("withdrawn", note="")), tmp_path)
+
+
+def test_derived_checks_the_arithmetic(tmp_path: Path) -> None:
+    resolve(Claim("x.md", 1, "0.106", Marker("derived", note="0.777 - 0.671")), tmp_path)
+    with pytest.raises(ClaimError, match="derived"):
+        resolve(Claim("x.md", 1, "0.200", Marker("derived", note="0.777 - 0.671")), tmp_path)
+
+
+def test_derived_refuses_anything_that_is_not_literal_arithmetic(tmp_path: Path) -> None:
+    """The evaluator walks the AST and applies `operator` functions. It must not reach names,
+    calls, attributes or subscripts — a documentation gate is not a place to execute code."""
+    for hostile in ("__import__('os').getcwd()", "open('x')", "a + 1", "[1][0]"):
+        with pytest.raises(ClaimError, match="literal arithmetic|does not parse"):
+            resolve(Claim("x.md", 1, "1.0", Marker("derived", note=hostile)), tmp_path)
+
+
+# --- F-06: pathological `derived:` expressions must not crash the gate ----------------------
+
+
+def test_derived_rejects_an_overlong_expression_before_parsing(tmp_path: Path) -> None:
+    """Reproduction: `'-' * 2000 + '1'` used to raise an uncaught RecursionError. The length
+    bound catches it before `ast.parse` (and this module's own `_eval_node`) ever see it."""
+    hostile = "-" * 2000 + "1"
+    with pytest.raises(ClaimError, match="characters"):
+        resolve(Claim("x.md", 1, "1.0", Marker("derived", note=hostile)), tmp_path)
+
+
+def test_derived_catches_deep_recursion_as_a_claim_error_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Belt-and-suspenders check on the second layer: with the length bound raised out of the
+    way, a genuinely deep `derived:` expression must still come back as `ClaimError`, not
+    propagate `RecursionError` out of the gate."""
+    monkeypatch.setattr(claim_gate, "_MAX_DERIVED_EXPRESSION_LENGTH", 10_000)
+    hostile = "-" * 2000 + "1"
+    with pytest.raises(ClaimError, match="deeply nested"):
+        resolve(Claim("x.md", 1, "1.0", Marker("derived", note=hostile)), tmp_path)
+
+
+def test_an_unmarked_claim_does_not_resolve(tmp_path: Path) -> None:
+    with pytest.raises(ClaimError, match="unmarked"):
+        resolve(Claim("x.md", 1, "0.777", None), tmp_path)
+
+
+def test_a_withdrawn_value_may_not_appear_bare() -> None:
+    withdrawn = {"0.945": {"figure": "real-corpus recall@5", "retraction_ref": "README"}}
+    errors = check_withdrawn([Claim("x.md", 3, "0.945", None)], withdrawn)
+    assert len(errors) == 1
+    assert "withdrawn" in str(errors[0])
+
+
+def test_a_withdrawn_value_passes_with_a_withdrawn_marker() -> None:
+    withdrawn = {"0.945": {"figure": "real-corpus recall@5", "retraction_ref": "README"}}
+    claim = Claim("x.md", 3, "0.945", Marker("withdrawn", note="README withdrawn list"))
+    assert check_withdrawn([claim], withdrawn) == []
+
+
+def test_a_withdrawn_value_passes_when_legitimately_re_measured() -> None:
+    """Same digits, arrived at from a committed artifact — a different figure that reads the same."""
+    withdrawn = {"0.945": {"figure": "real-corpus recall@5", "retraction_ref": "README"}}
+    claim = Claim("x.md", 3, "0.945", Marker("artifact", artifact="a.json", key="hit"))
+    assert check_withdrawn([claim], withdrawn) == []
+
+
+def test_a_citation_pending_marker_does_not_excuse_a_withdrawn_figure() -> None:
+    """"We have not sourced it yet" is not the same statement as "this was retracted"."""
+    withdrawn = {"0.945": {"figure": "real-corpus recall@5", "retraction_ref": "README"}}
+    claim = Claim("x.md", 3, "0.945", Marker("citation-pending", note="later"))
+    assert len(check_withdrawn([claim], withdrawn)) == 1
+
+
+def test_the_registry_on_disk_is_well_formed() -> None:
+    withdrawn = load_withdrawn(RESULTS_ROOT)
+    assert withdrawn, "an empty registry would make the withdrawn rule vacuous"
+    for value, entry in withdrawn.items():
+        assert value == value.strip()
+        assert entry["figure"].strip()
+        assert entry["retraction_ref"].strip()
+
+
+def test_the_registry_holds_literal_digit_strings_not_floats() -> None:
+    """0.615 and its artifact's 0.6152 are different strings; float comparison would conflate a
+    retracted figure with a live one at a different precision."""
+    for value in load_withdrawn(RESULTS_ROOT):
+        assert isinstance(value, str)
+
+
+#: The ratchet. This number may only ever go DOWN — EXCEPT for the one deliberate jump recorded
+#: below, which was a coverage expansion, not the ratchet slipping: a future reader diffing this
+#: constant against git blame should read the comment before assuming a regression.
+MAX_BASELINE_ENTRIES = 2481  # generated 2026-07-29: 2481 unmarked occurrences across 4 documents
+#: (2438 before marking 6 bare withdrawn-figure occurrences — see WITHDRAWN.json — with
+#: `<!--@ withdrawn: ... -->` in FINDINGS.md and README.md; 2432 before marking `0.467`
+#: citation-pending in benchmarks/SUITE-DESIGN.md — see Task 5 — with
+#: `<!--@ citation-pending: ... -->`; 2431 -> 2444 (+13) in the final-review pass: `EXCLUSIONS`
+#: stopped masking `n=` alongside `k=` (a sample size is a claim, not configuration — the exact
+#: defect class the design spec cites, `usable: 1` beside a published `n=17`) and `NUMBER_RE`
+#: stopped shredding comma-grouped integers like `1,536` into `1` + `536`. The `n=` change alone
+#: made roughly 60 previously-invisible integers visible; the comma-grouping change partially
+#: offsets it by merging pairs of digit fragments back into one token. Net +13 unmarked numbers
+#: is the correct, larger, more honest baseline — not a regression to chase back down.
+#:
+#: 2444 -> 2481 (+37) on merging origin/master: PR #154 rewrote SUITE-DESIGN.md's Track C passage
+#: — the false-abstain correction — introducing 21 distinct uncited numbers (9.3, 4.1, 3.3, 0.536,
+#: 0.594, 0.650, ...). The gate caught them on the merge, which is the guard working; they are
+#: baselined rather than cited because they landed on master BEFORE this gate existed, the same
+#: reasoning that froze the original 2431. Numbers written into these documents from here on must
+#: carry a marker.
+#:
+#: 2481 -> 2481 (net 0) after P1-A: `NUMBER_RE`/`Claim.text` now capture a leading sign (ASCII `-`
+#: or Unicode minus `−`), so `matches()` can catch a sign-flipped claim instead of silently
+#: accepting one — see the note on `NUMBER_RE` in `benchmarks/claim_gate.py`. This RELABELS
+#: entries, it does not add or remove any: every occurrence that used to sit under its unsigned
+#: digit string (`"0.065"`) now sits under its signed one (`"-0.065"`) if the document actually
+#: printed the sign — the per-document and grand totals are identical before and after (RESULTS
+#: 826, FINDINGS 1274, README 303, SUITE-DESIGN 78; 2481 throughout). Two effects are visible in
+#: the regenerated file: (1) FINDINGS.md and RESULTS.md's negative deltas (`−0.009`, `−0.512`,
+#: ...) move from their unsigned to their signed key; (2) README.md's Quickstart anchor slug
+#: `#quickstart--2-minutes...` — a `-` preceded by another `-`, which the stated sign rule counts
+#: as real — relabels 2 occurrences of `"2"` to `"-2"`. Neither is a real claim in either form;
+#: see the stated-limit paragraph on `NUMBER_RE`.)
+
+
+def test_unmarked_counts_ignores_marked_numbers() -> None:
+    claims = [
+        Claim("x.md", 1, "0.33", None),
+        Claim("x.md", 2, "0.33", None),
+        Claim("x.md", 3, "0.77", Marker("citation-pending", note="why")),
+    ]
+    assert unmarked_counts(claims) == {"0.33": 2}
+
+
+def test_every_baseline_entry_is_still_present_and_still_unmarked() -> None:
+    """Dead-entry test. Marking a number forces deleting its baseline row, so the file shrinks."""
+    assert load_baseline(RESULTS_ROOT) == build_baseline(), (
+        "CLAIMS_BASELINE.json no longer matches the documents. If you MARKED a number, remove its "
+        "row here and lower MAX_BASELINE_ENTRIES. If you ADDED an unmarked number, mark it instead."
+    )
+
+
+def test_the_baseline_never_grows() -> None:
+    total = sum(sum(counts.values()) for counts in load_baseline(RESULTS_ROOT).values())
+    assert total <= MAX_BASELINE_ENTRIES
+
+
+def test_no_withdrawn_value_hides_in_the_baseline() -> None:
+    """The known-bad figures may not sit in the ratchet — that is where they would be invisible."""
+    withdrawn = set(load_withdrawn(RESULTS_ROOT))
+    for doc, counts in load_baseline(RESULTS_ROOT).items():
+        assert not (withdrawn & set(counts)), f"{doc} baselines a withdrawn figure"
+
+
+def test_the_committed_baseline_has_no_crlf() -> None:
+    """`scripts/generate_claims_baseline.py` must write LF only, so the file it produces is
+    byte-identical whether it was generated on Windows or Linux. Without an explicit `newline`
+    argument, `Path.write_text` applies universal-newline translation and emits `os.linesep` —
+    on Windows that turns every `\n` `json.dumps(indent=2)` embeds into `\r\n`. A generated
+    artifact that comes out different on the OS that produced it than on the OS that consumes it
+    is exactly how a ratchet like this one silently diverges. Read as bytes: reading with
+    universal newlines would translate away the very bytes this test exists to check, and the
+    assertion would pass vacuously."""
+    raw = (RESULTS_ROOT / "CLAIMS_BASELINE.json").read_bytes()
+    assert b"\r\n" not in raw
+
+
+# --- The gate, armed over the four published documents -----------------------------------------
+
+
+@pytest.mark.parametrize("doc", GATED_DOCS)
+def test_every_marked_claim_resolves(doc: str) -> None:
+    """A marker that does not resolve is worse than no marker: it reads as verified."""
+    failures: list[str] = []
+    for claim in scan_document(Path(doc)):
+        if claim.marker is None:
+            continue
+        try:
+            resolve(claim, RESULTS_ROOT)
+        except ClaimError as exc:
+            failures.append(str(exc))
+    assert not failures, "\n".join(failures)
+
+
+@pytest.mark.parametrize("doc", GATED_DOCS)
+def test_no_new_unmarked_numbers(doc: str) -> None:
+    baseline = load_baseline(RESULTS_ROOT).get(doc, {})
+    current = unmarked_counts(scan_document(Path(doc)))
+    changed = {
+        value: count for value, count in current.items() if count != baseline.get(value, 0)
+    }
+    assert not changed, (
+        f"{doc}: these numbers are new or changed since the baseline: {changed}. Add a marker — "
+        f"`<!--@ <artifact>.json # <key> -->`, or `<!--@ citation-pending: <reason> -->` if no "
+        f"artifact retains it — and lower MAX_BASELINE_ENTRIES."
+    )
+
+
+@pytest.mark.parametrize("doc", GATED_DOCS)
+def test_no_bare_withdrawn_figures(doc: str) -> None:
+    errors = check_withdrawn(scan_document(Path(doc)), load_withdrawn(RESULTS_ROOT))
+    assert not errors, "\n".join(str(e) for e in errors)
+
+
+def test_composition_check_withdrawn_and_resolve_must_both_run_over_the_same_claims(
+    tmp_path: Path,
+) -> None:
+    """Pins the two-test composition that makes the withdrawn rule actually safe.
+
+    `check_withdrawn` passes any claim whose marker KIND is `artifact` without opening the
+    artifact file — it only checks that *some* citation exists, not that the citation is real. On
+    its own that would let a document exempt a retracted figure with a fabricated `artifact:`
+    marker pointing at a file that does not exist. The only thing that catches the fabrication is
+    `resolve()`, run over the SAME claim, because `resolve()` is the one that actually opens the
+    artifact. `test_no_bare_withdrawn_figures` and `test_every_marked_claim_resolves` must both
+    stay in this suite, over the same `GATED_DOCS`, for a withdrawn figure to be genuinely closed
+    off — either one alone looks sufficient and is not. If a future edit drops one of the pair,
+    this test fails and says why.
+    """
+    withdrawn = {"0.945": {"figure": "real-corpus recall@5", "retraction_ref": "README"}}
+    claim = Claim(
+        "x.md", 3, "0.945", Marker("artifact", artifact="sub/does-not-exist.json", key="hit")
+    )
+
+    # check_withdrawn alone: a fabricated artifact marker is enough to pass — it never opens the
+    # file. This is the gap; without the second check below, this line would be "the" answer.
+    assert check_withdrawn([claim], withdrawn) == []
+
+    # resolve alone closes it: it actually opens the artifact, and there is nothing at that path.
+    with pytest.raises(ClaimError, match="no such artifact"):
+        resolve(claim, tmp_path)
