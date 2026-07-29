@@ -63,17 +63,29 @@ EXCLUSIONS: tuple[tuple[str, str, int], ...] = (
     # Measured 2026-07-29 across the four gated documents (deferred CCA second pass): this row
     # masks 9 spans in the 1900-2099 range. 8 of 9 are genuine timestamps/citation-years that
     # belong excluded — `Mem0's 2026-07 announcement` (x2, RESULTS.md + FINDINGS.md), `ICLR 2026`,
-    # `May 2026`, `2026 redesign`, `in 2014`, `February 15, 2024`, `Hanley & McNeil (1982)`. The
-    # 9th is NOT a year at all and is a real quantity this row hides: `results/RESULTS.md:72`'s
-    # `1922.1` (a rerank ms/query latency figure in a cost/latency table) has its leading `1922`
-    # masked as a year, leaving an orphan `.1` that `NUMBER_RE` cannot match on its own (no
-    # leading digit) — so the whole figure disappears before ever reaching `NUMBER_RE`, unlike a
-    # normal masked span that just removes a token. This is a real, currently-unmarked, currently
-    # PUBLISHED number the gate does not see. Reported rather than silently narrowed, per the
-    # instruction that motivated this measurement — narrowing the regex without checking first
-    # risks re-breaking the `2026-07-29`/`2026-07` timestamp cases the wider pattern intentionally
-    # covers. See the deferred-pass report for the full reproduction.
-    ("year — timestamp", r"\b(?:19|20)\d{2}\b", 0),
+    # `May 2026`, `2026 redesign`, `in 2014`, `February 15, 2024`, `Hanley & McNeil (1982)`.
+    #
+    # The 9th was NOT a year and the row was eating it: `results/RESULTS.md:72`'s `1922.1` — a
+    # rerank ms/query latency figure in a cost/latency table. `\b` is satisfied by the `.`, so
+    # `\b1922\b` matched INSIDE `1922.1`, masking the leading digits and leaving `.1` behind.
+    # That orphan is not harmless: `NUMBER_RE` reads the trailing `1` as a claim, so the document
+    # published `1922.1` while the gate recorded `1`. An edit to `2922.1` would have changed
+    # nothing the gate could see, and the phantom `1` silently occupied a baseline slot.
+    #
+    # The two guards below are what a year needs and a quantity does not: `(?<![\d.])` stops the
+    # row matching partway into a longer number, and `(?!\.\d)` stops it matching the integer part
+    # of a decimal. Every one of the 8 genuine years above still masks (verified); `1922.1` now
+    # scans whole. The general shape of this bug is the one this table's header warns about — an
+    # exclusion row eating a real claim — and it is the second instance found on this branch, after
+    # the `n=`/`k=` row.
+    #
+    # RESIDUAL, measured and unresolved: a BARE 4-digit quantity in 1900-2099 is still masked.
+    # `corpus of 2048 chunks` yields no claim, while `1024` and `3072` are gated normally. This is
+    # not fixable by a local rule — `2048` and `2026` are the same four characters, and only
+    # context distinguishes a dim/chunk-count from a year. Today no gated document publishes such a
+    # quantity (the 9-span census above found only the `1922.1` decimal), so the hole is real but
+    # currently empty. If one is ever published, mark it explicitly rather than trusting this row.
+    ("year — timestamp", r"(?<![\d.])(?:19|20)\d{2}\b(?!\.\d)", 0),
     ("ordered list marker — structure", r"^\s{0,3}\d+\.\s", re.MULTILINE),
     ("table rule — structure", r"^\s*\|[\s:|-]+\|\s*$", re.MULTILINE),
     ("footnote — structure", r"\[\^\d+\]", 0),
