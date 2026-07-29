@@ -6,6 +6,16 @@ flow is more fragile than LOCOMO's: it gates the preflight on an `ablation_run` 
 than `position == 0`, and it interacts with `--resume` skipping an already-scored conversation's
 questions — exactly the kind of refactor (moving the sentinel flip, or sampling `pending` instead
 of `in_scope`) that would silently break the guard with no red test.
+
+`--embedder hashing` on the two `_main()` runs, for the same reason `tests/test_bench_run.py`
+builds every `RecallSystem` with `embedder_name="hashing"`: `BeamRecallSystem.__init__` resolves
+its embedder EAGERLY (`resolve_embedder(args.embedder)`, called before `ingest`/`ablation_preflight`
+are monkeypatched off), and the CLI's `--embedder` default is `fastembed`, which raises
+`ImportError` when the optional `fastembed` extra is not installed — the exact case in CI, which
+installs `.[dev]` only. These tests passed locally only because this machine's venv happens to
+have `fastembed` installed too. `hashing` (`recall.embeddings.HashingEmbedder`) needs no extra and
+no network, and is never asked to embed anything real here regardless — the store methods it would
+feed are monkeypatched away along with `ingest`.
 """
 from __future__ import annotations
 
@@ -171,6 +181,7 @@ def test_ablation_preflight_fires_once_before_run_pool_and_samples_in_scope_not_
             "--k", "45",
             "--candidate-k", "250",
             "--ablation-sample", "3",
+            "--embedder", "hashing",
             "--out-dir", str(out_dir),
             "--resume", str(resume_path),
         ],
@@ -271,6 +282,7 @@ def test_ablation_preflight_never_running_is_stamped_ran_false_not_an_empty_verd
             "--data", "unused.parquet",
             "--k", "45",
             "--candidate-k", "250",
+            "--embedder", "hashing",
             "--out-dir", str(out_dir),
             "--resume", str(resume_path),
         ],
