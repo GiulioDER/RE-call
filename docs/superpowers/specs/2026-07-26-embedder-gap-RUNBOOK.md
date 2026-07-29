@@ -125,20 +125,32 @@ Note also that the cloud embedder measured **61.5 docs/s — six times faster th
 is not the bottleneck; the local embedder is. (The API is still the budget risk, §5.)
 
 So: N workers over disjoint corpus subsets, few threads each. `gap_run` already takes `--datasets`,
-so this needs no code change. `scripts/run_gap_parallel.sh` in this repo launches 7 × 8 threads
-(= 56, under the quota):
+so this needs no code change. `scripts/run_gap_parallel.sh` launches **one worker per corpus** —
+16 workers × 4 threads (= 64, at the quota). It used to be described here as 7 × 8; the script
+itself argues for one-per-corpus, because wall clock is set by the slowest worker QUEUE, and the
+description was simply stale:
 
 ```bash
 cd /root/recall && ./scripts/run_gap_parallel.sh
 ```
 
-✅ **Right if:** `ps aux | grep -c "[g]ap_run"` prints 7, `cat /proc/loadavg` shows a 1-minute load
-near the CPU quota (~50–60 here, *not* ~8), and no log under `/root/logs/` contains `Traceback`.
+✅ **Right if:** `ps aux | grep -c "[g]ap_run"` prints **16**, `cat /proc/loadavg` shows a 1-minute
+load near the CPU quota (~50–60 here, *not* ~8), and no log under `/root/logs/` contains
+`Traceback`. The script now verifies this itself and exits non-zero if any worker died at launch,
+rather than printing `LAUNCHED 16 workers` regardless.
 
 Workers share `--out`, writing one `<dataset>.json` each — no contention, since every evaluation
 uses its own Postgres table. Fully resumable at worker granularity: relaunch and finished corpora
 are skipped. A *failed* corpus is deliberately **not** retried — pass `--retry-failed` on purpose,
 never by reflex.
+
+⚠️ **The summary is a separate step.** A worker given `--datasets` writes no `summary.json`: all 16
+would otherwise race to overwrite it, each with a summary of its own single corpus. Once every
+worker has finished, run it once over the full roster:
+
+```bash
+./.venv/bin/python -m recall.eval.gap_run --out ./results/gap --summarise
+```
 
 ⚠️ **Watch for completion, not for silence.** A waiter that only greps for the success marker
 returns 0 when the SSH connection drops and is indistinguishable from success — this happened
@@ -154,11 +166,26 @@ tail -f /root/recall/run.log
 ```bash
 cd /root/recall && ./.venv/bin/python -c "
 import json, glob
+from pathlib import Path
 from recall.eval.gap_study import analyse_records
-records = [json.load(open(p)) for p in glob.glob('results/gap/*.json') if 'summary' not in p]
-print(json.dumps(analyse_records(records, arm='hybrid'), indent=2))
-" | tee results/gap/analysis.json
+from recall.eval.gap_run import write_json
+recs = [json.load(open(p)) for p in sorted(glob.glob('results/gap/*.json'))
+        if 'summary' not in p and 'analysis' not in p]
+out = analyse_records(recs, arm='hybrid')
+write_json(Path('results/gap/analysis.json'), out)
+print(json.dumps(out, indent=2, default=str))
+"
 ```
+
+Two details in that command are load-bearing, and both were wrong here before:
+
+* **`'analysis' not in p`** — without it a re-run reads its own previous output back in as a corpus
+  record and appends `None` to `excluded`. The published version of this command in
+  `results/gap/FINDINGS-embedder-gap.md` had the filter; this one did not.
+* **`write_json` rather than `tee`** — a predictor that is undefined for some corpus makes
+  `holm_adjust` return NaN for that slot, and a plain `json.dumps` would emit a bare `NaN` token,
+  which is not valid JSON. That is exactly the defect that had to be repaired in `arguana.json`
+  and `fiqa.json`. `write_json` maps it to `null` and writes atomically.
 
 ### Reading it — decided in advance, so nothing here is a choice
 

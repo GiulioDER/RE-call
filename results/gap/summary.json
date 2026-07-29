@@ -1,11 +1,27 @@
 {
-  "attempted": 1,
-  "usable": 1,
+  "attempted": 17,
+  "usable": 17,
   "ok": [
-    "cqadupstack-tex"
+    "nfcorpus",
+    "scifact",
+    "scidocs",
+    "fiqa",
+    "arguana",
+    "cqadupstack-android",
+    "cqadupstack-english",
+    "cqadupstack-gaming",
+    "cqadupstack-gis",
+    "cqadupstack-mathematica",
+    "cqadupstack-physics",
+    "cqadupstack-programmers",
+    "cqadupstack-stats",
+    "cqadupstack-tex",
+    "cqadupstack-unix",
+    "cqadupstack-webmasters",
+    "cqadupstack-wordpress"
   ],
   "failed": [],
   "missing": [],
-  "underpowered": true,
-  "power_note": "n=1 is below the preregistered floor of 12: a null result here means UNDERPOWERED, not 'no effect' (at n=8 a partial r of 0.85 is needed to survive Holm over three predictors). Report it as such."
+  "underpowered": false,
+  "power_note": "n=17 meets the preregistered floor of 12."
 }

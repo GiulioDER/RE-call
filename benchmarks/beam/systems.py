@@ -38,6 +38,72 @@ DEFAULT_TOP_K = 200
 EMBED_BATCH = 32
 
 
+def require_indexed(store: Any, *, tenant: str, table: str, what: str) -> int:
+    """Refuse to measure a tenant that holds no chunks. Returns the chunk count.
+
+    The read-only probes (`threshold_probe`, `lexical_probe`, `rank_probe`, `dedup_probe`) do not
+    ingest — they measure a table some earlier run populated. Nothing checked that it HAD been
+    populated, and every one of them degrades into a well-formed report of zeros rather than an
+    error:
+
+    * `threshold_probe` gets no hits, so every candidate rule "correctly starves" every
+      unanswerable question and serves none of the answerable ones — a perfect-looking abstainer.
+    * `lexical_probe` gets `n_chunks = 0`, so its rare-term filter `df <= max_df * 0` admits
+      EVERY term, coverage is 0.0 for every question, and it prints `separation: 0.0000` — which
+      reads as a clean negative result.
+    * `rank_probe` reports the answer was never retrieved at any depth.
+
+    `BeamRecallSystem.ingest` already carries this guard, for a reason recorded there: every BEAM
+    table was once found emptied between two probes, with nothing running and no error anywhere.
+    The write path was hardened and the read paths were not, which leaves the same incident
+    producing publishable zeros instead of a stack trace.
+
+    Uses `store.count()` rather than walking `iter_chunks()`: the count is one SQL aggregate,
+    where the walk streams every row and builds a Chunk object per row to reach the same integer.
+    """
+    n = int(store.count())  # `store` is Any here; keep the declared int honest
+    if n == 0:
+        raise SystemExit(
+            f"{what}: tenant {tenant!r} in table {table!r} holds ZERO chunks. This probe does not "
+            f"index — it measures a table another run populated. With an empty tenant it would "
+            f"emit a complete report of zeros instead of failing, so it is refusing instead. "
+            f"Index the conversation first, or point --table at the table that holds it."
+        )
+    return n
+
+
+def rebuild_dates(store: Any) -> dict[str, str]:
+    """Recover the `{filename: iso_date}` map from an ALREADY-INDEXED tenant.
+
+    `BeamRecallSystem` builds this map during `ingest`, so a probe that skips ingest to measure a
+    pre-built table has an empty one — and `retrieve` then stamps `created_at: ""` on every
+    memory it returns. That is not a cosmetic gap: `dedup_probe`'s whole mechanism is "keep the
+    NEWEST of each near-duplicate cluster", and its comparison `if di and di > dj` can never fire
+    when every date is blank. The probe silently degraded to keep-the-highest-ranked and reported
+    the result as a newest-wins curve.
+
+    The date is recoverable because `_turn_document` deliberately writes it into the document
+    BODY rather than into metadata (see the note there — the dates ARE frequently the answer).
+    So the header line is parsed back out and re-normalised through the same `_iso_date` the
+    ingest path uses, which keeps the two routes to this map in agreement by construction.
+    """
+    dates: dict[str, str] = {}
+    for chunk in store.iter_chunks():
+        head = chunk.text.lstrip().split("\n", 1)[0]
+        if not head.startswith("#") or "—" not in head:
+            continue
+        name = Path(chunk.source).name
+        if dates.get(name):
+            # First non-empty wins. Only the FIRST chunk of a turn carries the header; a later
+            # chunk of the same document whose first line happens to start with `#` and contain
+            # an em dash would otherwise overwrite a recovered date — most likely with "", since
+            # `_iso_date` returns "" on anything it cannot parse. That would blank the date for
+            # some files only, which `dedup_probe`'s `any(...)` check cannot see.
+            continue
+        dates[name] = _iso_date(head.split("—", 1)[1].strip())
+    return dates
+
+
 #: BEAM stamps turns with a human-readable `time_anchor` like "March-01-2024". Two things in the
 #: VENDORED answerer prompt consume that value, and both break on it:
 #:

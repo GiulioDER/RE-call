@@ -249,3 +249,70 @@ def test_analyse_records_reports_no_haystack_confound_when_sizes_do_not_track_th
         rec["predictors"]["n_documents"] = rng.randint(4000, 20000)
         records.append(rec)
     assert abs(analyse_records(records, arm="hybrid")["haystack_confound"]["spearman"]) < 0.5
+
+
+# --- NaN handling (CCA audit 2026-07-28) --------------------------------------------------
+#
+# `vocab.oov_rate`, `query_overlap` and `crowding` all return NaN by design to mean "this corpus
+# admits no measurement of this predictor". `headroom_capture` does the same at a saturated
+# ceiling. Those sentinels have to survive the analysis as absences. Before these tests they did
+# not: NaN compares False against everything, so it sorted into the rank ladder as an ordinary
+# value and was scored as data.
+
+
+def test_spearman_does_not_rank_a_nan_as_though_it_were_a_value():
+    """A NaN in either series must not distort a correlation.
+
+    Verified before the fix: this returned **-0.7714** rather than -1.0. `sorted()` leaves NaN
+    wherever insertion order put it, `_ranks` hands it an ordinary rank, and that invented rank
+    pulls the correlation off the anti-monotone relation that actually holds among the five
+    measured points.
+    """
+    nan = float("nan")
+    # ANTI-monotone on the five measured points, so scoring the NaN as a value can only pull the
+    # answer off -1. The mirror-image case (monotone, expecting +1.0) is deliberately NOT asserted
+    # here: it returns 1.0 on the buggy code too, because NaN happens to sort where it does no
+    # damage. A case that is green before and after proves nothing, which is precisely the defect
+    # this same audit removed from tests/test_eval_locomo_rerank.py.
+    assert spearman([0.6, nan, 0.5, 0.4, 0.3, 0.1], [1, 2, 3, 4, 5, 6]) == pytest.approx(-1.0)
+
+
+def test_spearman_drops_the_incomplete_pair_rather_than_the_whole_series():
+    nan = float("nan")
+    # The NaN sits on the one point that breaks monotonicity. Dropping the PAIR must recover the
+    # monotone relation among what was measured; dropping only one side would misalign the rest.
+    assert spearman([1, 2, nan, 4], [10, 20, 5, 40]) == pytest.approx(1.0)
+
+
+def test_spearman_is_nan_when_too_few_pairs_survive():
+    nan = float("nan")
+    assert math.isnan(spearman([1.0, nan, nan], [1.0, 2.0, 3.0]))
+
+
+def test_holm_adjust_does_not_let_one_nan_erase_the_family():
+    """One undefined predictor must not silently un-find every other result.
+
+    Verified before the fix: `holm_adjust([nan, 0.001, 0.9])` returned `[1.0, 1.0, 1.0]`.
+    `min(1.0, nan)` is 1.0 in Python, so NaN sorted first, pinned the running maximum at 1.0, and
+    the monotone carry-forward pushed a p = 0.001 result to "not significant" with no error. The
+    damage also depended on input ORDER, which is the tell that it was an artefact.
+    """
+    nan = float("nan")
+    adjusted = holm_adjust([nan, 0.001, 0.9])
+    assert math.isnan(adjusted[0]), "an undefined test stays undefined"
+    assert adjusted[1] < 0.05, "a real result must survive an undefined sibling"
+
+
+def test_holm_adjust_corrects_over_the_tests_that_were_actually_run():
+    # An undefined test is not a test. Correcting over m=3 when only 2 could be computed spends
+    # correction budget on a comparison that never happened.
+    nan = float("nan")
+    assert holm_adjust([nan, 0.001, 0.9])[1] == pytest.approx(holm_adjust([0.001, 0.9])[0])
+
+
+def test_holm_adjust_is_order_independent_in_the_presence_of_a_nan():
+    nan = float("nan")
+    a = holm_adjust([nan, 0.001, 0.9])
+    b = holm_adjust([0.001, 0.9, nan])
+    assert a[1] == pytest.approx(b[0])
+    assert a[2] == pytest.approx(b[1])

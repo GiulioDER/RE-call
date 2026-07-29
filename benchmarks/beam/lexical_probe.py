@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.beam.dataset import iter_conversations
-from benchmarks.beam.systems import BEAM_TABLE, BeamRecallSystem
+from benchmarks.beam.systems import BEAM_TABLE, BeamRecallSystem, require_indexed
 from recall.eval.locomo import DEFAULT_DSN
 from recall.store import PgVectorStore
 
@@ -116,6 +116,11 @@ def main() -> None:
         # Document frequency over THIS conversation's chunks — rarity is a property of the corpus
         # being searched, not of English.
         with PgVectorStore(args.dsn, dim=embedder.dim, tenant=tenant, table=args.table) as store:
+            # This probe does not index. On an empty tenant `n_chunks` is 0, so `_rare_terms`'
+            # filter `df <= max_df * 0` admits EVERY term, nothing is retrieved, coverage is 0.0
+            # for every question, and the run prints `separation: 0.0000` — which reads as a
+            # clean negative result rather than as a corpus that was never there.
+            require_indexed(store, tenant=tenant, table=args.table, what="lexical_probe")
             chunk_terms = [_terms(c.text) for c in store.iter_chunks()]
         df: Counter[str] = Counter()
         for ts in chunk_terms:

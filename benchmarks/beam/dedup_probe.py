@@ -44,8 +44,14 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.beam.dataset import iter_conversations
-from benchmarks.beam.systems import BEAM_TABLE, BeamRecallSystem
+from benchmarks.beam.systems import (
+    BEAM_TABLE,
+    BeamRecallSystem,
+    rebuild_dates,
+    require_indexed,
+)
 from recall.eval.locomo import DEFAULT_DSN
+from recall.store import PgVectorStore
 
 #: Cosine at or above which two chunks are treated as restatements of one another. High on
 #: purpose: this must collapse "the TTL is 15 minutes" against "I set the TTL to 15 minutes",
@@ -122,8 +128,24 @@ def main() -> None:
         if args.reindex:
             system.ingest(conv)
         else:
-            system._tenant = f"beam-{conv.chat_size}-{conv.index}".lower()  # noqa: SLF001
-            system._dates = {}  # noqa: SLF001
+            tenant = f"beam-{conv.chat_size}-{conv.index}".lower()
+            system._tenant = tenant  # noqa: SLF001
+            # Rebuilt from the store, NOT blanked. This used to be `system._dates = {}`, which
+            # made `retrieve` stamp `created_at: ""` on every memory — and `collapse`'s
+            # newest-wins comparison `if di and di > dj` cannot fire on empty strings. In its own
+            # documented invocation (which does not pass --reindex) this probe was therefore
+            # measuring keep-the-highest-RANKED and publishing it as a newest-wins curve.
+            with PgVectorStore(
+                args.dsn, dim=embedder.dim, tenant=tenant, table=args.table
+            ) as store:
+                require_indexed(store, tenant=tenant, table=args.table, what="dedup_probe")
+                system._dates = rebuild_dates(store)  # noqa: SLF001
+            if not any(system._dates.values()):  # noqa: SLF001
+                raise SystemExit(
+                    f"dedup_probe: no chunk in tenant {tenant!r} carries a parseable date, so the "
+                    f"newest-wins collapse this probe exists to measure cannot fire. Re-run with "
+                    f"--reindex rather than publish a rank-wins curve under a newest-wins label."
+                )
         for q in conv.questions:
             if q.question_type not in wanted or not q.rubric:
                 continue

@@ -15,12 +15,17 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
+import re
+import os
 import time
 import traceback
 from pathlib import Path
 from typing import Any
 
 from recall.eval.beir import materialize
+from recall.eval.gap_study import POWER_FLOOR as _POWER_FLOOR
+from recall.eval.gap_study import PRIMARY_ARM as _PRIMARY_ARM
 from recall.eval.vocab import (
     bge_encoder,
     code_density,
@@ -41,14 +46,18 @@ MIN_PIECES = 2            # "the tokenizer has no whole-word entry for this"
 CROWDING_SAMPLE = 500     # fixed across corpora: sampling changes what "nearest" means
 SEED = 20260726
 
-#: The primary response arm. `hybrid` is what §7/§8 published and what a user deploys; `dense`
-#: isolates the embedder; `bm25` is embedder-independent and therefore a free control — a gap that
-#: tracks BM25 strength is a corpus-difficulty story, not a vocabulary one.
-PRIMARY_ARM = "hybrid"
-
-#: Below this, the preregistered power calculation says a null result means "underpowered" rather
-#: than "no effect": at n=8, |partial r| must reach 0.85 to survive Holm over three predictors.
-POWER_FLOOR = 12
+#: Re-exported from the analysis module, NOT redeclared. Both live here and there previously, and
+#: both drive the same preregistered `underpowered` verdict on the same n — so a change to one
+#: would have left the run summary and the analysis output disagreeing about the study's own power,
+#: with nothing raising. A frozen constant with two definitions is not frozen.
+#:
+#: `PRIMARY_ARM`: `hybrid` is what §7/§8 published and what a user deploys; `dense` isolates the
+#: embedder; `bm25` is embedder-independent and therefore a free control — a gap that tracks BM25
+#: strength is a corpus-difficulty story, not a vocabulary one.
+#: `POWER_FLOOR`: below this, the preregistered power calculation says a null result means
+#: "underpowered" rather than "no effect": at n=8, |partial r| must reach 0.85 to survive Holm.
+PRIMARY_ARM = _PRIMARY_ARM
+POWER_FLOOR = _POWER_FLOOR
 
 DATASETS = [
     "nfcorpus", "scifact", "scidocs", "fiqa", "arguana",
@@ -57,6 +66,41 @@ DATASETS = [
         "programmers", "stats", "tex", "unix", "webmasters", "wordpress",
     )),
 ]
+
+
+def write_json(path: Path, payload: Any) -> None:
+    """Write one artifact, atomically, and refuse to emit invalid JSON.
+
+    Two guards, each for a failure this study already produced.
+
+    `allow_nan=False`: `json.dumps` will otherwise emit a bare `NaN` token, which is not JSON
+    (RFC 8259). Python reads it back happily, so the file looks fine from here and rejects in
+    `jq`, `JSON.parse`, Go, Rust and Postgres `jsonb` — a reviewer who cannot open the artifact
+    cannot check the claim. NaN means "not measured" and `null` is how JSON says that, so the
+    payload is mapped rather than the check disabled.
+
+    Temp-file + `os.replace`: the documented operating mode is sixteen `nohup`'d workers on a
+    rented box, so a kill mid-write is the EXPECTED path, not the exotic one. A torn file is
+    worse than a missing one because `pending_datasets` treats existence as completion and would
+    skip that corpus as done forever.
+    """
+    encoded = json.dumps(_nan_to_null(payload), indent=2, allow_nan=False)
+    tmp = path.with_name(path.name + ".tmp")
+    # newline="\n" explicitly: the default translates on Windows, which would rewrite every line
+    # of a committed artifact as CRLF and bury a one-value correction in a whole-file diff.
+    tmp.write_text(encoded, encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
+
+
+def _nan_to_null(value: Any) -> Any:
+    """Recursively replace non-finite floats with None, so `allow_nan=False` can stay on."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: _nan_to_null(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_nan_to_null(v) for v in value]
+    return value
 
 
 def pending_datasets(
@@ -77,10 +121,18 @@ def pending_datasets(
         if not path.exists():
             out.append(name)
             continue
-        if retry_failed:
+        try:
             record = json.loads(path.read_text(encoding="utf-8"))
-            if record.get("status") != "ok":
-                out.append(name)
+        except (ValueError, OSError):
+            # An unreadable file is not a completed corpus. Existence alone used to be the
+            # completion marker, so a worker killed mid-write left a torn file that was skipped
+            # as done forever and then raised a JSONDecodeError in `summarise` — after the
+            # corpus had already been dropped from the run. Treating it as pending self-heals.
+            _log.warning("%s: unreadable result, re-running", path)
+            out.append(name)
+            continue
+        if record.get("status") is None or (retry_failed and record.get("status") != "ok"):
+            out.append(name)
     return out
 
 
@@ -93,10 +145,26 @@ def failure_record(dataset: str, exc: BaseException) -> dict[str, Any]:
     return {
         "status": "failed",
         "dataset": dataset,
-        "error": str(exc),
+        "error": _scrub(str(exc)),
         "error_type": type(exc).__name__,
-        "traceback": traceback.format_exc(),
+        # Redacted and bounded, because `results/gap/` is a git-TRACKED directory and this run
+        # holds a password-bearing DSN and an API key in its environment. An exception message
+        # that happens to carry either would otherwise be committed verbatim and published.
+        "traceback": _scrub(traceback.format_exc())[-2000:],
     }
+
+
+#: A Postgres URI's credentials, and long opaque token-shaped strings (API keys).
+_SECRET_PATTERNS = (
+    re.compile(r"(?P<scheme>[a-z+]+://)[^:/@\s]+:[^@/\s]+@", re.IGNORECASE),
+    re.compile(r"\b(?:sk|pa|voy)-[A-Za-z0-9_\-]{16,}\b"),
+)
+
+
+def _scrub(text: str) -> str:
+    """Remove credentials from text that is about to be written into a committed artifact."""
+    text = _SECRET_PATTERNS[0].sub(r"\g<scheme>***:***@", text)
+    return _SECRET_PATTERNS[1].sub("***", text)
 
 
 def summarise(datasets: list[str], out_dir: Path) -> dict[str, Any]:
@@ -212,6 +280,15 @@ def run_corpus(
         "predictors": compute_predictors(corpus_dir, questions, local),
         "primary_arm": PRIMARY_ARM,
         "seconds": round(time.perf_counter() - started, 1),
+        # The two embedders are the ONE variable this study manipulates, and until now no
+        # artifact recorded them: the names were only implied by `default_embedders()`'s
+        # defaults. But that indirection exists precisely so a cheap test embedder can be
+        # injected — so a real overnight record and a wired-up test record were indistinguishable
+        # after the fact. Read off the objects actually used, not off the defaults.
+        "embedders": {
+            "local": getattr(local, "name", type(local).__name__),
+            "cloud": getattr(cloud, "name", type(cloud).__name__),
+        },
         "params": {"max_docs": max_docs, "token_budget": TOKEN_BUDGET,
                    "min_pieces": MIN_PIECES, "crowding_sample": CROWDING_SAMPLE, "seed": SEED},
     }
@@ -219,20 +296,48 @@ def run_corpus(
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--beir-root", required=True, type=Path, help="directory of EXTRACTED BEIR datasets")
+    # NOT `required=True`: `--summarise` reads only the records already on disk, and argparse
+    # would reject that invocation before the flag was ever inspected. Since a `--datasets` worker
+    # no longer writes summary.json, `--summarise` is now the ONLY path that produces it — an
+    # unreachable one would leave the study with no summary at all. Checked below instead.
+    ap.add_argument("--beir-root", type=Path, default=None,
+                    help="directory of EXTRACTED BEIR datasets (required unless --summarise)")
     ap.add_argument("--out", required=True, type=Path, help="one <dataset>.json is written here per corpus")
     ap.add_argument("--work", type=Path, default=None, help="where materialised corpora go (default: <out>/corpora)")
     ap.add_argument("--dsn", default=None, help="Postgres DSN; falls back to RECALL_DSN")
     ap.add_argument("--retry-failed", action="store_true")
     ap.add_argument("--datasets", nargs="*", default=None)
+    ap.add_argument(
+        "--summarise", action="store_true",
+        help="write summary.json over the FULL preregistered roster and exit; run once, after "
+             "all workers have finished",
+    )
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    import os
+
+    if args.summarise:
+        args.out.mkdir(parents=True, exist_ok=True)
+        _write_summary(DATASETS, args.out)
+        return
+
+    if args.beir_root is None:
+        raise SystemExit("--beir-root is required (it is optional only for --summarise)")
 
     dsn = args.dsn or os.environ.get("RECALL_DSN")
     if not dsn:
         raise SystemExit("no DSN: pass --dsn or set RECALL_DSN")
+
+    # Checked HERE, next to the DSN, and not left to surface from inside the per-corpus
+    # `except Exception` below. Without this a missing key produced one failure record per
+    # corpus — each after materialising up to MAX_DOCS files to disk — then `usable: 0`,
+    # `underpowered: true`, and exit 0. A whole night, a full artifact set, and a green exit
+    # code for a run that could never have measured anything.
+    if not os.environ.get("VOYAGE_API_KEY"):
+        raise SystemExit(
+            "no VOYAGE_API_KEY: the cloud arm cannot run. Export it before starting, or the "
+            "whole roster fails one corpus at a time and the run still exits 0."
+        )
 
     datasets = args.datasets or DATASETS
     args.out.mkdir(parents=True, exist_ok=True)
@@ -251,10 +356,26 @@ def main() -> None:
         except Exception as exc:  # one corpus must not take the night down
             _log.exception("  %s FAILED", dataset)
             record = failure_record(dataset, exc)
-        (args.out / f"{dataset}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+        write_json(args.out / f"{dataset}.json", record)
 
-    summary = summarise(datasets, args.out)
-    (args.out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    if args.datasets:
+        # A worker that was handed a SUBSET must not write the study-wide summary. The launcher
+        # runs one process per corpus against a shared `--out`, so every worker would overwrite
+        # `summary.json` with a summary of its own single dataset and the last writer would win.
+        # That is not hypothetical: the committed summary read `attempted: 1, usable: 1,
+        # underpowered: true` while eighteen corpus records sat in the same directory and the
+        # published finding reported n=17. The one artifact whose job is to state `n` instead of
+        # letting it be inferred was the one misstating it.
+        _log.info("subset run (%s): summary.json not written — run `--summarise` once at the end",
+                  ",".join(datasets))
+        return
+
+    _write_summary(datasets, args.out)
+
+
+def _write_summary(datasets: list[str], out_dir: Path) -> None:
+    summary = summarise(datasets, out_dir)
+    write_json(out_dir / "summary.json", summary)
     _log.info("done: %d usable of %d attempted; failed=%s missing=%s",
               summary["usable"], summary["attempted"], summary["failed"], summary["missing"])
     if summary["underpowered"]:

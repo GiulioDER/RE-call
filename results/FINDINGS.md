@@ -1037,17 +1037,25 @@ That is the raw top-1 cosine per class under BEAM's own labels, collected by
 > regenerates it, and `--out` writes a `_report.json` whose `per_question` block carries the whole
 > distribution these two medians collapse from. Anyone who wants the artifact can make it.
 >
-> ⚠️ If you run it: pass `--out` explicitly. Without it the fitted threshold falls through to the
-> default calibration path — the same path `load_for()` reads — and a threshold fitted on 0-14
-> would silently become live for `text-embedding-3-small`, in-sample on the conversations the BEAM
-> cells are scored over. And empty `bench_beam_chunks` first: `calibrate.py` ingests, and indexing
-> over an existing corpus is the defect §9a was retracted for.
+> ⚠️ If you run it, two things that used to be the reader's job are now the code's. `--out` is
+> REQUIRED: omitting it used to fall through to the default calibration path — the same path
+> `load_for()` reads — so a threshold fitted on 0-14 became live for `text-embedding-3-small`,
+> in-sample on the conversations the BEAM cells are scored over. And the fit does not certify
+> (0.617), so writing it now needs `--save-uncertified` said out loud; the `_report.json` that
+> carries the distribution below is written either way. Still your job: empty
+> `bench_beam_chunks` first — `calibrate.py` ingests, and indexing over an existing corpus is
+> the defect §9a was retracted for.
 
 ```bash
 python -m benchmarks.beam.calibrate --data <beam_1M.parquet> --chat-size 1M \
     --conversations 0-14 --embedder router:openai/text-embedding-3-small \
-    --out results/beam/calibration_0_14.json
+    --out results/beam/calibration_0_14.json --save-uncertified
 ```
+
+`--save-uncertified` is required here because the fit this produces on BEAM is **0.617 and does
+not certify**, and `calibrate` now refuses to write an uncertified threshold by default — it used
+to write one straight to the process-global `calibration.json` that `trusted_search` autoloads.
+The sidecar report, which is what carries the cosines quoted above, is written either way.
 
 A threshold is a monotone rule on that column, so no value of it can separate two classes that are
 already in the wrong order — the argument §9n generalises to every rule of that shape. Counting

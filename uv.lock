@@ -3623,6 +3623,7 @@ dependencies = [
 bench = [
     { name = "mem0ai" },
     { name = "openai" },
+    { name = "pyarrow" },
 ]
 dev = [
     { name = "langchain-core" },
@@ -3639,6 +3640,8 @@ entail = [
 ]
 eval = [
     { name = "matplotlib" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 fastembed = [
     { name = "fastembed" },
@@ -3683,6 +3686,7 @@ requires-dist = [
     { name = "mcp", marker = "extra == 'dev'", specifier = ">=1.27.2,<2" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.27.2,<2" },
     { name = "mem0ai", marker = "extra == 'bench'", specifier = "==2.0.13" },
+    { name = "numpy", marker = "extra == 'eval'" },
     { name = "numpy", marker = "extra == 'finetune'" },
     { name = "openai", marker = "extra == 'bench'", specifier = ">=1.0" },
     { name = "pgvector", specifier = ">=0.4" },
@@ -3690,6 +3694,7 @@ requires-dist = [
     { name = "psycopg-pool", marker = "extra == 'dev'", specifier = ">=3.2" },
     { name = "psycopg-pool", marker = "extra == 'mcp'", specifier = ">=3.2" },
     { name = "psycopg-pool", marker = "extra == 'pool'", specifier = ">=3.2" },
+    { name = "pyarrow", marker = "extra == 'bench'", specifier = ">=15" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5" },
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },

@@ -102,9 +102,16 @@ arithmetic once both sides are measured, and nobody has published it.
 - **`Obsoletes:` is coarse** — a whole document supersedes a whole document, where a memory layer
   usually deals with a fact superseding a fact. This favours us by making the relation easier
   than the general case, and the write-up must say so.
-- **Our abstention is currently worse than Mem0's**: 0.467 against 0.533 on BEAM's abstention
+- **Our abstention is currently worse than Mem0's**: 0.467 against 0.536 on BEAM's abstention
   category, and we false-abstain at 9.3 % against their 4.1 %. C2 is not a lap of honour; on
   today's evidence we may lose it.
+  <!-- Mem0's cell is 0.536, not the 0.533 previously written here and in SUITE-DESIGN.md: it is
+  (38 x 0.974 + 32 x 0.016) / 70 from FINDINGS.md §9h's own n=70 table. Both documents are now
+  stated to three places from that arithmetic rather than from each other. -->
+
+  **Not yet reconciled:** our own 0.467 is asserted in both planning documents and is not derivable
+  from any committed artifact — unlike Mem0's cell, which is. It needs an artifact citation or a
+  re-measurement before it appears in anything published.
 - **The k=45 result that motivates our retrieval budget is not significant** (p=0.754, n=60). It
   is used here as a configuration choice, not as a claim.
 
