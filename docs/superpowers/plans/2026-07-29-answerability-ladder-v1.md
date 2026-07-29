@@ -455,6 +455,13 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 The manifest **is** the benchmark. A third party who distrusts the builder must be able to read it,
 verify its digest, and never run our code.
 
+> ⚠️ **Superseded during review — the shipped code is authoritative.** The blueprint below shows
+> `manifest_digest(instances)`, covering instance bodies only. Review demonstrated that a forged
+> `corpus_hashes` in a written header was then accepted silently, so the shipped signature is
+> `manifest_digest(instances, *, ring_widths, corpus_hashes)` with both REQUIRED (commit `81c161d`).
+> Read `benchmarks/ladder/manifest.py`, not this block, for the current contract. Tasks 6 and 8
+> below already use the new signature.
+
 **Files:**
 - Create: `benchmarks/ladder/__init__.py`
 - Create: `benchmarks/ladder/manifest.py`
