@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+import benchmarks.claim_gate as claim_gate
 from benchmarks.claim_gate import (
     GATED_DOCS,
     RESULTS_ROOT,
@@ -326,6 +327,29 @@ def test_derived_refuses_anything_that_is_not_literal_arithmetic(tmp_path: Path)
     for hostile in ("__import__('os').getcwd()", "open('x')", "a + 1", "[1][0]"):
         with pytest.raises(ClaimError, match="literal arithmetic|does not parse"):
             resolve(Claim("x.md", 1, "1.0", Marker("derived", note=hostile)), tmp_path)
+
+
+# --- F-06: pathological `derived:` expressions must not crash the gate ----------------------
+
+
+def test_derived_rejects_an_overlong_expression_before_parsing(tmp_path: Path) -> None:
+    """Reproduction: `'-' * 2000 + '1'` used to raise an uncaught RecursionError. The length
+    bound catches it before `ast.parse` (and this module's own `_eval_node`) ever see it."""
+    hostile = "-" * 2000 + "1"
+    with pytest.raises(ClaimError, match="characters"):
+        resolve(Claim("x.md", 1, "1.0", Marker("derived", note=hostile)), tmp_path)
+
+
+def test_derived_catches_deep_recursion_as_a_claim_error_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Belt-and-suspenders check on the second layer: with the length bound raised out of the
+    way, a genuinely deep `derived:` expression must still come back as `ClaimError`, not
+    propagate `RecursionError` out of the gate."""
+    monkeypatch.setattr(claim_gate, "_MAX_DERIVED_EXPRESSION_LENGTH", 10_000)
+    hostile = "-" * 2000 + "1"
+    with pytest.raises(ClaimError, match="deeply nested"):
+        resolve(Claim("x.md", 1, "1.0", Marker("derived", note=hostile)), tmp_path)
 
 
 def test_an_unmarked_claim_does_not_resolve(tmp_path: Path) -> None:

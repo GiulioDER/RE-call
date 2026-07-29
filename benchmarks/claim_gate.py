@@ -372,12 +372,39 @@ def _eval_node(node: ast.AST, expression: str) -> float:
     raise ClaimError(f"derived expression {expression!r} is not literal arithmetic")
 
 
+#: Maximum length of a `derived:` marker's raw expression text, checked BEFORE `ast.parse` ever
+#: sees it. Every real `derived:` marker in this repo is one arithmetic operation between two
+#: published numbers — comfortably under 50 characters — so this is generous, not tight.
+#: Without it, something like `'-' * 2000 + '1'` reaches `_eval_node`: `ast.parse` happily builds
+#: a 2000-deep chain of nested `UnaryOp` nodes, and `_eval_node` then recurses once PER LEVEL to
+#: walk that chain back down, hitting Python's call-stack limit before a single number comes out
+#: — an uncaught `RecursionError` from a documentation gate. Deeper nesting exhausts memory
+#: building the tree in `ast.parse` itself before `_eval_node` is even reached. Both are also
+#: caught below as a second layer (see the note there for why the length bound is the real fix,
+#: not that layer).
+_MAX_DERIVED_EXPRESSION_LENGTH = 200
+
+
 def _evaluate(expression: str) -> float:
+    if len(expression) > _MAX_DERIVED_EXPRESSION_LENGTH:
+        raise ClaimError(
+            f"derived expression is {len(expression)} characters, over the "
+            f"{_MAX_DERIVED_EXPRESSION_LENGTH}-character limit for a `derived:` marker — a "
+            f"legitimate one is one arithmetic operation between two published numbers"
+        )
     try:
         tree = ast.parse(expression, mode="eval")
+        return _eval_node(tree.body, expression)
     except SyntaxError as exc:
         raise ClaimError(f"derived expression {expression!r} does not parse") from exc
-    return _eval_node(tree.body, expression)
+    except (RecursionError, MemoryError) as exc:
+        # Belt-and-suspenders: the length bound above is what actually stops this in practice: a
+        # RecursionError/MemoryError only reaches here if something UNDER that bound still manages
+        # to nest deep enough, which no arithmetic literal realistically does. Catching it anyway
+        # is what turns "the process degrades or crashes" into "one claim fails to resolve".
+        raise ClaimError(
+            f"derived expression {expression!r} is too deeply nested to evaluate"
+        ) from exc
 
 
 def resolve(claim: Claim, results_root: Path) -> None:
