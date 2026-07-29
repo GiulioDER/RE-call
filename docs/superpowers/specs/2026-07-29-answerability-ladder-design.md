@@ -250,3 +250,11 @@ alongside these results rather than instead of them, per `SUITE-DESIGN.md` track
 Extraction quality, summarisation, multi-hop reasoning, currency/supersession, attribution,
 tenant isolation, cost, latency, and anything at 10M-token scale. Several of those are tracks in
 `benchmarks/SUITE-DESIGN.md` and remain there.
+
+## Status note, 2026-07-29 (post-publication audit) — v1 scope was narrowed after this spec
+
+Section 7 above lists LongMemEval, a 3-corpus BEIR generality arm, and a Mem0 adapter as v1 scope.
+None shipped in v1. The narrowing was deliberate and is explained, with a reason for each deferred
+item, in the companion implementation plan's
+[`## Out of scope for this plan (plan 2)`](../plans/2026-07-29-answerability-ladder-v1.md#out-of-scope-for-this-plan-plan-2)
+section — this spec did not reference it, which is what this note fixes.

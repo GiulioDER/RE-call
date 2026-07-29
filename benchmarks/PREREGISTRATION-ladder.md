@@ -25,7 +25,8 @@ total turns: 5882
 - **Tie-breaking:** equal BM25 scores rank by `doc_id` ascending.
 - **Instances per question:** one per ring level, all paired to the same answerable original.
 - **Question sample: 300, seed 0**, drawn from the 1 536 usable questions (non-category-5, with
-  `evidence`) after sorting by `question_id`. Fixed here, before any curve is visible.
+  `evidence`) after sorting by `question_id`. Fixed here, before any curve is visible. *(Corrected
+  to 1 533 below — see the 2026-07-29 addendum.)*
 - **Ingest scope: one conversation.** A question is scored against its own conversation only, not
   all ten. This matches `recall/eval/locomo.py`, which indexes one conversation at a time, and
   LOCOMO's own protocol.
@@ -35,12 +36,15 @@ total turns: 5882
   be queried. Against the whole 5 882-turn corpus that is ~45 million document-indexings. This is
   not merely expensive for us: it is what every third party adopting the benchmark would pay, and
   a benchmark nobody can afford to run is not adopted. 300 questions × 5 rungs ≈ 1 500 states,
-  each scoped to one conversation (median 646 turns), is a run an adopter can finish.
+  each scoped to one conversation (median 646 turns), is a run an adopter can finish. *(The 1 536
+  figure is corrected to 1 533 below — see the 2026-07-29 addendum; the 300-question sample and
+  every ratio here are unaffected.)*
 
   Power was checked **before** the number was chosen, not after: with 300 pairs the standard error
   of a paired mean over deltas in {−1, 0, +1} is at most 1/sqrt(300) ≈ 0.058, so the
   pre-registered 0.15 effect sits at roughly 2.6 SE. BEAM's own head-to-head used 300 questions.
-  **The H1 verdict rests on 300 questions, not 1 536, and every write-up must say so.**
+  **The H1 verdict rests on 300 questions, not 1 536, and every write-up must say so.** *(Read
+  1 536 here as 1 533 — see the 2026-07-29 addendum below.)*
 
 ## Predictions, committed now
 

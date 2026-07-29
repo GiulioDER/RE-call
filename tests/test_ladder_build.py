@@ -16,6 +16,7 @@ from benchmarks.ladder.build import build_instances, main
 from benchmarks.ladder.manifest import (
     LABEL_ANSWERABLE,
     LABEL_UNANSWERABLE,
+    MANIFEST_VERSION_V1,
     RING_MAX,
     manifest_digest,
     read_manifest,
@@ -94,9 +95,15 @@ def test_the_answerable_original_excises_nothing(tmp_path: Path):
 
 def test_every_unanswerable_instance_excises_its_gold(tmp_path: Path):
     instances = build_instances(_corpus(tmp_path), SPEC, corpus_name="locomo")
-    for inst in instances:
-        if inst.label == LABEL_UNANSWERABLE:
-            assert set(inst.gold_doc_ids) <= set(inst.excised_doc_ids)
+    unanswerable = [i for i in instances if i.label == LABEL_UNANSWERABLE]
+    # Without this, a bug that mislabels every instance as LABEL_ANSWERABLE leaves the loop below
+    # iterating zero times — green in isolation while proving nothing about the manifest's most
+    # important property (the label must never be a lie). See the proof in this module's audit
+    # note / PR description for how this was verified: mutating every label and confirming this
+    # assertion is what turns that mutation into a loud failure instead of a silent pass.
+    assert unanswerable, "no unanswerable instances found — filter or upstream labelling is broken"
+    for inst in unanswerable:
+        assert set(inst.gold_doc_ids) <= set(inst.excised_doc_ids)
 
 
 def test_a_family_shares_one_pair_id(tmp_path: Path):
@@ -152,6 +159,19 @@ def test_cli_writes_a_readable_manifest(tmp_path: Path):
     assert instances
     assert header["ring_widths"] == [0, 1]
     assert "locomo" in header["corpus_hashes"]
+
+
+def test_cli_stamps_the_manifest_v1_not_v2(tmp_path: Path):
+    """FIX-D: `build.py` is the v1 builder — it produces v1-shaped instances (absolute rings,
+    empty `scope_cluster_ids`) and must stamp the header accordingly. Before the fix,
+    `write_manifest` unconditionally stamped the module constant `"2.0"`, so a v1 rebuild would
+    have advertised v2 semantics with no digest coverage to catch it."""
+    src = tmp_path / "locomo.json"
+    src.write_text(json.dumps(WIDE_SAMPLE), encoding="utf-8")
+    out = tmp_path / "manifest.jsonl"
+    assert main(["--locomo", str(src), "--out", str(out), "--widths", "0,1"]) == 0
+    _instances, header = read_manifest(out)
+    assert header["manifest_version"] == MANIFEST_VERSION_V1 == "1.0"
 
 
 def test_sampling_is_deterministic_and_seed_dependent(tmp_path: Path):
