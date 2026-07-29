@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import TextIO
 from typing import Any
 
-from benchmarks.beam.dataset import Question, count_conversations, iter_conversations
+from benchmarks.beam.dataset import Question, count_conversations, iter_conversations, parse_conversation_indices
 from benchmarks.beam.prompts import (
     BEAM_JUDGE_SYSTEM_PROMPT,
     get_beam_answer_generation_prompt,
@@ -509,14 +509,7 @@ def _main() -> None:
 
     indices: list[int] | None = None
     if args.conversations:
-        indices = []
-        for part in args.conversations.split(","):
-            if "-" in part:
-                lo, hi = part.split("-", 1)
-                indices.extend(range(int(lo), int(hi) + 1))
-            else:
-                indices.append(int(part))
-        indices = sorted(set(indices))
+        indices = parse_conversation_indices(args.conversations)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     arm = "mem0-rejudged" if args.rejudge_mem0 else "recall"
