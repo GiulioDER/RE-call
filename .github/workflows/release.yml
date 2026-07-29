@@ -24,10 +24,12 @@ name: Release
 #     required reviewer      GiulioDER
 #     prevent_self_review    false  ← deliberate: the sole collaborator must be able to approve,
 #                                     or the gate blocks every release instead of pausing it
-#     deployment branches    custom policy, tag `v*` only
+#     deployment refs        custom policy: tag `v*` and branch `master`
 #
-# The tag-only policy is why a `workflow_dispatch` run cannot reach PyPI: a dispatch runs from a
-# branch, and only tags match. TestPyPI is unaffected.
+# Two refs, for the two ways this workflow runs. A tag push (`v*`) is the normal release. The
+# `master` branch policy is what keeps `workflow_dispatch --target pypi` usable — a dispatch runs
+# from a branch, so without it a manual publish would be refused. A feature branch still cannot
+# publish, and either route still stops at the reviewer. TestPyPI is unaffected by all of this.
 #
 # Verify it, because settings drift silently and this file cannot fail when they do:
 #
