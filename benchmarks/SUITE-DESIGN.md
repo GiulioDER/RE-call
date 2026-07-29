@@ -79,9 +79,9 @@ need λ≥3 to come out ahead. That must be stated, not discovered by a reader.
 
 > This sentence previously read "0.533 vs 0.533" — two identical numbers under the word WORSE, so
 > it disproved itself. Mem0's cell is **0.536**, derived from FINDINGS §9h's own n=70 table:
-> (38 × 0.974 + 32 × 0.016) / 70. Our own cell is quoted as 0.467 in
-> `PREREGISTRATION-currency.md` but is **not derivable from any committed artifact**, so it is
-> left as citation-pending here rather than propagated into a second planning document.
+> (38 × 0.974 + 32 × 0.016) / 70. Our own cell is quoted as 0.467 <!--@ citation-pending: no committed artifact retains this cell; re-derive or retract --> in `PREREGISTRATION-currency.md`
+> but is **not derivable from any committed artifact**, so it is left as citation-pending here
+> rather than propagated into a second planning document.
 
 ### D. Attribution
 
