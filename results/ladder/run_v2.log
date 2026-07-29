@@ -1,0 +1,2 @@
+no calibration found for embedder 'BAAI/bge-small-en-v1.5' — abstention will use the UNTUNED default cosine floor 0.50. That constant is not comparable across embedders (measured: 0th percentile of five top-1 distributions, 16th of a sixth), so on some models it never fires and on others it discards a sixth of queries as empty retrieval. Run `recall calibrate` for this embedder, or pass calibration= explicitly, to replace the guess with a measurement.
+scored 1200 instances into results\ladder\responses_v2.jsonl
