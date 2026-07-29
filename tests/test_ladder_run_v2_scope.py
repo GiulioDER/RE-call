@@ -22,6 +22,7 @@ from benchmarks.ladder.invariants import InvariantViolation
 from benchmarks.ladder.manifest import (
     LABEL_ANSWERABLE,
     LABEL_UNANSWERABLE,
+    MANIFEST_VERSION_V2,
     RING_ORIGINAL,
     Instance,
     write_manifest,
@@ -87,7 +88,10 @@ def _v2_inst(
 
 def _write(tmp_path: Path, instances: list[Instance]) -> Path:
     path = tmp_path / "manifest.jsonl"
-    write_manifest(path, instances, ring_widths=[0], corpus_hashes={"locomo": "x"})
+    write_manifest(
+        path, instances, ring_widths=[0], corpus_hashes={"locomo": "x"},
+        manifest_version=MANIFEST_VERSION_V2,
+    )
     return path
 
 

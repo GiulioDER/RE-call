@@ -21,6 +21,7 @@ from pathlib import Path
 from benchmarks.ladder.adapter import Document, MemorySystem, Response
 from benchmarks.ladder.invariants import (
     assert_excised_absent,
+    assert_manifest_digest,
     assert_originals_were_answered,
     assert_ring_zero_has_survivors,
     assert_survivors_present,
@@ -117,14 +118,42 @@ def _recorded(out_path: Path) -> dict[str, bool]:
     resume where every answerable original was already scored would otherwise leave
     `answered_originals` empty and skip the check silently — the failure shape where grepping for
     success turns a failure into no output at all.
+
+    A process killed mid-write (SIGKILL, OOM, power loss — the realistic ways an overnight run
+    dies) leaves a truncated final line. That must be treated as "not yet recorded", not fatal —
+    the whole point of `--resume` is surviving exactly this. A malformed line that is NOT last is
+    a different signal (corruption somewhere in the middle of an otherwise-flushed file, not a
+    write interrupted at the tail) and must still be loud rather than silently dropped.
+
+    When the tail is discarded as truncated, the file is rewritten with only the valid lines. The
+    caller reopens `out_path` in append ("a") mode afterwards; without this rewrite, a partial
+    line with no trailing newline would have the next row glued onto its end, corrupting the
+    JSONL format for every future read of a file that was otherwise fine.
     """
     if not out_path.exists():
         return {}
+    lines = [line for line in out_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     recorded: dict[str, bool] = {}
-    for line in out_path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
+    valid_lines: list[str] = []
+    truncated = False
+    for i, line in enumerate(lines):
+        try:
             row = json.loads(line)
-            recorded[row["instance_id"]] = bool(row["abstained"])
+        except json.JSONDecodeError:
+            if i != len(lines) - 1:
+                raise ValueError(
+                    f"{out_path}: line {i + 1} of {len(lines)} is not valid JSON and is NOT the "
+                    f"last line — this is corruption in the middle of the file, not a truncated "
+                    f"trailing write, and must not be silently treated as 'not yet recorded'."
+                ) from None
+            truncated = True
+            break
+        recorded[row["instance_id"]] = bool(row["abstained"])
+        valid_lines.append(line)
+    if truncated:
+        out_path.write_text(
+            "".join(f"{ln}\n" for ln in valid_lines), encoding="utf-8"
+        )
     return recorded
 
 
@@ -157,6 +186,7 @@ def run(
     documents: Mapping[str, str],
     cluster_members: Mapping[str, Sequence[str]],
     resume: bool = True,
+    expected_digest: str | None = None,
 ) -> int:
     """Returns the number of instances scored in this invocation.
 
@@ -165,9 +195,24 @@ def run(
     test suite calls directly. This does NOT functionally smoke-call the adapter: a real
     `ingest`/`query` round trip here would perturb the pinned `ingest_calls` counters. `main()`
     still performs that functional check via `smoke_check()` before ever calling `run()`.
+
+    `expected_digest`, when given, arms invariant 4 (`assert_manifest_digest`) against a
+    caller-supplied KNOWN-PUBLISHED digest, before any scoring happens. `read_manifest` already
+    refuses a body that does not match its own header — a narrower guarantee, since a forged
+    header/body pair that agree with EACH OTHER pass it silently. Proving "the instances being
+    scored are the instances that were published" needs a digest that came from somewhere other
+    than the file being checked. When `expected_digest` is omitted, this prints one line saying
+    the check is not armed — a skipped gate and a passed gate must never look the same.
     """
     _assert_adapter_signatures(system)
-    instances, _header = read_manifest(manifest_path)
+    instances, header = read_manifest(manifest_path)
+    if expected_digest is not None:
+        assert_manifest_digest(instances, {**header, "digest": expected_digest})
+    else:
+        print(
+            "manifest digest check: NOT ARMED (no --expected-digest given) — the loaded "
+            "manifest was NOT compared against any known-published digest."
+        )
     recorded = _recorded(out_path) if resume else {}
 
     # Keyed by (scope, excised) — v1's key was (cluster, excised), scoring a question against its
@@ -253,18 +298,47 @@ def run(
 
 def main(argv: list[str] | None = None) -> int:
     from benchmarks.ladder.sources.locomo import load_locomo
-    from benchmarks.ladder.systems.recall_system import RecallSystem
+    from benchmarks.ladder.systems.recall_system import DEFAULT_TABLE, DEFAULT_TENANT, RecallSystem
 
     parser = argparse.ArgumentParser(description="Run a system over the Answerability Ladder.")
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--locomo", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--dsn", required=True)
+    parser.add_argument(
+        "--table",
+        default=DEFAULT_TABLE,
+        help=(
+            f"Postgres table this run's RecallSystem owns exclusively (default: {DEFAULT_TABLE}). "
+            "Two runs against the same --dsn at the same time MUST use distinct --table and/or "
+            "--tenant values -- there is no other isolation between them, and the two would "
+            "otherwise collide on the same rows."
+        ),
+    )
+    parser.add_argument(
+        "--tenant",
+        default=DEFAULT_TENANT,
+        help=(
+            f"Tenant id this run's RecallSystem scopes count()/delete_sources() by "
+            f"(default: {DEFAULT_TENANT}). PgVectorStore scopes both by tenant, so a distinct "
+            "--tenant per run is real isolation on a --table two runs happen to share."
+        ),
+    )
+    parser.add_argument(
+        "--expected-digest",
+        default=None,
+        help=(
+            "A known-published manifest digest (see manifest.py:manifest_digest) to verify the "
+            "loaded --manifest against before any scoring starts. Omitted by default -- when "
+            "omitted, the run prints a one-line notice that this check is not armed rather than "
+            "silently skipping it."
+        ),
+    )
     parser.add_argument("--no-resume", action="store_true")
     args = parser.parse_args(argv)
 
     corpus = load_locomo(args.locomo)
-    system = RecallSystem(args.dsn)
+    system = RecallSystem(args.dsn, table=args.table, tenant=args.tenant)
     # Fail in the first second, not the fortieth minute: see `smoke_check`'s docstring. Run against
     # the REAL adapter instance before it ever touches the manifest, so a broken signature never
     # gets to burn even one real corpus state.
@@ -276,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
         documents=dict(corpus.documents),
         cluster_members=corpus.cluster_members,
         resume=not args.no_resume,
+        expected_digest=args.expected_digest,
     )
     print(f"scored {n} instances into {args.out}")
     return 0
