@@ -35,3 +35,9 @@ results/locomo/*.log
 longmemeval_*.json
 s_out/
 oracle_out/
+
+# Ladder smoke/probe scratch — a published-artifact directory must not accumulate untracked
+# scratch that could be swept into a later commit beside frozen results. The real artifacts are
+# manifest*.jsonl / responses_*.jsonl / H1_VERDICT*; anything *_smoke is a throwaway.
+results/ladder/*_smoke.jsonl
+results/ladder/*.log
