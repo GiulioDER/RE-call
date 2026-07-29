@@ -381,3 +381,44 @@ class BeamRecallSystem:
                     }
                 )
             return memories
+
+    def ablation_preflight(
+        self,
+        questions: list[str],
+        *,
+        sample: int,
+        metric_class: str,
+        allow_inert: bool,
+    ) -> list[dict[str, Any]]:
+        """Refuse the run if a configured mechanism changes nothing. Retrieval only — no LLM spend.
+
+        Mirrors `benchmarks.systems.RecallSystem.ablation_preflight`. Opens its own store exactly
+        as `retrieve` does, because the store is per-call here and the preflight must query the
+        index this arm will actually use.
+        """
+        from recall.eval.arm_check import DEFAULT_SAMPLE, ablation_verdicts, enforce
+        from recall.store import PgVectorStore
+
+        if self._tenant is None:
+            raise RuntimeError("BeamRecallSystem.ablation_preflight() called before ingest()")
+        sampled = questions[: sample or DEFAULT_SAMPLE]
+        with PgVectorStore(
+            self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=self._table
+        ) as store:
+            # self._candidate_k, NOT recall.retriever.DEFAULT_CANDIDATE_K: unlike the LOCOMO
+            # adapter (whose `retrieve` calls `trusted_search` without a candidate_k and so
+            # retrieves at the library default), `retrieve` above calls `trusted_search` with
+            # `candidate_k=self._candidate_k` — this arm's own clamped pool (see the note in
+            # `__init__`). Measuring a different pool size here would produce a verdict about a
+            # configuration this arm never runs.
+            verdicts = ablation_verdicts(
+                store,
+                self._embedder,
+                sampled,
+                k=self._k,
+                candidate_k=self._candidate_k,
+                reranker=self._reranker,
+                use_sparse=True,
+            )
+        enforce(verdicts, metric_class=metric_class, allow_inert=allow_inert)
+        return [v.as_dict() for v in verdicts]
