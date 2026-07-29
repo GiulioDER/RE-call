@@ -38,6 +38,31 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   `../`, which could otherwise cite a real file that was never committed as a result.
   (`benchmarks/claim_gate.py`, `tests/test_published_numbers_have_artifacts.py`,
   `results/CLAIMS_BASELINE.json`)
+### Fixed
+- **The planning documents compared two different false-abstain measurements, and quoted a stale
+  significance test.** `SUITE-DESIGN.md` (Track C) and `PREREGISTRATION-currency.md` both asserted
+  that we false-abstain at **9.3 %** against Mem0's **4.1 %**. Those are not the same measurement:
+  9.3 % is the shipped policy's rate in the §9i entailment sweep (30 unanswerable / 270
+  answerable, conversations 0-14), while 4.1 % is Mem0's rate in the full 300-question head-to-head
+  — where our comparable figure is **3.3 %**. The matched pair runs the *opposite* way to the
+  sentence built on it.
+
+  The same sentence cited `p_holm = 0.026` as the current paired result against us. That was the
+  **pre-calibration-fix** state; after the fix no family is significant against us (accuracy 0.39,
+  false-abstain 1.00, abstention 1.00). Both documents now state Track C as **undetermined** —
+  our own abstention cell is still citation-pending — rather than as a loss already measured.
+
+  🔑 An earlier pass corrected **9.6 % → 9.3 %** in this exact sentence (see 0.7.0, *"published a
+  loss as a tie"*). It verified the digit against its own source and never asked whether that
+  source was the right side of the comparison. **The defect was never the digit** — a figure can be
+  internally correct and still be the wrong number to place after the word "against".
+
+  Recorded alongside it: every BEAM figure in these documents is **reproduce-command tier, not
+  retained-artifact tier**. The cells live in `results/RESULTS.md` on branch `bench/beam-1m` and
+  regenerate from the FINDINGS §9e commands, but `benchmarks/results/` is gitignored, so the
+  per-question dumps are committed nowhere — which means the BEAM cross-check track currently
+  fails the suite's own Rule 5 (*per-question artifacts published, not summary statistics*). Noted
+  in `SUITE-DESIGN.md` under known defects rather than left for a reader to discover.
 
 ## [0.7.0] — 2026-07-29
 

@@ -270,7 +270,7 @@ def test_the_registry_holds_literal_digit_strings_not_floats() -> None:
 #: The ratchet. This number may only ever go DOWN — EXCEPT for the one deliberate jump recorded
 #: below, which was a coverage expansion, not the ratchet slipping: a future reader diffing this
 #: constant against git blame should read the comment before assuming a regression.
-MAX_BASELINE_ENTRIES = 2444  # generated 2026-07-29: 2444 unmarked occurrences across 4 documents
+MAX_BASELINE_ENTRIES = 2481  # generated 2026-07-29: 2481 unmarked occurrences across 4 documents
 #: (2438 before marking 6 bare withdrawn-figure occurrences — see WITHDRAWN.json — with
 #: `<!--@ withdrawn: ... -->` in FINDINGS.md and README.md; 2432 before marking `0.467`
 #: citation-pending in benchmarks/SUITE-DESIGN.md — see Task 5 — with
@@ -280,7 +280,14 @@ MAX_BASELINE_ENTRIES = 2444  # generated 2026-07-29: 2444 unmarked occurrences a
 #: stopped shredding comma-grouped integers like `1,536` into `1` + `536`. The `n=` change alone
 #: made roughly 60 previously-invisible integers visible; the comma-grouping change partially
 #: offsets it by merging pairs of digit fragments back into one token. Net +13 unmarked numbers
-#: is the correct, larger, more honest baseline — not a regression to chase back down.)
+#: is the correct, larger, more honest baseline — not a regression to chase back down.
+#:
+#: 2444 -> 2481 (+37) on merging origin/master: PR #154 rewrote SUITE-DESIGN.md's Track C passage
+#: — the false-abstain correction — introducing 21 distinct uncited numbers (9.3, 4.1, 3.3, 0.536,
+#: 0.594, 0.650, ...). The gate caught them on the merge, which is the guard working; they are
+#: baselined rather than cited because they landed on master BEFORE this gate existed, the same
+#: reasoning that froze the original 2431. Numbers written into these documents from here on must
+#: carry a marker.)
 
 
 def test_unmarked_counts_ignores_marked_numbers() -> None:
