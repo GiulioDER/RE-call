@@ -328,6 +328,13 @@ def matches(published: str, actual: object) -> bool:
     Rounding to the PUBLISHED precision, rather than comparing floats within a tolerance, is what
     catches a cell printed as 0.533 when the artifact holds 0.536: the published string says how
     precisely the author claimed to know it.
+
+    Rounding convention, stated because it changes which way a value on the boundary comes out:
+    this uses Python's `f"{x:.Nf}"`, which is round-HALF-TO-EVEN (banker's rounding), not the
+    round-half-away-from-zero most people do by hand. `matches("0.63", 0.625)` is False —
+    `f"{0.625:.2f}"` is `"0.62"`, because 2 is already even — while `matches("0.62", 0.625)` is
+    True. An author hand-rounding a boundary value to write a document should round the SAME way
+    (half to the nearest even final digit), or a correct figure can fail this check.
     """
     if isinstance(actual, bool) or not isinstance(actual, (int, float)):
         return False
