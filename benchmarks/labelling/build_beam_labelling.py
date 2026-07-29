@@ -45,6 +45,8 @@ import random
 from pathlib import Path
 from typing import Any
 
+from benchmarks.beam.dataset import _rubric_of
+
 #: Mem0's published file nests each arm's answer under a retrieval-budget key.
 THEIR_CUTOFF = "top_200"
 
@@ -72,15 +74,42 @@ def _their_cell(evaluation: dict[str, Any]) -> dict[str, Any]:
     return cell
 
 
+#: Characters a spreadsheet treats as the start of a FORMULA rather than as text.
+_FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value: str) -> str:
+    """Neutralise a cell a spreadsheet would execute rather than display.
+
+    This file's whole purpose is to be opened in Excel or LibreOffice by a human annotator, and
+    `question`, `gold_answer` and `predicted_answer` are never author-written: they come from a
+    third-party downloaded corpus (BEAM's rubrics) and from model output. A cell beginning `=`
+    is a formula to both applications, so a rubric reading `=cmd|'/c calc'!A1` runs on open.
+
+    Prefixing with an apostrophe is the standard fix and is visible to the annotator as a leading
+    quote rather than silently altering what they grade.
+    """
+    if value and value[0] in _FORMULA_LEAD:
+        return "'" + value
+    return value
+
+
 def _gold(rubric: Any, ground_truth: str | None) -> str:
     """The standard the annotator applies: every rubric nugget, one per line.
 
     BEAM grades against nuggets rather than a single string, and the judge prompt's rule is that a
     prediction covering only some of them is WRONG. Showing the nuggets rather than a prose gold
     answer is showing the annotator the criterion the systems were actually held to.
+
+    Extraction is delegated to `dataset._rubric_of` rather than re-implemented. The local copy
+    read each nugget under the key `"nugget"`; BEAM stores them under `"description"`. Our own
+    rows are already flattened to `list[str]` by that same function, so the bug was masked until
+    the documented fallback fired — `ours.get("rubric") or their.get("rubric")`, i.e. exactly when
+    our arm had no rubric for a question — and then the annotator was shown a raw dict repr as
+    the gold standard they grade against.
     """
-    if isinstance(rubric, list) and rubric:
-        items = [n if isinstance(n, str) else str(n.get("nugget", n)) for n in rubric]
+    items = _rubric_of(rubric)
+    if items:
         return "\n".join(f"- {i}" for i in items)
     return ground_truth or ""
 
@@ -114,6 +143,15 @@ def build(
                 continue
         pairs.append((qid, str(row.get("question_type", "?")), row, their))
 
+    # Capped by QUESTION, before the rows are expanded to one per arm. Slicing `rows` after the
+    # shuffle cut arm pairs in half at random: `score_beam_labels` drops half-pairs from the
+    # McNemar table but accumulates `per_arm` over EVERY labelled row, so the two per-arm
+    # accuracies were computed over different, randomly-selected question sets and printed side
+    # by side as a system comparison. Under --disagreements-only, where exactly one arm is correct
+    # per question by construction, an unbalanced split biases them in opposite directions.
+    if limit:
+        pairs = pairs[: max(1, limit // 2)]
+
     rows: list[dict[str, str]] = []
     key: dict[str, dict[str, Any]] = {}
     for qid, qtype, ours, their in pairs:
@@ -134,8 +172,6 @@ def build(
             })
 
     random.Random(seed).shuffle(rows)
-    if limit:
-        rows = rows[:limit]
 
     out_rows: list[dict[str, str]] = []
     for i, row in enumerate(rows, 1):
@@ -160,7 +196,11 @@ def main() -> None:
         help="only questions where the two arms' recorded LLM scores differ — agreement carries no "
              "information about which system is better",
     )
-    p.add_argument("--limit", type=int, default=None, help="cap the number of ITEMS (not questions)")
+    p.add_argument(
+        "--limit", type=int, default=None,
+        help="cap the number of ITEMS; applied in QUESTION units (limit // 2) so both "
+             "arms of a question are always emitted together or not at all",
+    )
     args = p.parse_args()
 
     ours = json.loads(args.ours.read_text(encoding="utf-8"))["rows"]
@@ -182,7 +222,7 @@ def main() -> None:
                         "predicted_answer", "your_verdict_Y_or_N"],
         )
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows([{k: _csv_safe(v) for k, v in row.items()} for row in rows])
     key_path.write_text(json.dumps(key, indent=1), encoding="utf-8")
 
     arms = [v["arm"] for v in key.values()]

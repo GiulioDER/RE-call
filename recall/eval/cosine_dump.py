@@ -45,7 +45,7 @@ from recall.calibration import separability, separability_interval
 from recall.embeddings import Embedder
 from recall.eval.harness import EVAL_DIR, _throwaway_store
 from recall.eval.provenance import generated_at, model_stack
-from recall.eval.locomo import _make_embedder
+from recall.eval.locomo import DEFAULT_DSN, _make_embedder
 from recall.eval.locomo_abstention import _partition_questions, _top_cosine
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
@@ -354,11 +354,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    import os
-
-    dsn = args.dsn or os.environ.get(
-        "RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall"
-    )
+    # `DEFAULT_DSN` already resolves RECALL_DSN at import time, so re-reading the env here was
+    # a redundant wrapper around a ninth hand-typed copy of the same connection string.
+    dsn = args.dsn or DEFAULT_DSN
     report = run(
         args.data,
         dsn=dsn,

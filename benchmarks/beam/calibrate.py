@@ -43,7 +43,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from benchmarks.beam.dataset import iter_conversations
+from benchmarks.beam.dataset import iter_conversations, parse_conversation_indices
 from benchmarks.beam.systems import BEAM_TABLE, BeamRecallSystem
 from recall.calibration import from_samples, save
 from recall.eval.locomo import DEFAULT_DSN
@@ -53,15 +53,8 @@ UNANSWERABLE_TYPE = "abstention"
 
 
 def _parse_indices(spec: str) -> list[int]:
-    out: list[int] = []
-    for part in spec.split(","):
-        part = part.strip()
-        if "-" in part:
-            lo, hi = part.split("-", 1)
-            out.extend(range(int(lo), int(hi) + 1))
-        elif part:
-            out.append(int(part))
-    return sorted(set(out))
+    """Kept as a thin alias; the implementation lives in `dataset` so all seven agree."""
+    return parse_conversation_indices(spec)
 
 
 def _stamp_fit_set(path: Path, indices: list[int]) -> None:
