@@ -32,6 +32,15 @@ class Response:
     answer: str | None
     cited_ids: tuple[str, ...] = ()
     tokens: int = 0
+    #: Top-1 retrieval score, when the system exposes one; `None` when it does not. Nothing in the
+    #: scoring path requires it, so a third-party adapter may ignore it.
+    #:
+    #: Recorded because abstention at any threshold `t` is exactly `top_cosine < t`. Storing the
+    #: score makes the WHOLE threshold sweep computable from a single arm, instead of one
+    #: multi-hour run per candidate threshold. It is a diagnostic and never the verdict: the
+    #: verdict stays the system's own shipped abstention decision, and a threshold picked after
+    #: seeing which one maximises the effect is not a result.
+    top_cosine: float | None = None
 
     @property
     def abstained(self) -> bool:

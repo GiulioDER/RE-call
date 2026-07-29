@@ -188,8 +188,12 @@ class RecallSystem:
     def query(self, question: str) -> Response:
         """Ask RE-call's own agent-facing entry point, at its shipped defaults, no overrides."""
         result = trusted_search(self._store, self._embedder, question)
+        # Read the score BEFORE the abstention branch. An abstained result still carries hits and
+        # still has a top-1 cosine, and those are exactly the rows the threshold sweep needs.
+        # Taking it only on the answered path would silently make the sweep blind to abstentions.
+        top_cosine = max((h.cosine for h in result.hits), default=None)
         if result.abstained or not result.hits:
-            return Response(answer=None)
+            return Response(answer=None, top_cosine=top_cosine)
         ok_hits = [h for h in result.hits if h.verdict == "ok"]
         top = ok_hits[0] if ok_hits else result.hits[0]
         cited: list[str] = []
@@ -207,4 +211,4 @@ class RecallSystem:
         # what "measured" here can mean without inventing a token boundary this library never
         # draws.
         tokens = len(answer.split())
-        return Response(answer=answer, cited_ids=tuple(cited), tokens=tokens)
+        return Response(answer=answer, cited_ids=tuple(cited), tokens=tokens, top_cosine=top_cosine)

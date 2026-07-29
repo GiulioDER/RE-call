@@ -135,6 +135,20 @@ def _cluster_id_of(instance: Instance) -> str:
     return instance.gold_doc_ids[0].split("/", 1)[0]
 
 
+def _scope_of(instance: Instance) -> tuple[str, ...]:
+    """The clusters this instance's ingested slice is drawn from.
+
+    v2 states this explicitly: `scope_cluster_ids` is the sorted union of the question's own
+    conversation plus its distractor conversations (`build_v2.build_v2_instances`). v1 instances
+    have an empty `scope_cluster_ids` — `manifest.py`'s documented meaning is "inferred from the
+    gold id's own cluster" — so that case falls back to `_cluster_id_of`, which is exactly v1's
+    existing behaviour and must not change for the frozen v1 manifest.
+    """
+    if instance.scope_cluster_ids:
+        return tuple(sorted(instance.scope_cluster_ids))
+    return (_cluster_id_of(instance),)
+
+
 def run(
     manifest_path: Path,
     system: MemorySystem,
@@ -156,15 +170,17 @@ def run(
     instances, _header = read_manifest(manifest_path)
     recorded = _recorded(out_path) if resume else {}
 
-    # Keyed by (cluster, excised) — a question is scored against its OWN conversation only, which
-    # is what recall/eval/locomo.py already does and what LOCOMO's protocol assumes. It is also
-    # the difference between indexing 646 turns per state and 5 882: at ~1 500 states that is the
-    # difference between a run an adopter can finish and one nobody will.
-    by_state: dict[tuple[str, tuple[str, ...]], list[Instance]] = {}
+    # Keyed by (scope, excised) — v1's key was (cluster, excised), scoring a question against its
+    # own conversation only (what recall/eval/locomo.py already does and what LOCOMO's protocol
+    # assumes). v2 widens "cluster" to "scope": the sorted union of clusters in
+    # `instance.scope_cluster_ids` when it is set, else the v1 fallback (`_scope_of`). Two
+    # questions that share a scope AND an excision set still collapse into one ingest — the same
+    # cost discipline as v1, just keyed on a set of clusters instead of one.
+    by_state: dict[tuple[tuple[str, ...], tuple[str, ...]], list[Instance]] = {}
     for inst in instances:
         if inst.instance_id in recorded:
             continue
-        key = (_cluster_id_of(inst), tuple(sorted(inst.excised_doc_ids)))
+        key = (_scope_of(inst), tuple(sorted(inst.excised_doc_ids)))
         by_state.setdefault(key, []).append(inst)
 
     # Seeded from what is already on disk, so invariant 3 sees the WHOLE artifact rather than only
@@ -177,20 +193,38 @@ def run(
     written = 0
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("a", encoding="utf-8") as fh:
-        for (cluster_id, excised), group in sorted(by_state.items()):
-            members = cluster_members.get(cluster_id, ())
+        for (scope, excised), group in sorted(by_state.items()):
+            # The FULL ingested slice: every cluster in scope, own conversation plus distractors.
+            # v1's `members` was one cluster; this is its v2 generalisation — a plain union, since
+            # v1's scope is always a 1-tuple and this reduces to v1's `members` unchanged there.
+            members = tuple(
+                sorted(
+                    {
+                        doc_id
+                        for cluster_id in scope
+                        for doc_id in cluster_members.get(cluster_id, ())
+                    }
+                )
+            )
             dropped = set(excised)
-            keep = [Document(d, documents[d]) for d in sorted(members) if d not in dropped]
+            keep = [Document(d, documents[d]) for d in members if d not in dropped]
             system.ingest(keep)
             indexed = system.indexed_doc_ids()
             for inst in sorted(group, key=lambda i: i.instance_id):
                 assert_excised_absent(inst, indexed)
-                assert_ring_zero_has_survivors(inst, indexed, members)
+                # "Did the topic survive at the near rung?" — asked of the question's OWN cluster
+                # ONLY, never the full scope. Distractors always survive (they are never excised),
+                # so passing the full scope here would make this pass trivially and silently
+                # disable the check it exists to run.
+                own_cluster = cluster_members.get(_cluster_id_of(inst), ())
+                assert_ring_zero_has_survivors(inst, indexed, own_cluster)
                 # The POSITIVE check, and the one that matters most. Every other invariant here
                 # confirms that what should be gone is gone, which cannot tell a correct excision
                 # from an ingest that silently did nothing. A partial ingest passes all of them,
                 # abstains on nearly everything, flattens the curve, and would be recorded as an
-                # H1 FAIL — retiring the benchmark on a harness bug.
+                # H1 FAIL — retiring the benchmark on a harness bug. This gets the FULL ingested
+                # slice (`members`, distractors included) — at r=1.00 this is what proves the
+                # distractors are really indexed, the whole point of v2.
                 assert_survivors_present(inst, indexed, members)
                 response = system.query(inst.question)
                 if inst.ring == RING_ORIGINAL:
@@ -203,6 +237,7 @@ def run(
                             "abstained": response.abstained,
                             "cited_ids": list(response.cited_ids),
                             "tokens": response.tokens,
+                            "top_cosine": response.top_cosine,
                         },
                         sort_keys=True,
                     )
