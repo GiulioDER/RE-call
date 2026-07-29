@@ -2,7 +2,7 @@
 
 Mirrors `tests/test_bench_run.py::test_main_runs_the_ablation_preflight_once_before_the_first_
 retrieve_and_stamps_it`, the LOCOMO test that pins the same guard on that harness. BEAM's control
-flow is more fragile than LOCOMO's: it gates the preflight on an `ablation_run` sentinel rather
+flow is more fragile than LOCOMO's: it gates the preflight on an `ablation_ran` sentinel rather
 than `position == 0`, and it interacts with `--resume` skipping an already-scored conversation's
 questions — exactly the kind of refactor (moving the sentinel flip, or sampling `pending` instead
 of `in_scope`) that would silently break the guard with no red test.
@@ -226,7 +226,7 @@ def test_ablation_preflight_never_running_is_stamped_ran_false_not_an_empty_verd
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`--resume` covering every conversation means `pending` is empty for both conversations, so
-    `ingest()` never fires and the `ablation_run` sentinel never flips — the artifact would carry
+    `ingest()` never fires and the `ablation_ran` sentinel never flips — the artifact would carry
     `verdicts: []`, indistinguishable from a preflight that ran and found every mechanism inert
     for a metric that permits it. `ran: False` is what tells the two apart.
     """
