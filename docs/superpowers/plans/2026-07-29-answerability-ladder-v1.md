@@ -2368,6 +2368,7 @@ from benchmarks.ladder.invariants import (
     assert_excised_absent,
     assert_originals_were_answered,
     assert_ring_zero_has_survivors,
+    assert_survivors_present,
 )
 from benchmarks.ladder.manifest import RING_ORIGINAL, Instance, read_manifest
 
@@ -2440,6 +2441,12 @@ def run(
             for inst in sorted(group, key=lambda i: i.instance_id):
                 assert_excised_absent(inst, indexed)
                 assert_ring_zero_has_survivors(inst, indexed, members)
+                # The POSITIVE check, and the one that matters most. Every other invariant here
+                # confirms that what should be gone is gone, which cannot tell a correct excision
+                # from an ingest that silently did nothing. A partial ingest passes all of them,
+                # abstains on nearly everything, flattens the curve, and would be recorded as an
+                # H1 FAIL — retiring the benchmark on a harness bug.
+                assert_survivors_present(inst, indexed, members)
                 response = system.query(inst.question)
                 if inst.ring == RING_ORIGINAL:
                     answered_originals[inst.instance_id] = not response.abstained
