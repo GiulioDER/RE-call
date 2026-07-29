@@ -99,11 +99,28 @@ Excluded, because these are not claims:
 | fenced code blocks, inline code spans | code, not prose |
 | URLs | path and query components |
 | semver version strings (`0.7.0`) | identifiers |
+| model version suffixes (`-v1.5`) | identifiers |
 | ISO dates and bare years (`19xx`/`20xx`) | timestamps |
 | `#`-prefixed issue/PR references | identifiers |
 | `§`-prefixed section numbers | identifiers |
+| metric depth suffixes (`hit@5`) | identifiers |
+| retrieval budgets (`k=5`) | configuration the caller chose |
 | markdown ordered-list numbering, heading levels, table alignment rows, footnote markers | structure |
 | digits inside a marker comment itself | the marker is the citation, not a claim |
+
+**`n=` is NOT excluded, and that is load-bearing.** An earlier revision of the implementation masked
+`k=` and `n=` with one combined pattern labelled "retrieval budget — configuration". That made
+`n=17` — the exact defect that justified gating integers at all — invisible to the gate, across 60
+occurrences in the four documents. `k=5` is configuration; `n=250` is a sample size, which is a
+claim about the data. They do not belong in the same row.
+
+**Grouped numbers.** Comma-grouped integers (`1,536`) scan as one token, so editing `n=1,536` to
+`n=2,536` is a visible change rather than one hiding behind an untouched `536`. **Space-grouped
+numbers (`1 982`) are not** — a space also separates two genuinely distinct numbers and no local
+rule tells the cases apart. 21 space-grouped numbers are published today against 47 comma-grouped,
+and the same figure appears both ways in all three documents (`1 536` beside `1,536`), so one
+published sample size is a single claim in one sentence and two claims in another. Stated here
+because it is the largest thing this design does not cover.
 
 **Stated consequence.** Gating integers makes the launch baseline substantially larger, and prose
 edits that introduce a count ("3 of 12 deferred") will need a marker. That burden is the price of
