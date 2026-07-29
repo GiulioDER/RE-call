@@ -55,3 +55,23 @@ def test_excluded_spans_hide_their_digits() -> None:
 def test_line_numbers_are_one_based() -> None:
     claims = scan_text("nothing here\nbut 0.33 here\n", doc="x.md")
     assert [c.line for c in claims] == [2]
+
+
+def test_a_marker_binds_only_to_the_nearest_preceding_number() -> None:
+    """Two numbers before one marker must not both read as backed by it.
+
+    A single marker covering both would let one of them drift unchecked — if a document reports
+    `hit@5 improves 0.671 -> 0.777 <!--@ f.json # k -->`, only 0.777 (the nearest preceding
+    number) may resolve to the artifact key; 0.671 must come back as an unmarked claim, not a
+    second claim silently backed by the same evidence.
+    """
+    claims = scan_text("a 1 and 2 <!--@ f.json # k -->", doc="x.md")
+    assert len(claims) == 2
+    first, second = claims
+    assert first.text == "1"
+    assert first.marker is None
+    assert second.text == "2"
+    assert second.marker is not None
+    assert second.marker.kind == "artifact"
+    assert second.marker.artifact == "f.json"
+    assert second.marker.key == "k"

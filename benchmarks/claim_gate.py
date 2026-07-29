@@ -128,12 +128,23 @@ def _line_of(offset: int, line_starts: list[int]) -> int:
 
 
 def _marker_for(
-    number_end: int, line: int, markers: list[tuple[int, Marker]], line_starts: list[int]
+    number_end: int,
+    line: int,
+    markers: list[tuple[int, Marker]],
+    line_starts: list[int],
+    other_number_starts: list[int],
 ) -> Marker | None:
-    """The first marker starting after `number_end` on the same line, if any."""
+    """The first marker starting after `number_end` on the same line, if no OTHER number's
+
+    occurrence lies strictly between `number_end` and that marker's start — otherwise the marker
+    binds to that nearer number instead, not to this one.
+    """
     for start, marker in markers:
-        if start >= number_end and _line_of(start, line_starts) == line:
-            return marker
+        if start < number_end or _line_of(start, line_starts) != line:
+            continue
+        if any(number_end < other_start < start for other_start in other_number_starts):
+            return None
+        return marker
     return None
 
 
@@ -149,15 +160,18 @@ def scan_text(text: str, doc: str) -> list[Claim]:
     markers: list[tuple[int, Marker]] = [
         (m.start(), _marker_from(m)) for m in MARKER_RE.finditer(text)
     ]
+    numbers = list(NUMBER_RE.finditer(masked))
+    number_starts = [number.start() for number in numbers]
     claims: list[Claim] = []
-    for number in NUMBER_RE.finditer(masked):
+    for number in numbers:
         line = _line_of(number.start(), line_starts)
+        other_starts = [start for start in number_starts if start != number.start()]
         claims.append(
             Claim(
                 doc=doc,
                 line=line,
                 text=number.group(0),
-                marker=_marker_for(number.end(), line, markers, line_starts),
+                marker=_marker_for(number.end(), line, markers, line_starts, other_starts),
             )
         )
     return claims
