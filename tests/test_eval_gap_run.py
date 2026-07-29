@@ -128,3 +128,105 @@ def test_run_corpus_end_to_end_against_real_postgres(tmp_path):
     # The frozen parameters travel with the result, so a record can never be read without them.
     assert record["params"]["seed"] == 20260726
     assert record["primary_arm"] == "hybrid"
+
+
+# --- artifact + credential guards (CCA audit 2026-07-28) -----------------------------------
+
+
+def test_write_json_refuses_to_emit_a_bare_nan_token():
+    """`NaN` is not JSON, and two committed study artifacts contained it.
+
+    Verified before the fix: `results/gap/arguana.json` and `fiqa.json` both carried
+    `"code_density": NaN`. Python round-trips that happily, so it looked fine from inside the
+    harness and rejected in `jq`, `JSON.parse`, Go, Rust and Postgres `jsonb` — a reviewer who
+    cannot open the artifact cannot check the claim.
+    """
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from recall.eval.gap_run import write_json
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "rec.json"
+        write_json(path, {"predictors": {"code_density": float("nan"), "oov_rate": 0.5}})
+        raw = path.read_text(encoding="utf-8")
+        assert "NaN" not in raw
+        # Parsed with the constant hook armed: a strict parser must not need one.
+        def _reject(token):  # pragma: no cover - only runs if the guard regressed
+            raise AssertionError(f"non-JSON constant emitted: {token}")
+
+        parsed = json.loads(raw, parse_constant=_reject)
+        assert parsed["predictors"]["code_density"] is None, "absence is null, not a number"
+        assert parsed["predictors"]["oov_rate"] == 0.5
+
+
+def test_write_json_replaces_the_target_atomically():
+    # Sixteen nohup'd workers on a rented box means a kill mid-write is the expected path. A
+    # torn file is worse than a missing one, because `pending_datasets` used to treat existence
+    # as completion and would skip that corpus as done forever.
+    import tempfile
+    from pathlib import Path
+
+    from recall.eval.gap_run import write_json
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "rec.json"
+        write_json(path, {"status": "ok"})
+        write_json(path, {"status": "ok", "again": True})
+        assert not list(Path(tmp).glob("*.tmp")), "no temp file left behind"
+
+
+def test_pending_datasets_re_runs_a_torn_result_instead_of_skipping_it_forever():
+    """A file that cannot be parsed is not a finished corpus.
+
+    Verified before the fix: `pending_datasets` only stat'd the path, so a half-written record
+    was skipped as complete and then crashed `summarise` — after the corpus had already been
+    dropped from the study.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from recall.eval.gap_run import pending_datasets
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        (out / "scifact.json").write_text('{"status": "ok", "dat', encoding="utf-8")
+        assert pending_datasets(["scifact"], out) == ["scifact"]
+
+
+def test_pending_datasets_re_runs_a_record_with_no_status():
+    import tempfile
+    from pathlib import Path
+
+    from recall.eval.gap_run import pending_datasets
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        (out / "scifact.json").write_text('{"dataset": "scifact"}', encoding="utf-8")
+        assert pending_datasets(["scifact"], out) == ["scifact"]
+
+
+def test_failure_record_does_not_commit_a_dsn_password_or_an_api_key():
+    """`results/gap/` is git-tracked and the run holds both credentials in its environment."""
+    from recall.eval.gap_run import failure_record
+
+    exc = RuntimeError(
+        "connect failed for postgresql://recall:hunter2@10.0.0.4:5432/recall "
+        "with key sk-abcdefghijklmnopqrstuvwxyz012345"
+    )
+    record = failure_record("scifact", exc)
+    blob = record["error"] + record["traceback"]
+    assert "hunter2" not in blob
+    assert "sk-abcdefghijklmnopqrstuvwxyz012345" not in blob
+    assert "scifact" in record["dataset"]
+
+
+def test_power_floor_and_primary_arm_have_exactly_one_definition():
+    # Both were declared independently in the runner AND the analyser, and both drive the same
+    # preregistered `underpowered` verdict on the same n. A frozen constant with two definitions
+    # is not frozen.
+    from recall.eval import gap_run, gap_study
+
+    assert gap_run.POWER_FLOOR is gap_study.POWER_FLOOR
+    assert gap_run.PRIMARY_ARM is gap_study.PRIMARY_ARM

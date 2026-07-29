@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 from typing import Protocol
@@ -84,10 +85,20 @@ class OpenRouterLLM:
         self._client: object | None = None
         #: The benchmark's OWN generator+judge usage (this instance drives both). Recorded as the
         #: `harness` baseline so the memory layer's cost can be isolated as total - harness.
+        #:
+        #: Lock-guarded, because ONE instance is driven concurrently by `benchmarks.beam.run`'s
+        #: worker pool (8 threads by default) and `+=` on a dict value is a read-modify-write.
+        #: The process-wide meter this gets SUBTRACTED FROM (`benchmarks.usage`) is already
+        #: locked, so lost updates here made `harness < total` and published a spuriously
+        #: positive `memory_layer` — the number whose entire job is to show that RE-call's
+        #: retrieval path spends no tokens. An undercount in the subtrahend invents cost that
+        #: was never incurred, in the one field that is supposed to prove the opposite.
         self._usage = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+        self._usage_lock = threading.Lock()
 
     def usage(self) -> dict[str, int]:
-        return dict(self._usage)
+        with self._usage_lock:
+            return dict(self._usage)
 
     def complete(self, system: str, user: str) -> str:
         def _once() -> str:
@@ -109,9 +120,12 @@ class OpenRouterLLM:
         )
         resp_usage = getattr(resp, "usage", None)
         if resp_usage is not None:
-            self._usage["calls"] += 1
-            self._usage["prompt_tokens"] += int(getattr(resp_usage, "prompt_tokens", 0) or 0)
-            self._usage["completion_tokens"] += int(getattr(resp_usage, "completion_tokens", 0) or 0)
+            with self._usage_lock:
+                self._usage["calls"] += 1
+                self._usage["prompt_tokens"] += int(getattr(resp_usage, "prompt_tokens", 0) or 0)
+                self._usage["completion_tokens"] += int(
+                    getattr(resp_usage, "completion_tokens", 0) or 0
+                )
         # A response that stopped for `length` is truncated. Fail loudly: scoring a half-written
         # answer would charge our own ceiling to the system under test.
         if getattr(resp.choices[0], "finish_reason", None) == "length":

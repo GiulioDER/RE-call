@@ -181,7 +181,17 @@ def crowding(vectors: Sequence[Sequence[float]], *, sample: int | None = None, s
     (a sparser sample has more distant neighbours), so it must be held fixed across corpora for
     the same reason `oov_rate`'s token budget must.
     """
-    import numpy as np
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        # Guarded exactly like `bge_encoder` above, and for the same reason. `recall/eval/` ships
+        # INSIDE the published wheel, and a bare `pip install recall-rag` resolves to psycopg +
+        # pgvector + pgvector's deps only — numpy arrives transitively via matplotlib in the
+        # `eval` extra, i.e. by luck. Unguarded, this handed a library user a bare
+        # ModuleNotFoundError raised from inside the package.
+        raise ImportError(
+            "crowding requires the eval extra (it brings `numpy`): pip install recall[eval]"
+        ) from exc
 
     if len(vectors) < 2:
         return float("nan")

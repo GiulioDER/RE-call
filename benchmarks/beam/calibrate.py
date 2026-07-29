@@ -3,8 +3,14 @@
 ::
 
     # $0 of LLM spend — embeddings and cosines only, no answerer, no judge.
+    # --out is REQUIRED: without it this used to write the PROCESS-GLOBAL calibration.json that
+    # `trusted_search` autoloads for every later run started from the same directory.
+    # The fit this produces on BEAM is 0.617 and UNCERTIFIED (see below), so the run refuses to
+    # write the calibration unless you say you want it kept for study. The *_report.json beside
+    # it is written either way.
     python -m benchmarks.beam.calibrate --data <shards> --conversations 30-34 \
-        --embedder router:openai/text-embedding-3-small
+        --embedder router:openai/text-embedding-3-small --out beam_calibration.json \
+        --save-uncertified
 
 Why this step exists
 --------------------
@@ -58,6 +64,13 @@ def _parse_indices(spec: str) -> list[int]:
     return sorted(set(out))
 
 
+def _stamp_fit_set(path: Path, indices: list[int]) -> None:
+    """Record which conversations a calibration was fitted on, inside the calibration file."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["fit_on_conversations"] = sorted(indices)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8", newline="\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, required=True, help="Shard directory or parquet")
@@ -70,7 +83,19 @@ def main() -> None:
     parser.add_argument("--embedder", default="router:openai/text-embedding-3-small")
     parser.add_argument("--dsn", default=DEFAULT_DSN)
     parser.add_argument("--table", default=BEAM_TABLE)
-    parser.add_argument("--out", type=Path, default=None, help="Calibration JSON path")
+    # REQUIRED. With `default=None`, `recall.calibration.save` resolved to the PROCESS-GLOBAL
+    # default (`$RECALL_CALIBRATION` or `./calibration.json`), which `trusted_search`
+    # autoloads for every later query started from that directory. So running this probe
+    # silently re-tuned the abstention threshold for everything that ran afterwards — and
+    # this module's own docstring records that the fit it produces is 0.617, UNCERTIFIED,
+    # and abstains MORE than the shipped 0.50.
+    parser.add_argument("--out", type=Path, required=True,
+                        help="where to write the fitted calibration; name it explicitly — "
+                             "the default path is autoloaded by every later run")
+    parser.add_argument(
+        "--save-uncertified", action="store_true",
+        help="write the calibration even when certification FAILED (default: refuse)",
+    )
     args = parser.parse_args()
 
     indices = _parse_indices(args.conversations)
@@ -101,8 +126,12 @@ def main() -> None:
         )
 
     cal = from_samples(embedder_name, answerable, unanswerable)
-    path = save(cal, args.out)
+    certified_ok = bool(cal.certified)  # `None` must never read as True — see calibration.py:200
 
+    # The REPORT is written first, unconditionally. It holds `per_question` — the raw top-cosines
+    # for every question across --conversations, i.e. the entire expensive output of the run. A
+    # refusal that fired before this point threw that away too, so an uncertified fit produced no
+    # calibration, no report and no diagnosis: the run cost the same and left nothing to read.
     report = {
         "embedder": embedder_name,
         "fit_on_conversations": indices,
@@ -113,16 +142,33 @@ def main() -> None:
         "separability": cal.separability,
         "certified": cal.certified,
         "certification_reason": cal.certification_reason,
-        "calibration_path": str(path),
+        "calibration_written": certified_ok or args.save_uncertified,
+        "calibration_path": str(args.out),
         # Kept so a reader can see the distributions the threshold came from rather than trust
         # the single number it collapsed to.
         "per_question": per_question,
     }
-    if args.out:
-        args.out.with_name(args.out.stem + "_report.json").write_text(
-            json.dumps(report, indent=1), encoding="utf-8"
-        )
+    args.out.with_name(args.out.stem + "_report.json").write_text(
+        json.dumps(report, indent=1), encoding="utf-8", newline="\n"
+    )
     print(json.dumps({k: v for k, v in report.items() if k != "per_question"}, indent=1))
+
+    # Certification is a verdict on whether the fit is USABLE, and it used to be reported after
+    # the calibration had already been written — with `--out` defaulting to the process-global
+    # path that `trusted_search` autoloads. So the documented outcome of running this probe was
+    # that an uncertified threshold silently became the default for every later run. A diagnosis
+    # that changes nothing is not a gate.
+    if not certified_ok and not args.save_uncertified:
+        raise SystemExit(
+            f"calibration NOT certified ({cal.certification_reason}); refusing to write "
+            f"{args.out}. The report beside it was still written, so nothing measured is lost. "
+            f"Pass --save-uncertified if you are deliberately keeping the fit for study."
+        )
+    path = save(cal, args.out)
+    # Persisted INSIDE the calibration, not only in the sidecar report: the out-of-sample
+    # contract ("the scored run must exclude these") was help text with nothing able to check it,
+    # because the fit set was not recorded anywhere the scoring run could read.
+    _stamp_fit_set(path, indices)
 
 
 if __name__ == "__main__":
