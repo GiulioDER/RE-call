@@ -97,17 +97,35 @@ class RecallSystem:
         # this adapter is not the sole owner of. Either way, this ingest()'s "replace" contract
         # (and invariant 1, which depends on it) can only be trusted against a table THIS instance
         # started empty and has tracked every write to since.
+        #
+        # This check is inherently TOCTOU across genuinely concurrent processes sharing --dsn: it
+        # cannot atomically claim the table, it can only observe it was empty a moment ago. The
+        # fix for that is per-run isolation (a distinct --table/--tenant per run — both scope
+        # `count()`/`delete_sources()`, see PgVectorStore), not a tighter check here.
         if self._store.count():
             raise RuntimeError(
                 f"table {table!r} (tenant {tenant!r}) already holds "
-                f"{self._store.count()} row(s). RecallSystem must own an empty table: point it at "
-                f"a fresh --table, or drop this one first. Reusing it silently would let a prior "
-                f"run's rows masquerade as this run's ingest, defeating invariant 1."
+                f"{self._store.count()} row(s). RecallSystem must own an empty table+tenant "
+                f"pair: pass a fresh --table and/or --tenant (both are run.py flags), or drop "
+                f"this one first. Reusing it silently would let a prior run's rows masquerade as "
+                f"this run's ingest, defeating invariant 1."
             )
 
-        self._cache = EmbeddingCache(
-            cache_path or (Path(tempfile.gettempdir()) / "ladder_recall_embed_cache.sqlite")
-        )
+        # A fixed name in the shared OS temp dir is a predictable, world-writable path another
+        # user on the same host can pre-create or symlink (CWE-377/CWE-59). `tenant` already
+        # identifies this run (`run.py --tenant`, threaded above), so it is what gives the cache
+        # a per-run identity the caller controls without inventing a new flag; a caller that wants
+        # full control can still pass `cache_path` directly. The cache's value is surviving across
+        # every `ingest()` call on THIS instance, so this directory is made once here, not per
+        # call — `mkdtemp` is the same pattern `ingest()` already uses for its work directories,
+        # and (on POSIX) creates it 0700, owner-only.
+        self._owns_cache_dir = cache_path is None
+        if cache_path is not None:
+            self._cache_path = Path(cache_path)
+        else:
+            self._cache_dir = Path(tempfile.mkdtemp(prefix="ladder-recall-cache-"))
+            self._cache_path = self._cache_dir / f"{tenant}_embed_cache.sqlite"
+        self._cache = EmbeddingCache(self._cache_path)
         # Exactly the absolute source paths the last `ingest()` wrote — the "replace" list a fresh
         # `ingest()` deletes before writing its own. Not the same thing as "what's in the DB right
         # now": this is bookkeeping for the delete, not a cache of query results.
@@ -134,6 +152,8 @@ class RecallSystem:
     def close(self) -> None:
         self._cache.close()
         self._store.close()
+        if self._owns_cache_dir:
+            shutil.rmtree(self._cache_dir, ignore_errors=True)
 
     def ingest(self, docs: Iterable[Document]) -> None:
         """Replace the corpus with `docs`: delete every row the previous call wrote, then index.
