@@ -19,6 +19,16 @@ evidence that qualifies it: `n` on every comparison, surviving-document counts p
 contrast plus explicitly the widest contrast whose corpus is not empty, a qualification line
 derived from those numbers rather than hardcoded, and a disclosure of the uncalibrated bge-small
 abstention floor this arm actually ran with.
+
+v1 vs v2 — the confound above is a v1-ONLY defect. v2 (`benchmarks/PREREGISTRATION-ladder-v2.md`
+§0) widens the ingested slice to the question's own conversation plus its distractor conversations
+(`Instance.scope_cluster_ids`), so even v2's top rung (fraction 1.00, stored as basis points 10000)
+still holds roughly 1,200 distractor documents — an abstention there is not explained by "the index
+has nothing in it". This module scores both manifest versions through the same machinery and reads
+which one it is from the manifest header (`manifest_version`), never from a module-level default,
+so a v2 run is labelled with `r=<fraction>` rather than v1's `d=<count>` and the empty-corpus
+warning above must not be assumed to apply to whichever manifest produced the run in front of you —
+the surviving-document column (`--corpus`) is what settles that per rung, not the version alone.
 """
 from __future__ import annotations
 
@@ -28,6 +38,7 @@ import statistics
 from pathlib import Path
 
 from benchmarks.ladder.manifest import RING_MAX, RING_ORIGINAL, Instance, read_manifest
+from benchmarks.ladder.rings import ring_to_fraction
 from benchmarks.ladder.score import (
     confusion_by_ring,
     correct_abstain_rate,
@@ -35,6 +46,15 @@ from benchmarks.ladder.score import (
     lambda_cost,
     paired_difference_ci,
 )
+
+#: The literal value `write_manifest` stamps for a v2 manifest today (`manifest.py:MANIFEST_VERSION`
+#: at the time this was written). Deliberately NOT imported from `manifest.py` — another change in
+#: flight on this branch is threading v1/v2 through the builders so they stamp "1.0"/"2.0"
+#: themselves, and importing the module constant would make this module's labelling silently track
+#: whatever that constant happens to equal at import time rather than what a *given manifest file*
+#: actually declares. `main()` always decides `is_v2` from the manifest header it just read, never
+#: from this constant; it exists only as the one place that literal string is spelled out.
+_V2_MANIFEST_VERSION = "2.0"
 
 LAMBDAS = (1.0, 3.0, 10.0)
 
@@ -47,11 +67,20 @@ UNCALIBRATED_BGE_SMALL_FLOOR = 0.50
 _QUALIFICATION_LINE = 'the axis as built prices "is anything indexed at all", not answerability'
 
 
-def _ring_label(ring: int) -> str:
+def _ring_label(ring: int, *, is_v2: bool = False) -> str:
+    """Render a rung. v1's sentinels (`d=max`, `original`) are shared by both versions; everything
+    else is version-specific — v1 rungs are counts (`d=<n>`), v2 rungs are basis points that MUST
+    render as the fraction they encode (`r=<f>`, via `rings.ring_to_fraction`), never reused under
+    v1's `d=` notation (`rings.py`'s own docstring: the two schemes must never be conflated in one
+    file's output). `is_v2` is always threaded down from the manifest header `main()` just read —
+    see `_V2_MANIFEST_VERSION` above for why it is never inferred from the module constant.
+    """
     if ring == RING_MAX:
         return "d=max"
     if ring == RING_ORIGINAL:
         return "original"
+    if is_v2:
+        return f"r={ring_to_fraction(ring):.2f}"
     return f"d={ring}"
 
 
@@ -156,6 +185,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     instances, header = read_manifest(args.manifest)
+    # is_v2 drives EVERY _ring_label call below (table, headline, supplementary contrasts) and the
+    # FIX-ENV4 mismatch check just past the table. Read directly off THIS manifest's own header,
+    # never off manifest.py's MANIFEST_VERSION constant (see _V2_MANIFEST_VERSION above for why).
+    # A header with no manifest_version key at all predates the field entirely — fall back to v1
+    # labelling for it rather than guessing.
+    manifest_version = header.get("manifest_version")
+    is_v2 = manifest_version == _V2_MANIFEST_VERSION
     abstained: dict[str, bool] = {}
     for line in args.responses.read_text(encoding="utf-8").splitlines():
         if line.strip():
@@ -187,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
             + cell.answered_answerable
         )
         row = (
-            f"{_ring_label(ring):<10}{n:>6}{correct_abstain_rate(cell):>11.3f}"
+            f"{_ring_label(ring, is_v2=is_v2):<10}{n:>6}{correct_abstain_rate(cell):>11.3f}"
             f"{cell.false_answer:>11}{cell.false_abstain:>12}"
             + "".join(f"{lambda_cost(cell, lam):>8.1f}" for lam in LAMBDAS)
         )
@@ -202,17 +238,38 @@ def main(argv: list[str] | None = None) -> int:
             "the source corpus)"
         )
 
-    # ---- The pre-registered H1 headline: d=0 vs d=max, computed and printed unedited. ----
-    # No try/except here: a verdict with no paired data must not be printable, so a ValueError
-    # from an empty overlap propagates out of main() rather than being swallowed into a fake PASS
-    # or FAIL.
+    # ---- FIX-ENV4: --high defaults to RING_MAX (v1's sentinel). A v2 manifest never has a
+    # ---- RING_MAX rung, so running with the bare default produced a generic, uninformative
+    # ---- ValueError ("no question appears at BOTH rung 0 and rung -1") that never named the
+    # ---- v1/v2 mismatch. Detected and named explicitly, BEFORE the generic error has a chance to
+    # ---- fire — and deliberately NOT auto-selected: which contrast is the headline is a
+    # ---- pre-registration decision (see the --high help text above), so this raises rather than
+    # ---- silently picking 10000 for the caller.
+    if is_v2 and args.high == RING_MAX:
+        raise ValueError(
+            f"--high was left at its default, RING_MAX ({RING_MAX}) — v1's sentinel for 'excise "
+            f"the whole cluster'. This manifest is v2-shaped (manifest_version={manifest_version!r})"
+            f", whose rungs are basis points 0-10000, so RING_MAX never appears in it. Pass "
+            f"--high 10000 explicitly for the v2 headline contrast (r=0.00 vs r=1.00) — inferring "
+            f"it here would make the report choose the pre-registered contrast silently."
+        )
+
+    # ---- The pre-registered H1 headline: derived from the rungs actually passed in (FIX-A) —
+    # ---- never hardcoded as "d=max - d=0", which is only ever true for v1's default flags and
+    # ---- was printed unconditionally even when --low/--high named a different contrast entirely
+    # ---- (v2 basis points, or a custom v1 pair). Computed and printed unedited otherwise. No
+    # ---- try/except: a verdict with no paired data must not be printable, so a ValueError from an
+    # ---- empty overlap propagates out of main() rather than being swallowed into a fake PASS/FAIL.
     print()
-    diff, low, high = paired_difference_ci(instances, abstained, args.low, args.high)
+    diff, ci_low, ci_high = paired_difference_ci(instances, abstained, args.low, args.high)
     n_headline = _paired_n(instances, abstained, args.low, args.high)
-    verdict = h1_verdict(diff, low, high)
+    verdict = h1_verdict(diff, ci_low, ci_high)
+    headline_contrast = (
+        f"{_ring_label(args.high, is_v2=is_v2)} - {_ring_label(args.low, is_v2=is_v2)}"
+    )
     print(
-        f"H1 (pre-registered) paired delta(correct-abstain), d=max - d=0: {diff:+.3f} "
-        f"[{low:+.3f}, {high:+.3f}]  n={n_headline}"
+        f"H1 (pre-registered) paired delta(correct-abstain), {headline_contrast}: {diff:+.3f} "
+        f"[{ci_low:+.3f}, {ci_high:+.3f}]  n={n_headline}"
     )
     print(f"H1: {verdict}")
 
@@ -227,15 +284,15 @@ def main(argv: list[str] | None = None) -> int:
 
     widest_verdict: str | None = None
     for lo, hi in pairs:
-        label = f"{_ring_label(lo)} vs {_ring_label(hi)}"
+        label = f"{_ring_label(lo, is_v2=is_v2)} vs {_ring_label(hi, is_v2=is_v2)}"
         try:
-            d, l, h = paired_difference_ci(instances, abstained, lo, hi)
+            d, lo_ci, hi_ci = paired_difference_ci(instances, abstained, lo, hi)
         except ValueError:
             print(f"  {label:<24} n=0 (no paired data)")
             continue
         n = _paired_n(instances, abstained, lo, hi)
-        v = h1_verdict(d, l, h)
-        print(f"  {label:<24} delta={d:+.3f} [{l:+.3f}, {h:+.3f}]  n={n}  {v}")
+        v = h1_verdict(d, lo_ci, hi_ci)
+        print(f"  {label:<24} delta={d:+.3f} [{lo_ci:+.3f}, {hi_ci:+.3f}]  n={n}  {v}")
         if widest is not None and {lo, hi} == {0, widest}:
             widest_verdict = v
 
