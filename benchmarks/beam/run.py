@@ -66,6 +66,7 @@ from benchmarks.run import _positive_int
 from benchmarks.usage import install_openai_meter
 from benchmarks.usage import reset as reset_usage
 from benchmarks.usage import snapshot as usage_snapshot
+from recall.eval.arm_check import DEFAULT_SAMPLE
 from recall.eval.locomo import DEFAULT_DSN
 
 #: The exact string the vendored answerer prompt instructs the model to emit when the retrieved
@@ -450,10 +451,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ablation-sample",
         type=_positive_int,
-        default=25,
+        default=DEFAULT_SAMPLE,
         help=(
-            "questions sampled by the inert-arm preflight (default 25). Taken deterministically "
-            "from the head of the question list, so the verdict is reproducible for a slice."
+            f"questions sampled by the inert-arm preflight (default {DEFAULT_SAMPLE}). Taken "
+            "deterministically from the head of the question list, so the verdict is "
+            "reproducible for a slice."
         ),
     )
     parser.add_argument(

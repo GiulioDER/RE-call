@@ -58,6 +58,7 @@ from benchmarks.systems import (
     mem0ai_version,
     sample_id_of,
 )
+from recall.eval.arm_check import DEFAULT_SAMPLE
 from recall.eval.locomo import (
     ADVERSARIAL_CATEGORY,
     ANSWERABLE_CATEGORIES,
@@ -432,10 +433,11 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     p.add_argument(
         "--ablation-sample",
         type=_positive_int,
-        default=25,
+        default=DEFAULT_SAMPLE,
         help=(
-            "questions sampled by the inert-arm preflight (default 25). Taken deterministically "
-            "from the head of the question list, so the verdict is reproducible for a slice."
+            f"questions sampled by the inert-arm preflight (default {DEFAULT_SAMPLE}). Taken "
+            "deterministically from the head of the question list, so the verdict is "
+            "reproducible for a slice."
         ),
     )
     p.add_argument(
