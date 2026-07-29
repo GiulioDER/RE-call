@@ -8,6 +8,15 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-29
+
+A minor bump, not a patch: `recall/eval/vocab.py`, `recall/eval/provenance.py` and
+`recall/integrations/__init__.py` are new, and `recall/trust.py`, `recall/store.py` and
+`recall_mcp/service.py` all changed substantially. 151 commits since 0.6.0.
+
+`recall_interop/` also landed in this window and is **deliberately not in the wheel** — it exists to
+run RE-call inside a third party's benchmark harness, and its own module docstring says so.
+
 ### Fixed
 - **`recall.eval.gap_study` scored NaN as an ordinary value, and one undefined test could erase
   every real result beside it.** Both are behaviour changes for anyone importing these functions.
