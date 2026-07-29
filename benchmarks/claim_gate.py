@@ -305,7 +305,16 @@ def resolve(claim: Claim, results_root: Path) -> None:
 
     if marker.artifact is None or marker.key is None:
         raise ClaimError(f"{claim.doc}:{claim.line} artifact marker is missing its path or key")
-    path = results_root / marker.artifact
+    # `MARKER_RE`'s artifact path is `[\w./-]+\.json`, which permits `../`. This cannot fabricate
+    # a claim by itself — the value still has to match below — but without this check a marker
+    # could cite a real file outside `results/` that was never committed as a result. Resolve
+    # before comparing so a symlink or `..` segment cannot land outside `results_root`.
+    resolved_root = results_root.resolve()
+    path = (results_root / marker.artifact).resolve()
+    if not path.is_relative_to(resolved_root):
+        raise ClaimError(
+            f"{claim.doc}:{claim.line} artifact path escapes results_root: {marker.artifact!r}"
+        )
     if not path.is_file():
         raise ClaimError(f"{claim.doc}:{claim.line} no such artifact: {marker.artifact}")
     actual = lookup(json.loads(path.read_text(encoding="utf-8")), marker.key)
