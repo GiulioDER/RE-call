@@ -427,6 +427,10 @@ def load_for(embedder: str, path: str | Path | None = None) -> Calibration | Non
             "ignoring out-of-range calibration in %s (threshold=%r, scale=%r) — "
             "uncalibrated fallback", p, threshold, scale,
         )
+        # Recorded like every other rejection above. Without this the one branch that already
+        # KNOWS the file is broken was the one that re-read and re-parsed it on every query, and
+        # repeated its warning each time.
+        _LOAD_CACHE[key] = (digest, None)
         return None
     # A malformed or absent diagnosis degrades to None ("not judged"), never to a pass. The
     # counts are read back too: `certified` needs them, so dropping them would silently turn a
