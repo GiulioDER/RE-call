@@ -51,6 +51,19 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   on — it is updated at every regeneration by construction (the test fails otherwise) — rather
   than this changelog bullet, which has no such guarantee.
 ### Fixed
+- **The one `load_for` branch that already knew the file was broken was the one that re-read it
+  every query.** An embedder mismatch and a malformed file both record their verdict in the loader
+  cache; the out-of-range branch — NaN or off-scale threshold, non-positive scale — returned
+  without recording anything. Since `load_for` runs on every search, a calibration file with a bad
+  threshold was re-read, re-parsed and re-warned once per query, indefinitely. It now caches the
+  rejection like its siblings, so the warning fires once per file version.
+
+  🔑 The omission survived because it fails in the *safe* direction — the verdict is `None` either
+  way, so no test asserting behaviour could see it. What it changed was the cost and the log
+  volume, which nothing was asserting. Found while auditing the same function for the mtime defect
+  below; it is the same shape of bug (an invalidation decision that nothing tested) in the branch
+  next door.
+
 - **The calibration cache was invalidated on `st_mtime_ns`, so a re-calibration written inside one
   filesystem timestamp tick was never seen.** `load_for` caches `(path, embedder) -> Calibration`
   and `trusted_search` calls it on every query, so the entry has to be invalidated on something
