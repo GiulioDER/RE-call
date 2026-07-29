@@ -62,7 +62,7 @@ def _their_cell(evaluation: dict[str, Any]) -> dict[str, Any]:
     cutoffs = evaluation.get("cutoff_results") or {}
     if not cutoffs:
         return {}
-    cell = cutoffs.get(THEIR_CUTOFF)
+    cell: dict[str, Any] = cutoffs.get(THEIR_CUTOFF) or {}
     if not cell:
         raise SystemExit(
             f"question {evaluation.get('question_id')!r} has no usable {THEIR_CUTOFF!r} cell "
