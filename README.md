@@ -36,22 +36,27 @@
 Give your AI agent, app, or team a long-term memory that is **free to run**, **stays on your
 machines**, and **tells the truth about what it knows**.
 
-- **$0 per memory, at any scale.** There is no LLM anywhere in the ingest or retrieval path —
-  writing a memory is an embedding, searching is Postgres. In the head-to-head below, building the
-  full benchmark's memory cost Mem0 **$7.29** in metered API calls; RE-call cost **$0.00** — and
-  scored higher on the same questions.
-- **Your data never leaves your infrastructure.** Local embeddings plus the PostgreSQL you already
-  run and back up. No vendor cloud, no graph database, no per-query data egress — which also means
-  it works offline and in privacy-bound environments. (A cloud embedder is a measured *option* for
+Head-to-head against **[Mem0](https://github.com/mem0ai/mem0)** — the most-adopted open-source
+memory layer — on the public **LOCOMO** benchmark, with an *identical* generator and judge and
+paired questions (full table, losses and caveats included →
+[FINDINGS §9d](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)):
+
+- 🎯 **More accurate** on both OpenAI reader models the field benchmarks with (paired
+  p = 0.0002–0.0065, Holm-corrected), and it refuses fewer legitimate questions — the lead holds
+  even on **Mem0's own default embedder** (`text-embedding-3-small`): **0.42 vs 0.366**, n=1,540.
+- 💸 **$0 to build, at any scale** — no LLM anywhere in the ingest or retrieval path. Writing a
+  memory is an embedding; searching is Postgres. Building the benchmark's memory cost Mem0
+  **$7.29** in metered API calls; RE-call **$0.00**.
+- ⚡ **~4.3× faster to build** memory, and measurably faster to query — a write-heavy agent fills
+  fast, with no per-write API bill.
+- 🔒 **Your data never leaves your infrastructure** — local embeddings on the PostgreSQL you
+  already run and back up. No vendor cloud, no graph database, no per-query egress, so it works
+  offline and in privacy-bound environments. (A cloud embedder is a measured *option* for
   jargon-heavy corpora, never a dependency.)
-- **Performance you can check.** Against **Mem0** — the most-adopted open-source memory layer — on
-  the LOCOMO benchmark, with an identical generator and judge and paired questions, RE-call is the
-  more accurate system on both OpenAI reader models the field benchmarks with (p = 0.0002–0.0065,
-  Holm-corrected), and refuses fewer legitimate questions. We also publish the configuration where
-  it loses, because a benchmark you can't lose isn't one.
-- **It knows when it doesn't know.** Every result carries a verdict, a confidence, and where it
-  came from. Memories that were superseded or expired are demoted instead of served, and a question
-  your memory can't answer gets an explicit *"I don't know"* instead of confident noise.
+- 🧭 **It abstains instead of guessing** — superseded or expired memories are demoted rather than
+  served. → [see it in one screen](#see-it-in-one-screen)
+
+We publish the configuration where it loses, because a benchmark you can't lose isn't one.
 
 ## Who is it for
 
@@ -63,8 +68,7 @@ machines**, and **tells the truth about what it knows**.
 | **a trader / researcher / operator** | notes pile up and the stale conclusion outranks its own correction | built inside a production trading-research agent for exactly this: closed experiments stay closed, reversed decisions stop resurfacing |
 
 **Try it in 2 minutes, no API key** → [Quickstart](#quickstart--2-minutes-no-api-key). Everything
-below this point is the evidence: what was measured, how, and where it fails — with the losses
-published next to the wins.
+below this point is the evidence: what was measured, how, and where it fails.
 
 ---
 
@@ -77,21 +81,10 @@ A long-running agent piles up memory — decisions, closed experiments, incident
 facts that are no longer true**. The catch: when you've reversed a decision, the *stale* memory of it
 is often the **highest-cosine hit in the whole result**. Similarity search serves it, confidently.
 
-RE-call is a retrieval engine for that memory that is *honest about what it doesn't know*. It returns
-**verdict + confidence + provenance** with every hit — not just similarity — demotes memories that
-were superseded or expired, and prefers an explicit **abstention** over confident noise.
-
-## RE-call's edges, measured
-
-Head-to-head against **[Mem0](https://github.com/mem0ai/mem0)** — the most-adopted open-source
-memory layer — on the public **LOCOMO** benchmark, with an *identical* generator and judge and
-paired questions (full table, losses and caveats included →
-[FINDINGS §9d](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)):
-
-- 🎯 **More accurate** on both OpenAI reader models the field benchmarks with (paired p = 0.0002–0.0065, Holm-corrected) — and the lead holds even on **Mem0's own default embedder** (`text-embedding-3-small`): **0.42 vs 0.366** at full n=1,540.
-- 💸 **$0 to build, at any scale** — no LLM anywhere in the ingest or retrieval path. Building the benchmark's memory cost Mem0 **$7.29** in metered API calls; RE-call **$0.00**.
-- ⚡ **~4.3× faster to build** memory (and measurably faster to query) — a large corpus or a write-heavy agent fills fast, with no per-write API bill.
-- 🔒 **On your own Postgres**, offline-capable — every hit returns a verdict, confidence, and provenance, or an explicit *"I don't know."*
+RE-call scores that ordering differently. A hit is ranked on whether it is still *true* — declared
+supersession, expiry, and a calibrated confidence — not on distance alone, so the corrected memory
+outranks the one it replaced no matter which is closer. When nothing clears the bar, the result is
+an abstention rather than the nearest match.
 
 ## See it in one screen
 
