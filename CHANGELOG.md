@@ -9,6 +9,180 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Fixed
+- **`recall.eval.gap_study` scored NaN as an ordinary value, and one undefined test could erase
+  every real result beside it.** Both are behaviour changes for anyone importing these functions.
+
+  `oov_rate`, `query_overlap`, `crowding` and `headroom_capture` all return NaN *by design*, to
+  mean "this corpus admits no measurement of this quantity". NaN compares False against everything,
+  so `sorted()` left it wherever insertion order put it and `_ranks` handed it an ordinary rank -
+  an absence scored as data. Measured: `spearman([0.1, nan, 0.3, 0.4, 0.5, 0.6], [1..6])` returned
+  **1.0**, a perfect correlation over a series with a missing measurement in it.
+
+  Worse in `holm_adjust`, because `min(1.0, nan)` is `1.0` in Python: a NaN sorted to the front,
+  pinned the running maximum at 1.0, and the monotone carry-forward reported every genuinely
+  significant sibling as `p = 1.0`. Measured: `holm_adjust([nan, 0.001, 0.9])` returned
+  `[1.0, 1.0, 1.0]` - a p=0.001 finding erased, *and the damage depended on input order*, which is
+  the tell that it was an artefact rather than a result.
+
+  Non-finite entries are now dropped **pairwise before ranking** (triple-wise for the partial, so
+  the three terms of one formula are taken over the same corpora), `permutation_p` restricts once
+  up front so its null and its observed statistic share a sample, and `holm_adjust` excludes
+  undefined tests from `m` and returns NaN in their slot rather than ranking them. Correcting over
+  a test that never ran spends correction budget on a multiplicity that is not there.
+
+  **No published number moved**: `results/gap/analysis.json` reproduces byte-identically from the
+  committed records, and no committed record carries a NaN in any of the three predictors - the
+  defect was latent. (`recall/eval/gap_study.py`, `tests/test_eval_gap_study.py`)
+- **Two committed artifacts were not valid JSON, and the study summary contradicted the finding
+  beside it.** `results/gap/arguana.json` and `fiqa.json` contained a bare `NaN` token, which is
+  not JSON (RFC 8259): Python reads it back happily, so it looked fine from inside the harness and
+  rejected in `jq`, `JSON.parse`, Go, Rust and Postgres `jsonb`. A reviewer who cannot open the
+  artifact cannot check the claim.
+
+  `results/gap/summary.json` read `attempted: 1, usable: 1, underpowered: true` while seventeen
+  corpus records sat in the same directory and `FINDINGS-embedder-gap.md` published **n = 17**. The
+  launcher runs one worker per corpus against a shared `--out`, and every worker overwrote the
+  shared summary with a summary of its own single dataset. The one artifact whose stated job is to
+  report `n` rather than let it be inferred was the one misstating it.
+
+  Artifacts are now written through a single `write_json` - `allow_nan=False` with absences mapped
+  to `null`, and temp-file + `os.replace`, because sixteen `nohup`'d workers means a kill mid-write
+  is the expected path and a torn file was previously frozen as "done" forever by an
+  existence-only completion check. A worker given `--datasets` no longer writes the summary at all;
+  `--summarise` does, once, over the full preregistered roster. Both artifacts were regenerated
+  from the committed records without re-measuring anything. (`recall/eval/gap_run.py`,
+  `results/gap/*.json`, `scripts/run_gap_parallel.sh`, `tests/test_eval_gap_run.py`)
+- **The BEAM comparison could score Mem0's `top_50` answers against our `k=200`.** Mem0's published
+  file nests each answer under a retrieval-budget key and ships more than one; `_load_published`
+  took `next(iter(cutoffs))`, i.e. whichever key upstream happened to serialise first. The tell was
+  already in the tree - `benchmarks/labelling/build_beam_labelling.py` pinned `top_200` - so two
+  readers of the same third-party file disagreed about which cell was the comparator and only one
+  could be right. Both now select by name and raise on absence.
+
+  Selecting the right cell is necessary and not sufficient, so the invariant is asserted where the
+  damage happens: the re-judge summary records its `cutoff`, and `pair` refuses to align two arms
+  whose recorded budgets differ. A missing value is reported as "not recorded" rather than treated
+  as agreement - artifacts predating the field would otherwise pass the check they can say least
+  about. (`benchmarks/beam/run.py`, `benchmarks/beam/pair.py`,
+  `benchmarks/labelling/build_beam_labelling.py`, `tests/test_bench_beam_cutoff_and_coverage.py`)
+- **Four probes measured a table nobody had checked was populated, and each degraded into a
+  publishable page of zeros.** The read-only probes do not index - they measure what an earlier run
+  left behind. On an empty tenant `threshold_probe` reports every candidate rule "correctly
+  starving" every unanswerable question and serving none of the answerable ones (a perfect-looking
+  abstainer); `lexical_probe` gets `n_chunks = 0`, so its rare-term filter `df <= max_df * 0`
+  admits every term and it prints `separation: 0.0000`, which reads as a clean negative result;
+  `rank_probe` reports the answer was never retrieved at any depth. `BeamRecallSystem.ingest`
+  already carried this guard, for a recorded reason - every BEAM table was once found emptied
+  between two probes with nothing running and no error anywhere. The write path was hardened and
+  the read paths were not. All four now refuse, and record `chunks_per_tenant` in the artifact.
+  (`benchmarks/beam/systems.py`, `benchmarks/beam/threshold_probe.py`,
+  `benchmarks/beam/lexical_probe.py`, `benchmarks/beam/rank_probe.py`,
+  `benchmarks/beam/dedup_probe.py`)
+- **`dedup_probe`'s newest-wins collapse could not fire under the invocation its own docstring
+  documents.** Without `--reindex` it set `system._dates = {}`, so `retrieve` stamped
+  `created_at: ""` on every memory and `collapse`'s `if di and di > dj` was unreachable. The probe
+  measured *keep-the-highest-ranked* and published it as a newest-wins curve, which is the opposite
+  of the hypothesis it exists to test. The date map is now rebuilt from the store - recoverable
+  because `_turn_document` deliberately writes the date into the document body - and the run
+  refuses rather than emitting a rank-wins curve under a newest-wins label.
+  (`benchmarks/beam/systems.py`, `benchmarks/beam/dedup_probe.py`,
+  `tests/test_bench_beam_probe_preconditions.py`)
+- **The probe that produced the §9a retraction evidence never verified its own premise.**
+  `probe_doubled_corpus` indexes twice to induce a doubled corpus, and counted no rows before or
+  after - `locomo.run`'s report carries no countable field at all. Had pass 2 failed to double (a
+  guard change, a wrong `--table`, a `delete_sources` in between) it would have emitted a
+  clean-looking number under the label DOUBLED and *refuted* the contamination hypothesis on an
+  apparatus that never ran the treatment. It now asserts `rows_pass2 == 2 x rows_pass1`, refuses
+  separately when pass 1 left zero rows (`0 != 2*0` is False, so an empty table would otherwise
+  satisfy the invariant), and stamps both counts into the artifact. `RESEARCH_PROTOCOL.md` names
+  this invariant and records that only a row count ever caught it.
+  (`scripts/probe_doubled_corpus.py`)
+- **The number that proves RE-call's retrieval path spends no tokens was computed from an
+  unsynchronised counter.** `OpenRouterLLM._usage` is mutated with `+=` - a read-modify-write -
+  from eight worker threads, while the process-wide meter it is *subtracted from* is lock-guarded.
+  Lost updates make `harness < total`, so the published `memory_layer` figure came out spuriously
+  positive: an undercount in the subtrahend invents cost that was never incurred, in the one field
+  whose job is to show there is none. `run.py`'s own module docstring asserted these counters were
+  lock-guarded; they were not. (`benchmarks/llm.py`, `tests/test_bench_llm_usage_lock.py`)
+- **`calibrate` wrote an uncertified threshold to the process-global calibration path.** With
+  `--out` omitted, `save()` resolved to `$RECALL_CALIBRATION` or `./calibration.json` - the file
+  `trusted_search` autoloads for every later query started from that directory - and certification
+  was *reported* after the write. The module's own docstring records that the fit it produces on
+  BEAM is 0.617 and does not certify, so the documented outcome of running the probe was that a
+  more-abstaining, uncertified threshold silently became the default for everything that ran
+  afterwards. `--out` is now required, an uncertified fit needs `--save-uncertified` said out loud,
+  and the sidecar report is written either way so a refusal no longer discards the run's evidence.
+  The fit set is persisted *inside* the calibration, so the out-of-sample contract is checkable
+  rather than help text. (`benchmarks/beam/calibrate.py`)
+- **Three guards could not fail.** `test_eval_locomo_rerank` constructed a `RecordingReranker`,
+  never passed it to anything, then asserted its call list was empty - true of any object handed to
+  nobody, whatever the code does, and it was the only check that the baseline arm stays
+  un-reranked. The cross-reference guard's scan roots excluded `README.md` and `CHANGELOG.md`,
+  which carry more section citations than anything else in the tree; widening it immediately
+  surfaced three unregistered ones. And the Dependabot guard passed if *any* declaration of a
+  pinned dependency carried a cap, while `mcp` is declared twice and only the `dev` copy is what
+  `test` and `typecheck` install - its extractor also stopped at the first `]`, which is inside
+  `"psycopg[binary]>=3.3.4"`, hiding every core dependency after it. All three are now
+  mutation-tested. (`tests/test_eval_locomo_rerank.py`, `tests/test_findings_crossrefs.py`,
+  `tests/test_dependabot_ignores_match_pins.py`)
+- **The RE-call arm published no `coverage` block while the arm it is compared against did.**
+  `_run_pool` drops a question it cannot score and continues, which is right - but it means a short
+  run exits 0 and looks complete, with `n` as its only trace. That is the failure the field was
+  added for (101 of 700 questions lost to one outage window), and it was emitted for the comparator
+  arm and not for ours. (`benchmarks/beam/run.py`)
+- **`--limit` cut the blind-labelling set's arm pairs in half at random, and the gold column could
+  show a raw dict.** The cap was applied *after* the shuffle, so a question could survive with only
+  one of its two arms; `score_beam_labels` drops half-pairs from the McNemar table but accumulates
+  `per_arm` over every labelled row, so the two per-arm accuracies were computed over different,
+  randomly-selected question sets and printed side by side as a system comparison. Under
+  `--disagreements-only`, where exactly one arm is correct per question by construction, an
+  unbalanced split biases them in opposite directions. The cap now applies in question units.
+
+  Separately, `_gold` extracted rubric nuggets under the key `"nugget"` while BEAM stores them
+  under `"description"`. Our own rows are already flattened to strings by `dataset._rubric_of`, so
+  the bug was masked until the documented fallback fired - exactly when our arm had no rubric for a
+  question - and then the human annotator was shown a raw dict repr as the gold standard they grade
+  against. It now delegates to `_rubric_of`. (`benchmarks/labelling/build_beam_labelling.py`)
+- **A `--conversations` range parser existed seven times, in two variants that disagreed.** Two
+  were named `_parse_indices`, five were inlined into a `main()`; the inline copies omitted the
+  `.strip()` on each part, so `--conversations "0-14, 20"` raised `ValueError` in five probes and
+  worked in two - and these probes read each other's tables. One implementation now, in `dataset`,
+  with the whitespace case pinned. The same class had already produced a live defect: a
+  hand-maintained copy of the dataset roster in `run_gap_parallel.sh` had silently lost `nfcorpus`,
+  launching 16 of the 17 preregistered corpora, and that list is what sets the `n` the power floor
+  gates. It is now derived from the module. (`benchmarks/beam/dataset.py`, `benchmarks/beam/*.py`,
+  `scripts/run_gap_parallel.sh`, `tests/test_bench_conversation_indices.py`)
+- **`dedup_probe`'s collapse was 47 seconds per question in a probe advertised as "$0, embeddings
+  and cosines only".** It was a pure-Python quadratic cosine that recomputed both norms on every
+  call and rebuilt the identical similarity matrix once per threshold - measured at the documented
+  defaults (k=200, 1536 dims, four thresholds) at 47.5 s per question, roughly 47 minutes per run.
+  It is now one numpy matrix multiply reused across thresholds: 0.057 s. **Verified byte-identical
+  rather than merely faster** - survivor sets match an independent reimplementation of the old
+  arithmetic across 30 random corpora x 4 thresholds including a zero-vector edge case, because
+  §9j is published off this curve and a speedup that changed which chunks survive would be a
+  different experiment. (`benchmarks/beam/dedup_probe.py`, `tests/test_bench_dedup_collapse.py`)
+- **`SUITE-DESIGN.md` published a loss as a tie.** It read "Our abstention is currently WORSE than
+  Mem0's - 0.533 vs 0.533" - two identical numbers under the word *worse*, so the sentence
+  disproved itself. Mem0's cell is **0.536**, re-derived from FINDINGS §9h's own n=70 table
+  as `(38 x 0.974 + 32 x 0.016) / 70`, and the false-abstain rate is 9.3 %, not 9.6 %. Our own
+  0.467 is asserted in both planning documents and **is not derivable from any committed
+  artifact**, so it is marked citation-pending rather than propagated into a second document.
+
+  Three documented commands could not run as written, which is the same class one layer up: the
+  BEAM dry run labelled "Run this first, always" exited on a missing `--data`, the
+  `probe_doubled_corpus` usage line omitted a required `--table` and pointed `--out` at a retained
+  artifact, and the embedder-gap runbook described a seven-worker launcher that launches sixteen -
+  with a "how you know it worked" check that would fail on a correct run.
+  (`benchmarks/SUITE-DESIGN.md`, `benchmarks/PREREGISTRATION-currency.md`, `results/FINDINGS.md`,
+  `docs/superpowers/specs/2026-07-26-embedder-gap-RUNBOOK.md`, `benchmarks/beam/run.py`,
+  `scripts/probe_doubled_corpus.py`)
+- **`recall/eval` imports two packages the wheel does not require.** `recall/eval/vocab.py`'s
+  `crowding` imports numpy directly, and a bare `pip install recall-rag` resolves to psycopg +
+  pgvector only - numpy arrived transitively through matplotlib in the `eval` extra, i.e. by luck.
+  It is now named in that extra and guarded with the same message shape as `bge_encoder`.
+  `pyarrow` is required by every BEAM entry point and was declared only as a *mypy override*, so
+  the need was recorded for the type checker and not for the installer; it is now in the `bench`
+  extra. (`pyproject.toml`, `recall/eval/vocab.py`, `uv.lock`)
 - **`mcp` is capped at `<2`. Its 2.0.0 release broke `master` with nothing in this repo changed.**
   mcp 2.0.0 landed on 2026-07-28 at 13:45 UTC; `master`'s last green run was 13:23. The next CI run
   after that — on an unrelated docs branch — failed `test` and `typecheck`, and the diff that
@@ -170,6 +344,38 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   → `results/gap/FINDINGS-embedder-gap.md`
 
 ### Security
+- **A benchmark probe defaulted to sending a private corpus to a cloud embedding API.** Two
+  defaults on `benchmarks/beam/heldout_probe.py` lined up so that a bare invocation indexed
+  `/opt/docs_rag_corpora/memory` - the operator's private memo corpus - through
+  `router:openai/text-embedding-3-small`, without the caller having asked for the cloud path.
+  SECURITY.md names this exact class as wanted-reported ("a default that silently prefers the
+  cloud embedder over the local one"). `--memory` is now required and `--embedder` defaults to the
+  local model; reaching a third-party API is an explicit choice.
+- **A Postgres DSN was interpolated into the body of a `python -c` source string, in a script that
+  runs as root.** `psycopg.connect('$DSN', ...)` placed the value inside a single-quoted Python
+  literal, so an apostrophe in the password - legal in a Postgres URI - closes the literal and the
+  remainder is parsed as Python source. The same shape also put the password on a command line
+  where any local user can read it from `/proc/<pid>/cmdline` for the hours an arm takes; the
+  library already holds the opposite standard, since `recall.store.redacted_dsn` exists so a
+  connection failure never logs a plaintext password. The DSN and table now reach Python through
+  the environment, and the table is validated as a bare identifier before it can reach SQL.
+- **The blind-labelling CSV was vulnerable to formula injection.** That file exists to be opened in
+  a spreadsheet by a human annotator, and its `question`, `gold_answer` and `predicted_answer`
+  columns are never author-written - they come from a third-party downloaded corpus and from model
+  output. A rubric beginning `=`, `+`, `-` or `@` is a formula to Excel and LibreOffice. Cells are
+  now neutralised at the writer.
+- **Failure records were committed to a tracked directory with the run's credentials un-redacted.**
+  `results/gap/` is in version control and the run holds a password-bearing DSN and an API key in
+  its environment; `failure_record` wrote `str(exc)` plus an unbounded `traceback.format_exc()`
+  verbatim. No live disclosure was found in the committed artifacts - this is the mechanism, not a
+  realised leak. Both are now scrubbed and the traceback bounded.
+- **`ast.literal_eval` ran on an unbounded field of a third-party download.** Literal-eval executes
+  no code, and the comment said so - but CPython's own documentation warns it is *not* safe against
+  untrusted data, because a sufficiently nested literal exhausts the parser stack. The input is now
+  size-capped before parsing and the resulting failure modes are caught.
+  (`benchmarks/beam/heldout_probe.py`, `benchmarks/beam/dataset.py`,
+  `benchmarks/labelling/build_beam_labelling.py`, `recall/eval/gap_run.py`,
+  `scripts/run_locomo_arms.sh`)
 - **The LangChain and LlamaIndex adapters no longer hand a chain a memory the trust layer
   refused.** Both returned `result.hits` wholesale, and `trust.evaluate` builds that list as
   `ok + rest` — so whenever at least one hit was `ok` the result did not abstain and every
