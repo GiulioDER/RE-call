@@ -12,7 +12,14 @@ from dataclasses import dataclass
 
 import pytest
 
-from recall.eval.arm_check import InertArmError, Verdict, ablation_verdicts, enforce
+from recall.eval.arm_check import (
+    EmptySampleError,
+    InertArmError,
+    Verdict,
+    _compare,
+    ablation_verdicts,
+    enforce,
+)
 
 
 def test_enforce_passes_when_every_mechanism_differs() -> None:
@@ -150,4 +157,35 @@ def test_no_mechanisms_configured_yields_no_verdicts() -> None:
     store = _StubStore(dense=[f"d{i}" for i in range(20)], sparse=[])
     assert ablation_verdicts(
         store, _StubEmbedder(), ["q"], k=5, candidate_k=20, reranker=None, use_sparse=False,
+    ) == []
+
+
+# --- F-04: a zero-length sample must not read as a mechanism proven inert -------------------
+
+
+def test_compare_on_a_zero_length_sample_is_a_loud_error_not_identical() -> None:
+    """Reproduction: `_compare([], [])` used to return `("IDENTICAL", 0)` -- zero questions
+    compared, zero differences, read exactly like a mechanism that was tested and found inert."""
+    with pytest.raises(EmptySampleError):
+        _compare([], [])
+
+
+def test_ablation_verdicts_on_zero_questions_raises_instead_of_reporting_identical() -> None:
+    """A zero-length sample must not silently abort a legitimate run under the banner of
+    `InertArmError` ("the arm is inert") when nothing was actually compared -- and must not be
+    swallowed by `--allow-inert-arm` either, since that flag is for a mechanism that WAS tested."""
+    store = _StubStore(dense=[f"d{i}" for i in range(20)], sparse=[])
+    with pytest.raises(EmptySampleError):
+        ablation_verdicts(
+            store, _StubEmbedder(), [], k=5, candidate_k=20,
+            reranker=_ReversingReranker(), use_sparse=False,
+        )
+
+
+def test_ablation_verdicts_on_zero_questions_with_no_mechanisms_still_yields_no_verdicts() -> None:
+    """An empty sample is harmless when nothing is configured to compare -- `_compare` is never
+    reached, so this stays the existing "no mechanisms configured" case, not a new error."""
+    store = _StubStore(dense=[f"d{i}" for i in range(20)], sparse=[])
+    assert ablation_verdicts(
+        store, _StubEmbedder(), [], k=5, candidate_k=20, reranker=None, use_sparse=False,
     ) == []
