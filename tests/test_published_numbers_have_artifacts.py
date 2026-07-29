@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-import benchmarks.claim_gate as claim_gate
 from benchmarks.claim_gate import (
     GATED_DOCS,
     RESULTS_ROOT,
@@ -55,14 +54,13 @@ def test_an_artifact_marker_binds_to_the_number_before_it() -> None:
     assert marker.key == "depth_curve.5.overall.hit"
 
 
-def test_citation_pending_derived_and_withdrawn_markers_parse() -> None:
+def test_citation_pending_and_withdrawn_markers_parse() -> None:
     text = (
         "a 0.467 <!--@ citation-pending: no artifact retains this -->\n"
-        "b 0.106 <!--@ derived: 0.777 - 0.671 -->\n"
         "c 0.945 <!--@ withdrawn: README withdrawn list -->\n"
     )
     kinds = [c.marker.kind for c in scan_text(text, doc="x.md") if c.marker]
-    assert kinds == ["citation-pending", "derived", "withdrawn"]
+    assert kinds == ["citation-pending", "withdrawn"]
 
 
 def test_excluded_spans_hide_their_digits() -> None:
@@ -106,27 +104,29 @@ def test_line_numbers_are_one_based() -> None:
 # --- P1-A: sign-aware NUMBER_RE ------------------------------------------------------------
 
 
-def test_a_correctly_cited_negative_claim_resolves() -> None:
-    """0.671 - 0.736 is genuinely -0.065; a correctly-signed claim must not be rejected."""
-    claims = scan_text(
-        "Delta was -0.065 <!--@ derived: 0.671 - 0.736 --> after the fix.", doc="x.md"
-    )
+def test_a_correctly_cited_negative_claim_resolves(tmp_path: Path) -> None:
+    """A correctly-signed claim, backed by a matching artifact, must not be rejected.
+
+    Rewritten against an `artifact:` marker (not `derived:`, removed 2026-07-29) — this pins P1-A
+    sign coverage, which does not depend on which marker kind carries it.
+    """
+    _write_artifact(tmp_path, {"delta": -0.065})
+    claims = scan_text("Delta was -0.065 <!--@ sub/a.json # delta --> after the fix.", doc="x.md")
     assert len(claims) == 1
     assert claims[0].text == "-0.065"
-    resolve(claims[0], RESULTS_ROOT)  # does not raise
+    resolve(claims[0], tmp_path)  # does not raise
 
 
-def test_a_sign_flipped_claim_is_rejected() -> None:
-    """Reproduction: the document prints -0.065 but the derived value is +0.065 — a wrong sign
-    must not read as verified. Before the fix, `Claim.text` dropped the minus entirely and this
+def test_a_sign_flipped_claim_is_rejected(tmp_path: Path) -> None:
+    """Reproduction: the document prints -0.065 but the artifact holds +0.065 — a wrong sign must
+    not read as verified. Before the P1-A fix, `Claim.text` dropped the minus entirely and this
     ACCEPTED."""
-    claims = scan_text(
-        "Delta was -0.065 <!--@ derived: 0.736 - 0.671 --> after the fix.", doc="x.md"
-    )
+    _write_artifact(tmp_path, {"delta": 0.065})
+    claims = scan_text("Delta was -0.065 <!--@ sub/a.json # delta --> after the fix.", doc="x.md")
     assert len(claims) == 1
     assert claims[0].text == "-0.065"
-    with pytest.raises(ClaimError, match="derived"):
-        resolve(claims[0], RESULTS_ROOT)
+    with pytest.raises(ClaimError, match="0.065"):
+        resolve(claims[0], tmp_path)
 
 
 def test_a_hyphenated_range_is_not_read_as_negative() -> None:
@@ -163,12 +163,6 @@ def test_unicode_minus_is_captured_as_a_sign() -> None:
 def test_match_rule_normalises_unicode_minus() -> None:
     assert matches("−0.512", -0.512)
     assert not matches("−0.512", 0.512)
-
-
-def test_derived_subtraction_inside_the_marker_still_parses() -> None:
-    """The `derived:` expression itself lives inside an HTML comment, already masked from
-    NUMBER_RE — the sign-capture change must not disturb evaluating it."""
-    resolve(Claim("x.md", 1, "-0.065", Marker("derived", note="0.671 - 0.736")), RESULTS_ROOT)
 
 
 def test_a_marker_binds_only_to_the_nearest_preceding_number() -> None:
@@ -324,43 +318,6 @@ def test_withdrawn_needs_a_retraction_reference(tmp_path: Path) -> None:
         resolve(Claim("x.md", 1, "0.945", Marker("withdrawn", note="")), tmp_path)
 
 
-def test_derived_checks_the_arithmetic(tmp_path: Path) -> None:
-    resolve(Claim("x.md", 1, "0.106", Marker("derived", note="0.777 - 0.671")), tmp_path)
-    with pytest.raises(ClaimError, match="derived"):
-        resolve(Claim("x.md", 1, "0.200", Marker("derived", note="0.777 - 0.671")), tmp_path)
-
-
-def test_derived_refuses_anything_that_is_not_literal_arithmetic(tmp_path: Path) -> None:
-    """The evaluator walks the AST and applies `operator` functions. It must not reach names,
-    calls, attributes or subscripts — a documentation gate is not a place to execute code."""
-    for hostile in ("__import__('os').getcwd()", "open('x')", "a + 1", "[1][0]"):
-        with pytest.raises(ClaimError, match="literal arithmetic|does not parse"):
-            resolve(Claim("x.md", 1, "1.0", Marker("derived", note=hostile)), tmp_path)
-
-
-# --- F-06: pathological `derived:` expressions must not crash the gate ----------------------
-
-
-def test_derived_rejects_an_overlong_expression_before_parsing(tmp_path: Path) -> None:
-    """Reproduction: `'-' * 2000 + '1'` used to raise an uncaught RecursionError. The length
-    bound catches it before `ast.parse` (and this module's own `_eval_node`) ever see it."""
-    hostile = "-" * 2000 + "1"
-    with pytest.raises(ClaimError, match="characters"):
-        resolve(Claim("x.md", 1, "1.0", Marker("derived", note=hostile)), tmp_path)
-
-
-def test_derived_catches_deep_recursion_as_a_claim_error_not_a_crash(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Belt-and-suspenders check on the second layer: with the length bound raised out of the
-    way, a genuinely deep `derived:` expression must still come back as `ClaimError`, not
-    propagate `RecursionError` out of the gate."""
-    monkeypatch.setattr(claim_gate, "_MAX_DERIVED_EXPRESSION_LENGTH", 10_000)
-    hostile = "-" * 2000 + "1"
-    with pytest.raises(ClaimError, match="deeply nested"):
-        resolve(Claim("x.md", 1, "1.0", Marker("derived", note=hostile)), tmp_path)
-
-
 def test_an_unmarked_claim_does_not_resolve(tmp_path: Path) -> None:
     with pytest.raises(ClaimError, match="unmarked"):
         resolve(Claim("x.md", 1, "0.777", None), tmp_path)
@@ -402,27 +359,42 @@ def test_the_registry_on_disk_is_well_formed() -> None:
         assert entry["retraction_ref"].strip()
 
 
-def test_the_registry_holds_literal_digit_strings_not_floats() -> None:
-    """0.615 and its artifact's 0.6152 are different strings; float comparison would conflate a
-    retracted figure with a live one at a different precision."""
+def test_the_registry_values_parse_as_floats_matching_their_own_precision() -> None:
+    """Pins the contract `load_withdrawn` exists for: each key is a digit string that `matches()`
+    accepts against its own parsed float value, at its own published precision.
+
+    Not `isinstance(value, str)` (the old version of this test): `json.loads` always produces
+    `str` keys, so that assertion could never fail regardless of what the registry held — it
+    pinned nothing. Parsing each key as a float AND round-tripping it through `matches()` actually
+    exercises why the registry stores literal digit strings rather than floats in the first place
+    (0.615 and its artifact's 0.6152 are different strings; float comparison would conflate a
+    retracted figure with a live one at a different precision)."""
     for value in load_withdrawn(RESULTS_ROOT):
-        assert isinstance(value, str)
+        parsed = float(value.replace(",", "").replace("−", "-"))
+        assert matches(value, parsed)
 
 
-#: The ratchet. This number may only ever go DOWN — EXCEPT for the one deliberate jump recorded
-#: below, which was a coverage expansion, not the ratchet slipping: a future reader diffing this
-#: constant against git blame should read the comment before assuming a regression.
-MAX_BASELINE_ENTRIES = 2481  # generated 2026-07-29: 2481 unmarked occurrences across 4 documents
-#: (2438 before marking 6 bare withdrawn-figure occurrences — see WITHDRAWN.json — with
-#: `<!--@ withdrawn: ... -->` in FINDINGS.md and README.md; 2432 before marking `0.467`
-#: citation-pending in benchmarks/SUITE-DESIGN.md — see Task 5 — with
-#: `<!--@ citation-pending: ... -->`; 2431 -> 2444 (+13) in the final-review pass: `EXCLUSIONS`
-#: stopped masking `n=` alongside `k=` (a sample size is a claim, not configuration — the exact
-#: defect class the design spec cites, `usable: 1` beside a published `n=17`) and `NUMBER_RE`
-#: stopped shredding comma-grouped integers like `1,536` into `1` + `536`. The `n=` change alone
-#: made roughly 60 previously-invisible integers visible; the comma-grouping change partially
-#: offsets it by merging pairs of digit fragments back into one token. Net +13 unmarked numbers
-#: is the correct, larger, more honest baseline — not a regression to chase back down.
+#: The historical ratchet log. `MAX_BASELINE_ENTRIES` — a hand-maintained second copy of the
+#: baseline's total size — was removed 2026-07-29 (deferred CCA second-pass audit):
+#: `test_every_baseline_entry_is_still_present_and_still_unmarked` below already asserts full
+#: dict equality between `load_baseline` and `build_baseline`, which already makes growth
+#: structurally impossible — any new or changed unmarked number fails that test regardless of
+#: what this constant said. The constant added no coverage the equality test lacked, and being a
+#: hand-edited duplicate figure, it went stale on its own: raised three times in one week and the
+#: direct cause of finding F-05 (a stale number in this very ratchet). Kept below as a comment,
+#: not a constant, because the growth history itself is worth keeping:
+#:
+#: 2481 unmarked occurrences across 4 documents as of 2026-07-29 (2438 before marking 6 bare
+#: withdrawn-figure occurrences — see WITHDRAWN.json — with `<!--@ withdrawn: ... -->` in
+#: FINDINGS.md and README.md; 2432 before marking `0.467` citation-pending in
+#: benchmarks/SUITE-DESIGN.md — see Task 5 — with `<!--@ citation-pending: ... -->`; 2431 -> 2444
+#: (+13) in the final-review pass: `EXCLUSIONS` stopped masking `n=` alongside `k=` (a sample size
+#: is a claim, not configuration — the exact defect class the design spec cites, `usable: 1`
+#: beside a published `n=17`) and `NUMBER_RE` stopped shredding comma-grouped integers like
+#: `1,536` into `1` + `536`. The `n=` change alone made roughly 60 previously-invisible integers
+#: visible; the comma-grouping change partially offsets it by merging pairs of digit fragments
+#: back into one token. Net +13 unmarked numbers is the correct, larger, more honest baseline —
+#: not a regression to chase back down.
 #:
 #: 2444 -> 2481 (+37) on merging origin/master: PR #154 rewrote SUITE-DESIGN.md's Track C passage
 #: — the false-abstain correction — introducing 21 distinct uncited numbers (9.3, 4.1, 3.3, 0.536,
@@ -443,6 +415,9 @@ MAX_BASELINE_ENTRIES = 2481  # generated 2026-07-29: 2481 unmarked occurrences a
 #: `#quickstart--2-minutes...` — a `-` preceded by another `-`, which the stated sign rule counts
 #: as real — relabels 2 occurrences of `"2"` to `"-2"`. Neither is a real claim in either form;
 #: see the stated-limit paragraph on `NUMBER_RE`.)
+#:
+#: 2481, unchanged, when `derived:` was deleted 2026-07-29 (deferred second pass): `derived:` had
+#: zero occurrences in any gated document, so removing it could not move a single baseline row.
 
 
 def test_unmarked_counts_ignores_marked_numbers() -> None:
@@ -455,16 +430,14 @@ def test_unmarked_counts_ignores_marked_numbers() -> None:
 
 
 def test_every_baseline_entry_is_still_present_and_still_unmarked() -> None:
-    """Dead-entry test. Marking a number forces deleting its baseline row, so the file shrinks."""
+    """Dead-entry test, and the sole ratchet (see the history comment above): full dict equality
+    against `build_baseline()` already makes growth structurally impossible, since any new or
+    changed unmarked number fails this assertion regardless of a separately-maintained total."""
     assert load_baseline(RESULTS_ROOT) == build_baseline(), (
         "CLAIMS_BASELINE.json no longer matches the documents. If you MARKED a number, remove its "
-        "row here and lower MAX_BASELINE_ENTRIES. If you ADDED an unmarked number, mark it instead."
+        "row here. If you ADDED an unmarked number, mark it instead. Regenerate with "
+        "scripts/generate_claims_baseline.py either way."
     )
-
-
-def test_the_baseline_never_grows() -> None:
-    total = sum(sum(counts.values()) for counts in load_baseline(RESULTS_ROOT).values())
-    assert total <= MAX_BASELINE_ENTRIES
 
 
 def test_no_withdrawn_value_hides_in_the_baseline() -> None:
@@ -506,16 +479,32 @@ def test_every_marked_claim_resolves(doc: str) -> None:
 
 @pytest.mark.parametrize("doc", GATED_DOCS)
 def test_no_new_unmarked_numbers(doc: str) -> None:
+    """The advice in the failure message must match the direction of the change: a number that
+    got MORE unmarked occurrences needs a marker; a number that got FEWER (partially marked, but
+    not down to zero — a full-zero drop is instead caught by the dead-entry equality test) needs
+    the baseline row shrunk to match, not another marker on top of the ones already added."""
     baseline = load_baseline(RESULTS_ROOT).get(doc, {})
     current = unmarked_counts(scan_document(Path(doc)))
     changed = {
         value: count for value, count in current.items() if count != baseline.get(value, 0)
     }
-    assert not changed, (
-        f"{doc}: these numbers are new or changed since the baseline: {changed}. Add a marker — "
-        f"`<!--@ <artifact>.json # <key> -->`, or `<!--@ citation-pending: <reason> -->` if no "
-        f"artifact retains it — and lower MAX_BASELINE_ENTRIES."
-    )
+    if not changed:
+        return
+    grew = {v: c for v, c in changed.items() if c > baseline.get(v, 0)}
+    shrank = {v: c for v, c in changed.items() if c < baseline.get(v, 0)}
+    messages = []
+    if grew:
+        messages.append(
+            f"new or more frequent: {grew}. Add a marker — `<!--@ <artifact>.json # <key> -->`, "
+            f"or `<!--@ citation-pending: <reason> -->` if no artifact retains it."
+        )
+    if shrank:
+        messages.append(
+            f"less frequent than the baseline: {shrank}. This means a number was marked — shrink "
+            f"its row in results/CLAIMS_BASELINE.json to match (regenerate with "
+            f"scripts/generate_claims_baseline.py), do not add another marker."
+        )
+    pytest.fail(f"{doc}: " + " ".join(messages))
 
 
 @pytest.mark.parametrize("doc", GATED_DOCS)
