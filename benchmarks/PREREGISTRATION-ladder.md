@@ -2,6 +2,8 @@
 
 Written **before** the builder exists. The git history of this file is the evidence.
 Design: `docs/superpowers/specs/2026-07-29-answerability-ladder-design.md`.
+Prior work: [[project-recall-abstention-bounded-domain-2026-07-24]] — six abstention signals
+measured, all failed; this measures the axis they were measured on, not a seventh signal.
 
 ## Corpus statistics (sizes only — inspected before fixing widths, as permitted)
 
@@ -49,9 +51,10 @@ total turns: 5882
   BEAM's abstention category.
 - **P3.** False-abstain on the *answerable* originals exceeds **0.30**, consistent with the 0.481
   measured on LongMemEval per-question.
-- **P4 (H3).** Rebuilding rings with a random-within-cluster neighbour function preserves the sign
-  and rough magnitude of the P1 difference. If it does not, BM25 is a confound and the curve does
-  not ship.
+- **P4 (H3).** Rebuilding rings with a random-within-cluster neighbour function preserves the P1
+  difference: same sign, and within **0.10 absolute** of the BM25 arm's paired difference. If the
+  sign flips or the gap exceeds 0.10, BM25 ordering is a confound — the curve is measuring the
+  neighbour function rather than answerability, and it does not ship as an answerability result.
 
 ## What falsifies the benchmark
 
