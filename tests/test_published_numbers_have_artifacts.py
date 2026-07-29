@@ -72,6 +72,31 @@ def test_excluded_spans_hide_their_digits() -> None:
     assert scan_text(text, doc="x.md") == []
 
 
+def test_k_equals_configuration_remains_excluded() -> None:
+    """`k=5` is retrieval-budget configuration, not a claim about the data."""
+    assert scan_text("retrieval budget k=5", doc="x.md") == []
+
+
+def test_n_equals_is_no_longer_masked_a_sample_size_is_gated() -> None:
+    """The design's stated defect: `results/gap/summary.json` read `usable: 1` beside a published
+    `n=17` — and masking `n=` together with `k=` made this exact claim invisible to the gate.
+    `n=` is a claim about the data (a sample size); only `k=` is configuration."""
+    claims = scan_text("The clean subset holds n=17 records.", doc="x.md")
+    assert [c.text for c in claims] == ["17"]
+
+
+def test_comma_grouped_sample_size_is_one_claim() -> None:
+    """`n=1,536` must scan as the single token `1,536`, not shred into `1` and `536` — a document
+    edit from `n=1,536` to `n=2,536` must be visible to the gate as a changed claim."""
+    claims = scan_text("n=1,536 answerable", doc="x.md")
+    assert [c.text for c in claims] == ["1,536"]
+
+
+def test_comma_grouped_number_with_decimals() -> None:
+    claims = scan_text("total 1,536.25 units", doc="x.md")
+    assert [c.text for c in claims] == ["1,536.25"]
+
+
 def test_line_numbers_are_one_based() -> None:
     claims = scan_text("nothing here\nbut 0.33 here\n", doc="x.md")
     assert [c.line for c in claims] == [2]
@@ -111,6 +136,12 @@ def test_match_rule_rejects_the_suite_design_defect() -> None:
 def test_match_rule_rejects_a_non_number() -> None:
     assert not matches("17", "17")
     assert not matches("1", True)
+
+
+def test_match_rule_strips_commas_from_the_published_string() -> None:
+    """`n=1,536` in the document must match an artifact holding the plain int `1536`."""
+    assert matches("1,536", 1536)
+    assert not matches("1,536", 1537)
 
 
 def _write_artifact(root: Path, payload: dict) -> None:
