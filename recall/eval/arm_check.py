@@ -28,6 +28,18 @@ class InertArmError(RuntimeError):
     """The arm under test does not differ from the arm with its mechanism disabled."""
 
 
+class EmptySampleError(RuntimeError):
+    """`_compare` was asked to compare a mechanism over zero questions.
+
+    Kept distinct from `InertArmError` on purpose: with no questions, the comparison never ran,
+    so nothing was PROVEN about the mechanism. `_compare([], [])`'s vacuous `zip` would otherwise
+    return `("IDENTICAL", 0)`, which reads exactly like a mechanism that WAS exercised and found
+    to make no difference — and `enforce`'s `allow_inert` flag exists to let a caller deliberately
+    record a mechanism that was tested and found inert, not to launder a preflight that tested
+    nothing. `_compare` raises this unconditionally, before `allow_inert` is ever consulted.
+    """
+
+
 @dataclass(frozen=True)
 class Verdict:
     """One mechanism's ablation result."""
@@ -54,7 +66,19 @@ def _ids(retriever: HybridRetriever, query: str, k: int) -> list[str]:
 def _compare(
     baseline: list[list[str]], ablated: list[list[str]]
 ) -> tuple[Literal["DIFFERS", "SET_IDENTICAL", "IDENTICAL"], int]:
-    """Aggregate per-question comparisons into one verdict plus a differing count."""
+    """Aggregate per-question comparisons into one verdict plus a differing count.
+
+    Raises `EmptySampleError` on a zero-length sample rather than returning a vacuous
+    `("IDENTICAL", 0)` — an empty `zip` compares nothing and proves nothing, and a caller (or a
+    ratchet reading the artifact later) must not be able to mistake "never compared" for "compared
+    and found identical".
+    """
+    if not baseline:
+        raise EmptySampleError(
+            "_compare called with zero questions — there is nothing to compare, so no verdict "
+            "can be produced. A caller reached the preflight with an empty in-scope/sample "
+            "question list; that is a caller bug, not evidence the mechanism is inert."
+        )
     set_differs = sum(1 for a, b in zip(baseline, ablated) if set(a) != set(b))
     if set_differs:
         return "DIFFERS", set_differs
