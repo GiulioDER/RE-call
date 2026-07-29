@@ -12,7 +12,17 @@ from pathlib import Path
 
 import pytest
 
-from benchmarks.claim_gate import Claim, ClaimError, Marker, matches, resolve, scan_text
+from benchmarks.claim_gate import (
+    RESULTS_ROOT,
+    Claim,
+    ClaimError,
+    Marker,
+    check_withdrawn,
+    load_withdrawn,
+    matches,
+    resolve,
+    scan_text,
+)
 
 
 def test_a_bare_decimal_is_an_unmarked_claim() -> None:
@@ -158,3 +168,46 @@ def test_derived_refuses_anything_that_is_not_literal_arithmetic(tmp_path: Path)
 def test_an_unmarked_claim_does_not_resolve(tmp_path: Path) -> None:
     with pytest.raises(ClaimError, match="unmarked"):
         resolve(Claim("x.md", 1, "0.777", None), tmp_path)
+
+
+def test_a_withdrawn_value_may_not_appear_bare() -> None:
+    withdrawn = {"0.945": {"figure": "real-corpus recall@5", "retraction_ref": "README"}}
+    errors = check_withdrawn([Claim("x.md", 3, "0.945", None)], withdrawn)
+    assert len(errors) == 1
+    assert "withdrawn" in str(errors[0])
+
+
+def test_a_withdrawn_value_passes_with_a_withdrawn_marker() -> None:
+    withdrawn = {"0.945": {"figure": "real-corpus recall@5", "retraction_ref": "README"}}
+    claim = Claim("x.md", 3, "0.945", Marker("withdrawn", note="README withdrawn list"))
+    assert check_withdrawn([claim], withdrawn) == []
+
+
+def test_a_withdrawn_value_passes_when_legitimately_re_measured() -> None:
+    """Same digits, arrived at from a committed artifact — a different figure that reads the same."""
+    withdrawn = {"0.945": {"figure": "real-corpus recall@5", "retraction_ref": "README"}}
+    claim = Claim("x.md", 3, "0.945", Marker("artifact", artifact="a.json", key="hit"))
+    assert check_withdrawn([claim], withdrawn) == []
+
+
+def test_a_citation_pending_marker_does_not_excuse_a_withdrawn_figure() -> None:
+    """"We have not sourced it yet" is not the same statement as "this was retracted"."""
+    withdrawn = {"0.945": {"figure": "real-corpus recall@5", "retraction_ref": "README"}}
+    claim = Claim("x.md", 3, "0.945", Marker("citation-pending", note="later"))
+    assert len(check_withdrawn([claim], withdrawn)) == 1
+
+
+def test_the_registry_on_disk_is_well_formed() -> None:
+    withdrawn = load_withdrawn(RESULTS_ROOT)
+    assert withdrawn, "an empty registry would make the withdrawn rule vacuous"
+    for value, entry in withdrawn.items():
+        assert value == value.strip()
+        assert entry["figure"].strip()
+        assert entry["retraction_ref"].strip()
+
+
+def test_the_registry_holds_literal_digit_strings_not_floats() -> None:
+    """0.615 and its artifact's 0.6152 are different strings; float comparison would conflate a
+    retracted figure with a live one at a different precision."""
+    for value in load_withdrawn(RESULTS_ROOT):
+        assert isinstance(value, str)

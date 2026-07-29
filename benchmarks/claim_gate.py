@@ -296,3 +296,38 @@ def resolve(claim: Claim, results_root: Path) -> None:
             f"{claim.doc}:{claim.line} published {claim.text} but "
             f"{marker.artifact}#{marker.key} holds {actual}"
         )
+
+
+def load_withdrawn(results_root: Path) -> dict[str, dict[str, str]]:
+    """The retracted-figure registry, minus its `_note` header."""
+    payload = json.loads((results_root / "WITHDRAWN.json").read_text(encoding="utf-8"))
+    return {key: value for key, value in payload.items() if not key.startswith("_")}
+
+
+def check_withdrawn(
+    claims: list[Claim], withdrawn: dict[str, dict[str, str]]
+) -> list[ClaimError]:
+    """A retracted figure may never appear bare.
+
+    It passes only with a `withdrawn:` marker (it is being discussed AS a retraction) or with an
+    artifact marker (the same digits arrived from a committed artifact, and are therefore a
+    different figure that happens to read the same). `citation-pending` does NOT excuse it: "not
+    sourced yet" and "this was retracted" are different statements about a number.
+
+    This is the document-side counterpart of deleting `postfix_pool100.json` outright rather than
+    annotating it — an annotated wrong number in a table is still a number someone can read off it.
+    """
+    errors: list[ClaimError] = []
+    for claim in claims:
+        if claim.text not in withdrawn:
+            continue
+        kind = claim.marker.kind if claim.marker else None
+        if kind in {"withdrawn", "artifact"}:
+            continue
+        errors.append(
+            ClaimError(
+                f"{claim.doc}:{claim.line} {claim.text} is a withdrawn figure "
+                f"({withdrawn[claim.text]['figure']}) and carries no withdrawn marker"
+            )
+        )
+    return errors
