@@ -10,9 +10,12 @@ Retrieval only: no generator, no judge, so this costs nothing and runs ahead of 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
+from recall.embeddings import Embedder
+from recall.rerank import Reranker
 from recall.retriever import HybridRetriever
+from recall.store import PgVectorStore
 
 #: Questions sampled by default. Deterministic (the first N of the caller's list, no RNG), so a
 #: preflight verdict is reproducible for a given slice.
@@ -30,7 +33,7 @@ class Verdict:
     """One mechanism's ablation result."""
 
     mechanism: str
-    verdict: str  # "DIFFERS" | "SET_IDENTICAL" | "IDENTICAL"
+    verdict: Literal["DIFFERS", "SET_IDENTICAL", "IDENTICAL"]
     sampled: int
     differing: int
 
@@ -48,7 +51,9 @@ def _ids(retriever: HybridRetriever, query: str, k: int) -> list[str]:
     return [hit.chunk.id for hit in retriever.search(query, k=k).hits]
 
 
-def _compare(baseline: list[list[str]], ablated: list[list[str]]) -> tuple[str, int]:
+def _compare(
+    baseline: list[list[str]], ablated: list[list[str]]
+) -> tuple[Literal["DIFFERS", "SET_IDENTICAL", "IDENTICAL"], int]:
     """Aggregate per-question comparisons into one verdict plus a differing count."""
     set_differs = sum(1 for a, b in zip(baseline, ablated) if set(a) != set(b))
     if set_differs:
@@ -60,13 +65,13 @@ def _compare(baseline: list[list[str]], ablated: list[list[str]]) -> tuple[str, 
 
 
 def ablation_verdicts(
-    store: Any,
-    embedder: Any,
+    store: PgVectorStore,
+    embedder: Embedder,
     questions: Sequence[str],
     *,
     k: int,
     candidate_k: int,
-    reranker: Any = None,
+    reranker: Reranker | None = None,
     use_sparse: bool = True,
 ) -> list[Verdict]:
     """One verdict per CONFIGURED mechanism. A mechanism that is off yields no verdict."""
