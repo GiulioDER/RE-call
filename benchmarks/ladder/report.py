@@ -77,18 +77,27 @@ def _cluster_id(instance: Instance) -> str:
 def _surviving_doc_counts(instances: list[Instance], corpus_path: Path) -> dict[int, float]:
     """Median surviving documents per rung, from the manifest's excised ids and the source corpus.
 
-    Surviving = the size of the question's own conversation cluster minus the docs THIS instance
-    excised. The answerable original excises nothing, so its count is the whole cluster; RING_MAX
-    excises the whole cluster, so its count is always 0 — the confound this report exists to
-    surface, made visible in the table itself rather than only in prose.
+    Surviving = the size of the **whole ingested slice** minus the docs THIS instance excised.
+
+    The slice is `scope_cluster_ids` when the manifest states one (v2, where it is the question's
+    own conversation plus distractors), and the question's own cluster when it does not (v1).
+    Getting this wrong is not cosmetic: counting only the own cluster reports 0 survivors for a v2
+    top rung whose index actually holds ~1 200 distractor documents, which is precisely the
+    empty-corpus confound this column exists to expose — reproduced as a false positive. A column
+    that cries confound where there is none is as useless as one that hides a real one.
     """
     from benchmarks.ladder.sources.locomo import load_locomo
 
     corpus = load_locomo(corpus_path)
     per_ring: dict[int, list[int]] = {}
     for inst in instances:
-        cluster = corpus.cluster_members.get(_cluster_id(inst), ())
-        surviving = len(cluster) - len(inst.excised_doc_ids)
+        if inst.scope_cluster_ids:
+            slice_ids: set[str] = set()
+            for cluster_id in inst.scope_cluster_ids:
+                slice_ids |= set(corpus.cluster_members.get(cluster_id, ()))
+        else:
+            slice_ids = set(corpus.cluster_members.get(_cluster_id(inst), ()))
+        surviving = len(slice_ids - set(inst.excised_doc_ids))
         per_ring.setdefault(inst.ring, []).append(surviving)
     return {ring: statistics.median(vals) for ring, vals in per_ring.items()}
 
@@ -124,6 +133,24 @@ def main(argv: list[str] | None = None) -> int:
             "path to the source corpus (e.g. locomo10.json). When given, the report prints "
             "median surviving documents per rung, computed from the manifest's excised ids "
             "against this corpus's cluster sizes."
+        ),
+    )
+    parser.add_argument(
+        "--low",
+        type=int,
+        default=0,
+        help="near rung of the pre-registered contrast. Default 0 (v1 d=0 and v2 r=0.00 share it).",
+    )
+    parser.add_argument(
+        "--high",
+        type=int,
+        default=RING_MAX,
+        help=(
+            "far rung of the pre-registered contrast. Default RING_MAX (-1), which is v1's. v2 "
+            "uses basis points, so its far rung is 10000 (r=1.00). Stated explicitly rather than "
+            "guessed from the manifest: which contrast is the headline is a pre-registration "
+            "decision, and a report that infers it could silently change the verdict's meaning "
+            "when a manifest gains a rung."
         ),
     )
     args = parser.parse_args(argv)
@@ -180,8 +207,8 @@ def main(argv: list[str] | None = None) -> int:
     # from an empty overlap propagates out of main() rather than being swallowed into a fake PASS
     # or FAIL.
     print()
-    diff, low, high = paired_difference_ci(instances, abstained, 0, RING_MAX)
-    n_headline = _paired_n(instances, abstained, 0, RING_MAX)
+    diff, low, high = paired_difference_ci(instances, abstained, args.low, args.high)
+    n_headline = _paired_n(instances, abstained, args.low, args.high)
     verdict = h1_verdict(diff, low, high)
     print(
         f"H1 (pre-registered) paired delta(correct-abstain), d=max - d=0: {diff:+.3f} "
