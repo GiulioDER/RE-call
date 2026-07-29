@@ -207,6 +207,88 @@ def test_ablation_preflight_fires_once_before_run_pool_and_samples_in_scope_not_
         ],
         "allow_inert_arm": False,
         "sample": 3,
+        "ran": True,
+    }
+
+
+def test_ablation_preflight_never_running_is_stamped_ran_false_not_an_empty_verdicts_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--resume` covering every conversation means `pending` is empty for both conversations, so
+    `ingest()` never fires and the `ablation_run` sentinel never flips — the artifact would carry
+    `verdicts: []`, indistinguishable from a preflight that ran and found every mechanism inert
+    for a metric that permits it. `ran: False` is what tells the two apart.
+    """
+    conv0, conv1 = _conversations()
+
+    events: list[str] = []
+
+    def _fake_ingest(self: BeamRecallSystem, conversation: Conversation) -> int:
+        events.append(f"ingest:{conversation.index}")
+        return len(conversation.turns)
+
+    def _fake_preflight(
+        self: BeamRecallSystem,
+        questions: list[str],
+        *,
+        sample: int,
+        metric_class: str,
+        allow_inert: bool,
+    ) -> list[dict[str, Any]]:
+        events.append("preflight")
+        return [{"mechanism": "sparse", "verdict": "DIFFERS", "sampled": len(questions), "differing": 1}]
+
+    def _fake_run_pool(tasks: list[Question], work: Any, workers: int) -> list[dict[str, Any]]:
+        events.append(f"run_pool:{len(tasks)}")
+        return [_scored_row(q) for q in tasks]
+
+    monkeypatch.setattr(BeamRecallSystem, "ingest", _fake_ingest)
+    monkeypatch.setattr(BeamRecallSystem, "ablation_preflight", _fake_preflight)
+    monkeypatch.setattr(beam_run_module, "_run_pool", _fake_run_pool)
+    monkeypatch.setattr(
+        beam_run_module,
+        "iter_conversations",
+        lambda path, chat_size, indices=None: iter([conv0, conv1]),
+    )
+    monkeypatch.setattr(beam_run_module, "count_conversations", lambda path, indices=None: 2)
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+
+    # Every question in both conversations is already "done" — pending is empty everywhere.
+    resume_path = tmp_path / "resume.partial.jsonl"
+    resume_rows = [
+        _scored_row(q) for q in (*conv0.questions, *conv1.questions)
+    ]
+    resume_path.write_text(
+        "\n".join(json.dumps(r) for r in resume_rows) + "\n", encoding="utf-8"
+    )
+    out_dir = tmp_path / "out"
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "beam-run",
+            "--data", "unused.parquet",
+            "--k", "45",
+            "--candidate-k", "250",
+            "--out-dir", str(out_dir),
+            "--resume", str(resume_path),
+        ],
+    )
+
+    beam_run_module._main()
+
+    assert "preflight" not in events
+    assert "ingest:0" not in events
+    assert "ingest:1" not in events
+
+    [artifact] = out_dir.glob("*.json")
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert payload["summary"]["ablation_preflight"] == {
+        "verdicts": [],
+        "allow_inert_arm": False,
+        "sample": 25,
+        "ran": False,
     }
 
 

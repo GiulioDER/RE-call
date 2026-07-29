@@ -178,6 +178,44 @@ def _stub_build(arm: str, model: str, openrouter_key: str, k: int, run_id: str, 
     return _StubSys()
 
 
+def _patch_recall_stub(monkeypatch: pytest.MonkeyPatch, *, retrieve_returns: str = "ctx") -> None:
+    """Make `RecallSystem` behave like `_StubSys` (no DB, no network, no spend).
+
+    `main`'s `isinstance(system, RecallSystem)` guard is now an `assert` (Finding 5 of the
+    final-review pass): `arm='recall'` with a bespoke non-`RecallSystem` fake now fails loudly
+    instead of silently skipping the ablation preflight, which is the point of that guard. Tests
+    below that only care about ordering/config/timestamps/NaN-safety, not about the preflight
+    itself, build a real `RecallSystem` and patch its methods at the class level instead of a
+    hand-rolled stand-in class.
+    """
+    from benchmarks.systems import RecallSystem
+
+    def _ingest(self: RecallSystem, conversation: dict[str, Any]) -> None:
+        return None
+
+    def _retrieve(self: RecallSystem, question: str) -> str:
+        return retrieve_returns
+
+    def _no_op_preflight(
+        self: RecallSystem, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+    ) -> list[dict[str, Any]]:
+        return []
+
+    monkeypatch.setattr(RecallSystem, "ingest", _ingest)
+    monkeypatch.setattr(RecallSystem, "retrieve", _retrieve)
+    monkeypatch.setattr(RecallSystem, "ablation_preflight", _no_op_preflight)
+
+
+def _recall_stub_build(
+    arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed", **_extra: object
+) -> MemorySystem:
+    """A real `RecallSystem` (satisfies `main`'s isinstance assert), lazy enough to build without
+    a database — pair with `_patch_recall_stub` to also stub its instance methods."""
+    from benchmarks.systems import RecallSystem
+
+    return RecallSystem("postgresql://x/y", embedder_name="hashing", k=k)
+
+
 def _stub_complete(self: OpenRouterLLM, system: str, user: str) -> str:
     """Judge says YES, generator answers. Patched over `OpenRouterLLM.complete`: nothing is sent."""
     return "YES" if "Correct?" in user else "an answer"
@@ -313,24 +351,31 @@ def test_main_ingests_each_conversation_before_scoring_its_own_questions(
     `main` end-to-end with a fake system and a fake completer (no DB, no network, no spend) and
     pins the ordering plus the artifact's contents.
     """
+    from benchmarks.systems import RecallSystem
+
     events: list[tuple[str, str]] = []
 
-    class _OrderedSys:
-        name = "ordered"
+    def _ordered_ingest(self: RecallSystem, conversation: dict[str, Any]) -> None:
+        events.append(("ingest", str(conversation["sample_id"])))
 
-        def ingest(self, conversation: dict[str, Any]) -> None:
-            events.append(("ingest", str(conversation["sample_id"])))
+    def _ordered_retrieve(self: RecallSystem, question: str) -> str:
+        events.append(("retrieve", question))
+        return "ctx"
 
-        def retrieve(self, question: str) -> str:
-            events.append(("retrieve", question))
-            return "ctx"
+    def _no_op_preflight(
+        self: RecallSystem, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+    ) -> list[dict[str, Any]]:
+        return []
 
     def _fake_build(
         arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed", **_extra: object
     ) -> MemorySystem:
-        return _OrderedSys()
+        return RecallSystem("postgresql://x/y", embedder_name="hashing", k=k)
 
     monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(RecallSystem, "ingest", _ordered_ingest)
+    monkeypatch.setattr(RecallSystem, "retrieve", _ordered_retrieve)
+    monkeypatch.setattr(RecallSystem, "ablation_preflight", _no_op_preflight)
     monkeypatch.setattr(run_module, "_build_system", _fake_build)
     monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
 
@@ -467,6 +512,7 @@ def test_main_runs_the_ablation_preflight_once_before_the_first_retrieve_and_sta
         ],
         "allow_inert_arm": False,
         "sample": 3,
+        "ran": True,
     }
 
 
@@ -500,6 +546,7 @@ def test_main_stamps_allow_inert_arm_even_when_the_preflight_never_runs(
         "verdicts": [],
         "allow_inert_arm": True,
         "sample": 25,  # the documented default
+        "ran": False,
     }
 
 
@@ -513,7 +560,8 @@ def test_main_records_the_configuration_that_produced_the_numbers(
     the arm name and the model string documents a run nobody can reproduce, including its author.
     """
     monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
-    monkeypatch.setattr(run_module, "_build_system", _stub_build)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
     monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
 
     out = tmp_path / "results"
@@ -553,15 +601,18 @@ def test_main_threads_k_to_the_adapters_and_defaults_to_five(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`--k` reaches both adapters, and omitting it keeps the documented default of 5."""
+    from benchmarks.systems import RecallSystem
+
     seen: list[int] = []
 
     def _recording_build(
         arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed", **_extra: object
     ) -> MemorySystem:
         seen.append(k)
-        return _StubSys()
+        return RecallSystem("postgresql://x/y", embedder_name="hashing", k=k)
 
     monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    _patch_recall_stub(monkeypatch)
     monkeypatch.setattr(run_module, "_build_system", _recording_build)
     monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
 
@@ -611,23 +662,16 @@ def test_main_persists_each_conversation_before_starting_the_next(
     the second's work exists; the first conversation's outcomes must already be on disk.
     """
 
-    class _CrashingSys:
-        name = "crashing"
+    from benchmarks.systems import RecallSystem
 
-        def ingest(self, conversation: dict[str, Any]) -> None:
-            if conversation["sample_id"] == "conv-b":
-                raise RuntimeError("simulated rate limit part-way through the run")
-
-        def retrieve(self, question: str) -> str:
-            return "ctx"
-
-    def _fake_build(
-        arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed", **_extra: object
-    ) -> MemorySystem:
-        return _CrashingSys()
+    def _crashing_ingest(self: RecallSystem, conversation: dict[str, Any]) -> None:
+        if conversation["sample_id"] == "conv-b":
+            raise RuntimeError("simulated rate limit part-way through the run")
 
     monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
-    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(RecallSystem, "ingest", _crashing_ingest)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
     monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
 
     out = tmp_path / "results"
@@ -663,7 +707,8 @@ def test_main_timestamps_the_filenames_so_a_rerun_cannot_clobber_a_published_art
     file that cost real money and may already have been linked from the article.
     """
     monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
-    monkeypatch.setattr(run_module, "_build_system", _stub_build)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
     monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
 
     out = tmp_path / "results"
@@ -691,25 +736,12 @@ def test_main_dump_has_no_nan_token(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     answerable sub-block built from an empty list — exactly where a bare `NaN` would appear.
     """
 
-    class _EmptySys:
-        name = "empty"
-
-        def ingest(self, conversation: dict[str, Any]) -> None:
-            return None
-
-        def retrieve(self, question: str) -> str:
-            return ""
-
-    def _fake_build(
-        arm: str, model: str, openrouter_key: str, k: int, run_id: str, embedder: str = "fastembed", **_extra: object
-    ) -> MemorySystem:
-        return _EmptySys()
-
     def _fake_complete(self: OpenRouterLLM, system: str, user: str) -> str:
         return "NO_ANSWER"
 
     monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
-    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    _patch_recall_stub(monkeypatch, retrieve_returns="")
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
     monkeypatch.setattr(OpenRouterLLM, "complete", _fake_complete)
 
     out = tmp_path / "results"
