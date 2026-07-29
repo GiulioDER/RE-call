@@ -540,3 +540,37 @@ def test_composition_check_withdrawn_and_resolve_must_both_run_over_the_same_cla
     # resolve alone closes it: it actually opens the artifact, and there is nothing at that path.
     with pytest.raises(ClaimError, match="no such artifact"):
         resolve(claim, tmp_path)
+
+
+def test_the_year_row_does_not_eat_a_four_digit_quantity_with_decimals() -> None:
+    """`results/RESULTS.md:72` publishes `1922.1` ms of rerank latency.
+
+    `\b` is satisfied by the `.`, so the old `\b(?:19|20)\d{2}\b` matched INSIDE `1922.1`,
+    masking the leading digits and leaving `.1`. The orphan was not harmless: NUMBER_RE read the
+    trailing `1` as a claim, so the document published `1922.1` while the gate recorded `1` — an
+    edit to `2922.1` would have changed nothing the gate could see.
+    """
+    assert [c.text for c in scan_text("rerank adds 1922.1 ms", doc="x.md")] == ["1922.1"]
+
+
+def test_the_year_row_still_masks_genuine_years() -> None:
+    """The fix must not reopen the timestamps this row exists to exclude."""
+    for text in (
+        "presented at ICLR 2026",
+        "in May 2026 we shipped",
+        "measured in 2014",
+        "Hanley & McNeil (1982)",
+        "dated 2026-07-29 exactly",
+    ):
+        assert scan_text(text, doc="x.md") == [], text
+
+
+def test_a_bare_four_digit_quantity_in_the_year_range_is_a_KNOWN_hole() -> None:
+    """Pins the residual rather than leaving it implied.
+
+    `2048` and `2026` are the same four characters; no local rule separates a chunk count from a
+    year. `1024` and `3072` fall outside the range and are gated normally. If a gated document ever
+    publishes a 1900-2099 quantity, it must be marked explicitly — this row will not catch it.
+    """
+    assert scan_text("corpus of 2048 chunks", doc="x.md") == []
+    assert [c.text for c in scan_text("dim 1024 vs 3072", doc="x.md")] == ["1024", "3072"]
