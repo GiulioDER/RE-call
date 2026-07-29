@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from recall.calibration import (
     DEFAULT_SCALE,
     Calibration,
@@ -99,6 +101,26 @@ def test_load_for_nonpositive_scale_returns_none(tmp_path):
             '{"embedder": "bge", "threshold": 0.7, "scale": %s}' % bad, encoding="utf-8"
         )
         assert load_for("bge", path) is None
+
+
+def test_load_for_rejects_an_out_of_range_file_once_not_once_per_query(tmp_path, caplog):
+    """The rejection must be remembered, like every other rejection in `load_for`.
+
+    An embedder mismatch and a malformed file both record their verdict in the cache; the
+    out-of-range branch returned without recording anything. `load_for` runs on EVERY query, so
+    that one omission re-read and re-parsed the file per search and logged the same warning per
+    search — the noise `test_warns_once_per_embedder_not_once_per_query` forbids one layer up,
+    and it appeared precisely where the file is already known to be broken.
+    """
+    path = tmp_path / "calibration.json"
+    path.write_text('{"embedder": "bge", "threshold": 2.0, "scale": 0.05}', encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        verdicts = [load_for("bge", path) for _ in range(5)]
+
+    assert verdicts == [None] * 5, "an out-of-range threshold must never be applied"
+    hits = [r for r in caplog.records if "out-of-range calibration" in r.message]
+    assert len(hits) == 1, f"expected exactly one warning across five loads, got {len(hits)}"
 
 
 def test_confidence_tiny_scale_does_not_overflow():
