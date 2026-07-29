@@ -208,7 +208,7 @@ def main() -> None:
             for p in params
         }
     args.out.write_text(json.dumps(report, indent=1), encoding="utf-8")
-    print("\n=== SPREAD (max-min del tasso di affamamento fra le condizioni) ===")
+    print("\n=== SPREAD (max-min of the starve rate across conditions) ===")
     print(json.dumps({k: v for k, v in report.items() if k.startswith("spread_")}, indent=1))
 
 

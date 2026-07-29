@@ -40,7 +40,7 @@ import statistics
 from pathlib import Path
 from typing import Any
 
-from benchmarks.beam.dataset import iter_conversations
+from benchmarks.beam.dataset import iter_conversations, parse_conversation_indices
 from benchmarks.beam.systems import (
     BEAM_TABLE,
     BeamRecallSystem,
@@ -96,13 +96,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
-    indices: list[int] = []
-    for part in args.conversations.split(","):
-        if "-" in part:
-            lo, hi = part.split("-", 1)
-            indices.extend(range(int(lo), int(hi) + 1))
-        elif part.strip():
-            indices.append(int(part))
+    indices = parse_conversation_indices(args.conversations)
 
     system = BeamRecallSystem(
         args.dsn, embedder_name=args.embedder, k=args.k, table=args.table
@@ -110,7 +104,7 @@ def main() -> None:
     embedder = system._embedder  # noqa: SLF001 - probe, deliberately reaching past the façade
     per_question: list[dict[str, Any]] = []
 
-    for conv in iter_conversations(args.data, args.chat_size, sorted(set(indices))):
+    for conv in iter_conversations(args.data, args.chat_size, indices):
         if args.reindex:
             system.ingest(conv)
         else:

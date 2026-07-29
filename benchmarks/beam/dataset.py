@@ -15,7 +15,11 @@ Two things here are load-bearing and easy to get subtly wrong:
 from __future__ import annotations
 
 import json
-from ast import literal_eval as _python_literal  # safe: builds literals only, never executes code
+#: Builds literals only — it executes NO code from the dataset. That is not a general
+#: safety clearance, though: CPython's own docs warn `literal_eval` is not safe against
+#: untrusted data, because a deeply nested literal can exhaust the parser stack. Hence the
+#: size cap at the call site and the widened except below.
+from ast import literal_eval as _python_literal
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -99,23 +103,35 @@ def iter_rows(path: Path, indices: set[int] | None = None) -> Iterator[tuple[int
         yield idx, row
 
 
+#: Upper bound on a `probing_questions` cell before it reaches a recursive-descent parser. Real
+#: blocks are a few hundred characters; this is ~250x the largest observed.
+_MAX_PROBING_CHARS = 200_000
+
+
 def _parse_probing(raw: Any) -> dict[str, Any]:
     """HuggingFace stores `probing_questions` as a Python-repr string; fall back to JSON.
 
     JSON is tried first and the Python-literal parser second. The literal parser accepts only
     literals (dicts, lists, strings, numbers) — it cannot call anything — so parsing this
     third-party field executes no code from the dataset.
+
+    That is a statement about code execution, NOT a general safety clearance: CPython's own
+    documentation warns `literal_eval` is unsafe on untrusted input, because a sufficiently
+    nested literal exhausts the parser stack. This field arrives from a HuggingFace download, so
+    the input is size-capped first and the failure modes that implies are caught below.
     """
     if isinstance(raw, dict):
         return raw
     if not isinstance(raw, str):
+        return {}
+    if len(raw) > _MAX_PROBING_CHARS:
         return {}
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
         try:
             parsed = _python_literal(raw)
-        except (ValueError, SyntaxError):
+        except (ValueError, SyntaxError, RecursionError, MemoryError):
             return {}
     return parsed if isinstance(parsed, dict) else {}
 
@@ -191,6 +207,29 @@ def _flatten_turns(chat: Any) -> list[dict[str, str]]:
                 if parsed is not None:
                     turns.append(parsed)
     return turns
+
+
+def parse_conversation_indices(spec: str) -> list[int]:
+    """`"0-14,20"` -> `[0, 1, ..., 14, 20]`, deduplicated and sorted.
+
+    One implementation, because there were seven: two named `_parse_indices` and five inlined
+    into a `main()`, in two variants that did not agree. The inline copies omitted the `.strip()`
+    on each part, so `--conversations "0, 2"` raised `ValueError` there and worked in the other
+    two; and they left deduplication to the call site, which `run.py` did and the probes did not.
+    Seven copies of a CLI parser is how `--conversations "0-14, 20"` comes to mean different
+    things in two probes that read each other's tables.
+    """
+    out: list[int] = []
+    for raw_part in spec.split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            out.extend(range(int(lo), int(hi.strip()) + 1))
+        else:
+            out.append(int(part))
+    return sorted(set(out))
 
 
 def _rubric_of(raw: Any) -> list[str]:
