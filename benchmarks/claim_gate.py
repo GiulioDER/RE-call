@@ -54,7 +54,11 @@ EXCLUSIONS: tuple[tuple[str, str, int], ...] = (
     ("issue ref — identifier", r"#\d+", 0),
     ("section ref — identifier", r"§\s*\d+[a-z]?", 0),
     ("metric depth suffix — identifier, e.g. hit@5", r"@\d+", 0),
-    ("retrieval budget — configuration, e.g. k=5", r"\b[kn]\s*=\s*\d+", 0),
+    # `n=` is DELIBERATELY absent from this row: it is a sample size, a claim about the data, not
+    # configuration — the design spec's motivating defect was exactly a `results/gap/summary.json`
+    # reading `usable: 1` beside a published `n=17` that this table's old combined `[kn]` pattern
+    # made invisible to the gate. Only `k=` (a retrieval budget the caller chose) is excluded here.
+    ("retrieval budget — configuration, e.g. k=5", r"\bk\s*=\s*\d+", 0),
     ("year — timestamp", r"\b(?:19|20)\d{2}\b", 0),
     ("ordered list marker — structure", r"^\s{0,3}\d+\.\s", re.MULTILINE),
     ("table rule — structure", r"^\s*\|[\s:|-]+\|\s*$", re.MULTILINE),
@@ -70,7 +74,17 @@ MARKER_RE = re.compile(
     r")\s*-->"
 )
 
-NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+#: Comma-grouped integer (e.g. `1,536`) tried FIRST so a triplet-grouped sample size scans as one
+#: token instead of shredding at each comma into `1` / `536` — an edit from `n=1,536` to `n=2,536`
+#: must be a visible change to the gate, not an invisible one hiding behind an untouched `536`.
+#: Order is load-bearing: Python's `re` alternation tries branches left-to-right at each position
+#: and commits to the first one that matches, so the plain-digit fallback must come second or it
+#: would win first and consume only the leading digits before the first comma.
+#:
+#: Space-grouped numbers (`n=1 982`) are NOT recognised as one token — deliberately punted rather
+#: than guessed at, because a space also separates two genuinely distinct numbers and there is no
+#: local rule that tells the two cases apart.
+NUMBER_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
 
 
 @dataclass(frozen=True)
@@ -211,10 +225,14 @@ def matches(published: str, actual: object) -> bool:
     """
     if isinstance(actual, bool) or not isinstance(actual, (int, float)):
         return False
-    if "." in published:
-        decimals = len(published.split(".", 1)[1])
-        return f"{float(actual):.{decimals}f}" == published
-    return float(actual).is_integer() and str(int(actual)) == published
+    # Comma grouping is a formatting choice ("1,536" vs "1536"), not part of the published
+    # precision — strip it before comparing digits so a comma-grouped sample size matches the
+    # plain int an artifact holds.
+    normalized = published.replace(",", "")
+    if "." in normalized:
+        decimals = len(normalized.split(".", 1)[1])
+        return f"{float(actual):.{decimals}f}" == normalized
+    return float(actual).is_integer() and str(int(actual)) == normalized
 
 
 #: Binary operators the `derived:` marker may use. Anything else is refused.
