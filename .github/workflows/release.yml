@@ -13,6 +13,28 @@ name: Release
 # Without that, the `publish` job fails on authentication — it never publishes to the wrong place.
 # The `environment:` is what lets a required reviewer sit between a pushed tag and a release that
 # can never be un-published: a version number on PyPI is permanent, even after a yank.
+#
+# ⚠️ That sentence was ASPIRATIONAL until 2026-07-29. The `pypi` environment existed with **no
+# protection rules at all**, so every tag published straight through — including v0.7.0 — and the
+# comment above read as a description of a gate that was not there. An environment lives in repo
+# settings, not in this file, so nothing here could report the gap and nothing did.
+#
+# It is armed now:
+#
+#     required reviewer      GiulioDER
+#     prevent_self_review    false  ← deliberate: the sole collaborator must be able to approve,
+#                                     or the gate blocks every release instead of pausing it
+#     deployment branches    custom policy, tag `v*` only
+#
+# The tag-only policy is why a `workflow_dispatch` run cannot reach PyPI: a dispatch runs from a
+# branch, and only tags match. TestPyPI is unaffected.
+#
+# Verify it, because settings drift silently and this file cannot fail when they do:
+#
+#     gh api repos/GiulioDER/RE-call/environments/pypi
+#     gh api repos/GiulioDER/RE-call/environments/pypi/deployment-branch-policies
+#
+# If `protection_rules` comes back empty, the gate is gone and a tag push publishes unreviewed.
 
 on:
   push:
