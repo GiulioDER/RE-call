@@ -51,6 +51,40 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   on — it is updated at every regeneration by construction (the test fails otherwise) — rather
   than this changelog bullet, which has no such guarantee.
 ### Fixed
+- **The calibration cache was invalidated on `st_mtime_ns`, so a re-calibration written inside one
+  filesystem timestamp tick was never seen.** `load_for` caches `(path, embedder) -> Calibration`
+  and `trusted_search` calls it on every query, so the entry has to be invalidated on something
+  that changes when the file changes. An mtime is a timestamp, not a version: the smallest
+  non-zero delta between consecutive writes measured on ext4 is **1,000,001 ns**, so two writes
+  inside one tick carry the same mtime and the second was discarded. The stale threshold was then
+  served indefinitely — nothing re-checks until the mtime changes again — and the threshold is
+  what gates abstention, so retrieval behaviour changed with nothing logged anywhere.
+
+  Not a corner case. Rewrite-then-reload, which is exactly what a `recall calibrate` run does,
+  served the **stale** threshold on **223 of 300 trials (74 %)** on ext4, and on 2 of 500 on NTFS.
+  Invalidation is now keyed on a `blake2b` digest of the file's bytes: 0 of 300 on the same probe.
+  Neither size nor mtime+size would have fixed it — a threshold edit (`0.42` → `0.31`) is
+  byte-for-byte the same length, so only the content distinguishes the two files.
+
+  Cost of the correctness, measured on ext4 against a 308-byte calibration: the cached call goes
+  from 13.8 µs (stat) to 38.4 µs (read + digest), against 62 µs uncached. The cache still earns
+  its place — it saves ~24 µs per query rather than ~48 — and the 24 µs given up is 0.03 % of a
+  77 ms query.
+
+  **This is a regression against 0.6.0, not a defect that shipped with a new feature.** The cache
+  arrived in 0.7.0 with the `trusted_search` auto-load (#101); before it, `recall_mcp/server.py`
+  already called `load_for` once per search and re-read the file every time, so a re-calibration
+  was always picked up. 0.7.0 made that path stale-prone.
+
+  🔑 The test that should have caught this existed, and passed. It wrote the file twice and
+  asserted the second threshold came back — the right invariant, tested by *waiting* for a
+  collision instead of *causing* one. It therefore failed only when the two writes landed close
+  enough together, which depended on which test file had already warmed the imports: it reached CI
+  as an occasional flake rather than a red build. It now pins the first write's mtime back onto
+  the second with `os.utime` — nothing the filesystem cannot do on its own, only made reachable on
+  every run — and fails deterministically on the old code. **A test that reproduces the defect
+  probabilistically is not a gate; it is a rumour.**
+
 - **The planning documents compared two different false-abstain measurements, and quoted a stale
   significance test.** `SUITE-DESIGN.md` (Track C) and `PREREGISTRATION-currency.md` both asserted
   that we false-abstain at **9.3 %** against Mem0's **4.1 %**. Those are not the same measurement:
