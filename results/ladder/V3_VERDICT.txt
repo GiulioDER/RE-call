@@ -1,0 +1,30 @@
+=== v3 gte-base (generality arm) ===
+pairs with a scored answerable original: 200
+
+DIRECT CONTRAST - AUC(answerable vs rung), threshold-free:
+  answerable vs r=0.00   n=200  AUC 0.570
+  answerable vs r=0.25   n=200  AUC 0.794
+  answerable vs r=0.50   n=200  AUC 0.841
+  answerable vs r=0.75   n=200  AUC 0.925
+  answerable vs r=1.00   n=200  AUC 0.976
+
+WITHIN-UNANSWERABLE (v2's axis, for continuity) - paired delta vs r=0.00:
+  r=0.25   n=200  -0.0176 [-0.0201, -0.0152]
+  r=0.50   n=200  -0.0234 [-0.0259, -0.0208]
+  r=0.75   n=200  -0.0390 [-0.0422, -0.0358]
+  r=1.00   n=200  -0.0531 [-0.0565, -0.0497]
+
+monotone NON-INCREASING across all rungs: 173/200 = 0.865
+per-step (strict decrease / ties / non-increase):
+  r=0.00 -> r=0.25: 155 / 32 / 187
+  r=0.25 -> r=0.50: 107 / 90 / 197
+  r=0.50 -> r=0.75: 154 / 39 / 193
+  r=0.75 -> r=1.00: 123 / 71 / 194
+
+shipped floor 0.5: 0 responses below it across all rungs
+
+--- pre-registered predictions (PREREGISTRATION-ladder-v3.md) ---
+P1 (KILL) gradient reproduces: delta=-0.0531 [-0.0565, -0.0497] -> PASS
+P2 monotone rung means: PASS
+P3 per-question >= 0.7: 0.865 -> PASS
+P4 floor inert (<= 0.02 at every rung): worst 0.000 -> PASS
