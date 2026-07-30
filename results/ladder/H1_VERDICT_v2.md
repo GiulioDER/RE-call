@@ -160,3 +160,48 @@ measurably (−0.11 cosine end to end, monotone per question in 173 of 200 cases
 abstention decision is blind to all of it.** That gap between a graded signal and a binary decision
 is the thing worth publishing, and it is not visible to any benchmark that reports only whether a
 system abstained.
+
+---
+
+## Addendum, 2026-07-29 — the direct contrast §2 never computed, and the limit it exposes
+
+Appended, not rewritten. §2's conclusion stands; what changes is the **evidence behind it** and one
+number that materially qualifies how far the finding reaches. Raised by a parallel analysis of
+these same frozen artifacts and reproduced here independently before being written down.
+
+**What §2 actually measured.** Its paired deltas compare `r=0.00` against *further* rungs — and
+every one of those instances has its gold evidence excised. So that is an axis **inside the
+unanswerable set**: it shows distance is detectable among unanswerable questions. It is *not* the
+answerable-vs-unanswerable contrast, which was never scored, even though "answerability is graded"
+is most naturally read as a claim about exactly that boundary.
+
+**The direct contrast, computed from `manifest_v2.jsonl` + `responses_v2.jsonl`, n=200 per cell.**
+AUC of top-1 cosine separating an answerable original from each unanswerable rung:
+
+```
+answerable vs r=0.00   AUC 0.567     <- near chance
+answerable vs r=0.25   AUC 0.784
+answerable vs r=0.50   AUC 0.841
+answerable vs r=0.75   AUC 0.921
+answerable vs r=1.00   AUC 0.968
+```
+
+**This strengthens the central claim and bounds it at the same time.** The monotone rise from 0.567
+to 0.968 *is* the graded axis, now shown directly rather than by proxy — §2's conclusion is
+confirmed, not weakened. But **0.567 at the near rung is barely above chance**: when the whole topic
+is present and only the supporting turn is gone, top-1 cosine cannot tell an answerable question
+from an unanswerable one. Discrimination only becomes reliable — crossing AUC 0.90 — somewhere
+between `r=0.50` and `r=0.75`, i.e. once *half to three-quarters of the topic* has been removed.
+
+That is the practically decisive figure, and it was missing from this document. A reader could have
+taken §2 to mean the answerable/unanswerable boundary is detectable in the score. **It is not, at
+the boundary itself.** What is detectable is how far past that boundary a question has travelled.
+
+**Also confirmed here:** the shipped 0.50 floor is provably inert on this arm — **1 of 1200**
+responses falls below it, over an observed range of [0.4945, 0.8238]. That is the mechanism behind
+§1's FAIL, stated as a measured fact rather than an inference.
+
+Neither the paired deltas, the CIs, the threshold sweep, nor the P1–P4 scorecard changes.
+
+Mechanism and a second closed family (top-k aggregates):
+[[project-recall-nearmiss-signal-exhaustion-2026-07-29]].
