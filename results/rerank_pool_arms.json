@@ -1,0 +1,52 @@
+{
+  "n": 200,
+  "ring": -2,
+  "reranker_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+  "reranker_revision": "c5ee24cb16019beea0893ab7796b1df96625c6b8",
+  "pool_size": 50,
+  "corpus_content_hash": "667d990fce012b363a0763255d4109b234f54f66066f0f4da4f5ba303456127e",
+  "summary": {
+    "retrieval": {
+      "1": 0.375,
+      "5": 0.64,
+      "10": 0.73,
+      "ceiling@5": 0.8200000000000001
+    },
+    "minilm": {
+      "1": 0.585,
+      "5": 0.785,
+      "10": 0.83,
+      "ceiling@5": 0.8925000000000001
+    },
+    "voyage": {
+      "1": 0.71,
+      "5": 0.87,
+      "10": 0.895,
+      "ceiling@5": 0.935
+    }
+  },
+  "paired_deltas_hit5": {
+    "minilm - retrieval": {
+      "mean": 0.145,
+      "ci95": [
+        0.095,
+        0.2
+      ]
+    },
+    "voyage - retrieval": {
+      "mean": 0.23,
+      "ci95": [
+        0.17,
+        0.295
+      ]
+    },
+    "voyage - minilm": {
+      "mean": 0.085,
+      "ci95": [
+        0.045,
+        0.13
+      ]
+    }
+  },
+  "seconds": 287.51164269447327
+}
