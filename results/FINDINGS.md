@@ -1686,3 +1686,95 @@ two concurrent runs (11 764 rows against a correct 5 882). Every depth came in ~
 appeared unmoved at +0.011, which would have published a false limitation. `run_conversation` now
 refuses to index over an existing tenant, and the runner asserts the row count before any result is
 read. See `docs/RESEARCH_PROTOCOL.md`._
+
+## 12. Reranking raises the abstention CEILING and the abstention signal does not follow
+
+§11 measured reranking as a retrieval win. This section measures two things it did not: whether a
+**hosted** reranker beats the shipped local one, and what reranking does to **abstention** — which
+§10b left bounded by retrieval recall rather than by any property of the guard.
+
+Measured on the Answerability Ladder v2 arms (`results/ladder/`), n=200 answerable + 200 near-miss
+at ring 0, bge-small.
+
+### 12a. `voyage:rerank-2.5` beats the shipped local reranker — and must not be stacked with it
+
+Reordering the shipped top-5 (n=130, gold inside it):
+
+| ordering | hit@1 | hit@2 | MRR | mean rank |
+|---|---|---|---|---|
+| retriever, no rerank | 0.569 | 0.708 | 0.7204 | 1.931 |
+| `ms-marco-MiniLM-L-6-v2` (shipped) | 0.792 | 0.892 | 0.8733 | 1.377 |
+| **`voyage:rerank-2.5`** | **0.846** | **0.969** | **0.9169** | **1.200** |
+| RRF(voyage, MiniLM) | 0.808 | 0.946 | 0.8942 | 1.254 |
+
+voyage vs shipped: mean rank **+0.177**, CI95 [+0.038, +0.323] — the interval excludes zero.
+**Stacking is worse than voyage alone** (0.808 vs 0.846): fusing a weaker ranker back in costs more
+than it adds. The `voyage:rerank-2.5` adapter existed before this measurement and had never been
+scored; §11's reading that the local model is the right one held for the *local* field only, and did
+not transfer to a hosted reranker of a different class.
+
+### 12b. Pool-level reranking moves the ceiling above the 0.90 bar
+
+§10b's bound is `hit@k + 0.5·(1−hit@k)`: a near-miss pair whose gold document was never retrieved
+presents *identical* evidence in both arms, so no post-retrieval stage can separate it. Reranking a
+**fixed** top-5 cannot change that — only reranking the pool and then truncating can.
+
+Reranking the top-50 pool, n=200 answerable:
+
+| | hit@1 | hit@5 | hit@10 | ceiling@5 |
+|---|---|---|---|---|
+| retrieval order | 0.375 | 0.640 | 0.730 | 0.8200 |
+| **`voyage:rerank-2.5` on pool** | **0.710** | **0.870** [0.816, 0.910] | 0.895 | **0.9350** |
+
+The ceiling clears 0.90 even at the interval's pessimistic end (hit@5 0.816 ⇒ 0.908). voyage
+recovers **96 %** of the gold present in the pool (0.870 of hit@50 = 0.910), so what remains is pool
+recall, not ranking.
+
+### 12c. The signal does not follow — reranking makes near-misses look MORE answerable
+
+A span-grounded null head (`deberta-v3-base-squad2`, SQuAD 2.0 null odds over the retrieved window)
+re-measured on reranked retrieval:
+
+| cell | AUC | CI95 | ceiling | % of achievable |
+|---|---|---|---|---|
+| retrieval k=5 | 0.6975 | [0.646, 0.749] | 0.820 | 61.7 % |
+| retrieval k=10 | 0.7396 | [0.691, 0.788] | 0.865 | 65.7 % |
+| voyage k=5 | 0.7304 | [0.681, 0.779] | 0.935 | 53.0 % |
+| voyage k=10 | 0.7218 | [0.672, 0.771] | 0.9475 | 49.6 % |
+
+**The best cell is unchanged at 0.7396** and the fraction of achievable *falls*, 65.7 % → 49.6 %.
+The mechanism is visible in the grounding rates — the share of windows where the reader finds any
+answer span at all:
+
+| k | answerable | near-miss (ring 0) |
+|---|---|---|
+| 5 | 0.595 → 0.765 (**+0.170**) | 0.330 → 0.490 (**+0.160**) |
+| 10 | 0.660 → 0.720 (+0.060) | 0.280 → 0.440 (**+0.160**) |
+
+Both arms rise by nearly the same amount, and at k=10 the near-miss arm rises *more*, narrowing the
+gap the guard depends on. This is §10b's finding one layer up: **a reranker optimises relevance, and
+the near-miss class is defined as maximally relevant and answer-free**, so better relevance ranking
+packs more convincing distractors into the window. Relevance is not answerability, and improving
+relevance sharpens the trap rather than defusing it.
+
+### 12d. What to use
+
+- **For retrieval quality, `voyage:rerank-2.5` over the pool is the largest gain measured in this
+  document** — hit@1 0.375 → 0.710, at roughly \$0.06 per 400 queries at the ladder's pool size.
+- **For abstention, it buys nothing.** The ceiling rises; the achieved separation does not.
+- **`voyage` at k=5 is the configuration to prefer**: its abstention AUC (0.7304 [0.681, 0.779]) is
+  statistically indistinguishable from the best unreranked cell (0.7396 [0.691, 0.788]) while its
+  retrieval is far better (hit@5 0.870 vs hit@10 0.730).
+- **The default stays opt-in.** A reranker is a model download, a latency cost and — for the hosted
+  one — an API key; that is the caller's choice, not a library default. What was missing is
+  documentation of the *interaction*: **a caller who relies on abstention is relying on retrieval
+  recall**, because the ceiling is a function of `hit@k`.
+
+### What this does not establish
+One corpus family (LOCOMO via the ladder), one embedder (bge-small), one near-miss construction
+(excision at ring 0). The "pool" here is the top-50 of a `candidate_k=250` ranking, not the
+production fused pool (≤ 2·`candidate_k`). **Reranking gains are corpus-conditional** — §8 measured a
+cloud embedder's win vanishing on a second corpus, and a local reranker was separately measured at
+**+0.043 (within noise)** on a private 794-memo corpus whose `hit@50` plateaued near 0.50. Where the
+pool does not contain the answer no reranker can recover it: §12b's 96 % recovery is an upper bound
+set by pool recall, and a corpus with `hit@50 ≈ 0.50` inherits that ceiling instead of this one.
