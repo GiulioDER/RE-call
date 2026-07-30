@@ -5,7 +5,18 @@ REALIZED fused pool equals k: `HybridRetriever` reranks the whole fused pool and
 afterwards, and a hybrid pool can reach 2 * candidate_k. So inertness is measured at runtime rather
 than asserted from configuration — which also catches inertness nobody predicted.
 
-Retrieval only: no generator, no judge, so this costs nothing and runs ahead of all LLM spend.
+Retrieval only: no generator, no judge, so this preflight spends no generator/judge tokens and
+runs ahead of all LLM spend. It does NOT cost nothing, though — it runs retrieval 2-3 times per
+sampled question (one baseline search plus one per configured mechanism being ablated), so with a
+network embedder that is real latency and, depending on the provider, real money, not zero cost.
+
+Known blind spot, stated because the design cares about this failure direction specifically: this
+preflight drives `HybridRetriever` directly. The LOCOMO arm under test does not serve through
+`HybridRetriever` alone — it goes through `recall.trust.trusted_search`, which layers trust
+verdicts and abstention on top of the same retrieval. A mechanism this preflight finds `DIFFERS`
+at the raw-retriever level can still be washed out by trust/abstention before it ever reaches the
+served result, which would read as a false GREEN here. This preflight checks the retrieval layer
+beneath `trusted_search`, not the served path itself.
 """
 from __future__ import annotations
 
@@ -79,10 +90,13 @@ def _compare(
             "can be produced. A caller reached the preflight with an empty in-scope/sample "
             "question list; that is a caller bug, not evidence the mechanism is inert."
         )
-    set_differs = sum(1 for a, b in zip(baseline, ablated) if set(a) != set(b))
+    # strict=True: a length mismatch must raise, not silently truncate. A silent truncation here
+    # would decouple `Verdict.sampled` (the caller's question count) from what was actually
+    # compared, without either count ever recording the discrepancy.
+    set_differs = sum(1 for a, b in zip(baseline, ablated, strict=True) if set(a) != set(b))
     if set_differs:
         return "DIFFERS", set_differs
-    order_differs = sum(1 for a, b in zip(baseline, ablated) if a != b)
+    order_differs = sum(1 for a, b in zip(baseline, ablated, strict=True) if a != b)
     if order_differs:
         return "SET_IDENTICAL", order_differs
     return "IDENTICAL", 0
@@ -98,7 +112,14 @@ def ablation_verdicts(
     reranker: Reranker | None = None,
     use_sparse: bool = True,
 ) -> list[Verdict]:
-    """One verdict per CONFIGURED mechanism. A mechanism that is off yields no verdict."""
+    """One verdict per CONFIGURED mechanism, for the two mechanisms this function covers —
+    `reranker` and `use_sparse`. A mechanism that is off yields no verdict.
+
+    Coverage is named explicitly rather than implied to be exhaustive: `HybridRetriever` also
+    exposes `use_dense` as an ablation switch (`recall/retriever.py`), and this function does not
+    check it. A future mechanism added to `HybridRetriever` gets zero preflight coverage unless
+    it is also wired in here.
+    """
     baseline = HybridRetriever(
         store, embedder, reranker=reranker, use_sparse=use_sparse, candidate_k=candidate_k
     )

@@ -53,7 +53,6 @@ Three further forms:
 | Form | Meaning |
 |---|---|
 | `<!--@ citation-pending: <reason> -->` | A figure with no artifact yet. A first-class state, not an exemption. **The 0.467 gets this.** |
-| `<!--@ derived: <expression> -->` | A number computed from other cited numbers (a delta, a percentage lift). The test checks the arithmetic against the cited operands instead of looking the value up. |
 | `<!--@ withdrawn: <retraction-ref> -->` | A figure published **because** it is wrong — the README's withdrawn list, FINDINGS §9a's retracted control. The reference is required and non-empty: a retracted number with no pointer to its retraction is just a wrong number. |
 
 ### The withdrawn registry
@@ -105,8 +104,18 @@ Excluded, because these are not claims:
 | `§`-prefixed section numbers | identifiers |
 | metric depth suffixes (`hit@5`) | identifiers |
 | retrieval budgets (`k=5`) | configuration the caller chose |
-| markdown ordered-list numbering, heading levels, table alignment rows, footnote markers | structure |
-| digits inside a marker comment itself | the marker is the citation, not a claim |
+| markdown ordered-list numbering, table alignment rows, footnote markers | structure |
+| any HTML comment (`<!-- ... -->`), not just ones containing a marker | the implementation masks the whole comment span — `benchmarks/claim_gate.py`'s `html comment` row is `<!--.*?-->`, unconditional on whether the comment is a `<!--@ ... -->` marker. It happens to be safe for a plain editorial comment too, for the same underlying reason a marker is excluded: an HTML comment renders to nothing, so a reader never sees either kind |
+
+**Two corrections against the implementation, made during the deferred CCA second-pass audit
+(2026-07-29):** this table used to list "heading levels" as structurally excluded above — no such
+`EXCLUSIONS` rule exists in `benchmarks/claim_gate.py`. A numbered markdown heading (e.g.
+`## 2. Trust layer`) is an unmarked number like any other; the ones present at launch are only
+absent from CI failures because they were already unmarked when `CLAIMS_BASELINE.json` was first
+generated, the same grandfathering every other pre-existing unmarked number in the launch baseline
+got — not because a rule excludes them. And the marker-comment row above used to read "digits
+inside a marker comment itself" as if the exclusion were scoped to comments that are markers; the
+row above states what the code actually does.
 
 **`n=` is NOT excluded, and that is load-bearing.** An earlier revision of the implementation masked
 `k=` and `n=` with one combined pattern labelled "retrieval budget — configuration". That made
@@ -262,3 +271,18 @@ Both guards exercise the **detection** path, not only the green path:
 
 - The wiki, which lives in a separate repository and cannot be gated by this repo's test suite.
 - Any judgement about whether a benchmark result is *right* — only whether it is *derivable*.
+
+## History
+
+- **2026-07-29, deferred CCA second-pass audit: the `derived:` marker form was removed.** It had
+  zero production uses — 7 markers across the four gated documents at the time (6 `withdrawn`, 1
+  `citation-pending`, 0 `artifact`, 0 `derived`) — but its operands were author-typed literals the
+  gate never checked against anything: `<!--@ derived: 0.999 - 0.5 -->` would publish `0.499` and
+  the gate would report the claim **resolved**. That reads as *verified* while proving nothing
+  about either operand, which is a worse failure mode than `citation-pending` — the state that at
+  least announces doubt instead of manufacturing false confidence. The marker syntax table and
+  guard-1 `derived:` row above were edited to match; `benchmarks/claim_gate.py` no longer contains
+  an expression evaluator at all (the `_BINOPS`/`_eval_node`/`_evaluate` chain, its length bound,
+  and the `MARKER_RE` alternative are gone). `matches()` — the rounding/sign comparison — is
+  unaffected; it still backs `artifact:` claims, which remain the only way to cite an artifact
+  value in this design.

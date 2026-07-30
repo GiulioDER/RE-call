@@ -17,13 +17,11 @@ experiment.
 """
 from __future__ import annotations
 
-import ast
 import json
-import operator
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_ROOT = REPO_ROOT / "results"
@@ -62,7 +60,32 @@ EXCLUSIONS: tuple[tuple[str, str, int], ...] = (
     # NUMBER_RE, which then publishes `536` as a claim — the mask leaking a fragment of the number
     # it exists to hide. No gated document writes a grouped `k=` today; the tail keeps it that way.
     ("retrieval budget — configuration, e.g. k=5", r"\bk\s*=\s*\d+(?:,\d{3})*", 0),
-    ("year — timestamp", r"\b(?:19|20)\d{2}\b", 0),
+    # Measured 2026-07-29 across the four gated documents (deferred CCA second pass): this row
+    # masks 9 spans in the 1900-2099 range. 8 of 9 are genuine timestamps/citation-years that
+    # belong excluded — `Mem0's 2026-07 announcement` (x2, RESULTS.md + FINDINGS.md), `ICLR 2026`,
+    # `May 2026`, `2026 redesign`, `in 2014`, `February 15, 2024`, `Hanley & McNeil (1982)`.
+    #
+    # The 9th was NOT a year and the row was eating it: `results/RESULTS.md:72`'s `1922.1` — a
+    # rerank ms/query latency figure in a cost/latency table. `\b` is satisfied by the `.`, so
+    # `\b1922\b` matched INSIDE `1922.1`, masking the leading digits and leaving `.1` behind.
+    # That orphan is not harmless: `NUMBER_RE` reads the trailing `1` as a claim, so the document
+    # published `1922.1` while the gate recorded `1`. An edit to `2922.1` would have changed
+    # nothing the gate could see, and the phantom `1` silently occupied a baseline slot.
+    #
+    # The two guards below are what a year needs and a quantity does not: `(?<![\d.])` stops the
+    # row matching partway into a longer number, and `(?!\.\d)` stops it matching the integer part
+    # of a decimal. Every one of the 8 genuine years above still masks (verified); `1922.1` now
+    # scans whole. The general shape of this bug is the one this table's header warns about — an
+    # exclusion row eating a real claim — and it is the second instance found on this branch, after
+    # the `n=`/`k=` row.
+    #
+    # RESIDUAL, measured and unresolved: a BARE 4-digit quantity in 1900-2099 is still masked.
+    # `corpus of 2048 chunks` yields no claim, while `1024` and `3072` are gated normally. This is
+    # not fixable by a local rule — `2048` and `2026` are the same four characters, and only
+    # context distinguishes a dim/chunk-count from a year. Today no gated document publishes such a
+    # quantity (the 9-span census above found only the `1922.1` decimal), so the hole is real but
+    # currently empty. If one is ever published, mark it explicitly rather than trusting this row.
+    ("year — timestamp", r"(?<![\d.])(?:19|20)\d{2}\b(?!\.\d)", 0),
     ("ordered list marker — structure", r"^\s{0,3}\d+\.\s", re.MULTILINE),
     ("table rule — structure", r"^\s*\|[\s:|-]+\|\s*$", re.MULTILINE),
     ("footnote — structure", r"\[\^\d+\]", 0),
@@ -71,7 +94,6 @@ EXCLUSIONS: tuple[tuple[str, str, int], ...] = (
 MARKER_RE = re.compile(
     r"<!--@\s*(?:"
     r"(?P<pending>citation-pending)\s*:\s*(?P<pending_note>[^>]*?)"
-    r"|(?P<derived>derived)\s*:\s*(?P<expr>[^>]*?)"
     r"|(?P<withdrawn>withdrawn)\s*:\s*(?P<ref>[^>]*?)"
     r"|(?P<artifact>[\w./-]+\.json)\s*#\s*(?P<key>[\w.-]+)"
     r")\s*-->"
@@ -132,6 +154,12 @@ NUMBER_RE = re.compile(r"[-−]?\d{1,3}(?:,\d{3})+(?:\.\d+)?|[-−]?\d+(?:\.\d+)
 #: the regex actually treats as a sign.
 _SIGN_CHARS = "-−"
 
+#: Valid triplet comma-grouping, used by `matches()` to reject a malformed grouping (`"12,3456"`,
+#: `"1,23,456"`) before stripping commas — stripping alone cannot tell "grouped correctly" from
+#: "has a comma somewhere", and both of those examples would otherwise strip to a digit string
+#: that happens to equal a real int.
+_COMMA_GROUPING_RE = re.compile(r"[-−]?\d{1,3}(?:,\d{3})*(?:\.\d+)?")
+
 
 def _sign_is_real(text: str, start: int) -> bool:
     """True when the sign character `NUMBER_RE` consumed at `start` is a genuine sign.
@@ -151,7 +179,7 @@ def _sign_is_real(text: str, start: int) -> bool:
 class Marker:
     """A citation attached to one published number."""
 
-    kind: str  # "artifact" | "citation-pending" | "derived" | "withdrawn"
+    kind: str  # "artifact" | "citation-pending" | "withdrawn"
     artifact: str | None = None
     key: str | None = None
     note: str | None = None
@@ -208,8 +236,6 @@ def mask_code_only(text: str) -> str:
 def _marker_from(match: re.Match[str]) -> Marker:
     if match.group("pending"):
         return Marker(kind="citation-pending", note=(match.group("pending_note") or "").strip())
-    if match.group("derived"):
-        return Marker(kind="derived", note=(match.group("expr") or "").strip())
     if match.group("withdrawn"):
         return Marker(kind="withdrawn", note=(match.group("ref") or "").strip())
     return Marker(kind="artifact", artifact=match.group("artifact"), key=match.group("key"))
@@ -243,7 +269,6 @@ def _marker_for(
     other_number_starts: list[int],
 ) -> Marker | None:
     """The first marker starting after `number_end` on the same line, if no OTHER number's
-
     occurrence lies strictly between `number_end` and that marker's start — otherwise the marker
     binds to that nearer number instead, not to this one.
     """
@@ -311,10 +336,10 @@ class ClaimError(Exception):
     """A published number that does not resolve. The gate raises this and reports every one."""
 
 
-def lookup(payload: Any, key: str) -> Any:
+def lookup(payload: object, key: str) -> Any:
     """Walk a dotted path into a decoded JSON payload. JSON object keys are always strings, so a
     numeric level like `depth_curve.5` works without special-casing."""
-    node = payload
+    node: Any = payload
     for part in key.split("."):
         if not isinstance(node, dict) or part not in node:
             raise ClaimError(f"no key {key!r} in artifact")
@@ -338,6 +363,13 @@ def matches(published: str, actual: object) -> bool:
     """
     if isinstance(actual, bool) or not isinstance(actual, (int, float)):
         return False
+    # Comma-stripping below only removes GROUPING commas, not arbitrary ones: it does not
+    # validate that they sit in triplets, so a malformed grouping like "12,3456" or "1,23,456"
+    # would otherwise strip to "123456" and compare equal to the plain int 123456 — accepting a
+    # typo'd or malformed figure as if it were the same claim. Reject anything with a comma that
+    # is not valid triplet grouping before stripping.
+    if "," in published and not _COMMA_GROUPING_RE.fullmatch(published):
+        return False
     # Comma grouping is a formatting choice ("1,536" vs "1536"), not part of the published
     # precision — strip it before comparing digits so a comma-grouped sample size matches the
     # plain int an artifact holds. The Unicode minus is likewise a formatting choice for the same
@@ -348,70 +380,6 @@ def matches(published: str, actual: object) -> bool:
         decimals = len(normalized.split(".", 1)[1])
         return f"{float(actual):.{decimals}f}" == normalized
     return float(actual).is_integer() and str(int(actual)) == normalized
-
-
-#: Binary operators the `derived:` marker may use. Anything else is refused.
-_BINOPS: dict[type, Callable[[float, float], float]] = {
-    ast.Add: operator.add,
-    ast.Sub: operator.sub,
-    ast.Mult: operator.mul,
-    ast.Div: operator.truediv,
-}
-
-
-def _eval_node(node: ast.AST, expression: str) -> float:
-    """Evaluate one literal-arithmetic AST node.
-
-    Deliberately NOT `eval`/`compile`: this walks the tree and applies `operator` functions, so
-    there is no code-execution path at all — not a validated one, none. A documentation gate that
-    can run arbitrary code is a worse problem than the one it solves.
-    """
-    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-        if isinstance(node.value, bool):
-            raise ClaimError(f"derived expression {expression!r} is not literal arithmetic")
-        return float(node.value)
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-        return -_eval_node(node.operand, expression)
-    if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
-        return _BINOPS[type(node.op)](
-            _eval_node(node.left, expression), _eval_node(node.right, expression)
-        )
-    raise ClaimError(f"derived expression {expression!r} is not literal arithmetic")
-
-
-#: Maximum length of a `derived:` marker's raw expression text, checked BEFORE `ast.parse` ever
-#: sees it. Every real `derived:` marker in this repo is one arithmetic operation between two
-#: published numbers — comfortably under 50 characters — so this is generous, not tight.
-#: Without it, something like `'-' * 2000 + '1'` reaches `_eval_node`: `ast.parse` happily builds
-#: a 2000-deep chain of nested `UnaryOp` nodes, and `_eval_node` then recurses once PER LEVEL to
-#: walk that chain back down, hitting Python's call-stack limit before a single number comes out
-#: — an uncaught `RecursionError` from a documentation gate. Deeper nesting exhausts memory
-#: building the tree in `ast.parse` itself before `_eval_node` is even reached. Both are also
-#: caught below as a second layer (see the note there for why the length bound is the real fix,
-#: not that layer).
-_MAX_DERIVED_EXPRESSION_LENGTH = 200
-
-
-def _evaluate(expression: str) -> float:
-    if len(expression) > _MAX_DERIVED_EXPRESSION_LENGTH:
-        raise ClaimError(
-            f"derived expression is {len(expression)} characters, over the "
-            f"{_MAX_DERIVED_EXPRESSION_LENGTH}-character limit for a `derived:` marker — a "
-            f"legitimate one is one arithmetic operation between two published numbers"
-        )
-    try:
-        tree = ast.parse(expression, mode="eval")
-        return _eval_node(tree.body, expression)
-    except SyntaxError as exc:
-        raise ClaimError(f"derived expression {expression!r} does not parse") from exc
-    except (RecursionError, MemoryError) as exc:
-        # Belt-and-suspenders: the length bound above is what actually stops this in practice: a
-        # RecursionError/MemoryError only reaches here if something UNDER that bound still manages
-        # to nest deep enough, which no arithmetic literal realistically does. Catching it anyway
-        # is what turns "the process degrades or crashes" into "one claim fails to resolve".
-        raise ClaimError(
-            f"derived expression {expression!r} is too deeply nested to evaluate"
-        ) from exc
 
 
 def resolve(claim: Claim, results_root: Path) -> None:
@@ -433,15 +401,6 @@ def resolve(claim: Claim, results_root: Path) -> None:
             raise ClaimError(
                 f"{claim.doc}:{claim.line} withdrawn needs a retraction reference — a retracted "
                 f"number with no pointer to its retraction is just a wrong number"
-            )
-        return
-
-    if marker.kind == "derived":
-        value = _evaluate(marker.note or "")
-        if not matches(claim.text, value):
-            raise ClaimError(
-                f"{claim.doc}:{claim.line} {claim.text} is not the derived value of "
-                f"{marker.note!r} ({value})"
             )
         return
 
@@ -468,7 +427,8 @@ def resolve(claim: Claim, results_root: Path) -> None:
 
 
 def load_withdrawn(results_root: Path) -> dict[str, dict[str, str]]:
-    """The retracted-figure registry, minus its `_note` header."""
+    """The retracted-figure registry, minus any leading-underscore key (e.g. its `_note` header —
+    the filter is general, not specific to that one key)."""
     payload = json.loads((results_root / "WITHDRAWN.json").read_text(encoding="utf-8"))
     return {key: value for key, value in payload.items() if not key.startswith("_")}
 
