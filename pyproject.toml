@@ -206,6 +206,9 @@ module = [
     "tokenizers.*",
     "voyageai.*",
     "sentence_transformers.*",
+    # `finetune` extra. `benchmarks/rerank_finetune.py` imports torch inside main() only, so the
+    # module imports and type-checks without it — the same guard as every entry above.
+    "torch.*",
     "matplotlib.*",
     "datasets.*",
     # Transitive of the extras above and of pgvector; never imported by this package directly.

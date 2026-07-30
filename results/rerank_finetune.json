@@ -1,0 +1,70 @@
+{
+  "n_eval": 200,
+  "n_train_questions": 1333,
+  "train_pairs": {
+    "positive": 2038,
+    "negative": 15996
+  },
+  "negatives_per_question": 12,
+  "negative_source": "BM25 corpus-wide",
+  "hyperparams": {
+    "epochs": 1.0,
+    "lr": 2e-05,
+    "batch_size": 32,
+    "max_length": 192,
+    "seed": 0
+  },
+  "base_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+  "base_revision": "c5ee24cb16019beea0893ab7796b1df96625c6b8",
+  "corpus_content_hash": "667d990fce012b363a0763255d4109b234f54f66066f0f4da4f5ba303456127e",
+  "base": {
+    "1": 0.585,
+    "5": 0.785,
+    "10": 0.83,
+    "ceiling@5": 0.8925000000000001
+  },
+  "finetuned": {
+    "1": 0.535,
+    "5": 0.77,
+    "10": 0.83,
+    "ceiling@5": 0.885
+  },
+  "paired_deltas": {
+    "hit@1": {
+      "mean": -0.05,
+      "ci95": [
+        -0.12,
+        0.015
+      ]
+    },
+    "hit@5": {
+      "mean": -0.015,
+      "ci95": [
+        -0.07,
+        0.04
+      ]
+    },
+    "hit@10": {
+      "mean": 0.0,
+      "ci95": [
+        -0.045,
+        0.045
+      ]
+    }
+  },
+  "pools_reordered_vs_base": 200,
+  "weight_drift_max_abs": 0.0013517141342163086,
+  "train_seconds": 2678.1983268260956,
+  "prediction": {
+    "hit@5": 0.03,
+    "range": [
+      0.01,
+      0.05
+    ]
+  },
+  "floor": {
+    "mean_hit5": 0.02,
+    "ci_excludes_zero": true
+  },
+  "verdict": "NULL"
+}
