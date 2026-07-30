@@ -78,8 +78,9 @@ def _ceiling(hit5: float) -> float:
     return hit5 + 0.5 * (1 - hit5)
 
 
-def _summarise(per_instance: dict[int, list[float]]) -> dict:
-    out = {k: sum(v) / len(v) for k, v in per_instance.items()}
+def _summarise(per_instance: dict[int, list[float]]) -> dict[int | str, float]:
+    """Mean hit@k for each k, plus the derived `ceiling@5` — hence the int|str key."""
+    out: dict[int | str, float] = {k: sum(v) / len(v) for k, v in per_instance.items()}
     out["ceiling@5"] = _ceiling(out[5])
     return out
 
@@ -177,9 +178,9 @@ def main() -> int:
     minilm_order: dict[str, list[str]] = {}
     minilm_scores: dict[str, dict[str, float]] = {}
     for i in ids:
-        lo, hi = spans[i]
+        start, end = spans[i]
         member_ids = [h["doc_id"] for h in ksweep[i]["hits"]]
-        s = {d: float(v) for d, v in zip(member_ids, scores[lo:hi])}
+        s = {d: float(v) for d, v in zip(member_ids, scores[start:end])}
         minilm_scores[i] = s
         minilm_order[i] = sorted(member_ids, key=lambda d: s[d], reverse=True)
 

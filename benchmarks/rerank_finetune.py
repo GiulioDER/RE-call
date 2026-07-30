@@ -61,6 +61,7 @@ import json
 import random
 import time
 from pathlib import Path
+from typing import Any
 
 # NB: torch / sentence-transformers / datasets are imported INSIDE main(), never at module level.
 # CI installs `.[dev]` only and deliberately omits the heavy extras, so a module-level import would
@@ -88,7 +89,10 @@ def _hit_at(order: list[str], gold: set[str], k: int) -> float:
     return 1.0 if set(order[:k]) & gold else 0.0
 
 
-def _paired_bootstrap(a, b, n_resamples=10_000, seed=SEED):
+def _paired_bootstrap(
+    a: list[float], b: list[float], n_resamples: int = 10_000, seed: int = SEED
+) -> tuple[float, float, float]:
+    """Paired bootstrap on the per-instance difference b - a. Returns (mean, lo, hi) at 95%."""
     diffs = [x - y for x, y in zip(b, a)]
     n = len(diffs)
     rng = random.Random(seed)
@@ -96,9 +100,22 @@ def _paired_bootstrap(a, b, n_resamples=10_000, seed=SEED):
     return sum(diffs) / n, means[int(0.025 * n_resamples)], means[int(0.975 * n_resamples)]
 
 
-def _score_pools(model, ids, ksweep, q_text, doc_text, batch_size, tag):
-    """Score every (question, pool-member) pair and return per-instance reranked orderings."""
-    pairs, spans = [], {}
+def _score_pools(
+    model: Any,
+    ids: list[str],
+    ksweep: dict[str, dict],
+    q_text: dict[str, str],
+    doc_text: dict[str, str],
+    batch_size: int,
+    tag: str,
+) -> dict[str, list[str]]:
+    """Score every (question, pool-member) pair and return per-instance reranked orderings.
+
+    `model` is Any because it is a `sentence_transformers.CrossEncoder`, and that extra is
+    deliberately absent from the type-check job (see the mypy overrides in pyproject.toml).
+    """
+    pairs: list[tuple[str, str]] = []
+    spans: dict[str, tuple[int, int]] = {}
     for i in ids:
         qid = i.split("/", 1)[1].split("#", 1)[0]
         q = q_text[qid]
@@ -118,9 +135,11 @@ def _score_pools(model, ids, ksweep, q_text, doc_text, batch_size, tag):
     return order
 
 
-def _arm(order, ids, gold_sets):
+def _arm(
+    order: dict[str, list[str]], ids: list[str], gold_sets: dict[str, set[str]]
+) -> tuple[dict[int, list[float]], dict[int | str, float]]:
     per = {k: [_hit_at(order[i], gold_sets[i], k) for i in ids] for k in KS}
-    summary = {k: sum(v) / len(v) for k, v in per.items()}
+    summary: dict[int | str, float] = {k: sum(v) / len(v) for k, v in per.items()}
     summary["ceiling@5"] = summary[5] + 0.5 * (1 - summary[5])
     return per, summary
 
@@ -276,19 +295,23 @@ def main() -> int:
 
     print(f"\n{'paired delta (ft - base)':<26} {'mean':>9} {'CI95 lo':>9} {'CI95 hi':>9}")
     print("-" * 56)
-    deltas = {}
+    # Kept as floats, not read back out of the JSON-shaped dict below: the pre-committed floor is
+    # evaluated from the numbers themselves, never from a re-parse of its own serialisation.
+    stats: dict[int, tuple[float, float, float]] = {}
+    deltas: dict[str, dict[str, object]] = {}
     for k in KS:
         mean, lo, hi = _paired_bootstrap(base_per[k], ft_per[k])
+        stats[k] = (mean, lo, hi)
         deltas[f"hit@{k}"] = {"mean": mean, "ci95": [lo, hi]}
         flag = "" if lo <= 0 <= hi else "  *"
         print(f"{'hit@' + str(k):<26} {mean:>+9.4f} {lo:>+9.4f} {hi:>+9.4f}{flag}")
     print("\n* = 95% CI excludes zero")
 
-    d5 = deltas["hit@5"]
-    passed = d5["mean"] >= 0.02 and not (d5["ci95"][0] <= 0 <= d5["ci95"][1])
+    d5_mean, d5_lo, d5_hi = stats[5]
+    passed = d5_mean >= 0.02 and not (d5_lo <= 0 <= d5_hi)
     verdict = "PASS" if passed else "NULL"
     print(f"\nPRE-COMMITTED FLOOR (mean >= +0.02 and CI excludes 0): {verdict}")
-    print(f"  predicted +0.03 (range +0.01..+0.05) -> observed {d5['mean']:+.4f}")
+    print(f"  predicted +0.03 (range +0.01..+0.05) -> observed {d5_mean:+.4f}")
 
     args.model_out.parent.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(str(args.model_out))
