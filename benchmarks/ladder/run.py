@@ -362,10 +362,24 @@ def main(argv: list[str] | None = None) -> int:
     corpus = load_locomo(args.locomo)
     embedder = None
     if args.embedder is not None:
-        from recall.embeddings import FastEmbedEmbedder
+        # `voyage:<model>` mirrors RE-call's own best-config syntax
+        # ([[reference-recall-best-configuration-2026-07-28]]) rather than inventing a second
+        # spelling for the same thing. Anything without the prefix stays a local fastembed model,
+        # so every existing invocation is unchanged.
+        if args.embedder.startswith("voyage:"):
+            from recall.embeddings import VoyageEmbedder
 
-        embedder = FastEmbedEmbedder(args.embedder)
-        print(f"embedder: {args.embedder} (dim {embedder.dim}) — separately labelled arm")
+            model = args.embedder.split(":", 1)[1]
+            # The key comes from VOYAGE_API_KEY in the environment. It is never passed on the
+            # command line and never printed: a key in argv is a key in `ps`, in shell history and
+            # in this run's own log.
+            embedder = VoyageEmbedder(model)
+            print(f"embedder: {args.embedder} (dim {embedder.dim}) — PAID arm, separately labelled")
+        else:
+            from recall.embeddings import FastEmbedEmbedder
+
+            embedder = FastEmbedEmbedder(args.embedder)
+            print(f"embedder: {args.embedder} (dim {embedder.dim}) — separately labelled arm")
     if args.tuned:
         from benchmarks.ladder.systems.recall_tuned import (
             TUNED_CANDIDATE_K,
