@@ -12,9 +12,21 @@ suite. The one test that DOES need the runs skips when they are absent, and says
 
 `test_validate_rejects_*` are the negative controls. Without them this module would assert that a
 correct file passes, which a validator that returns unconditionally also does — and a validator
-that cannot reject is not a guard. Each control corrupts one field of an in-memory copy and
-requires a rejection; all of them were confirmed to fail against a `validate()` that had not yet
-learned the corresponding rule.
+that cannot reject is not a guard.
+
+Every control asserts `match=` against a string unique to the rule it names. That is not
+decoration: a bug audit found three controls here passing because an EARLIER rule fired, so they
+were green while the rule in their own name was never executed. `match=` is what makes "this
+control tests that rule" a checked claim rather than a naming convention.
+
+Verified by rule ablation — each guard in `validate()` replaced by `pass` in turn, expecting a red
+test. Pinned that way: S2b, S6, S6b, S7 (both the rubric-answer and the endpoint branch), S5's
+`_stated_days` tie, S5's operand-in-answer check, S3, S4, the duplicate-id and
+classification-table checks, and the summary-consistency loop. **Not** independently pinned, and
+stated rather than implied: the two `days`-disagree-with-own-endpoints pre-checks and S5's
+`matches gold` check, all three of which are subsumed by a later rule that fires first on every
+corruption reachable through the fixture — they are defence in depth, not guards this module
+proves can fire.
 """
 from __future__ import annotations
 
@@ -33,6 +45,7 @@ from benchmarks.build_9l_temporal_fixture import (
     RECALL_RUN_NAME,
     RECALL_RUN_SHA256,
     BuildError,
+    _stated_days,
     build,
     load_rows,
     main,
@@ -76,17 +89,30 @@ def test_supersession_reaches_exactly_one_of_the_five(fixture: dict) -> None:
 
 def test_every_confident_wrong_case_did_correct_arithmetic(fixture: dict) -> None:
     """The finding that makes a retrieval-side fix the right shape at all: the day counts we
-    published were right for the dates we chose, so the defect is date selection, not reasoning."""
+    published were right for the dates we chose, so the defect is date selection, not reasoning.
+
+    Uses `_stated_days` rather than a substring test. `str(days) in our_answer` was unfalsifiable
+    for `1M_1_q18`, whose count is 0 and whose answer contains "2024" — the assertion held no
+    matter what the transcription said.
+    """
     confident = [c for c in fixture["cases"] if c["our_interval"] is not None]
     assert len(confident) == 5
     for case in confident:
-        assert str(case["our_interval"]["days"]) in case["our_answer"]
+        assert _stated_days(case["our_answer"]) == case["our_interval"]["days"]
         assert case["our_interval"]["days"] != case["gold_interval"]["days"]
 
 
 def test_mechanisms_use_the_declared_vocabulary(fixture: dict) -> None:
     allowed = set(DATE_SELECTION_MECHANISMS) | {"abstained_with_retrieval", "retrieval_empty"}
     assert {c["mechanism"] for c in fixture["cases"]} <= allowed
+
+
+def test_every_case_is_actually_a_full_point_loss(fixture: dict) -> None:
+    """The property that defines this set. It was checked only in `build` until a bug audit
+    demonstrated a fixture claiming RE-call WON all seven, accepted with the suite green."""
+    gate = fixture["provenance"]["badly_lost_delta"]
+    for case in fixture["cases"]:
+        assert case["recall_score"] - case["mem0_score"] <= gate
 
 
 def test_provenance_names_the_runs_by_hash(fixture: dict) -> None:
@@ -101,29 +127,99 @@ def test_provenance_names_the_runs_by_hash(fixture: dict) -> None:
 # --------------------------------------------------------------------------------------------
 
 
+def _corrupt(fixture: dict, question_id_prefix: str) -> tuple[dict, dict]:
+    """A deep copy plus the case named by id.
+
+    Addressing by id rather than by `cases[0]`: index 0 binds to whatever sorts first, so a
+    reclassification would silently retarget the control to a different case with nothing failing.
+    """
+    corrupt = copy.deepcopy(fixture)
+    case = next(c for c in corrupt["cases"] if c["question_id"].startswith(question_id_prefix))
+    return corrupt, case
+
+
+def test_validate_rejects_a_case_that_was_not_badly_lost(fixture: dict) -> None:
+    """A fixture asserting RE-call won the questions it publishes as losses. Accepted before S2b,
+    with all CI-visible tests green, because the criterion lived only in `build`."""
+    corrupt, case = _corrupt(fixture, "1M_8")
+    case["recall_score"], case["mem0_score"] = 1.0, 0.0
+    with pytest.raises(BuildError, match="S2b"):
+        validate(corrupt)
+
+
+def test_validate_rejects_a_mechanism_that_contradicts_the_flags(fixture: dict) -> None:
+    """Relabelling the empty-retrieval case as a date-selection failure moves a published count.
+    `mechanism_tally` is recomputed from the labels, so it can never disagree with them — which
+    is why the label has to be checked against the flags instead."""
+    corrupt, case = _corrupt(fixture, "1M_14")
+    case["mechanism"] = "instance_disambiguation"
+    corrupt["summary"]["mechanism_tally"] = {"instance_disambiguation": 3, "supersession": 1,
+                                             "event_vs_utterance_time": 1,
+                                             "abstained_with_retrieval": 1,
+                                             "role_value_vs_assertion_time": 1}
+    corrupt["summary"]["date_selection_failures"] = 6
+    with pytest.raises(BuildError, match="S6b"):
+        validate(corrupt)
+
+
 def test_validate_rejects_invented_operands_on_an_abstention(fixture: dict) -> None:
     """The corruption that a mutation pass caught this module missing: giving a question we
     abstained on a pair of dates makes the fixture report a date-selection failure that never
     happened."""
-    corrupt = copy.deepcopy(fixture)
-    case = next(c for c in corrupt["cases"] if c["abstained"] and not c["retrieval_empty"])
+    corrupt, case = _corrupt(fixture, "1M_13_q19")
     case["our_interval"] = {"start": "2024-02-04", "end": "2024-04-09", "days": 65}
-    with pytest.raises(BuildError, match="S6"):
+    with pytest.raises(BuildError, match="S6:"):
         validate(corrupt)
 
 
 def test_validate_rejects_operands_that_do_not_match_our_answer(fixture: dict) -> None:
-    corrupt = copy.deepcopy(fixture)
-    case = next(c for c in corrupt["cases"] if c["our_interval"] is not None)
-    case["our_interval"]["days"] += 1
-    with pytest.raises(BuildError, match="S5"):
+    """Self-consistent operands whose span disagrees with the count the answer leads with. Bumping
+    `days` alone tested the endpoint-consistency branch instead, leaving `_stated_days` — the whole
+    point of S5 — unpinned."""
+    corrupt, case = _corrupt(fixture, "1M_0")
+    case["our_interval"] = {"start": "2024-04-01", "end": "2024-04-16", "days": 15}
+    with pytest.raises(BuildError, match="answered 14 days but"):
+        validate(corrupt)
+
+
+def test_validate_rejects_operands_absent_from_our_own_answer(fixture: dict) -> None:
+    """A delta-preserving shift: the span is still 14 days, so every length check passes, but the
+    dates appear nowhere in the answer they were supposedly read from."""
+    corrupt, case = _corrupt(fixture, "1M_0")
+    case["our_interval"] = {"start": "2020-01-01", "end": "2020-01-15", "days": 14}
+    with pytest.raises(BuildError, match="not named anywhere in our own answer"):
+        validate(corrupt)
+
+
+def test_validate_rejects_an_answer_with_no_leading_day_count(fixture: dict) -> None:
+    """`_stated_days` returning None is what makes S5 unable to tie operands to the answer."""
+    corrupt, case = _corrupt(fixture, "1M_0")
+    case["our_answer"] = "It was about two weeks, from April 1, 2024 to April 15, 2024."
+    with pytest.raises(BuildError, match="does not lead with a day count"):
         validate(corrupt)
 
 
 def test_validate_rejects_a_gold_interval_the_rubric_does_not_state(fixture: dict) -> None:
-    corrupt = copy.deepcopy(fixture)
-    corrupt["cases"][0]["gold_interval"] = {"start": "2024-03-25", "end": "2024-04-02", "days": 8}
-    with pytest.raises(BuildError, match="S7"):
+    corrupt, case = _corrupt(fixture, "1M_0")
+    case["gold_interval"] = {"start": "2024-03-25", "end": "2024-04-02", "days": 8}
+    with pytest.raises(BuildError, match="does not state that as its answer"):
+        validate(corrupt)
+
+
+def test_validate_rejects_a_gold_span_that_collides_with_a_date_in_its_rubric(fixture: dict) -> None:
+    """The vacuity the old bare `\\b{days}\\b` allowed. `1M_12`'s rubric reads "from March 25, 2024
+    till April 10, 2024", so a wrong 10-day gold matched the "10" of April 10 and shipped."""
+    corrupt, case = _corrupt(fixture, "1M_12")
+    case["gold_interval"] = {"start": "2024-03-31", "end": "2024-04-10", "days": 10}
+    with pytest.raises(BuildError, match="does not state that as its answer"):
+        validate(corrupt)
+
+
+def test_validate_rejects_gold_endpoints_the_rubric_contradicts(fixture: dict) -> None:
+    """Both ends shifted, length preserved: only comparing the endpoints catches it."""
+    corrupt, case = _corrupt(fixture, "1M_0")
+    case["gold_interval"] = {"start": "2020-01-01", "end": "2020-01-08", "days": 7}
+    with pytest.raises(BuildError, match="but the rubric says"):
         validate(corrupt)
 
 
@@ -135,22 +231,70 @@ def test_validate_rejects_a_summary_that_disagrees_with_its_cases(fixture: dict)
 
 
 def test_validate_rejects_an_unknown_mechanism_label(fixture: dict) -> None:
-    corrupt = copy.deepcopy(fixture)
-    corrupt["cases"][0]["mechanism"] = "recency"
-    with pytest.raises(BuildError):
+    corrupt, case = _corrupt(fixture, "1M_0")
+    case["mechanism"] = "recency"
+    with pytest.raises(BuildError, match="S6b"):
+        validate(corrupt)
+
+
+def test_validate_rejects_an_id_outside_the_classification_table(fixture: dict) -> None:
+    corrupt, case = _corrupt(fixture, "1M_8")
+    case["question_id"] = "1M_99_q42_temporal_reasoning"
+    with pytest.raises(BuildError, match="classification table"):
         validate(corrupt)
 
 
 def test_validate_rejects_a_duplicated_case(fixture: dict) -> None:
-    corrupt = copy.deepcopy(fixture)
-    corrupt["cases"].append(copy.deepcopy(corrupt["cases"][0]))
-    with pytest.raises(BuildError):
+    """The summary is adjusted so only the duplicate-id rule can be what fires — otherwise this
+    passed on S4's confident-wrong count instead."""
+    corrupt, case = _corrupt(fixture, "1M_0")
+    corrupt["cases"].append(copy.deepcopy(case))
+    corrupt["summary"]["badly_lost"] = 8
+    corrupt["summary"]["confident_wrong"] = 6
+    with pytest.raises(BuildError, match="duplicate question_id"):
+        validate(corrupt)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (lambda c: c.__setitem__("our_answer", None), "our_answer is NoneType"),
+        (lambda c: c.__setitem__("gold_rubric", "should state: 7 days"), "gold_rubric is str"),
+        (lambda c: c["gold_interval"].__setitem__("start", "March 25, 2024"), "not an ISO date"),
+        (lambda c: c.pop("our_interval"), "missing 'our_interval'"),
+    ],
+    ids=["null-answer", "rubric-as-string", "prose-date", "missing-interval"],
+)
+def test_validate_reports_malformed_content_as_BuildError(fixture, mutate, expected) -> None:
+    """These raised TypeError / ValueError / KeyError, which `main` does not catch, so a slip in
+    the hand-typed table produced a traceback instead of the FAIL line. The rubric-as-a-string
+    case was worse than a crash: `" ".join` spaced out every character and the old regex still
+    matched, so it was accepted."""
+    corrupt, case = _corrupt(fixture, "1M_0")
+    mutate(case)
+    with pytest.raises(BuildError, match=expected):
         validate(corrupt)
 
 
 # --------------------------------------------------------------------------------------------
 # Re-derivation. Needs the gitignored runs; skips loudly when they are absent.
 # --------------------------------------------------------------------------------------------
+
+
+def test_validate_only_mode_needs_no_runs_and_passes() -> None:
+    """The CLI path CI can actually reach. `--check` cannot: it re-derives from the gitignored
+    runs and exits 2 when they are absent, which is every CI run and every fresh clone. The
+    docstring advertised `--check` as the no-runs mode; it never was."""
+    assert main(["--validate-only"]) == 0
+
+
+def test_validate_only_reports_failure_rather_than_passing_quietly(tmp_path) -> None:
+    """A guard whose failure path is untested is a guard with an untested failure path."""
+    broken = tmp_path / "broken.json"
+    payload = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    payload["summary"]["supersession_reachable"] = 99
+    broken.write_text(json.dumps(payload), encoding="utf-8")
+    assert main(["--validate-only", "--out", str(broken)]) == 1
 
 
 def _runs_present() -> bool:
