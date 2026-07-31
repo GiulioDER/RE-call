@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from collections.abc import Iterator
 
 # Markers that a speaker is REVISING something previously said, rather than asserting it fresh.
 # Chosen before looking at any counts.
@@ -56,7 +57,7 @@ VALUE_RE = re.compile(
 )
 
 
-def turns(conversation: dict):
+def turns(conversation: dict) -> Iterator[dict]:
     for key in conversation:
         if not (key.startswith("session_") and not key.endswith("date_time")):
             continue
@@ -73,8 +74,8 @@ def main() -> int:
     total = 0
     marked = 0
     marked_with_value = 0
-    hits = Counter()
-    samples = []
+    hits: Counter = Counter()
+    samples: list[tuple[str, str]] = []
 
     for conv in convs:
         for turn in turns(conv["conversation"]):

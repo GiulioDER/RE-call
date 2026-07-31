@@ -17,7 +17,7 @@ says the mechanism is built, so the open question is whether it can run on bench
 PRE-REGISTERED before running (predict-then-measure; the prediction is recorded here so a
 convenient result cannot be rationalised afterwards):
 
-  P1  A LOCOMO turn document, built by the REAL `_turn_document`, carries NO frontmatter, so
+  P1  A LOCOMO turn document AS IT WAS BUILT BEFORE THE FIX carries no frontmatter, so
       `validity_bounds` returns (None, None).
   P2  With both bounds None, `_verdict` can return neither `expired` nor `not_yet_valid`, for
       ANY reference time, including one inside the conversation's own era.
@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from recall.eval.locomo import _turn_document
+from recall.types import Chunk, ScoredChunk
 from recall.frontmatter import parse_frontmatter, validity_bounds
 from recall.trust import _verdict
 
@@ -51,30 +51,33 @@ NOW_WALLCLOCK = datetime.now(timezone.utc)
 NOW_IN_ERA = datetime(2024, 1, 20, tzinfo=timezone.utc)
 
 
-class _Chunk:
-    def __init__(self, metadata):
-        self.metadata = metadata
-        self.text = "x"
+def _verdict_for(meta: dict, now: datetime) -> tuple:
+    """Uses the REAL `ScoredChunk`/`Chunk`. A stand-in would be a second implementation of the
+    type under test, and this file exists to measure the shipped path, not a model of it."""
+    hit = ScoredChunk(chunk=Chunk(id="c", source="s", text="x", metadata=meta), score=0.9)
+    return _verdict(hit, {}, 0.5, now)
 
 
-class _Hit:
-    """Minimal stand-in for ScoredChunk: `_verdict` reads only .chunk.metadata and .score."""
+def _pre_change_turn_document(turn: dict, session_date: str) -> str:
+    """`_turn_document` EXACTLY as it stood before `valid_from` was added.
 
-    def __init__(self, metadata, score=0.9):
-        self.chunk = _Chunk(metadata)
-        self.score = score
-
-
-def _verdict_for(meta, now):
-    verdict, validity = _verdict(_Hit(meta), {}, 0.5, now)
-    return verdict, validity
+    The measurement below is a historical baseline: it is the state the published §9l conclusion
+    was drawn in. Pointing it at the CURRENT `_turn_document` would report "not inert", which is
+    true and useless, because the fix has since landed. Reconstructing the old body keeps this
+    file answering the question it was written to answer, and makes it a regression test for the
+    finding rather than a one-time script that decays into a false alarm.
+    """
+    speaker = turn.get("speaker", "unknown")
+    text = turn.get("text", "")
+    body = f"{speaker}: {text}"
+    return f"# {speaker} — {session_date}\n\n{body}\n"
 
 
 def main() -> int:
     results = []
 
     # ---- P1: what the real benchmark ingest actually writes -------------------------------
-    doc = _turn_document(TURN, SESSION_DATE)
+    doc = _pre_change_turn_document(TURN, SESSION_DATE)
     meta, _body = parse_frontmatter(doc)
     start, end = validity_bounds(meta)
     p1 = (start is None) and (end is None)
