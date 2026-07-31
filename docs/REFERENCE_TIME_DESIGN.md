@@ -229,3 +229,67 @@ and none of the `recently` bucket.
 
 The `$0` claim survives this either way, which is worth stating because it was in doubt: the free
 arithmetic subset is real, and what it cannot reach is mostly what nothing can reach cheaply.
+
+---
+
+# BUILT: bi-temporal as-of retrieval (`known_as_of`)
+
+Built as a **user capability**, on the explicit instruction that user value is the project's
+objective and benchmarks are only an instrument for improving it. The success criterion is that an
+agent can honestly replay what it knew at a past instant. It is *not* a `temporal_reasoning` fix,
+and the analysis above stands: it will not move that score. Those are different claims and only
+one of them is being made.
+
+## What turned out to be true
+
+`project-recall-finance-market-nogo-2026-07-25` recorded that "RE-call has validity time only".
+That was right about querying and wrong about storage: **`indexed_at` has been a real, indexed
+column all along**, populated on every write and reaching every hit as `ScoredChunk.indexed_at`.
+Both temporal axes were already stored. Only one could be asked about.
+
+## The two axes
+
+| axis | parameter | column / key | verdict it produces | the question it answers |
+|---|---|---|---|---|
+| valid time | `now` | `valid_from` / `valid_until` | `expired`, `not_yet_valid` | *when was this true?* |
+| transaction time | `known_as_of` | `indexed_at` | `not_yet_known` | *when did we know it?* |
+
+They compose. `trusted_search(..., now=june, known_as_of=tuesday)` asks what we believed on Tuesday
+about the state of the world in June.
+
+```python
+res = trusted_search(store, emb, "When and where is the launch?", known_as_of=cutoff)
+```
+
+Verified end to end against a real store: the same query returns both memos today, and as-of an
+earlier instant returns the original as `ok` while marking the later revision `not_yet_known`.
+
+## Deliberate choices
+
+- **Opt-in.** Passing nothing leaves every existing caller byte-identical.
+- **Inclusive boundary.** A memory written *at* the instant existed at that instant.
+- **A hit with no `indexed_at` stays visible.** Defaulting an unknown write time to "after the
+  as-of" would silently empty result sets for any store predating the column.
+- **Checked before supersession.** A memory that did not exist yet cannot meaningfully be reported
+  as superseded, and its successor is a document the caller cannot see.
+- **`not_yet_known` reads differently from `not_yet_valid` in `abstain_reason`.** One means the
+  memory had not been written; the other means it had been, and did not apply. Only the first
+  exonerates a past decision, so a caller replaying one must be able to tell them apart.
+
+## Known limit, stated rather than discovered later
+
+`known_as_of` filters hits by write time. **It does not rewind supersession.** Supersession edges
+carry no timestamp, so an edge added after the as-of instant still applies, and a memory that was
+current at that moment can read as `superseded` by a document the caller cannot see. Rewinding it
+needs edge timestamps the corpus format does not record.
+
+So point-in-time replay is **honest about which memories existed** and **approximate about which
+were current**. That is worth having and worth saying, and it is written into `evaluate`'s
+docstring rather than left for a user to find.
+
+## Not built
+
+Event-time extraction from prose ("last month" resolved against a session date). The measurements
+above size it: ~6% of turns carry an arithmetic-resolvable relative-time expression, 55.9% of all
+relative-time turns. It remains the honest boundary of the `$0` claim, and nothing here depends on
+it, because `indexed_at` is recorded by the store rather than extracted from language.

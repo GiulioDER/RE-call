@@ -10,9 +10,13 @@ from typing import Any, Literal
 #: corpus carries that basename in more than one directory. Which document the author meant is
 #: unanswerable, so the hit fails closed rather than being served with a guessed successor — or,
 #: worse, as healthy because the edge was quietly dropped.
+#: `not_yet_known` is the TRANSACTION-time verdict and the only one on that axis. The other
+#: temporal verdicts (`expired`, `not_yet_valid`) are VALID-time: they say when a fact was true.
+#: `not_yet_known` says the memory had not been written yet, which is a different question and the
+#: one a "what did we know on Tuesday" query is actually asking. See `recall.trust.evaluate`.
 Verdict = Literal[
-    "ok", "superseded", "expired", "not_yet_valid", "low_confidence", "invalid_metadata",
-    "ambiguous_supersession", "not_entailed",
+    "ok", "superseded", "expired", "not_yet_valid", "not_yet_known", "low_confidence",
+    "invalid_metadata", "ambiguous_supersession", "not_entailed",
 ]
 
 
