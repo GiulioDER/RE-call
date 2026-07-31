@@ -1687,69 +1687,79 @@ appeared unmoved at +0.011, which would have published a false limitation. `run_
 refuses to index over an existing tenant, and the runner asserts the row count before any result is
 read. See `docs/RESEARCH_PROTOCOL.md`._
 
-## 12. Reranking raises the abstention CEILING and the abstention signal does not follow
+## 12<!--@ citation-pending: 12; repro benchmarks/rerank_pool_arms.py -->. Reranking raises the abstention CEILING and the abstention signal does not follow
 
 §11 measured reranking as a retrieval win. This section measures two things it did not: whether a
 **hosted** reranker beats the shipped local one, and what reranking does to **abstention** — which
 §10b left bounded by retrieval recall rather than by any property of the guard.
 
-Measured on the Answerability Ladder v2 arms (`results/ladder/`), n=200 answerable + 200 near-miss
-at ring 0, bge-small.
+Measured on the Answerability Ladder v2<!--@ citation-pending: 12; repro benchmarks/rerank_pool_arms.py --> arms (`results/ladder/`), n=200<!--@ citation-pending: 12; repro benchmarks/rerank_pool_arms.py --> answerable + 200<!--@ citation-pending: 12; repro benchmarks/rerank_pool_arms.py --> near-miss
+at ring 0<!--@ citation-pending: 12; repro benchmarks/rerank_pool_arms.py -->, bge-small.
 
-### 12a. `voyage:rerank-2.5` beats the shipped local reranker — and must not be stacked with it
+**Evidence tier for this section, stated once rather than read off each marker.** Every number
+below carries a `citation-pending` marker naming `benchmarks/rerank_pool_arms.py`. The
+per-instance artifacts *are* retained — the `results/ladder/*_out.jsonl` files ship with this
+section — but they are JSONL, which the claim gate cannot key into, and they hold reranker scores
+without the gold labels the retrieval metrics need. So this is the reproduction-command tier, not
+the retained-artifact tier. The figures are re-derivable by running that script, whose
+`INVARIANT 3` asserts the pool arms reproduce the published values exactly and fails loudly if
+they ever stop. Promoting this section to resolving markers means having that script emit a
+summary JSON; until someone does, the weaker tier is the honest label.
 
-Reordering the shipped top-5 (n=130, gold inside it):
+### 12<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py -->a. `voyage:rerank-2.5` beats the shipped local reranker — and must not be stacked with it
+
+Reordering the shipped top-5<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> (n=130<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py -->, gold inside it):
 
 | ordering | hit@1 | hit@2 | MRR | mean rank |
 |---|---|---|---|---|
-| retriever, no rerank | 0.569 | 0.708 | 0.7204 | 1.931 |
-| `ms-marco-MiniLM-L-6-v2` (shipped) | 0.792 | 0.892 | 0.8733 | 1.377 |
-| **`voyage:rerank-2.5`** | **0.846** | **0.969** | **0.9169** | **1.200** |
-| RRF(voyage, MiniLM) | 0.808 | 0.946 | 0.8942 | 1.254 |
+| retriever, no rerank | 0.569<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> | 0.708<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> | 0.7204<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> | 1.931<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> |
+| `ms-marco-MiniLM-L-6-v2` (shipped) | 0.792<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> | 0.892<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> | 0.8733<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> | 1.377<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> |
+| **`voyage:rerank-2.5`** | **0.846<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py -->** | **0.969<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py -->** | **0.9169<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py -->** | **1.200<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py -->** |
+| RRF(voyage, MiniLM) | 0.808<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> | 0.946<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> | 0.8942<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> | 1.254<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> |
 
-voyage vs shipped: mean rank **+0.177**, CI95 [+0.038, +0.323] — the interval excludes zero.
-**Stacking is worse than voyage alone** (0.808 vs 0.846): fusing a weaker ranker back in costs more
+voyage vs shipped: mean rank **+0.177<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py -->**, CI95<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> [+0.038<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py -->, +0.323<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py -->] — the interval excludes zero.
+**Stacking is worse than voyage alone** (0.808<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py --> vs 0.846<!--@ citation-pending: 12a; repro benchmarks/rerank_pool_arms.py -->): fusing a weaker ranker back in costs more
 than it adds. The `voyage:rerank-2.5` adapter existed before this measurement and had never been
 scored; §11's reading that the local model is the right one held for the *local* field only, and did
 not transfer to a hosted reranker of a different class.
 
-### 12b. Pool-level reranking moves the ceiling above the 0.90 bar
+### 12<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py -->b. Pool-level reranking moves the ceiling above the 0.90<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py --> bar
 
 §10b's bound is `hit@k + 0.5·(1−hit@k)`: a near-miss pair whose gold document was never retrieved
 presents *identical* evidence in both arms, so no post-retrieval stage can separate it. Reranking a
-**fixed** top-5 cannot change that — only reranking the pool and then truncating can.
+**fixed** top-5<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py --> cannot change that — only reranking the pool and then truncating can.
 
-Reranking the top-50 pool, n=200 answerable:
+Reranking the top-50<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py --> pool, n=200<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py --> answerable:
 
 | | hit@1 | hit@5 | hit@10 | ceiling@5 |
 |---|---|---|---|---|
-| retrieval order | 0.375 | 0.640 | 0.730 | 0.8200 |
-| **`voyage:rerank-2.5` on pool** | **0.710** | **0.870** [0.816, 0.910] | 0.895 | **0.9350** |
+| retrieval order | 0.375<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py --> | 0.640<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py --> | 0.730<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py --> | 0.8200<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py --> |
+| **`voyage:rerank-2.5` on pool** | **0.710<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py -->** | **0.870<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py -->** [0.816<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py -->, 0.910<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py -->] | 0.895<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py --> | **0.9350<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py -->** |
 
-The ceiling clears 0.90 even at the interval's pessimistic end (hit@5 0.816 ⇒ 0.908). voyage
-recovers **96 %** of the gold present in the pool (0.870 of hit@50 = 0.910), so what remains is pool
+The ceiling clears 0.90<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py --> even at the interval's pessimistic end (hit@5 0.816<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py --> ⇒ 0.908<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py -->). voyage
+recovers **96<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py --> %** of the gold present in the pool (0.870<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py --> of hit@50 = 0.910<!--@ citation-pending: 12b; repro benchmarks/rerank_pool_arms.py -->), so what remains is pool
 recall, not ranking.
 
-### 12c. The signal does not follow — reranking makes near-misses look MORE answerable
+### 12<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->c. The signal does not follow — reranking makes near-misses look MORE answerable
 
-A span-grounded null head (`deberta-v3-base-squad2`, SQuAD 2.0 null odds over the retrieved window)
+A span-grounded null head (`deberta-v3-base-squad2`, SQuAD 2.0<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> null odds over the retrieved window)
 re-measured on reranked retrieval:
 
-| cell | AUC | CI95 | ceiling | % of achievable |
+| cell | AUC | CI95<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> | ceiling | % of achievable |
 |---|---|---|---|---|
-| retrieval k=5 | 0.6975 | [0.646, 0.749] | 0.820 | 61.7 % |
-| retrieval k=10 | 0.7396 | [0.691, 0.788] | 0.865 | 65.7 % |
-| voyage k=5 | 0.7304 | [0.681, 0.779] | 0.935 | 53.0 % |
-| voyage k=10 | 0.7218 | [0.672, 0.771] | 0.9475 | 49.6 % |
+| retrieval k=5 | 0.6975<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> | [0.646<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->, 0.749<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->] | 0.820<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> | 61.7<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> % |
+| retrieval k=10 | 0.7396<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> | [0.691<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->, 0.788<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->] | 0.865<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> | 65.7<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> % |
+| voyage k=5 | 0.7304<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> | [0.681<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->, 0.779<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->] | 0.935<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> | 53.0<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> % |
+| voyage k=10 | 0.7218<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> | [0.672<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->, 0.771<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->] | 0.9475<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> | 49.6<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> % |
 
-**The best cell is unchanged at 0.7396** and the fraction of achievable *falls*, 65.7 % → 49.6 %.
+**The best cell is unchanged at 0.7396<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->** and the fraction of achievable *falls*, 65.7<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> % → 49.6<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> %.
 The mechanism is visible in the grounding rates — the share of windows where the reader finds any
 answer span at all:
 
-| k | answerable | near-miss (ring 0) |
+| k | answerable | near-miss (ring 0<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->) |
 |---|---|---|
-| 5 | 0.595 → 0.765 (**+0.170**) | 0.330 → 0.490 (**+0.160**) |
-| 10 | 0.660 → 0.720 (+0.060) | 0.280 → 0.440 (**+0.160**) |
+| 5<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> | 0.595<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> → 0.765<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> (**+0.170<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->**) | 0.330<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> → 0.490<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> (**+0.160<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->**) |
+| 10<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> | 0.660<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> → 0.720<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> (+0.060<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->) | 0.280<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> → 0.440<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py --> (**+0.160<!--@ citation-pending: 12c; repro benchmarks/rerank_pool_arms.py -->**) |
 
 Both arms rise by nearly the same amount, and at k=10 the near-miss arm rises *more*, narrowing the
 gap the guard depends on. This is §10b's finding one layer up: **a reranker optimises relevance, and
@@ -1757,14 +1767,14 @@ the near-miss class is defined as maximally relevant and answer-free**, so bette
 packs more convincing distractors into the window. Relevance is not answerability, and improving
 relevance sharpens the trap rather than defusing it.
 
-### 12d. What to use
+### 12<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py -->d. What to use
 
 - **For retrieval quality, `voyage:rerank-2.5` over the pool is the largest gain measured in this
-  document** — hit@1 0.375 → 0.710, at roughly \$0.06 per 400 queries at the ladder's pool size.
+  document** — hit@1 0.375<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py --> → 0.710<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py -->, at roughly \$0.06<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py --> per 400<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py --> queries at the ladder's pool size.
 - **For abstention, it buys nothing.** The ceiling rises; the achieved separation does not.
-- **`voyage` at k=5 is the configuration to prefer**: its abstention AUC (0.7304 [0.681, 0.779]) is
-  statistically indistinguishable from the best unreranked cell (0.7396 [0.691, 0.788]) while its
-  retrieval is far better (hit@5 0.870 vs hit@10 0.730).
+- **`voyage` at k=5 is the configuration to prefer**: its abstention AUC (0.7304<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py --> [0.681<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py -->, 0.779<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py -->]) is
+  statistically indistinguishable from the best unreranked cell (0.7396<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py --> [0.691<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py -->, 0.788<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py -->]) while its
+  retrieval is far better (hit@5 0.870<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py --> vs hit@10 0.730<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py -->).
 - **The default stays opt-in.** A reranker is a model download, a latency cost and — for the hosted
   one — an API key; that is the caller's choice, not a library default. What was missing is
   documentation of the *interaction*: **a caller who relies on abstention is relying on retrieval
@@ -1772,9 +1782,9 @@ relevance sharpens the trap rather than defusing it.
 
 ### What this does not establish
 One corpus family (LOCOMO via the ladder), one embedder (bge-small), one near-miss construction
-(excision at ring 0). The "pool" here is the top-50 of a `candidate_k=250` ranking, not the
-production fused pool (≤ 2·`candidate_k`). **Reranking gains are corpus-conditional** — §8 measured a
+(excision at ring 0<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py -->). The "pool" here is the top-50<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py --> of a `candidate_k=250` ranking, not the
+production fused pool (≤ 2<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py -->·`candidate_k`). **Reranking gains are corpus-conditional** — §8 measured a
 cloud embedder's win vanishing on a second corpus, and a local reranker was separately measured at
-**+0.043 (within noise)** on a private 794-memo corpus whose `hit@50` plateaued near 0.50. Where the
-pool does not contain the answer no reranker can recover it: §12b's 96 % recovery is an upper bound
+**+0.043<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py --> (within noise)** on a private 794<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py -->-memo corpus whose `hit@50` plateaued near 0.50<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py -->. Where the
+pool does not contain the answer no reranker can recover it: §12b's 96<!--@ citation-pending: 12d; repro benchmarks/rerank_pool_arms.py --> % recovery is an upper bound
 set by pool recall, and a corpus with `hit@50 ≈ 0.50` inherits that ceiling instead of this one.
