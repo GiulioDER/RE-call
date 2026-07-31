@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from datetime import datetime, timezone
 
 from recall.embeddings import FastEmbedEmbedder
@@ -32,6 +33,7 @@ from recall.eval.locomo import index_conversation
 from recall.frontmatter import validity_bounds
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
+from recall.types import TrustedResult
 
 DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 TENANT = "temporal-live-check"
@@ -67,8 +69,7 @@ def main() -> int:
         res_early = trusted_search(store, emb, q, k=10, now=early)
         res_wall = trusted_search(store, emb, q, k=10, now=wall)
 
-        def verdicts(res):
-            from collections import Counter
+        def verdicts(res: TrustedResult) -> Counter:
             return Counter(h.verdict for h in res.hits)
 
         v_early, v_wall = verdicts(res_early), verdicts(res_wall)
