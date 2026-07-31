@@ -165,6 +165,34 @@ constructed to test exactly this and is therefore likely far denser in revisions
 is not cached locally, so **the null above does not transfer to BEAM and is not claimed to.**
 Settling it is the same script pointed at BEAM once that corpus is available.
 
+### What the BEAM cases themselves say about the ceiling — added with issue #167
+
+Density is not the only thing that bounds a supersession selector, and it turned out not to be the
+binding one. Enumerating §9l's seven questions into `results/beam_9l_temporal.json` and
+classifying the five that were answered, by the mechanism a selector would need:
+
+| mechanism | n |
+|---|---|
+| instance disambiguation — several similar events, the question names one | 2 |
+| **supersession of a revised value** | **1** |
+| field VALUE vs the time it was ASSERTED | 1 |
+| event time vs utterance time | 1 |
+
+So **supersession reaches one of the five even at perfect accuracy**, on the very split whose
+density this section proposes to measure. That does not settle the density question, and it does
+not transfer the LOCOMO null; it reprices the measurement. Running `check_p1_supersession_density`
+against BEAM is still cheap once the corpus is there, but a *dense* result would no longer license
+building the selector on its own — the reachable gain is capped by the case mix, not by the rate.
+
+Two of the four mechanisms are not orderings in time at all, which is the more useful half: the
+value/assertion row is two readings of the *same turn*, and the event/utterance row is the exact
+confusion this document's own analysis identifies. Neither is reachable by any rule that sorts
+instances by date, and the second is the one this document argues cannot be fixed without
+event-time extraction.
+
+Narrow by construction: a hand reading of five answers from the run artifact, with the corpus
+never consulted. Five items is a list, not a rate.
+
 ## Can bi-temporal be implemented in RE-call?
 
 Yes, and the plumbing is the cheap part.
