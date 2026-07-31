@@ -18,6 +18,9 @@ import pytest
 
 from tests.conftest import requires_fastembed
 
+from recall.eval.locomo import parse_session_date
+from recall.frontmatter import parse_frontmatter
+
 from benchmarks.systems import (
     BENCH_TABLE,
     MemorySystem,
@@ -328,12 +331,28 @@ def _split_caption(body: str) -> tuple[str, str]:
 def _recall_payload(document: str) -> dict[str, str]:
     """Informational fields of one on-disk RE-call corpus document.
 
-    Parses the real file `write_conversation_corpus` wrote (``# speaker — date`` header, then a
-    ``speaker: text`` body and an optional image line) back into named fields, so the comparison
-    against Mem0 is field-by-field and independent of either side's formatting.
+    Parses the real file `write_conversation_corpus` wrote (an optional validity frontmatter
+    block, then a ``# speaker — date`` header, then a ``speaker: text`` body and an optional image
+    line) back into named fields, so the comparison against Mem0 is field-by-field and independent
+    of either side's formatting.
+
+    The frontmatter is stripped BEFORE the field comparison, and its ``valid_from`` is separately
+    asserted to equal the date already printed in the body. That check is the point rather than
+    housekeeping: this test is the head-to-head FAIRNESS invariant, so a frontmatter key carrying
+    anything Mem0 does not also receive would hand RE-call information its competitor never sees.
+    ``valid_from`` is derived from the session stamp that is already in the body, and in Mem0's own
+    payload, so it re-encodes an existing field rather than adding one. This asserts that equality
+    rather than trusting it.
     """
+    meta, document = parse_frontmatter(document)
     header, sep, body = document.partition("\n\n")
     assert sep and header.startswith("# "), f"unexpected document shape: {document!r}"
+    if "valid_from" in meta:
+        body_date = header[2:].partition(" — ")[2].strip()
+        assert parse_session_date(body_date) == meta["valid_from"], (
+            "valid_from disagrees with the session date in the body, so the frontmatter would be "
+            "carrying information Mem0 never receives"
+        )
     header_speaker, dash, date = header[2:].partition(" — ")
     assert dash, f"document header carries no session date: {header!r}"
     spoken, caption = _split_caption(body)
