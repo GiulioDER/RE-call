@@ -131,3 +131,101 @@ afford replicates it", which is stronger than what was measured. The accurate st
 recency is falsified, the temporal layer could not fire, and the successor most people would reach
 for is now measured to be unsound on this corpus for a reason that has nothing to do with
 affordability.
+
+---
+
+# P1 result, and whether bi-temporal is worth building
+
+Both measured after the design above was written, against its pre-registered gate.
+
+## P1: revised state is effectively absent from LOCOMO
+
+`benchmarks/check_p1_supersession_density.py`, all 10 conversations:
+
+| | count | rate |
+|---|---|---|
+| turns | 5,882 | |
+| carrying a revision marker ("actually", "changed", "postponed", ...) | 88 | 1.5% |
+| ...and also carrying a value (date, number, weekday) | **3** | **0.1%** |
+
+Pre-registered floor was 15%. The measured rate is **0.1%**, and the proxy was designed to
+over-count, so the true rate is lower still. Inspecting all three survivors confirms it: *"a little
+girl around 8"*, *"it changed my view on helping"*, *"actually taken last Friday"*. **None revises
+an earlier assertion.** The real count is zero.
+
+**Verdict: P1 fails by two orders of magnitude. Supersession-based selection cannot move a LOCOMO
+aggregate**, because LOCOMO speakers essentially never revise a previously asserted field value.
+The line stops here, as pre-registered, and it cost one counting script rather than an
+implementation.
+
+### Scope, stated at the width of the data
+
+This measures **LOCOMO**. §9l's failure table is **BEAM**, whose `temporal_reasoning` split is
+constructed to test exactly this and is therefore likely far denser in revisions. The BEAM corpus
+is not cached locally, so **the null above does not transfer to BEAM and is not claimed to.**
+Settling it is the same script pointed at BEAM once that corpus is available.
+
+## Can bi-temporal be implemented in RE-call?
+
+Yes, and the plumbing is the cheap part.
+
+| piece | effort | why |
+|---|---|---|
+| storage | **none** | chunk metadata is JSONB and the Indexer splices `**meta`; new keys need no migration |
+| `Validity` dataclass | trivial | add `event_from` / `event_until` beside `valid_from` / `valid_until` |
+| frontmatter | trivial | add the keys to `VALIDITY_KEYS`, reuse `_parse_date` |
+| `_verdict` | small | it already takes one reference time; it needs a second, plus which axis a query filters on |
+| `trusted_search` | small | `now=` already exists; add `as_of_event=` |
+
+Call it 150 to 250 lines. Nothing about the architecture resists it.
+
+**The expensive part is populating event time**, and that is measurable:
+
+| turns (of 5,882) | | rate |
+|---|---|---|
+| carrying a relative-time expression resolvable by arithmetic against the session date | 334 | **5.7%** |
+| carrying one that is not ("recently", "when I was", "back in") | 264 | 4.5% |
+| share of all relative-time turns that arithmetic could resolve | | **55.9%** |
+
+`last week/month/year` (171), `yesterday` (66), `next week/month` (42) are all pure arithmetic
+against a date the corpus already gives us. So **event time is extractable for free on about 6% of
+turns**, with no model, and the largest unresolvable bucket is `recently/lately` (206), which
+carries no arithmetic content for anyone, model or not.
+
+Notably, the design's own killer example is in the **resolvable** half: *"recently I had a setback.
+Last month I got hurt"* on a session dated 13 October 2023. `recently` is noise; `last month`
+resolves to September by subtraction. Arithmetic bi-temporal gets that case right.
+
+## Does it have real benefits?
+
+Two different answers, and conflating them is how this gets oversold.
+
+**For benchmark scores: probably not, and nothing here argues it would.**
+
+Bi-temporal does not add recall. Today RE-call applies no as-of filter at all, so a retrospective
+turn is retrieved on similarity regardless. Event time's role is to stop as-of filtering from
+*destroying* those turns. It is a **prerequisite for a feature, not a feature**, and the feature it
+unlocks currently has no demonstrated upside: P1 kills supersession at 0.1%, and only 9 of 26
+`TEMPORAL_ERROR` questions name a date to filter on in the first place. Building it to move a
+LOCOMO number would be building the enabling half of a mechanism whose other half is already
+measured to be inert.
+
+**For the library's actual users: yes, and it is the stronger case.**
+
+"What was the plan as of last Tuesday" is a real agent-memory question, and today RE-call cannot
+answer it. That is a capability, not a score, and it is what Zep and Graphiti ship. It should be
+justified as a product decision with its own success criterion, not smuggled in as a benchmark
+optimisation.
+
+### The honest recommendation
+
+Do not build bi-temporal to fix `temporal_reasoning`. The measurements say the path from event time
+to that score runs through mechanisms already measured to be absent from the corpus.
+
+Build it if, and only if, as-of retrieval is wanted as a **capability** for agent memory, in which
+case the arithmetic-only version covering ~6% of turns is a sound, genuinely `$0` first cut, and
+its limits are already quantified above: it will resolve just over half of the relative-time turns
+and none of the `recently` bucket.
+
+The `$0` claim survives this either way, which is worth stating because it was in doubt: the free
+arithmetic subset is real, and what it cannot reach is mostly what nothing can reach cheaply.
