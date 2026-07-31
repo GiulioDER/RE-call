@@ -1203,9 +1203,32 @@ evidence against newest-wins (§9j).
 
 Mem0 answers these because its stored memory is one distilled line — "Sprint 1 deadline: February
 15, 2024" — while ours is the same date scattered across many raw turns in different roles
-(when set, when revised, when discussed). This is the one category where LLM distillation at
-ingest is genuinely the better architecture, and no retrieval-side change we can afford replicates
-it. Recorded as a known limit rather than an open task.
+(when set, when revised, when discussed).
+
+**CORRECTED 2026-07-31.** This section previously ended: *"This is the one category where LLM
+distillation at ingest is genuinely the better architecture, and no retrieval-side change we can
+afford replicates it. Recorded as a known limit rather than an open task."* That was an overclaim
+in two ways, and the correction is owed because Part 4 of the dev.to series inherited it.
+
+1. **It was measured with the temporal layer unable to run.** Nothing populated `valid_from` /
+   `valid_until` on ingested turns, so `validity_bounds` returned `(None, None)` for every chunk
+   and the `expired` / `not_yet_valid` branches were structurally unreachable. Not "we tried it";
+   it could not fire. Measured with controls in `benchmarks/check_temporal_inert.py`, and fixed:
+   419 of 419 indexed chunks now carry a window where the baseline was 0.
+2. **"Recency is falsified" does not imply "no affordable fix exists".** It rules out one family.
+   Interval coverage is a different family and survives this section's own counterexample: when a
+   question's reference time precedes the revision, the ORIGINAL deadline is the instance whose
+   interval covers it, which is exactly the case that killed newest-wins.
+
+The accurate statement is: **recency is falsified, the temporal layer could not fire when this was
+measured, and the obvious successor is now measured to be unsound on this corpus for a reason that
+has nothing to do with affordability.** That reason is that a validity window records when a turn
+was SAID while questions anchor on when the event HAPPENED, so filtering on it deletes
+retrospective testimony. Full analysis, including how much of the gap is closable for free
+(5.7% of turns, 55.9% of all relative-time turns), in `docs/REFERENCE_TIME_DESIGN.md`.
+
+Still open, and still not claimed to be solved: whether any retrieval-side selector recovers this
+category. What is settled is that the previous sentence claimed more than the evidence supported.
 
 ### 9m. The absolute threshold is embedder-fragile — indicative, NOT yet established
 
