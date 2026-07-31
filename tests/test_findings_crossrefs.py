@@ -60,6 +60,7 @@ EXPECTED: dict[str, tuple[str, str]] = {
     "9h": ("FINDINGS", "abstention category is a hallucination test"),
     "9i": ("FINDINGS", "the count rule does not pay"),
     "9j": ("FINDINGS", "Newest-wins dedup"),
+    "9l": ("FINDINGS", "temporal_reasoning"),
     "9m": ("FINDINGS", "embedder-fragile"),
     "9n": ("FINDINGS", "regime sweep"),
     "10b": ("FINDINGS", "abstention layer failed here"),

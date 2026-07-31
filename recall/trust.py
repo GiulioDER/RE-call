@@ -123,6 +123,7 @@ def _verdict(
     threshold: float,
     now: datetime,
     unresolved: frozenset[str] = frozenset(),
+    known_as_of: datetime | None = None,
 ) -> tuple[Verdict, Validity]:
     meta = hit.chunk.metadata
     file = meta.get("file")
@@ -133,6 +134,19 @@ def _verdict(
         # Indexer's fail-fast). Fail CLOSED per hit: an unparseable window must not read as
         # trustworthy, and one bad row must not crash every search that retrieves it.
         return "invalid_metadata", Validity(valid_from=None, valid_until=None, superseded_by=None)
+    if known_as_of is not None and hit.indexed_at is not None and hit.indexed_at > known_as_of:
+        # TRANSACTION time, checked BEFORE supersession on purpose: a memory written after the
+        # as-of instant did not exist yet, and whether it was later superseded is not a question
+        # that can be asked about something that had not been written. Ordering it after
+        # `superseded` would report the fate of a memory the caller cannot see.
+        #
+        # A row with NO `indexed_at` is left alone rather than hidden. It reaches here only from a
+        # store that did not record one, and defaulting an unknown write time to "after the as-of"
+        # would silently empty a result set for callers whose data predates the column.
+        return (
+            "not_yet_known",
+            Validity(valid_from=start, valid_until=end, superseded_by=None),
+        )
     if file is not None and file in unresolved:
         # A supersession edge points at this memory's basename, but several documents carry it.
         # Serving it as ``ok`` because the edge could not be resolved would be the silent
@@ -283,6 +297,15 @@ def abstain_reason(hits: list[TrustedHit]) -> str:
         return f"best candidate ({file}) is outside its validity window (expired)"
     if best.verdict == "not_yet_valid":
         return f"best candidate ({file}) is not yet valid"
+    if best.verdict == "not_yet_known":
+        # Distinct wording from `not_yet_valid` on purpose. That one means the fact was not true
+        # yet; this one means the memory had not been WRITTEN yet. A caller replaying a past
+        # decision needs to tell "we had no such memory then" apart from "we had it and it did not
+        # apply", because only the first exonerates the decision.
+        return (
+            f"best candidate ({file}) was written after the as-of instant — it did not exist "
+            f"yet, so it cannot explain a decision made then"
+        )
     if best.verdict == "invalid_metadata":
         return f"best candidate ({file}) carries malformed validity metadata"
     if best.verdict == "ambiguous_supersession":
@@ -300,11 +323,30 @@ def evaluate(
     calibration: Calibration | None,
     now: datetime,
     unresolved: frozenset[str] = frozenset(),
+    known_as_of: datetime | None = None,
 ) -> TrustedResult:
     """Pure trust evaluation of a retrieval result (no DB access, no clock reads).
 
-    Verdict precedence per hit: invalid_metadata > superseded > expired / not_yet_valid >
-    low_confidence > ok.
+    Two independent time axes, which is what makes this bi-temporal:
+
+    - ``now`` is **valid time**: when a fact was true. It drives ``expired`` and ``not_yet_valid``
+      from the memory's own declared `valid_from` / `valid_until`.
+    - ``known_as_of`` is **transaction time**: when the memory was written. It drives
+      ``not_yet_known`` from the store's `indexed_at`, and answers a different question, *what did
+      we know at that moment*, rather than *what was true*.
+
+    They compose: ``evaluate(..., now=june, known_as_of=tuesday)`` asks what we believed on Tuesday
+    about the state of the world in June. Passing neither leaves behaviour exactly as before.
+
+    **Known limit.** ``known_as_of`` filters HITS by write time; it does not rewind supersession.
+    Supersession edges carry no timestamp, so an edge added after the as-of instant still applies,
+    and a memory that was current at that moment can read as ``superseded`` by a document the
+    caller cannot see. Rewinding that needs edge timestamps, which the corpus format does not
+    record today. Point-in-time audit is therefore honest about *which memories existed* and
+    approximate about *which were current*.
+
+    Verdict precedence per hit: invalid_metadata > not_yet_known > superseded > expired /
+    not_yet_valid > low_confidence > ok.
     Successor promotion: when a superseded hit scored above the threshold (it would have been
     the confident answer), its retrieved successor is promoted from ``low_confidence`` to
     ``ok`` even if its own wording scores lower — the explicit supersession edge transfers the
@@ -317,7 +359,9 @@ def evaluate(
     cal = calibration or _UNCALIBRATED
     trusted: list[TrustedHit] = []
     for hit in result.hits:
-        verdict, validity = _verdict(hit, supersession, cal.threshold, now, unresolved)
+        verdict, validity = _verdict(
+            hit, supersession, cal.threshold, now, unresolved, known_as_of
+        )
         meta = hit.chunk.metadata
         trusted.append(
             TrustedHit(
@@ -379,6 +423,7 @@ def trusted_search(
     calibration: Calibration | None = None,
     reranker: Reranker | None = None,
     now: datetime | None = None,
+    known_as_of: datetime | None = None,
     entailment: "EntailmentJudge | None" = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
 ) -> TrustedResult:
@@ -435,6 +480,7 @@ def trusted_search(
         calibration,
         now or datetime.now(timezone.utc),
         unresolved,
+        known_as_of,
     )
     if entailment is not None:
         from recall.entailment import apply_entailment

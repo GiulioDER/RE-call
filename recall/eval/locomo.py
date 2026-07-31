@@ -75,6 +75,7 @@ import shutil
 import tempfile
 import time
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -138,6 +139,38 @@ def _filename_to_dia_id(filename: str) -> str:
     return Path(filename).stem.replace("_", ":", 1)
 
 
+#: LOCOMO session stamps look like "1:56 pm on 8 May, 2023". The time of day is dropped: validity
+#: is day-granular everywhere else in this library (`recall.frontmatter` reads `valid_from` as an
+#: ISO date at 00:00 UTC), and inventing sub-day precision here would be precision the corpus does
+#: not actually carry.
+_SESSION_DATE_RE = re.compile(
+    r"(?P<day>\d{1,2})\s+(?P<month>[A-Za-z]+),?\s+(?P<year>\d{4})"
+)
+_MONTHS = {m.lower(): i for i, m in enumerate(
+    ["January", "February", "March", "April", "May", "June",
+     "July", "August", "September", "October", "November", "December"], start=1)}
+
+
+def parse_session_date(session_date: str) -> str | None:
+    """`"1:56 pm on 8 May, 2023"` -> `"2023-05-08"`. `None` when the stamp is unparseable.
+
+    Returns `None` rather than a guess for the corpus's own `"unknown date"` placeholder and for
+    any format this does not recognise. A wrong `valid_from` is worse than none: it would make the
+    trust layer confidently demote a turn to `not_yet_valid` on a date nobody asserted, which is
+    the silent-wrong-answer the layer exists to prevent.
+    """
+    m = _SESSION_DATE_RE.search(session_date or "")
+    if not m:
+        return None
+    month = _MONTHS.get(m.group("month").lower())
+    if month is None:
+        return None
+    try:
+        return date(int(m.group("year")), month, int(m.group("day"))).isoformat()
+    except ValueError:  # e.g. "31 February"
+        return None
+
+
 def _turn_document(turn: dict[str, Any], session_date: str) -> str:
     """One dialog turn as a standalone markdown document.
 
@@ -146,6 +179,23 @@ def _turn_document(turn: dict[str, Any], session_date: str) -> str:
     happened, and its adversarial questions turn on *who* did it. A retriever that cannot see
     the speaker cannot distinguish the adversarial pair from the real one, and the abstention
     measurement below would be scoring a handicap rather than the library.
+
+    The date is ALSO emitted as a `valid_from` frontmatter key, which is additive: the body keeps
+    the human-readable stamp, exactly as above, so nothing the retriever could previously see is
+    taken away.
+
+    Why it was missing, and what it cost: `benchmarks/check_temporal_inert.py` shows that without
+    this key `validity_bounds` returns `(None, None)` for every ingested turn, so the `expired`
+    and `not_yet_valid` branches of `recall.trust._verdict` are UNREACHABLE on benchmark data.
+    FINDINGS §9l concluded that `temporal_reasoning` needs write-time distillation and that no
+    affordable retrieval-side fix exists; that was measured with the retrieval-side temporal layer
+    structurally unable to run. This does not by itself fix the category, and it is not claimed to:
+    it makes the layer able to fire, which is the precondition for finding out.
+
+    A turn asserts what was said ON its session date, so the turn is valid FROM that date onward.
+    `valid_until` is deliberately not emitted: closing the interval would require knowing which
+    later turn supersedes this one, which is the extraction step this change does not attempt.
+    An open-ended interval is the honest encoding of "said then, never explicitly revoked".
     """
     speaker = turn.get("speaker", "unknown")
     text = turn.get("text", "")
@@ -154,7 +204,11 @@ def _turn_document(turn: dict[str, Any], session_date: str) -> str:
     body = f"{speaker}: {text}"
     if caption:
         body += f"\n\n[shared an image: {caption}]"
-    return f"# {speaker} — {session_date}\n\n{body}\n"
+    document = f"# {speaker} — {session_date}\n\n{body}\n"
+    iso = parse_session_date(session_date)
+    if iso is None:
+        return document
+    return f"---\nvalid_from: {iso}\n---\n\n{document}"
 
 
 def write_conversation_corpus(conversation: dict[str, Any], out_dir: Path) -> int:
