@@ -10,16 +10,30 @@ parameter, and this is the arm most likely to tempt one.
 
 ## 1. What this arm changes
 
-`--embedder voyage:voyage-4-large`, RE-call's published best embedder
-([[reference-recall-best-configuration-2026-07-28]]) and the last untested component of its best
-configuration. Everything else is the shipped default — no reranker, `k=5`, `candidate_k=20` — so
-this is a single-variable comparison against the **v2 default arm**, exactly as v3 (`gte-base`) was.
+**RE-call's published best configuration, complete for the first time:**
+`--embedder voyage:voyage-4-large --k 45 --candidate-k 250 --reranker voyage:rerank-2.5`
+([[reference-recall-best-configuration-2026-07-28]], with `rerank-2.5` from `FINDINGS.md` §12a
+where it beat the local cross-encoder: hit@1 0.846 vs 0.792, mean rank +0.177 CI95 [+0.038, +0.323]).
+
+**This arm is deliberately NOT single-variable, and that limits what it can attribute.** v3 changed
+only the embedder; v4 changed only the retrieval stack; v5 changes the embedder AND the reranker AND
+the pool width together. It therefore answers *"what does RE-call at its best do on this axis"* and
+**cannot** answer *"which component was responsible"*. The arm was scoped this way on the user's
+instruction after v5 was first registered as an embedder-only arm; recorded here rather than
+silently, because a multi-variable arm read as a single-variable one is how a component gets
+credited for an effect it did not produce.
+
+The three prior arms remain the decomposition: v2 (bge-small, defaults), v3 (gte-base, defaults —
+embedder only), v4 (bge-small, tuned retrieval + local rerank — retrieval only).
 
 This is **paid work**, which a standing decision closed on 2026-07-29
 ([[feedback-no-paid-api-work-on-recall-2026-07-29]]). That decision is overridden here explicitly by
 the user, on a measured basis rather than a vibe: the run embeds **5 882 unique documents,
-~234 000 tokens**, once, because the embedding cache is content-addressed. That is cents, not the
-credit-blocked lanes the rule was written about.
+~234 000 tokens**, once, because the embedding cache is content-addressed. That is cents. The reranker adds
+1200 queries x a 250-document pool; the closest measured datapoint is `FINDINGS.md` §8h at 400
+calls / 50-document pool for about $0.06, which scales to roughly **$1** here. Order of magnitude:
+one dollar, not the credit-blocked lanes the rule was written about. If the real invoice lands far
+from that, the estimate is the thing that was wrong and it should be recorded.
 
 **Measured before choosing the manifest**: the standard subset would have cost the *same* API tokens
 (same 5 882 unique documents — 40 questions still span every LOCOMO conversation) while being unable
@@ -79,7 +93,8 @@ conclusion is not "we have not found the right configuration" but "**this axis i
 configuration**", which is a finding about the axis and a warning to anyone using near-rung
 abstention AUC to choose a memory system.
 
-It would also close the last open lever. `project-recall-nearmiss-signal-exhaustion` named retrieval
+It would also close the last open lever, and close it with the **whole** configuration rather
+than one component at a time. `project-recall-nearmiss-signal-exhaustion` named retrieval
 depth as the next step; v4 swept it 12× and moved AUC 0.006. If the embedder moves it no further,
 the ceiling is where that memo said it was: **46 of 200 pairs retrieve identical evidence in both
 arms**, and no scoring change can separate them.
