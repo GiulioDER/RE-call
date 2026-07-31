@@ -1182,14 +1182,18 @@ own terms — an ingest that consumes turns and stores no chunk is a broken run,
 now have no explanation, since every tenant is populated. That probe is void; the thirteen
 questions measured between 0.418 and 0.498 remain plausible but should be confirmed.
 
-### 9l. `temporal_reasoning` — diagnosed, no cheap fix, documented as a limit
+### 9l. `temporal_reasoning` — enumerated, recency falsified, successor still untested
 
 Second-worst category (0.408 vs Mem0's 0.567). Unlike `instruction_following`, it is NOT a
 threshold artefact: of 7 badly-lost questions only 1 had empty retrieval, and 5 were answered
 confidently and wrongly.
 
-Every one is an interval question — "how many days between A and B" — and in every one the wrong
-INSTANCE of a date was used:
+Every one is an interval question — "how many days between A and B". In the five answered
+confidently the wrong INSTANCE of a date was used, and in all
+5 <!--@ beam_9l_temporal.json#summary.arithmetic_correct_on_own_operands --> the arithmetic on
+those wrong dates was right, so what failed is date selection rather than reasoning. The
+remaining two chose no date at all: one abstained despite non-empty retrieval, one retrieved
+nothing.
 
 | gold | our answer |
 |---|---|
@@ -1200,6 +1204,31 @@ INSTANCE of a date was used:
 The decisive detail: sometimes the correct instance is the OLDER one (the original deadline,
 not the revision). That rules out every recency heuristic, and is the third independent line of
 evidence against newest-wins (§9j).
+
+**The seven are enumerated rather than described** (issue #167). `results/beam_9l_temporal.json`
+carries each one — question, gold rubric, our verbatim answer, and the interval each side used —
+rebuilt from the two pinned runs by `benchmarks/build_9l_temporal_fixture.py`, which fails if
+they stop reproducing the counts this section publishes. The table above shows three of the five;
+classifying all five by the mechanism a retrieval-side selector would have to implement:
+
+| mechanism | n | |
+|---|---|---|
+| instance disambiguation | 2 <!--@ beam_9l_temporal.json#summary.mechanism_tally.instance_disambiguation --> | several similar events, the question names one |
+| supersession of a revised value | 1 <!--@ beam_9l_temporal.json#summary.supersession_reachable --> | the first row above; the ORIGINAL deadline is the correct instance |
+| field VALUE vs the time it was ASSERTED | 1 <!--@ beam_9l_temporal.json#summary.mechanism_tally.role_value_vs_assertion_time --> | both instances are the same turn, so no ordering in time separates them |
+| event time vs utterance time | 1 <!--@ beam_9l_temporal.json#summary.mechanism_tally.event_vs_utterance_time --> | our answer quotes the gold date, then computes from the date the turn was *said* |
+
+That is the ceiling nobody had measured. Supersession — the mechanism
+`benchmarks/check_p1_supersession_density.py` gates, and the one the killed-recency argument
+points at — reaches a single question here. The LOCOMO `P1` null was deliberately not transferred
+to BEAM (`docs/REFERENCE_TIME_DESIGN.md`), and this does not transfer it either: it says that
+even if BEAM turned out dense in revisions, the reachable gain on this split is one question, so
+measuring that density is worth its cost only as part of a wider selector.
+
+Stated as narrowly as it was made: the classification is a hand reading of five answers from the
+run artifact alone. The BEAM corpus is not cached locally, so the turns themselves were never
+consulted, the evidence for each label is our own answer's wording (quoted in the fixture), and
+five items is a list, not a rate.
 
 Mem0 answers these because its stored memory is one distilled line — "Sprint 1 deadline: February
 15, 2024" — while ours is the same date scattered across many raw turns in different roles
