@@ -19,14 +19,25 @@ decoration: a bug audit found three controls here passing because an EARLIER rul
 were green while the rule in their own name was never executed. `match=` is what makes "this
 control tests that rule" a checked claim rather than a naming convention.
 
-Verified by rule ablation — each guard in `validate()` replaced by `pass` in turn, expecting a red
-test. Pinned that way: S2b, S6, S6b, S7 (both the rubric-answer and the endpoint branch), S5's
-`_stated_days` tie, S5's operand-in-answer check, S3, S4, the duplicate-id and
-classification-table checks, and the summary-consistency loop. **Not** independently pinned, and
-stated rather than implied: the two `days`-disagree-with-own-endpoints pre-checks and S5's
-`matches gold` check, all three of which are subsumed by a later rule that fires first on every
-corruption reachable through the fixture — they are defence in depth, not guards this module
-proves can fire.
+Verified by rule ablation, not by assertion: every `raise` in `validate()` and `_require_shape`
+was replaced by `pass` in turn and the module re-run, expecting a red test. **33 guards ablated,
+27 pinned.** The enumeration below is the measured result, and it is written out because an
+inventory that quietly omits a check is how a stale label starts — the first version of this
+docstring named three exceptions when there were eleven.
+
+The six that no test can turn red, each because a different rule reaches the corruption first:
+
+  1. the generic `malformed fixture:` wrapper — every concrete malformation now has a specific
+     `_require_shape` message, so the wrapper only catches what nothing else names
+  2. S3, the empty-retrieval count
+  3. S4, the confident-wrong count — 2 and 3 both need the flags changed, which trips S6, S6b or
+     S8 before a count can drift
+  4. S7's gold `days`-vs-its-own-endpoints pre-check — the rubric branch fires first
+  5. S5's operand `days`-vs-its-own-endpoints pre-check — the `_stated_days` branch fires first
+  6. S5's `matches gold` check — reaching it needs a two-field corruption
+
+These are defence in depth, not guards this module proves can fire. That distinction is the point
+of running the ablation at all.
 """
 from __future__ import annotations
 
@@ -37,6 +48,7 @@ from pathlib import Path
 import pytest
 
 from benchmarks.build_9l_temporal_fixture import (
+    CLASSIFICATION,
     DATE_SELECTION_MECHANISMS,
     DEFAULT_RUNS,
     FIXTURE_PATH,
@@ -291,15 +303,71 @@ def test_validate_rejects_a_duplicated_case(fixture: dict) -> None:
         validate(corrupt)
 
 
+def test_validate_rejects_a_relabelled_mechanism(fixture: dict) -> None:
+    """`mechanism` is published through a claim-gate marker in §9l's table, so an unpinned
+    relabel moves a figure in a released document. S6b only partitions empty / abstained /
+    any-date-selection, which leaves the four date-selection labels interchangeable."""
+    corrupt, case = _corrupt(fixture, "1M_8")
+    case["mechanism"] = "event_vs_utterance_time"
+    corrupt["summary"]["mechanism_tally"] = {"instance_disambiguation": 1, "supersession": 1,
+                                             "event_vs_utterance_time": 2,
+                                             "abstained_with_retrieval": 1,
+                                             "retrieval_empty": 1,
+                                             "role_value_vs_assertion_time": 1}
+    with pytest.raises(BuildError, match=r"S8: .*\.mechanism does not match"):
+        validate(corrupt)
+
+
+def test_validate_rejects_rewritten_reasoning(fixture: dict) -> None:
+    """The reasoning is the evidence a reader checks the label against."""
+    corrupt, case = _corrupt(fixture, "1M_0")
+    case["reasoning"] = "Because it seemed likely."
+    with pytest.raises(BuildError, match=r"S8: .*\.reasoning does not match"):
+        validate(corrupt)
+
+
+def test_validate_rejects_a_rubric_with_no_span(fixture: dict) -> None:
+    """The day count still reads "7 days", so S7's first branch passes and the span branch is
+    the one under test."""
+    corrupt, case = _corrupt(fixture, "1M_0")
+    case["gold_rubric"] = ["LLM response should state: 7 days"]
+    with pytest.raises(BuildError, match="states no 'from X till Y' span"):
+        validate(corrupt)
+
+
+def test_validate_rejects_a_classification_entry_with_an_impossible_date(fixture, monkeypatch) -> None:
+    """Corrupts the TABLE, not the artifact, and the message must say so — a typo in this
+    module's own data reported as a FAIL of the committed JSON blames the file that is correct."""
+    broken = copy.deepcopy(CLASSIFICATION)
+    broken["1M_0_q18_temporal_reasoning"]["gold"] = ("2024-03-25", "2024-04-31")
+    monkeypatch.setattr(
+        "benchmarks.build_9l_temporal_fixture.CLASSIFICATION", broken, raising=True
+    )
+    with pytest.raises(BuildError, match="CLASSIFICATION.*is not a valid date pair"):
+        validate(copy.deepcopy(fixture))
+
+
 @pytest.mark.parametrize(
     ("mutate", "expected"),
     [
-        (lambda c: c.__setitem__("our_answer", None), "our_answer is NoneType"),
-        (lambda c: c.__setitem__("gold_rubric", "should state: 7 days"), "gold_rubric is str"),
-        (lambda c: c["gold_interval"].__setitem__("start", "March 25, 2024"), "not an ISO date"),
-        (lambda c: c.pop("our_interval"), "missing 'our_interval'"),
+        (lambda f, c: f["cases"].append("not an object"), "case is str"),
+        (lambda f, c: c.__setitem__("gold_interval", {"start": "2024-03-25"}),
+         "must hold start, end and days"),
+        (lambda f, c: c["gold_interval"].__setitem__("days", 7.0), "days is not an int"),
+        (lambda f, c: c.__setitem__("our_answer", None), "our_answer is NoneType"),
+        (lambda f, c: c.__setitem__("gold_rubric", "should state: 7 days"), "gold_rubric is str"),
+        (lambda f, c: c.__setitem__("gold_rubric", [1, 2]), "non-string line"),
+        (lambda f, c: c.__setitem__("gold_interval", None), "gold_interval is null"),
+        (lambda f, c: c["gold_interval"].__setitem__("start", "March 25, 2024"), "not an ISO date"),
+        (lambda f, c: c.pop("our_interval"), "missing 'our_interval'"),
+        (lambda f, c: c.pop("conversation_idx"), "missing 'conversation_idx'"),
+        (lambda f, c: f.__setitem__("summary", []), "summary is list"),
+        (lambda f, c: f["provenance"].__setitem__("badly_lost_delta", "-1.0"),
+         "badly_lost_delta is str"),
     ],
-    ids=["null-answer", "rubric-as-string", "prose-date", "missing-interval"],
+    ids=["case-not-an-object", "interval-missing-a-key", "days-not-an-int", "null-answer",
+         "rubric-as-string", "rubric-non-string-line", "null-gold-interval", "prose-date",
+         "missing-interval", "missing-conv-idx", "summary-not-object", "gate-not-a-number"],
 )
 def test_validate_reports_malformed_content_as_BuildError(fixture, mutate, expected) -> None:
     """These raised TypeError / ValueError / KeyError, which `main` does not catch, so a slip in
@@ -307,7 +375,7 @@ def test_validate_reports_malformed_content_as_BuildError(fixture, mutate, expec
     case was worse than a crash: `" ".join` spaced out every character and the old regex still
     matched, so it was accepted."""
     corrupt, case = _corrupt(fixture, "1M_0")
-    mutate(case)
+    mutate(corrupt, case)
     with pytest.raises(BuildError, match=expected):
         validate(corrupt)
 
