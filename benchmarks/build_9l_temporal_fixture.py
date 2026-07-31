@@ -247,7 +247,9 @@ MONTHS = (
 #: The rubric's second line always names the interval in prose, e.g.
 #: "LLM response should state: from March 25, 2024 till April 1, 2024". The year is sometimes
 #: absent ("from February 15 till February 20"), so it is optional here and compared only when
-#: present -- requiring it would reject three of the seven for being transcribed correctly.
+#: present -- requiring it would reject TWO of the seven (1M_1_q18 and 1M_14_q18) for being
+#: transcribed correctly. Counted, because the first draft of this comment said three.
+#: The year those two rubrics omit is pinned by S8 against `CLASSIFICATION` instead.
 _RUBRIC_SPAN_RE = re.compile(r"\bfrom\s+(.+?)\s+till\s+(.+?)\s*$", re.I | re.M)
 
 
@@ -394,11 +396,17 @@ def _require_shape(case: object) -> None:
             raise BuildError(f"{where} is missing {key!r}")
         if isinstance(case[key], bool) != (kind is bool) or not isinstance(case[key], kind):
             raise BuildError(f"{where}.{key} is {type(case[key]).__name__}, expected {kind}")
+    if not all(isinstance(line, str) for line in case["gold_rubric"]):
+        raise BuildError(f"{where}.gold_rubric holds a non-string line")
     for key in ("gold_interval", "our_interval"):
         span = case.get(key, ...)
         if span is ...:
             raise BuildError(f"{where} is missing {key!r}")
         if span is None:
+            # Only `our_interval` may legitimately be null (S6 decides where): a case with no
+            # gold interval has no answer to be scored against at all.
+            if key == "gold_interval":
+                raise BuildError(f"{where}.gold_interval is null; every case has a gold answer")
             continue
         if not isinstance(span, dict) or {"start", "end", "days"} - set(span):
             raise BuildError(f"{where}.{key} must hold start, end and days")
@@ -424,10 +432,24 @@ def validate(fixture: dict) -> None:
         cases = fixture["cases"]
         summary = fixture["summary"]
         delta_gate = fixture["provenance"]["badly_lost_delta"]
+        if not isinstance(summary, dict):
+            raise BuildError(f"summary is {type(summary).__name__}, expected an object")
+        if isinstance(delta_gate, bool) or not isinstance(delta_gate, (int, float)):
+            raise BuildError(f"provenance.badly_lost_delta is {type(delta_gate).__name__}")
         for case in cases:
             _require_shape(case)
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise BuildError(f"malformed fixture: {type(exc).__name__}: {exc}") from exc
+
+    # The threshold is a LABEL inside the file being checked, so it is pinned to the module
+    # constant the same way the run hashes are. Read as authoritative, a two-token edit to
+    # `provenance.badly_lost_delta` weakens S2b below while every control stays green —
+    # demonstrated with 0.5, which admits a TIE as a "loss".
+    if delta_gate != BADLY_LOST_DELTA:
+        raise BuildError(
+            f"provenance.badly_lost_delta is {delta_gate}, but this module builds the set at "
+            f"{BADLY_LOST_DELTA}. The artifact does not get to move its own gate."
+        )
 
     ids = [c["question_id"] for c in cases]
     if len(set(ids)) != len(ids):
@@ -553,6 +575,31 @@ def validate(fixture: dict) -> None:
                     f"anywhere in our own answer, so it is not what we computed from"
                 )
 
+    # ---- S8: the payload agrees with the table it was generated from --------------------------
+    # Last on purpose. The checks above read the endpoints against prose that lives in the same
+    # file, which makes them informative -- they say WHICH rubric or answer the value contradicts
+    # -- but prose cannot constrain what prose omits. Two rubrics state no year, and
+    # `_date_is_mentioned`'s year group is optional and trailing, so a whole-year shift satisfied
+    # every one of them: 1M_0's operands moved to 2020 with all tests green.
+    #
+    # `CLASSIFICATION` holds the authoritative pair in CODE. Running it last keeps the specific
+    # diagnostics first and makes this the backstop for exactly what they cannot see.
+    for case in cases:
+        hand = CLASSIFICATION[case["question_id"]]
+        for key, expected_span in (("gold_interval", hand["gold"]), ("our_interval", hand["ours"])):
+            actual = case[key]
+            if expected_span is None:
+                if actual is not None:
+                    raise BuildError(f"S8: {case['question_id']}.{key} should be null")
+                continue
+            want = {"start": expected_span[0], "end": expected_span[1],
+                    "days": _days(expected_span)}
+            if actual != want:
+                raise BuildError(
+                    f"S8: {case['question_id']}.{key} is {actual}, but the classification table "
+                    f"says {want}"
+                )
+
     # ---- the summary must describe the cases it ships beside --------------------------------
     tally: dict[str, int] = {}
     for case in cases:
@@ -582,11 +629,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--recall-run", type=Path, default=DEFAULT_RUNS / RECALL_RUN_NAME)
     parser.add_argument("--mem0-run", type=Path, default=DEFAULT_RUNS / MEM0_RUN_NAME)
     parser.add_argument("--out", type=Path, default=FIXTURE_PATH)
-    parser.add_argument(
+    # Mutually exclusive: passing both used to run only the weaker check and return 0, the same
+    # code a real re-derivation returns. That is precisely the conflation the two-mode split
+    # exists to prevent, so argparse rejects it rather than silently preferring one.
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--check", action="store_true",
         help="rebuild from the runs and compare against the committed fixture (needs the runs)",
     )
-    parser.add_argument(
+    mode.add_argument(
         "--validate-only", action="store_true",
         help="run validate() on the committed fixture; needs no runs, so CI can use it",
     )
@@ -598,7 +649,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.validate_only:
         try:
             validate(json.loads(args.out.read_text(encoding="utf-8")))
-        except (BuildError, OSError, json.JSONDecodeError) as exc:
+        # ValueError, not json.JSONDecodeError: a non-UTF-8 file raises UnicodeDecodeError, which
+        # is a ValueError sibling of JSONDecodeError rather than an OSError, and escaped as a
+        # traceback with no FAIL line. ValueError subsumes both.
+        except (BuildError, OSError, ValueError) as exc:
             print(f"FAIL  {exc}")
             return 1
         print(f"OK    {args.out} is internally coherent (not re-derived — that needs --check).")
