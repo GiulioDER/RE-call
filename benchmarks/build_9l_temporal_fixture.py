@@ -56,7 +56,15 @@ runs stop reproducing them):
   S5  in every confident-wrong case our stated day-count is CORRECT arithmetic on the operands we
       chose, and our answer text contains that count
   S6  a case carries transcribed operands if and only if it is confident-wrong
-  S7  each transcribed gold interval reproduces the day count the rubric itself states
+  S7  each transcribed gold interval reproduces the day count the rubric itself states, and its
+      endpoints match the "from X till Y" the rubric spells out
+
+Added later, and listed here because an inventory that omits a check is how a stale label starts:
+
+  S2b every case really is a full-point loss, checked where CI can see it
+  S6b the mechanism label agrees with the `abstained` / `retrieval_empty` flags it describes
+  S8  intervals, mechanism and reasoning all match `CLASSIFICATION`, the authoritative copy in
+      CODE, which is the backstop for what the prose checks cannot constrain
 
 S5 is not in §9l. It is the check that decides whether a retrieval-side fix is even the right
 shape: if the arithmetic were wrong, date selection would not be the bottleneck.
@@ -375,7 +383,7 @@ def build(recall_rows: dict[str, dict], mem0_rows: dict[str, dict]) -> dict:
 #: Fields every case must carry, with the type `validate` will treat them as.
 _CASE_SHAPE: tuple[tuple[str, type | tuple[type, ...]], ...] = (
     ("question_id", str), ("question", str), ("gold_rubric", list), ("our_answer", str),
-    ("recall_score", (int, float)), ("mem0_score", (int, float)),
+    ("conversation_idx", int), ("recall_score", (int, float)), ("mem0_score", (int, float)),
     ("retrieval_empty", bool), ("abstained", bool), ("mechanism", str), ("reasoning", str),
 )
 
@@ -390,7 +398,7 @@ def _require_shape(case: object) -> None:
     """
     if not isinstance(case, dict):
         raise BuildError(f"case is {type(case).__name__}, expected an object")
-    where = case.get("question_id", "<no question_id>") if isinstance(case, dict) else "?"
+    where = case.get("question_id", "<no question_id>")
     for key, kind in _CASE_SHAPE:
         if key not in case:
             raise BuildError(f"{where} is missing {key!r}")
@@ -420,7 +428,7 @@ def _require_shape(case: object) -> None:
 
 
 def validate(fixture: dict) -> None:
-    """S3-S7 plus summary consistency, checked against the FIXTURE alone.
+    """S2b, S3-S8 plus summary consistency, checked against the FIXTURE alone.
 
     Split out from `build` on purpose. The two runs are gitignored, so CI never sees them; if
     these checks lived only in `build`, the committed artifact would ship with nothing verifying
@@ -438,7 +446,10 @@ def validate(fixture: dict) -> None:
             raise BuildError(f"provenance.badly_lost_delta is {type(delta_gate).__name__}")
         for case in cases:
             _require_shape(case)
-    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+    # No `AttributeError`: nothing inside this block can raise one. The `summary: []` case that
+    # motivated adding it is rejected by the isinstance check above, and its actual raise site
+    # (`summary.get`) is outside this try. An except arm that cannot fire reads as handling.
+    except (KeyError, TypeError, ValueError) as exc:
         raise BuildError(f"malformed fixture: {type(exc).__name__}: {exc}") from exc
 
     # The threshold is a LABEL inside the file being checked, so it is pinned to the module
@@ -500,21 +511,21 @@ def validate(fixture: dict) -> None:
     for case in cases:
         mechanism = case["mechanism"]
         if case["retrieval_empty"]:
-            expected = "retrieval_empty"
+            required = "retrieval_empty"
         elif case["abstained"]:
-            expected = "abstained_with_retrieval"
+            required = "abstained_with_retrieval"
         else:
-            expected = "<a date-selection mechanism>"
+            required = "<a date-selection mechanism>"
         wrong = (
-            mechanism != expected
-            if expected != "<a date-selection mechanism>"
+            mechanism != required
+            if required != "<a date-selection mechanism>"
             else mechanism not in DATE_SELECTION_MECHANISMS
         )
         if wrong:
             raise BuildError(
                 f"S6b: {case['question_id']} is labelled {mechanism!r} but abstained="
                 f"{case['abstained']} retrieval_empty={case['retrieval_empty']} requires "
-                f"{expected}"
+                f"{required}"
             )
 
     # ---- S7: the transcribed gold interval agrees with the rubric that defines it -------------
@@ -586,14 +597,37 @@ def validate(fixture: dict) -> None:
     # diagnostics first and makes this the backstop for exactly what they cannot see.
     for case in cases:
         hand = CLASSIFICATION[case["question_id"]]
+        # All FOUR fields build() takes from the table, not just the two intervals. `mechanism`
+        # is the one §9l publishes through a claim-gate marker, so an unpinned relabel moves a
+        # figure in a released document: swapping 1M_8 to `event_vs_utterance_time` with a
+        # self-consistent tally was accepted, CI green. `reasoning` is the evidence a reader
+        # checks the label against, so it is pinned beside it rather than left free to drift.
+        for key in ("mechanism", "reasoning"):
+            if case[key] != hand[key]:
+                raise BuildError(
+                    f"S8: {case['question_id']}.{key} does not match the classification table"
+                )
         for key, expected_span in (("gold_interval", hand["gold"]), ("our_interval", hand["ours"])):
             actual = case[key]
             if expected_span is None:
-                if actual is not None:
-                    raise BuildError(f"S8: {case['question_id']}.{key} should be null")
+                # No "and it had better be null" branch here. Reaching one would need a case
+                # whose flags say confident-wrong (S6 lets it carry operands), whose mechanism is
+                # therefore a date-selection label (S6b), and whose mechanism equals the table's
+                # `abstained_with_retrieval` (the check above) -- a contradiction. The branch
+                # that used to sit here could not fire, which is the third dead guard this file
+                # has grown and removed.
                 continue
-            want = {"start": expected_span[0], "end": expected_span[1],
-                    "days": _days(expected_span)}
+            try:
+                want = {"start": expected_span[0], "end": expected_span[1],
+                        "days": _days(expected_span)}
+            except (TypeError, ValueError) as exc:
+                # Names the TABLE, not the artifact. `_days` here runs on module data, so a typo
+                # in CLASSIFICATION would otherwise surface as "FAIL <date error>" against the
+                # committed JSON, blaming the file that is correct.
+                raise BuildError(
+                    f"S8: CLASSIFICATION[{case['question_id']!r}][{key}] is not a valid date "
+                    f"pair: {exc}"
+                ) from exc
             if actual != want:
                 raise BuildError(
                     f"S8: {case['question_id']}.{key} is {actual}, but the classification table "
@@ -665,27 +699,32 @@ def main(argv: list[str] | None = None) -> int:
                   f"--validate-only, which needs no runs.")
             return 2
 
+    # One handler over build AND the file I/O below. Widening only the --validate-only path left
+    # the same defect open here: a non-UTF-8 --out raised UnicodeDecodeError out of --check, and
+    # an unwritable path raised FileNotFoundError out of the write, both as tracebacks with no
+    # FAIL line. ValueError subsumes UnicodeDecodeError and JSONDecodeError.
     try:
         fixture = build(
             load_rows(args.recall_run, RECALL_RUN_SHA256, "recall"),
             load_rows(args.mem0_run, MEM0_RUN_SHA256, "mem0"),
         )
-    except BuildError as exc:
+
+        rendered = json.dumps(fixture, indent=2, ensure_ascii=False) + "\n"
+        if args.check:
+            if not args.out.is_file():
+                print(f"FAIL  no committed fixture at {args.out}")
+                return 1
+            if args.out.read_text(encoding="utf-8") != rendered:
+                print(f"FAIL  {args.out} differs from a fresh rebuild. Re-run without --check.")
+                return 1
+            print(f"OK    {args.out} matches a fresh rebuild from the pinned runs.")
+            return 0
+
+        args.out.write_text(rendered, encoding="utf-8")
+    except (BuildError, OSError, ValueError) as exc:
         print(f"FAIL  {exc}")
         return 1
 
-    rendered = json.dumps(fixture, indent=2, ensure_ascii=False) + "\n"
-    if args.check:
-        if not args.out.is_file():
-            print(f"FAIL  no committed fixture at {args.out}")
-            return 1
-        if args.out.read_text(encoding="utf-8") != rendered:
-            print(f"FAIL  {args.out} differs from a fresh rebuild. Re-run without --check.")
-            return 1
-        print(f"OK    {args.out} matches a fresh rebuild from the pinned runs.")
-        return 0
-
-    args.out.write_text(rendered, encoding="utf-8")
     summary = fixture["summary"]
     print(f"wrote {args.out}")
     print(f"  paired n={summary['paired_n']}  RE-call {summary['recall_mean']:.4f} "
