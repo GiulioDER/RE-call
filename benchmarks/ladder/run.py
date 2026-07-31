@@ -356,6 +356,16 @@ def main(argv: list[str] | None = None) -> int:
             "axis. Needs its own --table/--tenant like any other arm."
         ),
     )
+    parser.add_argument(
+        "--reranker",
+        default="local",
+        help=(
+            "Reranker for --tuned: 'local' (cross-encoder/ms-marco-MiniLM-L-6-v2, free) or "
+            "'voyage:<model>' e.g. voyage:rerank-2.5 (PAID). Ignored without --tuned. Both "
+            "REORDER ONLY -- every hit keeps its dense cosine -- so top_cosine stays the same "
+            "quantity across arms and v5 remains comparable to v2/v3/v4."
+        ),
+    )
     parser.add_argument("--no-resume", action="store_true")
     args = parser.parse_args(argv)
 
@@ -387,12 +397,17 @@ def main(argv: list[str] | None = None) -> int:
             RecallTunedSystem,
         )
 
+        reranker = None
+        if args.reranker.startswith("voyage:"):
+            from benchmarks.ladder.systems.voyage_rerank import VoyageReranker
+
+            reranker = VoyageReranker(args.reranker.split(":", 1)[1])
         system = RecallTunedSystem(
-            args.dsn, table=args.table, tenant=args.tenant, embedder=embedder
+            args.dsn, table=args.table, tenant=args.tenant, embedder=embedder, reranker=reranker
         )
         print(
             f"TUNED arm: k={TUNED_K} candidate_k={TUNED_CANDIDATE_K} "
-            f"reranker=cross-encoder/ms-marco-MiniLM-L-6-v2 — separately labelled arm "
+            f"reranker={args.reranker} — separately labelled arm "
             f"'{system.name}'"
         )
     else:

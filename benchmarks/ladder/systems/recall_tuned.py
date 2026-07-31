@@ -57,14 +57,17 @@ class RecallTunedSystem(RecallSystem):
 
     name = "recall-tuned"
 
-    def __init__(self, *args, k: int = TUNED_K, candidate_k: int = TUNED_CANDIDATE_K, **kwargs):
+    def __init__(self, *args, k: int = TUNED_K, candidate_k: int = TUNED_CANDIDATE_K,
+                 reranker=None, **kwargs):
         _assert_reranker_can_bite(k, candidate_k)
         super().__init__(*args, **kwargs)
         self._k = k
         self._candidate_k = candidate_k
-        # Constructed once, not per query: the cross-encoder loads ~90 MB of weights and this arm
-        # issues 1200 queries.
-        self._reranker = CrossEncoderReranker()
+        # Constructed once, not per query. The local cross-encoder loads ~90 MB of weights and
+        # this arm issues 1200 queries; the Voyage one holds a client. `reranker` is injectable
+        # so the paid arm does not need a second copy of this class -- the only thing that
+        # differs between the two tuned arms is which reranker sits in this slot.
+        self._reranker = reranker if reranker is not None else CrossEncoderReranker()
 
     def query(self, question: str) -> Response:
         """Same shape as the headline arm's `query`, with the tuned retrieval parameters.
