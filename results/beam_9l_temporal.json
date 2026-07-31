@@ -1,0 +1,208 @@
+{
+  "_note": "The seven temporal_reasoning questions §9l's conclusion was drawn from, re-derived from the two pinned BEAM runs. Regenerate with benchmarks/build_9l_temporal_fixture.py; do not hand-edit. `mechanism` and `reasoning` are a hand classification made from these runs alone — the BEAM corpus was not consulted, because it is not cached locally.",
+  "provenance": {
+    "recall_run": "beam1M_recall_20260726T201947Z.json",
+    "recall_run_sha256": "6cdf7a8c90c9dc090c4c6c42aedf3987b1a5d0c9166ac4b2fc4c8207a2ae512d",
+    "mem0_run": "beam1M_mem0-rejudged_20260726T113417Z.json",
+    "mem0_run_sha256": "815f4ac878473e0f351b4bf74f44737f11ad950233d0bfafe4acaa596bbfefdd",
+    "mem0_run_choice": "Forced, not selected: of the three re-judged Mem0 artifacts only this one covers all 30 paired ids; the other two carry 599 rows and cover 20.",
+    "badly_lost_delta": -1.0,
+    "question_type": "temporal_reasoning"
+  },
+  "summary": {
+    "paired_n": 30,
+    "recall_mean": 0.4083333333333333,
+    "mem0_mean": 0.5666666666666667,
+    "badly_lost": 7,
+    "retrieval_empty": 1,
+    "abstained_with_retrieval": 1,
+    "confident_wrong": 5,
+    "arithmetic_correct_on_own_operands": 5,
+    "date_selection_failures": 5,
+    "mechanism_tally": {
+      "supersession": 1,
+      "instance_disambiguation": 2,
+      "event_vs_utterance_time": 1,
+      "abstained_with_retrieval": 1,
+      "retrieval_empty": 1,
+      "role_value_vs_assertion_time": 1
+    },
+    "supersession_reachable": 1
+  },
+  "cases": [
+    {
+      "question_id": "1M_0_q18_temporal_reasoning",
+      "conversation_idx": 0,
+      "question": "How many days are there between when I need to integrate the translation API and my sprint review to discuss the project status?",
+      "gold_rubric": [
+        "LLM response should state: 7 days",
+        "LLM response should state: from March 25, 2024 till April 1, 2024"
+      ],
+      "gold_interval": {
+        "start": "2024-03-25",
+        "end": "2024-04-01",
+        "days": 7
+      },
+      "our_answer": "14 days.\n\nDetails:\n- Translation API integration deadline: April 15, 2024 (updated on March 26, 2024).\n- Sprint review: April 1, 2024.\n- Days between April 1 and April 15: 14.",
+      "our_interval": {
+        "start": "2024-04-01",
+        "end": "2024-04-15",
+        "days": 14
+      },
+      "recall_score": 0.0,
+      "mem0_score": 1.0,
+      "retrieval_empty": false,
+      "abstained": false,
+      "mechanism": "supersession",
+      "reasoning": "Our own answer names the revision: 'Translation API integration deadline: April 15, 2024 (updated on March 26, 2024)'. The question's interval ends before that update, so the ORIGINAL deadline is the covering instance. This is the row §9l cites as ruling out newest-wins, and it is the ONLY one of the five a supersession edge between two assertions of the same field could reach."
+    },
+    {
+      "question_id": "1M_12_q18_temporal_reasoning",
+      "conversation_idx": 12,
+      "question": "How many days are there between when I scheduled my first property viewing with Mehmet and the deadline I set to visit all three properties?",
+      "gold_rubric": [
+        "LLM response should state: 16 days",
+        "LLM response should state: from March 25, 2024 till April 10, 2024"
+      ],
+      "gold_interval": {
+        "start": "2024-03-25",
+        "end": "2024-04-10",
+        "days": 16
+      },
+      "our_answer": "26 days.\n\nYou scheduled your first viewing with Mehmet on March 15, 2024, and set the deadline to visit all three properties as April 10, 2024.",
+      "our_interval": {
+        "start": "2024-03-15",
+        "end": "2024-04-10",
+        "days": 26
+      },
+      "recall_score": 0.0,
+      "mem0_score": 1.0,
+      "retrieval_empty": false,
+      "abstained": false,
+      "mechanism": "instance_disambiguation",
+      "reasoning": "Second endpoint correct. The first is a different property viewing (15 March) from the first-with-Mehmet the question names (25 March)."
+    },
+    {
+      "question_id": "1M_13_q18_temporal_reasoning",
+      "conversation_idx": 13,
+      "question": "How many days passed between when I met Amy at the psychology conference and when I started thinking about sharing my cryptocurrency plans with Suzanne after onboarding at the clinic?",
+      "gold_rubric": [
+        "LLM response should state: 139 days",
+        "LLM response should state: from March 15, 2023 till August 1, 2023"
+      ],
+      "gold_interval": {
+        "start": "2023-03-15",
+        "end": "2023-08-01",
+        "days": 139
+      },
+      "our_answer": "301 days.\n\n- You met Amy at the psychology conference on March 15, 2023.\n- You started thinking about sharing your crypto plans with Suzanne on January 10, 2024 (referencing that you met her during clinic onboarding on August 1, 2023).",
+      "our_interval": {
+        "start": "2023-03-15",
+        "end": "2024-01-10",
+        "days": 301
+      },
+      "recall_score": 0.0,
+      "mem0_score": 1.0,
+      "retrieval_empty": false,
+      "abstained": false,
+      "mechanism": "event_vs_utterance_time",
+      "reasoning": "Our answer CONTAINS the gold endpoint — '(referencing that you met her during clinic onboarding on August 1, 2023)' — and then computes from the date the turn was SAID (10 Jan 2024) instead. Retrieval was sufficient; choosing between utterance time and event time is what failed. That is the distinction docs/REFERENCE_TIME_DESIGN.md identifies as the reason `valid_from` cannot serve as a question's reference time, here costing a full point on its own."
+    },
+    {
+      "question_id": "1M_13_q19_temporal_reasoning",
+      "conversation_idx": 13,
+      "question": "How many days passed between when I saw my Bitcoin investment rise after the 3-day rally and when I debated choosing between staking more ADA or buying USDT for stability?",
+      "gold_rubric": [
+        "LLM response should state: 65 days",
+        "LLM response should state: from February 4, 2024 till April 9, 2024"
+      ],
+      "gold_interval": {
+        "start": "2024-02-04",
+        "end": "2024-04-09",
+        "days": 65
+      },
+      "our_answer": "I don't have enough information to answer this question.",
+      "our_interval": null,
+      "recall_score": 0.0,
+      "mem0_score": 1.0,
+      "retrieval_empty": false,
+      "abstained": true,
+      "mechanism": "abstained_with_retrieval",
+      "reasoning": "Abstained although retrieval was NOT empty. No date was selected, so this is not a date-instance failure and no selector can be scored on it. It belongs in the abstention lane (§9m, §12), not this one."
+    },
+    {
+      "question_id": "1M_14_q18_temporal_reasoning",
+      "conversation_idx": 14,
+      "question": "How many days after my health screening did I have to decline the social event to complete my workout?",
+      "gold_rubric": [
+        "LLM response should state: 22 days",
+        "LLM response should state: from March 15 till April 6"
+      ],
+      "gold_interval": {
+        "start": "2024-03-15",
+        "end": "2024-04-06",
+        "days": 22
+      },
+      "our_answer": "I don't have enough information to answer this question.",
+      "our_interval": null,
+      "recall_score": 0.0,
+      "mem0_score": 1.0,
+      "retrieval_empty": true,
+      "abstained": true,
+      "mechanism": "retrieval_empty",
+      "reasoning": "Retrieval returned nothing, so the temporal layer was never reached. §9l already sets this one aside; it is carried here so the seven are enumerable rather than described."
+    },
+    {
+      "question_id": "1M_1_q18_temporal_reasoning",
+      "conversation_idx": 1,
+      "question": "How many days are there between when I set the Sprint 1 deadline and when I adjusted the sprint deadline to mid-February?",
+      "gold_rubric": [
+        "LLM response should state: 5 days",
+        "LLM response should state: from February 15 till February 20"
+      ],
+      "gold_interval": {
+        "start": "2024-02-15",
+        "end": "2024-02-20",
+        "days": 5
+      },
+      "our_answer": "0 days.\n\n- You set the Sprint 1 deadline (to February 15, 2024) on January 10, 2024.\n- You adjusted the sprint deadline to mid-February (around the 20th) also on January 10, 2024.",
+      "our_interval": {
+        "start": "2024-01-10",
+        "end": "2024-01-10",
+        "days": 0
+      },
+      "recall_score": 0.0,
+      "mem0_score": 1.0,
+      "retrieval_empty": false,
+      "abstained": false,
+      "mechanism": "role_value_vs_assertion_time",
+      "reasoning": "Gold reads 'when I set the Sprint 1 deadline' as the deadline's VALUE (15 Feb) and 'when I adjusted the sprint deadline to mid-February' as the adjusted VALUE (20 Feb). We answered with the date on which both were ASSERTED (10 Jan), collapsing the interval to zero. Neither instance is the newer one — they are the same turn — so no rule that orders instances in time can separate them."
+    },
+    {
+      "question_id": "1M_8_q18_temporal_reasoning",
+      "conversation_idx": 8,
+      "question": "How many days are there between when I planned to prepare for my quiz on inclusion-exclusion and when I started preparing for my test on multi-hypothesis Bayes’ theorem?",
+      "gold_rubric": [
+        "LLM response should state: 84 days",
+        "LLM response should state: from February 1, 2024 till April 25, 2024"
+      ],
+      "gold_interval": {
+        "start": "2024-02-01",
+        "end": "2024-04-25",
+        "days": 84
+      },
+      "our_answer": "83 days.\n\n- Planned to prepare for your inclusion-exclusion quiz: January 26, 2024 (Memory 4).\n- Started preparing for your multi-hypothesis Bayes’ theorem test: April 18, 2024 (Memory 20).\n\nCalculation: Jan 26–31 = 5 days; Feb = 29; Mar = 31; Apr 1–18 = 18; total = 5 + 29 + 31 + 18 = 83.",
+      "our_interval": {
+        "start": "2024-01-26",
+        "end": "2024-04-18",
+        "days": 83
+      },
+      "recall_score": 0.0,
+      "mem0_score": 1.0,
+      "retrieval_empty": false,
+      "abstained": false,
+      "mechanism": "instance_disambiguation",
+      "reasoning": "Both endpoints are a different instance of the same recurring kind of event (a study-prep session). No revision and no value/assertion split is involved: the failure is which of several similar events the question names."
+    }
+  ]
+}
