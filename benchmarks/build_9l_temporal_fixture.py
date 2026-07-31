@@ -68,8 +68,16 @@ report a date-selection failure that never happened, which is the one error this
 prevent. S7 closes the matching hole on the other side — before it, a mistyped gold endpoint was
 caught only when it happened to collide with our own answer.
 
+Every check above that does not need the runs lives in `validate()`, which runs against the
+COMMITTED fixture. That split is the guard, not a tidiness choice: `benchmarks/results/` is
+gitignored, so anything left in `build()` alone is unverified in CI and in every fresh clone. A
+bug audit found three invariants on the wrong side of that line -- the badly-lost margin, the
+mechanism/flag partition, and the rubric endpoints -- each demonstrated by a corrupted fixture
+that the whole suite accepted. They are in `validate()` now.
+
 Run:  python benchmarks/build_9l_temporal_fixture.py --recall-run PATH --mem0-run PATH
-      python benchmarks/build_9l_temporal_fixture.py --check   (CI: no runs needed)
+      python benchmarks/build_9l_temporal_fixture.py --check           (re-derive; needs the runs)
+      python benchmarks/build_9l_temporal_fixture.py --validate-only   (CI: no runs needed)
 """
 from __future__ import annotations
 
@@ -231,8 +239,45 @@ def _stated_days(answer: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+MONTHS = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+#: The rubric's second line always names the interval in prose, e.g.
+#: "LLM response should state: from March 25, 2024 till April 1, 2024". The year is sometimes
+#: absent ("from February 15 till February 20"), so it is optional here and compared only when
+#: present -- requiring it would reject three of the seven for being transcribed correctly.
+_RUBRIC_SPAN_RE = re.compile(r"\bfrom\s+(.+?)\s+till\s+(.+?)\s*$", re.I | re.M)
+
+
+def _parse_prose_date(text: str) -> tuple[int, int, int | None]:
+    """'March 25, 2024' -> (3, 25, 2024); 'February 15' -> (2, 15, None)."""
+    match = re.match(r"\s*([A-Za-z]+)\s+(\d{1,2})(?:\s*,\s*(\d{4}))?\s*$", text)
+    if match is None or match.group(1).capitalize() not in MONTHS:
+        raise BuildError(f"cannot parse a date out of {text!r}")
+    month = MONTHS.index(match.group(1).capitalize()) + 1
+    return month, int(match.group(2)), int(match.group(3)) if match.group(3) else None
+
+
+def _date_is_mentioned(text: str, iso: str) -> bool:
+    """True when `text` names this date in prose, e.g. '2024-04-01' in 'April 1, 2024'.
+
+    `\\b` after the day is load-bearing: without it 'April 1' matches inside 'April 15', and the
+    endpoints of `1M_0_q18` are exactly April 1 and April 15.
+    """
+    day = date.fromisoformat(iso)
+    pattern = rf"\b{MONTHS[day.month - 1]}\s+{day.day}\b(?:\s*,\s*{day.year})?"
+    return re.search(pattern, text, re.I) is not None
+
+
 def build(recall_rows: dict[str, dict], mem0_rows: dict[str, dict]) -> dict:
     paired = sorted(set(recall_rows) & set(mem0_rows))
+    if not paired:
+        raise BuildError(
+            "no question ids are common to the two runs, so there is nothing to pair. "
+            "S1's diagnostic below cannot run; check QUESTION_TYPE and the id scheme."
+        )
     recall_mean = statistics.mean(recall_rows[i]["score"] for i in paired)
     mem0_mean = statistics.mean(mem0_rows[i]["score"] for i in paired)
 
@@ -325,6 +370,47 @@ def build(recall_rows: dict[str, dict], mem0_rows: dict[str, dict]) -> dict:
     return fixture
 
 
+#: Fields every case must carry, with the type `validate` will treat them as.
+_CASE_SHAPE: tuple[tuple[str, type | tuple[type, ...]], ...] = (
+    ("question_id", str), ("question", str), ("gold_rubric", list), ("our_answer", str),
+    ("recall_score", (int, float)), ("mem0_score", (int, float)),
+    ("retrieval_empty", bool), ("abstained", bool), ("mechanism", str), ("reasoning", str),
+)
+
+
+def _require_shape(case: object) -> None:
+    """Raise `BuildError` -- not `KeyError`/`TypeError` -- for a malformed case.
+
+    `main` catches only `BuildError`, so without this a hand-typed slip in `CLASSIFICATION`
+    surfaced as a traceback instead of the `FAIL` line the CLI promises. A `gold_rubric` given
+    as a bare string was worse than a crash: `" ".join(...)` spaced out every character and the
+    old rubric regex still matched, so it was silently ACCEPTED.
+    """
+    if not isinstance(case, dict):
+        raise BuildError(f"case is {type(case).__name__}, expected an object")
+    where = case.get("question_id", "<no question_id>") if isinstance(case, dict) else "?"
+    for key, kind in _CASE_SHAPE:
+        if key not in case:
+            raise BuildError(f"{where} is missing {key!r}")
+        if isinstance(case[key], bool) != (kind is bool) or not isinstance(case[key], kind):
+            raise BuildError(f"{where}.{key} is {type(case[key]).__name__}, expected {kind}")
+    for key in ("gold_interval", "our_interval"):
+        span = case.get(key, ...)
+        if span is ...:
+            raise BuildError(f"{where} is missing {key!r}")
+        if span is None:
+            continue
+        if not isinstance(span, dict) or {"start", "end", "days"} - set(span):
+            raise BuildError(f"{where}.{key} must hold start, end and days")
+        if isinstance(span["days"], bool) or not isinstance(span["days"], int):
+            raise BuildError(f"{where}.{key}.days is not an int")
+        for bound in ("start", "end"):
+            try:
+                date.fromisoformat(span[bound])
+            except (TypeError, ValueError) as exc:
+                raise BuildError(f"{where}.{key}.{bound} is not an ISO date: {exc}") from exc
+
+
 def validate(fixture: dict) -> None:
     """S3-S7 plus summary consistency, checked against the FIXTURE alone.
 
@@ -334,12 +420,36 @@ def validate(fixture: dict) -> None:
     from the fixture, so `tests/test_9l_temporal_fixture.py` runs the SAME code on the committed
     file rather than a second implementation of the same rules.
     """
-    cases = fixture["cases"]
-    summary = fixture["summary"]
+    try:
+        cases = fixture["cases"]
+        summary = fixture["summary"]
+        delta_gate = fixture["provenance"]["badly_lost_delta"]
+        for case in cases:
+            _require_shape(case)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BuildError(f"malformed fixture: {type(exc).__name__}: {exc}") from exc
 
     ids = [c["question_id"] for c in cases]
     if len(set(ids)) != len(ids):
         raise BuildError(f"duplicate question_id in cases: {ids}")
+    if set(ids) != set(CLASSIFICATION):
+        raise BuildError(
+            f"cases do not match the classification table. "
+            f"fixture={sorted(ids)} table={sorted(CLASSIFICATION)}"
+        )
+
+    # ---- S2b: the defining property, checked where CI can see it ----------------------------
+    # `build` applies this to pick the seven, but `build` needs the gitignored runs. Without it
+    # here, a committed fixture could publish seven questions RE-call did not lose -- confirmed
+    # by mutation: setting every case to recall 1.0 / mem0 0.0 was accepted before this existed.
+    for case in cases:
+        margin = case["recall_score"] - case["mem0_score"]
+        if margin > delta_gate:
+            raise BuildError(
+                f"S2b: {case['question_id']} scores {case['recall_score']} vs "
+                f"{case['mem0_score']} (margin {margin:+}), which is not a loss of "
+                f"{delta_gate}. This fixture is the badly-lost set."
+            )
 
     empty = [c for c in cases if c["retrieval_empty"]]
     abstained_only = [c for c in cases if c["abstained"] and not c["retrieval_empty"]]
@@ -361,17 +471,61 @@ def validate(fixture: dict) -> None:
                 f"Operands belong to cases where we chose dates, and only those."
             )
 
-    # ---- S7: the transcribed gold interval agrees with the rubric's own day count ------------
+    # ---- S6b: the mechanism label agrees with the flags it claims to describe -----------------
+    # Without this the tally is self-consistent by construction: `mechanism_tally` is recomputed
+    # from whatever labels are present, so a mislabelled case publishes a wrong count straight
+    # through a claim-gate marker into §9l's table with nothing objecting.
+    for case in cases:
+        mechanism = case["mechanism"]
+        if case["retrieval_empty"]:
+            expected = "retrieval_empty"
+        elif case["abstained"]:
+            expected = "abstained_with_retrieval"
+        else:
+            expected = "<a date-selection mechanism>"
+        wrong = (
+            mechanism != expected
+            if expected != "<a date-selection mechanism>"
+            else mechanism not in DATE_SELECTION_MECHANISMS
+        )
+        if wrong:
+            raise BuildError(
+                f"S6b: {case['question_id']} is labelled {mechanism!r} but abstained="
+                f"{case['abstained']} retrieval_empty={case['retrieval_empty']} requires "
+                f"{expected}"
+            )
+
+    # ---- S7: the transcribed gold interval agrees with the rubric that defines it -------------
     for case in cases:
         rubric = " ".join(case["gold_rubric"])
         gold = case["gold_interval"]
         if _days((gold["start"], gold["end"])) != gold["days"]:
             raise BuildError(f"S7: {case['question_id']} gold days disagree with its own endpoints")
-        if not re.search(rf"\b{gold['days']}\b", rubric):
+        # Anchored to the rubric's own phrasing. A bare `\b{days}\b` matched ANY integer in the
+        # rubric, and the rubric spells out both endpoint dates -- so a wrong gold interval whose
+        # length happened to equal a day-of-month or the year passed. Confirmed by mutation:
+        # 1M_12's gold shortened to 10 days matched the "April 10" in its own rubric.
+        if not re.search(rf"state:\s*{gold['days']}\s+days?\b", rubric, re.I):
             raise BuildError(
                 f"S7: {case['question_id']} gold interval spans {gold['days']} days but the "
-                f"rubric does not state that number: {rubric!r}"
+                f"rubric does not state that as its answer: {rubric!r}"
             )
+        # And the endpoints themselves, not only their difference: a delta-preserving slip
+        # (shifting both ends by the same amount) survives every check that looks at length.
+        span = _RUBRIC_SPAN_RE.search(rubric)
+        if span is None:
+            raise BuildError(f"S7: {case['question_id']} rubric states no 'from X till Y' span")
+        for label, text, iso in (
+            ("start", span.group(1), gold["start"]),
+            ("end", span.group(2), gold["end"]),
+        ):
+            month, day, year = _parse_prose_date(text)
+            actual = date.fromisoformat(iso)
+            if (month, day) != (actual.month, actual.day) or (year is not None and year != actual.year):
+                raise BuildError(
+                    f"S7: {case['question_id']} gold {label} is {iso} but the rubric says "
+                    f"{text!r}"
+                )
 
     # ---- S5: our arithmetic was right; our operands were not --------------------------------
     for case in confident_wrong:
@@ -389,6 +543,15 @@ def validate(fixture: dict) -> None:
             )
         if interval["days"] == case["gold_interval"]["days"]:
             raise BuildError(f"S5: {case['question_id']} matches gold — it is not a loss")
+        # The operands are the fixture's whole payload — a future selector is scored on them —
+        # and until now only their DIFFERENCE was checked, so shifting both ends by the same
+        # amount shipped clean. Our answers name their dates in prose, so require that.
+        for label in ("start", "end"):
+            if not _date_is_mentioned(case["our_answer"], interval[label]):
+                raise BuildError(
+                    f"S5: {case['question_id']} {label} operand {interval[label]} is not named "
+                    f"anywhere in our own answer, so it is not what we computed from"
+                )
 
     # ---- the summary must describe the cases it ships beside --------------------------------
     tally: dict[str, int] = {}
@@ -408,9 +571,10 @@ def validate(fixture: dict) -> None:
         if summary.get(key) != value:
             raise BuildError(f"summary.{key} is {summary.get(key)!r}, cases say {value!r}")
 
-    unknown = set(tally) - DATE_SELECTION_MECHANISMS - {"abstained_with_retrieval", "retrieval_empty"}
-    if unknown:
-        raise BuildError(f"unknown mechanism label(s): {sorted(unknown)}")
+    # There was a trailing "unknown mechanism label" check here. S6b makes it unreachable -- it
+    # constrains every case's mechanism to the vocabulary already -- so it was removed rather than
+    # left in place. A branch that cannot fire still reads as a guard, and the audit that prompted
+    # this pass found its negative control was passing on the summary check above instead.
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -420,14 +584,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=FIXTURE_PATH)
     parser.add_argument(
         "--check", action="store_true",
-        help="rebuild and compare against the committed fixture instead of writing it",
+        help="rebuild from the runs and compare against the committed fixture (needs the runs)",
+    )
+    parser.add_argument(
+        "--validate-only", action="store_true",
+        help="run validate() on the committed fixture; needs no runs, so CI can use it",
     )
     args = parser.parse_args(argv)
+
+    # `--validate-only` is the mode CI can actually reach. It is separate from `--check` rather
+    # than a fallback inside it, because "the runs were missing so I checked less" must not be
+    # reported with the same exit code as "the fixture re-derives from the pinned runs".
+    if args.validate_only:
+        try:
+            validate(json.loads(args.out.read_text(encoding="utf-8")))
+        except (BuildError, OSError, json.JSONDecodeError) as exc:
+            print(f"FAIL  {exc}")
+            return 1
+        print(f"OK    {args.out} is internally coherent (not re-derived — that needs --check).")
+        return 0
 
     for path, flag in ((args.recall_run, "--recall-run"), (args.mem0_run, "--mem0-run")):
         if not path.is_file():
             print(f"missing run artifact: {path}")
-            print(f"benchmarks/results/ is gitignored, so pass {flag} explicitly.")
+            print(f"benchmarks/results/ is gitignored, so pass {flag} explicitly, or use "
+                  f"--validate-only, which needs no runs.")
             return 2
 
     try:
