@@ -132,10 +132,15 @@ def _corrupt(fixture: dict, question_id_prefix: str) -> tuple[dict, dict]:
 
     Addressing by id rather than by `cases[0]`: index 0 binds to whatever sorts first, so a
     reclassification would silently retarget the control to a different case with nothing failing.
+
+    The uniqueness assertion matters for the same reason: `cases` is sorted, so a prefix that
+    matches two ids picks the first one — reintroducing exactly the bug this helper replaced.
+    `1M_1` matches `1M_12_q18` before `1M_1_q18`, and `1M_13` matches q18 before q19.
     """
     corrupt = copy.deepcopy(fixture)
-    case = next(c for c in corrupt["cases"] if c["question_id"].startswith(question_id_prefix))
-    return corrupt, case
+    hits = [c for c in corrupt["cases"] if c["question_id"].startswith(question_id_prefix)]
+    assert len(hits) == 1, f"{question_id_prefix!r} matches {[h['question_id'] for h in hits]}"
+    return corrupt, hits[0]
 
 
 def test_validate_rejects_a_case_that_was_not_badly_lost(fixture: dict) -> None:
@@ -220,6 +225,37 @@ def test_validate_rejects_gold_endpoints_the_rubric_contradicts(fixture: dict) -
     corrupt, case = _corrupt(fixture, "1M_0")
     case["gold_interval"] = {"start": "2020-01-01", "end": "2020-01-08", "days": 7}
     with pytest.raises(BuildError, match="but the rubric says"):
+        validate(corrupt)
+
+
+def test_validate_rejects_a_whole_year_shift_of_our_operands(fixture: dict) -> None:
+    """The hole the prose checks cannot see, and the reason S8 exists.
+
+    `_date_is_mentioned`'s year group is optional and trailing, so "April 1, 2020" satisfies a
+    pattern written for "April 1, 2024". The span is still 14 days and the months and days still
+    appear in the answer, so every length and prose check passes — this shipped green until the
+    endpoints were pinned to `CLASSIFICATION` in code.
+    """
+    corrupt, case = _corrupt(fixture, "1M_0")
+    case["our_interval"] = {"start": "2020-04-01", "end": "2020-04-15", "days": 14}
+    with pytest.raises(BuildError, match="S8"):
+        validate(corrupt)
+
+
+def test_validate_rejects_a_year_shift_of_gold_whose_rubric_omits_the_year(fixture: dict) -> None:
+    """`1M_14_q18`'s rubric says "from March 15 till April 6" and names no year, so the rubric
+    check cannot constrain one. Two of the seven are like this."""
+    corrupt, case = _corrupt(fixture, "1M_14")
+    case["gold_interval"] = {"start": "2020-03-15", "end": "2020-04-06", "days": 22}
+    with pytest.raises(BuildError, match="S8"):
+        validate(corrupt)
+
+
+def test_validate_rejects_a_fixture_that_moved_its_own_gate(fixture: dict) -> None:
+    """S2b read its threshold from the file it was checking. At 0.5 a TIE counts as a loss."""
+    corrupt = copy.deepcopy(fixture)
+    corrupt["provenance"]["badly_lost_delta"] = 0.5
+    with pytest.raises(BuildError, match="does not get to move its own gate"):
         validate(corrupt)
 
 
