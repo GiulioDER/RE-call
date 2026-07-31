@@ -39,8 +39,9 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+from collections.abc import Iterable
 
-from membench.axes.temporal.adapter import TemporalResponse
+from membench.axes.temporal.adapter import TemporalDocument, TemporalResponse
 
 from benchmarks.membench import _env
 from recall.index import Indexer
@@ -68,7 +69,7 @@ class RecallTemporal:
         self._store = PgVectorStore(DSN, dim=self._embedder.dim, tenant="temporal", table=TABLE)
         self._store.ensure_schema()
 
-    def ingest(self, docs) -> None:
+    def ingest(self, docs: Iterable[TemporalDocument]) -> None:
         import tempfile
         from pathlib import Path
 

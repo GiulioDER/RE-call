@@ -29,8 +29,9 @@ mem-bench aborts if a flag contradicts it.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 
-from membench.axes.isolation.adapter import TenantResponse
+from membench.axes.isolation.adapter import TenantDocument, TenantResponse
 
 from benchmarks.membench import _env
 from recall.index import Indexer
@@ -65,7 +66,7 @@ class RecallIsolation:
             self._stores[tenant] = s
         return self._stores[tenant]
 
-    def ingest(self, docs, *, tenant: str) -> None:
+    def ingest(self, docs: Iterable[TenantDocument], *, tenant: str) -> None:
         """ADD, never replace: axis 2 needs every tenant resident at once or there is nothing to
         leak from. One store per tenant means the RLS policy does the isolating."""
         import tempfile

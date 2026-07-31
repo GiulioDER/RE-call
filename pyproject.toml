@@ -221,6 +221,12 @@ module = [
     # includes `benchmarks`, and the typecheck job installs `.[dev]` only, so without this the job
     # fails on a dependency it deliberately does not install.
     "pyarrow.*",
+    # mem-bench: a SEPARATE repo, deliberately NOT a dependency of this one. Its `membench` package
+    # is stdlib-only and its "$0 to recompute" claim depends on staying that way, so we put it on
+    # PYTHONPATH at run time rather than installing it. `benchmarks/membench/` holds our
+    # submitter-side adapters, which import it. Same shape as every entry above: the module must
+    # type-check without the thing it optionally talks to.
+    "membench.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

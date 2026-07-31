@@ -25,27 +25,31 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from recall.embeddings import FastEmbedEmbedder, VoyageEmbedder
+from recall.embeddings import Embedder, FastEmbedEmbedder, VoyageEmbedder
+from recall.rerank import Reranker
 
 _VOYAGE = "voyage:"
 
 
 @dataclass(frozen=True)
 class RetrievalConfig:
-    embedder: object
-    reranker: object | None
+    #: The library's own protocols, not `object`. Typing these loosely hid that `.dim` and the
+    #: `trusted_search` argument types were never checked -- mypy found it the moment these files
+    #: entered a repo that type-checks `benchmarks/`, which is the argument for them being here.
+    embedder: Embedder
+    reranker: Reranker | None
     k: int
     candidate_k: int
 
 
-def _build_embedder():
+def _build_embedder() -> Embedder:
     spec = os.environ.get("MEMBENCH_EMBEDDER", "")
     if spec.startswith(_VOYAGE):
         return VoyageEmbedder(spec[len(_VOYAGE):])
     return FastEmbedEmbedder(spec) if spec else FastEmbedEmbedder()
 
 
-def _build_reranker():
+def _build_reranker() -> Reranker | None:
     """`None` unless `MEMBENCH_RERANKER` names a Voyage model.
 
     Imported lazily and from `benchmarks.voyage_rerank`, the copy that is ON MASTER. The previous
