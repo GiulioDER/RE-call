@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import is_dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 from recall.embeddings import Embedder
@@ -7,6 +8,25 @@ from recall.guards import DEFAULT_GAP_THRESHOLD, gap_warning, staleness
 from recall.rerank import Reranker
 from recall.store import PgVectorStore
 from recall.types import RetrievalResult, ScoredChunk
+
+
+def _rescored(hit: ScoredChunk, score: float) -> ScoredChunk:
+    """The hit with a new score, keeping every other field.
+
+    `replace` for the real dataclass, so a field added to `ScoredChunk` later cannot be dropped
+    the way `first_indexed_at` silently was. The fallback is not decoration: stores and their
+    hits are duck-typed by tests and downstream adapters, and `replace` raises TypeError on a
+    non-dataclass, so without it this would turn a working search into a crash — the exact
+    hazard `recall.trust` goes out of its way to avoid one layer up.
+    """
+    if is_dataclass(hit) and not isinstance(hit, type):
+        return replace(hit, score=score)
+    return ScoredChunk(
+        chunk=hit.chunk,
+        score=score,
+        indexed_at=getattr(hit, "indexed_at", None),
+        first_indexed_at=getattr(hit, "first_indexed_at", None),
+    )
 
 #: Default candidate pool per retrieval leg before fusion. Exposed as a module constant (not only a
 #: signature default) so the eval harness references the SAME number instead of a hardcoded copy:
@@ -112,14 +132,13 @@ class HybridRetriever:
         # hide a relevant doc sitting just below the fused cutoff from the cross-encoder, which
         # is exactly the doc reranking exists to rescue.
         ranked_ids = sorted(fused, key=lambda cid: fused[cid], reverse=True)
-        hits = [
-            ScoredChunk(
-                chunk=by_id[cid].chunk,
-                score=dense_score.get(cid, by_id[cid].score),
-                indexed_at=by_id[cid].indexed_at,
-            )
-            for cid in ranked_ids
-        ]
+        # `replace`, not a freshly-listed ScoredChunk. Enumerating the carried fields by hand
+        # silently DROPPED `first_indexed_at` the day it was added: every production hit reached
+        # the trust layer with it None, fell back to `indexed_at`, and the entire point-in-time
+        # fix was inert on the only read path that matters — with the suite still green, because
+        # no test built a hit through a retriever. Copying the hit and overriding the one field
+        # that actually changes cannot lose a field added later.
+        hits = [_rescored(by_id[cid], dense_score.get(cid, by_id[cid].score)) for cid in ranked_ids]
         if self._reranker is not None:
             hits = self._reranker.rerank(query, hits)
         hits = hits[:k]
