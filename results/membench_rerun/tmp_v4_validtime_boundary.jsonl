@@ -1,0 +1,181 @@
+{"axis": "temporal", "config": {"dim": 384, "embedder": "BAAI/bge-small-en-v1.5", "reranker": null}, "harness_version": "mem-bench 0.1.0", "manifest_digest": "bdd48485a883539b4e7fdc895f30a1e16e002d004fb623e4fc0a08d1f9b95587", "run_started": "2026-08-01T21:20:41Z", "schema_version": 1, "submitter": "github:GiulioDER", "system": "RE-call", "system_version": "0.7.0", "version_source": "adapter"}
+{"answered": true, "cited_ids": ["1f6ab6ae9ce03693", "38d873827d7722ce", "9bfc28fb6e2c5ed6"], "instance_id": "temporal/T1-stable/000", "tokens": 76}
+{"answered": true, "cited_ids": ["0a15c94272c90d2c", "73e1819563b2fb0b", "62000b1195a54d56", "2b348c74dfd9c931", "1eddbaf1266aed59"], "instance_id": "temporal/T1-stable/001", "tokens": 66}
+{"answered": true, "cited_ids": ["48120e7cacaa8be1", "4287b196f7258ea0", "eb65951f4719747d", "c5f46887b02d758f", "4316d0210dfb8eec"], "instance_id": "temporal/T1-stable/002", "tokens": 73}
+{"answered": true, "cited_ids": ["55f5cf7b4116aa17", "1fb5ed4080e3224c", "7450c445c1af1e7c", "bd5debc338f22512", "7950c9f481e62881"], "instance_id": "temporal/T1-stable/003", "tokens": 62}
+{"answered": true, "cited_ids": ["42a9b070bf28edb8", "e7f07aadc0458170", "5e2d08abe40330bf", "b32f30b023d7464d", "7ed5b4d89f135a50"], "instance_id": "temporal/T1-stable/004", "tokens": 73}
+{"answered": true, "cited_ids": ["884dec6e844bf9ab", "6696598ebdaf12cb", "999567086eda715b", "ffb66a0a05cd905f"], "instance_id": "temporal/T1-stable/005", "tokens": 70}
+{"answered": true, "cited_ids": ["786136784f02f983", "c5623e95364d64ab", "781eb07ba2a3ba99", "cbdc60291b4e70f2"], "instance_id": "temporal/T1-stable/006", "tokens": 60}
+{"answered": true, "cited_ids": ["016d8b7aa27974d2", "b45524f51e15269c", "5b4d4818bd7f8283"], "instance_id": "temporal/T1-stable/007", "tokens": 52}
+{"answered": true, "cited_ids": ["3083f56a7ac14ab7", "65ced0b008e8d7db", "7ecfef71a709a6e2", "0835347fb20960a5", "e126bd117aba70f4"], "instance_id": "temporal/T1-stable/008", "tokens": 75}
+{"answered": true, "cited_ids": ["acd1ad638c89329d", "751219ba1eb44c50", "3a3da4b22739bcab"], "instance_id": "temporal/T1-stable/009", "tokens": 64}
+{"answered": true, "cited_ids": ["3c9be5647dd718c3", "bde4912f8c959252", "80b543087b231244"], "instance_id": "temporal/T1-stable/010", "tokens": 76}
+{"answered": true, "cited_ids": ["d164befd0dd41185", "854734b867082756"], "instance_id": "temporal/T1-stable/011", "tokens": 78}
+{"answered": true, "cited_ids": ["520fe399d601810e", "2d4854d8d56ea096", "bad746624ccece34", "d5eecd35ca834e41"], "instance_id": "temporal/T1-stable/012", "tokens": 71}
+{"answered": true, "cited_ids": ["c00b1dd3c94fd756", "027a9488c99d3d7b"], "instance_id": "temporal/T1-stable/013", "tokens": 78}
+{"answered": true, "cited_ids": ["182c8e617fcbc40a"], "instance_id": "temporal/T1-stable/014", "tokens": 74}
+{"answered": true, "cited_ids": ["3a2e6673f4ca6bbe", "672db463adcb1246", "b3aea6f1462c54e6", "ac71354473af9cbd", "83baed6c1285528a"], "instance_id": "temporal/T1-stable/015", "tokens": 63}
+{"answered": true, "cited_ids": ["0a97bc4f2c66905b", "0518c074dec7dbf5", "d399a28d55bea53e", "ab3ffaa41927aa81", "34a165b5ae6075ae"], "instance_id": "temporal/T1-stable/016", "tokens": 77}
+{"answered": true, "cited_ids": ["31e28f2c73761c8b", "a861a1332e0460c6", "1d1fd3eb7e01130b", "0450fc984db1ba30"], "instance_id": "temporal/T1-stable/017", "tokens": 67}
+{"answered": true, "cited_ids": ["b721322aeef8cfd9", "338f289dd13de193", "6006fda3c926d70a", "0dcd131fe0c55f9f"], "instance_id": "temporal/T1-stable/018", "tokens": 86}
+{"answered": true, "cited_ids": ["7c4805c517f47941", "626e519ef8fbb808", "9b67686b0a29b1e7"], "instance_id": "temporal/T1-stable/019", "tokens": 71}
+{"answered": true, "cited_ids": ["537a41e9bf874e86", "244842b32efe2082", "ed906a6d457f45d3", "95179871e1592a6f"], "instance_id": "temporal/T1-stable/020", "tokens": 74}
+{"answered": true, "cited_ids": ["7a45f18a89325f51", "a2c937a230557897", "42bdc767f3ba0db6"], "instance_id": "temporal/T1-stable/021", "tokens": 78}
+{"answered": true, "cited_ids": ["36084f1b14873e5d", "b0e98c3acdbd5b1a", "f52f58988fa8583c", "66d13ba26d5e6148", "277c7a05961c9781"], "instance_id": "temporal/T1-stable/022", "tokens": 73}
+{"answered": true, "cited_ids": ["989970308e8d8f22", "dabd05e219991ae8"], "instance_id": "temporal/T1-stable/023", "tokens": 67}
+{"answered": true, "cited_ids": ["38d873827d7722ce", "9bfc28fb6e2c5ed6", "74a5074d54d73d10"], "instance_id": "temporal/T1-stable/024", "tokens": 76}
+{"answered": true, "cited_ids": ["73e1819563b2fb0b", "0a15c94272c90d2c", "1eddbaf1266aed59", "08f13c2ccb37f86d", "1850754e43c30fda"], "instance_id": "temporal/T1-stable/025", "tokens": 77}
+{"answered": true, "cited_ids": ["4287b196f7258ea0", "48120e7cacaa8be1", "eb65951f4719747d"], "instance_id": "temporal/T1-stable/026", "tokens": 73}
+{"answered": true, "cited_ids": ["b153b304353163b4", "9c71fd6c9e19c265"], "instance_id": "temporal/T1-stable/027", "tokens": 73}
+{"answered": true, "cited_ids": ["42a9b070bf28edb8", "5e2d08abe40330bf", "e7f07aadc0458170", "9ae14826cc579fe7"], "instance_id": "temporal/T1-stable/028", "tokens": 63}
+{"answered": true, "cited_ids": ["984cc5a18c0b7392", "cc28a799e2c7f2e6", "50831226a12e0165", "10ff198794fc8628", "884dec6e844bf9ab"], "instance_id": "temporal/T1-stable/029", "tokens": 56}
+{"answered": true, "cited_ids": ["3f55a096d877cdd8", "33a51dc04d493977", "91840aa6b17eaed3", "146f92a6da2f266b"], "instance_id": "temporal/T2-revised-ref-after/000", "tokens": 76}
+{"answered": true, "cited_ids": ["f3343a64c6b4abe7", "6dc253ca5945ba74", "c29460a20cf78c6b", "19f511cfbfd85b62"], "instance_id": "temporal/T2-revised-ref-after/001", "tokens": 70}
+{"answered": true, "cited_ids": ["213d467c9a38ac63"], "instance_id": "temporal/T2-revised-ref-after/002", "tokens": 73}
+{"answered": true, "cited_ids": ["d55a0c08f3f7b746", "95f31a8aa9249293"], "instance_id": "temporal/T2-revised-ref-after/003", "tokens": 63}
+{"answered": true, "cited_ids": ["636a850de2fbe4cc", "d459c195d407a0f5", "b00f7e15d07767b8"], "instance_id": "temporal/T2-revised-ref-after/004", "tokens": 73}
+{"answered": true, "cited_ids": ["77b2bb662768c0f1", "eb4d82ce6a7f3ef5"], "instance_id": "temporal/T2-revised-ref-after/005", "tokens": 63}
+{"answered": true, "cited_ids": ["b1f8ec1908f929b3", "168832dd8b25fcc3", "7b09acc45ff78b3a"], "instance_id": "temporal/T2-revised-ref-after/006", "tokens": 70}
+{"answered": true, "cited_ids": ["57336826a5283bda"], "instance_id": "temporal/T2-revised-ref-after/007", "tokens": 66}
+{"answered": true, "cited_ids": ["c5f18b5a55c87f78", "5f21d5ce38602f75"], "instance_id": "temporal/T2-revised-ref-after/008", "tokens": 74}
+{"answered": true, "cited_ids": ["f7cbd502c35eb330"], "instance_id": "temporal/T2-revised-ref-after/009", "tokens": 74}
+{"answered": true, "cited_ids": ["d03fa5614af52eb2", "f1bd65707471a0a2"], "instance_id": "temporal/T2-revised-ref-after/010", "tokens": 71}
+{"answered": true, "cited_ids": ["1656a8d63fe12769", "2931b0c7cc04d8e0", "840340fe0c832777"], "instance_id": "temporal/T2-revised-ref-after/011", "tokens": 85}
+{"answered": true, "cited_ids": ["c736b63cf882b386", "2d4854d8d56ea096", "0d2b853c705d50ca"], "instance_id": "temporal/T2-revised-ref-after/012", "tokens": 72}
+{"answered": true, "cited_ids": ["5196ee0692762624", "c00b1dd3c94fd756"], "instance_id": "temporal/T2-revised-ref-after/013", "tokens": 75}
+{"answered": true, "cited_ids": ["f91033d851e4accb", "e936c114644c4a7f", "9c84f1f3e28fc5c3"], "instance_id": "temporal/T2-revised-ref-after/014", "tokens": 77}
+{"answered": true, "cited_ids": ["b42fe8888712efc0", "98150c60dca21bc6"], "instance_id": "temporal/T2-revised-ref-after/015", "tokens": 74}
+{"answered": true, "cited_ids": ["5ec345728a5d5d1a", "dd24e4042f2e111d", "0a97bc4f2c66905b"], "instance_id": "temporal/T2-revised-ref-after/016", "tokens": 78}
+{"answered": true, "cited_ids": ["0dab35f4f12b39f3", "31e28f2c73761c8b", "63adc5f58e1ef629"], "instance_id": "temporal/T2-revised-ref-after/017", "tokens": 64}
+{"answered": true, "cited_ids": ["2b3555060d775344", "391ec4b3dba48ce5", "6025d6d6b6c06b8a", "e5098d9c459707c2"], "instance_id": "temporal/T2-revised-ref-after/018", "tokens": 70}
+{"answered": true, "cited_ids": ["789276ef7ecc40c7", "0816a73c50199993", "8406462f6bd72210"], "instance_id": "temporal/T2-revised-ref-after/019", "tokens": 81}
+{"answered": true, "cited_ids": ["244842b32efe2082", "537a41e9bf874e86", "ed906a6d457f45d3", "95179871e1592a6f"], "instance_id": "temporal/T2-revised-ref-after/020", "tokens": 70}
+{"answered": true, "cited_ids": ["976569db415ddeba", "eb7463162ed4e273", "55155a354d2dbb0a"], "instance_id": "temporal/T2-revised-ref-after/021", "tokens": 60}
+{"answered": true, "cited_ids": ["e3041eb11d2bbffb", "a74cd410220cfeca"], "instance_id": "temporal/T2-revised-ref-after/022", "tokens": 68}
+{"answered": true, "cited_ids": ["230bcae3e988b296", "465917eb232f22e0", "df275581a68df874"], "instance_id": "temporal/T2-revised-ref-after/023", "tokens": 63}
+{"answered": true, "cited_ids": ["91840aa6b17eaed3", "146f92a6da2f266b", "3f55a096d877cdd8", "859b505bb02053ba"], "instance_id": "temporal/T2-revised-ref-after/024", "tokens": 77}
+{"answered": true, "cited_ids": ["f3343a64c6b4abe7", "6dc253ca5945ba74", "c29460a20cf78c6b", "ab5b4f6daa7eaad9"], "instance_id": "temporal/T2-revised-ref-after/025", "tokens": 77}
+{"answered": true, "cited_ids": ["1e11fb2eb5074052", "48f90372472bfb17"], "instance_id": "temporal/T2-revised-ref-after/026", "tokens": 70}
+{"answered": true, "cited_ids": ["95f31a8aa9249293", "a9ca8c5dceadcdf1"], "instance_id": "temporal/T2-revised-ref-after/027", "tokens": 60}
+{"answered": true, "cited_ids": ["28df61fda5c34f2b", "703e8492ef5124e4"], "instance_id": "temporal/T2-revised-ref-after/028", "tokens": 66}
+{"answered": true, "cited_ids": ["41cc973a4af1a5e2", "eb4d82ce6a7f3ef5", "fbcfbba72233ab39"], "instance_id": "temporal/T2-revised-ref-after/029", "tokens": 69}
+{"answered": true, "cited_ids": ["d6164eec05d0aa47"], "instance_id": "temporal/T3-revised-ref-before/000", "tokens": 76}
+{"answered": true, "cited_ids": ["08f13c2ccb37f86d", "62000b1195a54d56", "0a15c94272c90d2c"], "instance_id": "temporal/T3-revised-ref-before/001", "tokens": 66}
+{"answered": true, "cited_ids": ["6786b8bffe29833a", "48120e7cacaa8be1", "4287b196f7258ea0", "0ac7c999e3da8e24"], "instance_id": "temporal/T3-revised-ref-before/002", "tokens": 69}
+{"answered": true, "cited_ids": ["d5b50f9ad9a99b97", "b153b304353163b4", "2b8d4c043a917ec2"], "instance_id": "temporal/T3-revised-ref-before/003", "tokens": 74}
+{"answered": true, "cited_ids": ["5e2d08abe40330bf", "e7f07aadc0458170", "7ed5b4d89f135a50"], "instance_id": "temporal/T3-revised-ref-before/004", "tokens": 66}
+{"answered": true, "cited_ids": ["6696598ebdaf12cb", "10ff198794fc8628", "999567086eda715b", "ffb66a0a05cd905f"], "instance_id": "temporal/T3-revised-ref-before/005", "tokens": 70}
+{"answered": true, "cited_ids": ["0a89c32cd9daca7a", "786136784f02f983", "9740b6b70aee98ab"], "instance_id": "temporal/T3-revised-ref-before/006", "tokens": 59}
+{"answered": true, "cited_ids": ["b45524f51e15269c", "016d8b7aa27974d2"], "instance_id": "temporal/T3-revised-ref-before/007", "tokens": 48}
+{"answered": true, "cited_ids": ["7ecfef71a709a6e2", "3083f56a7ac14ab7", "0835347fb20960a5", "e126bd117aba70f4"], "instance_id": "temporal/T3-revised-ref-before/008", "tokens": 79}
+{"answered": true, "cited_ids": ["acd1ad638c89329d", "3a3da4b22739bcab"], "instance_id": "temporal/T3-revised-ref-before/009", "tokens": 63}
+{"answered": true, "cited_ids": ["16f285e20d8d9031", "f2544dc70ccf170a"], "instance_id": "temporal/T3-revised-ref-before/010", "tokens": 78}
+{"answered": true, "cited_ids": ["99a3db3a038d6483"], "instance_id": "temporal/T3-revised-ref-before/011", "tokens": 85}
+{"answered": true, "cited_ids": ["d5eecd35ca834e41"], "instance_id": "temporal/T3-revised-ref-before/012", "tokens": 76}
+{"answered": true, "cited_ids": ["027a9488c99d3d7b", "112842ad281cf585"], "instance_id": "temporal/T3-revised-ref-before/013", "tokens": 68}
+{"answered": true, "cited_ids": ["2217d7973fa8aef9", "f91033d851e4accb"], "instance_id": "temporal/T3-revised-ref-before/014", "tokens": 71}
+{"answered": true, "cited_ids": ["ac71354473af9cbd"], "instance_id": "temporal/T3-revised-ref-before/015", "tokens": 68}
+{"answered": true, "cited_ids": ["ab3ffaa41927aa81", "0518c074dec7dbf5", "0a7f4f261c5f7a02"], "instance_id": "temporal/T3-revised-ref-before/016", "tokens": 78}
+{"answered": true, "cited_ids": ["0450fc984db1ba30", "f8502084b8b2cfeb", "1d1fd3eb7e01130b"], "instance_id": "temporal/T3-revised-ref-before/017", "tokens": 67}
+{"answered": true, "cited_ids": ["6d8b74bcf761080d", "2bddb8966bee4682", "0dcd131fe0c55f9f", "6006fda3c926d70a", "b721322aeef8cfd9"], "instance_id": "temporal/T3-revised-ref-before/018", "tokens": 81}
+{"answered": true, "cited_ids": ["7ebf84109772672e"], "instance_id": "temporal/T3-revised-ref-before/019", "tokens": 77}
+{"answered": true, "cited_ids": ["ed906a6d457f45d3"], "instance_id": "temporal/T3-revised-ref-before/020", "tokens": 67}
+{"answered": true, "cited_ids": ["55155a354d2dbb0a", "9805b39b64a255c3"], "instance_id": "temporal/T3-revised-ref-before/021", "tokens": 67}
+{"answered": true, "cited_ids": ["f52f58988fa8583c", "b0e98c3acdbd5b1a", "36084f1b14873e5d"], "instance_id": "temporal/T3-revised-ref-before/022", "tokens": 69}
+{"answered": true, "cited_ids": ["afea4747e3c1ad3b"], "instance_id": "temporal/T3-revised-ref-before/023", "tokens": 60}
+{"answered": true, "cited_ids": ["9bfc28fb6e2c5ed6", "02cd0ed53d11da17"], "instance_id": "temporal/T3-revised-ref-before/024", "tokens": 73}
+{"answered": true, "cited_ids": ["0a15c94272c90d2c", "73e1819563b2fb0b", "f91b543413bf0d70", "62000b1195a54d56"], "instance_id": "temporal/T3-revised-ref-before/025", "tokens": 65}
+{"answered": true, "cited_ids": ["48120e7cacaa8be1", "ad1678d88168b8a1", "4287b196f7258ea0"], "instance_id": "temporal/T3-revised-ref-before/026", "tokens": 70}
+{"answered": true, "cited_ids": ["b153b304353163b4", "d5b50f9ad9a99b97", "7fe4d93f39255003", "7950c9f481e62881"], "instance_id": "temporal/T3-revised-ref-before/027", "tokens": 73}
+{"answered": true, "cited_ids": ["5e2d08abe40330bf", "b00f7e15d07767b8", "d459c195d407a0f5"], "instance_id": "temporal/T3-revised-ref-before/028", "tokens": 73}
+{"answered": true, "cited_ids": ["ffb66a0a05cd905f"], "instance_id": "temporal/T3-revised-ref-before/029", "tokens": 69}
+{"answered": true, "cited_ids": ["6fb48dd4cb7e5945", "91840aa6b17eaed3"], "instance_id": "temporal/T4-role-confusion/000", "tokens": 77}
+{"answered": true, "cited_ids": ["6dc253ca5945ba74", "0ff262b9d619f3cc"], "instance_id": "temporal/T4-role-confusion/001", "tokens": 73}
+{"answered": true, "cited_ids": ["059d85ff62c4e2c2"], "instance_id": "temporal/T4-role-confusion/002", "tokens": 80}
+{"answered": true, "cited_ids": ["1708f4794c6118f6", "95f31a8aa9249293"], "instance_id": "temporal/T4-role-confusion/003", "tokens": 59}
+{"answered": true, "cited_ids": ["891abfdc79b56551"], "instance_id": "temporal/T4-role-confusion/004", "tokens": 70}
+{"answered": true, "cited_ids": ["eb4d82ce6a7f3ef5"], "instance_id": "temporal/T4-role-confusion/005", "tokens": 74}
+{"answered": true, "cited_ids": ["f3fd21a9a46c6726", "786136784f02f983"], "instance_id": "temporal/T4-role-confusion/006", "tokens": 59}
+{"answered": true, "cited_ids": ["f97aa180619a5442"], "instance_id": "temporal/T4-role-confusion/007", "tokens": 70}
+{"answered": true, "cited_ids": ["d1f390ef7c6a84e5"], "instance_id": "temporal/T4-role-confusion/008", "tokens": 70}
+{"answered": true, "cited_ids": ["0247cad9eb2b791d", "24480b6a73f88ee4"], "instance_id": "temporal/T4-role-confusion/009", "tokens": 70}
+{"answered": true, "cited_ids": ["93162965d53f304a", "f1bd65707471a0a2", "d03fa5614af52eb2"], "instance_id": "temporal/T4-role-confusion/010", "tokens": 68}
+{"answered": true, "cited_ids": ["840340fe0c832777", "dcb7400f4ce86ba4", "d164befd0dd41185"], "instance_id": "temporal/T4-role-confusion/011", "tokens": 77}
+{"answered": true, "cited_ids": ["c2d4a2856a07de32"], "instance_id": "temporal/T4-role-confusion/012", "tokens": 68}
+{"answered": true, "cited_ids": ["6f58d4b6f52eebef", "5196ee0692762624"], "instance_id": "temporal/T4-role-confusion/013", "tokens": 71}
+{"answered": true, "cited_ids": ["e936c114644c4a7f", "2217d7973fa8aef9"], "instance_id": "temporal/T4-role-confusion/014", "tokens": 81}
+{"answered": true, "cited_ids": ["b42fe8888712efc0", "672db463adcb1246"], "instance_id": "temporal/T4-role-confusion/015", "tokens": 73}
+{"answered": true, "cited_ids": ["5ec345728a5d5d1a"], "instance_id": "temporal/T4-role-confusion/016", "tokens": 63}
+{"answered": true, "cited_ids": ["20b481f9aa22b687", "0dab35f4f12b39f3"], "instance_id": "temporal/T4-role-confusion/017", "tokens": 67}
+{"answered": true, "cited_ids": ["6025d6d6b6c06b8a"], "instance_id": "temporal/T4-role-confusion/018", "tokens": 78}
+{"answered": true, "cited_ids": ["0816a73c50199993", "7ebf84109772672e"], "instance_id": "temporal/T4-role-confusion/019", "tokens": 71}
+{"answered": true, "cited_ids": ["244842b32efe2082", "5d68353c33ed6ea8"], "instance_id": "temporal/T4-role-confusion/020", "tokens": 71}
+{"answered": true, "cited_ids": ["c79d784f0040e816", "eb7463162ed4e273", "976569db415ddeba"], "instance_id": "temporal/T4-role-confusion/021", "tokens": 70}
+{"answered": true, "cited_ids": ["e3041eb11d2bbffb", "4b18f3788482ee00", "53e2a08027ccfd48"], "instance_id": "temporal/T4-role-confusion/022", "tokens": 73}
+{"answered": true, "cited_ids": ["27356b5cb321d295"], "instance_id": "temporal/T4-role-confusion/023", "tokens": 60}
+{"answered": true, "cited_ids": ["3f55a096d877cdd8", "91840aa6b17eaed3"], "instance_id": "temporal/T4-role-confusion/024", "tokens": 80}
+{"answered": true, "cited_ids": ["eb80b04ee5fef1ab"], "instance_id": "temporal/T4-role-confusion/025", "tokens": 65}
+{"answered": true, "cited_ids": ["76805a87c6265ce2", "148b1cba3cba34d1"], "instance_id": "temporal/T4-role-confusion/026", "tokens": 67}
+{"answered": true, "cited_ids": ["90318814e9d83588", "d55a0c08f3f7b746", "fd7dfa43391574f8"], "instance_id": "temporal/T4-role-confusion/027", "tokens": 74}
+{"answered": true, "cited_ids": ["b00f7e15d07767b8", "1bfdacfe1b6fe0a4"], "instance_id": "temporal/T4-role-confusion/028", "tokens": 73}
+{"answered": true, "cited_ids": ["97afc5d086ed93f5"], "instance_id": "temporal/T4-role-confusion/029", "tokens": 66}
+{"answered": true, "cited_ids": ["91840aa6b17eaed3"], "instance_id": "temporal/T5-boundary/000", "tokens": 72}
+{"answered": true, "cited_ids": ["0a15c94272c90d2c"], "instance_id": "temporal/T5-boundary/001", "tokens": 61}
+{"answered": true, "cited_ids": ["48120e7cacaa8be1", "eb48c8f3a8dc0eef", "ad1678d88168b8a1"], "instance_id": "temporal/T5-boundary/002", "tokens": 66}
+{"answered": true, "cited_ids": ["b153b304353163b4", "a9ca8c5dceadcdf1"], "instance_id": "temporal/T5-boundary/003", "tokens": 67}
+{"answered": true, "cited_ids": ["28df61fda5c34f2b"], "instance_id": "temporal/T5-boundary/004", "tokens": 73}
+{"answered": true, "cited_ids": ["eca83d607de7495c", "6696598ebdaf12cb", "ffb66a0a05cd905f"], "instance_id": "temporal/T5-boundary/005", "tokens": 66}
+{"answered": true, "cited_ids": ["168832dd8b25fcc3"], "instance_id": "temporal/T5-boundary/006", "tokens": 66}
+{"answered": true, "cited_ids": ["65d35186e2ead183", "b45524f51e15269c", "5b4d4818bd7f8283"], "instance_id": "temporal/T5-boundary/007", "tokens": 66}
+{"answered": true, "cited_ids": ["90626ecb71f2dd85", "d1f390ef7c6a84e5"], "instance_id": "temporal/T5-boundary/008", "tokens": 72}
+{"answered": true, "cited_ids": ["24480b6a73f88ee4", "0247cad9eb2b791d"], "instance_id": "temporal/T5-boundary/009", "tokens": 70}
+{"answered": true, "cited_ids": ["c2d4ddbc43f1528f", "5d33b0432cae8b65"], "instance_id": "temporal/T5-boundary/010", "tokens": 77}
+{"answered": true, "cited_ids": ["229484de8b2ff06d"], "instance_id": "temporal/T5-boundary/011", "tokens": 67}
+{"answered": true, "cited_ids": ["0d2b853c705d50ca", "0aa283b91c257ef2"], "instance_id": "temporal/T5-boundary/012", "tokens": 68}
+{"answered": true, "cited_ids": ["b90e4f21943851ee", "5196ee0692762624"], "instance_id": "temporal/T5-boundary/013", "tokens": 68}
+{"answered": true, "cited_ids": ["9c84f1f3e28fc5c3", "e936c114644c4a7f", "2217d7973fa8aef9"], "instance_id": "temporal/T5-boundary/014", "tokens": 74}
+{"answered": true, "cited_ids": ["796b128e4d4267e6", "672db463adcb1246"], "instance_id": "temporal/T5-boundary/015", "tokens": 77}
+{"answered": true, "cited_ids": ["e2f33c741c72b3ea", "0a97bc4f2c66905b"], "instance_id": "temporal/T5-boundary/016", "tokens": 78}
+{"answered": true, "cited_ids": ["63adc5f58e1ef629"], "instance_id": "temporal/T5-boundary/017", "tokens": 64}
+{"answered": true, "cited_ids": ["391ec4b3dba48ce5", "2b3555060d775344"], "instance_id": "temporal/T5-boundary/018", "tokens": 70}
+{"answered": true, "cited_ids": ["8406462f6bd72210"], "instance_id": "temporal/T5-boundary/019", "tokens": 81}
+{"answered": true, "cited_ids": ["fa697ba4c607dfe7"], "instance_id": "temporal/T5-boundary/020", "tokens": 78}
+{"answered": true, "cited_ids": ["beb737027874eaf5", "9805b39b64a255c3"], "instance_id": "temporal/T5-boundary/021", "tokens": 67}
+{"answered": true, "cited_ids": ["4b18f3788482ee00", "06e309099d226a63", "53e2a08027ccfd48"], "instance_id": "temporal/T5-boundary/022", "tokens": 66}
+{"answered": true, "cited_ids": ["df275581a68df874"], "instance_id": "temporal/T5-boundary/023", "tokens": 66}
+{"answered": true, "cited_ids": ["146f92a6da2f266b", "91840aa6b17eaed3", "33a51dc04d493977"], "instance_id": "temporal/T5-boundary/024", "tokens": 73}
+{"answered": true, "cited_ids": ["f3343a64c6b4abe7", "6dc253ca5945ba74", "ab5b4f6daa7eaad9"], "instance_id": "temporal/T5-boundary/025", "tokens": 76}
+{"answered": true, "cited_ids": ["391f336eb6098a2f"], "instance_id": "temporal/T5-boundary/026", "tokens": 66}
+{"answered": true, "cited_ids": ["90318814e9d83588", "d55a0c08f3f7b746"], "instance_id": "temporal/T5-boundary/027", "tokens": 70}
+{"answered": true, "cited_ids": ["b00f7e15d07767b8", "5e2d08abe40330bf"], "instance_id": "temporal/T5-boundary/028", "tokens": 66}
+{"answered": true, "cited_ids": ["fbcfbba72233ab39", "eb4d82ce6a7f3ef5", "97afc5d086ed93f5"], "instance_id": "temporal/T5-boundary/029", "tokens": 62}
+{"answered": true, "cited_ids": ["4cb3b6326cf16a7c", "146f92a6da2f266b", "3f55a096d877cdd8"], "instance_id": "temporal/T6-write-time/000", "tokens": 73}
+{"answered": true, "cited_ids": ["08f13c2ccb37f86d", "0a15c94272c90d2c"], "instance_id": "temporal/T6-write-time/001", "tokens": 69}
+{"answered": true, "cited_ids": ["c0b5d9d41743226c", "4287b196f7258ea0", "ad1678d88168b8a1"], "instance_id": "temporal/T6-write-time/002", "tokens": 62}
+{"answered": true, "cited_ids": ["d5b50f9ad9a99b97", "d55a0c08f3f7b746"], "instance_id": "temporal/T6-write-time/003", "tokens": 62}
+{"answered": true, "cited_ids": ["5e2d08abe40330bf", "178c48054cd90666", "42a9b070bf28edb8", "e7f07aadc0458170"], "instance_id": "temporal/T6-write-time/004", "tokens": 70}
+{"answered": true, "cited_ids": ["6696598ebdaf12cb", "eb4d82ce6a7f3ef5", "77b2bb662768c0f1"], "instance_id": "temporal/T6-write-time/005", "tokens": 73}
+{"answered": true, "cited_ids": ["c5623e95364d64ab", "bc5f9c067357759d"], "instance_id": "temporal/T6-write-time/006", "tokens": 66}
+{"answered": true, "cited_ids": ["8d1a670a2ed47236"], "instance_id": "temporal/T6-write-time/007", "tokens": 66}
+{"answered": true, "cited_ids": ["0835347fb20960a5", "8481aaad47280596"], "instance_id": "temporal/T6-write-time/008", "tokens": 74}
+{"answered": true, "cited_ids": ["c5119b24137bb80d", "acd1ad638c89329d", "3a3da4b22739bcab"], "instance_id": "temporal/T6-write-time/009", "tokens": 71}
+{"answered": true, "cited_ids": ["f1bd65707471a0a2", "bde4912f8c959252"], "instance_id": "temporal/T6-write-time/010", "tokens": 79}
+{"answered": true, "cited_ids": ["840340fe0c832777", "878c1adfe72920f0", "1656a8d63fe12769"], "instance_id": "temporal/T6-write-time/011", "tokens": 82}
+{"answered": true, "cited_ids": ["15d1eddd1a715dc8", "d5eecd35ca834e41"], "instance_id": "temporal/T6-write-time/012", "tokens": 79}
+{"answered": true, "cited_ids": ["5196ee0692762624", "027a9488c99d3d7b", "7926766662d33eb6", "112842ad281cf585"], "instance_id": "temporal/T6-write-time/013", "tokens": 68}
+{"answered": true, "cited_ids": ["a32f5e45d574ae0d"], "instance_id": "temporal/T6-write-time/014", "tokens": 78}
+{"answered": true, "cited_ids": ["672db463adcb1246", "07d515553a80841c"], "instance_id": "temporal/T6-write-time/015", "tokens": 71}
+{"answered": true, "cited_ids": ["0518c074dec7dbf5", "5ec345728a5d5d1a", "e2f33c741c72b3ea"], "instance_id": "temporal/T6-write-time/016", "tokens": 74}
+{"answered": true, "cited_ids": ["0450fc984db1ba30"], "instance_id": "temporal/T6-write-time/017", "tokens": 74}
+{"answered": true, "cited_ids": ["0dcd131fe0c55f9f"], "instance_id": "temporal/T6-write-time/018", "tokens": 74}
+{"answered": true, "cited_ids": ["626e519ef8fbb808"], "instance_id": "temporal/T6-write-time/019", "tokens": 67}
+{"answered": true, "cited_ids": ["9668f061c17afc52"], "instance_id": "temporal/T6-write-time/020", "tokens": 67}
+{"answered": true, "cited_ids": ["9805b39b64a255c3", "976569db415ddeba", "c79d784f0040e816"], "instance_id": "temporal/T6-write-time/021", "tokens": 67}
+{"answered": true, "cited_ids": ["277c7a05961c9781", "4b18f3788482ee00"], "instance_id": "temporal/T6-write-time/022", "tokens": 74}
+{"answered": true, "cited_ids": ["dabd05e219991ae8", "230bcae3e988b296", "df275581a68df874"], "instance_id": "temporal/T6-write-time/023", "tokens": 70}
+{"answered": true, "cited_ids": ["58ac17d6226cc8bf", "91840aa6b17eaed3", "38d873827d7722ce"], "instance_id": "temporal/T6-write-time/024", "tokens": 72}
+{"answered": true, "cited_ids": ["2d5a5a61aa56cdae"], "instance_id": "temporal/T6-write-time/025", "tokens": 76}
+{"answered": true, "cited_ids": ["48f90372472bfb17", "eb65951f4719747d"], "instance_id": "temporal/T6-write-time/026", "tokens": 66}
+{"answered": true, "cited_ids": ["bd5debc338f22512", "7450c445c1af1e7c"], "instance_id": "temporal/T6-write-time/027", "tokens": 59}
+{"answered": true, "cited_ids": ["d459c195d407a0f5", "28df61fda5c34f2b"], "instance_id": "temporal/T6-write-time/028", "tokens": 73}
+{"answered": true, "cited_ids": ["6696598ebdaf12cb", "ffb66a0a05cd905f", "cc28a799e2c7f2e6", "999567086eda715b"], "instance_id": "temporal/T6-write-time/029", "tokens": 73}
