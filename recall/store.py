@@ -291,65 +291,108 @@ def _basename(file: str) -> str:
     return supersedes_key(file)
 
 
-def resolve_edge_dates(
+#: A superseded file -> every document claiming to supersede it, in scan order, each with when
+#: that claim was first written (``None`` when unknown). A LIST rather than one winner, because
+#: choosing a single superseder discards the information a point-in-time replay needs: where two
+#: documents supersede the same target, the one live at a past instant is often not the one live
+#: today, and picking by any time-independent rule answers a different question.
+EdgeCandidates = dict[str, list[tuple[str, "datetime | None"]]]
+
+
+def resolve_supersession_candidates(
     rows: list[tuple[str | None, str | None, datetime | None]],
-    edges: dict[str, str],
-) -> dict[str, datetime]:
-    """When each edge in `edges` became assertable, from ``(file, supersedes, first_indexed)`` rows.
+) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
+    """``(winner, unresolved, candidates)`` from ``(file, supersedes, first_indexed)`` rows.
 
     An edge ``A -> B`` becomes assertable when B is written, because the claim lives in B's
-    `supersedes:` frontmatter. So it is dated by the EARLIEST `indexed_at` among B's chunks: any
-    chunk of B existing implies the frontmatter existed, and the earliest is the conservative
-    reading.
+    `supersedes:` frontmatter. So it is dated by the EARLIEST `indexed_at` among the chunks of B
+    that CARRY that claim: a chunk existing implies the frontmatter existed, and the earliest is
+    the conservative reading. Per claim, not per file, because one file can carry several
+    different `supersedes` values without any authoring mistake (`Indexer._prune_vanished` notes a
+    corpus may be indexed under several roots, and `metadata['file']` is root-relative while
+    `replace_sources` deletes by absolute `source`).
 
-    Dated **per claim**, keyed on `(superseding file, superseded basename)`, not per file. One
-    file can carry several different `supersedes` values, and it need not be an authoring
-    mistake: `Indexer._prune_vanished` notes that a corpus may be indexed under several roots,
-    `metadata['file']` is root-relative while `replace_sources` deletes by absolute `source`, so
-    two roots with divergent frontmatter coexist under one `file` key. A per-file minimum then
-    dates a LATER claim from an EARLIER one, and the edge applies at instants before it was
-    written. Grouping by the pair is already what the SQL does; throwing the pair away here was
-    the bug.
+    `winner` is what `supersession()` has always returned and is unchanged. `candidates` is the
+    superset a replay needs; see `recall.trust.resolve_successor` for how it is consumed.
 
-    The "carries a claim" predicate must match `resolve_supersession`'s exactly, because both
-    consume the same rows. It uses falsiness, so a bare `supersedes:` in frontmatter (which
-    parses to the empty string) builds no edge; treating it as claim-carrying here would date an
-    edge that another row asserts, which is the same failure through a second door.
+    ⚠️ Every date is only as good as `indexed_at`, which records the LAST write, not the first:
+    see `PgVectorStore.supersession_all` for the open defect that blocks merging.
 
-    An edge whose superseding file has no recorded date is simply absent from the result, and
-    `recall.trust.resolve_successor` applies an undated edge. That is the fail-closed direction:
-    an edge of unknown age keeps demoting, rather than silently reviving a memory the corpus
-    marks as stale. Note this is the INVERSE of the rule for hits, where an unknown `indexed_at`
-    leaves the hit visible; both choices refuse to serve something as healthier than it is.
-
-    ⚠️ The date is only as good as `indexed_at`, which records the LAST write, not the first: see
-    `supersession_all` for the open defect that makes this unsafe to merge as it stands.
-
-    Pure and DB-free, so the dating rule is unit-testable without a database — same reason
-    `resolve_supersession` is.
+    Pure and DB-free, so the rule is unit-testable without a database.
     """
-    # (superseding file, superseded basename) -> when that CLAIM was first written.
-    by_claim: dict[tuple[str, str], datetime] = {}
+    winner, unresolved, candidates = _resolve_rows(rows)
+    return winner, unresolved, candidates
+
+
+def _resolve_rows(
+    rows: list[tuple[str | None, str | None, datetime | None]],
+) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
+    """The one resolution pass. `resolve_supersession` and the candidate map both come from here.
+
+    Deriving them separately is what made the previous version wrong twice: two functions matching
+    claims to targets by their own copy of the rule can disagree, and did (a normalised lookup
+    against a raw dangling key, and a per-file minimum against a per-claim group). One pass cannot.
+
+    `winner` reproduces last-row-wins EXACTLY, including the case where one file claims the same
+    target twice, so callers who never ask for a past instant see no change at all.
+    """
+    # DEDUPED. `rows` carries one entry per (file, supersedes) pair, so a file asserting two
+    # different claims appeared TWICE and made ITSELF read as an ambiguous basename: its own
+    # incoming edge was dropped and it was named in `unresolved`, telling the operator to
+    # disambiguate a basename that exactly one document carries. Ambiguity is a property of two
+    # FILES sharing a stem, never of one file carrying two claims.
+    files = list(dict.fromkeys(f for f, _s, _d in rows if f))
+    by_base: dict[str, list[str]] = {}
+    for f in files:
+        by_base.setdefault(_basename(f), []).append(f)
+
+    winner: dict[str, str] = {}
+    unresolved: set[str] = set()
+    order: dict[str, list[str]] = {}
+    when: dict[tuple[str, str], datetime | None] = {}
+
     for file, supersedes, first_indexed in rows:
-        if not file or not supersedes or first_indexed is None:
+        if not file or not supersedes:
             continue
-        # BOTH key forms, because `resolve_supersession` uses two. A RESOLVED edge is keyed on the
-        # target's root-relative path, matched through `_basename`. A DANGLING one is keyed on the
-        # raw `supersedes.rsplit("/", 1)[-1]`, deliberately keeping the author's spelling. Those
-        # differ whenever the claim carries both a path and brackets: `[[dir/gone]]` normalises to
-        # `gone` but dangles as `gone]]`. Indexing only the normalised form left every bracketed
-        # dangling edge undated, which the per-file keying this replaced happened to get right.
-        for form in {_basename(supersedes), supersedes.rsplit("/", 1)[-1]}:
-            key = (file, form)
-            known = by_claim.get(key)
-            if known is None or first_indexed < known:
-                by_claim[key] = first_indexed
-    dated: dict[str, datetime] = {}
-    for superseded, superseding in edges.items():
-        when = by_claim.get((superseding, _basename(superseded)))
-        if when is not None:
-            dated[superseded] = when
-    return dated
+        target_basename = _basename(supersedes)
+        matches = by_base.get(target_basename, [])
+        if len(matches) == 1:
+            key = matches[0]
+        elif len(matches) == 0:
+            # Dangling: key on the raw basename as written. Normalisation exists to make MATCHING
+            # tolerant of how humans spell a reference; this key matches no real file either way,
+            # so it keeps the author's form rather than inventing a normalised one.
+            key = supersedes.rsplit("/", 1)[-1]
+        else:
+            # Ambiguous: don't guess — but don't stay silent either. Dropping the edge alone
+            # would leave the (possibly superseded) memories looking perfectly `ok`, which is
+            # the same wrong answer the trust layer exists to prevent. Naming them lets the
+            # read path fail closed and tell the operator what to fix.
+            unresolved.update(matches)
+            continue
+
+        winner[key] = file  # last row wins, exactly as before
+        slot = order.setdefault(key, [])
+        if file not in slot:
+            slot.append(file)
+        pair = (key, file)
+        if pair in when:
+            prev = when[pair]
+            # An undated row makes the whole claim undated. Fail closed: unknown age keeps
+            # demoting rather than silently reviving a memory the corpus marks as stale.
+            when[pair] = (
+                min(prev, first_indexed)
+                if prev is not None and first_indexed is not None
+                else None
+            )
+        else:
+            when[pair] = first_indexed
+
+    candidates: EdgeCandidates = {
+        target: [(f, when[(target, f)]) for f in claimants]
+        for target, claimants in order.items()
+    }
+    return winner, frozenset(unresolved), candidates
 
 
 def resolve_supersession(
@@ -377,37 +420,12 @@ def resolve_supersession(
     dangling case). ``unresolved`` holds root-relative paths.
 
     Pure and DB-free so the resolution rule can be unit-tested without a database.
+
+    A thin projection of `resolve_supersession_candidates`, deliberately: the resolution rule
+    lives in exactly one place so the winner map and the candidate map cannot drift apart.
     """
-    # DEDUPED. `rows` carries one entry per (file, supersedes) pair, so a file asserting two
-    # different claims appeared TWICE and made ITSELF read as an ambiguous basename: its own
-    # incoming edge was dropped and it was named in `unresolved`, telling the operator to
-    # disambiguate a basename that exactly one document carries. Ambiguity is a property of two
-    # FILES sharing a stem, never of one file carrying two claims.
-    files = list(dict.fromkeys(f for f, _ in rows if f))
-    by_base: dict[str, list[str]] = {}
-    for f in files:
-        by_base.setdefault(_basename(f), []).append(f)
-    mapping: dict[str, str] = {}
-    unresolved: set[str] = set()
-    for file, supersedes in rows:
-        if not file or not supersedes:
-            continue
-        target_basename = _basename(supersedes)
-        candidates = by_base.get(target_basename, [])
-        if len(candidates) == 1:
-            mapping[candidates[0]] = file
-        elif len(candidates) == 0:
-            # Dangling: key on the raw basename as written. Normalisation exists to make MATCHING
-            # tolerant of how humans spell a reference; this key matches no real file either way,
-            # so it keeps the author's form rather than inventing a normalised one.
-            mapping[supersedes.rsplit("/", 1)[-1]] = file
-        else:
-            # Ambiguous: don't guess — but don't stay silent either. Dropping the edge alone
-            # would leave the (possibly superseded) memories looking perfectly `ok`, which is
-            # the same wrong answer the trust layer exists to prevent. Naming them lets the
-            # read path fail closed and tell the operator what to fix.
-            unresolved.update(candidates)
-    return mapping, frozenset(unresolved)
+    winner, unresolved, _candidates = _resolve_rows([(f, s, None) for f, s in rows])
+    return winner, unresolved
 
 
 def _ef_search_multiplier() -> int:
@@ -1461,30 +1479,28 @@ class PgVectorStore:
 
     def supersession_all(
         self,
-    ) -> tuple[dict[str, str], frozenset[str], dict[str, datetime]]:
-        """``(edges, unresolved, edge_dates)`` behind one validated cache and one scan.
+    ) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
+        """``(edges, unresolved, candidates)`` behind one validated cache and one scan.
 
-        `edge_dates` maps a superseded file to the moment its edge became assertable, which is
-        when the SUPERSEDING document was first written. That is `min(indexed_at)` over the
-        superseding file's claim-carrying chunks: a chunk of it existing implies its
-        `supersedes:` frontmatter existed, and the earliest is the conservative choice.
+        `candidates` maps a superseded file to EVERY document claiming to supersede it, each with
+        when that claim was first written: `min(indexed_at)` over the claiming chunks, since a
+        chunk existing implies its `supersedes:` frontmatter existed and the earliest is the
+        conservative reading.
 
-        Prefer this over calling `supersession()` and `supersession_dates()` in sequence. Each
-        enters its own cache validation with its own fingerprint query, so a concurrent index
-        between the two can hand back edges from one scan dated by the next.
+        **A list, not a winner, and that is the point.** `edges` keeps one superseder per target,
+        chosen by scan order, which is a time-independent rule and therefore answers a different
+        question. Where `b1.md` (Monday) and `b2.md` (Wednesday) both supersede `a.md`, only
+        `b2.md` survived, so a replay of Tuesday saw a single edge dated Wednesday, dropped it,
+        and answered `ok` when `a.md` was in fact superseded by `b1.md`. Renaming the two files
+        flipped the answer, which is what showed the axis was wrong. `resolve_successor` now picks
+        the claim that was live at the instant. `edges` is unchanged, so callers who never replay
+        see exactly what they saw before.
 
-        🔴 **SECOND OPEN DEFECT, independent of `first_indexed_at`: fan-in resolves
-        LEXICOGRAPHICALLY, and lexicographic is orthogonal to time.** Where `b1.md` (written
-        Monday) and `b2.md` (Wednesday) both supersede `a.md`, only `b2.md` survives, so a replay
-        as of Tuesday finds its single edge dated Wednesday, drops it, and answers `ok`. On
-        Tuesday `a.md` WAS superseded, by `b1.md`. Whether a corpus gets the wrong answer is
-        decided by the alphabet: rename the two and the same data answers correctly. The older
-        edge's date is computed and then discarded, because only the surviving winner is dated.
-        Fixing it means keeping every candidate edge per target and letting `resolve_successor`
-        choose the latest one asserted at or before the instant, rather than picking one winner
-        here. Pinned by `test_fan_in_replay_must_use_the_edge_live_at_the_instant`.
+        This is the only accessor. A second one returning just the dates existed briefly and had
+        to warn, in its own docstring, that pairing it with `supersession()` reintroduced the
+        two-validation race this exists to close.
 
-        `ORDER BY` is load-bearing, not tidiness. `resolve_supersession` resolves fan-in by
+        `ORDER BY` is load-bearing, not tidiness. `edges` resolves fan-in by
         last-row-wins, so an unordered scan lets the
         winner change between runs. The predecessor query was `SELECT DISTINCT`, and swapping it
         for `GROUP BY` preserves the row SET but not the row ORDER, which would have re-rolled
@@ -1509,7 +1525,7 @@ class PgVectorStore:
 
         def _op(
             conn: "psycopg.Connection",
-        ) -> tuple[dict[str, str], frozenset[str], dict[str, datetime]]:
+        ) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
             fingerprint = conn.execute(
                 f"SELECT max(indexed_at), count(*) FROM {self._table} WHERE tenant_id = %s",
                 (self._tenant,),
@@ -1531,29 +1547,25 @@ class PgVectorStore:
             ).fetchall()
             self._supersession_scans += 1
             METRICS.increment("recall_supersession_scans_total")
-            edges, unresolved = resolve_supersession([(r[0], r[1]) for r in rows])
-            edge_dates = resolve_edge_dates(rows, edges)
-            self._supersession_cache = (fingerprint, edges, unresolved, edge_dates)
-            return edges, unresolved, edge_dates
+            edges, unresolved, candidates = resolve_supersession_candidates(rows)
+            self._supersession_cache = (fingerprint, edges, unresolved, candidates)
+            return edges, unresolved, candidates
 
-        edges, unresolved, edge_dates = self._with_retry(_op)
+        edges, unresolved, candidates = self._with_retry(_op)
         # COPIES. This is public, and the cache is process-wide and validated by fingerprint
-        # rather than rebuilt, so handing out the live dicts would let one caller's mutation
-        # survive every later cache hit and redirect other callers' supersession verdicts.
-        # `supersession()` and `supersession_dates()` have always copied; this now matches them.
-        return dict(edges), unresolved, dict(edge_dates)
+        # rather than rebuilt, so handing out the live structures would let one caller's mutation
+        # survive every later cache hit and redirect other callers' supersession verdicts. The
+        # candidate LISTS are copied too, because a shallow `dict()` would still share them.
+        return (
+            dict(edges),
+            unresolved,
+            {target: list(claims) for target, claims in candidates.items()},
+        )
 
-    def supersession_dates(self) -> dict[str, datetime]:
-        """When each supersession edge became assertable, for point-in-time replay.
-
-        Feeds `resolve_successor(..., edge_dates=, known_as_of=)` so a past-instant query resolves
-        to the successor that was current *then*. Shares `supersession()`'s validated cache, so
-        this needs no second scan when the edges have already been read, though it does re-run
-        the fingerprint query. ⚠️ Pairing this with `supersession()` reintroduces the race that
-        `supersession_all()` exists to close: two independent validations can return edges from
-        one scan dated by the next. Prefer `supersession_all()` whenever you want both.
-        """
-        return self.supersession_all()[2]  # already a copy
+    # `supersession_dates()` deliberately does NOT exist. It was a second accessor onto the same
+    # cache, and its own docstring had to warn that pairing it with `supersession()` reintroduced
+    # the two-validation race `supersession_all()` was written to close. An API whose
+    # documentation is a warning against using it is better deleted; it had no callers.
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """Resolve caller-facing identifiers to the DB `source` value(s) to delete, this tenant only.

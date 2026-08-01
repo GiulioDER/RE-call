@@ -355,6 +355,13 @@ Two narrower residues, both genuine and both fail-closed:
   still forces an abstention at that instant. Fail closed, so it costs recall rather than
   correctness.
 
+**Fan-in was a second blocker and is now fixed.** Keeping one superseder per target resolved
+ties by scan order, which is time-independent and so answered a different question: where two
+documents superseded the same target, a replay saw only the surviving winner's edge and could
+drop a claim that was live at the instant. Renaming the two files flipped the answer. The resolver
+now returns every claim per target and `resolve_successor` picks the one live at the instant;
+`supersession()`'s single winner is untouched for callers who never replay.
+
 Note what none of this touches: the mechanism is transaction time on both sides, so it needs no
 event-time extraction and no objection from the first half of this document applies to it.
 
