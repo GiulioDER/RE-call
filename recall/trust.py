@@ -32,7 +32,7 @@ from recall.frontmatter import validity_bounds
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.rerank import Reranker
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
-from recall.store import PgVectorStore
+from recall.store import EdgeCandidates, PgVectorStore
 from recall.types import (
     Provenance,
     RetrievalResult,
@@ -130,7 +130,7 @@ _ANSI_SEQUENCE = re.compile(
 def resolve_successor(
     file: str,
     supersession: dict[str, str],
-    edge_dates: dict[str, datetime] | None = None,
+    edge_candidates: "EdgeCandidates | None" = None,
     known_as_of: datetime | None = None,
 ) -> str | None:
     """Terminal successor of `file` in the supersession chain, or None if it has none.
@@ -152,15 +152,36 @@ def resolve_successor(
     """
 
     def step(cur: str) -> str | None:
-        """The next file in the chain, or None if there is no edge or it is not yet asserted."""
-        nxt = supersession.get(cur)
-        if nxt is None:
+        """The next file in the chain, as it stood at `known_as_of`.
+
+        With no instant to replay, this is `supersession[cur]` and nothing else happens. With one,
+        it is the LIVE claim: of every document claiming to supersede `cur`, those asserted at or
+        before the instant, and among them the one asserted LAST.
+
+        Choosing among candidates is the whole point. `supersession` keeps a single winner per
+        target, picked by scan order, which is a time-independent rule and therefore answers a
+        different question: where two documents supersede one target, the winner today is often
+        not the one live at a past instant, and gating that single winner drops a real edge and
+        reports the stale memory as current.
+        """
+        if known_as_of is None or edge_candidates is None:
+            return supersession.get(cur)
+        claims = edge_candidates.get(cur)
+        if not claims:
+            # Candidates and `supersession` come from one pass, so an edge with no claims means
+            # hand-built, inconsistent input. Fail closed: keep demoting.
+            return supersession.get(cur)
+        live = [(f, when) for f, when in claims if when is None or when <= known_as_of]
+        if not live:
             return None
-        if known_as_of is not None and edge_dates is not None:
-            asserted = edge_dates.get(cur)
-            if asserted is not None and asserted > known_as_of:
-                return None
-        return nxt
+        best, best_when = live[0]
+        for f, when in live[1:]:
+            # An undated claim is of unknown age and loses to any dated one, so a known assertion
+            # decides the answer where one exists. Ties go to the later scan position, which is
+            # the same rule `supersession`'s single winner uses.
+            if best_when is None or (when is not None and when >= best_when):
+                best, best_when = f, when
+        return best
 
     first = step(file)
     if first in (None, file):
@@ -184,7 +205,7 @@ def _verdict(
     now: datetime,
     unresolved: frozenset[str] = frozenset(),
     known_as_of: datetime | None = None,
-    edge_dates: dict[str, datetime] | None = None,
+    edge_candidates: "EdgeCandidates | None" = None,
 ) -> tuple[Verdict, Validity]:
     meta = hit.chunk.metadata
     file = meta.get("file")
@@ -217,7 +238,7 @@ def _verdict(
             Validity(valid_from=start, valid_until=end, superseded_by=None),
         )
     successor = (
-        resolve_successor(file, supersession, edge_dates, known_as_of) if file else None
+        resolve_successor(file, supersession, edge_candidates, known_as_of) if file else None
     )
     validity = Validity(valid_from=start, valid_until=end, superseded_by=successor)
     if successor is not None:
@@ -387,7 +408,7 @@ def evaluate(
     now: datetime,
     unresolved: frozenset[str] = frozenset(),
     known_as_of: datetime | None = None,
-    edge_dates: dict[str, datetime] | None = None,
+    edge_candidates: "EdgeCandidates | None" = None,
 ) -> TrustedResult:
     """Pure trust evaluation of a retrieval result (no DB access, no clock reads).
 
@@ -440,13 +461,16 @@ def evaluate(
         # careful caller was the one that crashed. Two rounds of review to get one comment to
         # match its own code.
         known_as_of = _as_utc(known_as_of)
-        if edge_dates:
-            edge_dates = {file: _as_utc(when) for file, when in edge_dates.items()}
+        if edge_candidates:
+            edge_candidates = {
+                target: [(f, None if w is None else _as_utc(w)) for f, w in claims]
+                for target, claims in edge_candidates.items()
+            }
     cal = calibration or _UNCALIBRATED
     trusted: list[TrustedHit] = []
     for hit in result.hits:
         verdict, validity = _verdict(
-            hit, supersession, cal.threshold, now, unresolved, known_as_of, edge_dates
+            hit, supersession, cal.threshold, now, unresolved, known_as_of, edge_candidates
         )
         meta = hit.chunk.metadata
         trusted.append(
@@ -566,11 +590,11 @@ def trusted_search(
     # and a store without the method degrades to exactly the pre-change behaviour.
     supersession: dict[str, str] = {}
     unresolved: frozenset[str] = frozenset()
-    edge_dates: dict[str, datetime] | None = None
+    edge_candidates: "EdgeCandidates | None" = None
     if result.hits:
         fetch_all = getattr(store, "supersession_all", None) if known_as_of is not None else None
         if fetch_all is not None:
-            supersession, unresolved, edge_dates = fetch_all()
+            supersession, unresolved, edge_candidates = fetch_all()
         else:
             if known_as_of is not None:
                 _warn_no_edge_dates(type(store).__name__)
@@ -582,7 +606,7 @@ def trusted_search(
         now or datetime.now(timezone.utc),
         unresolved,
         known_as_of,
-        edge_dates,
+        edge_candidates,
     )
     if entailment is not None:
         from recall.entailment import apply_entailment

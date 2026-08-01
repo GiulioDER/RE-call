@@ -33,7 +33,11 @@ import psycopg
 import pytest
 
 from recall.embeddings import HashingEmbedder
-from recall.store import PgVectorStore, resolve_edge_dates, resolve_supersession
+from recall.store import (
+    PgVectorStore,
+    resolve_supersession,
+    resolve_supersession_candidates,
+)
 from recall.trust import _verdict, resolve_successor
 from recall.types import Chunk, ScoredChunk
 from tests.conftest import TEST_DSN, requires_db
@@ -68,10 +72,19 @@ def _hit(file: str = "a.md", *, indexed_at=MON):
     )
 
 
-def _v(*, supersession, edge_dates=None, known_as_of=None):
+def _v(*, supersession, edge_candidates=None, known_as_of=None):
     return _verdict(
-        _hit(), supersession, 0.5, WED, frozenset(), known_as_of, edge_dates
+        _hit(), supersession, 0.5, WED, frozenset(), known_as_of, edge_candidates
     )[0]
+
+
+def _cands(mapping):
+    """``{superseded: (superseding, when)}`` -> the candidate-list shape.
+
+    A convenience for the single-claim cases, where fan-in is not what is under test. The fan-in
+    cases build the lists explicitly, because there the list IS the subject.
+    """
+    return {target: [claim] for target, claim in mapping.items()}
 
 
 # --- the capability -----------------------------------------------------------------------
@@ -80,14 +93,14 @@ def test_an_edge_asserted_after_the_as_of_instant_does_not_apply():
     """The limit this closes. Replaying Tuesday, a revision written Wednesday must not yet have
     superseded anything, or the replay reports a fate decided after the moment being replayed."""
     verdict = _v(
-        supersession={"a.md": "b.md"}, edge_dates={"a.md": WED}, known_as_of=TUE
+        supersession={"a.md": "b.md"}, edge_candidates=_cands({"a.md": ("b.md", WED)}), known_as_of=TUE
     )
     assert verdict == "ok"
 
 
 def test_an_edge_asserted_before_the_as_of_instant_still_applies():
     verdict = _v(
-        supersession={"a.md": "b.md"}, edge_dates={"a.md": MON}, known_as_of=TUE
+        supersession={"a.md": "b.md"}, edge_candidates=_cands({"a.md": ("b.md", MON)}), known_as_of=TUE
     )
     assert verdict == "superseded"
 
@@ -95,7 +108,7 @@ def test_an_edge_asserted_before_the_as_of_instant_still_applies():
 def test_an_edge_asserted_exactly_at_the_instant_applies():
     """Inclusive boundary, matching `known_as_of` on hits: written AT the instant existed then."""
     verdict = _v(
-        supersession={"a.md": "b.md"}, edge_dates={"a.md": TUE}, known_as_of=TUE
+        supersession={"a.md": "b.md"}, edge_candidates=_cands({"a.md": ("b.md", TUE)}), known_as_of=TUE
     )
     assert verdict == "superseded"
 
@@ -104,18 +117,18 @@ def test_an_edge_asserted_exactly_at_the_instant_applies():
 
 def test_without_known_as_of_edge_dates_are_ignored():
     """Opt-in. A caller passing no as-of instant must be byte-identical to before the change."""
-    verdict = _v(supersession={"a.md": "b.md"}, edge_dates={"a.md": WED})
+    verdict = _v(supersession={"a.md": "b.md"}, edge_candidates=_cands({"a.md": ("b.md", WED)}))
     assert verdict == "superseded"
 
 
 def test_an_edge_with_no_date_still_applies():
     """Fail closed, and the inverse of the rule for hits. See the module docstring."""
-    verdict = _v(supersession={"a.md": "b.md"}, edge_dates={}, known_as_of=TUE)
+    verdict = _v(supersession={"a.md": "b.md"}, edge_candidates={}, known_as_of=TUE)
     assert verdict == "superseded"
 
 
 def test_no_edge_dates_at_all_behaves_as_before():
-    verdict = _v(supersession={"a.md": "b.md"}, edge_dates=None, known_as_of=TUE)
+    verdict = _v(supersession={"a.md": "b.md"}, edge_candidates=None, known_as_of=TUE)
     assert verdict == "superseded"
 
 
@@ -128,7 +141,7 @@ def test_a_chain_resolves_to_the_successor_known_at_the_instant():
     successor = resolve_successor(
         "a.md",
         {"a.md": "b.md", "b.md": "c.md"},
-        edge_dates={"a.md": MON, "b.md": WED},
+        edge_candidates=_cands({"a.md": ("b.md", MON), "b.md": ("c.md", WED)}),
         known_as_of=TUE,
     )
     assert successor == "b.md"
@@ -138,7 +151,7 @@ def test_a_chain_fully_known_still_resolves_to_the_terminal_successor():
     successor = resolve_successor(
         "a.md",
         {"a.md": "b.md", "b.md": "c.md"},
-        edge_dates={"a.md": MON, "b.md": MON},
+        edge_candidates=_cands({"a.md": ("b.md", MON), "b.md": ("c.md", MON)}),
         known_as_of=TUE,
     )
     assert successor == "c.md"
@@ -148,7 +161,7 @@ def test_the_first_edge_being_too_new_hides_the_whole_chain():
     successor = resolve_successor(
         "a.md",
         {"a.md": "b.md", "b.md": "c.md"},
-        edge_dates={"a.md": WED, "b.md": WED},
+        edge_candidates=_cands({"a.md": ("b.md", WED), "b.md": ("c.md", WED)}),
         known_as_of=TUE,
     )
     assert successor is None
@@ -160,7 +173,7 @@ def test_cycle_still_does_not_hang_with_dates_present():
     successor = resolve_successor(
         "a.md",
         {"a.md": "b.md", "b.md": "a.md"},
-        edge_dates={"a.md": MON, "b.md": MON},
+        edge_candidates=_cands({"a.md": ("b.md", MON), "b.md": ("a.md", MON)}),
         known_as_of=TUE,
     )
     assert successor == "b.md"
@@ -168,7 +181,7 @@ def test_cycle_still_does_not_hang_with_dates_present():
 
 def test_self_claim_still_ignored_with_dates_present():
     successor = resolve_successor(
-        "a.md", {"a.md": "a.md"}, edge_dates={"a.md": MON}, known_as_of=TUE
+        "a.md", {"a.md": "a.md"}, edge_candidates=_cands({"a.md": ("a.md", MON)}), known_as_of=TUE
     )
     assert successor is None
 
@@ -181,40 +194,53 @@ def test_unchanged_signature_still_works():
 
 # --- the dating rule, DB-free ---------------------------------------------------------------
 #
-# `resolve_edge_dates` is pure for the same reason `resolve_supersession` is: the rule can be
-# tested without a database. The rows it is fed by hand here are the SQL's output shape, so these
-# check the RULE and not the query. The `requires_db` cases at the bottom check the query, and
-# they are skipped wherever Postgres is unreachable, which is why both layers exist.
+# `resolve_supersession_candidates` is pure for the same reason `resolve_supersession` is: the
+# rule can be tested without a database. The rows fed by hand here are the SQL's output shape, so
+# these check the RULE and not the query. The `requires_db` cases at the bottom check the query.
+#
+# They assert on the CANDIDATE list rather than on a winner's date. That is the point of the
+# fan-in fix: keeping one winner per target threw away the information a replay needs.
+
+def _claims(rows):
+    """Just the candidate map, for tests that are only about dating."""
+    return resolve_supersession_candidates(rows)[2]
+
 
 def test_an_edge_is_dated_by_the_superseding_document():
     """A -> B is assertable when B is written, because the claim lives in B's frontmatter."""
     rows = [("a.md", None, MON), ("b.md", "a.md", WED)]
-    assert resolve_edge_dates(rows, {"a.md": "b.md"}) == {"a.md": WED}
+    assert _claims(rows) == {"a.md": [("b.md", WED)]}
 
 
 def test_the_earliest_chunk_of_the_superseding_document_wins():
     """Any chunk of B existing implies its frontmatter existed, so the earliest is the date."""
     rows = [("b.md", "a.md", WED), ("b.md", "a.md", MON), ("b.md", "a.md", TUE)]
-    assert resolve_edge_dates(rows, {"a.md": "b.md"}) == {"a.md": MON}
+    assert _claims(rows) == {"a.md": [("b.md", MON)]}
 
 
-def test_an_edge_whose_superseding_file_has_no_date_is_absent():
-    """Absent means `resolve_successor` applies it unconditionally, which is fail closed."""
+def test_a_claim_with_no_date_is_undated_and_therefore_always_live():
+    """Fail closed: unknown age keeps demoting rather than reviving a memory marked stale."""
     rows = [("b.md", "a.md", None)]
-    assert resolve_edge_dates(rows, {"a.md": "b.md"}) == {}
+    assert _claims(rows) == {"a.md": [("b.md", None)]}
+    assert resolve_successor("a.md", {"a.md": "b.md"}, _claims(rows), TUE) == "b.md"
 
 
-def test_a_dangling_edge_target_is_absent_rather_than_guessed():
-    """`resolve_supersession` keeps an edge keyed on a raw basename when nothing bears it. There
-    is no document to date, so there is no date, and the edge keeps applying."""
+def test_one_undated_row_makes_the_whole_claim_undated():
+    """Mixing a dated and an undated row for the same claim must not let the date win: we do not
+    know the claim was absent before it, so it has to keep applying."""
+    rows = [("b.md", "a.md", WED), ("b.md", "a.md", None)]
+    assert _claims(rows) == {"a.md": [("b.md", None)]}
+
+
+def test_a_dangling_edge_target_is_still_dated():
+    """`resolve_supersession` keeps an edge keyed on a raw basename when nothing bears it."""
     rows = [("b.md", "gone.md", MON)]
-    assert resolve_edge_dates(rows, {"gone.md": "b.md"}) == {"gone.md": MON}
-    assert resolve_edge_dates(rows, {"missing.md": "nowhere.md"}) == {}
+    assert _claims(rows) == {"gone.md": [("b.md", MON)]}
 
 
 def test_rows_with_no_file_are_skipped_not_crashed():
     rows = [(None, "a.md", MON), ("b.md", "a.md", TUE)]
-    assert resolve_edge_dates(rows, {"a.md": "b.md"}) == {"a.md": TUE}
+    assert _claims(rows) == {"a.md": [("b.md", TUE)]}
 
 
 # --- regressions from the bug audit of this change ----------------------------------------
@@ -224,10 +250,8 @@ def test_only_claim_carrying_rows_date_an_edge():
     Indexer's fail-fast). Dating from a chunk that does NOT assert the claim ran earlier than the
     claim, so the edge applied at instants before it was written."""
     rows = [("a.md", None, MON), ("b.md", None, MON), ("b.md", "a.md", WED)]
-    assert resolve_edge_dates(rows, {"a.md": "b.md"}) == {"a.md": WED}
-    assert (
-        resolve_successor("a.md", {"a.md": "b.md"}, {"a.md": WED}, TUE) is None
-    )
+    assert _claims(rows) == {"a.md": [("b.md", WED)]}
+    assert resolve_successor("a.md", {"a.md": "b.md"}, _claims(rows), TUE) is None
 
 
 def test_a_naive_known_as_of_does_not_raise():
@@ -252,7 +276,7 @@ def test_a_naive_known_as_of_does_not_raise():
         WED.replace(tzinfo=None),
         frozenset(),
         TUE.replace(tzinfo=None),  # naive: raised TypeError before the fix
-        {"a.md": MON},
+        _cands({"a.md": ("b.md", MON)}),
     )
     assert res.hits[0].verdict == "superseded"
 
@@ -318,13 +342,13 @@ def test_two_divergent_claims_from_one_file_are_dated_separately():
     ]
     # DERIVED, not hand-built. The previous version supplied `edges` by hand, which is exactly
     # why it could not see that the same row shape makes b.md self-ambiguous one row away.
-    edges, unresolved = resolve_supersession([(r[0], r[1]) for r in rows])
+    edges, unresolved, claims = resolve_supersession_candidates(rows)
     assert edges == {"a.md": "b.md", "c.md": "b.md"}
     assert unresolved == frozenset(), "one file with two claims is not an ambiguous basename"
-    assert resolve_edge_dates(rows, edges) == {"a.md": MON, "c.md": WED}
+    assert claims == {"a.md": [("b.md", MON)], "c.md": [("b.md", WED)]}
     # The claim on c.md was written WED, so as of TUE it had not been made.
-    assert resolve_successor("c.md", edges, resolve_edge_dates(rows, edges), TUE) is None
-    assert resolve_successor("a.md", edges, resolve_edge_dates(rows, edges), TUE) == "b.md"
+    assert resolve_successor("c.md", edges, claims, TUE) is None
+    assert resolve_successor("a.md", edges, claims, TUE) == "b.md"
 
 
 def test_an_empty_supersedes_does_not_date_an_edge_it_did_not_create():
@@ -341,16 +365,16 @@ def test_an_empty_supersedes_does_not_date_an_edge_it_did_not_create():
     protect it. Two functions consuming the same rows should agree on what a claim is regardless.
     """
     rows = [("a.md", None, MON), ("b.md", "", MON), ("b.md", "a.md", WED)]
-    edges, _ = resolve_supersession([(r[0], r[1]) for r in rows])
+    edges, _unresolved, claims = resolve_supersession_candidates(rows)
     assert edges == {"a.md": "b.md"}
-    assert resolve_edge_dates(rows, edges) == {"a.md": WED}
+    assert claims == {"a.md": [("b.md", WED)]}
 
 
 def test_a_claim_by_basename_dates_an_edge_between_nested_paths():
     """Edge keys are root-relative paths while the claim names a basename, which is how the edge
     was matched. The date lookup has to resolve it the same way or it silently finds nothing."""
     rows = [("x/a.md", None, MON), ("y/b.md", "a.md", WED)]
-    assert resolve_edge_dates(rows, {"x/a.md": "y/b.md"}) == {"x/a.md": WED}
+    assert _claims(rows) == {"x/a.md": [("y/b.md", WED)]}
 
 
 def test_naive_edge_dates_are_normalised_alongside_known_as_of():
@@ -376,7 +400,7 @@ def test_naive_edge_dates_are_normalised_alongside_known_as_of():
         WED.replace(tzinfo=None),
         frozenset(),
         TUE.replace(tzinfo=None),
-        {"a.md": MON.replace(tzinfo=None)},  # naive throughout: raised TypeError after the fix
+        _cands({"a.md": ("b.md", MON.replace(tzinfo=None))}),  # naive: raised TypeError
     )
     assert res.hits[0].verdict == "superseded"
 
@@ -408,7 +432,7 @@ class _EdgeDatedStore:
 
     def supersession_all(self):
         self.all_calls += 1
-        return {"a.md": "b.md"}, frozenset(), {"a.md": WED}
+        return {"a.md": "b.md"}, frozenset(), {"a.md": [("b.md", WED)]}
 
 
 class _NoEdgeDatesStore(_EdgeDatedStore):
@@ -538,27 +562,66 @@ def test_a_bracketed_dangling_claim_is_still_dated():
     a path and brackets, so indexing only the normalised form left every bracketed dangling edge
     undated, which the per-file keying this replaced happened to get right."""
     rows = [("b.md", "[[dir/gone]]", WED)]
-    edges, _ = resolve_supersession([(r[0], r[1]) for r in rows])
-    assert resolve_edge_dates(rows, edges) == dict.fromkeys(edges, WED)
+    edges, _unresolved, claims = resolve_supersession_candidates(rows)
+    assert claims == {target: [("b.md", WED)] for target in edges}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="SECOND OPEN DEFECT, independent of first_indexed_at: fan-in is resolved "
-    "lexicographically, which is orthogonal to time, so the older live edge is discarded and a "
-    "replay before the winner's date answers `ok`. Needs every candidate edge kept per target.",
-)
-def test_fan_in_replay_must_use_the_edge_live_at_the_instant():
-    """b1.md (Monday) and b2.md (Wednesday) both supersede a.md. On Tuesday a.md WAS superseded,
-    by b1.md. Only the lexicographic winner survives, so the replay sees one edge dated Wednesday
-    and drops it. Rename the two files and the same corpus answers correctly, which is the
-    clearest sign the rule is keyed on the wrong axis."""
-    rows = [("a.md", None, MON), ("b1.md", "a.md", MON), ("b2.md", "a.md", WED)]
-    edges, unresolved = resolve_supersession([(r[0], r[1]) for r in rows])
-    dates = resolve_edge_dates(rows, edges)
-    verdict = _verdict(_hit(), edges, 0.5, WED, unresolved, TUE, dates)[0]
+# --- fan-in: the defect this used to only pin ------------------------------------------------
+#
+# b1.md (Monday) and b2.md (Wednesday) both supersede a.md. Keeping ONE winner per target picked
+# b2.md lexicographically, so a replay of Tuesday saw a single edge dated Wednesday, dropped it,
+# and answered `ok` where a.md was in fact superseded by b1.md. Renaming the two files flipped the
+# answer, which is what showed the rule was keyed on the wrong axis. Now every claim is kept and
+# the replay chooses the one that was live.
+
+FAN_IN_ROWS = [("a.md", None, MON), ("b1.md", "a.md", MON), ("b2.md", "a.md", WED)]
+
+
+def test_fan_in_keeps_every_claim_not_just_the_winner():
+    edges, _unresolved, claims = resolve_supersession_candidates(FAN_IN_ROWS)
+    assert edges == {"a.md": "b2.md"}, "the winner map is unchanged for callers who never replay"
+    assert claims == {"a.md": [("b1.md", MON), ("b2.md", WED)]}
+
+
+def test_fan_in_replay_uses_the_edge_live_at_the_instant():
+    edges, unresolved, claims = resolve_supersession_candidates(FAN_IN_ROWS)
+    verdict, validity = _verdict(_hit(), edges, 0.5, WED, unresolved, TUE, claims)
     assert verdict == "superseded", "a.md was superseded by b1.md on Tuesday"
+    assert validity.superseded_by == "b1.md", "and by b1.md, not by the document written later"
+
+
+def test_fan_in_replay_after_both_claims_uses_the_later_one():
+    edges, unresolved, claims = resolve_supersession_candidates(FAN_IN_ROWS)
+    _verdict_, validity = _verdict(_hit(), edges, 0.5, WED, unresolved, WED, claims)
+    assert validity.superseded_by == "b2.md"
+
+
+def test_fan_in_replay_before_any_claim_finds_no_successor():
+    edges, unresolved, claims = resolve_supersession_candidates(FAN_IN_ROWS)
+    # The HIT must predate the instant too, or it is `not_yet_known` and never reaches the
+    # supersession branch at all.
+    early = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    verdict, _validity = _verdict(
+        _hit(indexed_at=datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        edges, 0.5, WED, unresolved, early, claims,
+    )
+    assert verdict == "ok"
+
+
+def test_fan_in_answer_does_not_depend_on_the_alphabet():
+    """The sharpest symptom of the old rule: renaming the two claimants flipped the answer.
+    Reversing their lexicographic order must now change nothing."""
+    renamed = [("a.md", None, MON), ("z_old.md", "a.md", MON), ("a_new.md", "a.md", WED)]
+    edges, unresolved, claims = resolve_supersession_candidates(renamed)
+    _v_, validity = _verdict(_hit(), edges, 0.5, WED, unresolved, TUE, claims)
+    assert validity.superseded_by == "z_old.md", "the Monday claim, whatever it is called"
+
+
+def test_fan_in_without_an_instant_is_unchanged():
+    """Callers who never replay must see exactly the pre-change winner."""
+    edges, unresolved, claims = resolve_supersession_candidates(FAN_IN_ROWS)
+    _v_, validity = _verdict(_hit(), edges, 0.5, WED, unresolved, None, claims)
+    assert validity.superseded_by == "b2.md"
 
 
 def test_an_aware_known_as_of_with_naive_edge_dates_does_not_raise():
@@ -582,6 +645,6 @@ def test_an_aware_known_as_of_with_naive_edge_dates_does_not_raise():
         Calibration(embedder="test", threshold=0.5, scale=0.05),
         WED, frozenset(),
         TUE,                                   # AWARE
-        {"a.md": MON.replace(tzinfo=None)},    # naive
+        _cands({"a.md": ("b.md", MON.replace(tzinfo=None))}),    # naive
     )
     assert res.hits[0].verdict == "superseded"
