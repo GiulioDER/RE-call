@@ -1586,7 +1586,8 @@ class PgVectorStore:
         )
 
     def touch_files(self, files: list[str]) -> int:
-        """Reset ``indexed_at`` to now() for every chunk whose metadata file name matches.
+        """Reset ``indexed_at`` to now(), carrying ``first_indexed_at`` across, for every chunk
+        whose metadata file name matches.
 
         A timestamp-only touch — text and embeddings are untouched by construction, so it is
         the honest way to simulate a re-sync (the eval's recency arm uses it; re-indexing
@@ -1602,6 +1603,12 @@ class PgVectorStore:
         re-sync. A timestamp-only touch is supposed to change what a staleness check sees, not
         rewrite when the corpus was acquired.
 
+        Clamped with `LEAST(..., now())` like the other two writers. This is the THIRD path that
+        writes `first_indexed_at`, and it was the only one that did not clamp: a migrated row
+        whose `indexed_at` sat in the future (clock skew, a restore) went from visible to
+        permanently `not_yet_known` after a touch, and no further touch repaired it. A rule
+        enforced on two paths out of three is not a rule.
+
         Captured in the SAME statement, because Postgres evaluates every `SET` expression against
         the OLD tuple: the COALESCE reads the pre-touch `indexed_at`, not `now()`. Two statements
         would race, and the ordering that writes `indexed_at` first would capture the value it had
@@ -1613,7 +1620,7 @@ class PgVectorStore:
         return self._with_retry(
             lambda conn: conn.execute(
                 f"UPDATE {self._table} SET "
-                f"first_indexed_at = COALESCE(first_indexed_at, indexed_at), "
+                f"first_indexed_at = LEAST(COALESCE(first_indexed_at, indexed_at), now()), "
                 f"indexed_at = now() "
                 f"WHERE tenant_id = %s AND metadata->>'file' = ANY(%s)",
                 (self._tenant, files),
