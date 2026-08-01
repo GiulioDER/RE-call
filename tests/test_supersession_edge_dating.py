@@ -946,8 +946,15 @@ def test_a_pre_column_row_acquires_a_first_write_and_then_freezes(shared_table):
     try:
         store.ensure_schema()
         store.replace_sources([], [_chunk("v1", "a.md", "one")], emb.embed(["one"]))
+        # Back-date `indexed_at` as well. Without this the row's only timestamp is ~now(), so a
+        # write path that stamps now() is indistinguishable from one that preserves the row's own
+        # date — which is exactly how the first version of this fix passed while still claiming a
+        # January memo was first seen in August.
         store._with_retry(
-            lambda conn: conn.execute(f"UPDATE {shared_table} SET first_indexed_at = NULL")
+            lambda conn: conn.execute(
+                f"UPDATE {shared_table} SET first_indexed_at = NULL, "
+                f"indexed_at = TIMESTAMPTZ '2026-01-05 00:00:00+00'"
+            )
         )
 
         store.replace_sources(["a.md"], [_chunk("v1", "a.md", "edited")], emb.embed(["edited"]))
@@ -960,6 +967,11 @@ def test_a_pre_column_row_acquires_a_first_write_and_then_freezes(shared_table):
             "the NULL was restored over the fresh timestamp, so this row can never acquire a "
             "first write and its date slides forward on every re-index"
         )
+        assert stamped.year == 2026 and stamped.month == 1, (
+            f"stamped {stamped} instead of the row's own indexed_at — a memo written in January "
+            f"now claims it was first seen when someone re-indexed it, and a replay between the "
+            f"two says it never existed. Both read paths COALESCE to indexed_at; so must this."
+        )
 
         store.replace_sources(["a.md"], [_chunk("v1", "a.md", "edited twice")],
                              emb.embed(["edited twice"]))
@@ -971,3 +983,40 @@ def test_a_pre_column_row_acquires_a_first_write_and_then_freezes(shared_table):
         assert after == stamped, "once stamped it must freeze, not track the latest write"
     finally:
         store.close()
+
+
+@requires_db
+def test_a_foreign_pgvector_table_is_rejected_before_anything_is_altered(shared_table):
+    """Validate everything, then mutate — asserted on the catalog, not on the error text.
+
+    The migrations were moved after the shape checks for this reason, and the move was unguarded.
+    It was also incomplete: `atttypmod` is -1 for an UNCONSTRAINED `vector` column, so the
+    dimension check said `> 0` and skipped itself entirely for `embedding vector`. A stranger's
+    table then had a column added and its PRIMARY KEY dropped and rewritten, and the caller got
+    `UndefinedColumn: column "tsv" does not exist` instead of the error written to tell them to
+    point somewhere else.
+    """
+    def catalog(conn):
+        cols = [r[0] for r in conn.execute(
+            "SELECT attname FROM pg_attribute WHERE attrelid = %s::regclass "
+            "AND attnum > 0 AND NOT attisdropped ORDER BY attnum", (shared_table,)).fetchall()]
+        keys = conn.execute(
+            "SELECT conkey FROM pg_constraint WHERE conrelid = %s::regclass AND contype = 'p'",
+            (shared_table,)).fetchall()
+        return cols, keys
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        conn.execute(
+            f"CREATE TABLE {shared_table} (id text PRIMARY KEY, note text, embedding vector)"
+        )
+        conn.execute(f"INSERT INTO {shared_table} VALUES ('x', 'not ours', NULL)")
+        before = catalog(conn)
+
+    with pytest.raises(ValueError, match="not a recall table"):
+        PgVectorStore(TEST_DSN, dim=DIM, table=shared_table).ensure_schema()
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        assert catalog(conn) == before, (
+            "a foreign table was mutated before the error that says it is not ours"
+        )

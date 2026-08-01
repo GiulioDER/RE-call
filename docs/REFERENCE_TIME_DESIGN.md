@@ -353,8 +353,9 @@ And it must be DDL, never DML. The first version backfilled from `indexed_at` an
 NULL, which bricks a shared multi-tenant table permanently: the backfill is ordinary DML and the
 FORCE'd RLS policy narrows it to one tenant, while `SET NOT NULL` validates with a heap scan that
 is not narrowed, so it trips over another tenant's NULLs and `ensure_schema` raises for everyone,
-unrepairably. Measured against a real Postgres as a `NOSUPERUSER NOBYPASSRLS` role: the role sees
-2 of 3 rows, the backfill touches 2, `SET NOT NULL` fails with `NotNullViolation`.
+unrepairably. Measured against a real Postgres as a `NOSUPERUSER NOBYPASSRLS` role: on a two-row two-tenant
+table the role sees 1 row, the backfill touches 1, and `SET NOT NULL` still fails with
+`NotNullViolation` because its validating scan sees both.
 
 A superuser bypasses RLS, and CI connects as one, so it is tempting to conclude CI cannot check
 this. It can, and does: `tests/test_tenancy.py`'s `unprivileged_dsn` fixture makes a throwaway
