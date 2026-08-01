@@ -32,7 +32,13 @@ class Chunk:
 class ScoredChunk:
     chunk: Chunk
     score: float
+    #: LAST write. What "how fresh is this corpus" means; staleness reports on this.
     indexed_at: datetime | None = None
+    #: FIRST write, preserved across re-indexing. This is the transaction-time axis: `known_as_of`
+    #: asks what we HELD at an instant, and a memo edited yesterday was still held last month.
+    #: Using `indexed_at` for that made a re-indexed memory read `not_yet_known` for every past
+    #: instant. `None` on stores predating the column, and then treated as visible, not hidden.
+    first_indexed_at: datetime | None = None
 
 
 @dataclass(frozen=True)

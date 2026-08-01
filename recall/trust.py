@@ -32,7 +32,7 @@ from recall.frontmatter import validity_bounds
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.rerank import Reranker
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
-from recall.store import PgVectorStore
+from recall.store import EdgeCandidates, PgVectorStore
 from recall.types import (
     Provenance,
     RetrievalResult,
@@ -51,6 +51,36 @@ _UNCALIBRATED = Calibration(embedder="uncalibrated", threshold=DEFAULT_GAP_THRES
 #: than once per query. Not thread-guarded: a duplicate warning under a race is harmless, a lock in
 #: the retrieval hot path is not.
 _WARNED_UNCALIBRATED: set[str] = set()
+
+#: Store types already warned about for a point-in-time query they can only half-answer. Same
+#: once-per-process, unguarded rationale as `_WARNED_UNCALIBRATED`.
+_WARNED_NO_EDGE_DATES: set[str] = set()
+
+
+def _as_utc(value: datetime) -> datetime:
+    """A naive datetime read as UTC. One helper, because the three comparison sites in this
+    module (`now`, `known_as_of`, and each candidate's date) all put a caller-supplied instant
+    against a TIMESTAMPTZ from the store, and normalising some of them raises where normalising
+    none of them did not."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _warn_no_edge_dates(store_type: str) -> None:
+    """A `known_as_of` query on a store that cannot date its supersession edges.
+
+    The caller asked what was true at a past instant and gets a HALF answer: hits are rewound by
+    write time, but supersession is not, so a memory can read as `superseded` by a document that
+    did not exist at that instant. Degrading silently would be worse than the AttributeError it
+    replaced, because a wrong answer arrives looking like a right one.
+    """
+    if store_type in _WARNED_NO_EDGE_DATES:
+        return
+    _WARNED_NO_EDGE_DATES.add(store_type)
+    _log.warning(
+        "%s exposes no supersession_all(), so known_as_of rewinds hits but NOT supersession "
+        "edges: a hit may read as superseded by a document that did not exist at that instant.",
+        store_type,
+    )
 
 
 def _warn_uncalibrated(embedder_name: str) -> None:
@@ -97,24 +127,88 @@ _ANSI_SEQUENCE = re.compile(
 )
 
 
-def resolve_successor(file: str, supersession: dict[str, str]) -> str | None:
+def resolve_successor(
+    file: str,
+    supersession: dict[str, str],
+    edge_candidates: "EdgeCandidates | None" = None,
+    known_as_of: datetime | None = None,
+) -> str | None:
     """Terminal successor of `file` in the supersession chain, or None if it has none.
 
     A cycle (a.md -> b.md -> a.md) cannot loop: the walk stops on the first revisit and the
     cycle member resolves to its direct successor. A self-claim (`supersedes:` the file's own
     name — an authoring mistake) is ignored: a document cannot supersede itself.
+
+    With `known_as_of`, the walk sees only the edges asserted by that instant, so a point-in-time
+    replay resolves to the successor that was current *then*. The filter is applied per STEP
+    rather than to the final answer: in a chain a -> b -> c where only the first edge predates the
+    instant, the answer is `b`. Gating the terminal successor instead would answer `c`, a document
+    that had not yet superseded anything.
+
+    An edge with no recorded date applies, which is the inverse of the rule for hits with no
+    `indexed_at` and deliberately so. Both are fail-closed: hiding a hit of unknown age would
+    silently empty result sets for stores predating the column, while ignoring an edge of unknown
+    age would serve a memory the corpus explicitly marks as stale.
     """
-    if supersession.get(file) in (None, file):
+
+    def step(cur: str) -> str | None:
+        """The next file in the chain, as it stood at `known_as_of`.
+
+        With no instant to replay, this is `supersession[cur]` and nothing else happens. With one,
+        it is the LIVE claim: of every document claiming to supersede `cur`, those asserted at or
+        before the instant, and among them the one asserted LAST.
+
+        Choosing among candidates is the whole point. `supersession` keeps a single winner per
+        target, picked by scan order, which is a time-independent rule and therefore answers a
+        different question: where two documents supersede one target, the winner today is often
+        not the one live at a past instant, and gating that single winner drops a real edge and
+        reports the stale memory as current.
+
+        ⚠️ **So asking about NOW two ways can give two answers, deliberately.** With fan-in where
+        the later-asserted claim is not the last scan row, a plain search follows `supersession`
+        and answers the scan-order winner, while `known_as_of=<any instant after both>` answers
+        the latest-ASSERTED one. By this function's own argument the replay answer is the better
+        one, but `supersession()` is not changed to match: it is what every existing caller
+        already gets, and silently re-answering it would be the behaviour change this whole branch
+        has been avoiding. Pinned by `test_replay_at_now_may_differ_from_a_plain_search`.
+        """
+        if known_as_of is None or edge_candidates is None:
+            return supersession.get(cur)
+        claims = edge_candidates.get(cur)
+        if claims is None:
+            # ABSENT from the map. Candidates and `supersession` come from one pass, so this means
+            # hand-built, inconsistent input. Fail closed: keep demoting.
+            return supersession.get(cur)
+        if not claims:
+            # PRESENT but empty is a different signal, and conflating the two silently ignored
+            # `known_as_of` for that step. `_resolve_rows` never emits an empty list, so this only
+            # reaches a caller who built one, and the only thing it can mean is "no claim".
+            return None
+        live = [(f, when) for f, when in claims if when is None or when <= known_as_of]
+        if not live:
+            return None
+        best, best_when = live[0]
+        for f, when in live[1:]:
+            # An undated claim is of unknown age and loses to any dated one, so a known assertion
+            # decides the answer where one exists. Ties go to the later scan position, which is
+            # the same rule `supersession`'s single winner uses.
+            if best_when is None or (when is not None and when >= best_when):
+                best, best_when = f, when
+        return best
+
+    first = step(file)
+    if first in (None, file):
         return None
     seen = {file}
     cur = file
-    while cur in supersession:
-        nxt = supersession[cur]
+    while True:
+        nxt = step(cur)
+        if nxt is None:
+            return cur
         if nxt in seen:
-            return supersession[file]
+            return first
         seen.add(nxt)
         cur = nxt
-    return cur
 
 
 def _verdict(
@@ -124,6 +218,7 @@ def _verdict(
     now: datetime,
     unresolved: frozenset[str] = frozenset(),
     known_as_of: datetime | None = None,
+    edge_candidates: "EdgeCandidates | None" = None,
 ) -> tuple[Verdict, Validity]:
     meta = hit.chunk.metadata
     file = meta.get("file")
@@ -134,15 +229,30 @@ def _verdict(
         # Indexer's fail-fast). Fail CLOSED per hit: an unparseable window must not read as
         # trustworthy, and one bad row must not crash every search that retrieves it.
         return "invalid_metadata", Validity(valid_from=None, valid_until=None, superseded_by=None)
-    if known_as_of is not None and hit.indexed_at is not None and hit.indexed_at > known_as_of:
+    # Read INSIDE the `known_as_of` guard, not before it. The original condition short-circuited
+    # on `known_as_of is not None`, so a hit carrying no write time at all never had the attribute
+    # touched; hoisting the lookup out broke duck-typed hits that had never needed one. And
+    # `getattr` on both, because adding a field to `ScoredChunk` must not turn a working search
+    # into an AttributeError — the same rule the `embedder.name` lookup below follows.
+    first_known = (
+        getattr(hit, "first_indexed_at", None) or getattr(hit, "indexed_at", None)
+        if known_as_of is not None
+        else None
+    )
+    if known_as_of is not None and first_known is not None and first_known > known_as_of:
         # TRANSACTION time, checked BEFORE supersession on purpose: a memory written after the
         # as-of instant did not exist yet, and whether it was later superseded is not a question
         # that can be asked about something that had not been written. Ordering it after
         # `superseded` would report the fate of a memory the caller cannot see.
         #
-        # A row with NO `indexed_at` is left alone rather than hidden. It reaches here only from a
-        # store that did not record one, and defaulting an unknown write time to "after the as-of"
-        # would silently empty a result set for callers whose data predates the column.
+        # FIRST write, not last. `indexed_at` moves forward every time a document is re-indexed,
+        # so using it here claimed a memo edited today did not exist last month, and every replay
+        # before the edit reported an empty store. The fallback to `indexed_at` is for stores
+        # predating the column, where it is the only evidence available and is exactly what the
+        # migration backfills.
+        #
+        # A row with NEITHER is left alone rather than hidden: defaulting an unknown write time to
+        # "after the as-of" would silently empty a result set for callers whose data predates both.
         return (
             "not_yet_known",
             Validity(valid_from=start, valid_until=end, superseded_by=None),
@@ -155,7 +265,9 @@ def _verdict(
             "ambiguous_supersession",
             Validity(valid_from=start, valid_until=end, superseded_by=None),
         )
-    successor = resolve_successor(file, supersession) if file else None
+    successor = (
+        resolve_successor(file, supersession, edge_candidates, known_as_of) if file else None
+    )
     validity = Validity(valid_from=start, valid_until=end, superseded_by=successor)
     if successor is not None:
         return "superseded", validity
@@ -324,6 +436,7 @@ def evaluate(
     now: datetime,
     unresolved: frozenset[str] = frozenset(),
     known_as_of: datetime | None = None,
+    edge_candidates: "EdgeCandidates | None" = None,
 ) -> TrustedResult:
     """Pure trust evaluation of a retrieval result (no DB access, no clock reads).
 
@@ -338,12 +451,24 @@ def evaluate(
     They compose: ``evaluate(..., now=june, known_as_of=tuesday)`` asks what we believed on Tuesday
     about the state of the world in June. Passing neither leaves behaviour exactly as before.
 
-    **Known limit.** ``known_as_of`` filters HITS by write time; it does not rewind supersession.
-    Supersession edges carry no timestamp, so an edge added after the as-of instant still applies,
-    and a memory that was current at that moment can read as ``superseded`` by a document the
-    caller cannot see. Rewinding that needs edge timestamps, which the corpus format does not
-    record today. Point-in-time audit is therefore honest about *which memories existed* and
-    approximate about *which were current*.
+    **``edge_candidates`` rewinds supersession too**, when supplied. `trusted_search` gets it from
+    `PgVectorStore.supersession_all()` whenever `known_as_of` is set, the store exposes that
+    method and the retrieval returned hits; a store without it logs a warning and rewinds hits
+    only. An edge becomes
+    assertable when the superseding document is written, so its `indexed_at` dates the edge; a
+    chain resolves per step, to the successor current at the instant. Point-in-time replay is
+    then honest about which memories existed *and* about which were current.
+
+    Transaction time comes from `first_indexed_at`, the FIRST write, preserved across
+    re-indexing. `indexed_at` is the LAST write and using it here claimed a memo edited today had
+    never existed before the edit, so every replay of an earlier instant reported an empty store.
+    A hit carrying neither is left visible rather than hidden.
+
+    Narrower residues, both fail-closed: an edge whose superseding file has no recorded date
+    applies unconditionally, and ``unresolved`` is not rewound, so an ambiguous claim written
+    after the instant still forces an abstention at it.
+
+    Omitting ``edge_candidates`` keeps the old behaviour exactly, so no caller changes.
 
     Verdict precedence per hit: invalid_metadata > not_yet_known > superseded > expired /
     not_yet_valid > low_confidence > ok.
@@ -356,11 +481,23 @@ def evaluate(
     """
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
+    if known_as_of is not None:
+        # BOTH operands, and NOT only when `known_as_of` happened to be naive. Nesting the
+        # `edge_candidates` half inside that branch left the mirror combination raising: an AWARE
+        # `known_as_of` against a naive hand-built date map still hit the comparison, so the more
+        # careful caller was the one that crashed. Two rounds of review to get one comment to
+        # match its own code.
+        known_as_of = _as_utc(known_as_of)
+        if edge_candidates:
+            edge_candidates = {
+                target: [(f, None if w is None else _as_utc(w)) for f, w in claims]
+                for target, claims in edge_candidates.items()
+            }
     cal = calibration or _UNCALIBRATED
     trusted: list[TrustedHit] = []
     for hit in result.hits:
         verdict, validity = _verdict(
-            hit, supersession, cal.threshold, now, unresolved, known_as_of
+            hit, supersession, cal.threshold, now, unresolved, known_as_of, edge_candidates
         )
         meta = hit.chunk.metadata
         trusted.append(
@@ -473,7 +610,22 @@ def trusted_search(
         store, embedder, reranker=reranker, gap_threshold=cal.threshold, candidate_k=candidate_k
     )
     result = retriever.search(query, k=k, source=source)
-    supersession, unresolved = store.supersession() if result.hits else ({}, frozenset())
+    # ONE call when the candidates are needed: `supersession_all()` returns edges and their
+    # dates from a single validated scan, so they cannot describe different scans. Read
+    # defensively: `store` is duck-typed in
+    # several places (tests and downstream adapters implement only the read surface they need),
+    # and a store without the method degrades to exactly the pre-change behaviour.
+    supersession: dict[str, str] = {}
+    unresolved: frozenset[str] = frozenset()
+    edge_candidates: "EdgeCandidates | None" = None
+    if result.hits:
+        fetch_all = getattr(store, "supersession_all", None) if known_as_of is not None else None
+        if fetch_all is not None:
+            supersession, unresolved, edge_candidates = fetch_all()
+        else:
+            if known_as_of is not None:
+                _warn_no_edge_dates(type(store).__name__)
+            supersession, unresolved = store.supersession()
     trusted = evaluate(
         result,
         supersession,
@@ -481,6 +633,7 @@ def trusted_search(
         now or datetime.now(timezone.utc),
         unresolved,
         known_as_of,
+        edge_candidates,
     )
     if entailment is not None:
         from recall.entailment import apply_entailment

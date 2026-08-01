@@ -291,6 +291,112 @@ def _basename(file: str) -> str:
     return supersedes_key(file)
 
 
+#: A superseded file -> every document claiming to supersede it, in scan order, each with when
+#: that claim was first written (``None`` when unknown). A LIST rather than one winner, because
+#: choosing a single superseder discards the information a point-in-time replay needs: where two
+#: documents supersede the same target, the one live at a past instant is often not the one live
+#: today, and picking by any time-independent rule answers a different question.
+EdgeCandidates = dict[str, list[tuple[str, "datetime | None"]]]
+
+
+def resolve_supersession_candidates(
+    rows: list[tuple[str | None, str | None, datetime | None]],
+) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
+    """``(winner, unresolved, candidates)`` from ``(file, supersedes, first_indexed)`` rows.
+
+    An edge ``A -> B`` becomes assertable when B is written, because the claim lives in B's
+    `supersedes:` frontmatter. So it is dated by the EARLIEST `indexed_at` among the chunks of B
+    that CARRY that claim: a chunk existing implies the frontmatter existed, and the earliest is
+    the conservative reading. Per claim, not per file, because one file can carry several
+    different `supersedes` values without any authoring mistake (`Indexer._prune_vanished` notes a
+    corpus may be indexed under several roots, and `metadata['file']` is root-relative while
+    `replace_sources` deletes by absolute `source`).
+
+    `winner` is what `supersession()` has always returned and is unchanged. `candidates` is the
+    superset a replay needs; see `recall.trust.resolve_successor` for how it is consumed.
+
+    Dates come from `first_indexed_at`, the FIRST write, preserved across re-indexing. Using
+    `indexed_at` (the last write) meant editing a superseding memo re-dated its edge, so a past
+    replay dropped a long-standing claim and served the stale memory as current.
+
+    Pure and DB-free, so the rule is unit-testable without a database.
+    """
+    winner, unresolved, candidates = _resolve_rows(rows)
+    return winner, unresolved, candidates
+
+
+def _resolve_rows(
+    rows: list[tuple[str | None, str | None, datetime | None]],
+) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
+    """The one resolution pass. `resolve_supersession` and the candidate map both come from here.
+
+    Deriving them separately is what made the previous version wrong twice: two functions matching
+    claims to targets by their own copy of the rule can disagree, and did (a normalised lookup
+    against a raw dangling key, and a per-file minimum against a per-claim group). One pass cannot.
+
+    `winner` reproduces last-row-wins EXACTLY, including the case where one file claims the same
+    target twice, so callers who never ask for a past instant see no change at all.
+    """
+    # DEDUPED. `rows` carries one entry per (file, supersedes) pair, so a file asserting two
+    # different claims appeared TWICE and made ITSELF read as an ambiguous basename: its own
+    # incoming edge was dropped and it was named in `unresolved`, telling the operator to
+    # disambiguate a basename that exactly one document carries. Ambiguity is a property of two
+    # FILES sharing a stem, never of one file carrying two claims.
+    files = list(dict.fromkeys(f for f, _s, _d in rows if f))
+    by_base: dict[str, list[str]] = {}
+    for f in files:
+        by_base.setdefault(_basename(f), []).append(f)
+
+    winner: dict[str, str] = {}
+    unresolved: set[str] = set()
+    order: dict[str, list[str]] = {}
+    when: dict[tuple[str, str], datetime | None] = {}
+
+    for file, supersedes, first_indexed in rows:
+        if not file or not supersedes:
+            continue
+        target_basename = _basename(supersedes)
+        matches = by_base.get(target_basename, [])
+        if len(matches) == 1:
+            key = matches[0]
+        elif len(matches) == 0:
+            # Dangling: key on the raw basename as written. Normalisation exists to make MATCHING
+            # tolerant of how humans spell a reference; this key matches no real file either way,
+            # so it keeps the author's form rather than inventing a normalised one.
+            key = supersedes.rsplit("/", 1)[-1]
+        else:
+            # Ambiguous: don't guess — but don't stay silent either. Dropping the edge alone
+            # would leave the (possibly superseded) memories looking perfectly `ok`, which is
+            # the same wrong answer the trust layer exists to prevent. Naming them lets the
+            # read path fail closed and tell the operator what to fix.
+            unresolved.update(matches)
+            continue
+
+        winner[key] = file  # last row wins, exactly as before
+        slot = order.setdefault(key, [])
+        if file in slot:
+            slot.remove(file)
+        slot.append(file)
+        pair = (key, file)
+        if pair in when:
+            prev = when[pair]
+            # An undated row makes the whole claim undated. Fail closed: unknown age keeps
+            # demoting rather than silently reviving a memory the corpus marks as stale.
+            when[pair] = (
+                min(prev, first_indexed)
+                if prev is not None and first_indexed is not None
+                else None
+            )
+        else:
+            when[pair] = first_indexed
+
+    candidates: EdgeCandidates = {
+        target: [(f, when[(target, f)]) for f in claimants]
+        for target, claimants in order.items()
+    }
+    return winner, frozenset(unresolved), candidates
+
+
 def resolve_supersession(
     rows: list[tuple[str | None, str | None]],
 ) -> tuple[dict[str, str], frozenset[str]]:
@@ -316,32 +422,12 @@ def resolve_supersession(
     dangling case). ``unresolved`` holds root-relative paths.
 
     Pure and DB-free so the resolution rule can be unit-tested without a database.
+
+    A thin projection of `resolve_supersession_candidates`, deliberately: the resolution rule
+    lives in exactly one place so the winner map and the candidate map cannot drift apart.
     """
-    files = [f for f, _ in rows if f]
-    by_base: dict[str, list[str]] = {}
-    for f in files:
-        by_base.setdefault(_basename(f), []).append(f)
-    mapping: dict[str, str] = {}
-    unresolved: set[str] = set()
-    for file, supersedes in rows:
-        if not file or not supersedes:
-            continue
-        target_basename = _basename(supersedes)
-        candidates = by_base.get(target_basename, [])
-        if len(candidates) == 1:
-            mapping[candidates[0]] = file
-        elif len(candidates) == 0:
-            # Dangling: key on the raw basename as written. Normalisation exists to make MATCHING
-            # tolerant of how humans spell a reference; this key matches no real file either way,
-            # so it keeps the author's form rather than inventing a normalised one.
-            mapping[supersedes.rsplit("/", 1)[-1]] = file
-        else:
-            # Ambiguous: don't guess — but don't stay silent either. Dropping the edge alone
-            # would leave the (possibly superseded) memories looking perfectly `ok`, which is
-            # the same wrong answer the trust layer exists to prevent. Naming them lets the
-            # read path fail closed and tell the operator what to fix.
-            unresolved.update(candidates)
-    return mapping, frozenset(unresolved)
+    winner, unresolved, _candidates = _resolve_rows([(f, s, None) for f, s in rows])
+    return winner, unresolved
 
 
 def _ef_search_multiplier() -> int:
@@ -426,7 +512,7 @@ class PgVectorStore:
         self._tenant = tenant
         self._statement_timeout_ms = statement_timeout_ms
         self._connect_timeout_s = connect_timeout_s
-        #: (fingerprint, edges, unresolved) — see `supersession()`. The fingerprint is what
+        #: (fingerprint, edges, unresolved, candidates) — see `supersession_all()`. The fingerprint is what
         #: makes the cache safe to reuse across processes.
         self._supersession_cache: tuple | None = None
         #: Count of full supersession scans actually performed (cache misses). Surfaced so a
@@ -707,11 +793,13 @@ class PgVectorStore:
                 metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                 embedding vector({self._dim}),
                 indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                first_indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
                 PRIMARY KEY (tenant_id, id)
             )
             """
         )
+        self._migrate_first_indexed_at(conn)
         self._migrate_to_tenanted(conn)
         dim_row = conn.execute(
             "SELECT atttypmod FROM pg_attribute "
@@ -778,6 +866,28 @@ class PgVectorStore:
         # Every hot-path predicate leads with tenant_id, so it leads the index too.
         conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_tenant_idx ON {t} (tenant_id)")
         self._enable_rls(conn)
+
+    def _migrate_first_indexed_at(self, conn: "psycopg.Connection") -> None:
+        """Add `first_indexed_at` to a table created before it existed, idempotently.
+
+        Three statements rather than one, and the order is the whole point. Adding the column
+        `NOT NULL DEFAULT now()` in a single step would stamp every EXISTING row with the moment
+        of the migration, which is the exact error the column exists to fix: it would claim the
+        whole corpus was first written the day someone upgraded, and every `known_as_of` replay
+        before that instant would report an empty store. So the column arrives nullable, is
+        backfilled from `indexed_at` (the best evidence available for rows written before anyone
+        was recording a first write), and only then gets its default and NOT NULL.
+
+        `ADD COLUMN IF NOT EXISTS` makes the whole thing a no-op on a table that already has it,
+        which is what lets `ensure_schema` stay idempotent.
+        """
+        t = self._table
+        conn.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS first_indexed_at TIMESTAMPTZ")
+        conn.execute(
+            f"UPDATE {t} SET first_indexed_at = indexed_at WHERE first_indexed_at IS NULL"
+        )
+        conn.execute(f"ALTER TABLE {t} ALTER COLUMN first_indexed_at SET DEFAULT now()")
+        conn.execute(f"ALTER TABLE {t} ALTER COLUMN first_indexed_at SET NOT NULL")
 
     def _migrate_to_tenanted(self, conn: "psycopg.Connection") -> None:
         """Add `tenant_id` to a table created before tenancy existed, idempotently.
@@ -954,14 +1064,18 @@ class PgVectorStore:
             cur.executemany(
                 f"""
                 INSERT INTO {t}
-                    (tenant_id, id, source, text, metadata, embedding, indexed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, now())
+                    (tenant_id, id, source, text, metadata, embedding,
+                     indexed_at, first_indexed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, now(), now())
                 ON CONFLICT (tenant_id, id) DO UPDATE SET
                     source = EXCLUDED.source,
                     text = EXCLUDED.text,
                     metadata = EXCLUDED.metadata,
                     embedding = EXCLUDED.embedding,
-                    indexed_at = now()
+                    indexed_at = now(),
+                    -- LEAST, so re-writing a chunk never moves its first-seen forward. The
+                    -- excluded value is now(), so this always keeps the stored one.
+                    first_indexed_at = LEAST({t}.first_indexed_at, EXCLUDED.first_indexed_at)
                 """,
                 [
                     (self._tenant, c.id, c.source, c.text, json.dumps(c.metadata), Vector(e))
@@ -1051,13 +1165,14 @@ class PgVectorStore:
 
     def _rows_to_hits(self, rows: list[tuple]) -> list[ScoredChunk]:
         hits: list[ScoredChunk] = []
-        for cid, source, text, metadata, indexed_at, score in rows:
+        for cid, source, text, metadata, indexed_at, first_indexed_at, score in rows:
             md = metadata if isinstance(metadata, dict) else json.loads(metadata)
             hits.append(
                 ScoredChunk(
                     chunk=Chunk(id=cid, source=source, text=text, metadata=md),
                     score=float(score),
                     indexed_at=indexed_at,
+                    first_indexed_at=first_indexed_at,
                 )
             )
         return hits
@@ -1108,7 +1223,8 @@ class PgVectorStore:
         # (no `file` metadata) and any absolute-path caller working. Same rule as recall_forget.
         where = "AND (metadata->>'file' = %(source)s OR source = %(source)s)" if source else ""
         sql = f"""
-            SELECT id, source, text, metadata, indexed_at, 1 - (embedding <=> %(vec)s) AS score
+            SELECT id, source, text, metadata, indexed_at, first_indexed_at,
+                   1 - (embedding <=> %(vec)s) AS score
             FROM {t}
             WHERE tenant_id = %(tenant)s {where}
             ORDER BY embedding <=> %(vec)s
@@ -1248,10 +1364,11 @@ class PgVectorStore:
             # query it would run for EVERY tsquery-matching row before the sort discards them
             sql = f"""
                 {tsquery_cte}
-                SELECT id, source, text, metadata, indexed_at,
+                SELECT id, source, text, metadata, indexed_at, first_indexed_at,
                        1 - (embedding <=> %(vec)s) AS score
                 FROM (
-                    SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.embedding,
+                    SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.first_indexed_at,
+                           c.embedding,
                            ts_rank(c.tsv, q.tsq) AS rank
                     FROM {t} c, q
                     WHERE c.tenant_id = %(tenant)s
@@ -1265,7 +1382,7 @@ class PgVectorStore:
         else:
             sql = f"""
                 {tsquery_cte}
-                SELECT c.id, c.source, c.text, c.metadata, c.indexed_at,
+                SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.first_indexed_at,
                        ts_rank(c.tsv, q.tsq) AS score
                 FROM {t} c, q
                 WHERE c.tenant_id = %(tenant)s
@@ -1298,7 +1415,20 @@ class PgVectorStore:
 
         def _op(conn: "psycopg.Connection") -> int:
             with conn.transaction():
+                # `first_indexed_at` has to survive the DELETE. `ON CONFLICT ... LEAST` in
+                # `_upsert_in` cannot help here: the row is gone by the time the insert runs, so
+                # there is no conflict and the re-inserted chunk would claim it was first written
+                # now. That is the whole re-index defect, and this is the path that causes it.
+                preserved: dict[str, datetime] = {}
                 if sources:
+                    preserved = {
+                        cid: first
+                        for cid, first in conn.execute(
+                            f"SELECT id, first_indexed_at FROM {self._table} "
+                            f"WHERE tenant_id = %s AND source = ANY(%s)",
+                            (self._tenant, sources),
+                        ).fetchall()
+                    }
                     conn.execute(
                         f"DELETE FROM {self._table} "
                         f"WHERE tenant_id = %s AND source = ANY(%s)",
@@ -1306,6 +1436,20 @@ class PgVectorStore:
                     )
                 if chunks:
                     self._upsert_in(conn, chunks, embeddings)  # savepoint, same commit
+                    restore = [
+                        (preserved[c.id], self._tenant, c.id)
+                        for c in chunks
+                        if c.id in preserved
+                    ]
+                    if restore:
+                        # executemany, matching `_upsert_in`: psycopg3 pipelines it. A chunk id
+                        # absent from `preserved` is genuinely new and keeps its now().
+                        with conn.cursor() as cur:
+                            cur.executemany(
+                                f"UPDATE {self._table} SET first_indexed_at = %s "
+                                f"WHERE tenant_id = %s AND id = %s",
+                                restore,
+                            )
             return len(chunks)
 
         self._with_retry(_op)
@@ -1378,7 +1522,7 @@ class PgVectorStore:
         answer, silently, which is the failure it exists to prevent.
 
         Freshness is established by a cheap fingerprint — `(max(indexed_at), count(*))` for this
-        tenant — and the expensive `DISTINCT` scan runs only when that fingerprint moves. Both
+        tenant — and the expensive grouped scan runs only when that fingerprint moves. Both
         halves are needed: `max(indexed_at)` alone cannot see a DELETE, and deleting a superseding
         document must stop its edge from applying, or the reader keeps demoting a memory that is
         current again.
@@ -1390,30 +1534,101 @@ class PgVectorStore:
         cache a result under a fingerprint that never described it.
         """
 
-        def _op(conn: "psycopg.Connection") -> tuple[dict[str, str], frozenset[str]]:
+        edges, unresolved, _dates = self.supersession_all()  # already copies
+        return edges, unresolved
+
+    def supersession_all(
+        self,
+    ) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
+        """``(edges, unresolved, candidates)`` behind one validated cache and one scan.
+
+        `candidates` maps a superseded file to EVERY document claiming to supersede it, each with
+        when that claim was first written: `min(indexed_at)` over the claiming chunks, since a
+        chunk existing implies its `supersedes:` frontmatter existed and the earliest is the
+        conservative reading.
+
+        **A list, not a winner, and that is the point.** `edges` keeps one superseder per target,
+        chosen by scan order, which is a time-independent rule and therefore answers a different
+        question. Where `b1.md` (Monday) and `b2.md` (Wednesday) both supersede `a.md`, only
+        `b2.md` survived, so a replay of Tuesday saw a single edge dated Wednesday, dropped it,
+        and answered `ok` when `a.md` was in fact superseded by `b1.md`. Renaming the two files
+        flipped the answer, which is what showed the axis was wrong. `resolve_successor` now picks
+        the claim that was live at the instant. `edges` is unchanged, so callers who never replay
+        see exactly what they saw before.
+
+        This is the only accessor. A second one returning just the dates existed briefly and had
+        to warn, in its own docstring, that pairing it with `supersession()` reintroduced the
+        two-validation race this exists to close.
+
+        `ORDER BY` is load-bearing, not tidiness. `edges` resolves fan-in by
+        last-row-wins, so an unordered scan lets the
+        winner change between runs. The predecessor query was `SELECT DISTINCT`, and swapping it
+        for `GROUP BY` preserves the row SET but not the row ORDER, which would have re-rolled
+        that winner for existing `supersession()` callers who never asked for any of this.
+        The ordering is the DATABASE's text collation, so the winner is stable within a
+        deployment but not guaranteed identical across one with a different `lc_collate`. That
+        residue is deliberately left rather than pinned with `COLLATE "C"`: `ORDER BY 1 COLLATE
+        "C"` does not mean what it looks like. An ORDER BY ordinal is only read as an output
+        column when it is a bare integer constant, so adding `COLLATE` turns it into the integer
+        literal 1, and integers have no collation. It was written that way here and broke 51 tests
+        on the first CI run that touched a real database, with nothing catching it locally because
+        no test executes this SQL without Postgres.
+
+        The winner is also stable rather than necessarily IDENTICAL to what `SELECT DISTINCT`
+        produced: under a Sort+Unique plan it is the same one, under HashAggregate the old one was
+        bucket order.
+
+        Dates come from `first_indexed_at` rather than `indexed_at`. The distinction is the
+        whole reason the column exists: `indexed_at` records the LAST write, so `replace_sources`
+        re-inserting an edited document moved its edge forward and a replay before the edit
+        dropped a claim that had been continuously true. `first_indexed_at` is preserved on
+        conflict with `LEAST`, and captured and restored across `replace_sources`' delete, which
+        `ON CONFLICT` alone cannot cover because the row is gone before the insert runs.
+        """
+
+        def _op(
+            conn: "psycopg.Connection",
+        ) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
             fingerprint = conn.execute(
                 f"SELECT max(indexed_at), count(*) FROM {self._table} WHERE tenant_id = %s",
                 (self._tenant,),
             ).fetchone()
             cached = self._supersession_cache
             if cached is not None and cached[0] == fingerprint:
-                return cached[1], cached[2]
+                return cached[1], cached[2], cached[3]
             rows = conn.execute(
                 f"""
-                SELECT DISTINCT metadata->>'file' AS file, metadata->>'supersedes' AS supersedes
+                SELECT metadata->>'file' AS file,
+                       metadata->>'supersedes' AS supersedes,
+                       min(first_indexed_at) AS first_indexed
                 FROM {self._table}
                 WHERE tenant_id = %s AND metadata ? 'file'
+                GROUP BY 1, 2
+                ORDER BY 1, 2
                 """,
                 (self._tenant,),
             ).fetchall()
             self._supersession_scans += 1
             METRICS.increment("recall_supersession_scans_total")
-            edges, unresolved = resolve_supersession(rows)
-            self._supersession_cache = (fingerprint, edges, unresolved)
-            return edges, unresolved
+            edges, unresolved, candidates = resolve_supersession_candidates(rows)
+            self._supersession_cache = (fingerprint, edges, unresolved, candidates)
+            return edges, unresolved, candidates
 
-        edges, unresolved = self._with_retry(_op)
-        return dict(edges), unresolved
+        edges, unresolved, candidates = self._with_retry(_op)
+        # COPIES. This is public, and the cache is process-wide and validated by fingerprint
+        # rather than rebuilt, so handing out the live structures would let one caller's mutation
+        # survive every later cache hit and redirect other callers' supersession verdicts. The
+        # candidate LISTS are copied too, because a shallow `dict()` would still share them.
+        return (
+            dict(edges),
+            unresolved,
+            {target: list(claims) for target, claims in candidates.items()},
+        )
+
+    # `supersession_dates()` deliberately does NOT exist. It was a second accessor onto the same
+    # cache, and its own docstring had to warn that pairing it with `supersession()` reintroduced
+    # the two-validation race `supersession_all()` was written to close. An API whose
+    # documentation is a warning against using it is better deleted; it had no callers.
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """Resolve caller-facing identifiers to the DB `source` value(s) to delete, this tenant only.

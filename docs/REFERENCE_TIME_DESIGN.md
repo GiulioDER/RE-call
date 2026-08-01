@@ -304,16 +304,68 @@ earlier instant returns the original as `ok` while marking the later revision `n
   memory had not been written; the other means it had been, and did not apply. Only the first
   exonerates a past decision, so a caller replaying one must be able to tell them apart.
 
-## Known limit, stated rather than discovered later
+## Known limit, stated rather than discovered later — mechanism built, NOT yet merge-ready
 
-`known_as_of` filters hits by write time. **It does not rewind supersession.** Supersession edges
-carry no timestamp, so an edge added after the as-of instant still applies, and a memory that was
-current at that moment can read as `superseded` by a document the caller cannot see. Rewinding it
-needs edge timestamps the corpus format does not record.
+**As first shipped**, `known_as_of` filtered hits by write time and did **not** rewind
+supersession: edges carried no timestamp, so an edge added after the as-of instant still applied,
+and a memory current at that moment could read as `superseded` by a document the caller could not
+see. Point-in-time replay was honest about *which memories existed* and approximate about *which
+were current*.
 
-So point-in-time replay is **honest about which memories existed** and **approximate about which
-were current**. That is worth having and worth saying, and it is written into `evaluate`'s
-docstring rather than left for a user to find.
+**Closed 2026-08-01.** The prompt came from a reader on the Part 4 thread, arguing that utterance
+time is the axis to **order** on rather than to filter on. That reframing makes the missing
+timestamp derivable rather than absent: an edge `A -> B` becomes assertable when B is written, and
+B's `indexed_at` has been an indexed column since the beginning. So the corpus format did not need
+to record anything new.
+
+`PgVectorStore.supersession_all()` returns the edges and their dates from the single scan that
+already builds the edge map, `resolve_supersession_candidates` is the pure rule behind it (keyed per **claim**,
+`(superseding file, superseded basename)`, because one file can carry several `supersedes` values),
+and `resolve_successor` filters **per step**, so a chain `a -> b -> c` whose second edge postdates
+the instant resolves to `b`. Replay is now
+honest about which memories existed *and* about which were current.
+
+### `first_indexed_at`: the column that made the rewind sound
+
+The first version dated everything from `indexed_at`, which records the LAST write. A bug audit
+found what that costs: `replace_sources` re-inserts with `now()` and `Indexer.index_path` skips
+files whose content hash is unchanged, so fixing a typo in a superseding memo moved **its** date
+forward while its predecessor kept the old one. A replay of an earlier instant then dropped a
+long-standing edge and served the superseded memory as `ok`, where the pre-change code correctly
+said `superseded`. A wrong answer replacing a right one, in the layer built to prevent that.
+
+The root cause predated edge dating entirely: `known_as_of` on **hits** had it too, so a
+re-indexed memory read `not_yet_known` for every instant before its edit. The store claimed it had
+never held a document it had held for months.
+
+`first_indexed_at` fixes both. It is preserved on conflict with `LEAST`, and captured and restored
+across `replace_sources`' delete, which `ON CONFLICT` alone cannot cover because the row is gone
+before the insert runs. Existing tables migrate by adding the column nullable, backfilling from
+`indexed_at`, then setting the default: adding it `NOT NULL DEFAULT now()` in one step would have
+stamped the whole corpus with the upgrade time, which is the same error in a new place.
+
+`indexed_at` stays, and still means the last write. That is the right answer for staleness, which
+asks how fresh a corpus is. The two axes were being served by one column.
+
+Two narrower residues, both genuine and both fail-closed:
+
+- An edge whose superseding file has no recorded date applies unconditionally, the inverse of the
+  rule for hits, where an unknown write time leaves the hit visible. Both refuse to present
+  something as healthier than it is. Note the schema makes `indexed_at` NOT NULL, so this branch
+  is defence in depth against caller input rather than a state the live table can reach.
+- `unresolved` is not rewound. An `ambiguous_supersession` claim written after the as-of instant
+  still forces an abstention at that instant. Fail closed, so it costs recall rather than
+  correctness.
+
+**Fan-in was a second blocker and is now fixed.** Keeping one superseder per target resolved
+ties by scan order, which is time-independent and so answered a different question: where two
+documents superseded the same target, a replay saw only the surviving winner's edge and could
+drop a claim that was live at the instant. Renaming the two files flipped the answer. The resolver
+now returns every claim per target and `resolve_successor` picks the one live at the instant;
+`supersession()`'s single winner is untouched for callers who never replay.
+
+Note what none of this touches: the mechanism is transaction time on both sides, so it needs no
+event-time extraction and no objection from the first half of this document applies to it.
 
 ## Not built
 
