@@ -319,31 +319,33 @@ B's `indexed_at` has been an indexed column since the beginning. So the corpus f
 to record anything new.
 
 `PgVectorStore.supersession_all()` returns the edges and their dates from the single scan that
-already builds the edge map, `resolve_edge_dates` is the pure rule behind it (keyed per **claim**,
+already builds the edge map, `resolve_supersession_candidates` is the pure rule behind it (keyed per **claim**,
 `(superseding file, superseded basename)`, because one file can carry several `supersedes` values),
 and `resolve_successor` filters **per step**, so a chain `a -> b -> c` whose second edge postdates
 the instant resolves to `b`. Replay is now
 honest about which memories existed *and* about which were current.
 
-### 🔴 Not merge-ready: `indexed_at` is the LAST write, not the first
+### `first_indexed_at`: the column that made the rewind sound
 
-A bug audit of the change found the mechanism sound and its **input** wrong, which is worse than
-it sounds and is the reason this section does not yet say "shipped".
+The first version dated everything from `indexed_at`, which records the LAST write. A bug audit
+found what that costs: `replace_sources` re-inserts with `now()` and `Indexer.index_path` skips
+files whose content hash is unchanged, so fixing a typo in a superseding memo moved **its** date
+forward while its predecessor kept the old one. A replay of an earlier instant then dropped a
+long-standing edge and served the superseded memory as `ok`, where the pre-change code correctly
+said `superseded`. A wrong answer replacing a right one, in the layer built to prevent that.
 
-`replace_sources` re-inserts with `indexed_at = now()`, while `Indexer.index_path` skips files
-whose content hash is unchanged. So fixing a typo in a superseding memo moves **its** date forward
-while its predecessor keeps the old one. Replay at an earlier instant then drops a long-standing
-edge and serves the superseded memory as `ok`, while hiding its successor as `not_yet_known`. The
-pre-change code answered `superseded` on that same input. A wrong answer replaced a right one, in
-the layer whose whole purpose is to prevent exactly that.
+The root cause predated edge dating entirely: `known_as_of` on **hits** had it too, so a
+re-indexed memory read `not_yet_known` for every instant before its edit. The store claimed it had
+never held a document it had held for months.
 
-The root cause predates this change: `known_as_of` on **hits** has always had it, so a re-indexed
-memory already reads `not_yet_known` for a past instant. What edge dating adds is that the same
-bad date now flips a verdict from safe to unsafe rather than merely abstaining.
+`first_indexed_at` fixes both. It is preserved on conflict with `LEAST`, and captured and restored
+across `replace_sources`' delete, which `ON CONFLICT` alone cannot cover because the row is gone
+before the insert runs. Existing tables migrate by adding the column nullable, backfilling from
+`indexed_at`, then setting the default: adding it `NOT NULL DEFAULT now()` in one step would have
+stamped the whole corpus with the upgrade time, which is the same error in a new place.
 
-Fixing it needs a `first_indexed_at` column preserved across upserts (`LEAST(existing, excluded)`),
-which repairs the hit path at the same time. That is a migration, and there was no reachable
-database in the environment where this was written, so it is deliberately **not** attempted here.
+`indexed_at` stays, and still means the last write. That is the right answer for staleness, which
+asks how fresh a corpus is. The two axes were being served by one column.
 
 Two narrower residues, both genuine and both fail-closed:
 

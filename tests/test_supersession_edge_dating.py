@@ -121,8 +121,10 @@ def test_without_known_as_of_edge_dates_are_ignored():
     assert verdict == "superseded"
 
 
-def test_an_edge_with_no_date_still_applies():
-    """Fail closed, and the inverse of the rule for hits. See the module docstring."""
+def test_a_target_absent_from_the_candidate_map_keeps_demoting():
+    """NOT the undated-edge rule, which has its own test below. An ABSENT target means the two
+    maps disagree, i.e. hand-built inconsistent input, and the fail-closed answer is to keep
+    demoting. A target PRESENT with an empty list means no claim, and resolves to nothing."""
     verdict = _v(supersession={"a.md": "b.md"}, edge_candidates={}, known_as_of=TUE)
     assert verdict == "superseded"
 
@@ -282,23 +284,18 @@ def test_a_naive_known_as_of_does_not_raise():
 
 
 @requires_db
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="OPEN DEFECT: indexed_at is the LAST write, so re-indexing a superseding document "
-    "re-dates its edge. Needs a first_indexed_at column preserved across upserts. "
-    "strict=True fails the suite the day it starts passing, which is the point; raises= is "
-    "what keeps it a guard, because without it a fixture error or a KeyError reports as xfail "
-    "and is indistinguishable from the defect being watched.",
-)
 def test_reindexing_the_superseding_file_must_not_re_date_its_edge(shared_table):
-    """The deadman for the defect that blocks this branch, asserting the CORRECT expectation.
+    """Was the deadman for the blocking defect; now the test that it stays fixed.
 
-    An earlier version of this test lived in the pure-function layer and asserted the WRONG
-    answer to "pin" the bug. It could not fire: its rows were byte-identical to the happy-path
-    test above, its assertions were correct for those rows, and it went on passing in the
-    post-fix world. The defect is in the WRITE path's timestamping, so nothing below the store
-    can see it. It has to be tested here or not at all.
+    It carried `xfail(strict=True, raises=AssertionError)` while `indexed_at` was the only write
+    time available. `first_indexed_at` closed that, so the xfail is gone: leaving it would have
+    turned an unexpected PASS into a suite failure, which is exactly what strict is for.
+
+    An earlier version of this lived in the pure-function layer and asserted the WRONG answer to
+    "pin" the bug. It could not fire: its rows were byte-identical to the happy-path test above,
+    its assertions were correct for those rows, and it went on passing in the post-fix world. The
+    defect is in the WRITE path's timestamping, so nothing below the store can see it. It has to
+    be tested here or not at all.
 
     Re-indexing b.md must not move the date of the edge it asserts, because the claim was made at
     the first write and has been continuously true since.
@@ -527,13 +524,21 @@ def test_supersession_all_hands_out_copies_not_the_live_cache(shared_table):
         store.upsert(
             [_chunk("v2", "limits_v2.md", "250 rps", "limits_v1.md")], emb.embed(["250 rps"])
         )
-        edges, _unresolved, dates = store.supersession_all()
+        edges, _unresolved, claims = store.supersession_all()
         edges["limits_v1.md"] = "ATTACKER.md"
-        dates.clear()
+        # The LIST too, not just the top-level dict: a shallow `dict()` copy would share the
+        # lists, so mutating one poisons the process-wide cache and the dict-only assertions
+        # below would still pass.
+        claims["limits_v1.md"].append(("ATTACKER.md", None))
+        claims.clear()
 
         assert store.supersession_all()[0] == {"limits_v1.md": "limits_v2.md"}
         assert store.supersession()[0] == {"limits_v1.md": "limits_v2.md"}
-        assert store.supersession_all()[2] != {}
+        fresh = store.supersession_all()[2]
+        assert fresh != {}
+        assert all(
+            f != "ATTACKER.md" for claimants in fresh.values() for f, _when in claimants
+        ), "a caller's append reached the shared cache"
     finally:
         store.close()
 
@@ -610,11 +615,21 @@ def test_fan_in_replay_before_any_claim_finds_no_successor():
 
 def test_fan_in_answer_does_not_depend_on_the_alphabet():
     """The sharpest symptom of the old rule: renaming the two claimants flipped the answer.
-    Reversing their lexicographic order must now change nothing."""
-    renamed = [("a.md", None, MON), ("z_old.md", "a.md", MON), ("a_new.md", "a.md", WED)]
-    edges, unresolved, claims = resolve_supersession_candidates(renamed)
-    _v_, validity = _verdict(_hit(), edges, 0.5, WED, unresolved, TUE, claims)
-    assert validity.superseded_by == "z_old.md", "the Monday claim, whatever it is called"
+
+    Both namings are SORTED as `ORDER BY 1, 2` sorts them before resolving, because the row order
+    is derived from the names: reversing the names without re-sorting builds a row set the query
+    cannot return, and the assertion then passes on unfixed code too. The invariant is that both
+    answer the Monday document, whatever it happens to be called."""
+    for old_name, new_name in (("b1.md", "b2.md"), ("z_old.md", "a_new.md")):
+        rows = sorted(
+            [("a.md", None, MON), (old_name, "a.md", MON), (new_name, "a.md", WED)],
+            key=lambda r: (r[0], r[1] or ""),
+        )
+        edges, unresolved, claims = resolve_supersession_candidates(rows)
+        _v_, validity = _verdict(_hit(), edges, 0.5, WED, unresolved, TUE, claims)
+        assert validity.superseded_by == old_name, (
+            f"as of Tuesday only {old_name} (Monday) had been asserted"
+        )
 
 
 def test_fan_in_without_an_instant_is_unchanged():
@@ -648,3 +663,197 @@ def test_an_aware_known_as_of_with_naive_edge_dates_does_not_raise():
         _cands({"a.md": ("b.md", MON.replace(tzinfo=None))}),    # naive
     )
     assert res.hits[0].verdict == "superseded"
+
+
+# --- first_indexed_at: the write path, which only Postgres can exercise ----------------------
+
+@requires_db
+def test_reindexing_a_hit_does_not_hide_it_from_a_past_replay(shared_table):
+    """The half of the defect that predates edge dating entirely.
+
+    `known_as_of` asks what we HELD at an instant. `indexed_at` moves forward on every re-index,
+    so a memo edited today read `not_yet_known` for every instant before the edit: the store
+    claimed it had never held a document it had held for months."""
+    emb = HashingEmbedder(dim=DIM)
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    try:
+        store.ensure_schema()
+        store.upsert([_chunk("v1", "limits.md", "100 rps")], emb.embed(["100 rps"]))
+        rows = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )
+        first = rows[0][0]
+
+        store.upsert([_chunk("v1", "limits.md", "100 rps, typo fixed")],
+                     emb.embed(["100 rps, typo fixed"]))
+        after = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at, indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0]
+        assert after[0] == first, "re-writing a chunk moved its first-seen forward"
+        assert after[1] > first, "and its LAST write should have moved, or nothing was re-indexed"
+    finally:
+        store.close()
+
+
+@requires_db
+def test_replace_sources_preserves_first_indexed_at_across_the_delete(shared_table):
+    """`replace_sources` DELETEs then inserts, so `ON CONFLICT ... LEAST` never fires: there is no
+    conflict to resolve. This is the path a real `recall index` takes, and the one that made the
+    defect reachable in the first place."""
+    emb = HashingEmbedder(dim=DIM)
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    try:
+        store.ensure_schema()
+        chunk = _chunk("v1", "limits.md", "100 rps")
+        store.replace_sources([], [chunk], emb.embed(["100 rps"]))
+        first = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0][0]
+
+        edited = _chunk("v1", "limits.md", "100 rps, edited")
+        store.replace_sources(["limits.md"], [edited], emb.embed(["100 rps, edited"]))
+        after = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0][0]
+        assert after == first, "the DELETE dropped the first-seen and the re-insert re-stamped it"
+    finally:
+        store.close()
+
+
+@requires_db
+def test_a_genuinely_new_chunk_gets_a_fresh_first_indexed_at(shared_table):
+    """The preservation must not leak across ids: a chunk nobody has seen is new."""
+    emb = HashingEmbedder(dim=DIM)
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    try:
+        store.ensure_schema()
+        store.replace_sources([], [_chunk("v1", "a.md", "one")], emb.embed(["one"]))
+        store.replace_sources(["a.md"], [_chunk("v2", "a.md", "two")], emb.embed(["two"]))
+        rows = dict(store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT id, first_indexed_at FROM {shared_table}"
+            ).fetchall()
+        ))
+        assert set(rows) == {"v2"}, "v1 was replaced away"
+        assert rows["v2"] is not None
+    finally:
+        store.close()
+
+
+@requires_db
+def test_the_migration_backfills_first_indexed_at_from_indexed_at(shared_table):
+    """A table created before the column existed must NOT read as first written at upgrade time.
+
+    Stamping every existing row with `now()` would claim the whole corpus appeared the day someone
+    upgraded, and every replay before that instant would report an empty store. The migration
+    therefore adds the column nullable, backfills from `indexed_at`, then sets the default."""
+    emb = HashingEmbedder(dim=DIM)
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    try:
+        store.ensure_schema()
+        store.upsert([_chunk("v1", "a.md", "one")], emb.embed(["one"]))
+
+        # Simulate the pre-column world: drop it and re-run ensure_schema.
+        store._with_retry(
+            lambda conn: conn.execute(
+                f"ALTER TABLE {shared_table} DROP COLUMN first_indexed_at"
+            )
+        )
+        store.ensure_schema()
+
+        row = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at, indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0]
+        assert row[0] == row[1], "backfilled rows must carry their indexed_at, not the upgrade time"
+    finally:
+        store.close()
+
+
+# --- round four: the rules that ARE the fix, which nothing could fail on --------------------
+#
+# Every fan-in fixture above happens to list the OLDER claim first, so "latest asserted" and
+# "last in scan order" coincide and cannot be told apart. Replacing the whole selection rule with
+# pure scan order — the exact time-independent rule this change calls wrong — left the suite
+# green. These rows put the two in conflict, which is the only shape that can distinguish them.
+
+#: Scan order and date order DISAGREE: b1 is first but asserted later. In `ORDER BY 1, 2` order,
+#: so it is a shape the production query can actually return.
+FAN_IN_ANTI = [("a.md", None, MON), ("b1.md", "a.md", WED), ("b2.md", "a.md", MON)]
+
+
+def test_the_latest_asserted_claim_wins_not_the_last_scanned():
+    edges, _unresolved, claims = resolve_supersession_candidates(FAN_IN_ANTI)
+    assert claims == {"a.md": [("b1.md", WED), ("b2.md", MON)]}
+    later = datetime(2026, 3, 5, tzinfo=timezone.utc)
+    assert resolve_successor("a.md", edges, claims, later) == "b1.md", (
+        "b1.md asserted Wednesday, b2.md Monday: the later assertion is live"
+    )
+
+
+def test_only_the_claim_live_at_the_instant_counts_even_when_it_is_not_the_latest():
+    """At Tuesday only b2.md (Monday) had been asserted, though b1.md wins later."""
+    edges, _unresolved, claims = resolve_supersession_candidates(FAN_IN_ANTI)
+    assert resolve_successor("a.md", edges, claims, TUE) == "b2.md"
+
+
+def test_a_dated_claim_beats_an_undated_one_regardless_of_order():
+    """The documented priority: an undated claim is of unknown age, so a known assertion decides
+    where one exists. Both list orders, or the rule is really 'last wins' wearing a disguise."""
+    edges = {"a.md": "dated.md"}
+    forward = {"a.md": [("undated.md", None), ("dated.md", MON)]}
+    reverse = {"a.md": [("dated.md", MON), ("undated.md", None)]}
+    assert resolve_successor("a.md", edges, forward, TUE) == "dated.md"
+    assert resolve_successor("a.md", edges, reverse, TUE) == "dated.md"
+
+
+def test_an_all_undated_fan_in_falls_back_to_scan_order():
+    edges = {"a.md": "b2.md"}
+    claims = {"a.md": [("b1.md", None), ("b2.md", None)]}
+    assert resolve_successor("a.md", edges, claims, TUE) == "b2.md"
+
+
+def test_a_target_present_with_no_live_claim_has_no_successor():
+    """Distinct from the target being ABSENT, which means inconsistent input and keeps demoting."""
+    edges = {"a.md": "b.md"}
+    assert resolve_successor("a.md", edges, {"a.md": []}, TUE) is None
+    assert resolve_successor("a.md", edges, {}, TUE) == "b.md"
+
+
+def test_the_last_candidate_is_always_the_winner():
+    """The invariant that lets `step` break ties by scan position and match `supersession`.
+
+    `winner` is overwritten on every row while the candidate list is appended to, so the two are
+    maintained under different rules and could drift. They are kept in step by moving a repeated
+    claimant to the END of the list. Without that, a tied replay answers a different document than
+    a plain search, which is the drift this single pass exists to make impossible."""
+    rows = [
+        ("a.md", None, MON),
+        ("b2.md", "a", MON), ("b1.md", "a.md", MON), ("b2.md", "[[a]]", MON),
+    ]
+    winner, _unresolved, claims = resolve_supersession_candidates(rows)
+    for target, claimants in claims.items():
+        assert claimants[-1][0] == winner[target], (
+            f"{target}: candidate list ends with {claimants[-1][0]} but the winner is "
+            f"{winner[target]}, so a tied replay disagrees with a plain search"
+        )
+
+
+def test_replay_at_now_may_differ_from_a_plain_search():
+    """Documented, not accidental. Where the later-asserted claim is not the last scan row, a
+    plain search follows `supersession` (scan order) and a replay follows assertion time. The
+    replay answer is the better one; `supersession()` is deliberately left alone because it is
+    what every existing caller already gets."""
+    edges, _unresolved, claims = resolve_supersession_candidates(FAN_IN_ANTI)
+    far = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    assert resolve_successor("a.md", edges, claims, None) == "b2.md", "scan-order winner"
+    assert resolve_successor("a.md", edges, claims, far) == "b1.md", "latest asserted"

@@ -315,8 +315,9 @@ def resolve_supersession_candidates(
     `winner` is what `supersession()` has always returned and is unchanged. `candidates` is the
     superset a replay needs; see `recall.trust.resolve_successor` for how it is consumed.
 
-    ⚠️ Every date is only as good as `indexed_at`, which records the LAST write, not the first:
-    see `PgVectorStore.supersession_all` for the open defect that blocks merging.
+    Dates come from `first_indexed_at`, the FIRST write, preserved across re-indexing. Using
+    `indexed_at` (the last write) meant editing a superseding memo re-dated its edge, so a past
+    replay dropped a long-standing claim and served the stale memory as current.
 
     Pure and DB-free, so the rule is unit-testable without a database.
     """
@@ -511,7 +512,7 @@ class PgVectorStore:
         self._tenant = tenant
         self._statement_timeout_ms = statement_timeout_ms
         self._connect_timeout_s = connect_timeout_s
-        #: (fingerprint, edges, unresolved, edge_dates) — see `supersession_all()`. The fingerprint is what
+        #: (fingerprint, edges, unresolved, candidates) — see `supersession_all()`. The fingerprint is what
         #: makes the cache safe to reuse across processes.
         self._supersession_cache: tuple | None = None
         #: Count of full supersession scans actually performed (cache misses). Surfaced so a
@@ -792,11 +793,13 @@ class PgVectorStore:
                 metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                 embedding vector({self._dim}),
                 indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                first_indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
                 PRIMARY KEY (tenant_id, id)
             )
             """
         )
+        self._migrate_first_indexed_at(conn)
         self._migrate_to_tenanted(conn)
         dim_row = conn.execute(
             "SELECT atttypmod FROM pg_attribute "
@@ -863,6 +866,28 @@ class PgVectorStore:
         # Every hot-path predicate leads with tenant_id, so it leads the index too.
         conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_tenant_idx ON {t} (tenant_id)")
         self._enable_rls(conn)
+
+    def _migrate_first_indexed_at(self, conn: "psycopg.Connection") -> None:
+        """Add `first_indexed_at` to a table created before it existed, idempotently.
+
+        Three statements rather than one, and the order is the whole point. Adding the column
+        `NOT NULL DEFAULT now()` in a single step would stamp every EXISTING row with the moment
+        of the migration, which is the exact error the column exists to fix: it would claim the
+        whole corpus was first written the day someone upgraded, and every `known_as_of` replay
+        before that instant would report an empty store. So the column arrives nullable, is
+        backfilled from `indexed_at` (the best evidence available for rows written before anyone
+        was recording a first write), and only then gets its default and NOT NULL.
+
+        `ADD COLUMN IF NOT EXISTS` makes the whole thing a no-op on a table that already has it,
+        which is what lets `ensure_schema` stay idempotent.
+        """
+        t = self._table
+        conn.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS first_indexed_at TIMESTAMPTZ")
+        conn.execute(
+            f"UPDATE {t} SET first_indexed_at = indexed_at WHERE first_indexed_at IS NULL"
+        )
+        conn.execute(f"ALTER TABLE {t} ALTER COLUMN first_indexed_at SET DEFAULT now()")
+        conn.execute(f"ALTER TABLE {t} ALTER COLUMN first_indexed_at SET NOT NULL")
 
     def _migrate_to_tenanted(self, conn: "psycopg.Connection") -> None:
         """Add `tenant_id` to a table created before tenancy existed, idempotently.
@@ -1039,14 +1064,18 @@ class PgVectorStore:
             cur.executemany(
                 f"""
                 INSERT INTO {t}
-                    (tenant_id, id, source, text, metadata, embedding, indexed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, now())
+                    (tenant_id, id, source, text, metadata, embedding,
+                     indexed_at, first_indexed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, now(), now())
                 ON CONFLICT (tenant_id, id) DO UPDATE SET
                     source = EXCLUDED.source,
                     text = EXCLUDED.text,
                     metadata = EXCLUDED.metadata,
                     embedding = EXCLUDED.embedding,
-                    indexed_at = now()
+                    indexed_at = now(),
+                    -- LEAST, so re-writing a chunk never moves its first-seen forward. The
+                    -- excluded value is now(), so this always keeps the stored one.
+                    first_indexed_at = LEAST({t}.first_indexed_at, EXCLUDED.first_indexed_at)
                 """,
                 [
                     (self._tenant, c.id, c.source, c.text, json.dumps(c.metadata), Vector(e))
@@ -1136,13 +1165,14 @@ class PgVectorStore:
 
     def _rows_to_hits(self, rows: list[tuple]) -> list[ScoredChunk]:
         hits: list[ScoredChunk] = []
-        for cid, source, text, metadata, indexed_at, score in rows:
+        for cid, source, text, metadata, indexed_at, first_indexed_at, score in rows:
             md = metadata if isinstance(metadata, dict) else json.loads(metadata)
             hits.append(
                 ScoredChunk(
                     chunk=Chunk(id=cid, source=source, text=text, metadata=md),
                     score=float(score),
                     indexed_at=indexed_at,
+                    first_indexed_at=first_indexed_at,
                 )
             )
         return hits
@@ -1193,7 +1223,8 @@ class PgVectorStore:
         # (no `file` metadata) and any absolute-path caller working. Same rule as recall_forget.
         where = "AND (metadata->>'file' = %(source)s OR source = %(source)s)" if source else ""
         sql = f"""
-            SELECT id, source, text, metadata, indexed_at, 1 - (embedding <=> %(vec)s) AS score
+            SELECT id, source, text, metadata, indexed_at, first_indexed_at,
+                   1 - (embedding <=> %(vec)s) AS score
             FROM {t}
             WHERE tenant_id = %(tenant)s {where}
             ORDER BY embedding <=> %(vec)s
@@ -1333,10 +1364,11 @@ class PgVectorStore:
             # query it would run for EVERY tsquery-matching row before the sort discards them
             sql = f"""
                 {tsquery_cte}
-                SELECT id, source, text, metadata, indexed_at,
+                SELECT id, source, text, metadata, indexed_at, first_indexed_at,
                        1 - (embedding <=> %(vec)s) AS score
                 FROM (
-                    SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.embedding,
+                    SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.first_indexed_at,
+                           c.embedding,
                            ts_rank(c.tsv, q.tsq) AS rank
                     FROM {t} c, q
                     WHERE c.tenant_id = %(tenant)s
@@ -1350,7 +1382,7 @@ class PgVectorStore:
         else:
             sql = f"""
                 {tsquery_cte}
-                SELECT c.id, c.source, c.text, c.metadata, c.indexed_at,
+                SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.first_indexed_at,
                        ts_rank(c.tsv, q.tsq) AS score
                 FROM {t} c, q
                 WHERE c.tenant_id = %(tenant)s
@@ -1383,7 +1415,20 @@ class PgVectorStore:
 
         def _op(conn: "psycopg.Connection") -> int:
             with conn.transaction():
+                # `first_indexed_at` has to survive the DELETE. `ON CONFLICT ... LEAST` in
+                # `_upsert_in` cannot help here: the row is gone by the time the insert runs, so
+                # there is no conflict and the re-inserted chunk would claim it was first written
+                # now. That is the whole re-index defect, and this is the path that causes it.
+                preserved: dict[str, datetime] = {}
                 if sources:
+                    preserved = {
+                        cid: first
+                        for cid, first in conn.execute(
+                            f"SELECT id, first_indexed_at FROM {self._table} "
+                            f"WHERE tenant_id = %s AND source = ANY(%s)",
+                            (self._tenant, sources),
+                        ).fetchall()
+                    }
                     conn.execute(
                         f"DELETE FROM {self._table} "
                         f"WHERE tenant_id = %s AND source = ANY(%s)",
@@ -1391,6 +1436,20 @@ class PgVectorStore:
                     )
                 if chunks:
                     self._upsert_in(conn, chunks, embeddings)  # savepoint, same commit
+                    restore = [
+                        (preserved[c.id], self._tenant, c.id)
+                        for c in chunks
+                        if c.id in preserved
+                    ]
+                    if restore:
+                        # executemany, matching `_upsert_in`: psycopg3 pipelines it. A chunk id
+                        # absent from `preserved` is genuinely new and keeps its now().
+                        with conn.cursor() as cur:
+                            cur.executemany(
+                                f"UPDATE {self._table} SET first_indexed_at = %s "
+                                f"WHERE tenant_id = %s AND id = %s",
+                                restore,
+                            )
             return len(chunks)
 
         self._with_retry(_op)
@@ -1519,17 +1578,12 @@ class PgVectorStore:
         produced: under a Sort+Unique plan it is the same one, under HashAggregate the old one was
         bucket order.
 
-        🔴 **OPEN DEFECT, do not merge the point-in-time rewind on this alone.** `indexed_at`
-        records the LAST write, not the first: `replace_sources` re-inserts with `indexed_at =
-        now()` while `Indexer.index_path` skips files whose content hash is unchanged. So editing
-        a superseding memo moves ITS date forward while its predecessor keeps the old one, and a
-        past replay then drops a long-standing edge and serves the superseded memory as `ok` —
-        the exact wrong answer this layer exists to prevent, where the pre-change code correctly
-        said `superseded`. The same flaw already affects `known_as_of` on HITS (a re-indexed
-        memory reads `not_yet_known` for a past instant), so the root cause predates this change;
-        what is new is that it flips a verdict from safe to unsafe. Fixing it properly needs a
-        `first_indexed_at` column preserved across upserts, which is a migration and needs a
-        database to verify.
+        Dates come from `first_indexed_at` rather than `indexed_at`. The distinction is the
+        whole reason the column exists: `indexed_at` records the LAST write, so `replace_sources`
+        re-inserting an edited document moved its edge forward and a replay before the edit
+        dropped a claim that had been continuously true. `first_indexed_at` is preserved on
+        conflict with `LEAST`, and captured and restored across `replace_sources`' delete, which
+        `ON CONFLICT` alone cannot cover because the row is gone before the insert runs.
         """
 
         def _op(
@@ -1546,7 +1600,7 @@ class PgVectorStore:
                 f"""
                 SELECT metadata->>'file' AS file,
                        metadata->>'supersedes' AS supersedes,
-                       min(indexed_at) AS first_indexed
+                       min(first_indexed_at) AS first_indexed
                 FROM {self._table}
                 WHERE tenant_id = %s AND metadata ? 'file'
                 GROUP BY 1, 2
