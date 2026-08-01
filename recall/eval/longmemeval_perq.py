@@ -33,6 +33,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import psycopg
+
 from recall.calibration import from_samples
 from recall.embeddings import Embedder
 from recall.eval.metrics import wilson_ci
@@ -47,7 +49,15 @@ DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost
 #: cannot be inserted into, and regenerates from `text` on the target. Listing it would make the
 #: INSERT fail; omitting `text` would make it regenerate empty and silently disable the sparse
 #: leg of the hybrid retriever, which is the failure a test pins.
-_COPIED = ("tenant_id", "id", "source", "text", "metadata", "embedding", "indexed_at")
+#:
+#: BOTH time columns. Omitting `first_indexed_at` let it take the scratch table's `DEFAULT now()`,
+#: i.e. the populate instant, while `indexed_at` kept the master's older value — a first write
+#: AFTER the last write, so a `known_as_of` replay in this arm read the whole haystack as
+#: `not_yet_known`. Unlike `tsv` it is an ordinary stored column with nothing stopping the insert.
+_COPIED = (
+    "tenant_id", "id", "source", "text", "metadata", "embedding",
+    "indexed_at", "first_indexed_at",
+)
 
 
 def populate_haystack(
@@ -69,7 +79,19 @@ def populate_haystack(
     if store is None:
         store = PgVectorStore(dsn, dim=dim, table=scratch)
         store.ensure_schema()
+    # The MASTER table is never migrated by this arm (`ensure_schema` runs on the SCRATCH table
+    # only), so a master built before `first_indexed_at` existed would make this SELECT die on a
+    # raw UndefinedColumn. Degrade to its last write, which is what the read path does anyway.
+    with psycopg.connect(dsn) as probe:
+        has_first = probe.execute(
+            "SELECT 1 FROM pg_attribute WHERE attrelid = %s::regclass "
+            "AND attname = 'first_indexed_at' AND NOT attisdropped",
+            (master,),
+        ).fetchone() is not None
     cols = ", ".join(_COPIED)
+    select_cols = cols if has_first else ", ".join(
+        c if c != "first_indexed_at" else "indexed_at AS first_indexed_at" for c in _COPIED
+    )
     # Match `metadata->>'file'` — the path RELATIVE to the index root, which is exactly the bare
     # name the question file carries — with `=`, not the absolute `source` with a suffix `LIKE`.
     #
@@ -83,7 +105,7 @@ def populate_haystack(
         conn.execute(f"TRUNCATE {scratch}")
         conn.execute(
             f"INSERT INTO {scratch} ({cols}) "
-            f"SELECT {cols} FROM {master} WHERE metadata->>'file' = ANY(%s)",
+            f"SELECT {select_cols} FROM {master} WHERE metadata->>'file' = ANY(%s)",
             (files,),
         )
         conn.commit()

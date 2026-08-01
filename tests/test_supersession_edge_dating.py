@@ -736,6 +736,11 @@ def test_a_genuinely_new_chunk_gets_a_fresh_first_indexed_at(shared_table):
     try:
         store.ensure_schema()
         store.replace_sources([], [_chunk("v1", "a.md", "one")], emb.embed(["one"]))
+        v1_first = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0][0]
         store.replace_sources(["a.md"], [_chunk("v2", "a.md", "two")], emb.embed(["two"]))
         rows = dict(store._with_retry(
             lambda conn: conn.execute(
@@ -743,25 +748,29 @@ def test_a_genuinely_new_chunk_gets_a_fresh_first_indexed_at(shared_table):
             ).fetchall()
         ))
         assert set(rows) == {"v2"}, "v1 was replaced away"
-        assert rows["v2"] is not None
+        # NOT `is not None`: that was tautological, and a restore that leaked v1's timestamp onto
+        # every new chunk would have passed it. The new chunk must be stamped AFTER v1 was.
+        assert rows["v2"] > v1_first, "a genuinely new chunk inherited a replaced chunk's date"
     finally:
         store.close()
 
 
 @requires_db
-def test_the_migration_backfills_first_indexed_at_from_indexed_at(shared_table):
-    """A table created before the column existed must NOT read as first written at upgrade time.
+def test_a_pre_column_table_migrates_to_a_NULLABLE_column(shared_table):
+    """The migration adds the column nullable, with a default, and does NOT backfill.
 
-    Stamping every existing row with `now()` would claim the whole corpus appeared the day someone
-    upgraded, and every replay before that instant would report an empty store. The migration
-    therefore adds the column nullable, backfills from `indexed_at`, then sets the default."""
+    The textbook version (backfill, then SET NOT NULL) could brick a multi-tenant deployment
+    permanently: the backfill is DML and is rewritten by the FORCE'd RLS policy to one tenant,
+    while SET NOT NULL validates with a heap scan that is not, so the constraint trips over
+    another tenant's NULLs and `ensure_schema` raises for everyone, forever. CI cannot see it
+    because CI connects as a superuser and a superuser bypasses RLS.
+
+    A NULL means 'this row predates the column', which both readers already handle."""
     emb = HashingEmbedder(dim=DIM)
     store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
     try:
         store.ensure_schema()
         store.upsert([_chunk("v1", "a.md", "one")], emb.embed(["one"]))
-
-        # Simulate the pre-column world: drop it and re-run ensure_schema.
         store._with_retry(
             lambda conn: conn.execute(
                 f"ALTER TABLE {shared_table} DROP COLUMN first_indexed_at"
@@ -769,12 +778,72 @@ def test_the_migration_backfills_first_indexed_at_from_indexed_at(shared_table):
         )
         store.ensure_schema()
 
-        row = store._with_retry(
+        notnull, hasdef = store._with_retry(
             lambda conn: conn.execute(
-                f"SELECT first_indexed_at, indexed_at FROM {shared_table} WHERE id = 'v1'"
+                "SELECT attnotnull, atthasdef FROM pg_attribute "
+                "WHERE attrelid = %s::regclass AND attname = 'first_indexed_at'",
+                (shared_table,),
             ).fetchall()
         )[0]
-        assert row[0] == row[1], "backfilled rows must carry their indexed_at, not the upgrade time"
+        assert not notnull, "NOT NULL is what makes the migration able to fail closed under RLS"
+        assert hasdef, "without a default, every insert omitting the column writes NULL"
+        assert store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0][0] is None, "pre-existing rows are left NULL rather than stamped with upgrade time"
+    finally:
+        store.close()
+
+
+@requires_db
+def test_a_migrated_row_still_dates_its_edge_from_its_last_write(shared_table):
+    """The COALESCE half. A NULL first write must not make the edge undated, which would ignore
+    `known_as_of` for supersession entirely on every migrated corpus."""
+    emb = HashingEmbedder(dim=DIM)
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    try:
+        store.ensure_schema()
+        store.upsert([_chunk("v1", "limits_v1.md", "100 rps")], emb.embed(["100 rps"]))
+        store.upsert(
+            [_chunk("v2", "limits_v2.md", "250 rps", "limits_v1.md")], emb.embed(["250 rps"])
+        )
+        store._with_retry(
+            lambda conn: conn.execute(f"UPDATE {shared_table} SET first_indexed_at = NULL")
+        )
+        store._supersession_cache = None
+
+        dates = store.supersession_all()[2]["limits_v1.md"]
+        assert dates and dates[0][1] is not None, "a migrated edge read as undated"
+    finally:
+        store.close()
+
+
+@requires_db
+def test_replace_sources_does_not_re_date_the_edge_it_carries(shared_table):
+    """The deadman went through `upsert`, which only exercises the ON CONFLICT arm. `recall
+    index` calls `replace_sources` exclusively, so deleting the restore block left it green."""
+    emb = HashingEmbedder(dim=DIM)
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    try:
+        store.ensure_schema()
+        store.replace_sources(
+            [], [_chunk("v1", "limits_v1.md", "100 rps")], emb.embed(["100 rps"])
+        )
+        store.replace_sources(
+            [],
+            [_chunk("v2", "limits_v2.md", "250 rps", "limits_v1.md")],
+            emb.embed(["250 rps"]),
+        )
+        before = store.supersession_all()[2]["limits_v1.md"][0][1]
+
+        store.replace_sources(
+            ["limits_v2.md"],
+            [_chunk("v2", "limits_v2.md", "250 rps (typo)", "limits_v1.md")],
+            emb.embed(["250 rps (typo)"]),
+        )
+        after = store.supersession_all()[2]["limits_v1.md"][0][1]
+        assert after == before, "re-indexing through replace_sources moved the edge date"
     finally:
         store.close()
 
@@ -857,3 +926,222 @@ def test_replay_at_now_may_differ_from_a_plain_search():
     far = datetime(2099, 1, 1, tzinfo=timezone.utc)
     assert resolve_successor("a.md", edges, claims, None) == "b2.md", "scan-order winner"
     assert resolve_successor("a.md", edges, claims, far) == "b1.md", "latest asserted"
+
+
+@requires_db
+def test_a_pre_column_row_acquires_a_first_write_and_then_freezes(shared_table):
+    """A NULL must not be restored over the `now()` the re-index just wrote.
+
+    `preserved` is built from a SELECT, and a NULL column yields a PRESENT key whose value is
+    None, so the restore wrote that NULL straight back over the fresh timestamp. The row could
+    then never acquire a first write on the only path `recall index` uses, and its effective date
+    (via COALESCE to `indexed_at`) slid forward on every re-index — which is exactly the defect
+    this column exists to prevent, made permanent for every migrated corpus.
+
+    Correct behaviour: stamped once at the first re-index, frozen after. That also matches the
+    upsert path, where `LEAST(NULL, now())` is `now()` because LEAST ignores NULLs.
+    """
+    emb = HashingEmbedder(dim=DIM)
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    try:
+        store.ensure_schema()
+        store.replace_sources([], [_chunk("v1", "a.md", "one")], emb.embed(["one"]))
+        # Back-date `indexed_at` as well. Without this the row's only timestamp is ~now(), so a
+        # write path that stamps now() is indistinguishable from one that preserves the row's own
+        # date — which is exactly how the first version of this fix passed while still claiming a
+        # January memo was first seen in August.
+        store._with_retry(
+            lambda conn: conn.execute(
+                f"UPDATE {shared_table} SET first_indexed_at = NULL, "
+                f"indexed_at = TIMESTAMPTZ '2026-01-05 00:00:00+00'"
+            )
+        )
+
+        store.replace_sources(["a.md"], [_chunk("v1", "a.md", "edited")], emb.embed(["edited"]))
+        stamped = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0][0]
+        assert stamped is not None, (
+            "the NULL was restored over the fresh timestamp, so this row can never acquire a "
+            "first write and its date slides forward on every re-index"
+        )
+        assert stamped.year == 2026 and stamped.month == 1, (
+            f"stamped {stamped} instead of the row's own indexed_at — a memo written in January "
+            f"now claims it was first seen when someone re-indexed it, and a replay between the "
+            f"two says it never existed. Both read paths COALESCE to indexed_at; so must this."
+        )
+
+        store.replace_sources(["a.md"], [_chunk("v1", "a.md", "edited twice")],
+                             emb.embed(["edited twice"]))
+        after = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0][0]
+        assert after == stamped, "once stamped it must freeze, not track the latest write"
+    finally:
+        store.close()
+
+
+@requires_db
+def test_a_foreign_pgvector_table_is_rejected_before_anything_is_altered(shared_table):
+    """Validate everything, then mutate — asserted on the catalog, not on the error text.
+
+    The migrations were moved after the shape checks for this reason, and the move was unguarded.
+    It was also incomplete: `atttypmod` is -1 for an UNCONSTRAINED `vector` column, so the
+    dimension check said `> 0` and skipped itself entirely for `embedding vector`. A stranger's
+    table then had a column added and its PRIMARY KEY dropped and rewritten, and the caller got
+    `UndefinedColumn: column "tsv" does not exist` instead of the error written to tell them to
+    point somewhere else.
+    """
+    def catalog(conn):
+        cols = [r[0] for r in conn.execute(
+            "SELECT attname FROM pg_attribute WHERE attrelid = %s::regclass "
+            "AND attnum > 0 AND NOT attisdropped ORDER BY attnum", (shared_table,)).fetchall()]
+        keys = conn.execute(
+            "SELECT conkey FROM pg_constraint WHERE conrelid = %s::regclass AND contype = 'p'",
+            (shared_table,)).fetchall()
+        return cols, keys
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        # `vector` UNCONSTRAINED. The matching-dimension shape is covered by its own test
+        # below, because a dimension check cannot tell them apart and the first two attempts at
+        # this guard each caught only one of the two.
+        conn.execute(
+            f"CREATE TABLE {shared_table} (id text PRIMARY KEY, note text, embedding vector)"
+        )
+        conn.execute(f"INSERT INTO {shared_table} VALUES ('x', 'not ours', NULL)")
+        before = catalog(conn)
+
+    with pytest.raises(ValueError, match="not a recall table"):
+        PgVectorStore(TEST_DSN, dim=DIM, table=shared_table).ensure_schema()
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        assert catalog(conn) == before, (
+            "a foreign table was mutated before the error that says it is not ours"
+        )
+
+
+@requires_db
+def test_a_foreign_table_whose_dimension_MATCHES_is_also_rejected_unmutated(shared_table):
+    """The input a dimension check can never catch, and the one both earlier guards missed.
+
+    `vector(64)` against a dim-64 store passes any dimension comparison, so the store used to
+    migrate a stranger's table — adding `first_indexed_at` and `tenant_id` and rewriting its
+    PRIMARY KEY from [1] to [5,1] — and then die on `UndefinedColumn: column "tsv" does not
+    exist`. What separates our table from theirs is the column SET, not the vector's declaration.
+    """
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        conn.execute(
+            f"CREATE TABLE {shared_table} "
+            f"(id text PRIMARY KEY, note text, embedding vector({DIM}))"
+        )
+        before = conn.execute(
+            "SELECT attname FROM pg_attribute WHERE attrelid = %s::regclass "
+            "AND attnum > 0 AND NOT attisdropped ORDER BY attnum", (shared_table,)
+        ).fetchall()
+        pk_before = conn.execute(
+            "SELECT conkey FROM pg_constraint WHERE conrelid = %s::regclass AND contype = 'p'",
+            (shared_table,)).fetchall()
+
+    with pytest.raises(ValueError, match="not a recall table"):
+        PgVectorStore(TEST_DSN, dim=DIM, table=shared_table).ensure_schema()
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT attname FROM pg_attribute WHERE attrelid = %s::regclass "
+            "AND attnum > 0 AND NOT attisdropped ORDER BY attnum", (shared_table,)
+        ).fetchall() == before
+        assert conn.execute(
+            "SELECT conkey FROM pg_constraint WHERE conrelid = %s::regclass AND contype = 'p'",
+            (shared_table,)).fetchall() == pk_before, "its PRIMARY KEY was rewritten"
+
+
+@requires_db
+def test_a_relaxed_embedding_column_is_still_OUR_table(shared_table):
+    """Rejecting `atttypmod <= 0` refused a REAL recall table whose embedding had been relaxed by
+    a supported pgvector ALTER, telling its owner it was not theirs. It has every recall column
+    and its own rows; the vector's declaration says nothing about ownership."""
+    emb = HashingEmbedder(dim=DIM)
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    store.ensure_schema()
+    store.upsert([_chunk("v1", "a.md", "ours")], emb.embed(["ours"]))
+    store.close()
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute(f"ALTER TABLE {shared_table} ALTER COLUMN embedding TYPE vector")
+
+    with PgVectorStore(TEST_DSN, dim=DIM, table=shared_table) as reopened:
+        reopened.ensure_schema()   # must not raise
+        assert reopened.supersession_all()[0] == {}
+
+
+@requires_db
+def test_the_upsert_path_also_dates_a_migrated_row_from_its_own_indexed_at(shared_table):
+    """The upsert path had NO guard: reverting its COALESCE left the entire suite green, while
+    the `replace_sources` twin was covered. Same rule, both doors."""
+    emb = HashingEmbedder(dim=DIM)
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    try:
+        store.ensure_schema()
+        store.upsert([_chunk("v1", "a.md", "one")], emb.embed(["one"]))
+        store._with_retry(
+            lambda conn: conn.execute(
+                f"UPDATE {shared_table} SET first_indexed_at = NULL, "
+                f"indexed_at = TIMESTAMPTZ '2026-01-05 00:00:00+00'"
+            )
+        )
+        store.upsert([_chunk("v1", "a.md", "edited")], emb.embed(["edited"]))
+        first = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0][0]
+        assert first.year == 2026 and first.month == 1, (
+            f"upsert stamped {first} instead of the row's own January indexed_at"
+        )
+    finally:
+        store.close()
+
+
+@requires_db
+def test_both_write_paths_clamp_a_stored_date_from_the_future(shared_table):
+    """Clock skew or a restore can leave a first-write in the future. `_upsert_in` clamped it and
+    the `replace_sources` restore did not — on the ONLY path `recall index` takes — so the row
+    stayed permanently invisible to every as-of replay and re-indexing never repaired it.
+
+    Both doors, in one test, because a rule enforced on one path is not a rule.
+    """
+    emb = HashingEmbedder(dim=DIM)
+    future = "TIMESTAMPTZ '2027-06-01 00:00:00+00'"
+    for label in ("replace_sources", "upsert"):
+        store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+        try:
+            store.ensure_schema()
+            store._with_retry(lambda conn: conn.execute(f"TRUNCATE {shared_table}"))
+            store.replace_sources([], [_chunk("v1", "a.md", "one")], emb.embed(["one"]))
+            store._with_retry(
+                lambda conn: conn.execute(
+                    f"UPDATE {shared_table} SET first_indexed_at = {future}"
+                )
+            )
+            edited = _chunk("v1", "a.md", f"edited via {label}")
+            if label == "replace_sources":
+                store.replace_sources(["a.md"], [edited], emb.embed(["e"]))
+            else:
+                store.upsert([edited], emb.embed(["e"]))
+
+            stored = store._with_retry(
+                lambda conn: conn.execute(
+                    f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+                ).fetchall()
+            )[0][0]
+            assert stored.year < 2027, (
+                f"{label} preserved a first-write of {stored}, which is in the future: the row "
+                f"reads as not_yet_known for every replay and no re-index repairs it"
+            )
+        finally:
+            store.close()
