@@ -1145,3 +1145,55 @@ def test_both_write_paths_clamp_a_stored_date_from_the_future(shared_table):
             )
         finally:
             store.close()
+
+
+@requires_db
+def test_touch_files_carries_the_first_write_across_the_touch(shared_table):
+    """A touch must not rewrite when the corpus was acquired.
+
+    A row predating `first_indexed_at` holds NULL there, and both read paths COALESCE that to
+    `indexed_at` — so `indexed_at` IS its only evidence of age. `touch_files` overwrote it alone,
+    and the next re-index then COALESCEd the TOUCH instant into `first_indexed_at` and froze it:
+    a memo written in January permanently claimed it was first seen when someone simulated a
+    re-sync. The eval's recency arm calls this on every run.
+
+    Both cases here, because the fix must be a no-op for a row that already has a first write.
+    """
+    emb = HashingEmbedder(dim=DIM)
+    for label, seed in (("migrated", "NULL"), ("already dated", "TIMESTAMPTZ '2025-11-03'")):
+        store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+        try:
+            store.ensure_schema()
+            store._with_retry(lambda conn: conn.execute(f"TRUNCATE {shared_table}"))
+            store.replace_sources([], [_chunk("v1", "a.md", "one")], emb.embed(["one"]))
+            store._with_retry(
+                lambda conn: conn.execute(
+                    f"UPDATE {shared_table} SET "
+                    f"indexed_at = TIMESTAMPTZ '2026-01-05 00:00:00+00', "
+                    f"first_indexed_at = {seed}"
+                )
+            )
+
+            assert store.touch_files(["a.md"]) == 1
+            store.replace_sources(
+                ["a.md"], [_chunk("v1", "a.md", "one")], emb.embed(["one"])
+            )
+
+            indexed_at, first = store._with_retry(
+                lambda conn: conn.execute(
+                    f"SELECT indexed_at, first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+                ).fetchall()
+            )[0]
+            # (year, month), not year alone. The real answer for the migrated row is JANUARY
+            # 2026 and the wrong one is AUGUST 2026 — a year comparison passes on both, and the
+            # first version of this assertion did exactly that: it passed with the fix reverted.
+            expected = (2026, 1) if seed == "NULL" else (2025, 11)
+            assert (first.year, first.month) == expected, (
+                f"{label}: first write froze at {first}, expected {expected} — the touch "
+                f"destroyed the only evidence of the row's age there was"
+            )
+            assert indexed_at.year == 2026 and indexed_at.month == 8, (
+                "the touch must still move `indexed_at`, or it is not a touch"
+            )
+        finally:
+            store.close()

@@ -1593,13 +1593,28 @@ class PgVectorStore:
         identical text would also re-embed, which is only a no-op for deterministic
         embedders). Matches on the ``file`` metadata key (basename), so it works for nested
         corpora too. Returns rows updated.
+
+        **`first_indexed_at` is carried across the touch.** A row predating that column holds NULL
+        there, and both read paths COALESCE the NULL to `indexed_at` — so `indexed_at` IS that
+        row's only evidence of age. Overwriting it alone destroyed the evidence, and the next
+        re-index then COALESCEd the TOUCH instant into `first_indexed_at` and froze it, so a memo
+        written in January permanently claimed it was first seen the moment someone simulated a
+        re-sync. A timestamp-only touch is supposed to change what a staleness check sees, not
+        rewrite when the corpus was acquired.
+
+        Captured in the SAME statement, because Postgres evaluates every `SET` expression against
+        the OLD tuple: the COALESCE reads the pre-touch `indexed_at`, not `now()`. Two statements
+        would race, and the ordering that writes `indexed_at` first would capture the value it had
+        just destroyed. A row that already has a first write is unaffected — COALESCE returns it.
         """
         if not files:
             return 0
         # rowcount read inside the borrow — see `delete_sources` for why.
         return self._with_retry(
             lambda conn: conn.execute(
-                f"UPDATE {self._table} SET indexed_at = now() "
+                f"UPDATE {self._table} SET "
+                f"first_indexed_at = COALESCE(first_indexed_at, indexed_at), "
+                f"indexed_at = now() "
                 f"WHERE tenant_id = %s AND metadata->>'file' = ANY(%s)",
                 (self._tenant, files),
             ).rowcount
