@@ -302,11 +302,19 @@ def resolve_edge_dates(
     chunk of B existing implies the frontmatter existed, and the earliest is the conservative
     reading.
 
-    Only rows that CARRY a `supersedes` claim date it. Taking the minimum over every row of the
-    file would date the edge from a chunk that does not assert it, and chunks of one file can
-    disagree: a direct `store.upsert` bypasses the Indexer's fail-fast, which `recall.trust` also
-    accounts for. That mis-dating ran EARLIER than the claim, so the edge applied at instants
-    before it was written.
+    Dated **per claim**, keyed on `(superseding file, superseded basename)`, not per file. One
+    file can carry several different `supersedes` values, and it need not be an authoring
+    mistake: `Indexer._prune_vanished` notes that a corpus may be indexed under several roots,
+    `metadata['file']` is root-relative while `replace_sources` deletes by absolute `source`, so
+    two roots with divergent frontmatter coexist under one `file` key. A per-file minimum then
+    dates a LATER claim from an EARLIER one, and the edge applies at instants before it was
+    written. Grouping by the pair is already what the SQL does; throwing the pair away here was
+    the bug.
+
+    The "carries a claim" predicate must match `resolve_supersession`'s exactly, because both
+    consume the same rows. It uses falsiness, so a bare `supersedes:` in frontmatter (which
+    parses to the empty string) builds no edge; treating it as claim-carrying here would date an
+    edge that another row asserts, which is the same failure through a second door.
 
     An edge whose superseding file has no recorded date is simply absent from the result, and
     `recall.trust.resolve_successor` applies an undated edge. That is the fail-closed direction:
@@ -320,18 +328,24 @@ def resolve_edge_dates(
     Pure and DB-free, so the dating rule is unit-testable without a database — same reason
     `resolve_supersession` is.
     """
-    first_claimed: dict[str, datetime] = {}
+    # (superseding file, superseded basename) -> when that CLAIM was first written.
+    by_claim: dict[tuple[str, str], datetime] = {}
     for file, supersedes, first_indexed in rows:
-        if file is None or supersedes is None or first_indexed is None:
+        if not file or not supersedes or first_indexed is None:
             continue
-        known = first_claimed.get(file)
+        key = (file, _basename(supersedes))
+        known = by_claim.get(key)
         if known is None or first_indexed < known:
-            first_claimed[file] = first_indexed
-    return {
-        superseded: first_claimed[superseding]
-        for superseded, superseding in edges.items()
-        if superseding in first_claimed
-    }
+            by_claim[key] = first_indexed
+    # `edges` keys are root-relative paths (or a bare basename when the target is dangling), and
+    # the claim referenced its target by basename, which is how the edge was matched in the first
+    # place. Resolving the key the same way is what keeps the two sides in agreement.
+    dated: dict[str, datetime] = {}
+    for superseded, superseding in edges.items():
+        when = by_claim.get((superseding, _basename(superseded)))
+        if when is not None:
+            dated[superseded] = when
+    return dated
 
 
 def resolve_supersession(
@@ -469,7 +483,7 @@ class PgVectorStore:
         self._tenant = tenant
         self._statement_timeout_ms = statement_timeout_ms
         self._connect_timeout_s = connect_timeout_s
-        #: (fingerprint, edges, unresolved) — see `supersession()`. The fingerprint is what
+        #: (fingerprint, edges, unresolved, edge_dates) — see `supersession_all()`. The fingerprint is what
         #: makes the cache safe to reuse across processes.
         self._supersession_cache: tuple | None = None
         #: Count of full supersession scans actually performed (cache misses). Surfaced so a
@@ -1421,7 +1435,7 @@ class PgVectorStore:
         answer, silently, which is the failure it exists to prevent.
 
         Freshness is established by a cheap fingerprint — `(max(indexed_at), count(*))` for this
-        tenant — and the expensive `DISTINCT` scan runs only when that fingerprint moves. Both
+        tenant — and the expensive grouped scan runs only when that fingerprint moves. Both
         halves are needed: `max(indexed_at)` alone cannot see a DELETE, and deleting a superseding
         document must stop its edge from applying, or the reader keeps demoting a memory that is
         current again.
@@ -1449,6 +1463,12 @@ class PgVectorStore:
         Prefer this over calling `supersession()` and `supersession_dates()` in sequence. Each
         enters its own cache validation with its own fingerprint query, so a concurrent index
         between the two can hand back edges from one scan dated by the next.
+
+        `ORDER BY` is load-bearing, not tidiness. `resolve_supersession` resolves fan-in (two
+        documents superseding the same target) by last-row-wins, so an unordered scan lets the
+        winner change between runs. The predecessor query was `SELECT DISTINCT`, and swapping it
+        for `GROUP BY` preserves the row SET but not the row ORDER, which would have re-rolled
+        that winner for existing `supersession()` callers who never asked for any of this.
 
         🔴 **OPEN DEFECT, do not merge the point-in-time rewind on this alone.** `indexed_at`
         records the LAST write, not the first: `replace_sources` re-inserts with `indexed_at =
@@ -1481,6 +1501,7 @@ class PgVectorStore:
                 FROM {self._table}
                 WHERE tenant_id = %s AND metadata ? 'file'
                 GROUP BY 1, 2
+                ORDER BY 1, 2
                 """,
                 (self._tenant,),
             ).fetchall()
@@ -1491,14 +1512,22 @@ class PgVectorStore:
             self._supersession_cache = (fingerprint, edges, unresolved, edge_dates)
             return edges, unresolved, edge_dates
 
-        return self._with_retry(_op)
+        edges, unresolved, edge_dates = self._with_retry(_op)
+        # COPIES. This is public, and the cache is process-wide and validated by fingerprint
+        # rather than rebuilt, so handing out the live dicts would let one caller's mutation
+        # survive every later cache hit and redirect other callers' supersession verdicts.
+        # `supersession()` and `supersession_dates()` have always copied; this now matches them.
+        return dict(edges), unresolved, dict(edge_dates)
 
     def supersession_dates(self) -> dict[str, datetime]:
         """When each supersession edge became assertable, for point-in-time replay.
 
         Feeds `resolve_successor(..., edge_dates=, known_as_of=)` so a past-instant query resolves
         to the successor that was current *then*. Shares `supersession()`'s validated cache, so
-        this is free when the edges have already been read.
+        this needs no second scan when the edges have already been read, though it does re-run
+        the fingerprint query. ⚠️ Pairing this with `supersession()` reintroduces the race that
+        `supersession_all()` exists to close: two independent validations can return edges from
+        one scan dated by the next. Prefer `supersession_all()` whenever you want both.
         """
         return dict(self.supersession_all()[2])
 
