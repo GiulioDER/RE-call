@@ -52,6 +52,28 @@ _UNCALIBRATED = Calibration(embedder="uncalibrated", threshold=DEFAULT_GAP_THRES
 #: the retrieval hot path is not.
 _WARNED_UNCALIBRATED: set[str] = set()
 
+#: Store types already warned about for a point-in-time query they can only half-answer. Same
+#: once-per-process, unguarded rationale as `_WARNED_UNCALIBRATED`.
+_WARNED_NO_EDGE_DATES: set[str] = set()
+
+
+def _warn_no_edge_dates(store_type: str) -> None:
+    """A `known_as_of` query on a store that cannot date its supersession edges.
+
+    The caller asked what was true at a past instant and gets a HALF answer: hits are rewound by
+    write time, but supersession is not, so a memory can read as `superseded` by a document that
+    did not exist at that instant. Degrading silently would be worse than the AttributeError it
+    replaced, because a wrong answer arrives looking like a right one.
+    """
+    if store_type in _WARNED_NO_EDGE_DATES:
+        return
+    _WARNED_NO_EDGE_DATES.add(store_type)
+    _log.warning(
+        "%s exposes no supersession_all(), so known_as_of rewinds hits but NOT supersession "
+        "edges: a hit may read as superseded by a document that did not exist at that instant.",
+        store_type,
+    )
+
 
 def _warn_uncalibrated(embedder_name: str) -> None:
     """Say plainly that an untuned constant is about to gate abstention for this model.
@@ -372,8 +394,10 @@ def evaluate(
     They compose: ``evaluate(..., now=june, known_as_of=tuesday)`` asks what we believed on Tuesday
     about the state of the world in June. Passing neither leaves behaviour exactly as before.
 
-    **``edge_dates`` rewinds supersession too**, when supplied (`PgVectorStore.supersession_dates`
-    derives it, and `trusted_search` passes it whenever `known_as_of` is set). An edge becomes
+    **``edge_dates`` rewinds supersession too**, when supplied. `trusted_search` gets it from
+    `PgVectorStore.supersession_all()` whenever `known_as_of` is set, the store exposes that
+    method and the retrieval returned hits; a store without it logs a warning and rewinds hits
+    only. An edge becomes
     assertable when the superseding document is written, so its `indexed_at` dates the edge; a
     chain resolves per step, to the successor current at the instant. Point-in-time replay is
     then honest about which memories existed *and* about which were current.
@@ -406,6 +430,16 @@ def evaluate(
         # comparison and the edge comparison put it against a TIMESTAMPTZ from the store, so a
         # naive value raises TypeError instead of returning a verdict.
         known_as_of = known_as_of.replace(tzinfo=timezone.utc)
+        if edge_dates:
+            # BOTH operands or neither. Normalising only `known_as_of` broke a caller who was
+            # self-consistently naive and whose hits carry no `indexed_at` (a case this module
+            # explicitly supports): it used to get a verdict and started raising TypeError at the
+            # edge comparison instead. Naive edge dates can only come from a hand-built map,
+            # since the store's own are TIMESTAMPTZ.
+            edge_dates = {
+                file: when if when.tzinfo is not None else when.replace(tzinfo=timezone.utc)
+                for file, when in edge_dates.items()
+            }
     cal = calibration or _UNCALIBRATED
     trusted: list[TrustedHit] = []
     for hit in result.hits:
@@ -536,6 +570,8 @@ def trusted_search(
         if fetch_all is not None:
             supersession, unresolved, edge_dates = fetch_all()
         else:
+            if known_as_of is not None:
+                _warn_no_edge_dates(type(store).__name__)
             supersession, unresolved = store.supersession()
     trusted = evaluate(
         result,

@@ -318,9 +318,11 @@ timestamp derivable rather than absent: an edge `A -> B` becomes assertable when
 B's `indexed_at` has been an indexed column since the beginning. So the corpus format did not need
 to record anything new.
 
-`PgVectorStore.supersession_dates()` derives the dates from the scan that already builds the edge
-map, `resolve_edge_dates` is the pure rule behind it, and `resolve_successor` filters **per step**,
-so a chain `a -> b -> c` whose second edge postdates the instant resolves to `b`. Replay is now
+`PgVectorStore.supersession_all()` returns the edges and their dates from the single scan that
+already builds the edge map, `resolve_edge_dates` is the pure rule behind it (keyed per **claim**,
+`(superseding file, superseded basename)`, because one file can carry several `supersedes` values),
+and `resolve_successor` filters **per step**, so a chain `a -> b -> c` whose second edge postdates
+the instant resolves to `b`. Replay is now
 honest about which memories existed *and* about which were current.
 
 ### 🔴 Not merge-ready: `indexed_at` is the LAST write, not the first
