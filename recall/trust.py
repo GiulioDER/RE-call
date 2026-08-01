@@ -97,24 +97,54 @@ _ANSI_SEQUENCE = re.compile(
 )
 
 
-def resolve_successor(file: str, supersession: dict[str, str]) -> str | None:
+def resolve_successor(
+    file: str,
+    supersession: dict[str, str],
+    edge_dates: dict[str, datetime] | None = None,
+    known_as_of: datetime | None = None,
+) -> str | None:
     """Terminal successor of `file` in the supersession chain, or None if it has none.
 
     A cycle (a.md -> b.md -> a.md) cannot loop: the walk stops on the first revisit and the
     cycle member resolves to its direct successor. A self-claim (`supersedes:` the file's own
     name — an authoring mistake) is ignored: a document cannot supersede itself.
+
+    With `known_as_of`, the walk sees only the edges asserted by that instant, so a point-in-time
+    replay resolves to the successor that was current *then*. The filter is applied per STEP
+    rather than to the final answer: in a chain a -> b -> c where only the first edge predates the
+    instant, the answer is `b`. Gating the terminal successor instead would answer `c`, a document
+    that had not yet superseded anything.
+
+    An edge with no recorded date applies, which is the inverse of the rule for hits with no
+    `indexed_at` and deliberately so. Both are fail-closed: hiding a hit of unknown age would
+    silently empty result sets for stores predating the column, while ignoring an edge of unknown
+    age would serve a memory the corpus explicitly marks as stale.
     """
-    if supersession.get(file) in (None, file):
+
+    def step(cur: str) -> str | None:
+        """The next file in the chain, or None if there is no edge or it is not yet asserted."""
+        nxt = supersession.get(cur)
+        if nxt is None:
+            return None
+        if known_as_of is not None and edge_dates is not None:
+            asserted = edge_dates.get(cur)
+            if asserted is not None and asserted > known_as_of:
+                return None
+        return nxt
+
+    first = step(file)
+    if first in (None, file):
         return None
     seen = {file}
     cur = file
-    while cur in supersession:
-        nxt = supersession[cur]
+    while True:
+        nxt = step(cur)
+        if nxt is None:
+            return cur
         if nxt in seen:
-            return supersession[file]
+            return first
         seen.add(nxt)
         cur = nxt
-    return cur
 
 
 def _verdict(
@@ -124,6 +154,7 @@ def _verdict(
     now: datetime,
     unresolved: frozenset[str] = frozenset(),
     known_as_of: datetime | None = None,
+    edge_dates: dict[str, datetime] | None = None,
 ) -> tuple[Verdict, Validity]:
     meta = hit.chunk.metadata
     file = meta.get("file")
@@ -155,7 +186,9 @@ def _verdict(
             "ambiguous_supersession",
             Validity(valid_from=start, valid_until=end, superseded_by=None),
         )
-    successor = resolve_successor(file, supersession) if file else None
+    successor = (
+        resolve_successor(file, supersession, edge_dates, known_as_of) if file else None
+    )
     validity = Validity(valid_from=start, valid_until=end, superseded_by=successor)
     if successor is not None:
         return "superseded", validity
@@ -324,6 +357,7 @@ def evaluate(
     now: datetime,
     unresolved: frozenset[str] = frozenset(),
     known_as_of: datetime | None = None,
+    edge_dates: dict[str, datetime] | None = None,
 ) -> TrustedResult:
     """Pure trust evaluation of a retrieval result (no DB access, no clock reads).
 
@@ -338,12 +372,23 @@ def evaluate(
     They compose: ``evaluate(..., now=june, known_as_of=tuesday)`` asks what we believed on Tuesday
     about the state of the world in June. Passing neither leaves behaviour exactly as before.
 
-    **Known limit.** ``known_as_of`` filters HITS by write time; it does not rewind supersession.
-    Supersession edges carry no timestamp, so an edge added after the as-of instant still applies,
-    and a memory that was current at that moment can read as ``superseded`` by a document the
-    caller cannot see. Rewinding that needs edge timestamps, which the corpus format does not
-    record today. Point-in-time audit is therefore honest about *which memories existed* and
-    approximate about *which were current*.
+    **``edge_dates`` rewinds supersession too**, when supplied (`PgVectorStore.supersession_dates`
+    derives it, and `trusted_search` passes it whenever `known_as_of` is set). An edge becomes
+    assertable when the superseding document is written, so its `indexed_at` dates the edge; a
+    chain resolves per step, to the successor current at the instant. Point-in-time replay is
+    then honest about which memories existed *and* about which were current.
+
+    🔴 **Not merge-ready.** `indexed_at` is the LAST write, not the first, so re-indexing a
+    superseding document moves its edge forward and a past replay can serve the superseded memory
+    as ``ok`` where the pre-change code correctly said ``superseded``. See
+    `PgVectorStore.supersession_all` for the mechanism and the fix it needs. Callers passing
+    ``known_as_of`` on a corpus that is ever re-indexed should not rely on the rewind yet.
+
+    Narrower residues, both fail-closed: an edge whose superseding file has no recorded date
+    applies unconditionally, and ``unresolved`` is not rewound, so an ambiguous claim written
+    after the instant still forces an abstention at it.
+
+    Omitting ``edge_dates`` keeps the old behaviour exactly, so no existing caller changes.
 
     Verdict precedence per hit: invalid_metadata > not_yet_known > superseded > expired /
     not_yet_valid > low_confidence > ok.
@@ -356,11 +401,16 @@ def evaluate(
     """
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
+    if known_as_of is not None and known_as_of.tzinfo is None:
+        # Same rule as `now`, and it has to be here rather than left to the caller: both the hit
+        # comparison and the edge comparison put it against a TIMESTAMPTZ from the store, so a
+        # naive value raises TypeError instead of returning a verdict.
+        known_as_of = known_as_of.replace(tzinfo=timezone.utc)
     cal = calibration or _UNCALIBRATED
     trusted: list[TrustedHit] = []
     for hit in result.hits:
         verdict, validity = _verdict(
-            hit, supersession, cal.threshold, now, unresolved, known_as_of
+            hit, supersession, cal.threshold, now, unresolved, known_as_of, edge_dates
         )
         meta = hit.chunk.metadata
         trusted.append(
@@ -473,7 +523,20 @@ def trusted_search(
         store, embedder, reranker=reranker, gap_threshold=cal.threshold, candidate_k=candidate_k
     )
     result = retriever.search(query, k=k, source=source)
-    supersession, unresolved = store.supersession() if result.hits else ({}, frozenset())
+    # ONE call when the edge dates are needed. `supersession()` and `supersession_dates()` each
+    # run their own cache validation, so calling them in sequence lets a concurrent index hand
+    # back edges from one scan dated by the next. Read defensively: `store` is duck-typed in
+    # several places (tests and downstream adapters implement only the read surface they need),
+    # and a store without the method degrades to exactly the pre-change behaviour.
+    supersession: dict[str, str] = {}
+    unresolved: frozenset[str] = frozenset()
+    edge_dates: dict[str, datetime] | None = None
+    if result.hits:
+        fetch_all = getattr(store, "supersession_all", None) if known_as_of is not None else None
+        if fetch_all is not None:
+            supersession, unresolved, edge_dates = fetch_all()
+        else:
+            supersession, unresolved = store.supersession()
     trusted = evaluate(
         result,
         supersession,
@@ -481,6 +544,7 @@ def trusted_search(
         now or datetime.now(timezone.utc),
         unresolved,
         known_as_of,
+        edge_dates,
     )
     if entailment is not None:
         from recall.entailment import apply_entailment

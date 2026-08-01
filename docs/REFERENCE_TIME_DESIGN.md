@@ -304,16 +304,57 @@ earlier instant returns the original as `ok` while marking the later revision `n
   memory had not been written; the other means it had been, and did not apply. Only the first
   exonerates a past decision, so a caller replaying one must be able to tell them apart.
 
-## Known limit, stated rather than discovered later
+## Known limit, stated rather than discovered later — mechanism built, NOT yet merge-ready
 
-`known_as_of` filters hits by write time. **It does not rewind supersession.** Supersession edges
-carry no timestamp, so an edge added after the as-of instant still applies, and a memory that was
-current at that moment can read as `superseded` by a document the caller cannot see. Rewinding it
-needs edge timestamps the corpus format does not record.
+**As first shipped**, `known_as_of` filtered hits by write time and did **not** rewind
+supersession: edges carried no timestamp, so an edge added after the as-of instant still applied,
+and a memory current at that moment could read as `superseded` by a document the caller could not
+see. Point-in-time replay was honest about *which memories existed* and approximate about *which
+were current*.
 
-So point-in-time replay is **honest about which memories existed** and **approximate about which
-were current**. That is worth having and worth saying, and it is written into `evaluate`'s
-docstring rather than left for a user to find.
+**Closed 2026-08-01.** The prompt came from a reader on the Part 4 thread, arguing that utterance
+time is the axis to **order** on rather than to filter on. That reframing makes the missing
+timestamp derivable rather than absent: an edge `A -> B` becomes assertable when B is written, and
+B's `indexed_at` has been an indexed column since the beginning. So the corpus format did not need
+to record anything new.
+
+`PgVectorStore.supersession_dates()` derives the dates from the scan that already builds the edge
+map, `resolve_edge_dates` is the pure rule behind it, and `resolve_successor` filters **per step**,
+so a chain `a -> b -> c` whose second edge postdates the instant resolves to `b`. Replay is now
+honest about which memories existed *and* about which were current.
+
+### 🔴 Not merge-ready: `indexed_at` is the LAST write, not the first
+
+A bug audit of the change found the mechanism sound and its **input** wrong, which is worse than
+it sounds and is the reason this section does not yet say "shipped".
+
+`replace_sources` re-inserts with `indexed_at = now()`, while `Indexer.index_path` skips files
+whose content hash is unchanged. So fixing a typo in a superseding memo moves **its** date forward
+while its predecessor keeps the old one. Replay at an earlier instant then drops a long-standing
+edge and serves the superseded memory as `ok`, while hiding its successor as `not_yet_known`. The
+pre-change code answered `superseded` on that same input. A wrong answer replaced a right one, in
+the layer whose whole purpose is to prevent exactly that.
+
+The root cause predates this change: `known_as_of` on **hits** has always had it, so a re-indexed
+memory already reads `not_yet_known` for a past instant. What edge dating adds is that the same
+bad date now flips a verdict from safe to unsafe rather than merely abstaining.
+
+Fixing it needs a `first_indexed_at` column preserved across upserts (`LEAST(existing, excluded)`),
+which repairs the hit path at the same time. That is a migration, and there was no reachable
+database in the environment where this was written, so it is deliberately **not** attempted here.
+
+Two narrower residues, both genuine and both fail-closed:
+
+- An edge whose superseding file has no recorded date applies unconditionally, the inverse of the
+  rule for hits, where an unknown write time leaves the hit visible. Both refuse to present
+  something as healthier than it is. Note the schema makes `indexed_at` NOT NULL, so this branch
+  is defence in depth against caller input rather than a state the live table can reach.
+- `unresolved` is not rewound. An `ambiguous_supersession` claim written after the as-of instant
+  still forces an abstention at that instant. Fail closed, so it costs recall rather than
+  correctness.
+
+Note what none of this touches: the mechanism is transaction time on both sides, so it needs no
+event-time extraction and no objection from the first half of this document applies to it.
 
 ## Not built
 
