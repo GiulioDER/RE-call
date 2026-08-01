@@ -952,11 +952,19 @@ def test_a_pre_column_row_acquires_a_first_write_and_then_freezes(shared_table):
         # January memo was first seen in August.
         store._with_retry(
             lambda conn: conn.execute(
+                # Relative to the DB clock, and read back below. A literal here needs the
+                # database clock to be past it; behind it, the clamp correctly lowers a seed that
+                # is now in the future and the test goes red blaming the code.
                 f"UPDATE {shared_table} SET first_indexed_at = NULL, "
-                f"indexed_at = TIMESTAMPTZ '2026-01-05 00:00:00+00'"
+                f"indexed_at = now() - interval '208 days'"
             )
         )
 
+        seeded = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0][0]
         store.replace_sources(["a.md"], [_chunk("v1", "a.md", "edited")], emb.embed(["edited"]))
         stamped = store._with_retry(
             lambda conn: conn.execute(
@@ -967,7 +975,7 @@ def test_a_pre_column_row_acquires_a_first_write_and_then_freezes(shared_table):
             "the NULL was restored over the fresh timestamp, so this row can never acquire a "
             "first write and its date slides forward on every re-index"
         )
-        assert stamped.year == 2026 and stamped.month == 1, (
+        assert stamped == seeded, (
             f"stamped {stamped} instead of the row's own indexed_at — a memo written in January "
             f"now claims it was first seen when someone re-indexed it, and a replay between the "
             f"two says it never existed. Both read paths COALESCE to indexed_at; so must this."
@@ -1090,17 +1098,25 @@ def test_the_upsert_path_also_dates_a_migrated_row_from_its_own_indexed_at(share
         store.upsert([_chunk("v1", "a.md", "one")], emb.embed(["one"]))
         store._with_retry(
             lambda conn: conn.execute(
+                # Relative to the DB clock, and read back below. A literal here needs the
+                # database clock to be past it; behind it, the clamp correctly lowers a seed that
+                # is now in the future and the test goes red blaming the code.
                 f"UPDATE {shared_table} SET first_indexed_at = NULL, "
-                f"indexed_at = TIMESTAMPTZ '2026-01-05 00:00:00+00'"
+                f"indexed_at = now() - interval '208 days'"
             )
         )
+        seeded = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0][0]
         store.upsert([_chunk("v1", "a.md", "edited")], emb.embed(["edited"]))
         first = store._with_retry(
             lambda conn: conn.execute(
                 f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
             ).fetchall()
         )[0][0]
-        assert first.year == 2026 and first.month == 1, (
+        assert first == seeded, (
             f"upsert stamped {first} instead of the row's own January indexed_at"
         )
     finally:
@@ -1126,7 +1142,7 @@ def test_every_write_path_clamps_a_stored_date_from_the_future(shared_table):
     cases = [
         (path, arm)
         for path in ("replace_sources", "upsert", "touch_files")
-        for arm in ("first_indexed_at", "indexed_at")
+        for arm in ("first_indexed_at", "indexed_at", "both")
     ]
     for label, arm in cases:
         store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
@@ -1134,14 +1150,17 @@ def test_every_write_path_clamps_a_stored_date_from_the_future(shared_table):
             store.ensure_schema()
             store._with_retry(lambda conn: conn.execute(f"TRUNCATE {shared_table}"))
             store.replace_sources([], [_chunk("v1", "a.md", "one")], emb.embed(["one"]))
-            seed = "now() + interval '365 days'"
-            other = "now()" if arm == "first_indexed_at" else "NULL"
+            # `both` is the shape a restore or a clock skew actually produces: the two columns
+            # were written by the same wrong clock. The other two arms each leave one column
+            # sane, which is the easier case.
+            future = "now() + interval '365 days'"
+            seeds = {
+                "first_indexed_at": f"first_indexed_at = {future}, indexed_at = now()",
+                "indexed_at": f"indexed_at = {future}, first_indexed_at = NULL",
+                "both": f"first_indexed_at = {future}, indexed_at = {future}",
+            }[arm]
             store._with_retry(
-                lambda conn: conn.execute(
-                    f"UPDATE {shared_table} SET {arm} = {seed}, "
-                    f"{'indexed_at' if arm == 'first_indexed_at' else 'first_indexed_at'}"
-                    f" = {other}"
-                )
+                lambda conn: conn.execute(f"UPDATE {shared_table} SET {seeds}")
             )
             edited = _chunk("v1", "a.md", f"edited via {label}")
             if label == "replace_sources":
@@ -1151,11 +1170,21 @@ def test_every_write_path_clamps_a_stored_date_from_the_future(shared_table):
             else:
                 store.touch_files(["a.md"])
 
-            stored, db_now = store._with_retry(
+            stored, stored_indexed, db_now = store._with_retry(
                 lambda conn: conn.execute(
-                    f"SELECT first_indexed_at, now() FROM {shared_table} WHERE id = 'v1'"
+                    f"SELECT first_indexed_at, indexed_at, now() FROM {shared_table} "
+                    f"WHERE id = 'v1'"
                 ).fetchall()
             )[0]
+            # The SIBLING column the same statement writes. Nothing asserted it, so a touch
+            # refusing to lower a future `indexed_at` was invisible to the whole repo — and
+            # `newest_indexed_at()`, which drives the staleness report, would sit in the future
+            # permanently.
+            if label == "touch_files":
+                assert stored_indexed <= db_now, (
+                    f"touch_files left `indexed_at` at {stored_indexed}, after the database's "
+                    f"own now() of {db_now}"
+                )
             # Against the DATABASE's clock, not a calendar year. Pins the clamp to now() rather
             # than to "some year before 2027", and cannot expire.
             assert stored <= db_now, (
@@ -1180,7 +1209,7 @@ def test_touch_files_carries_the_first_write_across_the_touch(shared_table):
     Both cases here, because the fix must be a no-op for a row that already has a first write.
     """
     emb = HashingEmbedder(dim=DIM)
-    for label, seed in (("migrated", "NULL"), ("already dated", "TIMESTAMPTZ '2025-11-03'")):
+    for label, seed in (("migrated", "NULL"), ("already dated", "now() - interval '640 days'")):
         store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
         try:
             store.ensure_schema()
@@ -1189,11 +1218,20 @@ def test_touch_files_carries_the_first_write_across_the_touch(shared_table):
             store._with_retry(
                 lambda conn: conn.execute(
                     f"UPDATE {shared_table} SET "
-                    f"indexed_at = TIMESTAMPTZ '2026-01-05 00:00:00+00', "
+                    f"indexed_at = now() - interval '208 days', "
                     f"first_indexed_at = {seed}"
                 )
             )
 
+            # Whichever column carries the age, read it back BEFORE the touch. Comparing to a
+            # literal needs the DB clock to be past it, and behind it the clamp correctly lowers
+            # the seed and the test goes red blaming the code.
+            expected_first = store._with_retry(
+                lambda conn: conn.execute(
+                    f"SELECT COALESCE(first_indexed_at, indexed_at) FROM {shared_table} "
+                    f"WHERE id = 'v1'"
+                ).fetchall()
+            )[0][0]
             before_touch = store._with_retry(
                 lambda conn: conn.execute("SELECT now()").fetchall()
             )[0][0]
@@ -1229,9 +1267,8 @@ def test_touch_files_carries_the_first_write_across_the_touch(shared_table):
             # (year, month), not year alone. The real answer for the migrated row is JANUARY
             # 2026 and the wrong one is AUGUST 2026 — a year comparison passes on both, and the
             # first version of this assertion did exactly that: it passed with the fix reverted.
-            expected = (2026, 1) if seed == "NULL" else (2025, 11)
-            assert (first.year, first.month) == expected, (
-                f"{label}: first write froze at {first}, expected {expected} — the touch "
+            assert first == expected_first, (
+                f"{label}: first write froze at {first}, expected {expected_first} — the touch "
                 f"destroyed the only evidence of the row's age there was"
             )
             # Relative to the value observed above, NOT a wall-clock literal. The previous
