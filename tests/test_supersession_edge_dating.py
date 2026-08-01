@@ -260,9 +260,12 @@ def test_a_naive_known_as_of_does_not_raise():
 @requires_db
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="OPEN DEFECT: indexed_at is the LAST write, so re-indexing a superseding document "
     "re-dates its edge. Needs a first_indexed_at column preserved across upserts. "
-    "strict=True means this FAILS the suite the day it starts passing, which is the point.",
+    "strict=True fails the suite the day it starts passing, which is the point; raises= is "
+    "what keeps it a guard, because without it a fixture error or a KeyError reports as xfail "
+    "and is indistinguishable from the defect being watched.",
 )
 def test_reindexing_the_superseding_file_must_not_re_date_its_edge(shared_table):
     """The deadman for the defect that blocks this branch, asserting the CORRECT expectation.
@@ -313,7 +316,11 @@ def test_two_divergent_claims_from_one_file_are_dated_separately():
         ("a.md", None, MON), ("c.md", None, MON),
         ("b.md", "a.md", MON), ("b.md", "c.md", WED),
     ]
-    edges = {"a.md": "b.md", "c.md": "b.md"}
+    # DERIVED, not hand-built. The previous version supplied `edges` by hand, which is exactly
+    # why it could not see that the same row shape makes b.md self-ambiguous one row away.
+    edges, unresolved = resolve_supersession([(r[0], r[1]) for r in rows])
+    assert edges == {"a.md": "b.md", "c.md": "b.md"}
+    assert unresolved == frozenset(), "one file with two claims is not an ambiguous basename"
     assert resolve_edge_dates(rows, edges) == {"a.md": MON, "c.md": WED}
     # The claim on c.md was written WED, so as of TUE it had not been made.
     assert resolve_successor("c.md", edges, resolve_edge_dates(rows, edges), TUE) is None
@@ -423,6 +430,18 @@ class _ConstantEmbedder:
         return [[1.0, 0.0] for _ in texts]
 
 
+@pytest.fixture(autouse=True)
+def _isolate_edge_date_warning():
+    """`_WARNED_NO_EDGE_DATES` is process-global. Clearing it inline on entry left it populated
+    for whatever ran next, so a `-k` selection or an xdist shard could see a silence produced by
+    another test. Mirrors `test_uncalibrated_warning._isolated_calibration`: clear BOTH sides."""
+    from recall.trust import _WARNED_NO_EDGE_DATES
+
+    _WARNED_NO_EDGE_DATES.clear()
+    yield
+    _WARNED_NO_EDGE_DATES.clear()
+
+
 def test_trusted_search_reads_edges_and_dates_in_one_call():
     """Two accessors meant two cache validations, so a concurrent index could hand back edges
     from one scan dated by the next. Reverting to the split form left the whole suite green."""
@@ -445,9 +464,8 @@ def test_trusted_search_degrades_without_supersession_all_and_says_so(caplog):
     """The `getattr` fallback traded an AttributeError for a silent HALF answer. It must warn:
     hits are rewound, edges are not, and the caller asked about a past instant."""
     from recall.calibration import Calibration
-    from recall.trust import _WARNED_NO_EDGE_DATES, trusted_search
+    from recall.trust import trusted_search
 
-    _WARNED_NO_EDGE_DATES.clear()
     store = _NoEdgeDatesStore()
     with caplog.at_level("WARNING"):
         res = trusted_search(
@@ -465,7 +483,6 @@ def test_no_warning_when_the_caller_never_asks_for_a_past_instant():
     from recall.calibration import Calibration
     from recall.trust import _WARNED_NO_EDGE_DATES, trusted_search
 
-    _WARNED_NO_EDGE_DATES.clear()
     store = _NoEdgeDatesStore()
     trusted_search(
         store, _ConstantEmbedder(), "q", k=1,
@@ -495,3 +512,76 @@ def test_supersession_all_hands_out_copies_not_the_live_cache(shared_table):
         assert store.supersession_all()[2] != {}
     finally:
         store.close()
+
+
+# --- round three -----------------------------------------------------------------------------
+
+def test_a_file_with_two_claims_is_not_an_ambiguous_target():
+    """`rows` carries one entry per (file, supersedes) pair, so a file asserting two claims
+    appeared twice and made ITSELF read as an ambiguous basename: its own incoming edge was
+    dropped and it was named in `unresolved`, so the trust layer abstained and told the operator
+    to disambiguate a basename that exactly one document carries. Ambiguity is two FILES sharing
+    a stem, never one file carrying two claims."""
+    rows = [
+        ("a.md", None, MON), ("c.md", None, MON),
+        ("b.md", "a.md", MON), ("b.md", "c.md", WED),
+        ("d.md", "b.md", WED),          # a third document supersedes the two-claim file
+    ]
+    edges, unresolved = resolve_supersession([(r[0], r[1]) for r in rows])
+    assert unresolved == frozenset()
+    assert edges == {"a.md": "b.md", "c.md": "b.md", "b.md": "d.md"}
+
+
+def test_a_bracketed_dangling_claim_is_still_dated():
+    """`resolve_supersession` keys a RESOLVED edge on the target's path (matched through
+    `_basename`) and a DANGLING one on the raw `rsplit`. Those differ when the claim carries both
+    a path and brackets, so indexing only the normalised form left every bracketed dangling edge
+    undated, which the per-file keying this replaced happened to get right."""
+    rows = [("b.md", "[[dir/gone]]", WED)]
+    edges, _ = resolve_supersession([(r[0], r[1]) for r in rows])
+    assert resolve_edge_dates(rows, edges) == dict.fromkeys(edges, WED)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="SECOND OPEN DEFECT, independent of first_indexed_at: fan-in is resolved "
+    "lexicographically, which is orthogonal to time, so the older live edge is discarded and a "
+    "replay before the winner's date answers `ok`. Needs every candidate edge kept per target.",
+)
+def test_fan_in_replay_must_use_the_edge_live_at_the_instant():
+    """b1.md (Monday) and b2.md (Wednesday) both supersede a.md. On Tuesday a.md WAS superseded,
+    by b1.md. Only the lexicographic winner survives, so the replay sees one edge dated Wednesday
+    and drops it. Rename the two files and the same corpus answers correctly, which is the
+    clearest sign the rule is keyed on the wrong axis."""
+    rows = [("a.md", None, MON), ("b1.md", "a.md", MON), ("b2.md", "a.md", WED)]
+    edges, unresolved = resolve_supersession([(r[0], r[1]) for r in rows])
+    dates = resolve_edge_dates(rows, edges)
+    verdict = _verdict(_hit(), edges, 0.5, WED, unresolved, TUE, dates)[0]
+    assert verdict == "superseded", "a.md was superseded by b1.md on Tuesday"
+
+
+def test_an_aware_known_as_of_with_naive_edge_dates_does_not_raise():
+    """The mirror of the naive case. Nesting the `edge_dates` normalisation inside
+    `if known_as_of.tzinfo is None` fixed one combination and left this one raising, so the more
+    careful caller was the one that crashed."""
+    from recall.calibration import Calibration
+    from recall.trust import evaluate
+    from recall.types import RetrievalResult, StalenessReport
+
+    hit = ScoredChunk(
+        chunk=Chunk(id="c", source="s", text="t", metadata={"file": "a.md"}),
+        score=0.9, indexed_at=None,
+    )
+    result = RetrievalResult(
+        query="q", hits=[hit], gap_warning=False,
+        staleness=StalenessReport(stale=False, newest_indexed_at=None, age=None, max_age=None),
+    )
+    res = evaluate(
+        result, {"a.md": "b.md"},
+        Calibration(embedder="test", threshold=0.5, scale=0.05),
+        WED, frozenset(),
+        TUE,                                   # AWARE
+        {"a.md": MON.replace(tzinfo=None)},    # naive
+    )
+    assert res.hits[0].verdict == "superseded"
