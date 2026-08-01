@@ -373,8 +373,9 @@ def _resolve_rows(
 
         winner[key] = file  # last row wins, exactly as before
         slot = order.setdefault(key, [])
-        if file not in slot:
-            slot.append(file)
+        if file in slot:
+            slot.remove(file)
+        slot.append(file)
         pair = (key, file)
         if pair in when:
             prev = when[pair]
@@ -1505,10 +1506,18 @@ class PgVectorStore:
         winner change between runs. The predecessor query was `SELECT DISTINCT`, and swapping it
         for `GROUP BY` preserves the row SET but not the row ORDER, which would have re-rolled
         that winner for existing `supersession()` callers who never asked for any of this.
-        `COLLATE "C"` pins it to byte order, so the winner is the same on a `C`-collation CI
-        database and an `en_US.UTF-8` developer one. It is stable, not necessarily IDENTICAL to
-        what `SELECT DISTINCT` produced: under a Sort+Unique plan it is the same winner, under
-        HashAggregate the old one was bucket order.
+        The ordering is the DATABASE's text collation, so the winner is stable within a
+        deployment but not guaranteed identical across one with a different `lc_collate`. That
+        residue is deliberately left rather than pinned with `COLLATE "C"`: `ORDER BY 1 COLLATE
+        "C"` does not mean what it looks like. An ORDER BY ordinal is only read as an output
+        column when it is a bare integer constant, so adding `COLLATE` turns it into the integer
+        literal 1, and integers have no collation. It was written that way here and broke 51 tests
+        on the first CI run that touched a real database, with nothing catching it locally because
+        no test executes this SQL without Postgres.
+
+        The winner is also stable rather than necessarily IDENTICAL to what `SELECT DISTINCT`
+        produced: under a Sort+Unique plan it is the same one, under HashAggregate the old one was
+        bucket order.
 
         🔴 **OPEN DEFECT, do not merge the point-in-time rewind on this alone.** `indexed_at`
         records the LAST write, not the first: `replace_sources` re-inserts with `indexed_at =
@@ -1541,7 +1550,7 @@ class PgVectorStore:
                 FROM {self._table}
                 WHERE tenant_id = %s AND metadata ? 'file'
                 GROUP BY 1, 2
-                ORDER BY 1 COLLATE "C", 2 COLLATE "C"
+                ORDER BY 1, 2
                 """,
                 (self._tenant,),
             ).fetchall()
