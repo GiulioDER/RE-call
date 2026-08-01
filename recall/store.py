@@ -829,17 +829,33 @@ class PgVectorStore:
                 f"table {t!r} exists but has no 'embedding' column — it is not a recall table. "
                 f"Point this store at a different table name."
             )
-        actual_dim = dim_row[0]
-        # `atttypmod` is -1 for an UNCONSTRAINED `vector` column, so `> 0` skipped the check
-        # entirely for `embedding vector` — a foreign table then had a column added and its
-        # PRIMARY KEY dropped and rewritten before any error, which is the failure this ordering
-        # was supposed to prevent. A recall table always declares a dimension.
-        if actual_dim <= 0:
+        # SHAPE, not dimension. Two wrong discriminators preceded this one. `atttypmod > 0`
+        # skipped itself for an UNCONSTRAINED `vector` column, so a foreign table was still
+        # migrated; rejecting `atttypmod <= 0` then refused a REAL recall table whose embedding
+        # had been relaxed by a supported pgvector ALTER, telling its owner it was not theirs.
+        # Neither question was the right one. What distinguishes our table from a stranger's is
+        # the column set, so ask that: a relaxed recall table still has `tsv` and `source`, and a
+        # foreign pgvector table has neither however its vector is declared.
+        required = {"id", "source", "text", "metadata", "embedding", "indexed_at", "tsv"}
+        # `array_agg` so this is ONE row read with `fetchone`, like every other probe in this
+        # method. A `fetchall` here was the only one, and the fake cursor the store tests drive
+        # `ensure_schema` with implements `fetchone` alone — eight of them went red on an
+        # AttributeError that had nothing to do with the check being wrong.
+        shape_row = conn.execute(
+            "SELECT array_agg(attname) FROM pg_attribute WHERE attrelid = %s::regclass "
+            "AND attnum > 0 AND NOT attisdropped",
+            (t,),
+        ).fetchone()
+        present = set(shape_row[0] or ()) if shape_row else set()
+        if missing := sorted(required - present):
             raise ValueError(
-                f"table {t!r} has an 'embedding' column with no declared dimension — it is not "
-                f"a recall table. Point this store at a different table name."
+                f"table {t!r} exists but is missing {missing} — it is not a recall table. "
+                f"Point this store at a different table name."
             )
-        if actual_dim != self._dim:
+        actual_dim = dim_row[0]
+        # A relaxed column (atttypmod -1) is accepted: pgvector validates the dimension per row,
+        # and the shape check above has already established the table is ours.
+        if actual_dim > 0 and actual_dim != self._dim:
             raise ValueError(
                 f"table {t!r} has a vector({actual_dim}) embedding column but this store is "
                 f"configured for dim {self._dim} — use a matching embedder or a different "
@@ -1535,7 +1551,13 @@ class PgVectorStore:
                         # absent from `preserved` is genuinely new and keeps its now().
                         with conn.cursor() as cur:
                             cur.executemany(
-                                f"UPDATE {self._table} SET first_indexed_at = %s "
+                                # LEAST(..., now()) mirrors `_upsert_in`. Without it the two
+                                # write paths disagreed on exactly the input the upsert comment
+                                # names: a stored date in the FUTURE (clock skew, a restore) was
+                                # clamped by upsert and preserved verbatim here — on the ONLY
+                                # path `recall index` takes, leaving the row permanently
+                                # invisible to every as-of replay.
+                                f"UPDATE {self._table} SET first_indexed_at = LEAST(%s, now()) "
                                 f"WHERE tenant_id = %s AND id = %s",
                                 restore,
                             )

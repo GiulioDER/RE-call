@@ -1007,6 +1007,9 @@ def test_a_foreign_pgvector_table_is_rejected_before_anything_is_altered(shared_
 
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        # `vector` UNCONSTRAINED. The matching-dimension shape is covered by its own test
+        # below, because a dimension check cannot tell them apart and the first two attempts at
+        # this guard each caught only one of the two.
         conn.execute(
             f"CREATE TABLE {shared_table} (id text PRIMARY KEY, note text, embedding vector)"
         )
@@ -1020,3 +1023,125 @@ def test_a_foreign_pgvector_table_is_rejected_before_anything_is_altered(shared_
         assert catalog(conn) == before, (
             "a foreign table was mutated before the error that says it is not ours"
         )
+
+
+@requires_db
+def test_a_foreign_table_whose_dimension_MATCHES_is_also_rejected_unmutated(shared_table):
+    """The input a dimension check can never catch, and the one both earlier guards missed.
+
+    `vector(64)` against a dim-64 store passes any dimension comparison, so the store used to
+    migrate a stranger's table — adding `first_indexed_at` and `tenant_id` and rewriting its
+    PRIMARY KEY from [1] to [5,1] — and then die on `UndefinedColumn: column "tsv" does not
+    exist`. What separates our table from theirs is the column SET, not the vector's declaration.
+    """
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        conn.execute(
+            f"CREATE TABLE {shared_table} "
+            f"(id text PRIMARY KEY, note text, embedding vector({DIM}))"
+        )
+        before = conn.execute(
+            "SELECT attname FROM pg_attribute WHERE attrelid = %s::regclass "
+            "AND attnum > 0 AND NOT attisdropped ORDER BY attnum", (shared_table,)
+        ).fetchall()
+        pk_before = conn.execute(
+            "SELECT conkey FROM pg_constraint WHERE conrelid = %s::regclass AND contype = 'p'",
+            (shared_table,)).fetchall()
+
+    with pytest.raises(ValueError, match="not a recall table"):
+        PgVectorStore(TEST_DSN, dim=DIM, table=shared_table).ensure_schema()
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        assert conn.execute(
+            "SELECT attname FROM pg_attribute WHERE attrelid = %s::regclass "
+            "AND attnum > 0 AND NOT attisdropped ORDER BY attnum", (shared_table,)
+        ).fetchall() == before
+        assert conn.execute(
+            "SELECT conkey FROM pg_constraint WHERE conrelid = %s::regclass AND contype = 'p'",
+            (shared_table,)).fetchall() == pk_before, "its PRIMARY KEY was rewritten"
+
+
+@requires_db
+def test_a_relaxed_embedding_column_is_still_OUR_table(shared_table):
+    """Rejecting `atttypmod <= 0` refused a REAL recall table whose embedding had been relaxed by
+    a supported pgvector ALTER, telling its owner it was not theirs. It has every recall column
+    and its own rows; the vector's declaration says nothing about ownership."""
+    emb = HashingEmbedder(dim=DIM)
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    store.ensure_schema()
+    store.upsert([_chunk("v1", "a.md", "ours")], emb.embed(["ours"]))
+    store.close()
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute(f"ALTER TABLE {shared_table} ALTER COLUMN embedding TYPE vector")
+
+    with PgVectorStore(TEST_DSN, dim=DIM, table=shared_table) as reopened:
+        reopened.ensure_schema()   # must not raise
+        assert reopened.supersession_all()[0] == {}
+
+
+@requires_db
+def test_the_upsert_path_also_dates_a_migrated_row_from_its_own_indexed_at(shared_table):
+    """The upsert path had NO guard: reverting its COALESCE left the entire suite green, while
+    the `replace_sources` twin was covered. Same rule, both doors."""
+    emb = HashingEmbedder(dim=DIM)
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    try:
+        store.ensure_schema()
+        store.upsert([_chunk("v1", "a.md", "one")], emb.embed(["one"]))
+        store._with_retry(
+            lambda conn: conn.execute(
+                f"UPDATE {shared_table} SET first_indexed_at = NULL, "
+                f"indexed_at = TIMESTAMPTZ '2026-01-05 00:00:00+00'"
+            )
+        )
+        store.upsert([_chunk("v1", "a.md", "edited")], emb.embed(["edited"]))
+        first = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0][0]
+        assert first.year == 2026 and first.month == 1, (
+            f"upsert stamped {first} instead of the row's own January indexed_at"
+        )
+    finally:
+        store.close()
+
+
+@requires_db
+def test_both_write_paths_clamp_a_stored_date_from_the_future(shared_table):
+    """Clock skew or a restore can leave a first-write in the future. `_upsert_in` clamped it and
+    the `replace_sources` restore did not — on the ONLY path `recall index` takes — so the row
+    stayed permanently invisible to every as-of replay and re-indexing never repaired it.
+
+    Both doors, in one test, because a rule enforced on one path is not a rule.
+    """
+    emb = HashingEmbedder(dim=DIM)
+    future = "TIMESTAMPTZ '2027-06-01 00:00:00+00'"
+    for label in ("replace_sources", "upsert"):
+        store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+        try:
+            store.ensure_schema()
+            store._with_retry(lambda conn: conn.execute(f"TRUNCATE {shared_table}"))
+            store.replace_sources([], [_chunk("v1", "a.md", "one")], emb.embed(["one"]))
+            store._with_retry(
+                lambda conn: conn.execute(
+                    f"UPDATE {shared_table} SET first_indexed_at = {future}"
+                )
+            )
+            edited = _chunk("v1", "a.md", f"edited via {label}")
+            if label == "replace_sources":
+                store.replace_sources(["a.md"], [edited], emb.embed(["e"]))
+            else:
+                store.upsert([edited], emb.embed(["e"]))
+
+            stored = store._with_retry(
+                lambda conn: conn.execute(
+                    f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+                ).fetchall()
+            )[0][0]
+            assert stored.year < 2027, (
+                f"{label} preserved a first-write of {stored}, which is in the future: the row "
+                f"reads as not_yet_known for every replay and no re-index repairs it"
+            )
+        finally:
+            store.close()

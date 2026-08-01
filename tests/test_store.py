@@ -194,6 +194,12 @@ def _canned_row(sql: str, *, migrated: bool = True, rls_ok: bool = True):
     """
     if "atttypmod" in sql:
         return (3,)  # embedding vector(3), matching _bare_store's dim: dimension check passes
+    if "array_agg(attname)" in sql:
+        # The whole-shape probe: a real recall table has every required column. Answering with
+        # the set itself, rather than a placeholder, keeps this meaningful — a short list here
+        # would steer `ensure_schema` into the "not a recall table" branch and quietly make
+        # every assertion below vacuous.
+        return (["id", "source", "text", "metadata", "embedding", "indexed_at", "tsv"],)
     if "pg_attribute" in sql and "tenant_id" in sql:
         return (1,) if migrated else None
     if "pg_constraint" in sql:
