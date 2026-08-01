@@ -1612,7 +1612,14 @@ class PgVectorStore:
         Captured in the SAME statement, because Postgres evaluates every `SET` expression against
         the OLD tuple: the COALESCE reads the pre-touch `indexed_at`, not `now()`. Two statements
         would race, and the ordering that writes `indexed_at` first would capture the value it had
-        just destroyed. A row that already has a first write is unaffected — COALESCE returns it.
+        just destroyed. A row that already has a first write IN THE PAST is unaffected: COALESCE returns
+        it and LEAST keeps it. One in the FUTURE is clamped to now() like everywhere else, so
+        "unaffected" was too strong once the clamp landed.
+
+        ⚠️ `LEAST` does not propagate NULL, so a row with BOTH time columns NULL is stamped with
+        the touch instant rather than staying unknown. Unreachable through a store-created table,
+        where `indexed_at` is NOT NULL; reachable only by pointing `ensure_schema` at a
+        hand-rolled table whose `indexed_at` is nullable, which the shape check does not forbid.
         """
         if not files:
             return 0

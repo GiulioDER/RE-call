@@ -344,7 +344,8 @@ stored date in the future (clock skew, a restore) makes the row permanently `not
 delete, which `ON CONFLICT` alone cannot cover because the row is gone before the insert runs;
 and `touch_files` carries it across in the same UPDATE that moves `indexed_at`, because for a
 migrated row that column is the only evidence of age there is. The third arrived later and
-shipped without the clamp the first two had, which is the argument for naming all three here. Existing tables migrate with two DDL statements and no DML: `ADD COLUMN` with **no default**,
+shipped without the clamp the first two had, which is the argument for naming all three here.
+Existing tables migrate with two DDL statements and no DML: `ADD COLUMN` with **no default**,
 then `SET DEFAULT` separately. Both halves are load-bearing and each was got wrong once.
 
 `DEFAULT` is what stamps existing rows, not `NOT NULL`. Postgres evaluates a non-volatile default
