@@ -57,6 +57,14 @@ _WARNED_UNCALIBRATED: set[str] = set()
 _WARNED_NO_EDGE_DATES: set[str] = set()
 
 
+def _as_utc(value: datetime) -> datetime:
+    """A naive datetime read as UTC. One helper, because the three comparison sites in this
+    module (`now`, `known_as_of`, and each `edge_dates` value) all put a caller-supplied instant
+    against a TIMESTAMPTZ from the store, and normalising some of them raises where normalising
+    none of them did not."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
 def _warn_no_edge_dates(store_type: str) -> None:
     """A `known_as_of` query on a store that cannot date its supersession edges.
 
@@ -425,21 +433,15 @@ def evaluate(
     """
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
-    if known_as_of is not None and known_as_of.tzinfo is None:
-        # Same rule as `now`, and it has to be here rather than left to the caller: both the hit
-        # comparison and the edge comparison put it against a TIMESTAMPTZ from the store, so a
-        # naive value raises TypeError instead of returning a verdict.
-        known_as_of = known_as_of.replace(tzinfo=timezone.utc)
+    if known_as_of is not None:
+        # BOTH operands, and NOT only when `known_as_of` happened to be naive. Nesting the
+        # `edge_dates` half inside that branch left the mirror combination raising: an AWARE
+        # `known_as_of` against a naive hand-built date map still hit the comparison, so the more
+        # careful caller was the one that crashed. Two rounds of review to get one comment to
+        # match its own code.
+        known_as_of = _as_utc(known_as_of)
         if edge_dates:
-            # BOTH operands or neither. Normalising only `known_as_of` broke a caller who was
-            # self-consistently naive and whose hits carry no `indexed_at` (a case this module
-            # explicitly supports): it used to get a verdict and started raising TypeError at the
-            # edge comparison instead. Naive edge dates can only come from a hand-built map,
-            # since the store's own are TIMESTAMPTZ.
-            edge_dates = {
-                file: when if when.tzinfo is not None else when.replace(tzinfo=timezone.utc)
-                for file, when in edge_dates.items()
-            }
+            edge_dates = {file: _as_utc(when) for file, when in edge_dates.items()}
     cal = calibration or _UNCALIBRATED
     trusted: list[TrustedHit] = []
     for hit in result.hits:

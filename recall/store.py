@@ -333,13 +333,17 @@ def resolve_edge_dates(
     for file, supersedes, first_indexed in rows:
         if not file or not supersedes or first_indexed is None:
             continue
-        key = (file, _basename(supersedes))
-        known = by_claim.get(key)
-        if known is None or first_indexed < known:
-            by_claim[key] = first_indexed
-    # `edges` keys are root-relative paths (or a bare basename when the target is dangling), and
-    # the claim referenced its target by basename, which is how the edge was matched in the first
-    # place. Resolving the key the same way is what keeps the two sides in agreement.
+        # BOTH key forms, because `resolve_supersession` uses two. A RESOLVED edge is keyed on the
+        # target's root-relative path, matched through `_basename`. A DANGLING one is keyed on the
+        # raw `supersedes.rsplit("/", 1)[-1]`, deliberately keeping the author's spelling. Those
+        # differ whenever the claim carries both a path and brackets: `[[dir/gone]]` normalises to
+        # `gone` but dangles as `gone]]`. Indexing only the normalised form left every bracketed
+        # dangling edge undated, which the per-file keying this replaced happened to get right.
+        for form in {_basename(supersedes), supersedes.rsplit("/", 1)[-1]}:
+            key = (file, form)
+            known = by_claim.get(key)
+            if known is None or first_indexed < known:
+                by_claim[key] = first_indexed
     dated: dict[str, datetime] = {}
     for superseded, superseding in edges.items():
         when = by_claim.get((superseding, _basename(superseded)))
@@ -374,7 +378,12 @@ def resolve_supersession(
 
     Pure and DB-free so the resolution rule can be unit-tested without a database.
     """
-    files = [f for f, _ in rows if f]
+    # DEDUPED. `rows` carries one entry per (file, supersedes) pair, so a file asserting two
+    # different claims appeared TWICE and made ITSELF read as an ambiguous basename: its own
+    # incoming edge was dropped and it was named in `unresolved`, telling the operator to
+    # disambiguate a basename that exactly one document carries. Ambiguity is a property of two
+    # FILES sharing a stem, never of one file carrying two claims.
+    files = list(dict.fromkeys(f for f, _ in rows if f))
     by_base: dict[str, list[str]] = {}
     for f in files:
         by_base.setdefault(_basename(f), []).append(f)
@@ -1447,8 +1456,8 @@ class PgVectorStore:
         cache a result under a fingerprint that never described it.
         """
 
-        edges, unresolved, _dates = self.supersession_all()
-        return dict(edges), unresolved
+        edges, unresolved, _dates = self.supersession_all()  # already copies
+        return edges, unresolved
 
     def supersession_all(
         self,
@@ -1464,11 +1473,26 @@ class PgVectorStore:
         enters its own cache validation with its own fingerprint query, so a concurrent index
         between the two can hand back edges from one scan dated by the next.
 
-        `ORDER BY` is load-bearing, not tidiness. `resolve_supersession` resolves fan-in (two
-        documents superseding the same target) by last-row-wins, so an unordered scan lets the
+        🔴 **SECOND OPEN DEFECT, independent of `first_indexed_at`: fan-in resolves
+        LEXICOGRAPHICALLY, and lexicographic is orthogonal to time.** Where `b1.md` (written
+        Monday) and `b2.md` (Wednesday) both supersede `a.md`, only `b2.md` survives, so a replay
+        as of Tuesday finds its single edge dated Wednesday, drops it, and answers `ok`. On
+        Tuesday `a.md` WAS superseded, by `b1.md`. Whether a corpus gets the wrong answer is
+        decided by the alphabet: rename the two and the same data answers correctly. The older
+        edge's date is computed and then discarded, because only the surviving winner is dated.
+        Fixing it means keeping every candidate edge per target and letting `resolve_successor`
+        choose the latest one asserted at or before the instant, rather than picking one winner
+        here. Pinned by `test_fan_in_replay_must_use_the_edge_live_at_the_instant`.
+
+        `ORDER BY` is load-bearing, not tidiness. `resolve_supersession` resolves fan-in by
+        last-row-wins, so an unordered scan lets the
         winner change between runs. The predecessor query was `SELECT DISTINCT`, and swapping it
         for `GROUP BY` preserves the row SET but not the row ORDER, which would have re-rolled
         that winner for existing `supersession()` callers who never asked for any of this.
+        `COLLATE "C"` pins it to byte order, so the winner is the same on a `C`-collation CI
+        database and an `en_US.UTF-8` developer one. It is stable, not necessarily IDENTICAL to
+        what `SELECT DISTINCT` produced: under a Sort+Unique plan it is the same winner, under
+        HashAggregate the old one was bucket order.
 
         🔴 **OPEN DEFECT, do not merge the point-in-time rewind on this alone.** `indexed_at`
         records the LAST write, not the first: `replace_sources` re-inserts with `indexed_at =
@@ -1501,7 +1525,7 @@ class PgVectorStore:
                 FROM {self._table}
                 WHERE tenant_id = %s AND metadata ? 'file'
                 GROUP BY 1, 2
-                ORDER BY 1, 2
+                ORDER BY 1 COLLATE "C", 2 COLLATE "C"
                 """,
                 (self._tenant,),
             ).fetchall()
@@ -1529,7 +1553,7 @@ class PgVectorStore:
         `supersession_all()` exists to close: two independent validations can return edges from
         one scan dated by the next. Prefer `supersession_all()` whenever you want both.
         """
-        return dict(self.supersession_all()[2])
+        return self.supersession_all()[2]  # already a copy
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """Resolve caller-facing identifiers to the DB `source` value(s) to delete, this tenant only.
