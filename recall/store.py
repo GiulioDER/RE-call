@@ -830,7 +830,16 @@ class PgVectorStore:
                 f"Point this store at a different table name."
             )
         actual_dim = dim_row[0]
-        if actual_dim > 0 and actual_dim != self._dim:
+        # `atttypmod` is -1 for an UNCONSTRAINED `vector` column, so `> 0` skipped the check
+        # entirely for `embedding vector` — a foreign table then had a column added and its
+        # PRIMARY KEY dropped and rewritten before any error, which is the failure this ordering
+        # was supposed to prevent. A recall table always declares a dimension.
+        if actual_dim <= 0:
+            raise ValueError(
+                f"table {t!r} has an 'embedding' column with no declared dimension — it is not "
+                f"a recall table. Point this store at a different table name."
+            )
+        if actual_dim != self._dim:
             raise ValueError(
                 f"table {t!r} has a vector({actual_dim}) embedding column but this store is "
                 f"configured for dim {self._dim} — use a matching embedder or a different "
@@ -898,9 +907,12 @@ class PgVectorStore:
         CURRENT tenant's rows. `ALTER TABLE ... SET NOT NULL` validates with a heap scan, which is
         NOT policy-rewritten and sees every tenant's rows. So on a shared table the backfill fills
         one tenant's rows, the constraint trips over another tenant's NULLs, and `ensure_schema`
-        raises — for every tenant, on every open, unrepairable by re-running. CI could never catch
-        it: CI connects as a superuser, and a superuser bypasses RLS. `README.md` already makes
-        that argument about a different test, in its own words.
+        raises — for every tenant, on every open, unrepairable by re-running. CI DOES catch it,
+        which an earlier version of this docstring denied: a superuser bypasses RLS, but
+        `tests/test_tenancy.py`'s `unprivileged_dsn` makes a throwaway NOSUPERUSER NOBYPASSRLS
+        role, so the policy applies to the role under test regardless of who connects. README
+        says the same: the RLS tests use such a role "because as a superuser they would pass
+        while testing nothing".
 
         A NULL therefore means exactly what it should: this row predates the column, so its first
         write is unknown. Both readers already handle that. `_verdict` falls back to `indexed_at`,
@@ -934,8 +946,18 @@ class PgVectorStore:
         #
         # Both are DDL, so unlike the backfill this replaced, neither is rewritten by the RLS
         # policy and neither can see a partial view of a multi-tenant table.
-        conn.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS first_indexed_at TIMESTAMPTZ")
-        conn.execute(f"ALTER TABLE {t} ALTER COLUMN first_indexed_at SET DEFAULT now()")
+        # ONE transaction. `ensure_schema` runs on an autocommit connection, so these were two
+        # separate commits, and the gate above only tests `attname` — so an interruption between
+        # them (a concurrent reader plus this method's own `lock_timeout` is enough) left the
+        # column existing with NO default, and every later `ensure_schema` short-circuited on the
+        # gate and returned clean. Permanently: nothing retries LockNotAvailable. DDL is
+        # transactional in Postgres, which `_migrate_to_tenanted` below already relies on for
+        # exactly this reason.
+        with conn.transaction():
+            conn.execute(
+                f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS first_indexed_at TIMESTAMPTZ"
+            )
+            conn.execute(f"ALTER TABLE {t} ALTER COLUMN first_indexed_at SET DEFAULT now()")
 
     def _migrate_to_tenanted(self, conn: "psycopg.Connection") -> None:
         """Add `tenant_id` to a table created before tenancy existed, idempotently.
@@ -1121,12 +1143,17 @@ class PgVectorStore:
                     metadata = EXCLUDED.metadata,
                     embedding = EXCLUDED.embedding,
                     indexed_at = now(),
-                    -- LEAST, so re-writing a chunk never moves its first-seen forward: the
-                    -- excluded value is now(), so a stored date always wins. NULL is the one
-                    -- case that is NOT kept, deliberately — LEAST ignores NULLs, so a row
-                    -- predating the column gets stamped with this write. That is the best
-                    -- evidence available for it, and it freezes from then on.
-                    first_indexed_at = LEAST({t}.first_indexed_at, EXCLUDED.first_indexed_at)
+                    -- LEAST over COALESCE, so re-writing a chunk never moves its first-seen
+                    -- forward: a stored date IN THE PAST always wins (a stored date in the
+                    -- FUTURE does not, and clock skew or a restore can produce one). A row
+                    -- predating the column has NULL, and COALESCE gives it its own
+                    -- `indexed_at` — the same fallback both read paths use — rather than
+                    -- stamping it with this write, which would claim a memo written in January
+                    -- was first seen the day someone re-indexed it.
+                    first_indexed_at = LEAST(
+                        COALESCE({t}.first_indexed_at, {t}.indexed_at),
+                        EXCLUDED.first_indexed_at
+                    )
                 """,
                 [
                     (self._tenant, c.id, c.source, c.text, json.dumps(c.metadata), Vector(e))
@@ -1472,18 +1499,20 @@ class PgVectorStore:
                 # now. That is the whole re-index defect, and this is the path that causes it.
                 preserved: dict[str, datetime] = {}
                 if sources:
-                    # `if first is not None` is load-bearing. A row predating the column has
-                    # NULL here, and a NULL key was still PRESENT, so the restore wrote that NULL
-                    # back over the `now()` `_upsert_in` had just given it — the row could never
-                    # acquire a first write on the only path `recall index` uses, and its
-                    # effective date then slid forward on every re-index, which is the defect this
-                    # column exists to prevent. Dropping the NULL lets the row keep that `now()`:
-                    # stamped once at first re-index, frozen after, which is also what the upsert
-                    # path does, so the two agree.
+                    # COALESCE to the row's OWN `indexed_at`, not `now()`. Two bugs deep here.
+                    # First: a NULL key was still PRESENT, so the restore wrote that NULL back
+                    # over the timestamp `_upsert_in` had just written, and the row could never
+                    # acquire a first write at all. Filtering the NULL fixed that but stamped
+                    # `now()` — so a memo written in January, migrated, then re-indexed once in
+                    # August claimed August as its first write, and a replay of March said it had
+                    # never existed. Its real `indexed_at` was sitting on the same row, and it is
+                    # exactly what BOTH read paths COALESCE to. The write path now agrees with
+                    # them: migrated rows keep their last-known write as their first, and freeze.
                     preserved = {
                         cid: first
                         for cid, first in conn.execute(
-                            f"SELECT id, first_indexed_at FROM {self._table} "
+                            f"SELECT id, COALESCE(first_indexed_at, indexed_at) "
+                            f"FROM {self._table} "
                             f"WHERE tenant_id = %s AND source = ANY(%s)",
                             (self._tenant, sources),
                         ).fetchall()

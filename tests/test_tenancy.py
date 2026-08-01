@@ -489,8 +489,11 @@ def test_the_first_indexed_at_migration_survives_rls_on_a_multi_tenant_table(
     `indexed_at`, SET DEFAULT, SET NOT NULL — and it bricks a shared table permanently. The
     backfill is ordinary DML, so the FORCE'd policy rewrites it to the current tenant's rows;
     `SET NOT NULL` validates with a heap scan, which is NOT rewritten and sees every tenant's.
-    Measured on this fixture: the role sees 2 of 3 rows, the backfill touches 2, and the
-    constraint fails with NotNullViolation. `ensure_schema` then raises for every tenant on every
+    Measured on this fixture: it holds 2 rows, the role sees 1, the backfill touches 1, and the
+    constraint still fails with NotNullViolation because its scan sees both. (An earlier version
+    of this sentence said 2 of 3 — those figures came from a three-row scratch table and a
+    two-row fixture shipped. The conclusion was unaffected, and nothing asserted the numbers, so
+    nothing caught the drift.) `ensure_schema` then raises for every tenant on every
     open, and re-running never repairs it.
 
     The shipped migration is two DDL statements and no DML, so there is nothing for the policy to
