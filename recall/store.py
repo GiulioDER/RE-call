@@ -917,10 +917,21 @@ class PgVectorStore:
         ).fetchone()
         if exists:
             return
-        conn.execute(
-            f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS first_indexed_at "
-            f"TIMESTAMPTZ DEFAULT now()"
-        )
+        # TWO statements, and splitting them is the whole point. `ADD COLUMN ... DEFAULT now()`
+        # does NOT leave existing rows NULL: since PG 11 a non-volatile default is applied to
+        # every existing row through stored metadata, so the one-statement form stamps the ENTIRE
+        # corpus with the upgrade instant. That is precisely the error this column exists to
+        # prevent, arrived at by a different route than the version it replaced, and CI caught it
+        # because the test asserts the rows are left NULL.
+        #
+        # Adding the column with no default leaves existing rows NULL, which is the honest answer
+        # for a row whose first write was never recorded. Setting the default afterwards applies
+        # only to future inserts and rewrites nothing.
+        #
+        # Both are DDL, so unlike the backfill this replaced, neither is rewritten by the RLS
+        # policy and neither can see a partial view of a multi-tenant table.
+        conn.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS first_indexed_at TIMESTAMPTZ")
+        conn.execute(f"ALTER TABLE {t} ALTER COLUMN first_indexed_at SET DEFAULT now()")
 
     def _migrate_to_tenanted(self, conn: "psycopg.Connection") -> None:
         """Add `tenant_id` to a table created before tenancy existed, idempotently.
