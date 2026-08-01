@@ -340,9 +340,22 @@ never held a document it had held for months.
 
 `first_indexed_at` fixes both. It is preserved on conflict with `LEAST`, and captured and restored
 across `replace_sources`' delete, which `ON CONFLICT` alone cannot cover because the row is gone
-before the insert runs. Existing tables migrate by adding the column nullable, backfilling from
-`indexed_at`, then setting the default: adding it `NOT NULL DEFAULT now()` in one step would have
-stamped the whole corpus with the upgrade time, which is the same error in a new place.
+before the insert runs. Existing tables migrate with two DDL statements and no DML: `ADD COLUMN` with **no default**,
+then `SET DEFAULT` separately. Both halves are load-bearing and each was got wrong once.
+
+`DEFAULT` is what stamps existing rows, not `NOT NULL`. Postgres evaluates a non-volatile default
+at ALTER time and applies it to every existing row through stored metadata, so `ADD COLUMN ...
+DEFAULT now()` claims the whole corpus was first written at the upgrade instant. Setting the
+default as a separate statement affects only future inserts and rewrites nothing, leaving existing
+rows NULL — the honest answer for a row whose first write was never recorded.
+
+And it must be DDL, never DML. The first version backfilled from `indexed_at` and then set NOT
+NULL, which bricks a shared multi-tenant table permanently: the backfill is ordinary DML and the
+FORCE'd RLS policy narrows it to one tenant, while `SET NOT NULL` validates with a heap scan that
+is not narrowed, so it trips over another tenant's NULLs and `ensure_schema` raises for everyone,
+unrepairably. Measured against a real Postgres as a `NOSUPERUSER NOBYPASSRLS` role: the role sees
+2 of 3 rows, the backfill touches 2, `SET NOT NULL` fails with `NotNullViolation`. A superuser
+bypasses RLS, so CI cannot see any of it.
 
 `indexed_at` stays, and still means the last write. That is the right answer for staleness, which
 asks how fresh a corpus is. The two axes were being served by one column.
