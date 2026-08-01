@@ -354,8 +354,13 @@ NULL, which bricks a shared multi-tenant table permanently: the backfill is ordi
 FORCE'd RLS policy narrows it to one tenant, while `SET NOT NULL` validates with a heap scan that
 is not narrowed, so it trips over another tenant's NULLs and `ensure_schema` raises for everyone,
 unrepairably. Measured against a real Postgres as a `NOSUPERUSER NOBYPASSRLS` role: the role sees
-2 of 3 rows, the backfill touches 2, `SET NOT NULL` fails with `NotNullViolation`. A superuser
-bypasses RLS, so CI cannot see any of it.
+2 of 3 rows, the backfill touches 2, `SET NOT NULL` fails with `NotNullViolation`.
+
+A superuser bypasses RLS, and CI connects as one, so it is tempting to conclude CI cannot check
+this. It can, and does: `tests/test_tenancy.py`'s `unprivileged_dsn` fixture makes a throwaway
+`NOSUPERUSER NOBYPASSRLS` role, so the policy applies to the role under test regardless of who
+connects. That fixture's own docstring explains it was written because an earlier version could
+only run as a superuser, "the single configuration in which RLS does not apply".
 
 `indexed_at` stays, and still means the last write. That is the right answer for staleness, which
 asks how fresh a corpus is. The two axes were being served by one column.
