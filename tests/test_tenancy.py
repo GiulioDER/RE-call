@@ -471,3 +471,57 @@ def test_a_policy_narrowed_to_a_role_is_repaired(tenant_table):
         assert restored is True, "a policy narrowed to one role was left in place"
     finally:
         s.close()
+
+
+@requires_db
+def test_the_first_indexed_at_migration_survives_rls_on_a_multi_tenant_table(
+    unprivileged_dsn, tenant_table
+):
+    """The migration must not need to WRITE rows, because a write cannot see every tenant's.
+
+    This is the configuration CI structurally cannot test: CI connects as a superuser, and a
+    superuser bypasses RLS entirely, so the policy is inert there. Verified locally against a real
+    Postgres, as a role with NOSUPERUSER NOBYPASSRLS.
+
+    The first version of this migration did the textbook thing — add nullable, backfill from
+    `indexed_at`, SET DEFAULT, SET NOT NULL — and it bricks a shared table permanently. The
+    backfill is ordinary DML, so the FORCE'd policy rewrites it to the current tenant's rows;
+    `SET NOT NULL` validates with a heap scan, which is NOT rewritten and sees every tenant's.
+    Measured on this fixture: the role sees 2 of 3 rows, the backfill touches 2, and the
+    constraint fails with NotNullViolation. `ensure_schema` then raises for every tenant on every
+    open, and re-running never repairs it.
+
+    The shipped migration is two DDL statements and no DML, so there is nothing for the policy to
+    narrow and nothing to fail. That is what this pins.
+    """
+    role, dsn = unprivileged_dsn
+
+    with PgVectorStore(TEST_DSN, dim=4, table=tenant_table, tenant="a") as owner:
+        owner.ensure_schema()
+        owner.upsert([Chunk("a1", "a.md", "tenant a")], [_vec(0)])
+    with PgVectorStore(TEST_DSN, dim=4, table=tenant_table, tenant="b") as other:
+        other.upsert([Chunk("b1", "b.md", "tenant b")], [_vec(1)])
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        # Back to a pre-column table, with rows belonging to two tenants.
+        conn.execute(f"ALTER TABLE {tenant_table} DROP COLUMN first_indexed_at")
+        conn.execute(f"ALTER TABLE {tenant_table} OWNER TO {role}")
+        conn.execute(f"GRANT ALL ON {tenant_table} TO {role}")
+
+    # The migration runs here, as the role that CANNOT see the other tenant's rows.
+    with PgVectorStore(dsn, dim=4, table=tenant_table, tenant="a") as migrator:
+        migrator.ensure_schema()
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        notnull = conn.execute(
+            "SELECT attnotnull FROM pg_attribute WHERE attrelid = %s::regclass "
+            "AND attname = 'first_indexed_at'",
+            (tenant_table,),
+        ).fetchone()[0]
+        assert not notnull, (
+            "a NOT NULL here is the failure mode: the constraint validates across every tenant "
+            "while the backfill that fills it cannot"
+        )
+        assert conn.execute(
+            f"SELECT count(*) FROM {tenant_table}"
+        ).fetchone()[0] == 2, "both tenants' rows survived the migration"

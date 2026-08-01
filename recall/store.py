@@ -829,8 +829,6 @@ class PgVectorStore:
                 f"table {t!r} exists but has no 'embedding' column — it is not a recall table. "
                 f"Point this store at a different table name."
             )
-        self._migrate_first_indexed_at(conn)
-        self._migrate_to_tenanted(conn)
         actual_dim = dim_row[0]
         if actual_dim > 0 and actual_dim != self._dim:
             raise ValueError(
@@ -838,6 +836,12 @@ class PgVectorStore:
                 f"configured for dim {self._dim} — use a matching embedder or a different "
                 f"table (drop and re-index for a clean slate)."
             )
+        # BOTH shape checks precede BOTH migrations. Moving only the missing-embedding one left
+        # the dim mismatch firing AFTER them, so a foreign pgvector table still had a column added
+        # and its PRIMARY KEY dropped and rewritten before the error that tells the caller to
+        # point somewhere else. Validate everything, then mutate.
+        self._migrate_first_indexed_at(conn)
+        self._migrate_to_tenanted(conn)
         # CONCURRENTLY: `ensure_schema` is not just a bootstrap step — it runs every time a
         # store is opened, including against a table that already exists and is taking live
         # writes (e.g. a server restart). A plain `CREATE INDEX` takes a lock that blocks
@@ -1117,8 +1121,11 @@ class PgVectorStore:
                     metadata = EXCLUDED.metadata,
                     embedding = EXCLUDED.embedding,
                     indexed_at = now(),
-                    -- LEAST, so re-writing a chunk never moves its first-seen forward. The
-                    -- excluded value is now(), so this always keeps the stored one.
+                    -- LEAST, so re-writing a chunk never moves its first-seen forward: the
+                    -- excluded value is now(), so a stored date always wins. NULL is the one
+                    -- case that is NOT kept, deliberately — LEAST ignores NULLs, so a row
+                    -- predating the column gets stamped with this write. That is the best
+                    -- evidence available for it, and it freezes from then on.
                     first_indexed_at = LEAST({t}.first_indexed_at, EXCLUDED.first_indexed_at)
                 """,
                 [
@@ -1465,6 +1472,14 @@ class PgVectorStore:
                 # now. That is the whole re-index defect, and this is the path that causes it.
                 preserved: dict[str, datetime] = {}
                 if sources:
+                    # `if first is not None` is load-bearing. A row predating the column has
+                    # NULL here, and a NULL key was still PRESENT, so the restore wrote that NULL
+                    # back over the `now()` `_upsert_in` had just given it — the row could never
+                    # acquire a first write on the only path `recall index` uses, and its
+                    # effective date then slid forward on every re-index, which is the defect this
+                    # column exists to prevent. Dropping the NULL lets the row keep that `now()`:
+                    # stamped once at first re-index, frozen after, which is also what the upsert
+                    # path does, so the two agree.
                     preserved = {
                         cid: first
                         for cid, first in conn.execute(
@@ -1472,6 +1487,7 @@ class PgVectorStore:
                             f"WHERE tenant_id = %s AND source = ANY(%s)",
                             (self._tenant, sources),
                         ).fetchall()
+                        if first is not None
                     }
                     conn.execute(
                         f"DELETE FROM {self._table} "

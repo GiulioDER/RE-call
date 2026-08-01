@@ -926,3 +926,48 @@ def test_replay_at_now_may_differ_from_a_plain_search():
     far = datetime(2099, 1, 1, tzinfo=timezone.utc)
     assert resolve_successor("a.md", edges, claims, None) == "b2.md", "scan-order winner"
     assert resolve_successor("a.md", edges, claims, far) == "b1.md", "latest asserted"
+
+
+@requires_db
+def test_a_pre_column_row_acquires_a_first_write_and_then_freezes(shared_table):
+    """A NULL must not be restored over the `now()` the re-index just wrote.
+
+    `preserved` is built from a SELECT, and a NULL column yields a PRESENT key whose value is
+    None, so the restore wrote that NULL straight back over the fresh timestamp. The row could
+    then never acquire a first write on the only path `recall index` uses, and its effective date
+    (via COALESCE to `indexed_at`) slid forward on every re-index — which is exactly the defect
+    this column exists to prevent, made permanent for every migrated corpus.
+
+    Correct behaviour: stamped once at the first re-index, frozen after. That also matches the
+    upsert path, where `LEAST(NULL, now())` is `now()` because LEAST ignores NULLs.
+    """
+    emb = HashingEmbedder(dim=DIM)
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    try:
+        store.ensure_schema()
+        store.replace_sources([], [_chunk("v1", "a.md", "one")], emb.embed(["one"]))
+        store._with_retry(
+            lambda conn: conn.execute(f"UPDATE {shared_table} SET first_indexed_at = NULL")
+        )
+
+        store.replace_sources(["a.md"], [_chunk("v1", "a.md", "edited")], emb.embed(["edited"]))
+        stamped = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0][0]
+        assert stamped is not None, (
+            "the NULL was restored over the fresh timestamp, so this row can never acquire a "
+            "first write and its date slides forward on every re-index"
+        )
+
+        store.replace_sources(["a.md"], [_chunk("v1", "a.md", "edited twice")],
+                             emb.embed(["edited twice"]))
+        after = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0][0]
+        assert after == stamped, "once stamped it must freeze, not track the latest write"
+    finally:
+        store.close()

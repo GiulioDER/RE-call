@@ -55,6 +55,13 @@ class _Store:
     def supersession(self):
         return {}, frozenset()
 
+    def supersession_all(self):
+        # Present, so these run the PRODUCTION branch. Without it `trusted_search` takes the
+        # degraded `getattr` fallback, warns, and leaves this class in the process-global
+        # `_WARNED_NO_EDGE_DATES` — a test billed as end-to-end exercising a path production
+        # never takes, and polluting a global on the way out.
+        return {}, frozenset(), {}
+
 
 class _Embedder:
     dim = 2
