@@ -146,7 +146,7 @@ def resolve_successor(
     that had not yet superseded anything.
 
     An edge with no recorded date applies, which is the inverse of the rule for hits with no
-    `indexed_at` and deliberately so. Both are fail-closed: hiding a hit of unknown age would
+    recorded write time at all and deliberately so. Both are fail-closed: hiding a hit of unknown age would
     silently empty result sets for stores predating the column, while ignoring an edge of unknown
     age would serve a memory the corpus explicitly marks as stale.
     """
@@ -234,11 +234,15 @@ def _verdict(
     # touched; hoisting the lookup out broke duck-typed hits that had never needed one. And
     # `getattr` on both, because adding a field to `ScoredChunk` must not turn a working search
     # into an AttributeError — the same rule the `embedder.name` lookup below follows.
-    first_known = (
-        getattr(hit, "first_indexed_at", None) or getattr(hit, "indexed_at", None)
-        if known_as_of is not None
-        else None
-    )
+    first_known = None
+    if known_as_of is not None:
+        # Explicit None test, not `or`: truthiness cannot tell "this store has no such column"
+        # from "something between the store and here dropped the field", and the second is what
+        # actually happened once — the retriever rebuilt hits from a hand-written field list and
+        # silently lost it, so the fallback below became the ONLY branch production ever took.
+        first_known = getattr(hit, "first_indexed_at", None)
+        if first_known is None:
+            first_known = getattr(hit, "indexed_at", None)
     if known_as_of is not None and first_known is not None and first_known > known_as_of:
         # TRANSACTION time, checked BEFORE supersession on purpose: a memory written after the
         # as-of instant did not exist yet, and whether it was later superseded is not a question

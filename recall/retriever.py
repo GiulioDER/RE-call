@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from recall.embeddings import Embedder
 from recall.guards import DEFAULT_GAP_THRESHOLD, gap_warning, staleness
 from recall.rerank import Reranker
 from recall.store import PgVectorStore
-from recall.types import RetrievalResult, ScoredChunk
+from recall.types import RetrievalResult
 
 #: Default candidate pool per retrieval leg before fusion. Exposed as a module constant (not only a
 #: signature default) so the eval harness references the SAME number instead of a hardcoded copy:
@@ -112,12 +113,14 @@ class HybridRetriever:
         # hide a relevant doc sitting just below the fused cutoff from the cross-encoder, which
         # is exactly the doc reranking exists to rescue.
         ranked_ids = sorted(fused, key=lambda cid: fused[cid], reverse=True)
+        # `replace`, not a freshly-listed ScoredChunk. Enumerating the carried fields by hand
+        # silently DROPPED `first_indexed_at` the day it was added: every production hit reached
+        # the trust layer with it None, fell back to `indexed_at`, and the entire point-in-time
+        # fix was inert on the only read path that matters — with the suite still green, because
+        # no test built a hit through a retriever. Copying the hit and overriding the one field
+        # that actually changes cannot lose a field added later.
         hits = [
-            ScoredChunk(
-                chunk=by_id[cid].chunk,
-                score=dense_score.get(cid, by_id[cid].score),
-                indexed_at=by_id[cid].indexed_at,
-            )
+            replace(by_id[cid], score=dense_score.get(cid, by_id[cid].score))
             for cid in ranked_ids
         ]
         if self._reranker is not None:
