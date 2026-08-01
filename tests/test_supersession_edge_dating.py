@@ -736,6 +736,11 @@ def test_a_genuinely_new_chunk_gets_a_fresh_first_indexed_at(shared_table):
     try:
         store.ensure_schema()
         store.replace_sources([], [_chunk("v1", "a.md", "one")], emb.embed(["one"]))
+        v1_first = store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0][0]
         store.replace_sources(["a.md"], [_chunk("v2", "a.md", "two")], emb.embed(["two"]))
         rows = dict(store._with_retry(
             lambda conn: conn.execute(
@@ -743,25 +748,29 @@ def test_a_genuinely_new_chunk_gets_a_fresh_first_indexed_at(shared_table):
             ).fetchall()
         ))
         assert set(rows) == {"v2"}, "v1 was replaced away"
-        assert rows["v2"] is not None
+        # NOT `is not None`: that was tautological, and a restore that leaked v1's timestamp onto
+        # every new chunk would have passed it. The new chunk must be stamped AFTER v1 was.
+        assert rows["v2"] > v1_first, "a genuinely new chunk inherited a replaced chunk's date"
     finally:
         store.close()
 
 
 @requires_db
-def test_the_migration_backfills_first_indexed_at_from_indexed_at(shared_table):
-    """A table created before the column existed must NOT read as first written at upgrade time.
+def test_a_pre_column_table_migrates_to_a_NULLABLE_column(shared_table):
+    """The migration adds the column nullable, with a default, and does NOT backfill.
 
-    Stamping every existing row with `now()` would claim the whole corpus appeared the day someone
-    upgraded, and every replay before that instant would report an empty store. The migration
-    therefore adds the column nullable, backfills from `indexed_at`, then sets the default."""
+    The textbook version (backfill, then SET NOT NULL) could brick a multi-tenant deployment
+    permanently: the backfill is DML and is rewritten by the FORCE'd RLS policy to one tenant,
+    while SET NOT NULL validates with a heap scan that is not, so the constraint trips over
+    another tenant's NULLs and `ensure_schema` raises for everyone, forever. CI cannot see it
+    because CI connects as a superuser and a superuser bypasses RLS.
+
+    A NULL means 'this row predates the column', which both readers already handle."""
     emb = HashingEmbedder(dim=DIM)
     store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
     try:
         store.ensure_schema()
         store.upsert([_chunk("v1", "a.md", "one")], emb.embed(["one"]))
-
-        # Simulate the pre-column world: drop it and re-run ensure_schema.
         store._with_retry(
             lambda conn: conn.execute(
                 f"ALTER TABLE {shared_table} DROP COLUMN first_indexed_at"
@@ -769,12 +778,72 @@ def test_the_migration_backfills_first_indexed_at_from_indexed_at(shared_table):
         )
         store.ensure_schema()
 
-        row = store._with_retry(
+        notnull, hasdef = store._with_retry(
             lambda conn: conn.execute(
-                f"SELECT first_indexed_at, indexed_at FROM {shared_table} WHERE id = 'v1'"
+                "SELECT attnotnull, atthasdef FROM pg_attribute "
+                "WHERE attrelid = %s::regclass AND attname = 'first_indexed_at'",
+                (shared_table,),
             ).fetchall()
         )[0]
-        assert row[0] == row[1], "backfilled rows must carry their indexed_at, not the upgrade time"
+        assert not notnull, "NOT NULL is what makes the migration able to fail closed under RLS"
+        assert hasdef, "without a default, every insert omitting the column writes NULL"
+        assert store._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
+            ).fetchall()
+        )[0][0] is None, "pre-existing rows are left NULL rather than stamped with upgrade time"
+    finally:
+        store.close()
+
+
+@requires_db
+def test_a_migrated_row_still_dates_its_edge_from_its_last_write(shared_table):
+    """The COALESCE half. A NULL first write must not make the edge undated, which would ignore
+    `known_as_of` for supersession entirely on every migrated corpus."""
+    emb = HashingEmbedder(dim=DIM)
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    try:
+        store.ensure_schema()
+        store.upsert([_chunk("v1", "limits_v1.md", "100 rps")], emb.embed(["100 rps"]))
+        store.upsert(
+            [_chunk("v2", "limits_v2.md", "250 rps", "limits_v1.md")], emb.embed(["250 rps"])
+        )
+        store._with_retry(
+            lambda conn: conn.execute(f"UPDATE {shared_table} SET first_indexed_at = NULL")
+        )
+        store._supersession_cache = None
+
+        dates = store.supersession_all()[2]["limits_v1.md"]
+        assert dates and dates[0][1] is not None, "a migrated edge read as undated"
+    finally:
+        store.close()
+
+
+@requires_db
+def test_replace_sources_does_not_re_date_the_edge_it_carries(shared_table):
+    """The deadman went through `upsert`, which only exercises the ON CONFLICT arm. `recall
+    index` calls `replace_sources` exclusively, so deleting the restore block left it green."""
+    emb = HashingEmbedder(dim=DIM)
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    try:
+        store.ensure_schema()
+        store.replace_sources(
+            [], [_chunk("v1", "limits_v1.md", "100 rps")], emb.embed(["100 rps"])
+        )
+        store.replace_sources(
+            [],
+            [_chunk("v2", "limits_v2.md", "250 rps", "limits_v1.md")],
+            emb.embed(["250 rps"]),
+        )
+        before = store.supersession_all()[2]["limits_v1.md"][0][1]
+
+        store.replace_sources(
+            ["limits_v2.md"],
+            [_chunk("v2", "limits_v2.md", "250 rps (typo)", "limits_v1.md")],
+            emb.embed(["250 rps (typo)"]),
+        )
+        after = store.supersession_all()[2]["limits_v1.md"][0][1]
+        assert after == before, "re-indexing through replace_sources moved the edge date"
     finally:
         store.close()
 

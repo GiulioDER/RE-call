@@ -47,7 +47,14 @@ DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost
 #: cannot be inserted into, and regenerates from `text` on the target. Listing it would make the
 #: INSERT fail; omitting `text` would make it regenerate empty and silently disable the sparse
 #: leg of the hybrid retriever, which is the failure a test pins.
-_COPIED = ("tenant_id", "id", "source", "text", "metadata", "embedding", "indexed_at")
+#: BOTH time columns. Omitting `first_indexed_at` let it take the scratch table's `DEFAULT now()`,
+#: i.e. the populate instant, while `indexed_at` kept the master's older value — a first write
+#: AFTER the last write, so a `known_as_of` replay in this arm read the whole haystack as
+#: `not_yet_known`. Unlike `tsv` it is an ordinary stored column with nothing stopping the insert.
+_COPIED = (
+    "tenant_id", "id", "source", "text", "metadata", "embedding",
+    "indexed_at", "first_indexed_at",
+)
 
 
 def populate_haystack(

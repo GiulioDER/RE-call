@@ -312,6 +312,15 @@ def resolve_supersession_candidates(
     corpus may be indexed under several roots, and `metadata['file']` is root-relative while
     `replace_sources` deletes by absolute `source`).
 
+    ⚠️ **Known limit: this dates the CHUNK's first write, not the CLAIM's.** Chunk ids are derived
+    from the file path, so editing a memo preserves them and `replace_sources` restores the
+    original `first_indexed_at`. Adding a `supersedes:` line to a memo that already existed
+    therefore back-dates the new edge to that memo's CREATION, and a replay between the two
+    reports `superseded` at a moment the claim had not been made. Dating the claim rather than the
+    row needs a per-(file, supersedes) first-seen, which this column is the wrong shape to carry:
+    `first_indexed_at` answers "when did this row appear", which is the right input for the hit
+    path and an approximation for the edge path. Stated rather than left to be discovered.
+
     `winner` is what `supersession()` has always returned and is unchanged. `candidates` is the
     superset a replay needs; see `recall.trust.resolve_successor` for how it is consumed.
 
@@ -793,14 +802,19 @@ class PgVectorStore:
                 metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                 embedding vector({self._dim}),
                 indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                first_indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                -- NULLABLE on purpose: a NULL means 'first write unknown, this row predates
+                -- the column', which both readers handle by falling back to indexed_at. See
+                -- _migrate_first_indexed_at for why a NOT NULL here could brick a migration.
+                first_indexed_at TIMESTAMPTZ DEFAULT now(),
                 tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
                 PRIMARY KEY (tenant_id, id)
             )
             """
         )
-        self._migrate_first_indexed_at(conn)
-        self._migrate_to_tenanted(conn)
+        # SHAPE CHECK BEFORE ANY MIGRATION. It used to run after them, so pointing the store at an
+        # unrelated table of the same name ALTERed that table first and then died on a raw
+        # UndefinedColumn, making the named error below unreachable for the input it was written
+        # for. Validate first, mutate second.
         dim_row = conn.execute(
             "SELECT atttypmod FROM pg_attribute "
             "WHERE attrelid = %s::regclass AND attname = 'embedding'",
@@ -815,6 +829,8 @@ class PgVectorStore:
                 f"table {t!r} exists but has no 'embedding' column — it is not a recall table. "
                 f"Point this store at a different table name."
             )
+        self._migrate_first_indexed_at(conn)
+        self._migrate_to_tenanted(conn)
         actual_dim = dim_row[0]
         if actual_dim > 0 and actual_dim != self._dim:
             raise ValueError(
@@ -868,26 +884,43 @@ class PgVectorStore:
         self._enable_rls(conn)
 
     def _migrate_first_indexed_at(self, conn: "psycopg.Connection") -> None:
-        """Add `first_indexed_at` to a table created before it existed, idempotently.
+        """Add a NULLABLE `first_indexed_at` to a table created before it existed.
 
-        Three statements rather than one, and the order is the whole point. Adding the column
-        `NOT NULL DEFAULT now()` in a single step would stamp every EXISTING row with the moment
-        of the migration, which is the exact error the column exists to fix: it would claim the
-        whole corpus was first written the day someone upgraded, and every `known_as_of` replay
-        before that instant would report an empty store. So the column arrives nullable, is
-        backfilled from `indexed_at` (the best evidence available for rows written before anyone
-        was recording a first write), and only then gets its default and NOT NULL.
+        Nullable, with a default, and NO backfill. The first version did the textbook thing (add
+        nullable, backfill from `indexed_at`, SET DEFAULT, SET NOT NULL) and it could brick a
+        multi-tenant deployment permanently:
 
-        `ADD COLUMN IF NOT EXISTS` makes the whole thing a no-op on a table that already has it,
-        which is what lets `ensure_schema` stay idempotent.
+        The backfill is ordinary DML, so the FORCE'd row-level-security policy rewrites it to the
+        CURRENT tenant's rows. `ALTER TABLE ... SET NOT NULL` validates with a heap scan, which is
+        NOT policy-rewritten and sees every tenant's rows. So on a shared table the backfill fills
+        one tenant's rows, the constraint trips over another tenant's NULLs, and `ensure_schema`
+        raises — for every tenant, on every open, unrepairable by re-running. CI could never catch
+        it: CI connects as a superuser, and a superuser bypasses RLS. `README.md` already makes
+        that argument about a different test, in its own words.
+
+        A NULL therefore means exactly what it should: this row predates the column, so its first
+        write is unknown. Both readers already handle that. `_verdict` falls back to `indexed_at`,
+        and the edge scan reads `COALESCE(first_indexed_at, indexed_at)`. The backfill was never
+        load-bearing for correctness, only for tidiness, and tidiness is not worth a migration
+        that can fail closed on a live table.
+
+        Gated on `pg_attribute`, so an already-migrated table executes NO DDL. The unconditional
+        version took four ACCESS EXCLUSIVE locks plus a full scan on every `ensure_schema`, which
+        the MCP server runs once per tenant — `_enable_rls` documents that hazard in this same
+        file, and this now follows it.
         """
         t = self._table
-        conn.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS first_indexed_at TIMESTAMPTZ")
+        exists = conn.execute(
+            "SELECT 1 FROM pg_attribute WHERE attrelid = %s::regclass "
+            "AND attname = 'first_indexed_at' AND NOT attisdropped",
+            (t,),
+        ).fetchone()
+        if exists:
+            return
         conn.execute(
-            f"UPDATE {t} SET first_indexed_at = indexed_at WHERE first_indexed_at IS NULL"
+            f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS first_indexed_at "
+            f"TIMESTAMPTZ DEFAULT now()"
         )
-        conn.execute(f"ALTER TABLE {t} ALTER COLUMN first_indexed_at SET DEFAULT now()")
-        conn.execute(f"ALTER TABLE {t} ALTER COLUMN first_indexed_at SET NOT NULL")
 
     def _migrate_to_tenanted(self, conn: "psycopg.Connection") -> None:
         """Add `tenant_id` to a table created before tenancy existed, idempotently.
@@ -1600,7 +1633,11 @@ class PgVectorStore:
                 f"""
                 SELECT metadata->>'file' AS file,
                        metadata->>'supersedes' AS supersedes,
-                       min(first_indexed_at) AS first_indexed
+                       -- COALESCE, mirroring the hit path's fallback: a row predating the
+                       -- column has no first write recorded, and its last write is the only
+                       -- evidence there is. Without this a migrated corpus dates every edge
+                       -- NULL, which reads as 'undated' and ignores known_as_of entirely.
+                       min(COALESCE(first_indexed_at, indexed_at)) AS first_indexed
                 FROM {self._table}
                 WHERE tenant_id = %s AND metadata ? 'file'
                 GROUP BY 1, 2
