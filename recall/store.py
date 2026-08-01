@@ -291,6 +291,49 @@ def _basename(file: str) -> str:
     return supersedes_key(file)
 
 
+def resolve_edge_dates(
+    rows: list[tuple[str | None, str | None, datetime | None]],
+    edges: dict[str, str],
+) -> dict[str, datetime]:
+    """When each edge in `edges` became assertable, from ``(file, supersedes, first_indexed)`` rows.
+
+    An edge ``A -> B`` becomes assertable when B is written, because the claim lives in B's
+    `supersedes:` frontmatter. So it is dated by the EARLIEST `indexed_at` among B's chunks: any
+    chunk of B existing implies the frontmatter existed, and the earliest is the conservative
+    reading.
+
+    Only rows that CARRY a `supersedes` claim date it. Taking the minimum over every row of the
+    file would date the edge from a chunk that does not assert it, and chunks of one file can
+    disagree: a direct `store.upsert` bypasses the Indexer's fail-fast, which `recall.trust` also
+    accounts for. That mis-dating ran EARLIER than the claim, so the edge applied at instants
+    before it was written.
+
+    An edge whose superseding file has no recorded date is simply absent from the result, and
+    `recall.trust.resolve_successor` applies an undated edge. That is the fail-closed direction:
+    an edge of unknown age keeps demoting, rather than silently reviving a memory the corpus
+    marks as stale. Note this is the INVERSE of the rule for hits, where an unknown `indexed_at`
+    leaves the hit visible; both choices refuse to serve something as healthier than it is.
+
+    ⚠️ The date is only as good as `indexed_at`, which records the LAST write, not the first: see
+    `supersession_all` for the open defect that makes this unsafe to merge as it stands.
+
+    Pure and DB-free, so the dating rule is unit-testable without a database — same reason
+    `resolve_supersession` is.
+    """
+    first_claimed: dict[str, datetime] = {}
+    for file, supersedes, first_indexed in rows:
+        if file is None or supersedes is None or first_indexed is None:
+            continue
+        known = first_claimed.get(file)
+        if known is None or first_indexed < known:
+            first_claimed[file] = first_indexed
+    return {
+        superseded: first_claimed[superseding]
+        for superseded, superseding in edges.items()
+        if superseding in first_claimed
+    }
+
+
 def resolve_supersession(
     rows: list[tuple[str | None, str | None]],
 ) -> tuple[dict[str, str], frozenset[str]]:
@@ -1390,30 +1433,74 @@ class PgVectorStore:
         cache a result under a fingerprint that never described it.
         """
 
-        def _op(conn: "psycopg.Connection") -> tuple[dict[str, str], frozenset[str]]:
+        edges, unresolved, _dates = self.supersession_all()
+        return dict(edges), unresolved
+
+    def supersession_all(
+        self,
+    ) -> tuple[dict[str, str], frozenset[str], dict[str, datetime]]:
+        """``(edges, unresolved, edge_dates)`` behind one validated cache and one scan.
+
+        `edge_dates` maps a superseded file to the moment its edge became assertable, which is
+        when the SUPERSEDING document was first written. That is `min(indexed_at)` over the
+        superseding file's claim-carrying chunks: a chunk of it existing implies its
+        `supersedes:` frontmatter existed, and the earliest is the conservative choice.
+
+        Prefer this over calling `supersession()` and `supersession_dates()` in sequence. Each
+        enters its own cache validation with its own fingerprint query, so a concurrent index
+        between the two can hand back edges from one scan dated by the next.
+
+        🔴 **OPEN DEFECT, do not merge the point-in-time rewind on this alone.** `indexed_at`
+        records the LAST write, not the first: `replace_sources` re-inserts with `indexed_at =
+        now()` while `Indexer.index_path` skips files whose content hash is unchanged. So editing
+        a superseding memo moves ITS date forward while its predecessor keeps the old one, and a
+        past replay then drops a long-standing edge and serves the superseded memory as `ok` —
+        the exact wrong answer this layer exists to prevent, where the pre-change code correctly
+        said `superseded`. The same flaw already affects `known_as_of` on HITS (a re-indexed
+        memory reads `not_yet_known` for a past instant), so the root cause predates this change;
+        what is new is that it flips a verdict from safe to unsafe. Fixing it properly needs a
+        `first_indexed_at` column preserved across upserts, which is a migration and needs a
+        database to verify.
+        """
+
+        def _op(
+            conn: "psycopg.Connection",
+        ) -> tuple[dict[str, str], frozenset[str], dict[str, datetime]]:
             fingerprint = conn.execute(
                 f"SELECT max(indexed_at), count(*) FROM {self._table} WHERE tenant_id = %s",
                 (self._tenant,),
             ).fetchone()
             cached = self._supersession_cache
             if cached is not None and cached[0] == fingerprint:
-                return cached[1], cached[2]
+                return cached[1], cached[2], cached[3]
             rows = conn.execute(
                 f"""
-                SELECT DISTINCT metadata->>'file' AS file, metadata->>'supersedes' AS supersedes
+                SELECT metadata->>'file' AS file,
+                       metadata->>'supersedes' AS supersedes,
+                       min(indexed_at) AS first_indexed
                 FROM {self._table}
                 WHERE tenant_id = %s AND metadata ? 'file'
+                GROUP BY 1, 2
                 """,
                 (self._tenant,),
             ).fetchall()
             self._supersession_scans += 1
             METRICS.increment("recall_supersession_scans_total")
-            edges, unresolved = resolve_supersession(rows)
-            self._supersession_cache = (fingerprint, edges, unresolved)
-            return edges, unresolved
+            edges, unresolved = resolve_supersession([(r[0], r[1]) for r in rows])
+            edge_dates = resolve_edge_dates(rows, edges)
+            self._supersession_cache = (fingerprint, edges, unresolved, edge_dates)
+            return edges, unresolved, edge_dates
 
-        edges, unresolved = self._with_retry(_op)
-        return dict(edges), unresolved
+        return self._with_retry(_op)
+
+    def supersession_dates(self) -> dict[str, datetime]:
+        """When each supersession edge became assertable, for point-in-time replay.
+
+        Feeds `resolve_successor(..., edge_dates=, known_as_of=)` so a past-instant query resolves
+        to the successor that was current *then*. Shares `supersession()`'s validated cache, so
+        this is free when the edges have already been read.
+        """
+        return dict(self.supersession_all()[2])
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """Resolve caller-facing identifiers to the DB `source` value(s) to delete, this tenant only.
