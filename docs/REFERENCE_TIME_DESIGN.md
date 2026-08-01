@@ -338,9 +338,13 @@ The root cause predated edge dating entirely: `known_as_of` on **hits** had it t
 re-indexed memory read `not_yet_known` for every instant before its edit. The store claimed it had
 never held a document it had held for months.
 
-`first_indexed_at` fixes both. It is preserved on conflict with `LEAST`, and captured and restored
-across `replace_sources`' delete, which `ON CONFLICT` alone cannot cover because the row is gone
-before the insert runs. Existing tables migrate with two DDL statements and no DML: `ADD COLUMN` with **no default**,
+`first_indexed_at` fixes both. There are THREE writers and each must clamp with `LEAST(..., now())`, or a
+stored date in the future (clock skew, a restore) makes the row permanently `not_yet_known`.
+`_upsert_in` preserves it on conflict; `replace_sources` captures and restores it across its
+delete, which `ON CONFLICT` alone cannot cover because the row is gone before the insert runs;
+and `touch_files` carries it across in the same UPDATE that moves `indexed_at`, because for a
+migrated row that column is the only evidence of age there is. The third arrived later and
+shipped without the clamp the first two had, which is the argument for naming all three here. Existing tables migrate with two DDL statements and no DML: `ADD COLUMN` with **no default**,
 then `SET DEFAULT` separately. Both halves are load-bearing and each was got wrong once.
 
 `DEFAULT` is what stamps existing rows, not `NOT NULL`. Postgres evaluates a non-volatile default
