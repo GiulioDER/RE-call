@@ -479,9 +479,11 @@ def test_the_first_indexed_at_migration_survives_rls_on_a_multi_tenant_table(
 ):
     """The migration must not need to WRITE rows, because a write cannot see every tenant's.
 
-    This is the configuration CI structurally cannot test: CI connects as a superuser, and a
-    superuser bypasses RLS entirely, so the policy is inert there. Verified locally against a real
-    Postgres, as a role with NOSUPERUSER NOBYPASSRLS.
+    A superuser bypasses RLS entirely, and CI connects as one — but that does NOT make this
+    untestable there, and an earlier version of this docstring wrongly said it did. The
+    `unprivileged_dsn` fixture creates a throwaway NOSUPERUSER NOBYPASSRLS role, so the policy
+    applies to the role running the migration no matter who connects. Confirmed: CI's passing
+    count rose by exactly the two tests added with this one, with its skip count unchanged.
 
     The first version of this migration did the textbook thing — add nullable, backfill from
     `indexed_at`, SET DEFAULT, SET NOT NULL — and it bricks a shared table permanently. The
