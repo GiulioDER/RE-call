@@ -1108,16 +1108,18 @@ def test_the_upsert_path_also_dates_a_migrated_row_from_its_own_indexed_at(share
 
 
 @requires_db
-def test_both_write_paths_clamp_a_stored_date_from_the_future(shared_table):
+def test_every_write_path_clamps_a_stored_date_from_the_future(shared_table):
     """Clock skew or a restore can leave a first-write in the future. `_upsert_in` clamped it and
     the `replace_sources` restore did not — on the ONLY path `recall index` takes — so the row
     stayed permanently invisible to every as-of replay and re-indexing never repaired it.
 
-    Both doors, in one test, because a rule enforced on one path is not a rule.
+    All THREE doors, in one test, because a rule enforced on two paths out of three is not a
+    rule either. `touch_files` was added to this loop after it became the third writer to the
+    column and shipped without the clamp the other two had.
     """
     emb = HashingEmbedder(dim=DIM)
     future = "TIMESTAMPTZ '2027-06-01 00:00:00+00'"
-    for label in ("replace_sources", "upsert"):
+    for label in ("replace_sources", "upsert", "touch_files"):
         store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
         try:
             store.ensure_schema()
@@ -1131,8 +1133,10 @@ def test_both_write_paths_clamp_a_stored_date_from_the_future(shared_table):
             edited = _chunk("v1", "a.md", f"edited via {label}")
             if label == "replace_sources":
                 store.replace_sources(["a.md"], [edited], emb.embed(["e"]))
-            else:
+            elif label == "upsert":
                 store.upsert([edited], emb.embed(["e"]))
+            else:
+                store.touch_files(["a.md"])
 
             stored = store._with_retry(
                 lambda conn: conn.execute(
@@ -1160,6 +1164,7 @@ def test_touch_files_carries_the_first_write_across_the_touch(shared_table):
     Both cases here, because the fix must be a no-op for a row that already has a first write.
     """
     emb = HashingEmbedder(dim=DIM)
+    SEEDED = datetime(2026, 1, 5, tzinfo=timezone.utc)
     for label, seed in (("migrated", "NULL"), ("already dated", "TIMESTAMPTZ '2025-11-03'")):
         store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
         try:
@@ -1175,6 +1180,17 @@ def test_touch_files_carries_the_first_write_across_the_touch(shared_table):
             )
 
             assert store.touch_files(["a.md"]) == 1
+            # Read `indexed_at` HERE, before the re-index. The previous version read it after
+            # `replace_sources` had already rewritten it to now(), so it could not observe what
+            # the touch did at all: deleting `indexed_at = now()` from `touch_files` entirely
+            # left this test green.
+            touched = store._with_retry(
+                lambda conn: conn.execute(
+                    f"SELECT indexed_at FROM {shared_table} WHERE id = 'v1'"
+                ).fetchall()
+            )[0][0]
+            assert touched > SEEDED, "the touch did not move `indexed_at`, so it is not a touch"
+
             store.replace_sources(
                 ["a.md"], [_chunk("v1", "a.md", "one")], emb.embed(["one"])
             )
@@ -1192,8 +1208,9 @@ def test_touch_files_carries_the_first_write_across_the_touch(shared_table):
                 f"{label}: first write froze at {first}, expected {expected} — the touch "
                 f"destroyed the only evidence of the row's age there was"
             )
-            assert indexed_at.year == 2026 and indexed_at.month == 8, (
-                "the touch must still move `indexed_at`, or it is not a touch"
-            )
+            # Relative to the value observed above, NOT a wall-clock literal. The previous
+            # version asserted `year == 2026 and month == 8`, which was true only in the month it
+            # was written and would have turned this red on 1 September with the fix intact.
+            assert indexed_at >= touched
         finally:
             store.close()
