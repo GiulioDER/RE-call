@@ -16,7 +16,9 @@ numbers differ.
 | variable | default | meaning |
 |---|---|---|
 | `MEMBENCH_EMBEDDER` | fastembed default | `voyage:<model>` for Voyage, otherwise a fastembed name |
-| `MEMBENCH_RERANKER` | none | `voyage:<model>`; anything else is ignored |
+| `MEMBENCH_RERANKER` | none | `voyage:<model>` for Voyage; any other non-empty value is a local
+  `CrossEncoderReranker` model name (mem-bench accepts exactly one,
+  `cross-encoder/ms-marco-MiniLM-L-6-v2`); unset is the default arm |
 | `MEMBENCH_K` | 5 | hits returned |
 | `MEMBENCH_CANDIDATE_K` | 20 | pool reranked down to `k` |
 """
@@ -50,19 +52,39 @@ def _build_embedder() -> Embedder:
 
 
 def _build_reranker() -> Reranker | None:
-    """`None` unless `MEMBENCH_RERANKER` names a Voyage model.
+    """`None`, a Voyage model, or the local cross-encoder.
 
-    Imported lazily and from `benchmarks.voyage_rerank`, the copy that is ON MASTER. The previous
-    version of this did `sys.path.insert(0, "/opt/recall-ladder-v4/benchmarks/ladder/systems")` --
-    an absolute path on a host that no longer exists, pointing at a branch-only duplicate of the
-    same file. A tuned re-run would have died on the import before scoring anything.
+    Voyage is imported lazily and from `benchmarks.voyage_rerank`, the copy that is ON MASTER. The
+    previous version of this did `sys.path.insert(0, "/opt/recall-ladder-v4/benchmarks/ladder/
+    systems")` -- an absolute path on a host that no longer exists, pointing at a branch-only
+    duplicate of the same file. A tuned re-run would have died on the import before scoring
+    anything.
+
+    **The cross-encoder branch was added 2026-08-02, and until then a tuned mem-bench arm was
+    unproducible through this module.** `mem-bench`'s `checks.KNOWN_RERANKERS` accepts exactly one
+    reranker, `cross-encoder/ms-marco-MiniLM-L-6-v2`, and its own comment explains the choice: the
+    binding is real (`recall.rerank.CrossEncoderReranker` defaults to that model at a pinned Hub
+    revision) and it is local and free, which is what lets a third party re-run a tuned arm without
+    paying anyone. This module could only build a VOYAGE reranker, which mem-bench does not accept
+    and which needs an API key. So the two shipped abstention artifacts declared a reranker that
+    the code in this file could not construct.
+
+    An unrecognised value is `None`, never an error, and that is the pre-existing contract this
+    keeps: `MEMBENCH_RERANKER` unset is the default arm, and the config a run DECLARES is checked
+    against what it built by mem-bench's own `check_config_sayable`, not here.
     """
     spec = os.environ.get("MEMBENCH_RERANKER", "")
-    if not spec.startswith(_VOYAGE):
-        return None
-    from benchmarks.voyage_rerank import VoyageReranker
+    if spec.startswith(_VOYAGE):
+        from benchmarks.voyage_rerank import VoyageReranker
 
-    return VoyageReranker(spec[len(_VOYAGE):])
+        return VoyageReranker(spec[len(_VOYAGE):])
+    if spec:
+        # Lazy for the same reason Voyage is: `sentence_transformers` is an optional extra
+        # (`pip install recall[rerank]`), and a default-arm run must not need it installed.
+        from recall.rerank import CrossEncoderReranker
+
+        return CrossEncoderReranker(spec)
+    return None
 
 
 def from_env() -> RetrievalConfig:
