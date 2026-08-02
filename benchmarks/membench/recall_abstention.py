@@ -100,7 +100,19 @@ class RecallAbstention:
         # ONE directory for this adapter's whole life. See the module docstring: a per-call
         # mkdtemp is the double-indexing bug, not a tidiness preference.
         self._work = Path(tempfile.mkdtemp(prefix="membench-abs-"))
-        self._indexer = Indexer(self._store, self._embedder)
+        # `allow_prune=True`, and this axis is the one place it is correct.
+        #
+        # `Indexer` refuses to prune when a run would delete >50% of the indexed sources, because a
+        # disappearance that large is nearly always an unmounted volume or a wrong path rather than
+        # a deletion. Here it is neither: `ingest` REPLACES the corpus per instance, the manifest
+        # moves between conversation clusters, and a slice from a new cluster legitimately makes
+        # 100% of the previous slice vanish. Measured on the standard subset: the run aborted at
+        # instance 1 of a new cluster with "refusing to prune 1355 of 1355 indexed source(s)".
+        #
+        # Scoped to this Indexer, which is why the flag is a constructor argument and not an env
+        # var: the guard stays armed for every other RE-call caller, including the two sibling
+        # adapters, which ingest once and would be right to refuse a 100% prune.
+        self._indexer = Indexer(self._store, self._embedder, allow_prune=True)
 
     def ingest(self, docs: Iterable[Document]) -> None:
         """Replace the corpus with `docs`, retaining nothing from the previous call.
