@@ -41,6 +41,26 @@ python -m membench.axes.isolation.run \
 Temporal (axis 3) is the same with `membench.axes.temporal.run`,
 `benchmarks.membench.recall_temporal:RecallTemporal`, and a `membench_tmp` DSN.
 
+**Every run needs an EMPTY store.** Drop the table before each one:
+
+```bash
+psql -qd membench_iso -c "DROP TABLE IF EXISTS iso_chunks"
+```
+
+Not tidiness — correctness. All three adapters create a fresh `mkdtemp` work directory per run, and
+`Indexer.index_path` prunes and replaces by the resolved absolute `source` path, so a second run
+into the same table INSERTS a whole new copy of the corpus rather than replacing it. Every query
+from then on searches a corpus containing its predecessors' documents.
+
+Measured 2026-08-02, running the full axis matrix twice: a shared isolation store ended with 22
+distinct work-dir roots and 1424 rows against a fresh store's 15 and 1024, and `own_tenant_recall`
+on an *identical* config read 0.9917 against an empty store and 0.8417 against a shared one. Six
+artifacts came back VERIFY OK and none of their figures measured the corpus their manifest
+describes — mem-bench cannot catch this, because the artifact is internally consistent, all six
+checks pass, and the delivery layer is satisfied: the run really did retrieve what it says it
+retrieved, out of a corpus nobody described. `scripts/run_campaign.sh` in mem-bench does the drop
+for you.
+
 **Do not pass `--system-version`.** Each adapter exposes `system_version`, read live from
 `recall.__version__`, and mem-bench aborts the run if a flag contradicts it. That guard exists
 because the eight artifacts currently on the board all declare `0.6.0` with nothing to confirm it —
