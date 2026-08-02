@@ -8,6 +8,8 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-02
+
 ### Added
 - **`recall.eval.arm_check` — the self-ablation preflight — ships in the wheel
   (`pyproject.toml`'s `packages = ["recall", "recall_mcp"]`) with no prior changelog entry.**
