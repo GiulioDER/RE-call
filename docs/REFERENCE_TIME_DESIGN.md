@@ -397,3 +397,98 @@ Event-time extraction from prose ("last month" resolved against a session date).
 above size it: ~6% of turns carry an arithmetic-resolvable relative-time expression, 55.9% of all
 relative-time turns. It remains the honest boundary of the `$0` claim, and nothing here depends on
 it, because `indexed_at` is recorded by the store rather than extracted from language.
+
+## The reference instant from the conversation in scope: sound, inert, and kept as an assertion
+
+The last open thread from the Part 4 reader. Having conceded that utterance time is the axis to
+order on rather than to filter on, the reader placed the reference instant at the last utterance of
+the conversation in scope. That version survives every objection in the first half of this document,
+because it never compares a question's anchor against a turn's utterance date at all.
+
+It is also inert, and the corpus says so outright. Of **5,882 turns** across the ten conversations,
+**zero** fall after their own conversation's end. That is by construction rather than by luck: a
+turn cannot postdate the transcript it belongs to. On in-scope questions the bound demotes nothing,
+ever. It is exactly as safe as claimed, and it does exactly nothing.
+
+**So the slot stays out of the ranker.** `recall/retriever.py` composes a dense score and an
+optional reranker, and no clock reaches it. A term pinned at zero would still occupy a slot and
+still invite someone to re-weight it later, on the strength of a mechanism whose measured
+contribution is zero.
+
+**And the check stays in**, because flat and absent differ in observability rather than in ranking.
+Inert is a property of closed transcripts, not of corpora generally. Ingest live transcripts and the
+scope has no last utterance. Merge haystacks, as §10 did when LongMemEval's per-question
+haystacks became one 19,195-session corpus and hit@5 fell from 0.970 to 0.366, and there is one
+boundary per source rather than one for the whole. Either change makes the bound start demoting real evidence, and it would do so quietly,
+because nothing in the retrieval path announces that a no-op has become load-bearing.
+
+`benchmarks/check_utterance_postdating.py` is that announcement, and it is the fourth member of the
+`check_temporal_*` family. Five things in it are load-bearing, and each one replaced a version that
+read as a check and was not one:
+
+- **A derived instant reports VACUOUS, not PASS.** Take the instant as the maximum over a
+  conversation's own turns and `said > max(said)` is false by arithmetic, on any data whatsoever.
+  The first version of this script did exactly that and reported a clean zero, which is the
+  guard-that-cannot-fire pattern this repo already keeps a script for. The instant must be
+  DECLARED, via `--snapshot`, which is what a live scope records and a closed transcript does not.
+- **The control is what makes the zero mean anything.** Widening the scope to the whole corpus,
+  which is what merging does, demotes **16,681 turn-instant pairs, 28.4% of all pairs**. So the
+  predicate fires; it is the closed-transcript shape, not the predicate, that makes the bound do
+  nothing here. Run with `--snapshot 2023-06-01` and the invariant breaks as designed: 3,344 turns
+  postdate their scope's declared instant, and the script exits non-zero.
+- **That control is taken over per-conversation instants, never over the declared snapshot**, and
+  a pre-push bug audit is why the sentence exists. A snapshot collapses every scope onto one
+  instant, which makes the merged count non-empty exactly when P2 is, so the control agreed with
+  the thing it was meant to check independently. The consequence was the mirror of the defect this
+  script exists to prevent: in the one mode the design mandates, a run where the invariant
+  genuinely HELD reported `CONTROL FAILED` and exited 1, leaving the passing verdict unreachable.
+  A guard that cannot pass is as uninformative as one that cannot fail.
+
+- **P2 is tested before the control**, and a second audit is why. A single transcript has nothing
+  to merge with, so its control is empty by construction; with the control tested first, a live
+  transcript whose turns postdate its declared instant printed a non-zero P2 count, named the
+  demoted turn, and then concluded `CONTROL FAILED ... the predicate never fires`. The one corpus
+  shape the script exists to announce could not reach the announcement. A non-empty P2 is itself
+  proof that the predicate fired, which is all the control was ever there to establish.
+
+- **A control that is empty BY CONSTRUCTION is not a control that failed**, and a third audit is
+  why. Widening the scope to "the whole corpus" is a no-op when the corpus holds one transcript, so
+  the merged count is empty there whatever the data says. Reported as a failure, it told a single
+  live transcript that genuinely held that "the predicate never fires", one invocation after the
+  same corpus had demonstrated it firing, and returned exit 1 for both a real break and a real
+  hold. `CONTROL FAILED` is now reserved for two or more transcripts, where an empty control is a
+  fact about the data.
+
+`tests/test_utterance_postdating.py` pins the predicate, `main()`'s verdicts, its exit codes and
+its printed counts, for a CI that cannot run the script against the corpus because `locomo10.json`
+is gitignored. The first version covered the predicate only, which is exactly how the
+unreachable-pass defect survived it. **Thirty-four rules were ablated in turn and the suite
+confirmed red for all thirty-four**: the two predicate rules, the declared instant, the control's
+source, five verdict rules, six P1 reports, four `dia_id` rules including testing type before
+emptiness, four exit-code rules (a usage error, a malformed corpus and `--help` must none of them
+share code 1 with a real finding), the real `sys.argv` path, seven printed measurements, and three
+share-denominator variants, because the published 28.4% needs its composition pinned and not only
+its magnitude.
+
+**The pre-audit suite had 7 test functions and never called `main()` once**; it now has 33. So
+every rule at the `main()` level, which is all three verdict rules, all four exit-code rules, the
+four printed measurements and the `sys.argv` path, exists only because of the audits. That is
+checkable from the file rather than from this sentence, which is the point: an earlier draft of
+this paragraph claimed "twelve of those were added after the audits", a number that corresponds to
+nothing countable and that I published without measuring, in the same document that argues for
+verifying the label that names what you measured.
+
+Four audit rounds each found defects in the previous round's fixes, twenty-five in total. Rounds
+three and four found them mostly in the **tests**, and three of those share one shape: **a count
+asserted only where its true value is zero is satisfied by a counter hard-coded to zero.** It
+appeared on the P1 line, then on the P2 line after the P1 one was fixed, and each time the test
+read as a check on a published figure. Alongside them, a square 2x2 fixture that could not tell
+`turns x instants` from either factor squared, and an ablation that mutated a falsy-value ordering
+rule by deleting the type check entirely, so it pinned "a type check exists" while the ordering it
+named stayed green.
+
+That last one is the sharpest, and it is why the count above was re-measured rather than re-quoted:
+**an ablation can be mislabelled exactly the way a test can.** A red result is evidence only about
+the rule the mutation actually removed, which is not always the rule in its label. An earlier
+version of this paragraph said twenty-nine rules were red for all twenty-nine; the real figure was
+twenty-eight of twenty-nine, and the discrepancy was a mutation that did not remove what it named.
