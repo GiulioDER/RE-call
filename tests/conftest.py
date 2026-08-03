@@ -8,6 +8,7 @@ import psycopg
 import pytest
 
 from recall.store import PgVectorStore
+from recall.schema import LEDGER_TABLE, apply_migrations
 
 #: The local dev database from docker-compose.yml — the same one the README quickstart uses.
 _LOCAL_DEV_DSN = "postgresql://recall:recall@localhost:5432/recall"
@@ -66,6 +67,20 @@ requires_db = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _bootstrap_default_test_schema():
+    """Provision the default MCP table explicitly for subprocess/server integration tests."""
+    if not _db_available():
+        yield
+        return
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("DROP TABLE IF EXISTS chunks CASCADE")
+        if conn.execute("SELECT to_regclass(%s)", (LEDGER_TABLE,)).fetchone()[0]:
+            conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = 'chunks'")
+    apply_migrations(TEST_DSN, table="chunks", dim=64)
+    yield
+
+
 def _fastembed_available() -> bool:
     try:
         import fastembed  # noqa: F401
@@ -117,8 +132,9 @@ def make_store():
 
     def _factory(dim: int) -> PgVectorStore:
         table = "t_" + uuid.uuid4().hex[:8]
+        apply_migrations(TEST_DSN, table=table, dim=dim)
         store = PgVectorStore(TEST_DSN, dim=dim, table=table)
-        store.ensure_schema()
+        store.check_schema()
         created.append(store)
         return store
 
@@ -130,8 +146,13 @@ def make_store():
             # table — skipping teardown entirely would leak a uuid-named table per run.
             with psycopg.connect(TEST_DSN, autocommit=True) as conn:
                 conn.execute(f"DROP TABLE IF EXISTS {store.table}")
+                conn.execute(
+                    f"DELETE FROM {LEDGER_TABLE} WHERE target_table = %s", (store.table,)
+                )
             continue
         store.drop_table()
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = %s", (store.table,))
         store.close()
 
 
@@ -145,6 +166,8 @@ def cli_table():
     user owns.
     """
     name = "cli_" + uuid.uuid4().hex[:8]
+    apply_migrations(TEST_DSN, table=name, dim=64)
     yield name
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute(f"DROP TABLE IF EXISTS {name}")
+        conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = %s", (name,))

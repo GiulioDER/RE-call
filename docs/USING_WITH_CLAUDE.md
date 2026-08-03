@@ -10,8 +10,13 @@ Works with **Claude Code** and **Claude Desktop** — both take the same MCP ser
 
 ```bash
 pip install -e ".[fastembed,mcp]"
+python -m recall.cli --migration-dsn "$RECALL_MIGRATION_DSN" schema --dim 384 apply
 python -m recall_mcp.server        # stdio server (Claude launches this for you via the config below)
 ```
+
+The migration command is a deployment/provisioning step, not part of server startup. Use a
+schema-owner DSN for it and an unprivileged `RECALL_SERVING_DSN` for the server; see
+[MIGRATIONS.md](MIGRATIONS.md).
 
 ## 2. Register the server
 
@@ -23,7 +28,7 @@ Both clients use the same `mcpServers` block; only the entry point differs.
     "recall": {
       "command": "python",
       "args": ["-m", "recall_mcp.server"],
-      "env": { "RECALL_DSN": "postgresql://recall:recall@localhost:5432/recall" }
+      "env": { "RECALL_SERVING_DSN": "postgresql://recall:recall@localhost:5432/recall" }
     }
   }
 }

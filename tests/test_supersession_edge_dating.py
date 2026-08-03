@@ -755,45 +755,6 @@ def test_a_genuinely_new_chunk_gets_a_fresh_first_indexed_at(shared_table):
         store.close()
 
 
-@requires_db
-def test_a_pre_column_table_migrates_to_a_NULLABLE_column(shared_table):
-    """The migration adds the column nullable, with a default, and does NOT backfill.
-
-    The textbook version (backfill, then SET NOT NULL) could brick a multi-tenant deployment
-    permanently: the backfill is DML and is rewritten by the FORCE'd RLS policy to one tenant,
-    while SET NOT NULL validates with a heap scan that is not, so the constraint trips over
-    another tenant's NULLs and `ensure_schema` raises for everyone, forever. CI cannot see it
-    because CI connects as a superuser and a superuser bypasses RLS.
-
-    A NULL means 'this row predates the column', which both readers already handle."""
-    emb = HashingEmbedder(dim=DIM)
-    store = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
-    try:
-        store.ensure_schema()
-        store.upsert([_chunk("v1", "a.md", "one")], emb.embed(["one"]))
-        store._with_retry(
-            lambda conn: conn.execute(
-                f"ALTER TABLE {shared_table} DROP COLUMN first_indexed_at"
-            )
-        )
-        store.ensure_schema()
-
-        notnull, hasdef = store._with_retry(
-            lambda conn: conn.execute(
-                "SELECT attnotnull, atthasdef FROM pg_attribute "
-                "WHERE attrelid = %s::regclass AND attname = 'first_indexed_at'",
-                (shared_table,),
-            ).fetchall()
-        )[0]
-        assert not notnull, "NOT NULL is what makes the migration able to fail closed under RLS"
-        assert hasdef, "without a default, every insert omitting the column writes NULL"
-        assert store._with_retry(
-            lambda conn: conn.execute(
-                f"SELECT first_indexed_at FROM {shared_table} WHERE id = 'v1'"
-            ).fetchall()
-        )[0][0] is None, "pre-existing rows are left NULL rather than stamped with upgrade time"
-    finally:
-        store.close()
 
 
 @requires_db

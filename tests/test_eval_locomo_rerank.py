@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import psycopg
 import pytest
 
 from recall.embeddings import HashingEmbedder
@@ -39,9 +40,12 @@ def _fresh(table: str) -> PgVectorStore:
     previous run of this same test left behind included. Dropping first keeps these assertions
     about reranking rather than about test order.
     """
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+        conn.execute(
+            "DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,)
+        )
     store = PgVectorStore(TEST_DSN, dim=64, table=table)
-    store.ensure_schema()
-    store.drop_table()
     store.ensure_schema()
     return store
 

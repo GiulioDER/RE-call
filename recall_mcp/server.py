@@ -35,7 +35,10 @@ from recall_mcp.stores import StoreRegistry
 #: and an unmetered tool would be one that also skipped authorisation.
 _SCOPE_BUDGETS = {SCOPE_READ: "read", SCOPE_WRITE: "write", SCOPE_FORGET: "forget"}
 
-DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
+DEFAULT_DSN = os.environ.get(
+    "RECALL_SERVING_DSN",
+    os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall"),
+)
 #: Transport to serve. `stdio` is a private pipe between one client and this process — there is no
 #: network listener and no remote caller to authenticate, so auth is not required there. The HTTP
 #: transports open a socket, and `build_auth` refuses to start them without tokens.
@@ -232,6 +235,18 @@ def _make_lifespan(
         registry: StoreRegistry | None = None
         try:
             embedder = make_embedder(EMBEDDER_NAME)
+            # Inspect migration state before PgVectorStore prepares a pgvector codec. On a fresh
+            # database the extension deliberately does not exist yet; reporting "migrations
+            # pending" is more useful than leaking the driver's missing-type error. This path is
+            # SELECT-only and uses the serving credential.
+            from recall.schema import SchemaTooOld, schema_status
+
+            schema = schema_status(DEFAULT_DSN, dim=embedder.dim)
+            if not schema.compatible:
+                pending = [m.version for m in schema.pending]
+                raise SchemaTooOld(
+                    f"database migrations pending: {pending}; run `recall schema apply`"
+                )
             if token_registry is None:
                 # Pooled + timed out: a server shares this store across concurrent tool calls,
                 # and one connection would serialise them however many threads are available.
@@ -259,12 +274,12 @@ def _make_lifespan(
 
         try:
             if store is not None:
-                store.ensure_schema()
+                store.check_schema()
                 probe = store
             else:
                 assert registry is not None
-                # Open ONE tenant eagerly. Schema creation, a missing pgvector extension and a
-                # bad DSN all fail identically for every tenant, and finding that out on the
+                # Open ONE tenant eagerly. Schema compatibility, a missing pgvector extension
+                # and a bad DSN fail identically for every tenant, and finding that out on the
                 # first client request — per tenant, at request latency — turns a startup error
                 # into an intermittent runtime one.
                 probe = registry.get(sorted(registry.allowed_tenants)[0])
