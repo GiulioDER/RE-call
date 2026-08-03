@@ -6,6 +6,7 @@ from urllib.parse import urlsplit, urlunsplit
 import psycopg
 import pytest
 
+from recall.schema import apply_migrations
 from recall.store import (
     TENANT_GUC,
     PgVectorStore,
@@ -259,197 +260,22 @@ class _RecordingConn:
         return _Cursor(_canned_row(text, migrated=self.migrated, rls_ok=self.rls_ok))
 
 
-def _ensure_schema_statements() -> list[str]:
-    """The statements a CLEAN ensure_schema issues — the baseline to replay against.
-
-    Derived by running the real method, so it cannot drift from the implementation.
-    """
-    store = _bare_store(_RecordingConn())
-    store.ensure_schema()
-    return store._conn.sql
 
 
-def test_ensure_schema_uses_reconnect_retry():
-    """A broken connection mid-ensure_schema replays the WHOLE operation on a fresh one.
-
-    Asserted against a baseline captured from the method itself, not a hard-coded count:
-    adding a statement to `ensure_schema` moves both sides together, so this test keeps
-    testing the invariant instead of needing to be re-numbered.
-    """
-    expected = _ensure_schema_statements()
-
-    store = _bare_store(_RecordingConn(fail_first=True))
-    first = store._conn
-    second = _RecordingConn()
-    reconnects = {"n": 0}
-
-    def fake_reconnect():
-        reconnects["n"] += 1
-        store._conn = second
-
-    store._reconnect = fake_reconnect  # type: ignore[method-assign]
-
-    store.ensure_schema()
-
-    assert reconnects["n"] == 1                 # reconnected exactly once
-    assert first.sql == expected[:1]            # died on its first statement
-    assert second.sql == expected               # the whole operation replayed, in order
 
 
-def test_ensure_schema_replay_baseline_is_not_trivially_empty():
-    # guards the guard: an ensure_schema that issued nothing would make the assertion above
-    # vacuously true
-    stmts = _ensure_schema_statements()
-    assert len(stmts) > 3
-    assert any(s.startswith("CREATE TABLE") for s in stmts)
-    assert sum(s.startswith("CREATE INDEX") for s in stmts) >= 2
 
 
-def test_ensure_schema_indexes_are_concurrent():
-    """Issue #11's fourth checkbox: `CREATE INDEX` must not lock writes on a live table.
-
-    Every secondary index `ensure_schema` creates should use `CONCURRENTLY` — plain `CREATE INDEX`
-    takes a lock for the whole build, and `ensure_schema` runs on every store open, not just at
-    bootstrap (see the comment above these statements in `store.py` for why that is safe here:
-    the connection is autocommit and this method is never wrapped in an explicit transaction).
-    """
-    stmts = _ensure_schema_statements()
-    create_index_stmts = [s for s in stmts if s.startswith("CREATE INDEX")]
-    assert len(create_index_stmts) >= 2  # guards the guard, same as the test above
-    for s in create_index_stmts:
-        assert s.startswith("CREATE INDEX CONCURRENTLY"), s
 
 
-def test_ensure_schema_lifts_the_statement_timeout_for_its_ddl():
-    """Schema DDL must not run under the per-connection `statement_timeout`.
-
-    `_prepare` sets `statement_timeout` on EVERY connection (it is the pool's `configure` hook,
-    and `_connect` calls it too), and the MCP server defaults it to 15s. `ensure_schema` then
-    builds an HNSW index on that same connection — a build the code's own comment describes as
-    "minutes, not milliseconds" on a real corpus. Under the timeout that build is cancelled, so
-    an upgrade against a populated database cannot start; worse, a cancelled CONCURRENTLY build
-    leaves an INVALID index that `IF NOT EXISTS` then treats as present forever.
-
-    Asserted on the statement stream rather than by timing a real build: the invariant is "the
-    timeout is lifted before the DDL and restored after", checkable without waiting minutes.
-    """
-    store = _bare_store(_RecordingConn())
-    store._statement_timeout_ms = 15000
-    store.ensure_schema()
-    stmts = store._conn.sql
-
-    def norm(s: str) -> str:
-        return s.lower().replace(" ", "")
-
-    lifted = [i for i, s in enumerate(stmts) if norm(s) == "setstatement_timeout=0"]
-    assert lifted, "ensure_schema never lifted statement_timeout before its DDL"
-    first_ddl = next(
-        i for i, s in enumerate(stmts) if s.startswith(("CREATE TABLE", "CREATE INDEX"))
-    )
-    assert lifted[0] < first_ddl, "statement_timeout lifted only after the DDL had already run"
-
-    restored = [i for i, s in enumerate(stmts) if norm(s) == "setstatement_timeout=15000"]
-    last_ddl = max(
-        i for i, s in enumerate(stmts) if s.startswith(("CREATE TABLE", "CREATE INDEX"))
-    )
-    assert restored and restored[-1] > last_ddl, "statement_timeout never restored after the DDL"
 
 
-def test_ensure_schema_installs_rls_when_the_table_has_none():
-    """The mutating half of `_enable_rls`, which the steady-state tests never reach.
-
-    `_enable_rls` skips work that is already done, so the DB-free tests above (which report a
-    correctly-configured table) record none of these statements. Without this case the security
-    control's install path would have no DB-free coverage at all — the exact shape of gap where
-    a conditional silently stops issuing the statement it exists to issue.
-    """
-    store = _bare_store(_RecordingConn(rls_ok=False))
-    store.ensure_schema()
-    stmts = store._conn.sql
-
-    assert any("ENABLE ROW LEVEL SECURITY" in s for s in stmts)
-    assert any("FORCE ROW LEVEL SECURITY" in s for s in stmts)
-    create = [s for s in stmts if s.startswith("CREATE POLICY")]
-    assert len(create) == 1, stmts
-    assert "current_setting" in create[0] and "tenant_id" in create[0]
 
 
-def test_a_tampered_policy_is_dropped_and_recreated_in_one_transaction():
-    """A drifted predicate must be repaired, and the repair must not open a gap.
-
-    Asserted on the transaction BOUNDARIES, not on adjacency. The two statements are adjacent in
-    the stream either way, so an adjacency check passes just as happily on two separately
-    committed statements — and separately committed is precisely the defect: between the DROP and
-    the CREATE the table has RLS FORCEd with no policy, and every concurrent query returns zero
-    rows, which the trust layer reports as an ordinary "no memories found" rather than an error.
-    """
-    store = _bare_store(_RecordingConn(rls_ok=False))
-    store.ensure_schema()
-    stmts = store._conn.sql
-
-    drop = next(i for i, s in enumerate(stmts) if s.startswith("DROP POLICY"))
-    create = next(i for i, s in enumerate(stmts) if s.startswith("CREATE POLICY"))
-    begins = [i for i, s in enumerate(stmts) if s == "BEGIN"]
-    commits = [i for i, s in enumerate(stmts) if s == "COMMIT"]
-
-    enclosing = [b for b in begins if b < drop and any(c > create for c in commits if c > b)]
-    assert enclosing, (
-        "DROP/CREATE POLICY are not inside a transaction — separately committed they leave the "
-        f"table with RLS forced and no policy: {stmts}"
-    )
-    assert drop < create, stmts
 
 
-def test_ensure_schema_leaves_a_correct_policy_alone():
-    """The other direction: a steady-state open must issue no policy DDL at all.
-
-    These are ALTER-TABLE-class statements taking ACCESS EXCLUSIVE, and `ensure_schema` runs on
-    every store open — including once per tenant in the server — so an unconditional version
-    serialises the whole table against every concurrent reader on a routine open.
-    """
-    store = _bare_store(_RecordingConn())  # already correct
-    store.ensure_schema()
-    stmts = store._conn.sql
-
-    assert not [s for s in stmts if s.startswith(("DROP POLICY", "CREATE POLICY"))]
-    assert not [s for s in stmts if "ROW LEVEL SECURITY" in s]
 
 
-def test_ensure_schema_emits_no_timeout_statements_when_none_is_configured():
-    """No timeout configured means no timeout statements at all — not `SET statement_timeout = 0`.
-
-    The CLI constructs stores without a timeout; emitting the lift/restore pair there would be
-    two pointless round-trips on every command.
-    """
-    store = _bare_store(_RecordingConn())
-    store._statement_timeout_ms = None
-    store.ensure_schema()
-    assert not [s for s in store._conn.sql if "statement_timeout" in s.lower()]
-
-
-@requires_db
-def test_ensure_schema_completes_under_a_tiny_statement_timeout():
-    """End-to-end: a 1ms timeout must not stop the schema from being created.
-
-    1ms is well under even an empty-table index build, so this fails on the pre-fix code for the
-    same reason a 15s timeout fails on a real corpus — the difference is only corpus size.
-    """
-    name = "pg_" + uuid.uuid4().hex[:8]
-    store = PgVectorStore(TEST_DSN, dim=4, table=name, statement_timeout_ms=1)
-    try:
-        store.ensure_schema()  # must not raise QueryCanceled
-        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-            invalid = conn.execute(
-                "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
-                "JOIN pg_class t ON t.oid = i.indrelid "
-                "WHERE t.relname = %s AND NOT i.indisvalid",
-                (name,),
-            ).fetchall()
-        assert invalid == [], f"a cancelled build left invalid index(es): {invalid}"
-    finally:
-        store.close()
-        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-            conn.execute(f"DROP TABLE IF EXISTS {name}")
 
 
 # --- _hnsw_filtered_tuning: HNSW ef_search/iterative_scan config for a filtered query_dense ----
@@ -704,12 +530,8 @@ def test_newest_indexed_at_none_when_empty(make_store):
 
 
 @requires_db
-def test_fresh_database_bootstraps_vector_extension():
-    """A brand-new database (no `vector` extension yet) must work out of the box.
-
-    Regression guard: register_vector needs the `vector` type, so PgVectorStore.__init__ must
-    install the extension itself — otherwise the README quickstart crashes on a fresh DB.
-    """
+def test_fresh_database_is_provisioned_before_the_serving_store_opens():
+    """A brand-new database is migrated explicitly; store startup itself performs no DDL."""
     # Needs CREATEDB. A correctly-configured deployment role does not have it, and skipping
     # loudly is the honest outcome — the alternative is a check that silently only ever runs for
     # whoever happens to connect as a superuser.
@@ -729,9 +551,10 @@ def test_fresh_database_bootstraps_vector_extension():
     fresh = urlunsplit(parts._replace(path="/" + fresh_name))
     conn = psycopg.connect(admin, autocommit=True)
     try:
-        conn.execute(f'CREATE DATABASE "{fresh_name}"')  # NO CREATE EXTENSION — store must self-bootstrap
+        conn.execute(f'CREATE DATABASE "{fresh_name}"')
+        apply_migrations(fresh, table="chunks", dim=8)
         with PgVectorStore(fresh, dim=8) as store:
-            store.ensure_schema()
+            store.check_schema()
             store.upsert([Chunk("a", "f", "hello")], [[0.1] * 8])
             assert store.count() == 1
     finally:

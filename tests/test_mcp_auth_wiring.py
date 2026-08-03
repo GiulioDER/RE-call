@@ -16,6 +16,7 @@ import psycopg
 
 import pytest
 
+from recall.schema import LEDGER_TABLE, apply_migrations
 from recall_mcp.auth import SCOPE_FORGET, SCOPE_READ, SCOPE_WRITE, AuthConfigError
 from recall_mcp.server import HTTP_TRANSPORTS, RecallTokenVerifier, build_auth
 from recall_mcp.stores import StoreRegistry
@@ -35,9 +36,11 @@ def tenant_table():
     have no reason to move together.
     """
     name = "mcpauth_" + uuid.uuid4().hex[:8]
+    apply_migrations(TEST_DSN, table=name, dim=4)
     yield name
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute(f"DROP TABLE IF EXISTS {name}")
+        conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = %s", (name,))
 
 
 def tokens_file(tmp_path, *, tenant="team-a", scopes=None, name="tokens.json") -> str:

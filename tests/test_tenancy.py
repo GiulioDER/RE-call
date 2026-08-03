@@ -21,6 +21,7 @@ from urllib.parse import urlsplit, urlunsplit
 import psycopg
 import pytest
 
+from recall.schema import LEDGER_TABLE, apply_migrations
 from recall.store import PgVectorStore
 from recall.types import Chunk
 
@@ -37,9 +38,11 @@ def _vec(i: int, dim: int = 4) -> list[float]:
 def tenant_table():
     """A shared table used by two differently-tenanted stores."""
     name = "tn_" + uuid.uuid4().hex[:8]
+    apply_migrations(TEST_DSN, table=name, dim=4)
     yield name
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute(f"DROP TABLE IF EXISTS {name}")
+        conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = %s", (name,))
 
 
 # --------------------------------------------------------------------------------------------
@@ -169,6 +172,8 @@ def test_default_tenant_keeps_an_existing_single_tenant_install_working(tenant_t
 def test_migrating_a_pre_tenancy_table_preserves_its_rows(tenant_table):
     """The upgrade path: a table created by an older version, then opened by this one."""
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute(f"DROP TABLE {tenant_table} CASCADE")
+        conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = %s", (tenant_table,))
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
         conn.execute(
             f"""CREATE TABLE {tenant_table} (
@@ -206,6 +211,8 @@ def test_a_half_migrated_table_is_repaired_not_reported_done(tenant_table):
     building that exact half-migrated state directly.
     """
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute(f"DROP TABLE {tenant_table} CASCADE")
+        conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = %s", (tenant_table,))
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
         conn.execute(
             f"""CREATE TABLE {tenant_table} (
@@ -276,6 +283,8 @@ def unprivileged_dsn(tenant_table):
         with psycopg.connect(TEST_DSN, autocommit=True) as conn:
             conn.execute(f"CREATE ROLE {role} LOGIN PASSWORD 'pw' NOSUPERUSER NOBYPASSRLS")
             conn.execute(f"GRANT ALL ON SCHEMA public TO {role}")
+            conn.execute(f"GRANT SELECT ON {LEDGER_TABLE} TO {role}")
+            conn.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {tenant_table} TO {role}")
     except psycopg.errors.InsufficientPrivilege:
         pytest.skip(
             "cannot verify RLS: the configured role bypasses it and lacks CREATEROLE to make "
@@ -362,42 +371,6 @@ def test_rls_blocks_writing_a_row_for_another_tenant(unprivileged_dsn, tenant_ta
         a.close()
 
 
-@requires_db
-def test_a_tampered_policy_predicate_is_repaired_on_the_next_open(tenant_table):
-    """The isolation policy must converge on its DEFINITION, not merely on its name.
-
-    `ensure_schema` runs on every store open, which is what makes it a repair mechanism. If it
-    only asked "does a policy with this name exist?", a policy whose predicate had been altered —
-    by hand, by a migration, by an older version of this code — would be left in place because
-    the name matched. A changed predicate here is a changed isolation boundary, so `USING (true)`
-    is the whole control silently switched off while the table still reports RLS as enabled.
-    """
-    s = PgVectorStore(TEST_DSN, dim=4, table=tenant_table)
-    try:
-        s.ensure_schema()
-        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-            conn.execute(
-                f"ALTER POLICY {tenant_table}_tenant_isolation ON {tenant_table} "
-                f"USING (true) WITH CHECK (true)"
-            )
-            tampered = conn.execute(
-                "SELECT pg_get_expr(polqual, polrelid) FROM pg_policy WHERE polname = %s",
-                (f"{tenant_table}_tenant_isolation",),
-            ).fetchone()[0]
-        assert tampered == "true", "fixture failed to tamper with the policy"
-
-        s.ensure_schema()  # the repair
-
-        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-            repaired = conn.execute(
-                "SELECT pg_get_expr(polqual, polrelid) FROM pg_policy WHERE polname = %s",
-                (f"{tenant_table}_tenant_isolation",),
-            ).fetchone()[0]
-        assert "tenant_id" in repaired and "current_setting" in repaired, (
-            f"tampered policy was not repaired: {repaired!r}"
-        )
-    finally:
-        s.close()
 
 
 @requires_db
@@ -437,96 +410,3 @@ def test_reopening_a_correct_table_does_not_recreate_the_policy(tenant_table):
         )
     finally:
         s.close()
-
-
-@requires_db
-def test_a_policy_narrowed_to_a_role_is_repaired(tenant_table):
-    """`ALTER POLICY ... TO <role>` must not survive a re-open.
-
-    The policy is created for PUBLIC and ALL commands. Narrowing its role set leaves the name,
-    the predicate and `relrowsecurity` all reporting healthy while the policy no longer applies
-    to the role the application actually connects as — an isolation boundary switched off in a
-    way that a name-or-predicate check cannot see.
-    """
-    s = PgVectorStore(TEST_DSN, dim=4, table=tenant_table)
-    try:
-        s.ensure_schema()
-        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-            conn.execute(
-                f"ALTER POLICY {tenant_table}_tenant_isolation ON {tenant_table} TO recall"
-            )
-            narrowed = conn.execute(
-                "SELECT polroles = '{0}'::oid[] FROM pg_policy WHERE polname = %s",
-                (f"{tenant_table}_tenant_isolation",),
-            ).fetchone()[0]
-        assert narrowed is False, "fixture failed to narrow the policy's role set"
-
-        s.ensure_schema()  # the repair
-
-        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-            restored = conn.execute(
-                "SELECT polroles = '{0}'::oid[] FROM pg_policy WHERE polname = %s",
-                (f"{tenant_table}_tenant_isolation",),
-            ).fetchone()[0]
-        assert restored is True, "a policy narrowed to one role was left in place"
-    finally:
-        s.close()
-
-
-@requires_db
-def test_the_first_indexed_at_migration_survives_rls_on_a_multi_tenant_table(
-    unprivileged_dsn, tenant_table
-):
-    """The migration must not need to WRITE rows, because a write cannot see every tenant's.
-
-    A superuser bypasses RLS entirely, and CI connects as one — but that does NOT make this
-    untestable there, and an earlier version of this docstring wrongly said it did. The
-    `unprivileged_dsn` fixture creates a throwaway NOSUPERUSER NOBYPASSRLS role, so the policy
-    applies to the role running the migration no matter who connects. Confirmed: CI's passing
-    count rose by exactly the two tests added with this one, with its skip count unchanged.
-
-    The first version of this migration did the textbook thing — add nullable, backfill from
-    `indexed_at`, SET DEFAULT, SET NOT NULL — and it bricks a shared table permanently. The
-    backfill is ordinary DML, so the FORCE'd policy rewrites it to the current tenant's rows;
-    `SET NOT NULL` validates with a heap scan, which is NOT rewritten and sees every tenant's.
-    Measured on this fixture: it holds 2 rows, the role sees 1, the backfill touches 1, and the
-    constraint still fails with NotNullViolation because its scan sees both. (An earlier version
-    of this sentence said 2 of 3 — those figures came from a three-row scratch table and a
-    two-row fixture shipped. The conclusion was unaffected, and nothing asserted the numbers, so
-    nothing caught the drift.) `ensure_schema` then raises for every tenant on every
-    open, and re-running never repairs it.
-
-    The shipped migration is two DDL statements and no DML, so there is nothing for the policy to
-    narrow and nothing to fail. That is what this pins.
-    """
-    role, dsn = unprivileged_dsn
-
-    with PgVectorStore(TEST_DSN, dim=4, table=tenant_table, tenant="a") as owner:
-        owner.ensure_schema()
-        owner.upsert([Chunk("a1", "a.md", "tenant a")], [_vec(0)])
-    with PgVectorStore(TEST_DSN, dim=4, table=tenant_table, tenant="b") as other:
-        other.upsert([Chunk("b1", "b.md", "tenant b")], [_vec(1)])
-
-    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-        # Back to a pre-column table, with rows belonging to two tenants.
-        conn.execute(f"ALTER TABLE {tenant_table} DROP COLUMN first_indexed_at")
-        conn.execute(f"ALTER TABLE {tenant_table} OWNER TO {role}")
-        conn.execute(f"GRANT ALL ON {tenant_table} TO {role}")
-
-    # The migration runs here, as the role that CANNOT see the other tenant's rows.
-    with PgVectorStore(dsn, dim=4, table=tenant_table, tenant="a") as migrator:
-        migrator.ensure_schema()
-
-    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-        notnull = conn.execute(
-            "SELECT attnotnull FROM pg_attribute WHERE attrelid = %s::regclass "
-            "AND attname = 'first_indexed_at'",
-            (tenant_table,),
-        ).fetchone()[0]
-        assert not notnull, (
-            "a NOT NULL here is the failure mode: the constraint validates across every tenant "
-            "while the backfill that fills it cannot"
-        )
-        assert conn.execute(
-            f"SELECT count(*) FROM {tenant_table}"
-        ).fetchone()[0] == 2, "both tenants' rows survived the migration"

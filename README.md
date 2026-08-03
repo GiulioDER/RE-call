@@ -201,7 +201,7 @@ on a laptop.
 | **Data erasure** | ✅ `recall forget` / `recall_forget` permanently delete a source's chunks; previews by default, `--yes` to act | The right-to-erasure path — irreversible, so it refuses to act unattended without the flag |
 | **Abuse bounds** | ✅ `recall_index` refuses before embedding anything if a request exceeds `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` | A client-callable indexer with no cap is an unbounded spend on a cloud embedder |
 | **Authentication** | ✅ bearer tokens on the HTTP transports, three scopes, one tenant per principal — see [docs/AUTH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/AUTH.md) | Starting an HTTP transport without tokens **refuses to boot** rather than warning. stdio stays unauthenticated by design: it is a private pipe, not a listener |
-| **Schema migrations** | ❌ runtime `CREATE TABLE IF NOT EXISTS`, no versioned upgrade path | Pre-tenancy tables *are* migrated in place, with a test |
+| **Schema migrations** | ✅ ordered SQL, committed cryptographic checksums, advisory lock, resumable concurrent indexes, separate migration/serving roles | MCP startup is SELECT-only and refuses pending, drifted, or unknown versions; both supported PostgreSQL majors are tested |
 | **HA / replication** | ❌ out of scope — this is a library over your Postgres | — |
 
 ## Retrieval quality: it depends on your corpus, and here is the rule
@@ -421,6 +421,8 @@ exactly what is public versus private.
 ```bash
 docker compose up -d --wait          # PostgreSQL + pgvector
 pip install "recall-rag[fastembed]"  # local embeddings, no API key
+python -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall \
+  schema --dim 384 apply             # explicit, versioned DDL step
 python -m recall.cli demo            # index corpus/ and run the sample queries
 ```
 
@@ -448,7 +450,7 @@ from recall.trust import trusted_search
 
 emb = FastEmbedEmbedder()
 with PgVectorStore(DSN, dim=emb.dim, tenant="acme", pool_size=8) as store:
-    store.ensure_schema()
+    store.check_schema()  # SELECT-only compatibility check; provisioning applied migrations
     result = trusted_search(store, emb, "what is the rate limit?")
     if result.abstained:
         ...  # say you don't know — do not answer from these hits
@@ -458,11 +460,14 @@ with PgVectorStore(DSN, dim=emb.dim, tenant="acme", pool_size=8) as store:
         hit.validity.superseded_by
 ```
 
-Point `RECALL_DSN` at any Postgres.
+Set `RECALL_SERVING_DSN` for application traffic and `RECALL_MIGRATION_DSN` only in the migration
+job. See [database migrations and roles](docs/MIGRATIONS.md). `RECALL_DSN` remains a deprecated
+development fallback for the serving DSN.
 
 > **Two operational notes.** The test suite **DROPs tables**, so it reads a separate
-> `RECALL_TEST_DSN` and never `RECALL_DSN` — exporting your real DSN and running `pytest` cannot
-> touch it. And the MCP server **refuses to start** if `RECALL_DSN` carries the built-in
+> `RECALL_TEST_DSN` and never the serving DSN — exporting your real DSN and running `pytest` cannot
+> touch it. And the MCP server **refuses to start** if `RECALL_SERVING_DSN` (or its deprecated
+> `RECALL_DSN` fallback) carries the built-in
 > `recall:recall` credentials against a non-local host; set a real password, or
 > `RECALL_ALLOW_INSECURE_DSN=1` to accept the risk deliberately.
 
@@ -477,7 +482,7 @@ Point `RECALL_DSN` at any Postgres.
 ```json
 { "mcpServers": { "recall": {
     "command": "python", "args": ["-m", "recall_mcp.server"],
-    "env": { "RECALL_DSN": "postgresql://...", "RECALL_TENANT": "acme" } } } }
+    "env": { "RECALL_SERVING_DSN": "postgresql://...", "RECALL_TENANT": "acme" } } } }
 ```
 
 Four tools: `recall_search` (verdict + confidence + provenance, or an explicit abstention),
@@ -563,8 +568,9 @@ Stated plainly, because the failure mode this library exists to prevent is confi
   rate limits and an indexing byte quota ship too, but their buckets are per process, so N workers
   admit roughly N times the rate. For revocation, rotation or per-request identity, front this with
   a real identity provider and supply the MCP SDK's `auth_server_provider`.
-- **No schema migrations, no HA.** Runtime `CREATE TABLE IF NOT EXISTS`, no versioned upgrade path
-  (pre-tenancy tables *are* migrated in place, with a test). Replication is your Postgres's job.
+- **No bundled HA.** Versioned, checksum-verified migrations and an unprivileged serving role now
+  ship, but replication, backups, failover and managed-Postgres operations remain yours until the
+  production reference deployment lands.
 
 
 ## Engineering

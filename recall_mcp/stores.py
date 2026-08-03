@@ -103,7 +103,8 @@ class StoreRegistry:
                     statement_timeout_ms=self._statement_timeout_ms,
                 )
                 try:
-                    store.ensure_schema()
+                    # Read-only compatibility check. Lazy tenant opens never run DDL.
+                    store.check_schema()
                 except Exception:
                     # Close the half-built store before propagating: otherwise a tenant whose
                     # schema check fails leaks a full pool on every retry, and a client retrying
