@@ -47,6 +47,7 @@ from typing import Any
 from benchmarks.beam.dataset import iter_conversations, parse_conversation_indices
 from benchmarks.beam.systems import BEAM_TABLE, BeamRecallSystem, require_indexed
 from recall.eval.locomo import DEFAULT_DSN
+from recall.embeddings import embedding_profile_id
 from recall.store import PgVectorStore
 
 #: Percentile candidates, as the fraction of the query's own scores that must be cleared.
@@ -192,7 +193,7 @@ def main() -> None:
         # only in the guard that refused to run against one.
         "chunks_per_tenant": chunks_per_tenant,
         "conversations": args.conversations,
-        "embedder": embedder.name,
+        "embedder": embedding_profile_id(embedder),
         # The regime itself — the thing an absolute floor cannot adapt to, published so two runs
         # on different embedders can be compared directly.
         "top1_distribution": {

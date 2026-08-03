@@ -50,7 +50,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without 
 SearchFn = Callable[[str], TrustedResult]
 
 
-def _hit_to_node(hit: TrustedHit) -> NodeWithScore:
+def _hit_to_node(hit: TrustedHit, result: TrustedResult | None = None) -> NodeWithScore:
     """Map one trusted hit onto a scored LlamaIndex node, carrying the trust signal in metadata.
 
     The chunk's own metadata is preserved; the ``recall_*`` and provenance keys are layered on top
@@ -59,6 +59,12 @@ def _hit_to_node(hit: TrustedHit) -> NodeWithScore:
     """
     metadata: dict[str, Any] = dict(hit.chunk.metadata)
     metadata.update(trust_metadata(hit))
+    if result is not None:
+        metadata.update(
+            embedding_profile=result.diagnostics.embedding_profile,
+            retrieval_profile=result.diagnostics.retrieval_profile,
+            index_generation=result.diagnostics.index_generation,
+        )
     node = TextNode(id_=hit.chunk.id, text=marked_text(hit), metadata=metadata)
     return NodeWithScore(node=node, score=hit.cosine)
 
@@ -143,6 +149,6 @@ class RecallRetriever(BaseRetriever):
                 return [NodeWithScore(node=node, score=0.0)]
             return []
         return [
-            _hit_to_node(hit)
+            _hit_to_node(hit, result)
             for hit in servable_hits(result.hits, include_untrusted=self._include_untrusted)
         ]

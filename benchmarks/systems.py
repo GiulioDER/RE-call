@@ -12,6 +12,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from recall.embeddings import embedding_profile_id
+
 #: Retrieval budget shared by every arm unless ``--k`` overrides it. 5 is the value the harness was
 #: originally written with and the number every early result was measured at; it is kept as the
 #: default so a rerun without flags reproduces those runs, and it is recorded in the results
@@ -198,7 +200,10 @@ class RecallSystem:
         return {
             "system": self.name,
             "k": self._k,
-            "embedder": {"name": self._embedder_name, "model": self._embedder.name},
+            "embedder": {
+                "name": self._embedder_name,
+                "model": embedding_profile_id(self._embedder),
+            },
             "reranker": self._reranker_name,
             "table": self._table,
             "tenant": self._tenant,

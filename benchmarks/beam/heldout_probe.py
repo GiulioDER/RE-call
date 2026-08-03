@@ -58,6 +58,7 @@ from typing import Any
 from benchmarks.beam.systems import EMBED_BATCH
 from benchmarks.systems import resolve_embedder
 from recall.eval.locomo import DEFAULT_DSN
+from recall.embeddings import embedding_profile_id
 from recall.index import Indexer
 from recall.store import PgVectorStore
 
@@ -190,7 +191,7 @@ def main() -> None:
         }
 
     report: dict[str, Any] = {
-        "embedder": embedder.name,
+        "embedder": embedding_profile_id(embedder),
         "indexed_memos": len(indexed),
         "held_out_memos": len(holdout),
         "chunks": n_chunks,

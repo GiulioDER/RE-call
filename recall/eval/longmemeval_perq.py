@@ -36,7 +36,7 @@ from pathlib import Path
 import psycopg
 
 from recall.calibration import from_samples
-from recall.embeddings import Embedder
+from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.eval.metrics import wilson_ci
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
@@ -163,14 +163,14 @@ def evaluate(dsn: str, master: str, questions: list[dict], embedder: Embedder,
         coverage = _assert_master_covers(store, master, questions)
         def top_cos_in_haystack(q: dict) -> float:
             populate_haystack(dsn, embedder.dim, master, scratch, q["haystack_files"], store=store)
-            hits = store.query_dense(embedder.embed([q["query"]])[0], k=1)
+            hits = store.query_dense(embed_query(embedder, q["query"]), k=1)
             return hits[0].score if hits else 0.0
 
         # Calibrated on the fit half, exactly as `labelled` does — a threshold from another
         # corpus's cosine regime does not transfer (FINDINGS section 2), and per-question
         # haystacks are a different regime again from the merged corpus.
         cal = from_samples(
-            embedder.name,
+            embedding_profile_id(embedder),
             [top_cos_in_haystack(q) for q in fit if q.get("answerable")],
             [top_cos_in_haystack(q) for q in fit if not q.get("answerable")],
         )

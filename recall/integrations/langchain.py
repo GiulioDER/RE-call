@@ -53,7 +53,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only without 
 SearchFn = Callable[[str], TrustedResult]
 
 
-def _hit_to_document(hit: TrustedHit) -> Document:
+def _hit_to_document(hit: TrustedHit, result: TrustedResult | None = None) -> Document:
     """Map one trusted hit onto a LangChain ``Document``, carrying the trust signal in metadata.
 
     The chunk's own metadata is preserved; the ``recall_*`` and provenance keys are layered on top
@@ -61,6 +61,12 @@ def _hit_to_document(hit: TrustedHit) -> Document:
     """
     metadata: dict[str, Any] = dict(hit.chunk.metadata)
     metadata.update(trust_metadata(hit))
+    if result is not None:
+        metadata.update(
+            embedding_profile=result.diagnostics.embedding_profile,
+            retrieval_profile=result.diagnostics.retrieval_profile,
+            index_generation=result.diagnostics.index_generation,
+        )
     return Document(page_content=marked_text(hit), metadata=metadata)
 
 
@@ -141,6 +147,6 @@ class RecallRetriever(BaseRetriever):
                 ]
             return []
         return [
-            _hit_to_document(hit)
+            _hit_to_document(hit, result)
             for hit in servable_hits(result.hits, include_untrusted=self.include_untrusted)
         ]

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from recall.calibration import best_threshold
-from recall.embeddings import Embedder
+from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.eval.metrics import false_confident_rate, fraction_true
 from recall.index import Indexer
 from recall.store import PgVectorStore
@@ -61,7 +61,7 @@ def measure_top_cosines(
     for q in queries:
         if q.get("trust"):
             continue
-        hits = store.query_dense(embedder.embed([q["query"]])[0], k=1)
+        hits = store.query_dense(embed_query(embedder, q["query"]), k=1)
         top = hits[0].score if hits else 0.0
         (ans if q["answerable"] else unans).append(top)
     return ans, unans
@@ -136,5 +136,6 @@ def calibrate(
     fcr_sug = false_confident_rate([mc < thr for mc in unans])
     fcr_heldout, false_abstain_heldout = loo_threshold_rates(ans, unans)
     return CalibrationReport(
-        embedder.name, ans, unans, thr, fcr_050, fcr_sug, fcr_heldout, false_abstain_heldout
+        embedding_profile_id(embedder), ans, unans, thr, fcr_050, fcr_sug,
+        fcr_heldout, false_abstain_heldout
     )
