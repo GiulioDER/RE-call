@@ -196,6 +196,10 @@ class ControlPlane:
     ) -> None:
         """Migration-role route update followed by a content-free notification."""
         with self._connect() as conn, conn.transaction():
+            # Routes are FORCE RLS protected, including from their table owner.  The
+            # dedicated migration role is intentionally neither superuser nor BYPASSRLS,
+            # so it must establish the same tenant GUC as runtime readers before writing.
+            self._set_tenant(conn, tenant)
             state_rows = conn.execute(
                     "SELECT generation_id, state FROM recall_index_generations "
                     "WHERE generation_id = ANY(%s)",
