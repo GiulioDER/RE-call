@@ -520,7 +520,17 @@ class Qwen3EmbeddingEmbedder:
         if prompt is not None:
             kwargs["prompt"] = prompt
         vectors = self._model.encode(texts, **kwargs)
-        return [[float(x) for x in vector] for vector in vectors]
+        normalized: list[list[float]] = []
+        for vector in vectors:
+            values = [float(x) for x in vector]
+            # Sentence Transformers normalizes before truncate_dim is applied for this
+            # model, so the returned 384-wide prefix is no longer unit length.  Normalize
+            # the final representation explicitly, which is the vector stored and scored.
+            norm = math.sqrt(sum(value * value for value in values))
+            if norm == 0.0:
+                raise RuntimeError("Qwen3 embedding produced a zero vector")
+            normalized.append([value / norm for value in values])
+        return normalized
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return self.embed_passages(texts)
