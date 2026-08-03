@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import psycopg
 
-from recall.control_plane import ControlPlane
+from recall.control_plane import ControlPlane, IndexGeneration, TenantRoute
+from recall_mcp import stores as stores_module
+from recall_mcp.stores import StoreRegistry
 from tests.conftest import TEST_DSN, requires_db
 
 
@@ -96,3 +99,48 @@ def test_set_route_establishes_tenant_before_forced_rls_write() -> None:
 
     assert connection.sql[0].startswith("SELECT set_config('recall.tenant_id'")
     assert any(sql.startswith("INSERT INTO recall_tenant_routes") for sql in connection.sql)
+
+
+def test_enterprise_registry_opens_with_read_only_catalog_validation(monkeypatch) -> None:
+    generation = IndexGeneration(
+        "active", "chunks_active", "profile-a", 8, "ready", 0, 0,
+        datetime.now(UTC), datetime.now(UTC),
+    )
+    route = TenantRoute("acme", generation, None, datetime.now(UTC))
+
+    class _Control:
+        def route(self, _tenant):
+            return route
+
+        def watch_routes(self, _callback, _stop):
+            return None
+
+    class _Store:
+        ensure_called = False
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def ensure_schema(self):
+            self.ensure_called = True
+
+        def readiness_facts(self):
+            return {"dimension": 8, "rls_enabled": True, "indexes_valid": True}
+
+        def check_rls_effective(self):
+            return True
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(stores_module, "PgVectorStore", _Store)
+    registry = StoreRegistry(
+        dsn="postgresql:///unused", dim=8, allowed_tenants=frozenset({"acme"}),
+        pool_size=1, statement_timeout_ms=1000, control_plane=_Control(),
+        embedding_profile="profile-a",
+    )
+    try:
+        store = registry.get("acme")
+        assert store.ensure_called is False
+    finally:
+        registry.close()

@@ -53,6 +53,8 @@ def check_enterprise_readiness(
             failures.append("row level security is ineffective for the runtime database role")
         if not facts["indexes_valid"]:
             failures.append("required HNSW or full text index is missing or invalid")
+        if facts["dimension"] != embedder.dim:
+            failures.append("physical table vector dimension does not match runtime")
         if facts["rows"] and facts["rows_without_profile"] and not allow_legacy_profile:
             failures.append("table has rows without an explicit embedding profile")
     if calibration is None:

@@ -174,7 +174,26 @@ class StoreRegistry:
                 generation_id=generation_id,
             )
             try:
-                store.ensure_schema()
+                if self._control_plane is None:
+                    store.ensure_schema()
+                else:
+                    # Enterprise tables are created by the dedicated migration role.
+                    # The runtime role has DML privileges only, so opening a routed store
+                    # must validate catalogs without attempting CREATE TABLE or ALTER TABLE.
+                    facts = store.readiness_facts()
+                    if facts["dimension"] != dimension:
+                        raise RuntimeError(
+                            f"generation {generation_id!r} physical vector dimension does not "
+                            "match its control plane metadata"
+                        )
+                    if not facts["rls_enabled"] or not store.check_rls_effective():
+                        raise RuntimeError(
+                            f"generation {generation_id!r} has ineffective row level security"
+                        )
+                    if not facts["indexes_valid"]:
+                        raise RuntimeError(
+                            f"generation {generation_id!r} has missing or invalid indexes"
+                        )
             except Exception:
                 store.close()
                 raise
