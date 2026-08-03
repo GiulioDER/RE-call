@@ -48,12 +48,17 @@ def main() -> None:
     if args.command == "migrate":
         control.apply_migrations()
     elif args.command == "create-generation":
-        # PgVectorStore registers the vector codec as soon as it connects.  A clean
-        # enterprise database therefore needs the extension before constructing the
-        # store, not later inside ensure_schema().  The migration role owns this isolated
-        # database and is the only role allowed to perform this bootstrap operation.
+        # PgVectorStore registers the vector codec as soon as it connects.  On PostgreSQL
+        # installations where pgvector is not a trusted extension, creating it requires a
+        # superuser.  Never solve that by elevating the migration role: require the database
+        # operator to install the extension once, then keep generation DDL restricted here.
         with psycopg.connect(dsn, autocommit=True) as conn:
-            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            vector_type = conn.execute("SELECT to_regtype('vector')").fetchone()
+        if vector_type is None or vector_type[0] is None:
+            raise RuntimeError(
+                "pgvector is not installed in this database; a database operator must run "
+                "CREATE EXTENSION vector before creating an index generation"
+            )
         control.register_generation(
             args.generation_id, args.table, args.profile, args.dimension
         )

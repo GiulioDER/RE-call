@@ -16,6 +16,15 @@ Set `RECALL_DSN` to the migration role connection, then apply the immutable migr
 recall-enterprise migrate
 ```
 
+The database operator must install pgvector once in a new database before the restricted
+migration role creates a generation:
+
+```sql
+CREATE EXTENSION vector;
+```
+
+Do not grant superuser or `BYPASSRLS` to the migration or runtime roles.
+
 Create an empty generation table and register its profile identity:
 
 ```console
