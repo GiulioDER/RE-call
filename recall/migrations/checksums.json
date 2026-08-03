@@ -5,5 +5,8 @@
   "0004_indexed_at_index.sql": "4d54f192ff2a7215810c4016db7fef417e568f85a03ba3b34c167c000bcf277c",
   "0005_source_index.sql": "6d3179e0d0000c29e3a1a7840c21df595d7f7e9f0225b47cba82d6f6e8ff48a9",
   "0006_file_index.sql": "209b2155753091264d1f0529c5ae5da97db5ca7882fc1904060e54c5c25c3aaa",
-  "0007_tenant_index.sql": "4f29246e59de5253bfd0ac60f46e14ddd3e9f7c1a0d026057d3cf65c87f04593"
+  "0007_tenant_index.sql": "4f29246e59de5253bfd0ac60f46e14ddd3e9f7c1a0d026057d3cf65c87f04593",
+  "0008_generation_foundation.sql": "7d2a8bc1de707b8b052b446cc096b26d2aecdf305026095c52c58b4dce32fb07",
+  "0009_chunks_v1_tsv_index.sql": "fd93c0cb5116d2cd36ce12255433cc2d64f113a51481b2e16e47054ae6c75eec",
+  "0010_chunks_v1_embedding_index.sql": "ad1c0b1ee4d924ffc3fc2241a44400c947ed98c08d5d3ed6293211266c99d774"
 }

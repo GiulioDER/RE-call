@@ -17,6 +17,7 @@ import psycopg
 import pytest
 
 from recall.schema import LEDGER_TABLE, apply_migrations
+from recall.generation_store import GenerationStore
 from recall_mcp.auth import SCOPE_FORGET, SCOPE_READ, SCOPE_WRITE, AuthConfigError
 from recall_mcp.server import HTTP_TRANSPORTS, RecallTokenVerifier, build_auth
 from recall_mcp.stores import StoreRegistry
@@ -169,6 +170,22 @@ def test_connection_budget_is_computable_before_serving_traffic():
 
 def test_nothing_is_opened_until_a_request_arrives():
     assert registry().open_tenants == frozenset()
+
+
+@requires_db
+def test_production_registry_opens_generation_store_not_legacy_table():
+    reg = StoreRegistry(
+        dsn=TEST_DSN,
+        dim=64,
+        allowed_tenants=frozenset({"generation-tenant"}),
+        pool_size=1,
+        statement_timeout_ms=1000,
+        generation_mode=True,
+    )
+    try:
+        assert isinstance(reg.get("generation-tenant"), GenerationStore)
+    finally:
+        reg.close()
 
 
 def test_a_closed_registry_refuses_to_hand_out_stores():

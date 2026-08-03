@@ -37,8 +37,8 @@ jobs:
           cache: pip
       - name: Install
         run: pip install -e ".[dev]"
-      - name: Exercise fresh, upgrade, drift, lock and serving-role paths
-        run: pytest -q tests/test_schema_migrations.py
+      - name: Exercise migrations, lineage and generation lifecycle
+        run: pytest -q tests/test_schema_migrations.py tests/test_generations.py
 
   test:
     runs-on: ubuntu-latest

@@ -6,6 +6,12 @@ from recall_mcp.service import index_memory, search_memory
 from tests.conftest import requires_db
 
 
+def test_production_refuses_local_filesystem_ingestion_before_reading(monkeypatch) -> None:
+    monkeypatch.setenv("RECALL_ENV", "production")
+    with pytest.raises(ValueError, match="development-only"):
+        index_memory(object(), object(), "private/local/path")  # type: ignore[arg-type]
+
+
 @requires_db
 def test_index_then_search(tmp_path, make_store, monkeypatch):
     monkeypatch.setenv("RECALL_INDEX_ROOT", str(tmp_path))

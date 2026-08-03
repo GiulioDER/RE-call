@@ -74,6 +74,7 @@ pool = ["psycopg-pool>=3.2"]
 # Keep this in step with the `dev` extra below.
 mcp = ["mcp>=1.27.2,<2", "psycopg-pool>=3.2"]
 voyage = ["voyageai>=0.2"]
+s3 = ["boto3>=1.35"]
 # NB: rerank / entail / finetune pin the same sentence-transformers floor — bump all three together.
 rerank = ["sentence-transformers>=3.0"]
 entail = ["sentence-transformers>=3.0"]
@@ -221,6 +222,8 @@ module = [
     # includes `benchmarks`, and the typecheck job installs `.[dev]` only, so without this the job
     # fails on a dependency it deliberately does not install.
     "pyarrow.*",
+    # S3 extra. Imported lazily by recall.manifest and absent from the default/dev install.
+    "boto3.*",
     # mem-bench: a SEPARATE repo, deliberately NOT a dependency of this one. Its `membench` package
     # is stdlib-only and its "$0 to recompute" claim depends on staying that way, so we put it on
     # PYTHONPATH at run time rather than installing it. `benchmarks/membench/` holds our

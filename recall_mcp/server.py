@@ -235,6 +235,7 @@ def _make_lifespan(
         registry: StoreRegistry | None = None
         try:
             embedder = make_embedder(EMBEDDER_NAME)
+            generation_mode = os.environ.get("RECALL_ENV", "development").lower() == "production"
             # Inspect migration state before PgVectorStore prepares a pgvector codec. On a fresh
             # database the extension deliberately does not exist yet; reporting "migrations
             # pending" is more useful than leaking the driver's missing-type error. This path is
@@ -250,13 +251,24 @@ def _make_lifespan(
             if token_registry is None:
                 # Pooled + timed out: a server shares this store across concurrent tool calls,
                 # and one connection would serialise them however many threads are available.
-                store = PgVectorStore(
-                    DEFAULT_DSN,
-                    dim=embedder.dim,
-                    tenant=TENANT,
-                    pool_size=POOL_SIZE,
-                    statement_timeout_ms=STATEMENT_TIMEOUT_MS,
-                )
+                if generation_mode:
+                    from recall.generation_store import GenerationStore
+
+                    store = GenerationStore(
+                        DEFAULT_DSN,
+                        dim=embedder.dim,
+                        tenant=TENANT,
+                        pool_size=POOL_SIZE,
+                        statement_timeout_ms=STATEMENT_TIMEOUT_MS,
+                    )
+                else:
+                    store = PgVectorStore(
+                        DEFAULT_DSN,
+                        dim=embedder.dim,
+                        tenant=TENANT,
+                        pool_size=POOL_SIZE,
+                        statement_timeout_ms=STATEMENT_TIMEOUT_MS,
+                    )
             else:
                 registry = StoreRegistry(
                     dsn=DEFAULT_DSN,
@@ -264,6 +276,7 @@ def _make_lifespan(
                     allowed_tenants=token_registry.tenants,
                     pool_size=POOL_SIZE,
                     statement_timeout_ms=STATEMENT_TIMEOUT_MS,
+                    generation_mode=generation_mode,
                 )
         except Exception:
             _log.error(

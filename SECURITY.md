@@ -134,6 +134,11 @@ silently prefers the cloud embedder over the local one, etc.).
   explicit, greppable opt-out for a genuinely private network. Do not set that variable to silence
   the warning without actually changing the password.
 - **`.env` is never committed** (`.gitignore`) and `.env.example` documents the keys without values.
+- **S3 corpus access is deployment-owned.** `RECALL_S3_ALLOWLIST` constrains bucket and prefix;
+  `RECALL_S3_ENDPOINT_URL` is read only from the server environment. Manifests and requests cannot
+  provide credentials or endpoints. The SDK credential chain should resolve a workload identity
+  with read access only to immutable versioned corpus objects. RE-call verifies version ID, size,
+  and SHA-256 before indexing.
 
 ## The evaluation harness (`recall/eval/`)
 

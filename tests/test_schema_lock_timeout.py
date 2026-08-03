@@ -40,9 +40,9 @@ def test_the_lock_bound_is_in_force_during_the_ddl(table_name, monkeypatch):
     seen: list[str] = []
     original = schema_module._run_transactional
 
-    def spy(conn, table, dim, migration):
+    def spy(conn, table, dim, migration, ledger_target):
         seen.append(conn.execute("SHOW lock_timeout").fetchone()[0])
-        return original(conn, table, dim, migration)
+        return original(conn, table, dim, migration, ledger_target)
 
     monkeypatch.setattr(schema_module, "_run_transactional", spy)
     with PgVectorStore(TEST_DSN, dim=4, table=table_name, statement_timeout_ms=15000) as store:

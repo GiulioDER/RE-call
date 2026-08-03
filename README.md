@@ -464,6 +464,23 @@ Set `RECALL_SERVING_DSN` for application traffic and `RECALL_MIGRATION_DSN` only
 job. See [database migrations and roles](docs/MIGRATIONS.md). `RECALL_DSN` remains a deprecated
 development fallback for the serving DSN.
 
+### Immutable index generations
+
+The generation index path fingerprints the embedder revision, chunker configuration, FTS configuration,
+and immutable object manifest. It builds a replacement generation without mutating the active
+one, then promotes or rolls back by atomically changing tenant pointers. Equal vector dimensions
+do not permit reuse across models or revisions. Legacy rows are registered as
+`legacy_unverified` and never become an active strict generation index.
+
+Production object access requires a deployment-owned bucket and prefix allowlist; requests cannot
+supply credentials or an endpoint. Every object version, length, and cryptographic digest is
+verified before embedding. See the
+[generation operations guide](docs/GENERATIONS.md) for manifest commands, lifecycle rules,
+retention, the rebuild storage budget, and erasure semantics.
+
+Calibration-bound certification arrives in later implementation sessions. Until it does,
+generation promotion is blocked in production and requires an explicit unsafe flag in development.
+
 > **Two operational notes.** The test suite **DROPs tables**, so it reads a separate
 > `RECALL_TEST_DSN` and never the serving DSN — exporting your real DSN and running `pytest` cannot
 > touch it. And the MCP server **refuses to start** if `RECALL_SERVING_DSN` (or its deprecated
@@ -571,6 +588,10 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 - **No bundled HA.** Versioned, checksum-verified migrations and an unprivileged serving role now
   ship, but replication, backups, failover and managed-Postgres operations remain yours until the
   production reference deployment lands.
+- **The generation path is not certified yet.** Immutable lineage and atomic blue-green
+  generations ship, but tenant/generation-bound calibration and strict certification are later
+  sessions. Production promotion therefore fails closed. This repository does not yet claim the
+  seven-session enterprise target is complete.
 
 
 ## Engineering
