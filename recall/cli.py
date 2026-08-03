@@ -6,8 +6,8 @@ import os
 import sys
 from pathlib import Path
 
-from recall.calibration import Calibration, from_samples, load_for, save
-from recall.embeddings import Embedder, HashingEmbedder, embedding_profile_id
+from recall.calibration import Calibration
+from recall.embeddings import Embedder, HashingEmbedder
 from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
@@ -51,9 +51,7 @@ def _print_result(result: TrustedResult) -> None:
         preview = terminal_safe(h.chunk.text).replace("\n", " ")[:52]
         name = terminal_safe(h.provenance.file or h.chunk.source)
         redirect = (
-            f" -> use {terminal_safe(h.validity.superseded_by)}"
-            if h.validity.superseded_by
-            else ""
+            f" -> use {terminal_safe(h.validity.superseded_by)}" if h.validity.superseded_by else ""
         )
         print(
             f"  {h.verdict:<14} conf={h.confidence:.2f} cos={h.cosine:.3f}  "
@@ -62,7 +60,9 @@ def _print_result(result: TrustedResult) -> None:
 
 
 def _run_queries(
-    store: PgVectorStore, embedder: Embedder, queries: list[str],
+    store: PgVectorStore,
+    embedder: Embedder,
+    queries: list[str],
     calibration: Calibration | None,
 ) -> None:
     for q in queries:
@@ -78,30 +78,38 @@ def main(argv: list[str] | None = None) -> None:
     configure_logging()
     parser = argparse.ArgumentParser(prog="recall")
     parser.add_argument(
-        "--serving-dsn", "--dsn", dest="dsn", default=DEFAULT_DSN,
+        "--serving-dsn",
+        "--dsn",
+        dest="dsn",
+        default=DEFAULT_DSN,
         help="unprivileged application DSN (env: RECALL_SERVING_DSN; --dsn is deprecated)",
     )
     parser.add_argument(
-        "--migration-dsn", default=DEFAULT_MIGRATION_DSN,
+        "--migration-dsn",
+        default=DEFAULT_MIGRATION_DSN,
         help="DDL-owner DSN used only by `schema apply` (env: RECALL_MIGRATION_DSN)",
     )
     parser.add_argument("--embedder", default="fastembed", choices=["fastembed", "hashing"])
     parser.add_argument(
-        "--table", default="chunks",
+        "--table",
+        default="chunks",
         help="table to read/write (default: chunks). Use a throwaway name to keep an "
-             "experiment out of your real memory index.",
+        "experiment out of your real memory index.",
     )
     parser.add_argument(
-        "--tenant", default=DEFAULT_TENANT,
+        "--tenant",
+        default=DEFAULT_TENANT,
         help=f"tenant namespace to operate on (default: {DEFAULT_TENANT}). Every command is "
-             f"scoped to one tenant; `forget` in particular deletes nothing outside it, so an "
-             f"erasure request against another tenant needs this flag.",
+        f"scoped to one tenant; `forget` in particular deletes nothing outside it, so an "
+        f"erasure request against another tenant needs this flag.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_schema = sub.add_parser("schema", help="inspect or apply versioned database migrations")
     p_schema.add_argument(
-        "--dim", type=int, default=None,
+        "--dim",
+        type=int,
+        default=None,
         help="embedding dimension (default: infer from --embedder)",
     )
     schema_sub = p_schema.add_subparsers(dest="schema_cmd", required=True)
@@ -111,7 +119,9 @@ def main(argv: list[str] | None = None) -> None:
 
     p_manifest = sub.add_parser("manifest", help="create or verify immutable corpus manifests")
     manifest_sub = p_manifest.add_subparsers(dest="manifest_cmd", required=True)
-    p_manifest_create = manifest_sub.add_parser("create", help="canonicalise an S3 object inventory")
+    p_manifest_create = manifest_sub.add_parser(
+        "create", help="canonicalise an S3 object inventory"
+    )
     p_manifest_create.add_argument("--corpus-version", required=True)
     p_manifest_create.add_argument("--objects", required=True, help="JSON array of object entries")
     p_manifest_create.add_argument("--output", required=True)
@@ -149,15 +159,17 @@ def main(argv: list[str] | None = None) -> None:
     p_index = sub.add_parser("index", help="index a folder of markdown or code")
     p_index.add_argument("path")
     p_index.add_argument(
-        "--glob", default=DEFAULT_GLOB,
+        "--glob",
+        default=DEFAULT_GLOB,
         help="file glob to index — e.g. '**/*.py' for code (auto-uses code chunking). Default: markdown.",
     )
     p_index.add_argument(
-        "--allow-prune", action="store_true",
+        "--allow-prune",
+        action="store_true",
         help="permit this run to drop most of the indexed corpus. Re-indexing removes files that "
-             "are gone from disk; when most of them vanish at once that is refused, because it "
-             "usually means the corpus is missing rather than deleted. Pass this once you have "
-             "confirmed the files really are gone.",
+        "are gone from disk; when most of them vanish at once that is refused, because it "
+        "usually means the corpus is missing rather than deleted. Pass this once you have "
+        "confirmed the files really are gone.",
     )
 
     p_forget = sub.add_parser(
@@ -165,25 +177,28 @@ def main(argv: list[str] | None = None) -> None:
         help="permanently delete indexed memory for the given source(s) — irreversible",
     )
     p_forget.add_argument(
-        "sources", nargs="+",
+        "sources",
+        nargs="+",
         help="source value(s) to forget, exactly as stored (see the `source` field in "
-             "`recall search` output)",
+        "`recall search` output)",
     )
     p_forget.add_argument(
-        "--yes", action="store_true",
+        "--yes",
+        action="store_true",
         help="actually delete. Without this flag, forget only PREVIEWS what would be removed "
-             "and changes nothing — this command is the right-to-erasure path, it is "
-             "irreversible, and it is also invoked from scripts, so a typo or an unattended "
-             "run must not silently wipe a corpus. Re-run with --yes once the preview looks right.",
+        "and changes nothing — this command is the right-to-erasure path, it is "
+        "irreversible, and it is also invoked from scripts, so a typo or an unattended "
+        "run must not silently wipe a corpus. Re-run with --yes once the preview looks right.",
     )
 
     p_search = sub.add_parser("search", help="search the index")
     p_search.add_argument("query")
     p_search.add_argument("-k", type=int, default=5)
     p_search.add_argument(
-        "--entail", action="store_true",
+        "--entail",
+        action="store_true",
         help="opt-in entailment stage: demote hits that don't answer the query "
-             "(requires recall[entail]; downloads the QNLI judge on first use)",
+        "(requires recall[entail]; downloads the QNLI judge on first use)",
     )
 
     sub.add_parser("demo", help="index corpus/ and run sample memory queries")
@@ -196,48 +211,66 @@ def main(argv: list[str] | None = None) -> None:
     p_lint.add_argument("path")
     p_lint.add_argument("--glob", default=DEFAULT_GLOB)
     p_lint.add_argument(
-        "--semantic", action="store_true",
+        "--semantic",
+        action="store_true",
         help="also run the retrieval-based MISSING-edge check: flag memos highly similar to a "
-             "prior closed decision they don't reference (needs the DB + embedder; opt-in)",
+        "prior closed decision they don't reference (needs the DB + embedder; opt-in)",
     )
     p_lint.add_argument(
-        "--fix", action="store_true",
+        "--fix",
+        action="store_true",
         help="propose the frontmatter `supersedes:` edge for each closure marker whose target "
-             "is provable. DRY RUN by default — prints the plan and changes nothing.",
+        "is provable. DRY RUN by default — prints the plan and changes nothing.",
     )
     p_lint.add_argument(
-        "--apply", action="store_true",
+        "--apply",
+        action="store_true",
         help="with --fix, actually write the proposed edges to the memo files",
     )
     p_lint.add_argument(
-        "--threshold", type=float, default=None,
+        "--threshold",
+        type=float,
+        default=None,
         help="cosine threshold for --semantic (default: the calibrated abstention threshold "
-             "for this embedder; must be calibrated per embedder — see FINDINGS section 2)",
+        "for this embedder; must be calibrated per embedder — see FINDINGS section 2)",
     )
 
     p_check = sub.add_parser(
         "check",
         help="write-time gate: for the memo(s) you are committing, ask for the supersession "
-             "edge while you still know the answer (no DB needed)",
+        "edge while you still know the answer (no DB needed)",
     )
     p_check.add_argument("paths", nargs="+", help="the memo file(s) being written")
     p_check.add_argument(
-        "--corpus", default=None,
+        "--corpus",
+        default=None,
         help="corpus dir used to filter candidates to real documents (default: each file's own "
-             "directory)",
+        "directory)",
     )
     p_check.add_argument(
-        "--strict", action="store_true",
+        "--strict",
+        action="store_true",
         help="exit 1 when a memo needs an edge — use this in a pre-commit hook",
     )
 
     p_cal = sub.add_parser(
         "calibrate",
-        help="calibrate the abstention threshold for this embedder against labeled queries",
+        help="measure a calibration bound to one immutable generation",
     )
-    p_cal.add_argument("queries", help="JSON list of {query, answerable, relevant_ids} entries")
-    p_cal.add_argument("--corpus", default=None, help="corpus dir (default: the built-in eval corpus)")
-    p_cal.add_argument("--out", default=None, help="output path (default: calibration.json)")
+    p_cal.add_argument("--generation", required=True)
+    p_cal.add_argument("--queries", dest="query_file", required=True)
+    p_cal.add_argument("--publish", action="store_true")
+
+    p_calibration = sub.add_parser("calibration", help="inspect or transfer calibration artifacts")
+    calibration_sub = p_calibration.add_subparsers(dest="calibration_cmd", required=True)
+    calibration_sub.add_parser("list")
+    p_cal_show = calibration_sub.add_parser("show")
+    p_cal_show.add_argument("calibration_id")
+    p_cal_export = calibration_sub.add_parser("export")
+    p_cal_export.add_argument("calibration_id")
+    p_cal_export.add_argument("--output", required=True)
+    p_cal_import = calibration_sub.add_parser("import")
+    p_cal_import.add_argument("path")
 
     args = parser.parse_args(argv)
     warn_if_insecure_dsn(args.dsn)  # loud stderr note if default creds target a remote host
@@ -295,9 +328,7 @@ def main(argv: list[str] | None = None) -> None:
         reader = S3ObjectReader.from_environment()
         if args.manifest.startswith("s3://"):
             if args.version_id is None or args.sha256 is None or args.size is None:
-                raise SystemExit(
-                    "an S3 manifest requires --version-id, --sha256 and --size"
-                )
+                raise SystemExit("an S3 manifest requires --version-id, --sha256 and --size")
             reference = ManifestObjectV1(
                 args.manifest,
                 args.version_id,
@@ -336,10 +367,7 @@ def main(argv: list[str] | None = None) -> None:
                 retention_days=args.retention_days,
                 retain_previous=args.retain_previous,
             )
-            print(
-                f"collected {len(collected)} generation(s): "
-                f"{', '.join(collected) or '(none)'}"
-            )
+            print(f"collected {len(collected)} generation(s): {', '.join(collected) or '(none)'}")
             return
         if args.generation_cmd == "validate":
             generation_validation = manager.validate(args.generation_id)
@@ -405,8 +433,11 @@ def main(argv: list[str] | None = None) -> None:
             revision=revision,
             artifact_digest=args.embedder_artifact_digest,
             unverified_reason=(
-                "explicit development build" if args.unverified_development and not revision
-                and not args.embedder_artifact_digest else None
+                "explicit development build"
+                if args.unverified_development
+                and not revision
+                and not args.embedder_artifact_digest
+                else None
             ),
         )
         if args.chunker == "code":
@@ -481,15 +512,14 @@ def main(argv: list[str] | None = None) -> None:
             from recall.semantic_lint import semantic_lint
 
             emb = _make_embedder(args.embedder)
-            cal = load_for(embedding_profile_id(emb))
-            thr = args.threshold if args.threshold is not None else (
-                cal.threshold if cal else 0.70
-            )
+            thr = args.threshold if args.threshold is not None else 0.70
             chains = semantic_lint(args.dsn, emb, args.path, threshold=thr, glob=args.glob)
             for c in chains:
-                print(f"warning  unlinked-chain             {c.new_memo}: highly similar "
-                      f"(cos={c.cosine:.2f}) to closed decision {c.prior!r} it does not "
-                      f"reference — add `supersedes: {c.prior}`?")
+                print(
+                    f"warning  unlinked-chain             {c.new_memo}: highly similar "
+                    f"(cos={c.cosine:.2f}) to closed decision {c.prior!r} it does not "
+                    f"reference — add `supersedes: {c.prior}`?"
+                )
             warnings += len(chains)
 
         print(f"{errors} errors, {warnings} warnings")
@@ -517,8 +547,47 @@ def main(argv: list[str] | None = None) -> None:
                 raise SystemExit(1)
         return
 
+    if args.cmd == "calibration":
+        import json
+
+        from recall.calibration_v2 import CalibrationError, CalibrationRepository
+
+        repository = CalibrationRepository(args.dsn, args.tenant)
+        try:
+            if args.calibration_cmd == "list":
+                print(json.dumps(repository.list_records(), indent=2, default=str))
+            elif args.calibration_cmd == "show":
+                print(
+                    json.dumps(repository.show_record(args.calibration_id), indent=2, default=str)
+                )
+            elif args.calibration_cmd == "export":
+                print(repository.export_bundle(args.calibration_id, args.output))
+            else:
+                print(repository.import_bundle(args.path))
+        except CalibrationError as exc:
+            raise SystemExit(str(exc)) from exc
+        return
+
     embedder = _make_embedder(args.embedder)
-    calibration = load_for(embedding_profile_id(embedder))
+    if args.cmd == "calibrate":
+        from recall.calibration_v2 import CalibrationError, CalibrationRepository, load_query_set
+
+        repository = CalibrationRepository(args.dsn, args.tenant)
+        try:
+            labels, _digest = load_query_set(args.query_file)
+            artifact = repository.calibrate(args.generation, labels, embedder)
+            if args.publish:
+                artifact = repository.publish(artifact.calibration_id)
+        except CalibrationError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(f"calibration: {artifact.calibration_id}")
+        print(f"status: {artifact.status.value}")
+        print(f"generation: {artifact.generation_id}")
+        print(f"pipeline: {artifact.pipeline_fingerprint}")
+        print(f"corpus: {artifact.corpus_fingerprint}")
+        print(f"queries: {artifact.query_set_digest}")
+        return
+    calibration = None
 
     if args.cmd == "index":
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
@@ -527,7 +596,9 @@ def main(argv: list[str] | None = None) -> None:
                 "manifest in production"
             )
         chunker = chunk_code if args.glob.endswith(".py") else chunk_text
-        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
+        with PgVectorStore(
+            args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
+        ) as store:
             store.check_schema()
             indexer = Indexer(store, embedder, chunker=chunker, allow_prune=args.allow_prune)
             try:
@@ -563,8 +634,10 @@ def main(argv: list[str] | None = None) -> None:
             found = [s for s in requested if s in existing]
             not_found = [s for s in requested if s not in existing]
             if not args.yes:
-                print(f"DRY RUN: would forget {len(found)} source(s): "
-                      f"{', '.join(found) if found else '(none)'}")
+                print(
+                    f"DRY RUN: would forget {len(found)} source(s): "
+                    f"{', '.join(found) if found else '(none)'}"
+                )
                 if not_found:
                     print(f"not found (check for typos): {', '.join(not_found)}")
                 print("nothing deleted — re-run with --yes to actually delete.")
@@ -592,104 +665,55 @@ def main(argv: list[str] | None = None) -> None:
         with store_context as store:
             store.check_schema()
             _print_result(
-                trusted_search(store, embedder, args.query, k=args.k, calibration=calibration,
-                               entailment=entail_judge)
+                trusted_search(
+                    store,
+                    embedder,
+                    args.query,
+                    k=args.k,
+                    calibration=calibration,
+                    entailment=entail_judge,
+                )
             )
     elif args.cmd == "demo":
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
             raise SystemExit("the filesystem demo is unavailable in production")
-        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
+        with PgVectorStore(
+            args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
+        ) as store:
             store.check_schema()
             stats = Indexer(store, embedder).index_path("corpus")
             print(f"indexed {stats.chunks} chunks from {stats.files} files\n")
-            _run_queries(store, embedder, [
-                "what did we decide about caching?",
-                "do we inject retrieved context into the prompt?",
-                "how many requests per second can a client make?",
-                "how do we handle penguins on mars?",
-            ], calibration)
+            _run_queries(
+                store,
+                embedder,
+                [
+                    "what did we decide about caching?",
+                    "do we inject retrieved context into the prompt?",
+                    "how many requests per second can a client make?",
+                    "how do we handle penguins on mars?",
+                ],
+                calibration,
+            )
     elif args.cmd == "code":
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
             raise SystemExit("local source indexing is unavailable in production")
         # index recall's own package source (content-agnostic engine, code-aware chunking)
         src = Path(__file__).resolve().parent
-        with PgVectorStore(args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant) as store:
+        with PgVectorStore(
+            args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant
+        ) as store:
             store.check_schema()
             stats = Indexer(store, embedder, chunker=chunk_code).index_path(src, glob="**/*.py")
             print(f"indexed {stats.chunks} code chunks from {stats.files} files\n")
-            _run_queries(store, embedder, [
-                "where is reciprocal rank fusion implemented?",
-                "how are embeddings stored in postgres?",
-                "how does cross-encoder reranking reorder hits?",
-            ], calibration)
-    elif args.cmd == "calibrate":
-        import json
-
-        from recall.calibration import ENV_VAR, _resolve_path
-        from recall.eval.calibrate import calibrate as run_calibration
-
-        # fail fast on a malformed or one-class queries file: a calibration built without both
-        # answerable AND unanswerable samples is degenerate, and saving it silently would arm a
-        # meaningless threshold
-        try:
-            entries = json.loads(Path(args.queries).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise SystemExit(f"cannot read queries file {args.queries!r}: {exc}") from exc
-        labeled = [q for q in entries if isinstance(q, dict) and not q.get("trust")]
-        if not all("query" in q and "answerable" in q for q in labeled):
-            raise SystemExit(
-                "queries file entries need 'query' and 'answerable' keys "
-                "(see recall/eval/queries.json for the format)"
+            _run_queries(
+                store,
+                embedder,
+                [
+                    "where is reciprocal rank fusion implemented?",
+                    "how are embeddings stored in postgres?",
+                    "how does cross-encoder reranking reorder hits?",
+                ],
+                calibration,
             )
-        if not any(q["answerable"] for q in labeled) or not any(
-            not q["answerable"] for q in labeled
-        ):
-            raise SystemExit(
-                "queries file needs at least one answerable AND one unanswerable entry — "
-                "a one-class file cannot calibrate an abstention threshold"
-            )
-
-        measured = run_calibration(
-            args.dsn,
-            embedder,
-            corpus_dir=Path(args.corpus) if args.corpus else None,
-            queries_path=Path(args.queries),
-        )
-        cal = from_samples(
-            embedding_profile_id(embedder), measured.answerable_max_cos,
-            measured.unanswerable_max_cos
-        )
-        path = save(cal, args.out)
-        print(f"embedder:  {embedding_profile_id(embedder)}")
-        print(f"threshold: {cal.threshold} (scale {cal.scale})")
-        sep = "n/a" if cal.separability is None else f"{cal.separability:.3f}"
-        ci = cal.separability_ci
-        # The interval, not just the point, because the bar is applied to its lower bound — a
-        # reader who sees only "0.95" cannot reconstruct why a certification failed.
-        sep_ci = "" if ci is None else f" [{ci[0]:.3f}, {ci[1]:.3f}]"
-        print(f"separability (AUC): {sep}{sep_ci} over {cal.n_answerable} answerable / "
-              f"{cal.n_unanswerable} unanswerable")
-        print(f"FCR at default 0.50: {measured.fcr_at_050:.2f} -> at calibrated: "
-              f"{measured.fcr_at_suggested:.2f}")
-        print(f"saved: {path}")
-        if args.out and Path(args.out).resolve() != _resolve_path(None).resolve():
-            print(f"note: searches load {_resolve_path(None)} by default — set "
-                  f"{ENV_VAR}={path} for this file to be used")
-
-        # Exit non-zero on a threshold the data does not support. The file is still written: the
-        # artifact records `certified: false` and the reason, and refusing to write would destroy
-        # the evidence of WHY. What changes is that a calibration step can now fail — measured on
-        # LongMemEval, an uncertified threshold refused 44% of the questions retrieval had just
-        # answered correctly, and neither the API nor the file said anything was wrong.
-        if cal.certified is False:
-            print(f"\nNOT CERTIFIED: {cal.certification_reason}", file=sys.stderr)
-            print("Saved anyway — there is no better threshold for this data — but abstention on "
-                  "this corpus is not trustworthy. Do NOT read an abstention as evidence that the "
-                  "answer is absent.", file=sys.stderr)
-            raise SystemExit(1)
-        if cal.certified is None:
-            print(f"\nnot judged: {cal.certification_reason}", file=sys.stderr)
-
-
 if __name__ == "__main__":
     main()

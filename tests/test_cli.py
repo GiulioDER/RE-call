@@ -68,8 +68,7 @@ def test_cli_demo_shows_supersession_redirect(capsys, cli_table):
     assert "rate_limits_v2.md" in out   # the successor is surfaced
 
 
-@requires_db
-def test_cli_calibrate_writes_calibration_file(tmp_path, capsys):
+def test_cli_legacy_process_global_calibration_form_is_rejected(tmp_path):
     import json
 
     (tmp_path / "a.md").write_text("cats purr loudly", encoding="utf-8")
@@ -83,26 +82,10 @@ def test_cli_calibrate_writes_calibration_file(tmp_path, capsys):
         ),
         encoding="utf-8",
     )
-    out_path = tmp_path / "cal.json"
-    # Two samples cannot support a percentile boundary (FINDINGS §6), so the separability check
-    # refuses to certify and `calibrate` exits non-zero — while STILL writing the file, because
-    # the artifact is what records why. A calibration step that cannot fail is not a check.
     with pytest.raises(SystemExit) as exc:
-        main(
-            ["--embedder", "hashing", "--dsn", TEST_DSN, "calibrate", str(queries),
-             "--corpus", str(tmp_path), "--out", str(out_path)]
-        )
-    assert exc.value.code == 1
-
-    data = json.loads(out_path.read_text(encoding="utf-8"))
-    assert data["embedder"] == "hashing-64"
-    assert "threshold" in data and "scale" in data
-    assert data["certified"] is False
-    assert "sample" in data["certification_reason"].lower()
-    captured = capsys.readouterr()
-    assert "threshold" in captured.out
-    assert "separability" in captured.out
-    assert "NOT CERTIFIED" in captured.err
+        main(["--embedder", "hashing", "calibrate", str(queries)])
+    assert exc.value.code == 2
+    assert not (tmp_path / "calibration.json").exists()
 
 
 @requires_db

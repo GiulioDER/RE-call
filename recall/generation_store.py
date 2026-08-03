@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import psycopg
 from pgvector import Vector
@@ -21,6 +21,9 @@ from recall.store import (
     resolve_supersession_candidates,
 )
 from recall.types import Chunk, ScoredChunk
+
+if TYPE_CHECKING:
+    from recall.calibration_v2 import CalibrationResolution
 
 
 class ImmutableGenerationError(RuntimeError):
@@ -57,9 +60,7 @@ class GenerationStore(PgVectorStore):
         from recall.schema import check_schema
 
         self._with_retry(
-            lambda conn: check_schema(
-                conn, table=self._migration_target, dim=self._dim
-            )
+            lambda conn: check_schema(conn, table=self._migration_target, dim=self._dim)
         )
 
     def ensure_schema(self) -> None:
@@ -101,6 +102,51 @@ class GenerationStore(PgVectorStore):
     def _generation_id(self) -> str:
         return self._pinned_generation.get() or self.active_generation_id()
 
+    @contextmanager
+    def pin_generation(self, generation_id: str) -> Iterator[str]:
+        """Administrative read view for calibrating one explicit immutable generation."""
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT 1 FROM recall_generations WHERE tenant_id = %s "
+                "AND generation_id = %s AND state IN ('ready', 'active', 'retired')",
+                (self._tenant, generation_id),
+            ).fetchone()
+        )
+        if row is None:
+            raise NoActiveGeneration(
+                f"tenant {self._tenant!r} has no calibratable generation {generation_id!r}"
+            )
+        token = self._pinned_generation.set(generation_id)
+        try:
+            yield generation_id
+        finally:
+            self._pinned_generation.reset(token)
+
+    def generation_binding(self) -> dict[str, str]:
+        generation_id = self._generation_id()
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT pipeline_fingerprint, corpus_fingerprint FROM recall_generations "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (self._tenant, generation_id),
+            ).fetchone()
+        )
+        if row is None:
+            raise NoActiveGeneration(generation_id)
+        return {
+            "tenant_id": self._tenant,
+            "generation_id": generation_id,
+            "pipeline_fingerprint": str(row[0]),
+            "corpus_fingerprint": str(row[1]),
+        }
+
+    def resolve_calibration(self) -> CalibrationResolution:
+        from recall.calibration_v2 import CalibrationRepository
+
+        return CalibrationRepository(self._dsn, self._tenant, actor="generation-search").resolve(
+            self._generation_id()
+        )
+
     @staticmethod
     def _generation_rows(rows: list[tuple[Any, ...]]) -> list[ScoredChunk]:
         hits: list[ScoredChunk] = []
@@ -128,9 +174,7 @@ class GenerationStore(PgVectorStore):
             raise ValueError("k must be a positive int")
         generation_id = self._generation_id()
         source_filter = (
-            "AND (metadata->>'file' = %(source)s OR source_uri = %(source)s)"
-            if source
-            else ""
+            "AND (metadata->>'file' = %(source)s OR source_uri = %(source)s)" if source else ""
         )
         sql = f"""
             SELECT chunk_id, source_uri, text, metadata, indexed_at,
@@ -169,9 +213,7 @@ class GenerationStore(PgVectorStore):
             raise ValueError("k must be a positive int")
         generation_id = self._generation_id()
         source_filter = (
-            "AND (c.metadata->>'file' = %(source)s OR c.source_uri = %(source)s)"
-            if source
-            else ""
+            "AND (c.metadata->>'file' = %(source)s OR c.source_uri = %(source)s)" if source else ""
         )
         score = "1 - (embedding <=> %(vec)s)" if vec is not None else "rank"
         sql = f"""
@@ -225,8 +267,7 @@ class GenerationStore(PgVectorStore):
         generation_id = self._generation_id()
         row = self._with_retry(
             lambda conn: conn.execute(
-                "SELECT count(*) FROM recall_chunks_v1 "
-                "WHERE tenant_id = %s AND generation_id = %s",
+                "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s",
                 (self._tenant, generation_id),
             ).fetchone()
         )
@@ -260,9 +301,11 @@ class GenerationStore(PgVectorStore):
             ).fetchall()
         )
         edges, unresolved, candidates = resolve_supersession_candidates(rows)
-        return dict(edges), unresolved, {
-            target: list(claims) for target, claims in candidates.items()
-        }
+        return (
+            dict(edges),
+            unresolved,
+            {target: list(claims) for target, claims in candidates.items()},
+        )
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         if not identifiers:
@@ -287,17 +330,19 @@ class GenerationStore(PgVectorStore):
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
         generation_id = self._generation_id()
-        with self._borrowed() as conn:
-            with conn.cursor(name=f"recall_gen_{uuid.uuid4().hex[:12]}") as cur:
-                cur.execute(
-                    "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
-                    "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
-                    (self._tenant, generation_id),
-                )
-                while rows := cur.fetchmany(batch_size):
-                    for chunk_id, source, text, metadata in rows:
-                        value = metadata if isinstance(metadata, dict) else json.loads(metadata)
-                        yield Chunk(str(chunk_id), str(source), str(text), value)
+        with (
+            self._borrowed() as conn,
+            conn.cursor(name=f"recall_gen_{uuid.uuid4().hex[:12]}") as cur,
+        ):
+            cur.execute(
+                "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
+                (self._tenant, generation_id),
+            )
+            while rows := cur.fetchmany(batch_size):
+                for chunk_id, source, text, metadata in rows:
+                    value = metadata if isinstance(metadata, dict) else json.loads(metadata)
+                    yield Chunk(str(chunk_id), str(source), str(text), value)
 
     def upsert(self, chunks: list[Chunk], embeddings: list[list[float]]) -> int:
         raise ImmutableGenerationError("active generations are read only")

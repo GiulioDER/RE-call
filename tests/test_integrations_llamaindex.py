@@ -47,9 +47,10 @@ def _result(hits: list[TrustedHit], *, abstained: bool = False, reason: str = ""
         hits=hits,
         abstained=abstained,
         reason=reason,
-        calibrated=True,
         gap_warning=abstained,
         staleness=_staleness(),
+        calibration_id="cal_fixture",
+        calibration_status="certified",
     )
 
 

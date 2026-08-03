@@ -140,6 +140,19 @@ silently prefers the cloud embedder over the local one, etc.).
   with read access only to immutable versioned corpus objects. RE-call verifies version ID, size,
   and SHA-256 before indexing.
 
+## Calibration artifacts are tenant data
+
+The v1 search path resolves calibration through the authenticated tenant and the active immutable
+generation. Applicability requires exact tenant, generation, pipeline, corpus, and labelled query
+set digests. Legacy `calibration.json` files are not selected automatically; importing one retains
+it as `legacy_unbound` evidence only. Calibration exports include the labelled questions and raw
+retrieval scores, so they can disclose corpus topics and evaluation intent. Protect them with the
+same access controls as the corpus itself.
+
+Publication is serialized per tenant and generation and preserves superseded artifacts for audit.
+This session does not yet enforce the next release's strict trust policy: until that gate lands,
+missing or stale calibration can still produce explicitly uncalibrated development results.
+
 ## The evaluation harness (`recall/eval/`)
 
 `recall/eval/` is the project's own measurement harness — it indexes the project's own eval corpus

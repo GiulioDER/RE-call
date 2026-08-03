@@ -266,10 +266,11 @@ Two things worth knowing before you copy that line:
   caps `hnsw.ef_search` at 1000. Past that the pool is still honoured, a `RuntimeWarning` says the
   over-fetch margin was reduced, and retrieval still covers your `k`.
 
-**If you change the embedder, recalibrate the abstention gate.** The shipped `0.50` floor is not
-comparable across models — measured, it sits at the 0th percentile of five score distributions and
-the 16th of a sixth, so on one model it never fires and on another it discards ~7% of queries as
-empty retrieval. `recall calibrate` measures it for **$0** (embeddings only, no LLM call).
+**Calibrate every immutable generation before trusting its abstention gate.** A threshold is valid
+only for the exact tenant, generation, pipeline, corpus, and labelled query set on which its scores
+were measured. Reusing labels on a new generation reruns every retrieval score. A legacy
+`calibration.json` has none of those bindings, so search never selects it automatically. See the
+[calibration operations guide](docs/CALIBRATION.md).
 
 **On this corpus the pipeline was not the cap.** Three other levers were tested one at a time on the
 same questions and none moved it: cross-encoder rerank +0.065 *(n.s., 57× latency)*, chunk size
@@ -443,13 +444,16 @@ python -m recall.cli lint ./notes --fix                   # propose missing edge
 python -m recall.cli check ./notes/new-memo.md --strict    # write-time gate, for a pre-commit hook
 ```
 
+For the generation path, after building, validating, calibrating, and promoting it as described
+below, query the tenant's active immutable generation:
+
 ```python
-from recall.store import PgVectorStore
 from recall.embeddings import FastEmbedEmbedder
+from recall.generation_store import GenerationStore
 from recall.trust import trusted_search
 
 emb = FastEmbedEmbedder()
-with PgVectorStore(DSN, dim=emb.dim, tenant="acme", pool_size=8) as store:
+with GenerationStore(DSN, dim=emb.dim, tenant="acme", pool_size=8) as store:
     store.check_schema()  # SELECT-only compatibility check; provisioning applied migrations
     result = trusted_search(store, emb, "what is the rate limit?")
     if result.abstained:
@@ -478,8 +482,10 @@ verified before embedding. See the
 [generation operations guide](docs/GENERATIONS.md) for manifest commands, lifecycle rules,
 retention, the rebuild storage budget, and erasure semantics.
 
-Calibration-bound certification arrives in later implementation sessions. Until it does,
-generation promotion is blocked in production and requires an explicit unsafe flag in development.
+Tenant and generation bound calibration now ships. Strict production enforcement is the next
+implementation session, so generation promotion remains blocked in production and requires an
+explicit unsafe flag in development. A published artifact does not yet make this release's
+production path fail closed when calibration is absent.
 
 > **Two operational notes.** The test suite **DROPs tables**, so it reads a separate
 > `RECALL_TEST_DSN` and never the serving DSN — exporting your real DSN and running `pytest` cannot
@@ -588,9 +594,10 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 - **No bundled HA.** Versioned, checksum-verified migrations and an unprivileged serving role now
   ship, but replication, backups, failover and managed-Postgres operations remain yours until the
   production reference deployment lands.
-- **The generation path is not certified yet.** Immutable lineage and atomic blue-green
-  generations ship, but tenant/generation-bound calibration and strict certification are later
-  sessions. Production promotion therefore fails closed. This repository does not yet claim the
+- **Strict calibration enforcement has not landed yet.** Immutable lineage, atomic blue-green
+  generations, and exact tenant/generation-bound calibration artifacts ship. The next session must
+  refuse absent, stale, mismatched, and uncertified artifacts before returning corpus text.
+  Production promotion therefore remains blocked. This repository does not yet claim the
   seven-session enterprise target is complete.
 
 

@@ -24,10 +24,15 @@ def _result(*, abstained: bool = False) -> TrustedResult:
         Validity(None, None, None),
     )
     return TrustedResult(
-        "question", [] if abstained else [hit], abstained,
-        "no trusted hit" if abstained else "", True, abstained,
-        StalenessReport(False, None, None, timedelta(days=2)),
-        RetrievalDiagnostics("profile-v1", "fast", "g1", 20, False, {}),
+        query="question",
+        hits=[] if abstained else [hit],
+        abstained=abstained,
+        reason="no trusted hit" if abstained else "",
+        gap_warning=abstained,
+        staleness=StalenessReport(False, None, None, timedelta(days=2)),
+        diagnostics=RetrievalDiagnostics("profile-v1", "fast", "g1", 20, False, {}),
+        calibration_id="cal-evidence-fixture",
+        calibration_status="certified",
     )
 
 

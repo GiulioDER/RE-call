@@ -32,7 +32,7 @@ The first migration adopts a v0.8 table in place: existing rows stay in the same
 to tenant `default`, and retain their text, metadata, vectors, and timestamps. The legacy table is
 not renamed or converted into a generation table. Migration 0008 records its tenants as
 `legacy_unverified` evidence, but never copies or activates those rows. Migrations 0008 through
-0010 are database-global and are recorded once under the `__global__` ledger target. Apply them
+0011 are database-global and are recorded once under the `__global__` ledger target. Apply them
 through the default `chunks` target before provisioning custom evaluation tables.
 
 ## Role split
@@ -58,7 +58,8 @@ GRANT SELECT ON recall_schema_migrations TO recall_server;
 GRANT SELECT, INSERT, UPDATE, DELETE ON chunks TO recall_server;
 GRANT SELECT, INSERT, UPDATE, DELETE ON
   recall_generations, recall_tenant_state, recall_chunks_v1, recall_ingest_jobs,
-  recall_audit_events, recall_source_tombstones TO recall_server;
+  recall_audit_events, recall_source_tombstones, recall_calibration_query_sets,
+  recall_calibrations TO recall_server;
 -- These tables use application-generated text IDs and no sequence.
 ```
 

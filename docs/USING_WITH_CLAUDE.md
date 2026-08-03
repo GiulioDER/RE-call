@@ -45,10 +45,11 @@ Both clients use the same `mcpServers` block; only the entry point differs.
 > repo.** The server reads them from the environment.
 
 Optional env: `RECALL_EMBEDDER=hashing` for the fully-offline embedder (default `fastembed`);
-`RECALL_INDEX_ROOT` bounds where `recall_index` may read (default: the server's working directory);
-`RECALL_CALIBRATION` points at the `calibration.json` written by `recall calibrate` — set it to an
-**absolute path** in the MCP `env` block, because the server's working directory is chosen by the
-MCP client, so a cwd-relative file will silently not be found (results then say `calibrated: false`).
+`RECALL_INDEX_ROOT` bounds where the development-only `recall_index` may read (default: the
+server's working directory). V1 calibration is stored in PostgreSQL and resolved from the
+authenticated tenant plus active generation on every search. `RECALL_CALIBRATION` and local
+`calibration.json` files are never selected automatically; import a legacy file with
+`recall --tenant T calibration import FILE` to retain it as unbound evidence.
 
 ### `RECALL_RERANK=1` — the single biggest quality lever
 
@@ -83,7 +84,7 @@ one that honoured it.
 
 | Tool | When the agent calls it |
 |------|-------------------------|
-| **`recall_search`** | *Before* proposing an idea, forming a hypothesis, or repeating past work — to check what memory already says. Every hit carries a trust `verdict` (`ok / superseded / expired / not_yet_valid / low_confidence / invalid_metadata` — plus `not_entailed` when the opt-in entailment stage is enabled; this MCP server keeps it off), the true dense cosine (`score`), a calibrated `confidence`, `superseded_by`, `valid_until`, and `indexed_at`; the result adds `abstained` + `reason` + `calibrated` + `stale` + `gap_warning` + `advice`. When `abstained` is true, the advice is explicit: say you don't know, do not answer from the hits. |
+| **`recall_search`** | *Before* proposing an idea, forming a hypothesis, or repeating past work — to check what memory already says. Every hit carries a trust `verdict` (`ok / superseded / expired / not_yet_valid / low_confidence / invalid_metadata` — plus `not_entailed` when the opt-in entailment stage is enabled; this MCP server keeps it off), the true dense cosine (`score`), a calibrated `confidence`, `superseded_by`, `valid_until`, and `indexed_at`; the result adds `abstained`, `reason`, `calibrated`, calibration status and ID, tenant/generation/pipeline/corpus/query-set identities, `stale`, `gap_warning`, and `advice`. `calibrated` is true only for a certified exact generation binding. When `abstained` is true, the advice is explicit: say you don't know, do not answer from the hits. |
 | **`recall_index`** | To add a markdown file/folder to memory (bounded by `RECALL_INDEX_ROOT`). |
 | **`recall_stats`** | To check how much memory exists and whether the index is stale. |
 
