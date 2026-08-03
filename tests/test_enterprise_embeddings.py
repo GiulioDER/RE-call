@@ -5,6 +5,7 @@ import pytest
 from recall.cache import EmbeddingCache, embed_with_cache
 from recall.embeddings import (
     EmbeddingProfile,
+    Qwen3EmbeddingEmbedder,
     artifact_tree_sha256,
     embed_passages,
     embed_query,
@@ -61,3 +62,17 @@ def test_artifact_checksum_is_fail_closed(tmp_path: Path) -> None:
     assert verify_artifact(tmp_path, digest) == tmp_path.resolve()
     with pytest.raises(RuntimeError, match="checksum mismatch"):
         verify_artifact(tmp_path, "0" * 64)
+
+
+def test_qwen_normalizes_after_dimension_truncation() -> None:
+    class _Model:
+        def encode(self, _texts, **_kwargs):
+            return [[3.0, 4.0]]
+
+    embedder = object.__new__(Qwen3EmbeddingEmbedder)
+    embedder._model = _Model()
+    embedder._batch_size = 1
+
+    vector = embedder._encode(["query"])[0]
+
+    assert vector == pytest.approx([0.6, 0.8])
