@@ -14,7 +14,11 @@ from recall.store import DEFAULT_TENANT, PgVectorStore, warn_if_insecure_dsn
 from recall.trust import terminal_safe, trusted_search
 from recall.types import TrustedResult
 
-DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
+DEFAULT_DSN = os.environ.get(
+    "RECALL_SERVING_DSN",
+    os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall"),
+)
+DEFAULT_MIGRATION_DSN = os.environ.get("RECALL_MIGRATION_DSN")
 
 
 def _make_embedder(name: str) -> Embedder:
@@ -72,7 +76,14 @@ def main(argv: list[str] | None = None) -> None:
     # is how `index` came to prune rows while printing nothing about it.
     configure_logging()
     parser = argparse.ArgumentParser(prog="recall")
-    parser.add_argument("--dsn", default=DEFAULT_DSN)
+    parser.add_argument(
+        "--serving-dsn", "--dsn", dest="dsn", default=DEFAULT_DSN,
+        help="unprivileged application DSN (env: RECALL_SERVING_DSN; --dsn is deprecated)",
+    )
+    parser.add_argument(
+        "--migration-dsn", default=DEFAULT_MIGRATION_DSN,
+        help="DDL-owner DSN used only by `schema apply` (env: RECALL_MIGRATION_DSN)",
+    )
     parser.add_argument("--embedder", default="fastembed", choices=["fastembed", "hashing"])
     parser.add_argument(
         "--table", default="chunks",
@@ -86,6 +97,16 @@ def main(argv: list[str] | None = None) -> None:
              f"erasure request against another tenant needs this flag.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_schema = sub.add_parser("schema", help="inspect or apply versioned database migrations")
+    p_schema.add_argument(
+        "--dim", type=int, default=None,
+        help="embedding dimension (default: infer from --embedder)",
+    )
+    schema_sub = p_schema.add_subparsers(dest="schema_cmd", required=True)
+    schema_sub.add_parser("status", help="show installed and required schema versions")
+    schema_sub.add_parser("plan", help="show pending migrations without changing the database")
+    schema_sub.add_parser("apply", help="apply pending migrations with the migration role")
 
     p_index = sub.add_parser("index", help="index a folder of markdown or code")
     p_index.add_argument("path")
@@ -183,6 +204,43 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     warn_if_insecure_dsn(args.dsn)  # loud stderr note if default creds target a remote host
 
+    if args.cmd == "schema":
+        from recall.schema import apply_migrations, schema_plan, schema_status
+
+        dim = args.dim if args.dim is not None else _make_embedder(args.embedder).dim
+        inspect_dsn = args.migration_dsn or args.dsn
+        if args.schema_cmd == "status":
+            status = schema_status(inspect_dsn, table=args.table, dim=dim)
+            print(f"table: {status.table}")
+            print(f"current: {status.current_version or 'none'}")
+            print(f"required: {status.required_version}")
+            print(f"compatible: {'yes' if status.compatible else 'no'}")
+            for migration in status.migrations:
+                print(f"{migration.version} {migration.state:<7} {migration.filename}")
+            if not status.compatible:
+                raise SystemExit(1)
+            return
+        if args.schema_cmd == "plan":
+            pending = schema_plan(inspect_dsn, table=args.table, dim=dim)
+            if not pending:
+                print("schema is current; no changes planned")
+            else:
+                for migration in pending:
+                    print(f"would apply {migration.version} {migration.filename}")
+            return
+        if not args.migration_dsn:
+            raise SystemExit(
+                "schema apply requires --migration-dsn or RECALL_MIGRATION_DSN; "
+                "the serving DSN is never used for DDL"
+            )
+        applied = apply_migrations(args.migration_dsn, table=args.table, dim=dim)
+        if not applied:
+            print("schema is current; nothing applied")
+        else:
+            for migration in applied:
+                print(f"applied {migration.version} {migration.filename}")
+        return
+
     if args.cmd == "lint":  # pure filesystem check — no embedder, no DB
         from recall.lint import lint_corpus
 
@@ -264,7 +322,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.cmd == "index":
         chunker = chunk_code if args.glob.endswith(".py") else chunk_text
         with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
-            store.ensure_schema()
+            store.check_schema()
             indexer = Indexer(store, embedder, chunker=chunker, allow_prune=args.allow_prune)
             try:
                 stats = indexer.index_path(args.path, glob=args.glob)
@@ -283,7 +341,7 @@ def main(argv: list[str] | None = None) -> None:
             print(summary)
     elif args.cmd == "forget":
         with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
-            store.ensure_schema()
+            store.check_schema()
             requested = list(dict.fromkeys(args.sources))
             existing = store.source_content_hashes()
             found = [s for s in requested if s in existing]
@@ -306,14 +364,14 @@ def main(argv: list[str] | None = None) -> None:
 
             entail_judge = QnliEntailmentJudge()
         with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
-            store.ensure_schema()
+            store.check_schema()
             _print_result(
                 trusted_search(store, embedder, args.query, k=args.k, calibration=calibration,
                                entailment=entail_judge)
             )
     elif args.cmd == "demo":
         with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
-            store.ensure_schema()
+            store.check_schema()
             stats = Indexer(store, embedder).index_path("corpus")
             print(f"indexed {stats.chunks} chunks from {stats.files} files\n")
             _run_queries(store, embedder, [
@@ -326,7 +384,7 @@ def main(argv: list[str] | None = None) -> None:
         # index recall's own package source (content-agnostic engine, code-aware chunking)
         src = Path(__file__).resolve().parent
         with PgVectorStore(args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant) as store:
-            store.ensure_schema()
+            store.check_schema()
             stats = Indexer(store, embedder, chunker=chunk_code).index_path(src, glob="**/*.py")
             print(f"indexed {stats.chunks} code chunks from {stats.files} files\n")
             _run_queries(store, embedder, [

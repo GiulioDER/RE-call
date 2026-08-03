@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import psycopg
 import pytest
 
 from recall.embeddings import HashingEmbedder
@@ -41,9 +42,12 @@ def _fresh(tenant: str, table: str) -> PgVectorStore:
     rows a previous run of this same test left behind. Dropping first is what makes the assertions
     about the guard rather than about test order.
     """
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+        conn.execute(
+            "DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,)
+        )
     store = PgVectorStore(TEST_DSN, dim=64, tenant=tenant, table=table)
-    store.ensure_schema()
-    store.drop_table()
     store.ensure_schema()
     return store
 

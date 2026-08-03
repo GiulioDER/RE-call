@@ -19,6 +19,7 @@ import uuid
 import psycopg
 import pytest
 
+import recall.schema as schema_module
 from recall.store import DEFAULT_SCHEMA_LOCK_TIMEOUT_MS, PgVectorStore, _schema_lock_timeout_ms
 
 from tests.conftest import TEST_DSN, requires_db
@@ -37,13 +38,13 @@ def test_the_lock_bound_is_in_force_during_the_ddl(table_name, monkeypatch):
     indistinguishable from the outside once `ensure_schema` returns.
     """
     seen: list[str] = []
-    original = PgVectorStore._ensure_schema_ddl
+    original = schema_module._run_transactional
 
-    def spy(self, conn):
+    def spy(conn, table, dim, migration):
         seen.append(conn.execute("SHOW lock_timeout").fetchone()[0])
-        return original(self, conn)
+        return original(conn, table, dim, migration)
 
-    monkeypatch.setattr(PgVectorStore, "_ensure_schema_ddl", spy)
+    monkeypatch.setattr(schema_module, "_run_transactional", spy)
     with PgVectorStore(TEST_DSN, dim=4, table=table_name, statement_timeout_ms=15000) as store:
         store.ensure_schema()
         _drop(store, table_name)
@@ -98,6 +99,11 @@ def test_ensure_schema_gives_up_rather_than_queueing_behind_a_held_lock(table_na
         # Drop one index so the next ensure_schema has real DDL to do and must take a lock.
         with store._connect() as conn:
             conn.execute(f"DROP INDEX IF EXISTS {table_name}_source_idx")
+            conn.execute(
+                "UPDATE recall_schema_migrations SET state = 'failed', error = 'test rebuild' "
+                "WHERE target_table = %s AND version = '0005'",
+                (table_name,),
+            )
 
         blocker = psycopg.connect(TEST_DSN)
         try:

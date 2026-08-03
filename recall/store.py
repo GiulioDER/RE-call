@@ -499,9 +499,9 @@ class PgVectorStore:
         query occupies a connection until the process dies, with nothing to cancel it; that is
         the difference between a slow request and an exhausted pool.
 
-        One documented exception: `ensure_schema()` lifts it for the duration of its DDL, because
-        an HNSW build legitimately outlasts any sane query bound, and restores it before the
-        connection is reused. A `lock_timeout` bounds that window instead — see `ensure_schema`.
+        Normal serving code calls the read-only ``check_schema()`` compatibility gate. The
+        deprecated ``ensure_schema()`` method is an explicit v0.8 compatibility wrapper around
+        the versioned migrator; operators should use ``recall schema apply`` with a separate DSN.
         """
         # `dim` and `table` are interpolated directly into SQL — as a type modifier and an
         # identifier respectively — because Postgres cannot bind those as parameters. They
@@ -561,16 +561,11 @@ class PgVectorStore:
         return pool
 
     def _prepare(self, conn: "psycopg.Connection") -> None:
-        """Per-connection setup: extension, vector type registration, statement timeout."""
-        # register_vector needs the `vector` type to already exist, so ensure the extension
-        # is installed first — this makes a brand-new database work out of the box (the
-        # README quickstart path). If this role lacks privilege to create it, fall through:
-        # register_vector still succeeds when an admin has pre-installed the extension, and
-        # fails with a clear "vector type not found" if it genuinely isn't there.
-        try:
-            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        except psycopg.Error:
-            pass
+        """Per-connection setup: vector codec, tenant context and statement timeout.
+
+        Deliberately contains no DDL. A missing pgvector extension is a pending migration, not
+        something a serving credential is allowed to repair during startup.
+        """
         register_vector(conn)
         # Per-connection tenant for the RLS policy. Safe to set once at connection setup because
         # a store is bound to ONE tenant: the pool belongs to the store, so no connection is ever
@@ -580,7 +575,7 @@ class PgVectorStore:
             conn.execute(f"SET statement_timeout = {int(self._statement_timeout_ms)}")
 
     def _connect(self) -> "psycopg.Connection":
-        """Open one autocommit connection and prepare it (extension + vector type registration)."""
+        """Open one autocommit serving connection and prepare its session state."""
         conn = psycopg.connect(self._dsn, **self._connect_kwargs())
         try:
             self._prepare(conn)  # same per-connection setup the pool applies via `configure`
@@ -709,7 +704,24 @@ class PgVectorStore:
         sites would raise `AttributeError` on a store configured for a server.
         """
         self._supersession_cache = None
-        self._with_retry(lambda conn: conn.execute(f"DROP TABLE IF EXISTS {self._table}"))
+
+        def _drop(conn: "psycopg.Connection") -> None:
+            # Disposable eval/test tables may be recreated with the same name. Remove their
+            # migration target atomically with the table; otherwise the ledger says every phase
+            # is applied and the next explicit ensure_schema() correctly skips all SQL, leaving
+            # the requested table absent.
+            with conn.transaction():
+                conn.execute(f"DROP TABLE IF EXISTS {self._table}")
+                ledger = conn.execute(
+                    "SELECT to_regclass('recall_schema_migrations')"
+                ).fetchone()
+                if ledger and ledger[0]:
+                    conn.execute(
+                        "DELETE FROM recall_schema_migrations WHERE target_table = %s",
+                        (self._table,),
+                    )
+
+        self._with_retry(_drop)
 
     def __enter__(self) -> "PgVectorStore":
         return self
@@ -718,391 +730,33 @@ class PgVectorStore:
         self.close()
 
     def ensure_schema(self) -> None:
-        def _op(conn: "psycopg.Connection") -> None:
-            # Schema DDL runs WITHOUT the per-connection statement_timeout. `_prepare` sets that
-            # timeout on every connection (it is the pool's `configure` hook, and `_connect` calls
-            # it too) to bound runaway QUERIES — but the HNSW build below is not a runaway query,
-            # and on a real corpus it takes minutes, far past the MCP server's 15s default. Left
-            # in place the timeout cancels the build, which fails startup against any populated
-            # database and leaves an INVALID index that the `IF NOT EXISTS` below then treats as
-            # present forever (see the CONCURRENTLY comment further down). Restored in `finally`
-            # so a pooled connection is never handed back with the guard still lifted.
-            #
-            # Lifting statement_timeout removes the bound on how long the DDL may WORK, which is
-            # intended. It also removes the only bound on how long it may QUEUE, which is not:
-            # statement_timeout counts lock-wait time, so it was previously what broke a wait on
-            # a lock that never came. `CREATE INDEX CONCURRENTLY` waits for every concurrent
-            # transaction on the table, and the ALTERs below take ACCESS EXCLUSIVE — so one
-            # `idle in transaction` session elsewhere is enough to park schema setup forever,
-            # with every query arriving afterwards queued behind it and no error to say why.
-            # `lock_timeout` restores that bound where it belongs: unbounded work, bounded
-            # waiting. A build that cannot get its lock fails fast and is retried on next open,
-            # which is idempotent.
-            statement_timeout_ms = self._statement_timeout_ms
-            timeout_lifted = statement_timeout_ms is not None
-            # `SHOW` always returns exactly one row, so `row` is None only if the connection died
-            # between the two statements. Default to Postgres' own default rather than indexing
-            # None: the restore below is best-effort and must not raise over the real failure.
-            row = conn.execute("SHOW lock_timeout").fetchone()
-            prior_lock_timeout = row[0] if row else "0"
-            # BOTH `SET`s go inside the `try`. Outside it, a failure of the second would skip the
-            # `finally` entirely and hand a connection back to the pool with statement_timeout
-            # still lifted — the one thing the paragraph above promises cannot happen.
-            try:
-                if timeout_lifted:
-                    conn.execute("SET statement_timeout = 0")
-                conn.execute(f"SET lock_timeout = {_schema_lock_timeout_ms()}")
-                self._ensure_schema_ddl(conn)
-            finally:
-                # Never let a restore displace the exception already in flight: if the DDL failed
-                # because the connection died, these SETs raise too, and the operator would be
-                # shown the restore failure instead of the cause. The connection is discarded
-                # either way, so a failed restore costs nothing. Each restore is guarded
-                # independently — sharing one `try` would let the first failure skip the second.
-                if statement_timeout_ms is not None:
-                    # Plain `SET`: this value is an int this object owns, so there is nothing to
-                    # bind and nothing to quote.
-                    self._safe_execute(
-                        conn, f"SET statement_timeout = {int(statement_timeout_ms)}"
-                    )
-                # `set_config` here, because `SHOW` hands the prior value back as a FORMATTED
-                # string ('0', '5s', '1min') and `SET` does not take a bind parameter.
-                self._safe_execute(
-                    conn, "SELECT set_config('lock_timeout', %s, false)", (prior_lock_timeout,)
-                )
+        """Explicitly apply versioned migrations using this store's DSN.
 
-        self._with_retry(_op)
-
-    @staticmethod
-    def _safe_execute(
-        conn: "psycopg.Connection", sql: str, params: tuple | None = None
-    ) -> None:
-        """Run a session-restore statement that must never mask an exception already in flight.
-
-        Called only from `finally` blocks. If the DDL failed because the connection died, the
-        restore raises too and would REPLACE the real error with itself; the connection is being
-        discarded either way, so swallowing the restore failure loses nothing and keeps the
-        diagnosis.
+        Deprecated for production provisioning: use ``recall schema apply`` with a dedicated
+        migration DSN. The compatibility wrapper remains for v0.8 callers and disposable
+        benchmark/test stores; importantly, it no longer contains an independent runtime DDL
+        implementation — every change goes through the checksum-verified migration ledger.
         """
-        try:
-            conn.execute(sql, params) if params else conn.execute(sql)
-        except psycopg.Error as exc:  # pragma: no cover - requires a broken connection
-            _log.warning("could not restore session setting after schema DDL: %s", exc)
+        from recall.schema import apply_migrations
 
-    def _ensure_schema_ddl(self, conn: "psycopg.Connection") -> None:
-        t = self._table
-        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        conn.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {t} (
-                tenant_id TEXT NOT NULL DEFAULT '{DEFAULT_TENANT}',
-                id TEXT NOT NULL,
-                source TEXT NOT NULL,
-                text TEXT NOT NULL,
-                metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-                embedding vector({self._dim}),
-                indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                -- NULLABLE on purpose: a NULL means 'first write unknown, this row predates
-                -- the column', which both readers handle by falling back to indexed_at. See
-                -- _migrate_first_indexed_at for why a NOT NULL here could brick a migration.
-                first_indexed_at TIMESTAMPTZ DEFAULT now(),
-                tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
-                PRIMARY KEY (tenant_id, id)
-            )
-            """
-        )
-        # SHAPE CHECK BEFORE ANY MIGRATION. It used to run after them, so pointing the store at an
-        # unrelated table of the same name ALTERed that table first and then died on a raw
-        # UndefinedColumn, making the named error below unreachable for the input it was written
-        # for. Validate first, mutate second.
-        dim_row = conn.execute(
-            "SELECT atttypmod FROM pg_attribute "
-            "WHERE attrelid = %s::regclass AND attname = 'embedding'",
-            (t,),
-        ).fetchone()
-        if dim_row is None:
-            # `CREATE TABLE IF NOT EXISTS` above is a no-op against a table that already exists
-            # under this name with a different shape, so an unrelated `chunks` table reaches here
-            # with no `embedding` column at all. Indexing `None` gave a bare TypeError that named
-            # neither the table nor the cause.
-            raise ValueError(
-                f"table {t!r} exists but has no 'embedding' column — it is not a recall table. "
-                f"Point this store at a different table name."
-            )
-        # SHAPE, not dimension. Two wrong discriminators preceded this one. `atttypmod > 0`
-        # skipped itself for an UNCONSTRAINED `vector` column, so a foreign table was still
-        # migrated; rejecting `atttypmod <= 0` then refused a REAL recall table whose embedding
-        # had been relaxed by a supported pgvector ALTER, telling its owner it was not theirs.
-        # Neither question was the right one. What distinguishes our table from a stranger's is
-        # the column set, so ask that: a relaxed recall table still has `tsv` and `source`, and a
-        # foreign pgvector table has neither however its vector is declared.
-        required = {"id", "source", "text", "metadata", "embedding", "indexed_at", "tsv"}
-        # `array_agg` so this is ONE row read with `fetchone`, like every other probe in this
-        # method. A `fetchall` here was the only one, and the fake cursor the store tests drive
-        # `ensure_schema` with implements `fetchone` alone — eight of them went red on an
-        # AttributeError that had nothing to do with the check being wrong.
-        shape_row = conn.execute(
-            "SELECT array_agg(attname) FROM pg_attribute WHERE attrelid = %s::regclass "
-            "AND attnum > 0 AND NOT attisdropped",
-            (t,),
-        ).fetchone()
-        present = set(shape_row[0] or ()) if shape_row else set()
-        if missing := sorted(required - present):
-            raise ValueError(
-                f"table {t!r} exists but is missing {missing} — it is not a recall table. "
-                f"Point this store at a different table name."
-            )
-        actual_dim = dim_row[0]
-        # A relaxed column (atttypmod -1) is accepted: pgvector validates the dimension per row,
-        # and the shape check above has already established the table is ours.
-        if actual_dim > 0 and actual_dim != self._dim:
-            raise ValueError(
-                f"table {t!r} has a vector({actual_dim}) embedding column but this store is "
-                f"configured for dim {self._dim} — use a matching embedder or a different "
-                f"table (drop and re-index for a clean slate)."
-            )
-        # BOTH shape checks precede BOTH migrations. Moving only the missing-embedding one left
-        # the dim mismatch firing AFTER them, so a foreign pgvector table still had a column added
-        # and its PRIMARY KEY dropped and rewritten before the error that tells the caller to
-        # point somewhere else. Validate everything, then mutate.
-        self._migrate_first_indexed_at(conn)
-        self._migrate_to_tenanted(conn)
-        # CONCURRENTLY: `ensure_schema` is not just a bootstrap step — it runs every time a
-        # store is opened, including against a table that already exists and is taking live
-        # writes (e.g. a server restart). A plain `CREATE INDEX` takes a lock that blocks
-        # writers for as long as the build takes, which for the HNSW index on a real corpus is
-        # minutes, not milliseconds. `CONCURRENTLY` builds the index without that lock (a small
-        # number of exclusive locks at the very start/end only). This is safe here because
-        # `_op` runs on an autocommit connection (see `_connect_kwargs`) and, unlike
-        # `replace_sources`/`upsert`, is never wrapped in `conn.transaction()` — every
-        # statement in this method is already its own implicit transaction, which is the one
-        # precondition `CREATE INDEX CONCURRENTLY` has (Postgres refuses it inside an explicit
-        # transaction block). Verified directly against the container: back-to-back
-        # `CREATE INDEX CONCURRENTLY IF NOT EXISTS` calls on this same autocommit-connection
-        # shape all complete and land `indisvalid = true`.
-        #
-        # Trade-off accepted, not hidden: if the process is killed mid-build, Postgres can
-        # leave an INVALID index behind, and `IF NOT EXISTS` treats that name as "already
-        # there" on the next `ensure_schema()` — it will not retry the build. A plain
-        # `CREATE INDEX` cannot fail this way (it is one transaction: abort undoes it), so this
-        # trades a low-probability manual-cleanup case (`DROP INDEX <name>` then re-run) for
-        # not blocking writers on every restart. `check_rls_effective`-style tooling could
-        # detect an invalid index the same way; not added here to keep this change scoped to
-        # issue #11's checkbox.
-        conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_tsv_idx ON {t} USING GIN (tsv)")
-        conn.execute(
-            f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_emb_idx ON {t} "
-            f"USING hnsw (embedding vector_cosine_ops)"
-        )
-        # The vector and full-text indexes cover the two retrieval legs; these cover the
-        # rest of the hot path, each of which was a sequential scan growing with the corpus:
-        #   indexed_at — `newest_indexed_at()` runs a max() on EVERY search; a DESC index
-        #                turns it into a one-row backward scan.
-        #   source     — a source-filtered search cannot use HNSW without it, and
-        #                replace_sources/delete_sources match `source = ANY(...)` per re-index.
-        #   file       — the supersession map groups on metadata->>'file'.
-        conn.execute(
-            f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_indexed_at_idx ON {t} (indexed_at DESC)"
-        )
-        conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_source_idx ON {t} (source)")
-        conn.execute(
-            f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_file_idx ON {t} ((metadata->>'file'))"
-        )
-        # Every hot-path predicate leads with tenant_id, so it leads the index too.
-        conn.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {t}_tenant_idx ON {t} (tenant_id)")
-        self._enable_rls(conn)
+        apply_migrations(self._dsn, table=self._table, dim=self._dim)
 
-    def _migrate_first_indexed_at(self, conn: "psycopg.Connection") -> None:
-        """Add a NULLABLE `first_indexed_at` to a table created before it existed.
+    def check_schema(self) -> None:
+        """Verify schema compatibility using SELECT statements only."""
+        from recall.schema import check_schema
 
-        Nullable, with a default, and NO backfill. The first version did the textbook thing (add
-        nullable, backfill from `indexed_at`, SET DEFAULT, SET NOT NULL) and it could brick a
-        multi-tenant deployment permanently:
+        self._with_retry(lambda conn: check_schema(conn, table=self._table, dim=self._dim))
 
-        The backfill is ordinary DML, so the FORCE'd row-level-security policy rewrites it to the
-        CURRENT tenant's rows. `ALTER TABLE ... SET NOT NULL` validates with a heap scan, which is
-        NOT policy-rewritten and sees every tenant's rows. So on a shared table the backfill fills
-        one tenant's rows, the constraint trips over another tenant's NULLs, and `ensure_schema`
-        raises — for every tenant, on every open, unrepairable by re-running. CI DOES catch it,
-        which an earlier version of this docstring denied: a superuser bypasses RLS, but
-        `tests/test_tenancy.py`'s `unprivileged_dsn` makes a throwaway NOSUPERUSER NOBYPASSRLS
-        role, so the policy applies to the role under test regardless of who connects. README
-        says the same: the RLS tests use such a role "because as a superuser they would pass
-        while testing nothing".
+    def migrate_schema(self, migration_dsn: str | None = None) -> None:
+        """Explicitly apply versioned migrations for this store's table.
 
-        A NULL therefore means exactly what it should: this row predates the column, so its first
-        write is unknown. Both readers already handle that. `_verdict` falls back to `indexed_at`,
-        and the edge scan reads `COALESCE(first_indexed_at, indexed_at)`. The backfill was never
-        load-bearing for correctness, only for tidiness, and tidiness is not worth a migration
-        that can fail closed on a live table.
-
-        Gated on `pg_attribute`, so an already-migrated table executes NO DDL. The unconditional
-        version took four ACCESS EXCLUSIVE locks plus a full scan on every `ensure_schema`, which
-        the MCP server runs once per tenant — `_enable_rls` documents that hazard in this same
-        file, and this now follows it.
+        Kept as a convenience for disposable benchmark/test tables. Production provisioning
+        should use ``recall schema apply`` so the migration and serving credentials stay visibly
+        separate.
         """
-        t = self._table
-        exists = conn.execute(
-            "SELECT 1 FROM pg_attribute WHERE attrelid = %s::regclass "
-            "AND attname = 'first_indexed_at' AND NOT attisdropped",
-            (t,),
-        ).fetchone()
-        if exists:
-            return
-        # TWO statements, and splitting them is the whole point. `ADD COLUMN ... DEFAULT now()`
-        # does NOT leave existing rows NULL: since PG 11 a non-volatile default is applied to
-        # every existing row through stored metadata, so the one-statement form stamps the ENTIRE
-        # corpus with the upgrade instant. That is precisely the error this column exists to
-        # prevent, arrived at by a different route than the version it replaced, and CI caught it
-        # because the test asserts the rows are left NULL.
-        #
-        # Adding the column with no default leaves existing rows NULL, which is the honest answer
-        # for a row whose first write was never recorded. Setting the default afterwards applies
-        # only to future inserts and rewrites nothing.
-        #
-        # Both are DDL, so unlike the backfill this replaced, neither is rewritten by the RLS
-        # policy and neither can see a partial view of a multi-tenant table.
-        # ONE transaction. `ensure_schema` runs on an autocommit connection, so these were two
-        # separate commits, and the gate above only tests `attname` — so an interruption between
-        # them (a concurrent reader plus this method's own `lock_timeout` is enough) left the
-        # column existing with NO default, and every later `ensure_schema` short-circuited on the
-        # gate and returned clean. Permanently: nothing retries LockNotAvailable. DDL is
-        # transactional in Postgres, which `_migrate_to_tenanted` below already relies on for
-        # exactly this reason.
-        with conn.transaction():
-            conn.execute(
-                f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS first_indexed_at TIMESTAMPTZ"
-            )
-            conn.execute(f"ALTER TABLE {t} ALTER COLUMN first_indexed_at SET DEFAULT now()")
+        from recall.schema import apply_migrations
 
-    def _migrate_to_tenanted(self, conn: "psycopg.Connection") -> None:
-        """Add `tenant_id` to a table created before tenancy existed, idempotently.
-
-        An existing deployment has `id` as the sole primary key. Chunk ids are derived from the
-        file path, so two tenants indexing the same path produce the SAME id — with a single-column
-        key, one tenant's re-index would overwrite the other's row. The key therefore has to become
-        `(tenant_id, id)`, which means dropping the old constraint.
-
-        Existing rows are assigned to `DEFAULT_TENANT`, so an upgrade is invisible to a
-        single-tenant deployment: the store's default tenant is the same value.
-
-        Runs as ONE transaction, and its "already done?" check is the KEY, not the column. Both
-        matter for the same reason: the migration is three ALTERs, and on an autocommit connection
-        each commits separately. Interrupted after the DROP CONSTRAINT — a crash, a restart, a
-        cancelled statement — the table is left with `tenant_id` but no primary key, and a check
-        that only looked for the column would report the migration complete forever after. Every
-        later `upsert` then fails on `ON CONFLICT (tenant_id, id)` with no matching constraint.
-        DDL is transactional in Postgres (unlike the CONCURRENTLY builds in the caller), so the
-        whole migration can simply be atomic.
-        """
-        t = self._table
-        # Resolve through `search_path` (`%s::regclass`) rather than matching a bare table_name
-        # across every visible schema: with a same-named table in another schema, an
-        # information_schema lookup answers about the WRONG relation and skips the migration on
-        # the real one. Every ALTER below resolves via search_path, so the check must too.
-        has_tenant = conn.execute(
-            "SELECT 1 FROM pg_attribute "
-            "WHERE attrelid = %s::regclass AND attname = 'tenant_id' AND NOT attisdropped",
-            (t,),
-        ).fetchone()
-        pkey = conn.execute(
-            "SELECT conname, array_length(conkey, 1) FROM pg_constraint "
-            "WHERE conrelid = %s::regclass AND contype = 'p'",
-            (t,),
-        ).fetchone()
-        # Done only when BOTH halves landed: the column exists AND the key is the composite one.
-        if has_tenant and pkey and pkey[1] == 2:
-            return
-
-        with conn.transaction():
-            if not has_tenant:
-                conn.execute(
-                    f"ALTER TABLE {t} ADD COLUMN tenant_id TEXT NOT NULL "
-                    f"DEFAULT '{DEFAULT_TENANT}'"
-                )
-            if pkey:
-                conn.execute(f'ALTER TABLE {t} DROP CONSTRAINT "{pkey[0]}"')
-            conn.execute(f"ALTER TABLE {t} ADD PRIMARY KEY (tenant_id, id)")
-
-    def _enable_rls(self, conn: "psycopg.Connection") -> None:
-        """Enforce tenant isolation in the DATABASE, not only in this class's WHERE clauses.
-
-        Every query here already filters on `tenant_id`. That is the correctness mechanism and it
-        works for any role. This is the CONTROL: a policy means a forgotten predicate — in future
-        code, in a migration script, in someone's psql session — returns nothing instead of
-        another tenant's memories.
-
-        `FORCE` matters: without it the policy does not apply to the table's OWNER, which is
-        usually the very role the application connects as.
-
-        ⚠️ **A superuser bypasses RLS entirely, and so does a role with BYPASSRLS.** If the
-        application connects as one (the default `docker-compose.yml` role IS a superuser), this
-        policy is decoration and only the WHERE clauses are protecting you. See
-        `check_rls_effective()`.
-        """
-        t = self._table
-        policy = f"{t}_tenant_isolation"
-        # Check before altering. `ensure_schema` runs on EVERY store open — including once per
-        # tenant in the MCP server's registry — and these are ALTER-TABLE-class statements that
-        # take ACCESS EXCLUSIVE whether or not the state is already correct, so an unconditional
-        # version serialises the whole table against every concurrent reader on a routine open.
-        # The DROP/CREATE pair is worse than slow: `CREATE POLICY` still has no `IF NOT EXISTS`,
-        # so the old code dropped first — and on an autocommit connection those are two separate
-        # commits, leaving a window in which the table has RLS FORCEd with NO policy. A query
-        # from another tenant landing in that window matches nothing and returns zero rows, which
-        # the trust layer reports as an ordinary "no memories found" rather than an error.
-        # `polroles = {0}` is PUBLIC and `polcmd = '*'` is ALL — the two the CREATE below implies.
-        # They are compared for the same reason the expressions are: `ALTER POLICY ... TO <role>`
-        # narrows who the policy applies to, and a policy that applies to nobody relevant is an
-        # isolation boundary switched off while still reporting as present.
-        state = conn.execute(
-            "SELECT c.relrowsecurity, c.relforcerowsecurity, "
-            "       p.polname IS NOT NULL, "
-            "       pg_get_expr(p.polqual, p.polrelid), "
-            "       pg_get_expr(p.polwithcheck, p.polrelid), "
-            "       p.polroles = '{0}'::oid[], p.polcmd "
-            "FROM pg_class c "
-            "LEFT JOIN pg_policy p ON p.polrelid = c.oid AND p.polname = %s "
-            "WHERE c.oid = %s::regclass",
-            (policy, t),
-        ).fetchone()
-        if state:
-            rls_on, rls_forced, has_policy, using_expr, check_expr, all_roles, cmd = state
-        else:  # pragma: no cover - the table was just created above, so it exists
-            rls_on = rls_forced = has_policy = all_roles = False
-            using_expr = check_expr = cmd = None
-
-        if not rls_on:
-            conn.execute(f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY")
-        if not rls_forced:
-            conn.execute(f"ALTER TABLE {t} FORCE ROW LEVEL SECURITY")
-
-        # Compare the policy's DEFINITION, not merely its name. Checking only for existence
-        # would make this stop being self-healing: a policy whose predicate had been altered —
-        # by hand, by a migration, by an older version of this code — would be left in place
-        # because something with the right name was there, and a changed predicate here is a
-        # changed isolation boundary. `pg_get_expr` renders both sides in Postgres' own
-        # normalised form, so the comparison is against what the server actually stores.
-        want = f"(tenant_id = current_setting('{TENANT_GUC}'::text, true))"
-        correct = (
-            has_policy
-            and using_expr == want
-            and check_expr == want
-            and all_roles          # applies to PUBLIC, not a narrowed role set
-            and cmd == "*"         # applies to ALL commands, not just SELECT
-        )
-        if not correct:
-            # DROP + CREATE in ONE transaction. Separately committed (this connection is
-            # autocommit) they leave a window in which the table has RLS FORCEd and no policy,
-            # during which every concurrent query returns zero rows — which the trust layer
-            # reports as an ordinary "no memories found" rather than an error.
-            with conn.transaction():
-                conn.execute(f"DROP POLICY IF EXISTS {policy} ON {t}")
-                conn.execute(
-                    f"CREATE POLICY {policy} ON {t} "
-                    f"USING (tenant_id = current_setting('{TENANT_GUC}', true)) "
-                    f"WITH CHECK (tenant_id = current_setting('{TENANT_GUC}', true))"
-                )
+        apply_migrations(migration_dsn or self._dsn, table=self._table, dim=self._dim)
 
     def check_rls_effective(self) -> bool:
         """True when row-level security actually constrains THIS connection's role.
