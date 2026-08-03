@@ -522,7 +522,7 @@ class PgVectorStore:
         self._dim = dim
         self._table = table
         self._tenant = tenant
-        self._generation_id = generation_id
+        self._index_generation_id = generation_id
         self._statement_timeout_ms = statement_timeout_ms
         self._connect_timeout_s = connect_timeout_s
         #: (fingerprint, edges, unresolved, candidates) — see `supersession_all()`. The fingerprint is what
@@ -689,7 +689,7 @@ class PgVectorStore:
 
     @property
     def generation_id(self) -> str:
-        return self._generation_id
+        return self._index_generation_id
 
     def close(self) -> None:
         """Close the connection (or pool) for good.
