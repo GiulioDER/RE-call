@@ -22,6 +22,16 @@ from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, TENANT_GUC, _schema_lock
 
 LEDGER_TABLE = "recall_schema_migrations"
 MIGRATION_LOCK_NAME = "recall-schema-migrations-v1"
+GENERATION_TABLES = (
+    "recall_generations",
+    "recall_tenant_state",
+    "recall_chunks_v1",
+    "recall_ingest_jobs",
+    "recall_audit_events",
+    "recall_source_tombstones",
+)
+GLOBAL_MIGRATION_TARGET = "__global__"
+GLOBAL_MIGRATION_START = "0008"
 _MIGRATION_NAME = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
 _INDEX_MARKER = re.compile(r"^-- recall:concurrent-index ([A-Za-z_][A-Za-z0-9_]*)$", re.M)
 
@@ -189,15 +199,19 @@ def schema_status(dsn: str, *, table: str = DEFAULT_TABLE, dim: int) -> SchemaSt
     _validate_target(table, dim)
     migrations = load_migrations()
     with _connect(dsn) as conn:
-        applied = _read_applied(conn, table)
+        table_applied = _read_applied(conn, table)
+        global_applied = _read_applied(conn, GLOBAL_MIGRATION_TARGET)
     known = {m.version for m in migrations}
-    unknown = sorted(set(applied) - known)
+    unknown = sorted((set(table_applied) | set(global_applied)) - known)
     if unknown:
         raise SchemaTooNew(
             f"table {table!r} has unknown schema migration(s) {unknown}; upgrade RE-call"
         )
     states: list[MigrationState] = []
     for migration in migrations:
+        applied = (
+            global_applied if migration.version >= GLOBAL_MIGRATION_START else table_applied
+        )
         row = applied.get(migration.version)
         if row is None:
             states.append(
@@ -309,6 +323,57 @@ def _validate_current_schema(conn: Connection, table: str, dim: int) -> None:
         raise SchemaIncompatible(
             f"table {table!r} schema drift: missing/invalid indexes {missing_indexes}"
         )
+    _validate_generation_schema(conn, dim, enforce_dimension=table == DEFAULT_TABLE)
+
+
+def _validate_generation_schema(
+    conn: Connection, dim: int, *, enforce_dimension: bool
+) -> None:
+    """Validate the global v1 generation boundary after migration 0008."""
+    missing_tables = [
+        table
+        for table in GENERATION_TABLES
+        if not (row := conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()) or not row[0]
+    ]
+    if missing_tables:
+        raise SchemaIncompatible(f"generation schema drift: missing tables {missing_tables}")
+
+    want = f"(tenant_id = current_setting('{TENANT_GUC}'::text, true))"
+    for table in GENERATION_TABLES:
+        policy = f"{table}_tenant_isolation"
+        state = conn.execute(
+            "SELECT c.relrowsecurity, c.relforcerowsecurity, p.polname IS NOT NULL, "
+            "pg_get_expr(p.polqual, p.polrelid), pg_get_expr(p.polwithcheck, p.polrelid), "
+            "p.polroles = '{0}'::oid[], p.polcmd "
+            "FROM pg_class c LEFT JOIN pg_policy p "
+            "ON p.polrelid = c.oid AND p.polname = %s WHERE c.oid = %s::regclass",
+            (policy, table),
+        ).fetchone()
+        if not state or state != (True, True, True, want, want, True, "*"):
+            raise SchemaIncompatible(
+                f"generation table {table!r} row-level-security policy drift"
+            )
+
+    rows = conn.execute(
+        "SELECT c.relname, i.indisvalid FROM pg_index i "
+        "JOIN pg_class c ON c.oid = i.indexrelid "
+        "WHERE i.indrelid = 'recall_chunks_v1'::regclass"
+    ).fetchall()
+    valid = {str(name) for name, is_valid in rows if is_valid}
+    expected = {"recall_chunks_v1_tsv_idx", "recall_chunks_v1_embedding_idx"}
+    if missing := sorted(expected - valid):
+        raise SchemaIncompatible(f"generation schema drift: missing/invalid indexes {missing}")
+
+    if enforce_dimension:
+        row = conn.execute(
+            "SELECT atttypmod FROM pg_attribute "
+            "WHERE attrelid = 'recall_chunks_v1'::regclass AND attname = 'embedding'"
+        ).fetchone()
+        actual_dim = row[0] if row else None
+        if actual_dim != dim:
+            raise SchemaIncompatible(
+                f"recall_chunks_v1 uses vector({actual_dim}), requested dimension is {dim}"
+            )
 
 
 def _create_ledger(conn: Connection) -> None:
@@ -341,7 +406,7 @@ def _require_migration_privileges(conn: Connection) -> None:
         )
 
 
-def _mark_running(conn: Connection, table: str, migration: Migration) -> None:
+def _mark_running(conn: Connection, ledger_target: str, migration: Migration) -> None:
     conn.execute(
         f"""
         INSERT INTO {LEDGER_TABLE}
@@ -355,43 +420,53 @@ def _mark_running(conn: Connection, table: str, migration: Migration) -> None:
             applied_at = NULL,
             error = NULL
         """,
-        (table, migration.version, migration.filename, migration.checksum),
+        (ledger_target, migration.version, migration.filename, migration.checksum),
     )
 
 
-def _mark_failed(conn: Connection, table: str, migration: Migration, exc: BaseException) -> None:
+def _mark_failed(
+    conn: Connection, ledger_target: str, migration: Migration, exc: BaseException
+) -> None:
     conn.execute(
         f"UPDATE {LEDGER_TABLE} SET state = 'failed', error = %s "
         "WHERE target_table = %s AND version = %s",
-        (f"{type(exc).__name__}: {exc}"[:2000], table, migration.version),
+        (f"{type(exc).__name__}: {exc}"[:2000], ledger_target, migration.version),
     )
 
 
-def _mark_applied(conn: Connection, table: str, migration: Migration) -> None:
+def _mark_applied(conn: Connection, ledger_target: str, migration: Migration) -> None:
     conn.execute(
         f"UPDATE {LEDGER_TABLE} SET state = 'applied', applied_at = clock_timestamp(), error = NULL "
         "WHERE target_table = %s AND version = %s",
-        (table, migration.version),
+        (ledger_target, migration.version),
     )
 
 
 def _run_transactional(
-    conn: Connection, table: str, dim: int, migration: Migration
+    conn: Connection,
+    table: str,
+    dim: int,
+    migration: Migration,
+    ledger_target: str,
 ) -> None:
     sql, _ = _render(migration, table, dim)
     with conn.transaction():
-        _mark_running(conn, table, migration)
+        _mark_running(conn, ledger_target, migration)
         conn.execute(sql)
-        _mark_applied(conn, table, migration)
+        _mark_applied(conn, ledger_target, migration)
 
 
 def _run_concurrent_index(
-    conn: Connection, table: str, dim: int, migration: Migration
+    conn: Connection,
+    table: str,
+    dim: int,
+    migration: Migration,
+    ledger_target: str,
 ) -> None:
     sql, index = _render(migration, table, dim)
     if index is None:  # pragma: no cover - load_migrations enforces this shape
         raise AssertionError("concurrent migration has no index marker")
-    _mark_running(conn, table, migration)
+    _mark_running(conn, ledger_target, migration)
     try:
         row = conn.execute(
             "SELECT i.indisvalid FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid "
@@ -411,9 +486,9 @@ def _run_concurrent_index(
                 f"migration {migration.filename} did not leave valid index {index!r}"
             )
     except BaseException as exc:
-        _mark_failed(conn, table, migration, exc)
+        _mark_failed(conn, ledger_target, migration, exc)
         raise
-    _mark_applied(conn, table, migration)
+    _mark_applied(conn, ledger_target, migration)
 
 
 def apply_migrations(
@@ -441,13 +516,36 @@ def apply_migrations(
             conn.execute(f"SET lock_timeout = {_schema_lock_timeout_ms()}")
             _create_ledger(conn)
             _validate_existing_table(conn, table, dim)
-            existing = _read_applied(conn, table)
+            table_existing = _read_applied(conn, table)
+            global_existing = _read_applied(conn, GLOBAL_MIGRATION_TARGET)
             known = {m.version for m in migrations}
-            if unknown := sorted(set(existing) - known):
+            if unknown := sorted((set(table_existing) | set(global_existing)) - known):
                 raise SchemaTooNew(
                     f"table {table!r} has unknown schema migration(s) {unknown}; upgrade RE-call"
                 )
+            global_migrations = tuple(
+                migration
+                for migration in migrations
+                if migration.version >= GLOBAL_MIGRATION_START
+            )
+            if table != DEFAULT_TABLE and any(
+                migration.version not in global_existing for migration in global_migrations
+            ):
+                raise SchemaTooOld(
+                    "global generation migrations must be applied through the default `chunks` "
+                    "target before migrating custom/evaluation tables"
+                )
             for migration in migrations:
+                ledger_target = (
+                    GLOBAL_MIGRATION_TARGET
+                    if migration.version >= GLOBAL_MIGRATION_START
+                    else table
+                )
+                existing = (
+                    global_existing
+                    if ledger_target == GLOBAL_MIGRATION_TARGET
+                    else table_existing
+                )
                 row = existing.get(migration.version)
                 if row is not None:
                     checksum, state, _applied_at, _error = row
@@ -458,9 +556,9 @@ def apply_migrations(
                     if state == "applied":
                         continue
                 if migration.transactional:
-                    _run_transactional(conn, table, dim, migration)
+                    _run_transactional(conn, table, dim, migration, ledger_target)
                 else:
-                    _run_concurrent_index(conn, table, dim, migration)
+                    _run_concurrent_index(conn, table, dim, migration, ledger_target)
                 applied_now.append(
                     MigrationState(
                         migration.version,
@@ -492,14 +590,18 @@ def check_schema(conn: Connection, *, table: str = DEFAULT_TABLE, dim: int) -> N
     """Fail unless the schema exactly matches this package. Executes SELECT only."""
     _validate_target(table, dim)
     migrations = load_migrations()
-    applied = _read_applied(conn, table)
+    table_applied = _read_applied(conn, table)
+    global_applied = _read_applied(conn, GLOBAL_MIGRATION_TARGET)
     known = {m.version for m in migrations}
-    if unknown := sorted(set(applied) - known):
+    if unknown := sorted((set(table_applied) | set(global_applied)) - known):
         raise SchemaTooNew(
             f"table {table!r} has unknown migration(s) {unknown}; upgrade the application"
         )
     pending: list[str] = []
     for migration in migrations:
+        applied = (
+            global_applied if migration.version >= GLOBAL_MIGRATION_START else table_applied
+        )
         row = applied.get(migration.version)
         if row is None or row[1] != "applied":
             pending.append(migration.version)

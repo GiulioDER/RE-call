@@ -9,7 +9,16 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
-- **Versioned PostgreSQL migrations and split database credentials.** Seven ordered SQL phases are
+- **Immutable pipeline lineage and blue-green index generations.** Public frozen identities bind
+  embedder provider/model/revision/dimension, chunker configuration, FTS configuration, corpus
+  manifest, and generation into canonical SHA-256 fingerprints. Versioned migrations add tenant
+  generation, state, chunks, jobs, audit, and erasure tables with forced RLS. Exact S3 versions are
+  allowlisted and verified before indexing; incompatible same-dimensional models cannot reuse
+  chunks. Atomic promotion/rollback, failed-build isolation, retention GC, and tombstone-backed
+  erasure are exposed through `recall manifest` and `recall generation`. Production promotion is
+  deliberately blocked until the later calibration and certification gates land.
+  (`recall/lineage.py`, `recall/generations.py`, `docs/GENERATIONS.md`)
+- **Versioned PostgreSQL migrations and split database credentials.** Ten ordered SQL phases are
   shipped with committed SHA-256 checksums and recorded per target table in
   `recall_schema_migrations`. `recall schema status|plan|apply` provides read-only inspection and
   advisory-lock-guarded application; concurrent index phases are resumable, checksum drift and

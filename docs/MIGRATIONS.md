@@ -30,7 +30,10 @@ disposable test/evaluation stores; it delegates to this same migrator. Productio
 
 The first migration adopts a v0.8 table in place: existing rows stay in the same table, are assigned
 to tenant `default`, and retain their text, metadata, vectors, and timestamps. The legacy table is
-not renamed or converted into a generation table in this release step.
+not renamed or converted into a generation table. Migration 0008 records its tenants as
+`legacy_unverified` evidence, but never copies or activates those rows. Migrations 0008 through
+0010 are database-global and are recorded once under the `__global__` ledger target. Apply them
+through the default `chunks` target before provisioning custom evaluation tables.
 
 ## Role split
 
@@ -53,8 +56,10 @@ After `recall schema apply`, grant the serving role only the objects it uses:
 ```sql
 GRANT SELECT ON recall_schema_migrations TO recall_server;
 GRANT SELECT, INSERT, UPDATE, DELETE ON chunks TO recall_server;
--- The v0.8 table uses no sequence. Grant USAGE on an explicitly introduced sequence only when a
--- future versioned migration adds one.
+GRANT SELECT, INSERT, UPDATE, DELETE ON
+  recall_generations, recall_tenant_state, recall_chunks_v1, recall_ingest_jobs,
+  recall_audit_events, recall_source_tombstones TO recall_server;
+-- These tables use application-generated text IDs and no sequence.
 ```
 
 The migration role must own the managed objects (or be a member of their owner role) and have

@@ -52,6 +52,7 @@ class StoreRegistry:
         pool_size: int,
         statement_timeout_ms: int,
         table: str | None = None,
+        generation_mode: bool = False,
     ) -> None:
         self._dsn = dsn
         self._table = table
@@ -59,6 +60,7 @@ class StoreRegistry:
         self._allowed = frozenset(allowed_tenants)
         self._pool_size = pool_size
         self._statement_timeout_ms = statement_timeout_ms
+        self._generation_mode = generation_mode
         self._stores: dict[str, PgVectorStore] = {}
         self._lock = threading.Lock()
         self._closed = False
@@ -94,14 +96,26 @@ class StoreRegistry:
                 # `table=` passed explicitly rather than splatted from a conditional dict: a
                 # `**kwargs` here is opaque to a type checker, so a wrong name or type in it
                 # would only surface as a TypeError at the first tenant open.
-                store = PgVectorStore(
-                    self._dsn,
-                    dim=self._dim,
-                    table=self._table or DEFAULT_TABLE,
-                    tenant=tenant,
-                    pool_size=self._pool_size,
-                    statement_timeout_ms=self._statement_timeout_ms,
-                )
+                if self._generation_mode:
+                    from recall.generation_store import GenerationStore
+
+                    store = GenerationStore(
+                        self._dsn,
+                        dim=self._dim,
+                        tenant=tenant,
+                        migration_target=self._table or DEFAULT_TABLE,
+                        pool_size=self._pool_size,
+                        statement_timeout_ms=self._statement_timeout_ms,
+                    )
+                else:
+                    store = PgVectorStore(
+                        self._dsn,
+                        dim=self._dim,
+                        table=self._table or DEFAULT_TABLE,
+                        tenant=tenant,
+                        pool_size=self._pool_size,
+                        statement_timeout_ms=self._statement_timeout_ms,
+                    )
                 try:
                     # Read-only compatibility check. Lazy tenant opens never run DDL.
                     store.check_schema()
