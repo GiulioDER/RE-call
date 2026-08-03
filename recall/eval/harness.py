@@ -14,7 +14,7 @@ from statistics import mean
 import math
 
 from recall.calibration import Calibration, from_samples
-from recall.embeddings import Embedder
+from recall.embeddings import Embedder, embedding_profile_id
 from recall.entailment import EntailmentJudge
 from recall.eval.calibrate import measure_top_cosines
 from recall.eval.metrics import (
@@ -121,7 +121,7 @@ def _score_config(
         else:
             unans_gaps.append(res.gap_warning)
     return AblationResult(
-        embedder=embedder.name, fusion=fusion,
+        embedder=embedding_profile_id(embedder), fusion=fusion,
         p_at_5=mean(ps) if ps else 0.0,
         r_at_5=mean(rs) if rs else 0.0,
         mrr=mean(ms) if ms else 0.0,
@@ -264,11 +264,16 @@ def run_nearmiss_eval(
             # positionally aligned with `answerable` and unans_cos with `gaps` — that alignment
             # is what lets a held-out fold be matched back to the query it belongs to.
             ans_cos, unans_cos = measure_top_cosines(store, emb, plain)
-            cal = from_samples(emb.name, ans_cos, unans_cos)
-            gap_cals = _loo_calibrations(emb.name, unans_cos, ans_cos, hold_out_unanswerable=True)
-            ans_cals = _loo_calibrations(emb.name, ans_cos, unans_cos, hold_out_unanswerable=False)
+            profile_id = embedding_profile_id(emb)
+            cal = from_samples(profile_id, ans_cos, unans_cos)
+            gap_cals = _loo_calibrations(
+                profile_id, unans_cos, ans_cos, hold_out_unanswerable=True
+            )
+            ans_cals = _loo_calibrations(
+                profile_id, ans_cos, unans_cos, hold_out_unanswerable=False
+            )
             # threshold -1 passes every cosine: isolates the judge in the entail-only arm
-            permissive = Calibration(embedder=emb.name, threshold=-1.0, scale=cal.scale)
+            permissive = Calibration(embedder=profile_id, threshold=-1.0, scale=cal.scale)
             # third element: whether this arm's threshold was FITTED to the eval samples, and so
             # must be swapped for the leave-one-out refit when scoring them.
             arm_setup = {
@@ -313,7 +318,7 @@ def run_nearmiss_eval(
                     mrrs.append(mrr(ok_keys, q["relevant_ids"]))
                 results.append(
                     NearMissEvalResult(
-                        embedder=emb.name,
+                        embedder=profile_id,
                         arm=arm,
                         nearmiss_fcr=near_miss_false_confident_rate(nm_confident),
                         gap_fcr=gap_false_confident_rate(gap_confident),
@@ -412,7 +417,9 @@ def run_trust_eval(
                 ))
             # in-run calibration from the labeled plain queries (per-embedder threshold —
             # a fixed constant does not transfer across embedders, see FINDINGS §2)
-            cal = from_samples(emb.name, *measure_top_cosines(store, emb, plain))
+            cal = from_samples(
+                embedding_profile_id(emb), *measure_top_cosines(store, emb, plain)
+            )
 
             retr = HybridRetriever(store, emb)
             base_flags, rec_flags, trust_flags, succ_flags, abst_flags = [], [], [], [], []
@@ -455,7 +462,7 @@ def run_trust_eval(
 
             results.append(
                 TrustEvalResult(
-                    embedder=emb.name,
+                    embedder=embedding_profile_id(emb),
                     str_baseline=superseded_trust_rate(base_flags),
                     str_recency=superseded_trust_rate(rec_flags),
                     str_trust=superseded_trust_rate(trust_flags),

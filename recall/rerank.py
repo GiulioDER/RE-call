@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from recall.embeddings import verify_artifact
 from recall.types import ScoredChunk
 
 
@@ -32,14 +34,31 @@ class CrossEncoderReranker:
         self,
         model: str = DEFAULT_RERANKER_MODEL,
         revision: str | None = DEFAULT_RERANKER_REVISION,
+        local_files_only: bool = False,
+        artifact_sha256: str | None = None,
+        inference_threads: int | None = None,
     ) -> None:
         try:
             from sentence_transformers import CrossEncoder
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError("CrossEncoderReranker requires: pip install recall[rerank]") from exc
+        if local_files_only:
+            if artifact_sha256 is None:
+                raise ValueError("offline reranking requires an artifact_sha256")
+            model = str(verify_artifact(Path(model), artifact_sha256))
+            revision = None
         if model != DEFAULT_RERANKER_MODEL and revision == DEFAULT_RERANKER_REVISION:
             revision = None  # the default pin belongs to the default model only
-        self._model = CrossEncoder(model, revision=revision)
+        if inference_threads is not None:
+            if inference_threads < 1:
+                raise ValueError("inference_threads must be positive")
+            try:
+                import torch
+
+                torch.set_num_threads(inference_threads)
+            except ImportError:  # pragma: no cover
+                pass
+        self._model = CrossEncoder(model, revision=revision, local_files_only=local_files_only)
 
     def rerank(self, query: str, hits: list[ScoredChunk]) -> list[ScoredChunk]:
         if not hits:

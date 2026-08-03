@@ -481,6 +481,7 @@ class PgVectorStore:
         pool_size: int | None = None,
         statement_timeout_ms: int | None = None,
         connect_timeout_s: int | None = 10,
+        generation_id: str = "legacy",
     ) -> None:
         """Open a store against `dsn`.
 
@@ -515,10 +516,13 @@ class PgVectorStore:
             raise ValueError("pool_size must be a positive int or None")
         if not isinstance(tenant, str) or not tenant:
             raise ValueError("tenant must be a non-empty str")
+        if not isinstance(generation_id, str) or not generation_id:
+            raise ValueError("generation_id must be a non-empty str")
         self._dsn = dsn
         self._dim = dim
         self._table = table
         self._tenant = tenant
+        self._generation_id = generation_id
         self._statement_timeout_ms = statement_timeout_ms
         self._connect_timeout_s = connect_timeout_s
         #: (fingerprint, edges, unresolved, candidates) — see `supersession_all()`. The fingerprint is what
@@ -683,6 +687,10 @@ class PgVectorStore:
         """
         return self._tenant
 
+    @property
+    def generation_id(self) -> str:
+        return self._generation_id
+
     def close(self) -> None:
         """Close the connection (or pool) for good.
 
@@ -772,6 +780,34 @@ class PgVectorStore:
             ).fetchone()
         )
         return not (row and row[0])
+
+    def readiness_facts(self) -> dict[str, object]:
+        """Catalog facts used by enterprise readiness without exposing corpus content."""
+        expected = {f"{self._table}_tsv_idx", f"{self._table}_emb_idx"}
+
+        def _op(conn: "psycopg.Connection") -> dict[str, object]:
+            table_row = conn.execute(
+                "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+                "WHERE oid = %s::regclass", (self._table,)
+            ).fetchone()
+            indexes = conn.execute(
+                "SELECT c.relname, i.indisvalid FROM pg_index i "
+                "JOIN pg_class c ON c.oid = i.indexrelid "
+                "WHERE i.indrelid = %s::regclass", (self._table,)
+            ).fetchall()
+            counts = conn.execute(
+                f"SELECT count(*), count(*) FILTER (WHERE NOT metadata ? 'embedding_profile') "
+                f"FROM {self._table} WHERE tenant_id = %s", (self._tenant,)
+            ).fetchone()
+            valid = {str(name) for name, is_valid in indexes if is_valid}
+            return {
+                "rls_enabled": bool(table_row and table_row[0] and table_row[1]),
+                "indexes_valid": expected.issubset(valid),
+                "rows": int(counts[0]) if counts else 0,
+                "rows_without_profile": int(counts[1]) if counts else 0,
+            }
+
+        return self._with_retry(_op)
 
     def upsert(self, chunks: list[Chunk], embeddings: list[list[float]]) -> int:
         if len(chunks) != len(embeddings):
@@ -1239,6 +1275,27 @@ class PgVectorStore:
             or 0
         )
 
+    def delete_sources_across(self, tables: list[str], sources: list[str]) -> int:
+        """Atomically erase tenant sources from active and shadow generation tables."""
+        if not sources:
+            return 0
+        unique_tables = list(dict.fromkeys(tables))
+        if not unique_tables or any(not table.isidentifier() for table in unique_tables):
+            raise ValueError("all generation tables must be valid SQL identifiers")
+        self._supersession_cache = None
+
+        def _op(conn: "psycopg.Connection") -> int:
+            removed = 0
+            with conn.transaction():
+                for table in unique_tables:
+                    removed += conn.execute(
+                        f"DELETE FROM {table} WHERE tenant_id = %s AND source = ANY(%s)",
+                        (self._tenant, sources),
+                    ).rowcount or 0
+            return removed
+
+        return self._with_retry(_op)
+
     def touch_files(self, files: list[str]) -> int:
         """Reset ``indexed_at`` to now(), carrying ``first_indexed_at`` across, for every chunk
         whose metadata file name matches.
@@ -1467,6 +1524,18 @@ class PgVectorStore:
         has no hash and is reported as `""`, which can never equal a real sha256 — so it is
         re-indexed once and then skipped like everything else.
         """
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT DISTINCT source, coalesce(metadata->>'index_fingerprint', "
+                f"metadata->>'content_hash', '') "
+                f"FROM {self._table} WHERE tenant_id = %s",
+                (self._tenant,),
+            ).fetchall()
+        )
+        return {source: content_hash for source, content_hash in rows}
+
+    def source_raw_hashes(self) -> dict[str, str]:
+        """Raw content hashes by source, independent of embedding profile or context mode."""
         rows = self._with_retry(
             lambda conn: conn.execute(
                 f"SELECT DISTINCT source, coalesce(metadata->>'content_hash', '') "
