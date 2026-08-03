@@ -146,6 +146,7 @@ Changelog = "https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md"
 
 [project.scripts]
 recall = "recall.cli:main"
+recall-enterprise = "recall.enterprise_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["recall", "recall_mcp"]

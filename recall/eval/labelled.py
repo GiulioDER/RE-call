@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from recall.calibration import from_samples
-from recall.embeddings import Embedder
+from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.eval.bm25 import BM25Retriever
 from recall.eval.metrics import wilson_ci
 from recall.index import Indexer
@@ -116,11 +116,11 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
         retr = HybridRetriever(store, embedder, candidate_k=candidate_k)
 
         def top_cos(q: str) -> float:
-            hits = store.query_dense(embedder.embed([q])[0], k=1)
+            hits = store.query_dense(embed_query(embedder, q), k=1)
             return hits[0].score if hits else 0.0
 
         cal = from_samples(
-            embedder.name,
+            embedding_profile_id(embedder),
             [top_cos(q["query"]) for q in fit if q.get("answerable")],
             [top_cos(q["query"]) for q in fit if not q.get("answerable")],
         )

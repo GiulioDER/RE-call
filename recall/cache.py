@@ -5,17 +5,25 @@ import json
 import sqlite3
 from pathlib import Path
 
-from recall.embeddings import Embedder
+from recall.embeddings import (
+    Embedder,
+    EmbeddingPurpose,
+    embed_passages,
+    embed_query,
+    embedding_profile_id,
+)
 
 
-def cache_key(name: str, dim: int, text: str) -> str:
+def cache_key(
+    name: str, dim: int, text: str, purpose: EmbeddingPurpose = "legacy"
+) -> str:
     """Content-address a chunk's embedding by (embedder name, dim, text).
 
     Including ``name`` and ``dim`` means switching embedder or model can never return a vector
     computed by a different backend — the key simply misses and the text is re-embedded.
     """
     h = hashlib.sha256()
-    for part in (name, str(dim), text):
+    for part in (name, purpose, str(dim), text):
         h.update(part.encode("utf-8"))
         h.update(b"\x00")
     return h.hexdigest()
@@ -63,7 +71,11 @@ class EmbeddingCache:
 
 
 def embed_with_cache(
-    embedder: Embedder, texts: list[str], cache: EmbeddingCache | None
+    embedder: Embedder,
+    texts: list[str],
+    cache: EmbeddingCache | None,
+    *,
+    purpose: EmbeddingPurpose = "legacy",
 ) -> list[list[float]]:
     """Return one vector per text, serving cached hits and embedding only the misses.
 
@@ -71,14 +83,29 @@ def embed_with_cache(
     re-index of a corpus where most chunks are unchanged only pays to embed what actually
     changed. With ``cache=None`` this is exactly ``embedder.embed(texts)``.
     """
+    def _embed(values: list[str]) -> list[list[float]]:
+        if purpose == "query":
+            return [embed_query(embedder, value) for value in values]
+        if purpose == "passage":
+            return embed_passages(embedder, values)
+        return embedder.embed(values)
+
     if cache is None:
-        return embedder.embed(texts)
-    keys = [cache_key(embedder.name, embedder.dim, t) for t in texts]
+        return _embed(texts)
+    profile_id = embedding_profile_id(embedder)
+    keys = [cache_key(profile_id, embedder.dim, t, purpose) for t in texts]
     results: list[list[float] | None] = [cache.get(k) for k in keys]
     miss_idx = [i for i, r in enumerate(results) if r is None]
     if miss_idx:
-        fresh = embedder.embed([texts[i] for i in miss_idx])
+        fresh = _embed([texts[i] for i in miss_idx])
         for i, vec in zip(miss_idx, fresh):
             results[i] = vec
             cache.put(keys[i], vec)
     return [r for r in results if r is not None]
+
+
+def embed_query_with_cache(
+    embedder: Embedder, text: str, cache: EmbeddingCache | None
+) -> list[float]:
+    """Query-specific cache path whose entries cannot alias passage vectors."""
+    return embed_with_cache(embedder, [text], cache, purpose="query")[0]

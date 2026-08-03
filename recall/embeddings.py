@@ -6,7 +6,10 @@ import os
 import random
 import time
 from collections.abc import Callable, Iterator
-from typing import Protocol, TypeVar, runtime_checkable
+from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+from typing import Literal, Protocol, TypeVar, runtime_checkable
 
 #: Return type of the callable `retry_with_backoff` wraps — it hands back whatever `fn` returns,
 #: so the retry is transparent to the caller's type rather than widening it to `object`.
@@ -139,6 +142,124 @@ class Embedder(Protocol):
     def embed(self, texts: list[str]) -> list[list[float]]: ...
 
 
+EmbeddingPurpose = Literal["query", "passage", "legacy"]
+
+
+@runtime_checkable
+class AsymmetricEmbedder(Embedder, Protocol):
+    """Optional extension for models with distinct retrieval encoders."""
+
+    def embed_query(self, text: str) -> list[float]: ...
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]: ...
+
+
+@dataclass(frozen=True)
+class EmbeddingProfile:
+    """Immutable identity for every input that can change stored vectors."""
+
+    profile_id: str
+    model_name: str
+    artifact_digest: str
+    dimension: int
+    query_mode: str
+    passage_mode: str
+    normalization: str = "l2"
+    instruction_version: str = "none"
+    chunker_version: str = "chunk-text-v1"
+    context_version: str = "raw-v1"
+    dependencies: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.profile_id or not self.model_name or not self.artifact_digest:
+            raise ValueError("embedding profile identity fields must be non-empty")
+        if self.dimension < 1:
+            raise ValueError("embedding profile dimension must be positive")
+
+
+def _package_version(package: str) -> str:
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return "not-installed"
+
+
+def legacy_embedding_profile(embedder: Embedder) -> EmbeddingProfile:
+    """Describe a legacy embedder without changing its public protocol."""
+    name = getattr(embedder, "name", type(embedder).__name__)
+    dim = int(getattr(embedder, "dim"))
+    return EmbeddingProfile(
+        profile_id=str(name),
+        model_name=str(name),
+        artifact_digest="legacy-unverified",
+        dimension=dim,
+        query_mode="legacy",
+        passage_mode="legacy",
+        normalization="embedder-defined",
+    )
+
+
+def embedding_profile(embedder: Embedder) -> EmbeddingProfile:
+    profile = getattr(embedder, "profile", None)
+    return profile if isinstance(profile, EmbeddingProfile) else legacy_embedding_profile(embedder)
+
+
+def embedding_profile_id(embedder: Embedder) -> str:
+    profile = getattr(embedder, "profile", None)
+    if isinstance(profile, EmbeddingProfile):
+        return profile.profile_id
+    name = getattr(embedder, "name", None)
+    return name if isinstance(name, str) else type(embedder).__name__
+
+
+def embed_query(embedder: Embedder, text: str) -> list[float]:
+    """Encode one query, falling back to the legacy symmetric interface."""
+    method = getattr(embedder, "embed_query", None)
+    if callable(method):
+        return [float(x) for x in method(text)]
+    return [float(x) for x in embedder.embed([text])[0]]
+
+
+def embed_passages(embedder: Embedder, texts: list[str]) -> list[list[float]]:
+    """Encode passages, falling back to the legacy symmetric interface."""
+    method = getattr(embedder, "embed_passages", None)
+    raw = method(texts) if callable(method) else embedder.embed(texts)
+    return [[float(x) for x in vector] for vector in raw]
+
+
+def artifact_tree_sha256(path: str | Path) -> str:
+    """Hash a provisioned file or directory without following directory symlinks."""
+    root = Path(path).resolve(strict=True)
+    digest = hashlib.sha256()
+    files = [root] if root.is_file() else sorted(p for p in root.rglob("*") if p.is_file())
+    if not files:
+        raise ValueError(f"model artifact has no files: {root}")
+    for file in files:
+        resolved = file.resolve(strict=True)
+        if root.is_dir() and not resolved.is_relative_to(root):
+            raise ValueError(f"model artifact symlink escapes its root: {file}")
+        relative = resolved.name if root.is_file() else resolved.relative_to(root).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\x00")
+        with resolved.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+    return digest.hexdigest()
+
+
+def verify_artifact(path: str | Path, expected_sha256: str) -> Path:
+    """Resolve and checksum a local model artifact before a runtime loads it."""
+    if len(expected_sha256) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected_sha256):
+        raise ValueError("model artifact SHA256 must be 64 hexadecimal characters")
+    resolved = Path(path).resolve(strict=True)
+    actual = artifact_tree_sha256(resolved)
+    if actual.lower() != expected_sha256.lower():
+        raise RuntimeError(
+            f"model artifact checksum mismatch: expected {expected_sha256.lower()}, got {actual}"
+        )
+    return resolved
+
+
 class HashingEmbedder:
     """Deterministic, dependency-free embedder for tests and offline demos.
 
@@ -206,21 +327,62 @@ def resolve_thread_budget(
 class FastEmbedEmbedder:
     """Real local embeddings (no API key). Requires `pip install recall[fastembed]`."""
 
-    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5") -> None:
+    def __init__(
+        self,
+        model_name: str = "BAAI/bge-small-en-v1.5",
+        *,
+        asymmetric: bool = False,
+        profile_id: str | None = None,
+        cache_dir: str | Path | None = None,
+        artifact_sha256: str | None = None,
+        require_local: bool = False,
+        context_version: str = "raw-v1",
+    ) -> None:
         try:
             from fastembed import TextEmbedding
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError(
                 "FastEmbedEmbedder requires the fastembed extra: pip install recall[fastembed]"
             ) from exc
+        if require_local and cache_dir is None:
+            raise ValueError("offline embedding profiles require a provisioned cache_dir")
+        if require_local and artifact_sha256 is None:
+            raise ValueError("offline embedding profiles require an artifact_sha256")
+        local_cache = None
+        if cache_dir is not None:
+            local_cache = str(
+                verify_artifact(cache_dir, artifact_sha256)
+                if artifact_sha256 is not None
+                else Path(cache_dir).resolve(strict=True)
+            )
         threads = resolve_thread_budget()
+        kwargs: dict[str, object] = {"model_name": model_name}
+        if threads is not None:
+            kwargs["threads"] = threads
+        if local_cache is not None:
+            kwargs["cache_dir"] = local_cache
+        if require_local:
+            kwargs["local_files_only"] = True
         self._model = (
-            TextEmbedding(model_name=model_name, threads=threads)
-            if threads is not None
-            else TextEmbedding(model_name=model_name)
+            TextEmbedding(**kwargs)
         )
         self._name = model_name
-        self._dim = len(next(iter(self._model.embed(["probe"]))))
+        self._asymmetric = asymmetric
+        passage_method = self._model.passage_embed if asymmetric else self._model.embed
+        self._dim = len(next(iter(passage_method(["probe"]))))
+        digest = artifact_sha256 or "legacy-unverified"
+        self._profile = EmbeddingProfile(
+            profile_id=profile_id or (
+                "bge-small-asymmetric-v1" if asymmetric else "bge-small-symmetric-v1"
+            ),
+            model_name=model_name,
+            artifact_digest=digest,
+            dimension=self._dim,
+            query_mode="query_embed" if asymmetric else "embed",
+            passage_mode="passage_embed" if asymmetric else "embed",
+            context_version=context_version,
+            dependencies=(("fastembed", _package_version("fastembed")),),
+        )
 
     @property
     def dim(self) -> int:
@@ -230,8 +392,20 @@ class FastEmbedEmbedder:
     def name(self) -> str:
         return self._name
 
+    @property
+    def profile(self) -> EmbeddingProfile:
+        return self._profile
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         return [[float(x) for x in vec] for vec in self._model.embed(texts)]
+
+    def embed_query(self, text: str) -> list[float]:
+        method = self._model.query_embed if self._asymmetric else self._model.embed
+        return [float(x) for x in next(iter(method([text])))]
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        method = self._model.passage_embed if self._asymmetric else self._model.embed
+        return [[float(x) for x in vec] for vec in method(texts)]
 
 
 class SentenceTransformerEmbedder:
@@ -275,6 +449,97 @@ class SentenceTransformerEmbedder:
             show_progress_bar=False,
         )
         return [[float(x) for x in v] for v in vecs]
+
+
+QWEN3_RETRIEVAL_INSTRUCTION_V1 = (
+    "Given a user question, retrieve passages that answer the question"
+)
+
+
+class Qwen3EmbeddingEmbedder:
+    """Offline, instruction-aware Qwen3 0.6B experiment truncated to 384 dimensions."""
+
+    def __init__(
+        self,
+        model_path: str | Path,
+        artifact_sha256: str,
+        *,
+        dimension: int = 384,
+        context_version: str = "raw-v1",
+        batch_size: int = 32,
+    ) -> None:
+        if dimension != 384:
+            raise ValueError("the registered Qwen3 experiment is fixed at 384 dimensions")
+        local = verify_artifact(model_path, artifact_sha256)
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError(
+                "Qwen3EmbeddingEmbedder requires: pip install recall[rerank]"
+            ) from exc
+        threads = resolve_thread_budget()
+        if threads is not None:
+            import torch
+
+            torch.set_num_threads(threads)
+        self._model = SentenceTransformer(
+            str(local), local_files_only=True, truncate_dim=dimension
+        )
+        self._dim = dimension
+        self._batch_size = batch_size
+        self._profile = EmbeddingProfile(
+            profile_id="qwen3-embedding-0.6b-384-v1",
+            model_name="Qwen/Qwen3-Embedding-0.6B",
+            artifact_digest=artifact_sha256,
+            dimension=dimension,
+            query_mode="instruction-v1",
+            passage_mode="document",
+            instruction_version="retrieval-v1",
+            context_version=context_version,
+            dependencies=(("sentence-transformers", _package_version("sentence-transformers")),),
+        )
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def name(self) -> str:
+        return self._profile.model_name
+
+    @property
+    def profile(self) -> EmbeddingProfile:
+        return self._profile
+
+    def _encode(self, texts: list[str], prompt: str | None = None) -> list[list[float]]:
+        kwargs: dict[str, object] = {
+            "batch_size": self._batch_size,
+            "normalize_embeddings": True,
+            "show_progress_bar": False,
+        }
+        if prompt is not None:
+            kwargs["prompt"] = prompt
+        vectors = self._model.encode(texts, **kwargs)
+        normalized: list[list[float]] = []
+        for vector in vectors:
+            values = [float(x) for x in vector]
+            # Sentence Transformers normalizes before truncate_dim is applied for this
+            # model, so the returned 384-wide prefix is no longer unit length.  Normalize
+            # the final representation explicitly, which is the vector stored and scored.
+            norm = math.sqrt(sum(value * value for value in values))
+            if norm == 0.0:
+                raise RuntimeError("Qwen3 embedding produced a zero vector")
+            normalized.append([value / norm for value in values])
+        return normalized
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self.embed_passages(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._encode([text], prompt=QWEN3_RETRIEVAL_INSTRUCTION_V1)[0]
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        return self._encode(texts)
 
 
 class VoyageEmbedder:

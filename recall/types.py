@@ -50,11 +50,24 @@ class StalenessReport:
 
 
 @dataclass(frozen=True)
+class RetrievalDiagnostics:
+    """Non-content metadata for one retrieval execution."""
+
+    embedding_profile: str = "legacy"
+    retrieval_profile: str = "legacy"
+    index_generation: str = "legacy"
+    candidate_pool_size: int = 20
+    reranking_ran: bool = False
+    stage_ms: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class RetrievalResult:
     query: str
     hits: list[ScoredChunk]
     gap_warning: bool
     staleness: StalenessReport
+    diagnostics: RetrievalDiagnostics = field(default_factory=RetrievalDiagnostics)
 
 
 @dataclass(frozen=True)
@@ -99,3 +112,4 @@ class TrustedResult:
     calibrated: bool
     gap_warning: bool
     staleness: StalenessReport
+    diagnostics: RetrievalDiagnostics = field(default_factory=RetrievalDiagnostics)

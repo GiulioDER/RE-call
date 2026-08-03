@@ -3,18 +3,28 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
-from recall.embeddings import Embedder, HashingEmbedder
+from recall.embeddings import (
+    Embedder,
+    FastEmbedEmbedder,
+    HashingEmbedder,
+    Qwen3EmbeddingEmbedder,
+    embedding_profile_id,
+)
 from recall.guards import staleness
 from recall.observability import METRICS, get_logger
-from recall.index import Indexer, candidate_files
+from recall.context import context_policy_for_profile
+from recall.control_plane import ControlPlane
+from recall.index import Indexer, ShadowIndexTarget, candidate_files
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.rerank import DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION, Reranker
+from recall.profiles import RetrievalAdmission, RetrievalProfile, resolve_retrieval_profile
 from recall.trust import trusted_search
 
 _log = get_logger("mcp.service")
@@ -88,18 +98,71 @@ DEFAULT_MAX_INDEX_FILES = 2000
 DEFAULT_MAX_INDEX_BYTES = 20_000_000  # 20 MB
 
 
-def make_embedder(name: str) -> Embedder:
+def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     """Return the embedder backend by name ('fastembed' local default, or offline 'hashing')."""
+    values = dict(os.environ) if env is None else env
+    profile = values.get("RECALL_EMBED_PROFILE", "").strip()
+    if profile and name != "fastembed":
+        raise ValueError("RECALL_EMBED_PROFILE can only be combined with RECALL_EMBEDDER=fastembed")
     if name == "hashing":
         return HashingEmbedder(dim=HASHING_DIM)
     if name == "fastembed":
-        from recall.embeddings import FastEmbedEmbedder
-
-        return FastEmbedEmbedder()
+        if not profile:
+            return FastEmbedEmbedder()
+        context_versions = {
+            "bge-small-symmetric-v1": "raw-v1",
+            "bge-small-asymmetric-v1": "raw-v1",
+            "bge-small-context-document-v1": "context-document-v1",
+            "bge-small-context-section-v1": "context-section-v1",
+            "bge-small-context-neighbor-v1": "context-neighbor-v1",
+            "qwen3-embedding-0.6b-384-v1": "raw-v1",
+        }
+        if profile not in context_versions:
+            raise ValueError(f"unknown RECALL_EMBED_PROFILE: {profile!r}")
+        artifact_digest = values.get("RECALL_MODEL_SHA256", "")
+        if profile == "qwen3-embedding-0.6b-384-v1":
+            path = values.get("RECALL_QWEN_MODEL_PATH", "")
+            if not path or not artifact_digest:
+                raise ValueError(
+                    "Qwen3 profile requires RECALL_QWEN_MODEL_PATH and RECALL_MODEL_SHA256"
+                )
+            return Qwen3EmbeddingEmbedder(path, artifact_digest)
+        cache_dir = values.get("RECALL_MODEL_CACHE", "")
+        if not cache_dir or not artifact_digest:
+            raise ValueError(
+                "explicit BGE profiles require RECALL_MODEL_CACHE and RECALL_MODEL_SHA256"
+            )
+        return FastEmbedEmbedder(
+            asymmetric=profile != "bge-small-symmetric-v1",
+            profile_id=profile,
+            cache_dir=cache_dir,
+            artifact_sha256=artifact_digest,
+            require_local=True,
+            context_version=context_versions[profile],
+        )
     raise ValueError(f"unknown embedder: {name!r} (use 'fastembed' or 'hashing')")
 
 
+def make_profile_embedder(
+    profile_id: str, *, shadow: bool = False, env: dict[str, str] | None = None
+) -> Embedder:
+    """Construct one registered profile, with optional shadow-specific artifact settings."""
+    values = dict(os.environ if env is None else env)
+    values["RECALL_EMBED_PROFILE"] = profile_id
+    if shadow:
+        mappings = {
+            "RECALL_SHADOW_MODEL_CACHE": "RECALL_MODEL_CACHE",
+            "RECALL_SHADOW_MODEL_SHA256": "RECALL_MODEL_SHA256",
+            "RECALL_SHADOW_QWEN_MODEL_PATH": "RECALL_QWEN_MODEL_PATH",
+        }
+        for source, target in mappings.items():
+            if source in values:
+                values[target] = values[source]
+    return make_embedder("fastembed", values)
+
+
 class SearchHit(BaseModel):
+    chunk_id: str | None = Field(default=None, description="Stable retrieved chunk identifier.")
     source: str = Field(description="Where this memory came from (file/source id).")
     score: float = Field(description="True dense cosine similarity in [-1, 1].")
     confidence: float = Field(
@@ -118,6 +181,10 @@ class SearchHit(BaseModel):
     valid_until: str | None = Field(
         default=None, description="ISO end of this memory's validity window, when declared."
     )
+    valid_from: str | None = Field(
+        default=None, description="ISO start of this memory's validity window, when declared."
+    )
+    ordinal: int | None = Field(default=None, description="Chunk order within its source.")
     indexed_at: str | None = Field(
         default=None, description="ISO timestamp of when this memory entered the index."
     )
@@ -141,6 +208,13 @@ class SearchResult(BaseModel):
         description="Query-embedding latency in milliseconds (cost/latency metadata; null if "
         "not measured). Additive — clients that ignore it are unaffected.",
     )
+    rerank_ms: float | None = None
+    embedding_profile: str = "legacy"
+    retrieval_profile: str = "legacy"
+    index_generation: str = "legacy"
+    candidate_pool_size: int = 20
+    reranking_ran: bool = False
+    stage_ms: dict[str, float] = Field(default_factory=dict)
     hits: list[SearchHit]
 
 
@@ -248,15 +322,49 @@ def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str] | Non
     return (model, revision)
 
 
-def _build_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pragma: no cover
+def _new_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pragma: no cover
     """Instantiate the configured reranker, or None. Imports torch only when actually enabled."""
-    spec = resolve_reranker(env)
+    values = dict(os.environ) if env is None else env
+    profile = resolve_retrieval_profile(values)
+    if profile.name == "fast":
+        return None
+    if profile.name == "quality":
+        model_path = values.get("RECALL_RERANK_PATH", "")
+        digest = values.get("RECALL_RERANK_SHA256", "")
+        if not model_path or not digest:
+            raise ValueError(
+                "quality profile requires RECALL_RERANK_PATH and RECALL_RERANK_SHA256"
+            )
+        from recall.rerank import CrossEncoderReranker
+
+        return CrossEncoderReranker(
+            model=model_path,
+            revision=None,
+            local_files_only=True,
+            artifact_sha256=digest,
+            inference_threads=profile.inference_threads,
+        )
+    spec = resolve_reranker(values)
     if spec is None:
         return None
     from recall.rerank import CrossEncoderReranker
 
     model, revision = spec
     return CrossEncoderReranker(model=model, revision=revision)
+
+
+@lru_cache(maxsize=1)
+def _shared_reranker() -> "Reranker | None":  # pragma: no cover
+    return _new_reranker()
+
+
+def _build_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pragma: no cover
+    return _new_reranker(env) if env is not None else _shared_reranker()
+
+
+@lru_cache(maxsize=8)
+def _admission(profile: RetrievalProfile) -> RetrievalAdmission:
+    return RetrievalAdmission(profile)
 
 
 def search_memory(
@@ -283,20 +391,29 @@ def search_memory(
             f"Search cost scales with query length while the rate budget does not, so an "
             f"unbounded query is a shared-database denial of service. Ask a shorter question."
         )
+    profile = resolve_retrieval_profile()
     k = max(1, min(k, MAX_SEARCH_K))
+    if profile.name != "legacy":
+        k = min(k, profile.returned_k)
     timed = TimedEmbedder(embedder)  # measure embedding latency without altering trusted_search
-    result = trusted_search(
-        store, timed, query, k=k, source=source, calibration=calibration,
-        reranker=_build_reranker(),
-    )
+    generation = str(getattr(store, "generation_id", "legacy"))
+    with _admission(profile):
+        result = trusted_search(
+            store, timed, query, k=k, source=source, calibration=calibration,
+            reranker=_build_reranker(), candidate_k=profile.candidate_k,
+            retrieval_profile=profile.name, index_generation=generation,
+        )
     hits = [
         SearchHit(
+            chunk_id=h.chunk.id,
             source=h.provenance.file or h.chunk.source,
             score=round(h.cosine, 4),
             confidence=round(h.confidence, 4),
             verdict=h.verdict,
             superseded_by=h.validity.superseded_by,
             valid_until=h.validity.valid_until.isoformat() if h.validity.valid_until else None,
+            valid_from=h.validity.valid_from.isoformat() if h.validity.valid_from else None,
+            ordinal=h.provenance.ord,
             indexed_at=h.provenance.indexed_at.isoformat() if h.provenance.indexed_at else None,
             text=h.chunk.text,
         )
@@ -367,6 +484,13 @@ def search_memory(
         stale=result.staleness.stale,
         advice=advice,
         embed_ms=round(timed.stats.total_ms, 2),
+        rerank_ms=result.diagnostics.stage_ms.get("reranking"),
+        embedding_profile=result.diagnostics.embedding_profile,
+        retrieval_profile=result.diagnostics.retrieval_profile,
+        index_generation=result.diagnostics.index_generation,
+        candidate_pool_size=result.diagnostics.candidate_pool_size,
+        reranking_ran=result.diagnostics.reranking_ran,
+        stage_ms=result.diagnostics.stage_ms,
         hits=hits,
     )
 
@@ -376,6 +500,9 @@ def index_memory(
     embedder: Embedder,
     path: str,
     on_measured: Callable[[int, int], None] | None = None,
+    shadow_store: PgVectorStore | None = None,
+    shadow_embedder: Embedder | None = None,
+    control_plane: ControlPlane | None = None,
 ) -> IndexResult:
     """Index a markdown file or folder into memory; return counts + a human message.
 
@@ -456,7 +583,22 @@ def index_memory(
         on_measured(len(files), total_bytes)
 
     try:
-        stats = Indexer(store, embedder).index_path(target, files=files)
+        shadow_target = None
+        if any(value is not None for value in (shadow_store, shadow_embedder, control_plane)):
+            if shadow_store is None or shadow_embedder is None or control_plane is None:
+                raise ValueError("shadow indexing requires store, embedder, and control plane")
+            shadow_target = ShadowIndexTarget(
+                store=shadow_store,
+                embedder=shadow_embedder,
+                control_plane=control_plane,
+                context_policy=context_policy_for_profile(embedding_profile_id(shadow_embedder)),
+            )
+        stats = Indexer(
+            store,
+            embedder,
+            context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+            shadow=shadow_target,
+        ).index_path(target, files=files)
     except (RuntimeError, OSError, ValueError) as exc:
         # The library's own message is preserved verbatim for the OPERATOR and redacted for the
         # CLIENT. Only the server-side paths are removed — the scale of a refused prune, and the
@@ -483,7 +625,11 @@ def index_memory(
     )
 
 
-def forget_memory(store: PgVectorStore, sources: list[str]) -> ForgetResult:
+def forget_memory(
+    store: PgVectorStore,
+    sources: list[str],
+    shadow_store: PgVectorStore | None = None,
+) -> ForgetResult:
     """Permanently delete every indexed chunk for the given sources; return what actually went away.
 
     This is the right-to-erasure path: irreversible and tenant-scoped (only ever touches the
@@ -508,10 +654,20 @@ def forget_memory(store: PgVectorStore, sources: list[str]) -> ForgetResult:
     # store — so following the documented erasure contract actually deletes. (Previously forget
     # compared the relative id straight against the absolute `source` column and matched nothing.)
     resolved = store.sources_for_identifiers(requested)  # {identifier: [source, ...]}
+    if shadow_store is not None:
+        shadow_resolved = shadow_store.sources_for_identifiers(requested)
+        for identifier, values in shadow_resolved.items():
+            bucket = resolved.setdefault(identifier, [])
+            bucket.extend(value for value in values if value not in bucket)
     found = [s for s in requested if s in resolved]
     not_found = [s for s in requested if s not in resolved]
     to_delete = sorted({src for ident in found for src in resolved[ident]})
-    chunks_removed = store.delete_sources(to_delete) if to_delete else 0
+    if to_delete and shadow_store is not None:
+        chunks_removed = store.delete_sources_across(
+            [store.table, shadow_store.table], to_delete
+        )
+    else:
+        chunks_removed = store.delete_sources(to_delete) if to_delete else 0
     if found and not_found:
         message = (
             f"Forgot {chunks_removed} chunk(s) from {len(found)} source(s); "

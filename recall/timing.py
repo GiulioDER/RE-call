@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TypeVar
 
-from recall.embeddings import Embedder
+from recall.embeddings import Embedder, EmbeddingProfile, embed_passages, embed_query
 from recall.rerank import Reranker
 from recall.types import ScoredChunk
 
@@ -66,8 +66,19 @@ class TimedEmbedder:
     def name(self) -> str:
         return self._inner.name
 
+    @property
+    def profile(self) -> EmbeddingProfile | None:
+        profile = getattr(self._inner, "profile", None)
+        return profile if isinstance(profile, EmbeddingProfile) else None
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         return timed_call(self.stats, lambda: self._inner.embed(texts))
+
+    def embed_query(self, text: str) -> list[float]:
+        return timed_call(self.stats, lambda: embed_query(self._inner, text))
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        return timed_call(self.stats, lambda: embed_passages(self._inner, texts))
 
 
 class TimedReranker:

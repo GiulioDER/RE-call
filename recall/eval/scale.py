@@ -22,7 +22,7 @@ import os
 import time
 from pathlib import Path
 
-from recall.embeddings import Embedder
+from recall.embeddings import Embedder, embedding_profile_id
 from recall.store import PgVectorStore
 from recall.eval.harness import (
     _throwaway_store,
@@ -149,7 +149,7 @@ def main() -> None:
     print(f"  {corpus.n_files} files, {corpus.n_chunks} chunks, {len(corpus.queries)} queries")
 
     t0 = time.perf_counter()
-    print(f"indexing + measuring retrieval with {emb.name} ...")
+    print(f"indexing + measuring retrieval with {embedding_profile_id(emb)} ...")
     with _throwaway_store(args.dsn, emb, corpus.root, "scale_") as store:
         index_s = time.perf_counter() - t0
         indexed = store.count()
@@ -174,7 +174,7 @@ def main() -> None:
         f"- corpus: **{indexed} chunks** across {corpus.n_files} files",
         f"- queries: **{len(corpus.queries)}** ({args.answerable} answerable, "
         f"{args.unanswerable} unanswerable, {args.successor} successor, {args.abstain} abstain)",
-        f"- embedder: `{emb.name}` · index time: {index_s:.1f}s",
+        f"- embedder: `{embedding_profile_id(emb)}` · index time: {index_s:.1f}s",
         "",
         "## Retrieval under index pressure",
         "",
