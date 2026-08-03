@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import os
 
+import psycopg
+
 from recall.control_plane import ControlPlane
 from recall.store import PgVectorStore, require_secure_dsn
 
@@ -46,6 +48,12 @@ def main() -> None:
     if args.command == "migrate":
         control.apply_migrations()
     elif args.command == "create-generation":
+        # PgVectorStore registers the vector codec as soon as it connects.  A clean
+        # enterprise database therefore needs the extension before constructing the
+        # store, not later inside ensure_schema().  The migration role owns this isolated
+        # database and is the only role allowed to perform this bootstrap operation.
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
         control.register_generation(
             args.generation_id, args.table, args.profile, args.dimension
         )
