@@ -9,6 +9,21 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
+- **Tenant and generation bound calibration artifacts.** Labelled query sets now have a canonical
+  digest independent of input order and are stored separately from measured retrieval scores.
+  Frozen `CalibrationArtifactV2` records bind tenant, generation, embedder, pipeline, corpus, and
+  query set exactly, retain certification statistics and raw scores, and carry a verified
+  checksum. Publication uses a tenant and generation advisory lock, preserves immutable history,
+  and records creation, rejection, publication, and supersession in the audit log. Legacy JSON is
+  importable only as `legacy_unbound` evidence and is never selected automatically. Privacy
+  erasure changes the effective corpus fingerprint, immediately staling prior measurements and
+  carrying the exclusion into generations later created from the same manifest.
+  (`recall/calibration_v2.py`, `docs/CALIBRATION.md`)
+- **Calibration administration and result lineage.** `recall calibrate --generation ... --queries
+  ... [--publish]` and `recall calibration list|show|export|import` manage the new artifacts.
+  Python and MCP search results expose calibration status and the tenant, generation, pipeline,
+  corpus, query set, and calibration identities used for the decision. `calibrated` is now a
+  computed compatibility property and is true only for a certified exact match.
 - **Immutable pipeline lineage and blue-green index generations.** Public frozen identities bind
   embedder provider/model/revision/dimension, chunker configuration, FTS configuration, corpus
   manifest, and generation into canonical SHA-256 fingerprints. Versioned migrations add tenant
@@ -18,7 +33,7 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   erasure are exposed through `recall manifest` and `recall generation`. Production promotion is
   deliberately blocked until the later calibration and certification gates land.
   (`recall/lineage.py`, `recall/generations.py`, `docs/GENERATIONS.md`)
-- **Versioned PostgreSQL migrations and split database credentials.** Ten ordered SQL phases are
+- **Versioned PostgreSQL migrations and split database credentials.** Eleven ordered SQL phases are
   shipped with committed SHA-256 checksums and recorded per target table in
   `recall_schema_migrations`. `recall schema status|plan|apply` provides read-only inspection and
   advisory-lock-guarded application; concurrent index phases are resumable, checksum drift and
@@ -27,6 +42,9 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   integration suite. (`recall/schema.py`, `recall/migrations/`, `docs/MIGRATIONS.md`)
 
 ### Changed
+- **Search no longer auto-loads process-global calibration files.** Generation search resolves a
+  calibration from the authenticated tenant and pinned active generation for each request.
+  Reusing a labelled query set on a replacement generation always measures retrieval again.
 - **Library data paths and MCP startup perform zero DDL.** `PgVectorStore.check_schema()` is the
   SELECT-only compatibility gate, pgvector is no longer installed from connection setup, and MCP
   readiness refuses missing, pending, failed, drifted or unknown migrations. The deprecated

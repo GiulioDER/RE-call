@@ -273,8 +273,15 @@ def test_abstention_propagates_as_an_empty_result_list(table, tmp_path, monkeypa
         result = real(*a, **kw)
         return type(result)(
             query=result.query, hits=result.hits, abstained=True, reason="forced",
-            calibrated=result.calibrated, gap_warning=result.gap_warning,
+            gap_warning=result.gap_warning,
             staleness=result.staleness,
+            calibration_id=result.calibration_id,
+            calibration_status=result.calibration_status,
+            tenant_id=result.tenant_id,
+            generation_id=result.generation_id,
+            pipeline_fingerprint=result.pipeline_fingerprint,
+            corpus_fingerprint=result.corpus_fingerprint,
+            query_set_digest=result.query_set_digest,
         )
 
     async def scenario():

@@ -59,11 +59,12 @@ def _mixed_result() -> TrustedResult:
         ],
         abstained=False,
         reason="",
-        calibrated=True,
         gap_warning=False,
         staleness=StalenessReport(
             stale=False, newest_indexed_at=None, age=None, max_age=timedelta(days=1)
         ),
+        calibration_id="cal_fixture",
+        calibration_status="certified",
     )
 
 

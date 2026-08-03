@@ -43,9 +43,10 @@ def _result_with(file: str, *, superseded_by: str | None = None, text: str = "bo
         validity=Validity(valid_from=None, valid_until=None, superseded_by=superseded_by),
     )
     return TrustedResult(
-        query="q", hits=[hit], abstained=False, reason="", calibrated=True, gap_warning=False,
+        query="q", hits=[hit], abstained=False, reason="", gap_warning=False,
         staleness=StalenessReport(stale=False, newest_indexed_at=None, age=None,
                                   max_age=timedelta(days=1)),
+        calibration_id="cal_fixture", calibration_status="certified",
     )
 
 

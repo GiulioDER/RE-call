@@ -48,10 +48,11 @@ def _result(hits: list[TrustedHit], abstained: bool = False, reason: str = "") -
         hits=hits,
         abstained=abstained,
         reason=reason,
-        calibrated=True,
         gap_warning=False,
         staleness=StalenessReport(stale=False, newest_indexed_at=None, age=None,
                                   max_age=__import__("datetime").timedelta(days=2)),
+        calibration_id="cal_fixture",
+        calibration_status="certified",
     )
 
 

@@ -1,19 +1,24 @@
 """Pure trust-layer tests: verdicts, precedence, cycles, abstention — no DB, no clock reads."""
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from recall.calibration import Calibration
 from recall.trust import evaluate, resolve_successor
 from recall.types import Chunk, RetrievalResult, ScoredChunk, StalenessReport
 
-NOW = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
-FRESH = StalenessReport(stale=False, newest_indexed_at=NOW, age=timedelta(0), max_age=timedelta(days=2))
+NOW = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
+FRESH = StalenessReport(
+    stale=False, newest_indexed_at=NOW, age=timedelta(0), max_age=timedelta(days=2)
+)
 CAL = Calibration(embedder="test", threshold=0.5, scale=0.05)
 
 
 def _hit(cid: str, file: str, score: float, **meta) -> ScoredChunk:
-    chunk = Chunk(id=cid, source=file, text=f"text of {file}", metadata={"file": file, "ord": 0, **meta})
+    chunk = Chunk(
+        id=cid, source=file, text=f"text of {file}", metadata={"file": file, "ord": 0, **meta}
+    )
     return ScoredChunk(chunk=chunk, score=score, indexed_at=NOW)
 
 
@@ -38,7 +43,7 @@ def test_ok_verdict_above_threshold():
     assert res.hits[0].verdict == "ok"
     assert res.abstained is False
     assert res.reason == ""
-    assert res.calibrated is True
+    assert res.calibrated is False  # an unbound legacy threshold is not a v2 certification
     assert res.hits[0].confidence > 0.5
 
 
@@ -68,13 +73,9 @@ def test_superseded_only_hits_abstain_with_reason():
 
 
 def test_expired_verdict_and_window_boundaries():
-    ok = evaluate(
-        _result([_hit("x", "d.md", 0.9, valid_until="2026-07-17")]), {}, CAL, NOW
-    )
+    ok = evaluate(_result([_hit("x", "d.md", 0.9, valid_until="2026-07-17")]), {}, CAL, NOW)
     assert ok.hits[0].verdict == "ok"  # NOW is inside the last valid day (inclusive)
-    expired = evaluate(
-        _result([_hit("x", "d.md", 0.9, valid_until="2026-07-16")]), {}, CAL, NOW
-    )
+    expired = evaluate(_result([_hit("x", "d.md", 0.9, valid_until="2026-07-16")]), {}, CAL, NOW)
     assert expired.hits[0].verdict == "expired"
     assert expired.abstained is True
 
@@ -101,6 +102,27 @@ def test_uncalibrated_fallback_uses_default_threshold_and_flags_it():
     assert res.calibrated is False
     assert res.hits[0].verdict == "ok"  # 0.8 >= DEFAULT_GAP_THRESHOLD (0.50)
     assert 0.0 < res.hits[0].confidence < 1.0  # still computed, just uncalibrated
+
+
+def test_calibrated_is_computed_only_for_a_certified_bound_artifact():
+    result = _result([_hit("x", "doc.md", 0.8)])
+    certified = evaluate(
+        result,
+        {},
+        CAL,
+        NOW,
+        calibration_id="cal_v2",
+        calibration_status="certified",
+        generation_binding={
+            "tenant_id": "tenant-a",
+            "generation_id": "gen-a",
+            "pipeline_fingerprint": "a" * 64,
+            "corpus_fingerprint": "b" * 64,
+        },
+        query_set_digest="c" * 64,
+    )
+    assert certified.calibrated is True
+    assert certified.calibration_id == "cal_v2"
 
 
 def test_provenance_and_validity_populated():
@@ -155,7 +177,5 @@ def test_self_supersession_is_ignored():
 
 def test_naive_now_is_interpreted_as_utc():
     naive = NOW.replace(tzinfo=None)
-    res = evaluate(
-        _result([_hit("x", "d.md", 0.9, valid_until="2026-07-16")]), {}, CAL, naive
-    )
+    res = evaluate(_result([_hit("x", "d.md", 0.9, valid_until="2026-07-16")]), {}, CAL, naive)
     assert res.hits[0].verdict == "expired"  # no TypeError on naive-vs-aware comparison
