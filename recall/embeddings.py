@@ -477,6 +477,11 @@ class Qwen3EmbeddingEmbedder:
             raise ImportError(
                 "Qwen3EmbeddingEmbedder requires: pip install recall[rerank]"
             ) from exc
+        threads = resolve_thread_budget()
+        if threads is not None:
+            import torch
+
+            torch.set_num_threads(threads)
         self._model = SentenceTransformer(
             str(local), local_files_only=True, truncate_dim=dimension
         )
