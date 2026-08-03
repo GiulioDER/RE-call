@@ -121,7 +121,10 @@ silently prefers the cloud embedder over the local one, etc.).
 - **`VOYAGE_API_KEY`** is read from the environment (`recall/embeddings.py`) or a gitignored `.env`
   loaded by `recall/_env.py`. Never commit it. It is visible to anything that can read the process
   environment of a running `recall` process — treat it with the same care as any API key.
-- **The Postgres DSN (`RECALL_DSN`)** carries a password in the connection string. `recall/store.py`
+- **The Postgres DSNs (`RECALL_SERVING_DSN` and `RECALL_MIGRATION_DSN`)** carry passwords in their
+  connection strings. The serving credential must not own schema objects or have DDL privileges;
+  the migration credential must not be present in the MCP process. `RECALL_DSN` is a deprecated
+  local-development fallback for the serving DSN. `recall/store.py`
   redacts it before logging (`redacted_dsn`) so a connection failure never writes a plaintext
   password to a log file or a systemd journal — but the DSN itself, wherever you configure it
   (environment, `.env`, an MCP client's config block), is a credential and should be handled as one.

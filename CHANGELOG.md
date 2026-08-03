@@ -8,6 +8,23 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Added
+- **Versioned PostgreSQL migrations and split database credentials.** Seven ordered SQL phases are
+  shipped with committed SHA-256 checksums and recorded per target table in
+  `recall_schema_migrations`. `recall schema status|plan|apply` provides read-only inspection and
+  advisory-lock-guarded application; concurrent index phases are resumable, checksum drift and
+  future schemas fail closed, and the v0.8 table is adopted without rewriting its rows. PostgreSQL
+  16 and 17 run the fresh-install, legacy-upgrade, interruption, drift, lock and unprivileged-role
+  integration suite. (`recall/schema.py`, `recall/migrations/`, `docs/MIGRATIONS.md`)
+
+### Changed
+- **Library data paths and MCP startup perform zero DDL.** `PgVectorStore.check_schema()` is the
+  SELECT-only compatibility gate, pgvector is no longer installed from connection setup, and MCP
+  readiness refuses missing, pending, failed, drifted or unknown migrations. The deprecated
+  `ensure_schema()` compatibility method now delegates to the same versioned migrator instead of
+  maintaining a second runtime-DDL implementation. Production config separates
+  `RECALL_SERVING_DSN` from `RECALL_MIGRATION_DSN`; `RECALL_DSN` remains a deprecated local fallback.
+
 ## [0.8.0] — 2026-08-02
 
 ### Added

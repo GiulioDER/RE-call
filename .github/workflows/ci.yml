@@ -6,6 +6,40 @@ on:
   pull_request:
 
 jobs:
+  schema-migrations:
+    name: Schema migrations (PostgreSQL ${{ matrix.postgres }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [16, 17]
+    services:
+      db:
+        image: pgvector/pgvector:pg${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: recall
+          POSTGRES_PASSWORD: recall
+          POSTGRES_DB: recall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recall"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      RECALL_TEST_DSN: postgresql://recall:recall@localhost:5432/recall
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Exercise fresh, upgrade, drift, lock and serving-role paths
+        run: pytest -q tests/test_schema_migrations.py
+
   test:
     runs-on: ubuntu-latest
 

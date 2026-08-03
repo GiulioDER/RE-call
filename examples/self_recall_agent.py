@@ -35,10 +35,13 @@ def main() -> None:  # pragma: no cover - manual demo entry point
 
     from recall_mcp.service import make_embedder
 
-    dsn = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
+    dsn = os.environ.get(
+        "RECALL_SERVING_DSN",
+        os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall"),
+    )
     embedder = make_embedder(os.environ.get("RECALL_EMBEDDER", "fastembed"))
     with PgVectorStore(dsn, dim=embedder.dim) as store:
-        store.ensure_schema()
+        store.check_schema()
         for proposal in [
             "let's inject retrieved context into the prompt to boost answers",
             "should we add a brand new telemetry dashboard",
