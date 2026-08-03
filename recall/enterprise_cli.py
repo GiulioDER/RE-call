@@ -57,17 +57,19 @@ def main() -> None:
         control.register_generation(
             args.generation_id, args.table, args.profile, args.dimension
         )
-        store = PgVectorStore(
-            dsn, args.dimension, table=args.table, tenant=args.tenant,
-            generation_id=args.generation_id,
-        )
+        store: PgVectorStore | None = None
         try:
+            store = PgVectorStore(
+                dsn, args.dimension, table=args.table, tenant=args.tenant,
+                generation_id=args.generation_id,
+            )
             store.ensure_schema()
         except Exception:
             control.set_generation_state(args.generation_id, "failed")
             raise
         finally:
-            store.close()
+            if store is not None:
+                store.close()
     elif args.command == "mark-ready":
         control.set_generation_state(
             args.generation_id, "ready",
