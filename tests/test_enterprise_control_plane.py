@@ -54,3 +54,45 @@ def test_control_plane_migration_route_outbox_and_cutover() -> None:
                 "DELETE FROM recall_index_generations WHERE generation_id = ANY(%s)",
                 ([active, shadow],),
             )
+
+
+def test_set_route_establishes_tenant_before_forced_rls_write() -> None:
+    class _Transaction:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class _Cursor:
+        def __init__(self, rows=()):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class _Connection:
+        def __init__(self):
+            self.sql: list[str] = []
+            self.transaction = _Transaction
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, sql, _params=None):
+            self.sql.append(sql)
+            if sql.startswith("SELECT generation_id, state"):
+                return _Cursor((("active", "ready"),))
+            return _Cursor()
+
+    connection = _Connection()
+    control = ControlPlane("postgresql:///unused")
+    control._connect = lambda: connection  # type: ignore[method-assign]
+
+    control.set_route("acme", "active")
+
+    assert connection.sql[0].startswith("SELECT set_config('recall.tenant_id'")
+    assert any(sql.startswith("INSERT INTO recall_tenant_routes") for sql in connection.sql)
