@@ -11,6 +11,7 @@ import pytest
 
 from recall.cli import main as cli_main
 from recall.schema import (
+    GLOBAL_MIGRATION_TARGET,
     LEDGER_TABLE,
     MIGRATION_LOCK_NAME,
     ConcurrentMigrator,
@@ -50,9 +51,10 @@ def _target(prefix: str = "mig_"):
 
 def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     migrations = load_migrations()
-    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 8)]
+    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 11)]
     assert migrations[0].transactional
-    assert all(m.concurrent_index for m in migrations[1:])
+    assert migrations[7].transactional
+    assert all(m.concurrent_index for m in (*migrations[1:7], *migrations[8:]))
     assert len({m.checksum for m in migrations}) == len(migrations)
 
 
@@ -104,7 +106,7 @@ def test_fresh_apply_repeated_apply_and_plan_is_read_only():
         assert [m.version for m in applied] == [f"{n:04d}" for n in range(1, 8)]
         assert apply_migrations(TEST_DSN, table=table, dim=DIM) == ()
         status = schema_status(TEST_DSN, table=table, dim=DIM)
-        assert status.compatible and status.current_version == "0007"
+        assert status.compatible and status.current_version == "0010"
 
         with PgVectorStore(TEST_DSN, dim=DIM, table=table) as store:
             store.check_schema()
@@ -138,7 +140,7 @@ def test_schema_cli_plan_apply_and_status_are_wired(capsys):
         assert "applied 0001" in applied and "applied 0007" in applied
         cli_main([*base, "schema", "--dim", str(DIM), "status"])
         status = capsys.readouterr().out
-        assert "current: 0007" in status and "compatible: yes" in status
+        assert "current: 0010" in status and "compatible: yes" in status
 
 
 @requires_db
@@ -177,6 +179,24 @@ def test_v08_table_is_adopted_without_rewriting_existing_data():
         assert row[:4] == ("default", "old", "memo.md", "preserve me")
         assert row[4] is None
         assert key == (2,)
+
+
+@requires_db
+def test_generation_migrations_are_recorded_once_in_the_global_ledger():
+    migrations = load_migrations()
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        global_versions = conn.execute(
+            f"SELECT version FROM {LEDGER_TABLE} WHERE target_table = %s ORDER BY version",
+            (GLOBAL_MIGRATION_TARGET,),
+        ).fetchall()
+        duplicated = conn.execute(
+            f"SELECT target_table, version FROM {LEDGER_TABLE} "
+            "WHERE version >= '0008' AND target_table != %s",
+            (GLOBAL_MIGRATION_TARGET,),
+        ).fetchall()
+
+    assert global_versions == [(migration.version,) for migration in migrations[7:]]
+    assert duplicated == []
 
 
 @requires_db

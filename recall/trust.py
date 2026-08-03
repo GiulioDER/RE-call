@@ -567,6 +567,7 @@ def trusted_search(
     known_as_of: datetime | None = None,
     entailment: "EntailmentJudge | None" = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
+    _generation_snapshot: bool = True,
 ) -> TrustedResult:
     """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point.
 
@@ -581,6 +582,23 @@ def trusted_search(
     """
     if k < 1:
         raise ValueError("k must be >= 1")
+    snapshot = getattr(store, "snapshot", None)
+    if _generation_snapshot and callable(snapshot):
+        with snapshot():
+            return trusted_search(
+                store,
+                embedder,
+                query,
+                k=k,
+                source=source,
+                calibration=calibration,
+                now=now,
+                known_as_of=known_as_of,
+                reranker=reranker,
+                entailment=entailment,
+                candidate_k=candidate_k,
+                _generation_snapshot=False,
+            )
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
     # always come from the same calibration (or the same uncalibrated default)
     #

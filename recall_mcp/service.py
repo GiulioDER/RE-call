@@ -395,6 +395,11 @@ def index_memory(
     tree itself: a second walk is a second answer, and the one that bills must be the one that
     runs.
     """
+    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+        raise ValueError(
+            "local filesystem indexing is development-only; production ingestion requires an "
+            "immutable S3 manifest"
+        )
     root = Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve()
     target = Path(path).resolve()
     if not target.is_relative_to(root):
