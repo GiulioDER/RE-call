@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.beam.dataset import Conversation
+from recall.embeddings import embedding_profile_id
 
 #: Benchmark-only table, isolated from the LOCOMO arm's `bench_locomo_chunks` so a BEAM run cannot
 #: contaminate — or be contaminated by — an accuracy run in flight.
@@ -262,7 +263,10 @@ class BeamRecallSystem:
             "system": self.name,
             "k": self._k,
             "candidate_k": self._candidate_k,
-            "embedder": {"name": self._embedder_name, "model": self._embedder.name},
+            "embedder": {
+                "name": self._embedder_name,
+                "model": embedding_profile_id(self._embedder),
+            },
             "reranker": self._reranker_name,
             "entailment": (
                 {

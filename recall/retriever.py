@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import is_dataclass, replace
 from datetime import datetime, timedelta, timezone
+import time
 
-from recall.embeddings import Embedder
+from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.guards import DEFAULT_GAP_THRESHOLD, gap_warning, staleness
 from recall.rerank import Reranker
 from recall.store import PgVectorStore
-from recall.types import RetrievalResult, ScoredChunk
+from recall.types import RetrievalDiagnostics, RetrievalResult, ScoredChunk
 
 
 def _rescored(hit: ScoredChunk, score: float) -> ScoredChunk:
@@ -86,6 +87,8 @@ class HybridRetriever:
         candidate_k: int = DEFAULT_CANDIDATE_K,
         use_sparse: bool = True,
         use_dense: bool = True,
+        retrieval_profile: str = "legacy",
+        index_generation: str = "legacy",
     ) -> None:
         if not (use_dense or use_sparse):
             raise ValueError("at least one of use_dense / use_sparse must be True")
@@ -97,6 +100,8 @@ class HybridRetriever:
         self._candidate_k = candidate_k
         self._use_sparse = use_sparse
         self._use_dense = use_dense
+        self._retrieval_profile = retrieval_profile
+        self._index_generation = index_generation
 
     def search(self, query: str, k: int = 5, source: str | None = None) -> RetrievalResult:
         """Retrieve the top-`k` chunks for `query` (optionally filtered to one `source`).
@@ -110,18 +115,26 @@ class HybridRetriever:
         """
         if k < 1:
             raise ValueError("k must be >= 1")
-        qvec = self._embedder.embed([query])[0]
+        timings: dict[str, float] = {}
+        started = time.perf_counter()
+        qvec = embed_query(self._embedder, query)
+        timings["query_embedding"] = (time.perf_counter() - started) * 1000.0
+        started = time.perf_counter()
         dense = (
             self._store.query_dense(qvec, k=self._candidate_k, source=source)
             if self._use_dense
             else []
         )
+        timings["dense_retrieval"] = (time.perf_counter() - started) * 1000.0
+        started = time.perf_counter()
         sparse = (
             self._store.query_sparse(query, k=self._candidate_k, source=source, vec=qvec)
             if self._use_sparse
             else []
         )
+        timings["sparse_retrieval"] = (time.perf_counter() - started) * 1000.0
 
+        started = time.perf_counter()
         fused = _rrf([[h.chunk.id for h in dense], [h.chunk.id for h in sparse]])
         by_id = {h.chunk.id: h for h in dense}
         for h in sparse:
@@ -139,10 +152,27 @@ class HybridRetriever:
         # no test built a hit through a retriever. Copying the hit and overriding the one field
         # that actually changes cannot lose a field added later.
         hits = [_rescored(by_id[cid], dense_score.get(cid, by_id[cid].score)) for cid in ranked_ids]
+        timings["fusion"] = (time.perf_counter() - started) * 1000.0
+        reranking_ran = self._reranker is not None
+        started = time.perf_counter()
         if self._reranker is not None:
             hits = self._reranker.rerank(query, hits)
+        timings["reranking"] = (time.perf_counter() - started) * 1000.0
         hits = hits[:k]
 
         gap = gap_warning(list(dense_score.values()), self._gap_threshold)
         stale = staleness(self._store.newest_indexed_at(), datetime.now(timezone.utc), self._max_age)
-        return RetrievalResult(query=query, hits=hits, gap_warning=gap, staleness=stale)
+        return RetrievalResult(
+            query=query,
+            hits=hits,
+            gap_warning=gap,
+            staleness=stale,
+            diagnostics=RetrievalDiagnostics(
+                embedding_profile=embedding_profile_id(self._embedder),
+                retrieval_profile=self._retrieval_profile,
+                index_generation=self._index_generation,
+                candidate_pool_size=self._candidate_k,
+                reranking_ran=reranking_ran,
+                stage_ms={key: round(value, 3) for key, value in timings.items()},
+            ),
+        )

@@ -15,6 +15,7 @@ step over `HybridRetriever.search()`:
 from __future__ import annotations
 
 import re
+import time
 import unicodedata
 from dataclasses import replace
 
@@ -27,7 +28,7 @@ if TYPE_CHECKING:  # avoid a runtime import cycle: entailment imports trust's ab
 
 from recall.calibration import Calibration
 from recall.observability import get_logger
-from recall.embeddings import Embedder
+from recall.embeddings import Embedder, embedding_profile_id
 from recall.frontmatter import validity_bounds
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.rerank import Reranker
@@ -552,6 +553,7 @@ def evaluate(
         calibrated=calibration is not None,
         gap_warning=result.gap_warning,
         staleness=result.staleness,
+        diagnostics=result.diagnostics,
     )
 
 
@@ -567,6 +569,8 @@ def trusted_search(
     known_as_of: datetime | None = None,
     entailment: "EntailmentJudge | None" = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
+    retrieval_profile: str = "legacy",
+    index_generation: str = "legacy",
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
     """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point.
@@ -597,6 +601,8 @@ def trusted_search(
                 reranker=reranker,
                 entailment=entailment,
                 candidate_k=candidate_k,
+                retrieval_profile=retrieval_profile,
+                index_generation=index_generation,
                 _generation_snapshot=False,
             )
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
@@ -622,14 +628,19 @@ def trusted_search(
         # a convenience, and a convenience must never turn a search that worked into an
         # AttributeError. A stub or a partial implementation simply does not get a calibration,
         # which is exactly the behaviour it had before this feature existed.
-        name = getattr(embedder, "name", None)
-        if isinstance(name, str):
-            calibration = load_for(name)
-            if calibration is None:
-                _warn_uncalibrated(name)
+        name = embedding_profile_id(embedder)
+        calibration = load_for(name)
+        if calibration is None:
+            _warn_uncalibrated(name)
     cal = calibration or _UNCALIBRATED
     retriever = HybridRetriever(
-        store, embedder, reranker=reranker, gap_threshold=cal.threshold, candidate_k=candidate_k
+        store,
+        embedder,
+        reranker=reranker,
+        gap_threshold=cal.threshold,
+        candidate_k=candidate_k,
+        retrieval_profile=retrieval_profile,
+        index_generation=index_generation,
     )
     result = retriever.search(query, k=k, source=source)
     # ONE call when the candidates are needed: `supersession_all()` returns edges and their
@@ -648,6 +659,7 @@ def trusted_search(
             if known_as_of is not None:
                 _warn_no_edge_dates(type(store).__name__)
             supersession, unresolved = store.supersession()
+    trust_started = time.perf_counter()
     trusted = evaluate(
         result,
         supersession,
@@ -656,6 +668,12 @@ def trusted_search(
         unresolved,
         known_as_of,
         edge_candidates,
+    )
+    stage_ms = dict(trusted.diagnostics.stage_ms)
+    stage_ms["trust_evaluation"] = round((time.perf_counter() - trust_started) * 1000.0, 3)
+    trusted = replace(
+        trusted,
+        diagnostics=replace(trusted.diagnostics, stage_ms=stage_ms),
     )
     if entailment is not None:
         from recall.entailment import apply_entailment

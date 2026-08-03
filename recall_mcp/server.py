@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager
 from contextlib import asynccontextmanager
@@ -15,6 +16,9 @@ from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
 
 from recall.calibration import load_for
+from recall.control_plane import ControlPlane
+from recall.embeddings import embedding_profile_id
+from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
 from recall.store import DEFAULT_TENANT, PgVectorStore, redacted_dsn
 from recall_mcp.auth import (
@@ -27,7 +31,14 @@ from recall_mcp.auth import (
     token_registry_from_env,
 )
 from recall_mcp.limits import limiter_from_env
-from recall_mcp.service import forget_memory, index_memory, make_embedder, memory_stats, search_memory
+from recall_mcp.service import (
+    forget_memory,
+    index_memory,
+    make_embedder,
+    make_profile_embedder,
+    memory_stats,
+    search_memory,
+)
 from recall_mcp.stores import StoreRegistry
 
 #: Which call budget each scope draws on. Keyed by scope rather than by tool name so a new tool
@@ -248,6 +259,11 @@ def _make_lifespan(
                 raise SchemaTooOld(
                     f"database migrations pending: {pending}; run `recall schema apply`"
                 )
+            enterprise = os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE", "").lower() in {
+                "1", "true", "yes", "on"
+            }
+            if enterprise and token_registry is None:
+                raise RuntimeError("enterprise control plane requires authenticated tenant routing")
             if token_registry is None:
                 # Pooled + timed out: a server shares this store across concurrent tool calls,
                 # and one connection would serialise them however many threads are available.
@@ -276,7 +292,9 @@ def _make_lifespan(
                     allowed_tenants=token_registry.tenants,
                     pool_size=POOL_SIZE,
                     statement_timeout_ms=STATEMENT_TIMEOUT_MS,
-                    generation_mode=generation_mode,
+                    generation_mode=generation_mode and not enterprise,
+                    control_plane=ControlPlane(DEFAULT_DSN) if enterprise else None,
+                    embedding_profile=embedding_profile_id(embedder),
                 )
         except Exception:
             _log.error(
@@ -308,7 +326,7 @@ def _make_lifespan(
             _log.error("schema check failed", exc_info=True)
             raise
 
-        calibration = load_for(embedder.name)  # None -> uncalibrated fallback, flagged in results
+        calibration = load_for(embedding_profile_id(embedder))
         if calibration is None:
             _log.warning(
                 "no calibration for embedder %r — using the default threshold (results will "
@@ -320,6 +338,17 @@ def _make_lifespan(
                 "tenant isolation rests on query predicates alone. Connect as an unprivileged "
                 "role for defence in depth."
             )
+        if enterprise:
+            readiness = check_enterprise_readiness(
+                probe,
+                embedder,
+                control_plane=registry.control_plane if registry is not None else None,
+                calibration=calibration,
+            )
+            if not readiness.ready:
+                raise RuntimeError("enterprise readiness failed: " + "; ".join(readiness.failures))
+            if readiness.degraded:
+                _log.warning("enterprise readiness degraded: %s", "; ".join(readiness.warnings))
         # Built only for the authenticated shape: buckets are keyed by tenant, and stdio has no
         # principal to attribute a call to. Reported at startup so the effective budget is visible
         # in the journal rather than inferred from which requests started failing.
@@ -338,6 +367,8 @@ def _make_lifespan(
                 "embedder": embedder,
                 "calibration": calibration,
                 "limiter": limiter,
+                "shadow_embedders": {},
+                "shadow_embedder_lock": threading.Lock(),
             }
         finally:
             if store is not None:
@@ -482,6 +513,27 @@ def build_server() -> FastMCP:
         store = _require(SCOPE_WRITE)
         limiter = state.get("limiter")
         tenant = _current_tenant(state)
+        registry: StoreRegistry | None = state.get("stores")
+        shadow_store = (
+            registry.get_shadow(tenant)
+            if registry is not None and tenant is not None else None
+        )
+        shadow_embedder = None
+        if shadow_store is not None:
+            assert registry is not None and registry.control_plane is not None and tenant is not None
+            route = registry.control_plane.route(tenant)
+            if route is None or route.shadow is None:
+                raise RuntimeError("shadow store was acquired without shadow generation metadata")
+            profile_id = route.shadow.embedding_profile
+            lock = state["shadow_embedder_lock"]
+            with lock:
+                cache = state["shadow_embedders"]
+                shadow_embedder = cache.get(profile_id)
+                if shadow_embedder is None:
+                    shadow_embedder = make_profile_embedder(profile_id, shadow=True)
+                    if shadow_embedder.dim != route.shadow.dimension:
+                        raise RuntimeError("shadow embedder dimension does not match generation")
+                    cache[profile_id] = shadow_embedder
 
         def _debit(_files: int, total_bytes: int) -> None:
             """Charge the tenant for what is about to be embedded, before it is embedded.
@@ -496,7 +548,10 @@ def build_server() -> FastMCP:
         with METRICS.timer("recall_tool_latency_ms", tool="index"):
             return await _to_thread(
                 lambda: index_memory(
-                    store, state["embedder"], path, on_measured=_debit
+                    store, state["embedder"], path, on_measured=_debit,
+                    shadow_store=shadow_store,
+                    shadow_embedder=shadow_embedder,
+                    control_plane=registry.control_plane if registry is not None else None,
                 ).model_dump_json(indent=2)
             )
 
@@ -522,10 +577,14 @@ def build_server() -> FastMCP:
         Returns:
             JSON of {chunks_removed, sources_removed, sources_not_found, message}.
         """
+        state = _state()
         store = _require(SCOPE_FORGET)
+        registry: StoreRegistry | None = state.get("stores")
+        tenant = _current_tenant(state)
+        shadow = registry.get_shadow(tenant) if registry is not None and tenant is not None else None
         with METRICS.timer("recall_tool_latency_ms", tool="forget"):
             return await _to_thread(
-                lambda: forget_memory(store, sources).model_dump_json(indent=2)
+                lambda: forget_memory(store, sources, shadow).model_dump_json(indent=2)
             )
 
     @mcp.tool(

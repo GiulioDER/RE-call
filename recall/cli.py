@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from recall.calibration import Calibration, from_samples, load_for, save
-from recall.embeddings import Embedder, HashingEmbedder
+from recall.embeddings import Embedder, HashingEmbedder, embedding_profile_id
 from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
@@ -481,7 +481,7 @@ def main(argv: list[str] | None = None) -> None:
             from recall.semantic_lint import semantic_lint
 
             emb = _make_embedder(args.embedder)
-            cal = load_for(emb.name)
+            cal = load_for(embedding_profile_id(emb))
             thr = args.threshold if args.threshold is not None else (
                 cal.threshold if cal else 0.70
             )
@@ -518,7 +518,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     embedder = _make_embedder(args.embedder)
-    calibration = load_for(embedder.name)
+    calibration = load_for(embedding_profile_id(embedder))
 
     if args.cmd == "index":
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
@@ -656,10 +656,11 @@ def main(argv: list[str] | None = None) -> None:
             queries_path=Path(args.queries),
         )
         cal = from_samples(
-            embedder.name, measured.answerable_max_cos, measured.unanswerable_max_cos
+            embedding_profile_id(embedder), measured.answerable_max_cos,
+            measured.unanswerable_max_cos
         )
         path = save(cal, args.out)
-        print(f"embedder:  {embedder.name}")
+        print(f"embedder:  {embedding_profile_id(embedder)}")
         print(f"threshold: {cal.threshold} (scale {cal.scale})")
         sep = "n/a" if cal.separability is None else f"{cal.separability:.3f}"
         ci = cal.separability_ci

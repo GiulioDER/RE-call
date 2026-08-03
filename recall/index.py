@@ -6,9 +6,12 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
+from uuid import uuid4
 
 from recall.cache import EmbeddingCache, embed_with_cache
-from recall.embeddings import Embedder
+from recall.context import ContextPolicy, StructuredChunk, contextual_passages
+from recall.control_plane import ControlPlane
+from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
 from recall.frontmatter import parse_frontmatter, validity_bounds
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
@@ -302,6 +305,14 @@ class IndexStats:
     deleted: int = 0   # files gone from disk whose rows were pruned
 
 
+@dataclass(frozen=True)
+class ShadowIndexTarget:
+    store: PgVectorStore
+    embedder: Embedder
+    control_plane: ControlPlane
+    context_policy: ContextPolicy = ContextPolicy()
+
+
 class Indexer:
     def __init__(
         self,
@@ -311,6 +322,8 @@ class Indexer:
         cache: EmbeddingCache | None = None,
         batch_chunks: int = DEFAULT_BATCH_CHUNKS,
         allow_prune: bool = False,
+        context_policy: ContextPolicy = ContextPolicy(),
+        shadow: ShadowIndexTarget | None = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -324,6 +337,26 @@ class Indexer:
         #: always the run you are not watching.
         self._allow_prune = allow_prune
         self._max_prune_fraction = _prune_fraction_from_env()
+        self._context_policy = context_policy
+        self._shadow = shadow
+        expected_context = (
+            "raw-v1" if context_policy.mode == "none"
+            else f"context-{context_policy.mode}-{context_policy.version}"
+        )
+        profile = embedding_profile(embedder)
+        if profile.artifact_digest != "legacy-unverified" and profile.context_version != expected_context:
+            raise ValueError(
+                f"embedding profile context {profile.context_version!r} does not match "
+                f"index context {expected_context!r}"
+            )
+        if shadow is not None:
+            shadow_expected = (
+                "raw-v1" if shadow.context_policy.mode == "none"
+                else f"context-{shadow.context_policy.mode}-{shadow.context_policy.version}"
+            )
+            shadow_profile = embedding_profile(shadow.embedder)
+            if shadow_profile.context_version != shadow_expected:
+                raise ValueError("shadow embedding profile does not match its context policy")
 
     def index_path(
         self, path: str | Path, glob: str | None = None, files: list[Path] | None = None
@@ -394,6 +427,9 @@ class Indexer:
 
         pending_sources: list[str] = []
         pending_chunks: list[Chunk] = []
+        pending_embedding_texts: list[str] = []
+        pending_shadow_chunks: list[Chunk] = []
+        pending_shadow_texts: list[str] = []
         indexed = skipped = written = vanished_before_read = 0
 
         for f in files:
@@ -414,7 +450,12 @@ class Indexer:
                 continue
             raw = _strip_nul(raw, f)
             content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-            if known.get(str(f)) == content_hash:
+            fingerprint_input = "\x00".join(
+                (content_hash, embedding_profile_id(self._embedder), self._context_policy.mode,
+                 self._context_policy.version)
+            )
+            index_fingerprint = hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()
+            if known.get(str(f)) == index_fingerprint:
                 skipped += 1
                 continue
             meta, body = parse_frontmatter(raw)
@@ -424,7 +465,19 @@ class Indexer:
                 raise ValueError(f"{f}: {exc}") from exc
             pending_sources.append(str(f))
             indexed += 1
-            for i, ct in enumerate(self._chunker(body)):
+            raw_chunks = self._chunker(body)
+            structured, embedding_texts = contextual_passages(
+                raw, body, raw_chunks, rel[f], self._context_policy
+            )
+            shadow_structured: list[StructuredChunk] = []
+            shadow_embedding_texts: list[str] = []
+            if self._shadow is not None:
+                shadow_structured, shadow_embedding_texts = contextual_passages(
+                    raw, body, raw_chunks, rel[f], self._shadow.context_policy
+                )
+            for i, (ct, structured_chunk, embedding_text) in enumerate(
+                zip(raw_chunks, structured, embedding_texts)
+            ):
                 cid = hashlib.md5(f"{f}:{i}".encode("utf-8")).hexdigest()
                 pending_chunks.append(
                     Chunk(
@@ -432,18 +485,60 @@ class Indexer:
                         source=str(f),
                         text=ct,
                         metadata={
-                            "file": rel[f], "ord": i, "content_hash": content_hash, **meta
+                            "file": rel[f], "ord": i, "content_hash": content_hash,
+                            "index_fingerprint": index_fingerprint,
+                            "embedding_profile": embedding_profile_id(self._embedder),
+                            "context_mode": self._context_policy.mode,
+                            "context_version": self._context_policy.version,
+                            "text_start": structured_chunk.start,
+                            "text_end": structured_chunk.end,
+                            "heading_hierarchy": list(structured_chunk.headings),
+                            **meta
                         },
                     )
                 )
+                pending_embedding_texts.append(embedding_text)
+                if self._shadow is not None:
+                    shadow_piece = shadow_structured[i]
+                    pending_shadow_chunks.append(
+                        Chunk(
+                            id=cid,
+                            source=str(f),
+                            text=ct,
+                            metadata={
+                                "file": rel[f], "ord": i, "content_hash": content_hash,
+                                "index_fingerprint": hashlib.sha256(
+                                    "\x00".join((content_hash,
+                                        embedding_profile_id(self._shadow.embedder),
+                                        self._shadow.context_policy.mode,
+                                        self._shadow.context_policy.version)).encode("utf-8")
+                                ).hexdigest(),
+                                "embedding_profile": embedding_profile_id(self._shadow.embedder),
+                                "context_mode": self._shadow.context_policy.mode,
+                                "context_version": self._shadow.context_policy.version,
+                                "text_start": shadow_piece.start,
+                                "text_end": shadow_piece.end,
+                                "heading_hierarchy": list(shadow_piece.headings),
+                                **meta,
+                            },
+                        )
+                    )
+                    pending_shadow_texts.append(shadow_embedding_texts[i])
             # Flush on a whole-file boundary once the batch is big enough. A file's chunks are
             # never split across batches: `replace_sources` deletes the file's rows before
             # inserting, so a half-written file would land as a partial replace.
             if len(pending_chunks) >= self._batch_chunks:
-                written += self._flush(pending_sources, pending_chunks)
-                pending_sources, pending_chunks = [], []
+                written += self._flush(
+                    pending_sources, pending_chunks, pending_embedding_texts,
+                    pending_shadow_chunks, pending_shadow_texts,
+                )
+                pending_sources, pending_chunks, pending_embedding_texts = [], [], []
+                pending_shadow_chunks, pending_shadow_texts = [], []
 
-        written += self._flush(pending_sources, pending_chunks)
+        written += self._flush(
+            pending_sources, pending_chunks, pending_embedding_texts,
+            pending_shadow_chunks, pending_shadow_texts,
+        )
         # Tolerating individual disappearances must not turn a TOTAL failure into a success.
         # If every candidate is gone, the corpus was not there — a wrong path, an unmounted
         # volume, a sync that removed everything — and reporting "indexed 0 files" with exit 0
@@ -477,18 +572,65 @@ class Indexer:
             self._store.analyze_if_stale(written)
         return IndexStats(files=indexed, chunks=written, skipped=skipped, deleted=deleted)
 
-    def _flush(self, sources: list[str], chunks: list[Chunk]) -> int:
+    def _flush(
+        self,
+        sources: list[str],
+        chunks: list[Chunk],
+        embedding_texts: list[str] | None = None,
+        shadow_chunks: list[Chunk] | None = None,
+        shadow_embedding_texts: list[str] | None = None,
+    ) -> int:
         """Embed and write one batch. Returns chunks written."""
         if not sources:
             return 0
         # Embed BEFORE touching the store: if embedding fails, this batch's old rows stay
         # intact. With a cache, unchanged chunk text is served from cache and never re-embedded.
         embeddings = (
-            embed_with_cache(self._embedder, [c.text for c in chunks], self._cache)
+            embed_with_cache(
+                self._embedder,
+                embedding_texts if embedding_texts is not None else [c.text for c in chunks],
+                self._cache,
+                purpose="passage",
+            )
             if chunks
             else []
         )
+        if self._shadow is None:
+            self._store.replace_sources(sources, chunks, embeddings)
+            return len(chunks)
+        if shadow_chunks is None or shadow_embedding_texts is None:
+            raise ValueError("shadow chunks and embedding texts are required for shadow indexing")
+        shadow_embeddings = embed_with_cache(
+            self._shadow.embedder,
+            shadow_embedding_texts,
+            None,
+            purpose="passage",
+        )
+        operation_id = str(uuid4())
+        payload: dict[str, object] = {
+            "active_generation": self._store.generation_id,
+            "shadow_generation": self._shadow.store.generation_id,
+            "sources": sources,
+            "active_chunks": [
+                {"id": chunk.id, "source": chunk.source, "text": chunk.text,
+                 "metadata": chunk.metadata, "embedding": vector}
+                for chunk, vector in zip(chunks, embeddings)
+            ],
+            "chunks": [
+                {"id": chunk.id, "source": chunk.source, "text": chunk.text,
+                 "metadata": chunk.metadata, "embedding": vector}
+                for chunk, vector in zip(shadow_chunks, shadow_embeddings)
+            ],
+        }
+        self._shadow.control_plane.append_event(
+            self._store.tenant, operation_id, "index", payload,
+            active_count=len(chunks),
+        )
         self._store.replace_sources(sources, chunks, embeddings)
+        self._shadow.store.replace_sources(sources, shadow_chunks, shadow_embeddings)
+        self._shadow.control_plane.complete_event(
+            self._store.tenant, operation_id, len(shadow_chunks)
+        )
         return len(chunks)
 
     def _prune_vanished(self, root: Path, files: list[Path], known: dict[str, str]) -> int:
@@ -560,5 +702,10 @@ class Indexer:
                 )
 
         _log.info("pruning %d file(s) no longer on disk under %s", len(vanished), root)
-        self._store.delete_sources(vanished)
+        if self._shadow is not None:
+            self._store.delete_sources_across(
+                [self._store.table, self._shadow.store.table], vanished
+            )
+        else:
+            self._store.delete_sources(vanished)
         return len(vanished)
