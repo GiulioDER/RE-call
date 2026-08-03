@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import sys
 from pathlib import Path
@@ -107,6 +108,43 @@ def main(argv: list[str] | None = None) -> None:
     schema_sub.add_parser("status", help="show installed and required schema versions")
     schema_sub.add_parser("plan", help="show pending migrations without changing the database")
     schema_sub.add_parser("apply", help="apply pending migrations with the migration role")
+
+    p_manifest = sub.add_parser("manifest", help="create or verify immutable corpus manifests")
+    manifest_sub = p_manifest.add_subparsers(dest="manifest_cmd", required=True)
+    p_manifest_create = manifest_sub.add_parser("create", help="canonicalise an S3 object inventory")
+    p_manifest_create.add_argument("--corpus-version", required=True)
+    p_manifest_create.add_argument("--objects", required=True, help="JSON array of object entries")
+    p_manifest_create.add_argument("--output", required=True)
+    p_manifest_verify = manifest_sub.add_parser("verify", help="verify every immutable S3 object")
+    p_manifest_verify.add_argument("manifest")
+    p_manifest_verify.add_argument("--version-id")
+    p_manifest_verify.add_argument("--sha256")
+    p_manifest_verify.add_argument("--size", type=int)
+
+    p_generation = sub.add_parser("generation", help="manage immutable blue green generations")
+    generation_sub = p_generation.add_subparsers(dest="generation_cmd", required=True)
+    p_build = generation_sub.add_parser("build", help="create and build a generation")
+    p_build.add_argument("manifest")
+    p_build.add_argument("--manifest-version-id")
+    p_build.add_argument("--manifest-sha256")
+    p_build.add_argument("--manifest-size", type=int)
+    p_build.add_argument("--embedder-provider", default=None)
+    p_build.add_argument("--embedder-revision", default=None)
+    p_build.add_argument("--embedder-artifact-digest", default=None)
+    p_build.add_argument("--unverified-development", action="store_true")
+    p_build.add_argument("--chunker", choices=["text", "code"], default="text")
+    p_build.add_argument("--max-chars", type=int, default=800)
+    p_build.add_argument("--overlap", type=int, default=80)
+    p_validate = generation_sub.add_parser("validate", help="validate a built generation")
+    p_validate.add_argument("generation_id")
+    p_promote = generation_sub.add_parser("promote", help="promote a ready generation")
+    p_promote.add_argument("generation_id")
+    p_promote.add_argument("--unsafe-development-promotion", action="store_true")
+    generation_sub.add_parser("rollback", help="atomically restore the previous generation")
+    generation_sub.add_parser("list", help="list immutable generation history")
+    p_gc = generation_sub.add_parser("gc", help="collect expired retired generations")
+    p_gc.add_argument("--retention-days", type=int, default=7)
+    p_gc.add_argument("--retain-previous", type=int, default=2)
 
     p_index = sub.add_parser("index", help="index a folder of markdown or code")
     p_index.add_argument("path")
@@ -241,6 +279,169 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"applied {migration.version} {migration.filename}")
         return
 
+    if args.cmd == "manifest":
+        from recall.lineage import IndexManifestV1, ManifestObjectV1
+        from recall.manifest import S3ObjectReader, load_inventory, load_manifest
+
+        if args.manifest_cmd == "create":
+            manifest = IndexManifestV1(
+                args.tenant,
+                args.corpus_version,
+                load_inventory(args.objects),
+            )
+            Path(args.output).write_text(manifest.to_json(), encoding="utf-8")
+            print(f"wrote {args.output} sha256={manifest.digest} objects={len(manifest.objects)}")
+            return
+        reader = S3ObjectReader.from_environment()
+        if args.manifest.startswith("s3://"):
+            if args.version_id is None or args.sha256 is None or args.size is None:
+                raise SystemExit(
+                    "an S3 manifest requires --version-id, --sha256 and --size"
+                )
+            reference = ManifestObjectV1(
+                args.manifest,
+                args.version_id,
+                "application/json",
+                args.size,
+                args.sha256,
+            )
+            manifest = IndexManifestV1.from_json(reader.fetch(reference).data)
+        else:
+            manifest = load_manifest(args.manifest)
+        if manifest.tenant_id != args.tenant:
+            raise SystemExit(
+                f"manifest tenant {manifest.tenant_id!r} does not match --tenant {args.tenant!r}"
+            )
+        reader.verify(manifest)
+        print(f"verified sha256={manifest.digest} objects={len(manifest.objects)}")
+        return
+
+    if args.cmd == "generation":
+        from recall.generations import GenerationManager
+
+        manager = GenerationManager(args.dsn, args.tenant)
+        if args.generation_cmd == "list":
+            for generation in manager.list_generations():
+                print(
+                    f"{generation.generation_id} {generation.state.value:<18} "
+                    f"pipeline={generation.pipeline_fingerprint} "
+                    f"corpus={generation.corpus_fingerprint}"
+                )
+            return
+        if args.generation_cmd == "rollback":
+            print(f"active generation: {manager.rollback()}")
+            return
+        if args.generation_cmd == "gc":
+            collected = manager.gc(
+                retention_days=args.retention_days,
+                retain_previous=args.retain_previous,
+            )
+            print(
+                f"collected {len(collected)} generation(s): "
+                f"{', '.join(collected) or '(none)'}"
+            )
+            return
+        if args.generation_cmd == "validate":
+            generation_validation = manager.validate(args.generation_id)
+            print(
+                f"ready {generation_validation.generation_id}: "
+                f"{generation_validation.sources} sources, "
+                f"{generation_validation.chunks} chunks"
+            )
+            return
+        if args.generation_cmd == "promote":
+            manager.promote(
+                args.generation_id,
+                unsafe_development=args.unsafe_development_promotion,
+            )
+            print(f"active generation: {args.generation_id}")
+            return
+
+        from recall.lineage import (
+            ChunkerIdentity,
+            EmbedderIdentity,
+            IndexManifestV1,
+            ManifestObjectV1,
+            PipelineIdentity,
+        )
+        from recall.manifest import S3ObjectReader, load_manifest
+
+        environment = manager.environment
+        reader = S3ObjectReader.from_environment()
+        if args.manifest.startswith("s3://"):
+            if (
+                args.manifest_version_id is None
+                or args.manifest_sha256 is None
+                or args.manifest_size is None
+            ):
+                raise SystemExit(
+                    "an S3 manifest requires --manifest-version-id, --manifest-sha256 and "
+                    "--manifest-size"
+                )
+            reference = ManifestObjectV1(
+                args.manifest,
+                args.manifest_version_id,
+                "application/json",
+                args.manifest_size,
+                args.manifest_sha256,
+            )
+            manifest = IndexManifestV1.from_json(reader.fetch(reference).data)
+        else:
+            if environment == "production":
+                raise SystemExit("production generation builds require a versioned S3 manifest")
+            manifest = load_manifest(args.manifest)
+        embedder = _make_embedder(args.embedder)
+        revision = args.embedder_revision
+        provider = args.embedder_provider
+        if isinstance(embedder, HashingEmbedder):
+            provider = provider or "recall"
+            revision = revision or "hashing-md5-bow-v1"
+        else:
+            provider = provider or "fastembed"
+        identity = EmbedderIdentity(
+            provider=provider,
+            model=embedder.name,
+            dimension=embedder.dim,
+            revision=revision,
+            artifact_digest=args.embedder_artifact_digest,
+            unverified_reason=(
+                "explicit development build" if args.unverified_development and not revision
+                and not args.embedder_artifact_digest else None
+            ),
+        )
+        if args.chunker == "code":
+            generation_chunker = functools.partial(chunk_code, max_chars=args.max_chars)
+            chunker_identity = ChunkerIdentity(
+                "recall.chunk_code", 1, {"max_chars": args.max_chars}
+            )
+        else:
+            generation_chunker = functools.partial(
+                chunk_text, max_chars=args.max_chars, overlap=args.overlap
+            )
+            chunker_identity = ChunkerIdentity(
+                "recall.chunk_text",
+                1,
+                {"max_chars": args.max_chars, "overlap": args.overlap},
+            )
+        pipeline = PipelineIdentity(identity, chunker_identity)
+        generation = manager.create(
+            manifest,
+            pipeline,
+            allow_unverified=args.unverified_development,
+        )
+        generation_stats = manager.build(
+            generation.generation_id,
+            reader,
+            embedder,
+            generation_chunker,
+        )
+        print(
+            f"built {generation_stats.generation_id}: {generation_stats.objects} objects, "
+            f"{generation_stats.chunks} chunks, {generation_stats.reused_objects} objects "
+            f"reused; run `recall generation validate {generation_stats.generation_id}`"
+        )
+        return
+
     if args.cmd == "lint":  # pure filesystem check — no embedder, no DB
         from recall.lint import lint_corpus
 
@@ -320,6 +521,11 @@ def main(argv: list[str] | None = None) -> None:
     calibration = load_for(embedder.name)
 
     if args.cmd == "index":
+        if os.environ.get("RECALL_ENV", "development").lower() == "production":
+            raise SystemExit(
+                "local filesystem indexing is development-only; build from an immutable S3 "
+                "manifest in production"
+            )
         chunker = chunk_code if args.glob.endswith(".py") else chunk_text
         with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
             store.check_schema()
@@ -340,7 +546,17 @@ def main(argv: list[str] | None = None) -> None:
                 summary += f", pruned {stats.deleted} source(s) no longer on disk"
             print(summary)
     elif args.cmd == "forget":
-        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
+        if os.environ.get("RECALL_ENV", "development").lower() == "production":
+            from recall.generation_store import GenerationStore
+
+            forget_store: PgVectorStore = GenerationStore(
+                args.dsn, embedder.dim, tenant=args.tenant
+            )
+        else:
+            forget_store = PgVectorStore(
+                args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
+            )
+        with forget_store as store:
             store.check_schema()
             requested = list(dict.fromkeys(args.sources))
             existing = store.source_content_hashes()
@@ -363,13 +579,25 @@ def main(argv: list[str] | None = None) -> None:
             from recall.entailment import QnliEntailmentJudge
 
             entail_judge = QnliEntailmentJudge()
-        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
+        if os.environ.get("RECALL_ENV", "development").lower() == "production":
+            from recall.generation_store import GenerationStore
+
+            store_context: PgVectorStore = GenerationStore(
+                args.dsn, embedder.dim, tenant=args.tenant
+            )
+        else:
+            store_context = PgVectorStore(
+                args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
+            )
+        with store_context as store:
             store.check_schema()
             _print_result(
                 trusted_search(store, embedder, args.query, k=args.k, calibration=calibration,
                                entailment=entail_judge)
             )
     elif args.cmd == "demo":
+        if os.environ.get("RECALL_ENV", "development").lower() == "production":
+            raise SystemExit("the filesystem demo is unavailable in production")
         with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
             store.check_schema()
             stats = Indexer(store, embedder).index_path("corpus")
@@ -381,6 +609,8 @@ def main(argv: list[str] | None = None) -> None:
                 "how do we handle penguins on mars?",
             ], calibration)
     elif args.cmd == "code":
+        if os.environ.get("RECALL_ENV", "development").lower() == "production":
+            raise SystemExit("local source indexing is unavailable in production")
         # index recall's own package source (content-agnostic engine, code-aware chunking)
         src = Path(__file__).resolve().parent
         with PgVectorStore(args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant) as store:
