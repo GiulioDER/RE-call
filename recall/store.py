@@ -787,8 +787,10 @@ class PgVectorStore:
 
         def _op(conn: "psycopg.Connection") -> dict[str, object]:
             table_row = conn.execute(
-                "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
-                "WHERE oid = %s::regclass", (self._table,)
+                "SELECT c.relrowsecurity, c.relforcerowsecurity, a.atttypmod "
+                "FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid "
+                "AND a.attname = 'embedding' AND NOT a.attisdropped "
+                "WHERE c.oid = %s::regclass", (self._table,)
             ).fetchone()
             indexes = conn.execute(
                 "SELECT c.relname, i.indisvalid FROM pg_index i "
@@ -803,6 +805,7 @@ class PgVectorStore:
             return {
                 "rls_enabled": bool(table_row and table_row[0] and table_row[1]),
                 "indexes_valid": expected.issubset(valid),
+                "dimension": int(table_row[2]) if table_row and table_row[2] > 0 else None,
                 "rows": int(counts[0]) if counts else 0,
                 "rows_without_profile": int(counts[1]) if counts else 0,
             }
