@@ -284,6 +284,23 @@ class GenerationStore(PgVectorStore):
         )
         return {str(source): str(digest) for source, digest in rows}
 
+    def sources_in_any_generation(self) -> frozenset[str]:
+        """Every source this tenant has indexed, across ALL generations.
+
+        `source_content_hashes()` is scoped to one generation, so it answers "can I read this
+        now", not "does this exist". Erasure needs the second question: a source that dropped
+        out of the active generation must still be erasable, while one that was never indexed
+        must still be refused as a typo, because forgetting it writes a permanent tombstone
+        that bars that URI from every future build.
+        """
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT DISTINCT source_uri FROM recall_chunks_v1 WHERE tenant_id = %s",
+                (self._tenant,),
+            ).fetchall()
+        )
+        return frozenset(str(row[0]) for row in rows)
+
     def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
         edges, unresolved, _candidates = self.supersession_all()
         return edges, unresolved
