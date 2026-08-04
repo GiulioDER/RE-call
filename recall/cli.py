@@ -663,10 +663,6 @@ def main(argv: list[str] | None = None) -> None:
                 raise SystemExit(
                     "forget: empty source argument (an unset shell variable?); nothing deleted"
                 )
-            try:
-                visible_now = set(store.source_content_hashes())
-            except NoActiveGeneration:
-                visible_now = set()
             if gen_store is not None:
                 # Widen the existence check, do not drop it, and ask the right question.
                 # `source_content_hashes()` is scoped to ONE generation, so FILTERING on it
@@ -678,16 +674,26 @@ def main(argv: list[str] | None = None) -> None:
                 # which the MANIFEST answers and chunk rows do not: an object that chunks to
                 # nothing is built as `empty_objects` and writes no row, yet is unquestionably
                 # part of the corpus and must be erasable.
-                known = gen_store.sources_in_any_generation() | gen_store.sources_in_any_manifest()
+                known = (
+                    gen_store.sources_in_any_generation()
+                    | gen_store.sources_in_any_manifest()
+                    | gen_store.sources_in_legacy_table()
+                )
                 targets = [s for s in requested if s in known]
                 unseen = [s for s in requested if s not in known]
                 unseen_note = (
-                    "not present in any generation or manifest, so NOT erased and NOT "
-                    f"tombstoned (check for typos): {', '.join(unseen)}"
+                    "not present in any generation, manifest, or the adopted v0.8 table, so "
+                    f"NOT erased and NOT tombstoned (check for typos): {', '.join(unseen)}"
                 )
             else:
                 # The v0.8 table has no generations, so the probe covers everything the
-                # tenant owns and an absent source really is a typo.
+                # tenant owns and an absent source really is a typo. Computed here rather than
+                # above because the generation branch never reads it, and on a GenerationStore
+                # it costs an active-generation lookup plus a DISTINCT scan.
+                try:
+                    visible_now = set(store.source_content_hashes())
+                except NoActiveGeneration:
+                    visible_now = set()
                 targets = [s for s in requested if s in visible_now]
                 unseen = [s for s in requested if s not in visible_now]
                 unseen_note = f"not found (check for typos): {', '.join(unseen)}"
