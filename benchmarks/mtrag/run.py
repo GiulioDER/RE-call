@@ -267,6 +267,19 @@ def recall_at(ranked: list[str], relevant: set[str], k: int) -> float:
 def score_predictions(
     predictions: list[dict[str, Any]], qrels: dict[str, dict[str, set[str]]]
 ) -> dict[str, Any]:
+    """Score predictions against the qrels, per query and aggregated.
+
+    `overall` is a POOLED mean: every judged query contributes one value to one flat list, so a
+    domain's influence is proportional to how many judged queries it has (on the four-domain
+    release: clapnq 83, cloud 86, fiqa 58, govt 105). It is NOT the unweighted mean of the four
+    `domains` figures, which is what `recall.promotion` calls a macro average. The two differ by
+    1.5% to 6.6% on the 2026-08-04 baseline and they do not agree on every arm ordering, so the
+    distinction is load bearing and the name has to say which one this is.
+
+    `domains[d]` is the unweighted mean over domain `d`'s judged queries. Anyone who wants the
+    macro figure can average those four; it is deliberately derivable rather than reported, so
+    this function's output shape stays what the frozen run produced.
+    """
     by_task = {item["task_id"]: item for item in predictions}
     ks = (1, 3, 5, 10)
     domain_rows: dict[str, Any] = {}
