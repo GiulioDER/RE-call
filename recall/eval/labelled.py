@@ -42,7 +42,7 @@ from recall.index import Indexer
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
 from recall.store import PgVectorStore
 from recall.trust import evaluate as trust_evaluate
-from recall.trust import trusted_search
+from recall.eval._research_trust import research_search
 from recall.types import RetrievalResult, TrustedResult
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
@@ -189,16 +189,16 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
             )
 
         # Unanswerable held questions are retrieved by no arm above, so they still need their own
-        # trusted_search — with candidate_k so it shares the reported pool (EVAL-002).
+        # research_search — with candidate_k so it shares the reported pool (EVAL-002).
         abstained = [
-            trusted_search(store, embedder, q["query"], k=k, calibration=cal,
+            research_search(store, embedder, q["query"], k=k, calibration=cal,
                            candidate_k=candidate_k).abstained
             for q in held if not q.get("answerable")
         ]
         # Answerable held questions were already retrieved for the `hybrid` arm; reuse those
         # RetrievalResults for the abstain decision instead of retrieving a second time (PERF-003).
         # `abstained` depends only on the hits + supersession + threshold — not the retriever's
-        # gap_threshold — so at the same candidate_k this equals a fresh trusted_search.
+        # gap_threshold — so at the same candidate_k this equals a fresh research_search.
         supersession, unresolved = store.supersession()
         now = datetime.now(timezone.utc)
         false_abstain = [

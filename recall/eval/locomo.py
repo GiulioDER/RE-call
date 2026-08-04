@@ -87,7 +87,7 @@ from recall.index import Indexer
 from recall.rerank import DEFAULT_RERANKER_MODEL, Reranker
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
 from recall.store import PgVectorStore
-from recall.trust import trusted_search
+from recall.eval._research_trust import research_search
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 
@@ -384,12 +384,12 @@ def run_conversation(
             continue
 
         if cat == ADVERSARIAL_CATEGORY:
-            # The abstention arm. `trusted_search` is the agent-facing entry point, and its
+            # The abstention arm. `research_search` is the agent-facing entry point, and its
             # `abstained` flag is the whole answer: the correct behaviour on an unanswerable
             # question is to refuse, regardless of what came back underneath. Pass candidate_k so
             # this arm shares the same fused pool as the depth-curve arm above and the report's
             # top-level `candidate_k` — not silently the retriever's default.
-            result = trusted_search(store, embedder, question, k=k, candidate_k=candidate_k)
+            result = research_search(store, embedder, question, k=k, candidate_k=candidate_k)
             abstained.append(result.abstained)
             per_question.append(
                 {

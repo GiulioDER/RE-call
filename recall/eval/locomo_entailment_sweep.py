@@ -49,7 +49,7 @@ from recall.eval.locomo import _make_embedder, _rate
 from recall.eval.provenance import generated_at, model_stack
 from recall.eval.locomo_abstention import _partition_questions
 from recall.store import PgVectorStore
-from recall.trust import trusted_search
+from recall.eval._research_trust import research_search
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 
@@ -162,7 +162,7 @@ def gather_scores(
         with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table="locomo_chunks") as store:
             for q, is_adv in [(q, True) for q in adversarial] + [(q, False) for q in answerable]:
                 # Default path (no calibration, no judge) to get the ok hits the judge would see.
-                res = trusted_search(store, embedder, q["question"], k=k)
+                res = research_search(store, embedder, q["question"], k=k)
                 ok_texts = [h.chunk.text for h in res.hits if h.verdict == "ok"]
                 scores = scorer(q["question"], ok_texts)
                 out.append(

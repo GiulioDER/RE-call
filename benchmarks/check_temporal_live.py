@@ -6,7 +6,7 @@ was that benchmark data never populated a window).
 
 This is the empirical half. `check_temporal_inert.py` and `tests/test_locomo_turn_validity.py`
 both work on the DOCUMENT, so they prove the text changed. Neither proves the window survives the
-Indexer's chunking and reaches the store, which is where it has to arrive for `trusted_search` to
+Indexer's chunking and reaches the store, which is where it has to arrive for `research_search` to
 act on it. A document-level pass with a store-level failure would look exactly like success.
 
 PRE-REGISTERED:
@@ -32,7 +32,7 @@ from recall.embeddings import FastEmbedEmbedder
 from recall.eval.locomo import index_conversation
 from recall.frontmatter import validity_bounds
 from recall.store import PgVectorStore
-from recall.trust import trusted_search
+from recall.eval._research_trust import research_search
 from recall.types import TrustedResult
 
 DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
@@ -66,8 +66,8 @@ def main() -> int:
         wall = datetime.now(timezone.utc)
         q = "What did they say about their plans?"
 
-        res_early = trusted_search(store, emb, q, k=10, now=early)
-        res_wall = trusted_search(store, emb, q, k=10, now=wall)
+        res_early = research_search(store, emb, q, k=10, now=early)
+        res_wall = research_search(store, emb, q, k=10, now=wall)
 
         def verdicts(res: TrustedResult) -> Counter:
             return Counter(h.verdict for h in res.hits)
