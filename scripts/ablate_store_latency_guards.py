@@ -173,13 +173,30 @@ def main() -> int:
     reds, inconclusive = 0, 0
     for label, path, old, new, test in ABLATIONS:
         original = path.read_bytes()
-        old_b, new_b = old.encode("utf-8"), new.encode("utf-8")
+        # Anchors are written with "\n", but these files are CRLF in the working copy (git
+        # normalises on commit; .gitattributes pins LF in the index). `read_text` used to hide
+        # that by translating newlines. Comparing BYTES does not, so the anchor must be re-encoded
+        # with the newline the file actually uses. Switching to bytes WITHOUT this dropped 5 of 10
+        # rules to SKIP: the fix for the restore check broke the anchor matching.
+        newline = "\r\n" if b"\r\n" in original else "\n"
+        old_b = old.replace("\n", newline).encode("utf-8")
+        new_b = new.replace("\n", newline).encode("utf-8")
         if original.count(old_b) != 1:
             print(f"  SKIP  {label}: anchor matched {original.count(old_b)} times, expected 1")
             continue
         path.write_bytes(original.replace(old_b, new_b))
         try:
             code, output = run(test)
+            # Retry ONCE on a non-verdict, INSIDE the try — the mutation must still be applied.
+            # (Placing this after the `finally` re-ran the test against RESTORED source, which
+            # passes, so every transient scored GREEN "not caught". The retry has to happen while
+            # the code under test is still mutated or it is not a retry of the same experiment.)
+            #
+            # Why a retry at all: back-to-back pytest processes contend for the schema migration
+            # advisory lock, and the loser raises ConcurrentMigrator during fixture setup. That is
+            # a real error, but about scheduling, not about the rule under test.
+            if code != 0 and "1 failed" not in output:
+                code, output = run(test)
         finally:
             path.write_bytes(original)
             # Verify the restore, do not assume it. A partial write here leaves shipped library
