@@ -57,6 +57,21 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   unchanged; it is now named explicitly at the call site, where a reader can question it.
 
 ### Added
+- **Per-leg store latency, so a backend swap can be priced.** `PgVectorStore` records
+  `recall_store_query_ms{leg=dense|sparse|meta}`. `meta` is `newest_indexed_at()`, the round trip
+  `HybridRetriever` makes on every search for its staleness report; it sits outside every
+  `diagnostics.stage_ms` bracket and was invisible to any attribution. `Metrics` gains
+  `drain_histogram(name, **labels) -> (retained_samples, total_observed)`, whose two values
+  disagree exactly when the capped ring evicted — which is what stops a mean over a suffix being
+  published under the name of a mean over the run. `Metrics.snapshot()` histogram entries gain
+  `observed` and `truncated` for the same reason, so the operator-facing reader and the drain
+  reader report the same fact. `AblationResult` gains `dense_ms_mean` / `sparse_ms_mean` /
+  `store_latency_truncated`, and `results_to_markdown` now renders them.
+- `benchmarks/store_latency_share.py` (not shipped in the wheel) attributes end-to-end search
+  latency across embed / dense / sparse / meta / fusion / rerank, reading `diagnostics.stage_ms`
+  and cross-checking it against the store-internal metric, which must nest inside it.
+
+
 - **Tenant and generation bound calibration artifacts.** Labelled query sets now have a canonical
   digest independent of input order and are stored separately from measured retrieval scores.
   Frozen `CalibrationArtifactV2` records bind tenant, generation, embedder, pipeline, corpus, and
@@ -99,6 +114,15 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   `ensure_schema()` compatibility method now delegates to the same versioned migrator instead of
   maintaining a second runtime-DDL implementation. Production config separates
   `RECALL_SERVING_DSN` from `RECALL_MIGRATION_DSN`; `RECALL_DSN` remains a deprecated local fallback.
+- `GenerationStore` overrides `_query_dense` / `_query_sparse` instead of the public
+  `query_dense` / `query_sparse`, so it inherits the timed wrappers and the `k <= 0` check.
+  Overriding the public pair left the generation-scoped path — the one `RECALL_ENV=production`
+  selects — recording no store latency at all, and an absent series reads exactly like a free store.
+
+### Fixed
+- The `hnsw.ef_search` cap warning used `stacklevel=2`, which after the timed-wrapper split named
+  `recall/store.py` itself rather than the caller.
+
 
 ## [0.8.0] — 2026-08-02
 

@@ -184,11 +184,17 @@ class GenerationStore(PgVectorStore):
             )
         return hits
 
-    def query_dense(
+    def _query_dense(
         self, vector: list[float], k: int, source: str | None = None
     ) -> list[ScoredChunk]:
-        if k <= 0:
-            raise ValueError("k must be a positive int")
+        """Generation-scoped dense search. PRIVATE on purpose: the timed public `query_dense` on
+        `PgVectorStore` delegates here, so this subclass inherits the instrumentation and the
+        `k <= 0` check rather than re-stating them.
+
+        Overriding the PUBLIC method (as this did) silently drops the timing, and
+        `RECALL_ENV=production` selects exactly this class — so the metric fired on a laptop and
+        recorded nothing in production, with an empty series and a free store reading the same.
+        """
         generation_id = self._generation_id()
         source_filter = (
             "AND (metadata->>'file' = %(source)s OR source_uri = %(source)s)" if source else ""
@@ -219,15 +225,14 @@ class GenerationStore(PgVectorStore):
 
         return self._generation_rows(self._with_retry(_op))
 
-    def query_sparse(
+    def _query_sparse(
         self,
         text: str,
         k: int,
         source: str | None = None,
         vec: list[float] | None = None,
     ) -> list[ScoredChunk]:
-        if k <= 0:
-            raise ValueError("k must be a positive int")
+        """Generation-scoped sparse search. PRIVATE for the same reason as `_query_dense`."""
         generation_id = self._generation_id()
         source_filter = (
             "AND (c.metadata->>'file' = %(source)s OR c.source_uri = %(source)s)" if source else ""
@@ -269,7 +274,9 @@ class GenerationStore(PgVectorStore):
         rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._generation_rows(rows)
 
-    def newest_indexed_at(self) -> datetime | None:
+    def _newest_indexed_at(self) -> datetime | None:
+        """Generation-scoped freshness. PRIVATE so the timed public wrapper is inherited —
+        see `store.TIMED_PUBLIC_METHODS`."""
         generation_id = self._generation_id()
         row = self._with_retry(
             lambda conn: conn.execute(

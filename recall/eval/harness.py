@@ -33,9 +33,10 @@ from recall.eval.metrics import (
     wilson_ci,
 )
 from recall.index import Indexer
+from recall.observability import METRICS
 from recall.rerank import CrossEncoderReranker, Reranker
 from recall.retriever import HybridRetriever
-from recall.store import PgVectorStore
+from recall.store import LEG_DENSE, LEG_META, LEG_SPARSE, STORE_QUERY_METRIC, PgVectorStore
 from recall.timing import TimedEmbedder, TimedReranker, TimingStats, timed_call
 from recall.eval._research_trust import research_search
 from recall.types import ScoredChunk, TrustedHit, TrustedResult
@@ -62,6 +63,19 @@ class AblationResult:
     # constructors/tests are unaffected. rerank_ms_mean is 0.0 for configs without a reranker.
     embed_ms_mean: float = 0.0
     rerank_ms_mean: float = 0.0
+    #: The two store legs, same statistic and same run as the two above. (`HybridRetriever` also
+    #: records per-query stage timings in `diagnostics.stage_ms`; these are the process-wide
+    #: aggregate of the same intervals, which is what an ablation table wants.)
+    #:
+    #: 0.0 means the leg recorded NO SAMPLES. On the `dense` fusion that is expected, because the
+    #: sparse leg does not run. Anywhere else it means the leg was not timed — do not read it as
+    #: "free", which is the reading this whole metric exists to make impossible.
+    dense_ms_mean: float = 0.0
+    sparse_ms_mean: float = 0.0
+    #: True when the metric ring evicted samples, so a *_ms_mean above is a mean over the retained
+    #: suffix rather than over the run. Carried rather than silently tolerated: the two are
+    #: different statistics and only this flag distinguishes them.
+    store_latency_truncated: bool = False
 
 
 def _key(hit: ScoredChunk) -> str:
@@ -94,6 +108,18 @@ def _throwaway_store(
             store.close()
 
 
+def _drained_mean(leg: str) -> tuple[float, bool]:
+    """Mean ms for one store leg, plus whether the ring evicted samples before we read it.
+
+    Returns 0.0 for a leg that never ran (the `dense` fusion never calls the sparse leg), which
+    is the same convention `rerank_ms_mean` uses for a config with no reranker.
+    """
+    samples, total = METRICS.drain_histogram(STORE_QUERY_METRIC, leg=leg)
+    if not samples:
+        return 0.0, False
+    return mean(samples), total > len(samples)
+
+
 def _score_config(
     store: PgVectorStore, embedder: Embedder, queries: list[dict], fusion: str,
     reranker: Reranker | None,
@@ -107,6 +133,12 @@ def _score_config(
         reranker=timed_rr,
         use_sparse=(fusion != "dense"),
     )
+    # Drain first: `METRICS` is process-wide, so without this the previous configuration's
+    # samples are still in the ring and would be averaged into this one's.
+    # LEG_META included: `search()` records one per query too, and a series left undrained
+    # accumulates across every configuration — the exact contamination this drain prevents.
+    for leg in (LEG_DENSE, LEG_META, LEG_SPARSE):
+        METRICS.drain_histogram(STORE_QUERY_METRIC, leg=leg)
     ps, rs, ms, ns, unans_gaps = [], [], [], [], []
     for q in queries:
         if q.get("trust"):
@@ -120,6 +152,8 @@ def _score_config(
             ns.append(ndcg_at_k(retrieved, q["relevant_ids"], 10))
         else:
             unans_gaps.append(res.gap_warning)
+    dense_ms, dense_truncated = _drained_mean(LEG_DENSE)
+    sparse_ms, sparse_truncated = _drained_mean(LEG_SPARSE)
     return AblationResult(
         embedder=embedding_profile_id(embedder), fusion=fusion,
         p_at_5=mean(ps) if ps else 0.0,
@@ -129,6 +163,9 @@ def _score_config(
         fcr_no_guard=1.0, fcr_with_guard=false_confident_rate(unans_gaps),
         embed_ms_mean=timed_emb.stats.mean_ms,
         rerank_ms_mean=timed_rr.stats.mean_ms if timed_rr else 0.0,
+        dense_ms_mean=dense_ms,
+        sparse_ms_mean=sparse_ms,
+        store_latency_truncated=dense_truncated or sparse_truncated,
     )
 
 
@@ -623,11 +660,28 @@ def results_to_markdown(results: list[AblationResult]) -> str:
     lines.append("")
     lines.append("Cost/latency (mean wall time per call):")
     lines.append("")
-    lines.append("| embedder | fusion | embed ms/query | rerank ms/query |")
-    lines.append("|---|---|---|---|")
+    lines.append(
+        "| embedder | fusion | embed ms/query | dense ms/query | sparse ms/query | "
+        "rerank ms/query |"
+    )
+    lines.append("|---|---|---|---|---|---|")
     for r in results:
+        # A truncated mean is a different statistic from a full-run mean, so it is marked in the
+        # cell rather than left to a footnote a reader can skip. Only the two STORE legs can
+        # truncate: embed and rerank come from `TimingStats`, which is uncapped.
+        # ‡, not †: † already means "ANALYTIC, not measured" in the quality table above,
+        # and one document must not carry two meanings for one mark.
+        mark = "‡" if r.store_latency_truncated else ""
         lines.append(
-            f"| {r.embedder} | {r.fusion} | {r.embed_ms_mean:.1f} | {r.rerank_ms_mean:.1f} |"
+            f"| {r.embedder} | {r.fusion} | {r.embed_ms_mean:.1f} | "
+            f"{r.dense_ms_mean:.1f}{mark} | {r.sparse_ms_mean:.1f}{mark} | "
+            f"{r.rerank_ms_mean:.1f} |"
+        )
+    if any(r.store_latency_truncated for r in results):
+        lines.append("")
+        lines.append(
+            "_‡ the metric ring evicted samples: this leg's figure is a mean over the retained "
+            "suffix, NOT over the run._"
         )
     return "\n".join(lines)
 
