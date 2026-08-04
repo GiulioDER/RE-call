@@ -24,6 +24,7 @@ from recall.types import Chunk, ScoredChunk
 
 if TYPE_CHECKING:
     from recall.calibration_v2 import CalibrationResolution
+    from recall.pool import SharedPool
 
 
 class ImmutableGenerationError(RuntimeError):
@@ -42,6 +43,7 @@ class GenerationStore(PgVectorStore):
         migration_target: str = DEFAULT_TABLE,
         pool_size: int | None = None,
         statement_timeout_ms: int | None = None,
+        shared_pool: "SharedPool | None" = None,
     ) -> None:
         super().__init__(
             dsn,
@@ -50,9 +52,24 @@ class GenerationStore(PgVectorStore):
             tenant=tenant,
             pool_size=pool_size,
             statement_timeout_ms=statement_timeout_ms,
+            shared_pool=shared_pool,
         )
         self._migration_target = migration_target
         self._pinned_generation: ContextVar[str | None] = ContextVar(
+            f"recall_generation_{uuid.uuid4().hex}", default=None
+        )
+
+    def _reset_tenant_state(self) -> None:
+        """Also rebuild the pinned-generation ContextVar, which is tenant-derived.
+
+        `for_tenant` copies `__dict__` by reference, so without this a view shares the SOURCE
+        store's ContextVar object: a generation pinned while serving tenant A silently governs
+        queries issued through a view bound to tenant B. RLS and the explicit `tenant_id`
+        predicate still hold, so it is not disclosure — it is worse-shaped than that, an empty or
+        wrong-generation result that reads like an honest answer.
+        """
+        super()._reset_tenant_state()
+        self._pinned_generation = ContextVar(
             f"recall_generation_{uuid.uuid4().hex}", default=None
         )
 

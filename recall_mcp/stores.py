@@ -1,27 +1,31 @@
-"""One `PgVectorStore` per tenant, created on demand and shared across requests.
+"""One `PgVectorStore` per tenant, over ONE connection pool per process.
 
 Why a registry rather than a tenant argument
 --------------------------------------------
-A store is bound to one tenant for its lifetime. The pool's `configure` hook runs
-`set_config('recall.tenant_id', <tenant>, false)` on every connection it opens (`store.py`
-`_prepare`), and the RLS policy compares each row against that GUC. The tenant is therefore a
-property of the CONNECTION, not of the query — which is exactly what makes the isolation hold
-even if a `WHERE tenant_id = ...` predicate is ever forgotten.
+A store is bound to one tenant for its lifetime, so the registry hands each request a store that
+cannot name another tenant. What changed is what backs that store: every one of them now borrows
+from a single process-wide `recall.pool.SharedPool` instead of owning a pool of its own.
 
-The consequence is that you cannot serve two tenants from one store without re-setting the GUC
-per request on a pooled connection, and doing that is how cross-tenant leaks happen: a connection
-handed back to the pool mid-request, or an exception between `set_config` and the query, and the
-next caller inherits someone else's tenant. Keeping one pool per tenant makes that class of bug
-unrepresentable rather than merely avoided.
+How the tenant is enforced, and where that logic lives
+------------------------------------------------------
+It is NOT connection session state any more. The tenant is applied per TRANSACTION with
+`SET LOCAL`, and PostgreSQL discards it at COMMIT or ROLLBACK. `recall.pool` documents the full
+argument for why that is safe to share; the short version is that the database, not application
+code, is what unsets it, so no exception, cancellation or timeout can leave a connection carrying
+the previous caller's tenant.
 
-Bounded by configuration, not by traffic
-----------------------------------------
+The consequence for anyone editing this file: a bare `pool.connection()` carries NO tenant. Under
+RLS that reads as "match nothing" rather than as an error, which is a silent empty result. Every
+database operation must go through `SharedPool.tenant_transaction` (which `PgVectorStore` does for
+you in shared-pool mode).
+
+Bounded by configuration, and now by a constant
+-----------------------------------------------
 `allowed_tenants` comes from the token registry, so a tenant exists only if an operator
-provisioned a token for it. There is no request-driven growth: an unauthenticated or unknown
-caller never reaches this class, and a known caller can only ever name the one tenant its own
-token carries. That is what keeps `len(tenants) * pool_size` a number you can compute at startup
-and check against `max_connections`, instead of something that grows until the database refuses
-connections.
+provisioned a token for it; there is no request-driven growth. The connection ceiling used to be
+`len(tenants) * generations * pool_size`, which grew every time a tenant was provisioned. It is
+now just the shared pool's `max_size` — a constant, independent of how many tenants exist, which
+is what makes a thousand of them a configuration question rather than a capacity one.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ import threading
 import time
 
 from recall.control_plane import ControlPlane, TenantRoute
+from recall.pool import DEFAULT_MIN_POOL_SIZE, SharedPool
 from recall.observability import get_logger
 from recall.store import DEFAULT_TABLE, PgVectorStore
 
@@ -73,6 +78,16 @@ class StoreRegistry:
         self._routes: dict[str, tuple[float, TenantRoute | None]] = {}
         self._lock = threading.Lock()
         self._closed = False
+        #: ONE pool for the process, shared by every tenant and every generation. The old
+        #: design opened one per (tenant, generation) and computed its own ceiling as
+        #: `len(allowed) * generations * pool_size`, which at the 1,000-tenant target is a
+        #: denial of service against your own database rather than a pool.
+        self._shared = SharedPool(
+            dsn,
+            min_size=min(DEFAULT_MIN_POOL_SIZE, pool_size),
+            max_size=pool_size,
+            statement_timeout_ms=statement_timeout_ms,
+        )
         self._listener_stop = threading.Event()
         self._listener: threading.Thread | None = None
         if control_plane is not None:
@@ -98,9 +113,15 @@ class StoreRegistry:
             return frozenset(tenant for tenant, _generation in self._stores)
 
     def max_connections(self) -> int:
-        """Worst-case connection count if every provisioned tenant becomes active at once."""
-        generations = 2 if self._control_plane is not None else 1
-        return len(self._allowed) * generations * self._pool_size
+        """Worst-case connection count for this process.
+
+        Now a CONSTANT, not a product. It used to be
+        `len(allowed_tenants) * generations * pool_size`, which grew with provisioning and had to
+        be checked against the server's `max_connections` at startup. One shared pool makes the
+        ceiling independent of how many tenants exist, which is what allows the 1,000-tenant
+        target to be a configuration question rather than a capacity one.
+        """
+        return self._shared.max_size
 
     def invalidate_route(self, tenant: str) -> None:
         """Drop only routing metadata. Acquired stores remain valid for in-flight requests."""
@@ -137,7 +158,7 @@ class StoreRegistry:
                     dim=self._dim,
                     tenant=tenant,
                     migration_target=self._table or DEFAULT_TABLE,
-                    pool_size=self._pool_size,
+                    shared_pool=self._shared,
                     statement_timeout_ms=self._statement_timeout_ms,
                 )
                 try:
@@ -169,7 +190,7 @@ class StoreRegistry:
                 dim=dimension,
                 table=table,
                 tenant=tenant,
-                pool_size=self._pool_size,
+                shared_pool=self._shared,
                 statement_timeout_ms=self._statement_timeout_ms,
                 generation_id=generation_id,
             )
@@ -240,3 +261,7 @@ class StoreRegistry:
                     "error closing store for tenant %r generation %r",
                     tenant, generation, exc_info=True,
                 )
+        # Those stores are views over the shared pool and own no connections, so their `close()`
+        # is a no-op on the sockets. The registry owns the pool, so shutdown is this line — and
+        # omitting it would leak the pool's background maintenance thread for the process's life.
+        self._shared.close()
