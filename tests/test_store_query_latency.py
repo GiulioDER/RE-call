@@ -159,9 +159,19 @@ def test_no_subclass_overrides_the_timed_public_query_methods():
     import recall.generation_store  # noqa: F401  (registers the subclass)
     from recall.store import TIMED_PUBLIC_METHODS, PgVectorStore
 
+    def _descendants(cls: type) -> list[type]:
+        """TRANSITIVE: `__subclasses__()` is direct-only, so a grandchild would be invisible."""
+        out: list[type] = []
+        for sub in cls.__subclasses__():
+            out.append(sub)
+            out.extend(_descendants(sub))
+        return out
+
+    subclasses = _descendants(PgVectorStore)
+    assert subclasses, "found no PgVectorStore subclasses; an import regression made this vacuous"
     offenders = [
         f"{cls.__name__}.{name}"
-        for cls in PgVectorStore.__subclasses__()
+        for cls in subclasses
         for name in TIMED_PUBLIC_METHODS
         if name in vars(cls)
     ]

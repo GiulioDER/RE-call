@@ -122,6 +122,12 @@ class LegSplit:
     residual_ms_mean: float
 
     #: dense + sparse + meta. What a store swap could address.
+    #:
+    #: NOTE the two are measured from different instruments: the mean sums the retriever's
+    #: OUTER stage brackets for dense/sparse (plus the inner timer for meta), while the p50 is
+    #: the inner store timer for all three. The gap is per-call Python overhead, which is what
+    #: `max_nesting_violation_ms` bounds; do not read them as the mean and median of one
+    #: series.
     store_ms_mean: float
     store_ms_p50: float
     #: Fraction of end-to-end latency spent in the store, in [0, 1].
@@ -313,7 +319,7 @@ def measure(
     )
 
 
-def to_markdown(splits: list[LegSplit], ctx: str = "") -> str:
+def to_markdown(splits: list[LegSplit], ctx: str) -> str:
     rows = [
         "| chunks | cand_k | rerank | total | embed | dense | sparse | meta | fusion | rerank | "
         "**store** | resid | **store share** | sparse fire |",

@@ -4,6 +4,11 @@ Each entry removes EXACTLY ONE rule and names the test that exists to catch it. 
 matters: a mutation that deletes something adjacent produces a red that pins the adjacent thing,
 so the red is evidence only about the rule the mutation actually removed.
 
+⚠️ This sweep MUTATES `recall/*.py` in place while it runs, so no other pytest run may be in
+flight against this checkout: a concurrent suite reads half-mutated source and goes
+non-deterministically red, blaming whatever it happened to read. The dirty-tree refusal in
+`main()` only covers the inverse direction (a dirty tree before the sweep starts).
+
 Run: uv run --extra dev python scripts/ablate_store_latency_guards.py
 """
 from __future__ import annotations
@@ -105,6 +110,16 @@ ABLATIONS = [
         "test_newest_indexed_at_is_timed_as_a_store_leg",
     ),
     (
+        # Mutate the TUPLE, not a timer. Removing a timer would also turn that leg's own test
+        # red, so the red would not be evidence about THIS rule alone — the sweep's docstring
+        # rule that each entry must remove exactly one rule.
+        "TIMED_PUBLIC_METHODS stays in step with the real timer call sites",
+        STORE,
+        'TIMED_PUBLIC_METHODS = ("query_dense", "query_sparse", "newest_indexed_at")',
+        'TIMED_PUBLIC_METHODS = ("query_dense", "query_sparse")',
+        "test_timed_public_methods_matches_the_actual_timer_call_sites",
+    ),
+    (
         "snapshot() reveals truncation, not just the drain path",
         OBS,
         '"truncated": observed > len(samples),',
@@ -176,8 +191,10 @@ def main() -> int:
         # Anchors are written with "\n", but these files are CRLF in the working copy (git
         # normalises on commit; .gitattributes pins LF in the index). `read_text` used to hide
         # that by translating newlines. Comparing BYTES does not, so the anchor must be re-encoded
-        # with the newline the file actually uses. Switching to bytes WITHOUT this dropped 5 of 10
-        # rules to SKIP: the fix for the restore check broke the anchor matching.
+        # with the newline the file actually uses. Switching to bytes WITHOUT this took 4 of the 10
+        # rules to SKIP and a 5th to INCONCLUSIVE: the fix for the restore check broke the
+        # anchor matching. Assumes a uniformly-lined file; a mixed-ending file would need a
+        # per-anchor sniff.
         newline = "\r\n" if b"\r\n" in original else "\n"
         old_b = old.replace("\n", newline).encode("utf-8")
         new_b = new.replace("\n", newline).encode("utf-8")
