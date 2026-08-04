@@ -147,7 +147,15 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     material is not something to retrieve over a connection we did not verify.
     """
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+    def redirect_request(
+        self,
+        req: Any,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
         raise IdentityProviderUnavailable(
             "discovery_failed", f"identity endpoint attempted a {code} redirect"
         )
