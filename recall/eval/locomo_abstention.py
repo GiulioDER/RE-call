@@ -55,7 +55,7 @@ from recall.eval.locomo import (
 )
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
-from recall.trust import trusted_search
+from recall.eval._research_trust import research_search
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 
@@ -160,16 +160,16 @@ def run(
                 question = q["question"]
                 # default / calibrated share the no-judge path; entail / both add the judge.
                 bucket["default"].append(
-                    trusted_search(store, embedder, question, k=k).abstained
+                    research_search(store, embedder, question, k=k).abstained
                 )
                 bucket["calibrated"].append(
-                    trusted_search(store, embedder, question, k=k, calibration=cal).abstained
+                    research_search(store, embedder, question, k=k, calibration=cal).abstained
                 )
                 bucket["entail"].append(
-                    trusted_search(store, embedder, question, k=k, entailment=judge).abstained
+                    research_search(store, embedder, question, k=k, entailment=judge).abstained
                 )
                 bucket["both"].append(
-                    trusted_search(
+                    research_search(
                         store, embedder, question, k=k, calibration=cal, entailment=judge
                     ).abstained
                 )

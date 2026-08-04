@@ -35,6 +35,13 @@ from recall.observability import get_logger
 from recall.rerank import Reranker
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
 from recall.store import EdgeCandidates, PgVectorStore
+from recall.trust_policy import (
+    TrustFailureCode,
+    TrustPolicy,
+    TrustRefusal,
+    TrustState,
+    code_for_status,
+)
 from recall.types import (
     Provenance,
     RetrievalResult,
@@ -380,6 +387,18 @@ def marked_text(hit: TrustedHit) -> str:
     """
     if is_trusted(hit):
         return hit.chunk.text
+    if hit.verdict == "unverified":
+        # A different sentence on purpose. Every other verdict means the trust layer ran and
+        # judged this memory; `unverified` means it never ran, so "did NOT pass the trust layer"
+        # would be a false statement about a check that was skipped, not failed. That is
+        # requirement 13's distinction, and it has to survive into the prompt, because the prompt
+        # is the only place a model will ever see it.
+        return (
+            "[RE-CALL WARNING — the trust layer did not run for this memory: no certified "
+            "calibration was available, so it was NOT judged at all. This is a degraded "
+            "development-mode result; treat it as unverified context and do not rely on it.]\n"
+            f"{hit.chunk.text}"
+        )
     detail = ""
     if hit.verdict == "superseded" and hit.validity.superseded_by:
         detail = f" by {safe_ref(hit.validity.superseded_by)}"
@@ -586,6 +605,7 @@ def trusted_search(
     candidate_k: int = DEFAULT_CANDIDATE_K,
     retrieval_profile: str = "legacy",
     index_generation: str = "legacy",
+    policy: TrustPolicy | None = None,
     _generation_snapshot: bool = True,
 ) -> TrustedResult:
     """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point.
@@ -618,6 +638,7 @@ def trusted_search(
                 candidate_k=candidate_k,
                 retrieval_profile=retrieval_profile,
                 index_generation=index_generation,
+                policy=policy,
                 _generation_snapshot=False,
             )
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
@@ -626,24 +647,67 @@ def trusted_search(
     # Generation stores resolve through the tenant-scoped database repository. Legacy JSON is
     # deliberately never auto-loaded: it has no tenant, generation, pipeline, corpus, or labelled
     # query-set binding and therefore cannot establish that its threshold applies here.
+    active_policy = policy or TrustPolicy()
     calibration_id: str | None = None
     calibration_status = "legacy_unbound" if calibration is not None else "missing"
     query_set_digest: str | None = None
     generation_binding: dict[str, str] | None = None
-    binding_reader = getattr(store, "generation_binding", None)
-    if callable(binding_reader):
-        generation_binding = binding_reader()
-    resolver = getattr(store, "resolve_calibration", None)
-    if calibration is None and callable(resolver):
-        resolution = resolver()
-        calibration_status = resolution.status.value
-        artifact = resolution.artifact
-        if artifact is not None:
-            calibration = artifact.runtime
-            calibration_id = artifact.calibration_id
-            query_set_digest = artifact.query_set_digest
-    elif calibration is None:
-        _warn_uncalibrated(embedding_profile_id(embedder))
+    # A dependency fault must be distinguishable from a calibration verdict. Reading the binding
+    # and resolving the artifact both touch the database, so a failure in either is
+    # DEPENDENCY_UNAVAILABLE ("the gate could not run") and never CALIBRATION_MISSING ("the gate
+    # ran and found nothing"). Collapsing the two would tell an operator to go and calibrate
+    # while the real fault was an unreachable control plane.
+    try:
+        binding_reader = getattr(store, "generation_binding", None)
+        if callable(binding_reader):
+            generation_binding = binding_reader()
+        resolver = getattr(store, "resolve_calibration", None)
+        if calibration is None and callable(resolver):
+            resolution = resolver()
+            calibration_status = resolution.status.value
+            artifact = resolution.artifact
+            if artifact is not None:
+                calibration = artifact.runtime
+                calibration_id = artifact.calibration_id
+                query_set_digest = artifact.query_set_digest
+        elif calibration is None:
+            _warn_uncalibrated(embedding_profile_id(embedder))
+    except TrustRefusal:
+        raise
+    except Exception as exc:
+        binding = generation_binding or {}
+        raise TrustRefusal(
+            code=TrustFailureCode.DEPENDENCY_UNAVAILABLE,
+            calibration_status=calibration_status,
+            tenant_id=binding.get("tenant_id") or getattr(store, "tenant", None),
+            generation_id=binding.get("generation_id"),
+        ) from exc
+
+    # THE GATE. It sits here, above `retriever.search(...)`, and that position is the whole
+    # guarantee: a refusal raised before any `query_dense` call cannot leak corpus bytes, because
+    # none were ever fetched. Placing it after retrieval and filtering the payload would have
+    # left a sanitiser that someone eventually forgets to call.
+    failure_code = code_for_status(calibration_status)
+    if failure_code is not None:
+        binding = generation_binding or {}
+        # No active generation outranks any calibration verdict, and for the same reason
+        # `tenant_readiness` checks it first: telling an operator to recalibrate against a
+        # generation that does not exist is useless advice. The two call sites must agree, or the
+        # readiness endpoint and the search path would name different faults for one cause.
+        if not binding.get("generation_id"):
+            failure_code = TrustFailureCode.INDEX_NOT_READY
+        if active_policy.strict:
+            raise TrustRefusal(
+                code=failure_code,
+                calibration_status=calibration_status,
+                tenant_id=binding.get("tenant_id") or getattr(store, "tenant", None),
+                generation_id=binding.get("generation_id"),
+                calibration_id=calibration_id,
+                pipeline_fingerprint=binding.get("pipeline_fingerprint"),
+                corpus_fingerprint=binding.get("corpus_fingerprint"),
+                query_set_digest=query_set_digest,
+            )
+        METRICS.increment("recall_degraded_searches_total", code=failure_code.value)
     cal = calibration or _UNCALIBRATED
     retriever = HybridRetriever(
         store,
@@ -691,6 +755,34 @@ def trusted_search(
         trusted,
         diagnostics=replace(trusted.diagnostics, stage_ms=stage_ms),
     )
+    if failure_code is not None:
+        # Development degradation. Reached only when the policy explicitly allows it, since
+        # strict already raised above. The result is ALWAYS marked degraded and is never
+        # `calibrated`, whichever branch below runs.
+        trusted = replace(
+            trusted,
+            trust_state=TrustState.DEGRADED.value,
+            failure_code=failure_code.value,
+        )
+        if calibration is None:
+            # No threshold exists at all: the trust system is genuinely unavailable. Every
+            # verdict is overwritten rather than adjusted, because the ones `evaluate` just
+            # computed came from `_UNCALIBRATED`'s 0.50 floor, so `ok` would mean "cleared a
+            # threshold nobody chose". `abstained` is forced False for the mirror reason:
+            # abstaining is itself a trustworthy decision, and no gate licensed it.
+            trusted = replace(
+                trusted,
+                hits=[replace(hit, verdict="unverified") for hit in trusted.hits],
+                abstained=False,
+                reason="",
+            )
+        # The other branch: the CALLER passed an explicit `Calibration`. A threshold exists and
+        # the caller chose it deliberately, so the verdicts `evaluate` produced are meaningful
+        # and are left alone — this is the path every abstention benchmark measures, and blanking
+        # it would make "does RE-call abstain correctly" unmeasurable. What the caller does NOT
+        # get is a trust claim: the artifact is not certified-bound to this tenant and
+        # generation, so `trust_state` stays `degraded` and `calibrated` stays False. Strict mode
+        # refuses this case outright, so it can never reach a production serving path.
     if entailment is not None:
         from recall.entailment import apply_entailment
 

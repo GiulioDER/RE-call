@@ -133,6 +133,26 @@ class _UserScope:
         self.seq = 0
 
 
+def _bench_calibration(embedder: Any) -> Any:
+    """The benchmark's operating point, stated OUT LOUD instead of inherited by accident.
+
+    This backend's abstention was previously produced by `_UNCALIBRATED` — the library's 0.50
+    default — reached because no calibration was passed. That made every published abstention
+    figure a measurement of an uncertified constant that nothing in the call site mentioned.
+
+    Naming it here changes no number: it is the same threshold the backend has always used. What
+    changes is that it is now a visible, deliberate choice a reader can question, and it survives
+    the strict trust gate, which refuses an unstated default rather than silently supplying one.
+    It is still NOT certified for any corpus, so results stay `trust_state=degraded` and
+    `calibrated=False`.
+    """
+    from recall.calibration import Calibration
+    from recall.guards import DEFAULT_GAP_THRESHOLD
+
+    return Calibration(embedder=getattr(embedder, "name", "benchmark"),
+                       threshold=DEFAULT_GAP_THRESHOLD)
+
+
 class RecallBackend:
     """RE-call behind `Mem0Client`'s interface. Drop-in for their LOCOMO and BEAM runners.
 
@@ -278,15 +298,18 @@ class RecallBackend:
 
         def work() -> list[dict]:
             from recall.retriever import DEFAULT_CANDIDATE_K
-            from recall.trust import trusted_search
+            # Benchmark backend: measures retrieval on uncertified corpora, so it opts
+            # into development mode explicitly. See recall/eval/_research_trust.py.
+            from recall.eval._research_trust import research_search
 
             scope = self._scopes[user_id]
-            result = trusted_search(
+            result = research_search(
                 scope.store,
                 self._embedder,
                 query,
                 k=top_k,
                 candidate_k=max(pool, DEFAULT_CANDIDATE_K),
+                calibration=_bench_calibration(self._embedder),
             )
             if result.abstained:
                 return []

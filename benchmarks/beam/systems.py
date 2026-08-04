@@ -230,7 +230,7 @@ class BeamRecallSystem:
 
         self._dsn = dsn
         self._k = k
-        # The fused candidate pool `trusted_search` ranks within. It defaults to 20 library-wide
+        # The fused candidate pool `research_search` ranks within. It defaults to 20 library-wide
         # (`recall.retriever.DEFAULT_CANDIDATE_K`), which at k=200 silently caps retrieval at ~20
         # chunks no matter what k says — measured: a k=200 query over a 1,548-chunk conversation
         # came back with 21 memories. Left at the default, this arm would have shown the answerer
@@ -243,7 +243,7 @@ class BeamRecallSystem:
         self._reranker_name = reranker_name
         self._reranker = resolve_reranker(reranker_name)
         self._table = table
-        # OFF unless asked for: `trusted_search` ships the guard disabled, and the as-shipped arm
+        # OFF unless asked for: `research_search` ships the guard disabled, and the as-shipped arm
         # must measure what ships. A non-zero cap builds the QNLI judge ONCE here rather than per
         # query — the cross-encoder loads ~300 MB of weights, and paying that per question would
         # dominate the measurement it is supposed to inform.
@@ -357,14 +357,14 @@ class BeamRecallSystem:
         back to unfiltered hits is the single design decision this benchmark exists to price.
         """
         from recall.store import PgVectorStore
-        from recall.trust import trusted_search
+        from recall.eval._research_trust import research_search
 
         if self._tenant is None:
             raise RuntimeError("BeamRecallSystem.retrieve() called before ingest()")
         with PgVectorStore(
             self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=self._table
         ) as store:
-            result = trusted_search(
+            result = research_search(
                 store,
                 self._embedder,
                 question,
@@ -410,8 +410,8 @@ class BeamRecallSystem:
             self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=self._table
         ) as store:
             # self._candidate_k, NOT recall.retriever.DEFAULT_CANDIDATE_K: unlike the LOCOMO
-            # adapter (whose `retrieve` calls `trusted_search` without a candidate_k and so
-            # retrieves at the library default), `retrieve` above calls `trusted_search` with
+            # adapter (whose `retrieve` calls `research_search` without a candidate_k and so
+            # retrieves at the library default), `retrieve` above calls `research_search` with
             # `candidate_k=self._candidate_k` — this arm's own clamped pool (see the note in
             # `__init__`). Measuring a different pool size here would produce a verdict about a
             # configuration this arm never runs.

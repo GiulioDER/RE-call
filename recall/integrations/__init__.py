@@ -8,7 +8,32 @@ from __future__ import annotations
 
 from typing import Any
 
-from recall.types import TrustedHit
+from recall.types import TrustedHit, TrustedResult
+
+
+def result_trust_metadata(result: TrustedResult) -> dict[str, Any]:
+    """Result-level trust and lineage identity, shared by the framework adapters.
+
+    Separate from `trust_metadata`, which is per hit. These keys answer "what produced this
+    answer, and may I rely on it", and they have to travel with every document or node because a
+    framework will happily hand a single document to a chain that never sees the result object.
+
+    `recall_trust_state` and `recall_failure_code` are the load-bearing pair. Without them a
+    degraded result is indistinguishable from a trusted one once the hits are unpacked, which is
+    the exact boundary at which the trust signal used to be lost.
+    """
+    return {
+        "recall_trust_state": result.trust_state,
+        "recall_failure_code": result.failure_code,
+        "recall_calibrated": result.calibrated,
+        "recall_calibration_id": result.calibration_id,
+        "recall_calibration_status": result.calibration_status,
+        "recall_tenant_id": result.tenant_id,
+        "recall_generation_id": result.generation_id,
+        "recall_pipeline_fingerprint": result.pipeline_fingerprint,
+        "recall_corpus_fingerprint": result.corpus_fingerprint,
+        "recall_query_set_digest": result.query_set_digest,
+    }
 
 
 def trust_metadata(hit: TrustedHit) -> dict[str, Any]:

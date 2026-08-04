@@ -80,7 +80,7 @@ def sweep(
 ) -> dict[str, Any]:
     from benchmarks.systems import resolve_embedder, resolve_reranker
     from recall.store import PgVectorStore
-    from recall.trust import trusted_search
+    from recall.eval._research_trust import research_search
 
     embedder = resolve_embedder(embedder_name)
     reranker = resolve_reranker(reranker_name)
@@ -95,7 +95,7 @@ def sweep(
             continue
         tenant = f"beam-1m-{row['conversation_idx']}"
         with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table=table) as store:
-            result = trusted_search(
+            result = research_search(
                 store, embedder, row["question"], k=MAX_POOL,
                 candidate_k=MAX_POOL, reranker=reranker,
             )

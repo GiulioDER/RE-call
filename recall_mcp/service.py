@@ -202,6 +202,17 @@ class SearchResult(BaseModel):
     )
     calibration_id: str | None = None
     calibration_status: str = "missing"
+    trust_state: str = Field(
+        default="trusted",
+        description="trusted | degraded. 'degraded' means the trust gate could not run and every "
+        "hit is unverified; a strict-mode server refuses instead of returning this.",
+    )
+    failure_code: str | None = Field(
+        default=None,
+        description="Stable machine-readable reason the gate could not certify this answer: "
+        "INDEX_NOT_READY | LINEAGE_MISMATCH | CALIBRATION_MISSING | CALIBRATION_UNCERTIFIED | "
+        "CALIBRATION_STALE | DEPENDENCY_UNAVAILABLE. Null when trusted.",
+    )
     tenant_id: str | None = None
     generation_id: str | None = None
     pipeline_fingerprint: str | None = None
@@ -493,6 +504,8 @@ def search_memory(
         calibrated=result.calibrated,
         calibration_id=result.calibration_id,
         calibration_status=result.calibration_status,
+        trust_state=result.trust_state,
+        failure_code=result.failure_code,
         tenant_id=result.tenant_id,
         generation_id=result.generation_id,
         pipeline_fingerprint=result.pipeline_fingerprint,
