@@ -8,7 +8,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
 import psycopg
 import pytest
@@ -394,8 +394,14 @@ def _dsn_in_timezone(dsn: str, timezone: str) -> str:
         pytest.skip("non-URI RECALL_TEST_DSN; cannot inject a session TimeZone")
     query = dict(parse_qsl(parts.query))
     # Append: an existing `options` may carry settings the rest of the suite relies on, and
-    # overwriting it would silently change more than the timezone.
-    existing = query.get("options", "")
+    # overwriting it would silently change more than the timezone. Recover it WITHOUT
+    # form-decoding, because parse_qsl turns a literal "+" into a space while libpq reads "+"
+    # literally, so a round trip through it would corrupt e.g. `search_path=a+b`.
+    existing = ""
+    for pair in parts.query.split("&"):
+        key, _, value = pair.partition("=")
+        if key == "options":
+            existing = unquote(value)
     query["options"] = f"{existing} -c TimeZone={timezone}".strip()
     # quote_via=quote, not the default quote_plus: libpq reads a "+" literally, so a
     # plus-encoded space turns the option into a parameter named "+TimeZone".
