@@ -69,15 +69,24 @@ REVOKE CREATE ON SCHEMA public FROM recall_server;
 
 After `recall schema apply`, grant the serving role only the objects it uses:
 
-```sql
-GRANT SELECT ON recall_schema_migrations TO recall_server;
-GRANT SELECT, INSERT, UPDATE, DELETE ON chunks TO recall_server;
-GRANT SELECT, INSERT, UPDATE, DELETE ON
-  recall_generations, recall_tenant_state, recall_chunks_v1, recall_ingest_jobs,
-  recall_audit_events, recall_source_tombstones, recall_calibration_query_sets,
-  recall_calibrations TO recall_server;
--- These tables use application-generated text IDs and no sequence.
+Do not copy a list from this page. Generate it, so it cannot drift out of step with the tables
+the code actually creates:
+
+```bash
+recall schema grants --role recall_server
+recall schema grants --role recall_server --enterprise   # if RECALL_ENTERPRISE_CONTROL_PLANE is on
 ```
+
+The command prints SQL and runs nothing, so it needs no DSN. Run the output as the object owner.
+
+`--enterprise` adds the four control-plane tables (`recall_index_generations`,
+`recall_schema_versions`, `recall_tenant_routes`, `recall_migration_events`) and, critically,
+`GRANT USAGE ON SEQUENCE recall_migration_events_sequence_id_seq`. The serving process reads the
+first two on every routed request and appends to `recall_migration_events` on every shadow flush.
+That table is the one object in the schema with a `bigserial` key, so table privileges alone are
+not enough: the INSERT fails with `permission denied for sequence` until the sequence is granted.
+An earlier version of this section listed ten objects and omitted all of these, which meant an
+operator who followed it exactly got `permission denied` at startup readiness.
 
 The migration role must own the managed objects (or be a member of their owner role) and have
 `CREATE` on the target schema. The serving role must not own the table, be a superuser, carry
