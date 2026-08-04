@@ -669,7 +669,9 @@ def results_to_markdown(results: list[AblationResult]) -> str:
         # A truncated mean is a different statistic from a full-run mean, so it is marked in the
         # cell rather than left to a footnote a reader can skip. Only the two STORE legs can
         # truncate: embed and rerank come from `TimingStats`, which is uncapped.
-        mark = "†" if r.store_latency_truncated else ""
+        # ‡, not †: † already means "ANALYTIC, not measured" in the quality table above,
+        # and one document must not carry two meanings for one mark.
+        mark = "‡" if r.store_latency_truncated else ""
         lines.append(
             f"| {r.embedder} | {r.fusion} | {r.embed_ms_mean:.1f} | "
             f"{r.dense_ms_mean:.1f}{mark} | {r.sparse_ms_mean:.1f}{mark} | "
@@ -678,7 +680,7 @@ def results_to_markdown(results: list[AblationResult]) -> str:
     if any(r.store_latency_truncated for r in results):
         lines.append("")
         lines.append(
-            "_† the metric ring evicted samples: this leg's figure is a mean over the retained "
+            "_‡ the metric ring evicted samples: this leg's figure is a mean over the retained "
             "suffix, NOT over the run._"
         )
     return "\n".join(lines)

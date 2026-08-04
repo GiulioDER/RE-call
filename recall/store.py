@@ -95,8 +95,13 @@ LEG_META = "meta"
 #: This is a tuple rather than a docstring because `GenerationStore` made that mistake TWICE: once
 #: on the query legs, then again on `newest_indexed_at` immediately after the query legs were
 #: fixed. The guard could not catch the second one because it enumerated two method names inline
-#: instead of reading a list. `tests/test_store_query_latency.py` iterates this tuple, so adding a
-#: timed method here extends the guard in the same edit that creates the hazard.
+#: instead of reading a list. `tests/test_store_query_latency.py` iterates this tuple.
+#:
+#: The tuple is HAND-MAINTAINED, so it bounds the guard only while it stays in step with the real
+#: timer call sites — a declaration nothing checks is the same failure one level up, which is how
+#: this recurred twice already. `test_timed_public_methods_matches_the_actual_timer_call_sites`
+#: parses this module and requires this tuple to EQUAL the set of methods that actually open a
+#: `METRICS.timer` on `STORE_QUERY_METRIC`.
 TIMED_PUBLIC_METHODS = ("query_dense", "query_sparse", "newest_indexed_at")
 
 #: How long schema DDL may WAIT FOR A LOCK before giving up (ms). Not a bound on the work — the
