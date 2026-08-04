@@ -315,3 +315,76 @@ def test_serving_role_has_dml_but_cannot_run_ddl():
                 )
                 conn.execute(f'REVOKE USAGE ON SCHEMA public FROM "{role}"')
                 conn.execute(f'DROP ROLE IF EXISTS "{role}"')
+
+
+@contextmanager
+def _fresh_database(prefix: str = "migdb_"):
+    """A throwaway database with no migration ledger, so the global migrations really run.
+
+    The shared test database already carries 0008-0011 in the global ledger, so they are
+    skipped for any custom target table. Adopting a *populated* v0.8 install is only
+    reachable on a database where they have never been applied.
+    """
+    name = _name(prefix)
+    parts = urlsplit(TEST_DSN)
+    admin = urlunsplit(parts._replace(path="/postgres"))
+    scratch = urlunsplit(parts._replace(path=f"/{name}"))
+    with psycopg.connect(admin, autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{name}"')
+    try:
+        yield scratch
+    finally:
+        with psycopg.connect(admin, autocommit=True) as conn:
+            conn.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s",
+                (name,),
+            )
+            conn.execute(f'DROP DATABASE IF EXISTS "{name}"')
+
+
+@requires_db
+def test_a_populated_v08_install_can_be_adopted_by_the_generation_migrations():
+    """Migration 0008 must survive a legacy table that actually contains rows.
+
+    0008 relaxes FORCE RLS, seeds `recall_generations` and `recall_tenant_state` from the
+    distinct tenants of the legacy table, then restores FORCE — all in one transaction.
+    The seed into `recall_tenant_state` queues its DEFERRABLE INITIALLY DEFERRED foreign
+    key trigger events, and PostgreSQL refuses `ALTER TABLE` while any are pending, so the
+    restore aborts with `ObjectInUse` and the whole chain rolls back. An empty legacy table
+    queues nothing, which is why every fresh database, and CI, passes.
+    """
+    with _fresh_database() as dsn:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            conn.execute(
+                f"""
+                CREATE TABLE chunks (
+                    id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    embedding vector({DIM}),
+                    indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO chunks (id, source, text, embedding) "
+                "VALUES ('old', 'memo.md', 'preserve me', '[1,0,0,0]')"
+            )
+
+        apply_migrations(dsn, table="chunks", dim=DIM)
+
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            tenants = conn.execute("SELECT tenant_id FROM recall_tenant_state").fetchall()
+            legacy = conn.execute(
+                "SELECT generation_id, state FROM recall_generations"
+            ).fetchall()
+            forced = conn.execute(
+                "SELECT relforcerowsecurity FROM pg_class WHERE relname = 'recall_tenant_state'"
+            ).fetchone()
+        # The legacy tenant is adopted as evidence, and FORCE RLS is back on afterwards.
+        assert tenants == [("default",)]
+        assert legacy == [("legacy-v08", "legacy_unverified")]
+        assert forced == (True,)

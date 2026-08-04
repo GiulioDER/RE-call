@@ -46,7 +46,13 @@ from recall.types import Chunk
 
 from tests.conftest import TEST_DSN, requires_db
 
-pytestmark = requires_db
+# The module-scoped `filtered_corpus` fixture upserts 20,000 rows and builds an HNSW index over
+# them, and that cost is charged to whichever test happens to trigger it first — which, under
+# random ordering, is any of the four. Measured at ~106 s on an idle machine, i.e. 88% of the
+# global `timeout = 120` in pyproject.toml, so the run dies on a loaded CI box while passing
+# locally. Raise the ceiling for this module only, per the escape hatch that setting documents;
+# the point of the global timeout is to fail a HUNG chunker fast, and it keeps doing that here.
+pytestmark = [requires_db, pytest.mark.timeout(300)]
 
 DIM = 64
 N_ROWS = 20_000

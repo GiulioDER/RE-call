@@ -6,6 +6,7 @@ import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import psycopg
 import pytest
@@ -376,3 +377,42 @@ def test_query_set_digest_is_canonical_and_rejects_duplicates() -> None:
     assert first_digest == second_digest
     with pytest.raises(CalibrationBindingError, match="duplicate"):
         canonical_query_set([{"query": "a", "answerable": True}] * 2)
+
+
+def _dsn_in_timezone(dsn: str, timezone: str) -> str:
+    """The same DSN, but the session runs in `timezone` instead of the server default."""
+    parts = urlsplit(dsn)
+    query = dict(parse_qsl(parts.query))
+    query["options"] = f"-c TimeZone={timezone}"
+    # quote_via=quote, not the default quote_plus: libpq reads a "+" literally, so a
+    # plus-encoded space turns the option into a parameter named "+TimeZone".
+    return urlunsplit(parts._replace(query=urlencode(query, quote_via=quote)))
+
+
+@requires_db
+def test_a_calibration_reads_back_under_a_non_utc_session_timezone(calibration_tenant) -> None:
+    """`created_at` is checksummed as a string but stored as `timestamptz`.
+
+    psycopg renders a `timestamptz` in the *connection's* TimeZone, so a calibration
+    written by one session and read by another whose TimeZone differs recomputes a
+    different digest and raises `CalibrationBindingError` on every read. The suite's
+    own database runs UTC, which is exactly why this needs an explicit non-UTC
+    session: under UTC the defect is invisible.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    generation_id = _ready(manager, embedder, b"answer corpus", "v1")
+
+    written = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+    artifact = written.calibrate(generation_id, _labels(), embedder)
+    published = written.publish(artifact.calibration_id)
+
+    rome = CalibrationRepository(_dsn_in_timezone(TEST_DSN, "Europe/Rome"), tenant, actor="pytest")
+
+    # The stored instant must survive the round trip as the same string.
+    assert rome.get(published.calibration_id).created_at == published.created_at
+    # And the serving path must still resolve it, not fail closed on a digest mismatch.
+    assert rome.resolve(generation_id).status == CalibrationStatus.CERTIFIED
+    # The listing renders the same instant too.
+    listed = {row["calibration_id"]: row["created_at"] for row in rome.list_records()}
+    assert listed[published.calibration_id] == published.created_at

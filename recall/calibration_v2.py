@@ -60,6 +60,21 @@ def _frozen_json(value: Any) -> Any:
     return value
 
 
+def _utc_isoformat(value: Any) -> str:
+    """Render a stored timestamp as the UTC ISO string the checksum was computed over.
+
+    `created_at` is part of `immutable_payload()`, so its *string* form is inside the
+    artifact checksum, but the column is `timestamptz` and psycopg decodes it in the
+    connection's TimeZone. Rendering it as-is makes the recomputed digest depend on the
+    session's `TimeZone`, so an artifact written by one session fails `verify_checksum()`
+    in another. `calibrate()` always writes `datetime.now(UTC).isoformat()`, so
+    normalising back to UTC on read restores the exact bytes that were hashed.
+    """
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat()
+    return str(value)
+
+
 def _require_digest(value: str, field_name: str) -> None:
     if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
         raise CalibrationBindingError(f"{field_name} must be a lowercase SHA-256 digest")
@@ -319,7 +334,7 @@ class CalibrationRepository:
             certification_reason=str(row[15]),
             lifecycle_state=str(row[16]),
             scores=dict(scores),
-            created_at=row[18].isoformat() if isinstance(row[18], datetime) else str(row[18]),
+            created_at=_utc_isoformat(row[18]),
             created_by=str(row[19]),
             checksum=str(row[20]),
         )
@@ -558,7 +573,7 @@ class CalibrationRepository:
                 "pipeline_fingerprint": row[4],
                 "corpus_fingerprint": row[5],
                 "query_set_digest": row[6],
-                "created_at": row[7].isoformat(),
+                "created_at": _utc_isoformat(row[7]),
             }
             for row in rows
         ]
