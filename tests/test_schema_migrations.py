@@ -335,16 +335,19 @@ def _fresh_database(prefix: str = "migdb_"):
     admin = urlunsplit(parts._replace(path="/postgres"))
     scratch = urlunsplit(parts._replace(path=f"/{name}"))
     with psycopg.connect(admin, autocommit=True) as conn:
-        conn.execute(f'CREATE DATABASE "{name}"')
+        try:
+            conn.execute(f'CREATE DATABASE "{name}"')
+        except psycopg.errors.InsufficientPrivilege:
+            pytest.skip("RECALL_TEST_DSN role cannot CREATE DATABASE")
     try:
         yield scratch
     finally:
         with psycopg.connect(admin, autocommit=True) as conn:
-            conn.execute(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s",
-                (name,),
-            )
-            conn.execute(f'DROP DATABASE IF EXISTS "{name}"')
+            # WITH (FORCE) terminates and drops atomically. pg_terminate_backend returns as
+            # soon as SIGTERM is delivered, not once the backend has exited, so a plain DROP
+            # could still fail with ObjectInUse from inside this finally, replacing the real
+            # test failure and leaking a uniquely-named database on every retry.
+            conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
 
 
 @requires_db

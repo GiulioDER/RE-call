@@ -90,12 +90,15 @@ def _require_utc_isoformat(value: str, field_name: str) -> None:
     except ValueError:
         raise CalibrationBindingError(f"{field_name} must be an ISO-8601 timestamp") from None
     if parsed.tzinfo is None:
-        # Suggest ADDING an offset rather than converting: astimezone() would read a naive
-        # value as machine-local, so the example would name a different instant and would
-        # differ between machines.
+        # `replace(tzinfo=UTC)`, not `astimezone()`: astimezone would read a naive value as
+        # machine-local, naming a different instant on every host. Not string concatenation
+        # either: `fromisoformat` accepts spellings the canonical form does not (a space
+        # separator, minute precision, milliseconds, a bare date), and appending an offset to
+        # those produced advice this very guard then rejected. `str()` on a naive datetime
+        # yields the space-separated form, so that was the likely shape to hit it.
         raise CalibrationBindingError(
-            f"{field_name} must carry a UTC offset (e.g. {value + '+00:00'!r}); "
-            "re-export the bundle"
+            f"{field_name} must carry a UTC offset "
+            f"(e.g. {parsed.replace(tzinfo=UTC).isoformat()!r}); re-export the bundle"
         )
     try:
         canonical = parsed.astimezone(UTC).isoformat()
