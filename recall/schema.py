@@ -32,6 +32,17 @@ GENERATION_TABLES = (
     "recall_calibration_query_sets",
     "recall_calibrations",
 )
+#: Enterprise control-plane objects, created by `recall/sql/001_enterprise_control_plane.sql`
+#: through `ControlPlane.apply_migrations()` rather than by the versioned migrator. The serving
+#: process reads the first two on every routed request and appends to the third on every shadow
+#: flush, so they belong in the serving role's grants even though a different framework creates
+#: them.
+CONTROL_PLANE_READ_TABLES = ("recall_index_generations", "recall_schema_versions")
+CONTROL_PLANE_WRITE_TABLES = ("recall_tenant_routes", "recall_migration_events")
+#: `recall_migration_events.sequence_id` is `bigserial`, so INSERT additionally needs USAGE on
+#: its sequence. It is the only sequence in the shipped schema, and the omission of this one line
+#: is why table-level grants alone still failed.
+CONTROL_PLANE_SEQUENCES = ("recall_migration_events_sequence_id_seq",)
 GLOBAL_MIGRATION_TARGET = "__global__"
 GLOBAL_MIGRATION_START = "0008"
 _MIGRATION_NAME = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
@@ -104,6 +115,46 @@ def _validate_target(table: str, dim: int) -> None:
         raise ValueError("table must be a valid SQL identifier")
     if not isinstance(dim, int) or dim <= 0:
         raise ValueError("dim must be a positive int")
+
+
+def serving_grants(
+    role: str, *, table: str = DEFAULT_TABLE, enterprise: bool = False
+) -> tuple[str, ...]:
+    """The GRANT statements a serving role needs, derived from the table constants.
+
+    No migration emits a GRANT, because the role name is a deployment decision the packaged
+    SQL cannot know. That left the privilege list as prose in `docs/MIGRATIONS.md`, and prose
+    drifted: it named ten objects and missed the four enterprise control-plane tables the
+    serving process reads on every routed request, plus the one sequence in the schema. An
+    operator who followed it got `permission denied` at startup readiness.
+
+    Generating the list from `GENERATION_TABLES` / `CONTROL_PLANE_*` instead means a table
+    added to those tuples cannot be forgotten here.
+    """
+    # Both are interpolated as identifiers, so they are gated the same way every other
+    # identifier in this module is.
+    if not role.isidentifier():
+        raise ValueError("role must be a valid SQL identifier")
+    if not table.isidentifier():
+        raise ValueError("table must be a valid SQL identifier")
+    statements = [
+        f"GRANT SELECT ON {LEDGER_TABLE} TO {role};",
+        f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {role};",
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON "
+        + ", ".join(GENERATION_TABLES)
+        + f" TO {role};",
+    ]
+    if enterprise:
+        statements += [
+            "GRANT SELECT ON " + ", ".join(CONTROL_PLANE_READ_TABLES) + f" TO {role};",
+            "GRANT SELECT, INSERT, UPDATE ON "
+            + ", ".join(CONTROL_PLANE_WRITE_TABLES)
+            + f" TO {role};",
+            "GRANT USAGE ON SEQUENCE "
+            + ", ".join(CONTROL_PLANE_SEQUENCES)
+            + f" TO {role};",
+        ]
+    return tuple(statements)
 
 
 def _migration_root() -> resources.abc.Traversable:

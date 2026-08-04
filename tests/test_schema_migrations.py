@@ -11,6 +11,10 @@ import pytest
 
 from recall.cli import main as cli_main
 from recall.schema import (
+    CONTROL_PLANE_READ_TABLES,
+    CONTROL_PLANE_SEQUENCES,
+    CONTROL_PLANE_WRITE_TABLES,
+    GENERATION_TABLES,
     GLOBAL_MIGRATION_TARGET,
     LEDGER_TABLE,
     MIGRATION_LOCK_NAME,
@@ -23,6 +27,7 @@ from recall.schema import (
     load_migrations,
     schema_plan,
     schema_status,
+    serving_grants,
 )
 from recall.store import PgVectorStore
 from recall.types import Chunk
@@ -388,3 +393,65 @@ def test_a_populated_v08_install_can_be_adopted_by_the_generation_migrations():
         assert tenants == [("default",)]
         assert legacy == [("legacy-v08", "legacy_unverified")]
         assert forced == (True,)
+
+
+@requires_db
+def test_the_generated_serving_grants_are_sufficient_for_the_control_plane():
+    """A serving role given exactly `serving_grants(...)` must be able to serve.
+
+    No migration emits a GRANT, so the privilege list lived only as prose and drifted: it
+    named ten objects and missed the four enterprise control-plane tables the serving process
+    reads on every routed request, plus the one `bigserial` sequence in the schema. Following
+    the documentation literally produced `permission denied` at startup readiness. This pins
+    the generated list against the operations that actually run.
+    """
+    from recall.control_plane import ControlPlane
+
+    role = _name("cca_grantee_")
+    parts = urlsplit(TEST_DSN)
+    as_role = urlunsplit(parts._replace(netloc=f"{role}:probe@{parts.hostname}:{parts.port}"))
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute(f"CREATE ROLE {role} LOGIN PASSWORD 'probe' NOSUPERUSER NOBYPASSRLS")
+        conn.execute(f"GRANT CONNECT ON DATABASE {parts.path.lstrip('/')} TO {role}")
+        conn.execute(f"GRANT USAGE ON SCHEMA public TO {role}")
+    try:
+        control = ControlPlane(TEST_DSN)
+        control.apply_migrations()
+        generation = _name("g_")
+        physical = _name("cp_chunks_")
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(f"CREATE TABLE {physical} (id text primary key)")
+            # Grant ONLY what the generated list prescribes, nothing more.
+            for statement in serving_grants(role, table=physical, enterprise=True):
+                conn.execute(statement)
+        control.register_generation(generation, physical, "profile-x", DIM)
+        control.set_generation_state(generation, "ready")
+        control.set_route("probe-tenant", generation)
+
+        # The two operations the panel proved were denied: a routed read and an outbox append.
+        as_serving = ControlPlane(as_role)
+        assert as_serving.route("probe-tenant") is not None
+        # An INSERT here is what needed USAGE on the bigserial sequence.
+        assert as_serving.append_event("probe-tenant", _name("op_"), "index", {}) > 0
+    finally:
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(
+                "DELETE FROM recall_migration_events WHERE tenant_id = %s", ("probe-tenant",)
+            )
+            conn.execute("DELETE FROM recall_tenant_routes WHERE tenant_id = %s", ("probe-tenant",))
+            conn.execute(f"DROP TABLE IF EXISTS {physical}")
+            conn.execute(f"REASSIGN OWNED BY {role} TO CURRENT_USER")
+            conn.execute(f"DROP OWNED BY {role}")
+            conn.execute(f"DROP ROLE IF EXISTS {role}")
+
+
+def test_serving_grants_cover_every_table_the_migrator_manages():
+    """A table added to the constants must not be able to fall out of the grant list."""
+    statements = " ".join(serving_grants("recall_server", enterprise=True))
+    for name in (LEDGER_TABLE, *GENERATION_TABLES, *CONTROL_PLANE_READ_TABLES,
+                 *CONTROL_PLANE_WRITE_TABLES, *CONTROL_PLANE_SEQUENCES):
+        assert name in statements, f"{name} is created by this project but never granted"
+    # The sequence needs USAGE, not table DML: a table-only grant was the near miss.
+    assert "GRANT USAGE ON SEQUENCE" in statements
+    with pytest.raises(ValueError, match="role"):
+        serving_grants("not a role")
