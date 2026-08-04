@@ -257,7 +257,9 @@ class GenerationStore(PgVectorStore):
         rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._generation_rows(rows)
 
-    def newest_indexed_at(self) -> datetime | None:
+    def _newest_indexed_at(self) -> datetime | None:
+        """Generation-scoped freshness. PRIVATE so the timed public wrapper is inherited —
+        see `store.TIMED_PUBLIC_METHODS`."""
         generation_id = self._generation_id()
         row = self._with_retry(
             lambda conn: conn.execute(
