@@ -16,6 +16,11 @@ calibration.json
 .claude/
 results/scale*/corpus/
 results/scale*/.recall-synthetic
+# Same rule for the latency-split benchmark: it generates a corpus per size (up to ~20k chunks),
+# reproducible from its seed and not something to vendor. The SPLIT.md / splits.json written
+# beside them ARE the artifacts and are committed.
+results/store_latency*/**/corpus/
+results/store_latency*/**/.recall-synthetic
 
 # LOCOMO benchmark data — fetched on demand, not vendored (see recall/eval/locomo.py)
 locomo10.json
