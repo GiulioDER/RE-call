@@ -10,9 +10,25 @@ values are committed in
 - `RECALL_SERVING_DSN`: unprivileged credential used by indexing, search, forget, and MCP.
 - `RECALL_MIGRATION_DSN`: schema-owner credential used only by `recall schema apply`.
 - `RECALL_DSN`: deprecated development fallback for the serving DSN.
+- `RECALL_ENV`: `development` (default) | `test` | `production`.
 
 Keep the two credentials distinct outside a disposable local database. The MCP process never reads
 the migration DSN.
+
+`RECALL_ENV` is what selects the production code paths, and it **fails open**. Set it explicitly on
+every production process: left unset, it resolves to `development` and silently disables all of the
+following. A misspelling behaves worse than either, because it is not handled consistently — `prod`
+or a stray trailing space degrades the seven `== "production"` comparisons below to development
+silently, while `GenerationManager` validates its value and raises `ValueError`, so the same typo
+is loud in one place and mute in the rest.
+
+| Set to `production` | Left at the default |
+|---|---|
+| `recall search` / `recall forget` use the v1 `GenerationStore` | they use the legacy v0.8 `chunks` table |
+| MCP server serves generation-routed reads | serves the legacy table |
+| `recall index` / `demo` / `code` and the MCP `recall_index` tool refuse local-filesystem indexing | accepted |
+| generations require a pinned, verified embedder identity | an unverified embedder can build one |
+| `generation promote` is blocked | promotion is permitted |
 
 ```bash
 recall --serving-dsn "$RECALL_SERVING_DSN" --table chunks schema --dim 384 status
