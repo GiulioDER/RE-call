@@ -62,13 +62,31 @@ _T = TypeVar("_T")
 #: Wall time of one retrieval leg, in ms. ONE series with a `leg` label rather than two names,
 #: so the two legs of a hybrid query are compared without correlating separate metrics.
 #:
-#: This exists because every latency figure this project has published is whole-`search()` wall
-#: time, which folds the embedder, both store legs and the reranker into one number. Attributing
-#: that total needs the store to report its own share, and `observability.METRICS` already had the
-#: histogram machinery to receive it with no call site anywhere in the library.
+#: Recorded by `PgVectorStore`, and inherited by `GenerationStore` because that subclass overrides
+#: the PRIVATE `_query_*` methods — overriding the public pair would silently drop the timing on
+#: the `RECALL_ENV=production` path.
+#:
+#: Scope, stated precisely because an earlier version of this comment overstated it: `METRICS.timer`
+#: was ALREADY used for tool-level latency in `recall_mcp/server.py` (`recall_tool_latency_ms`).
+#: What had no series was any leg INSIDE `recall/`. Note also that `HybridRetriever` records
+#: per-query stage timings in `diagnostics.stage_ms`, so this metric is not the only per-leg
+#: measurement — it adds process-wide aggregation (percentiles an operator can read via MCP) and
+#: `LEG_META`, which no `stage_ms` bracket covers.
 STORE_QUERY_METRIC = "recall_store_query_ms"
 LEG_DENSE = "dense"
 LEG_SPARSE = "sparse"
+#: The THIRD store round trip on the search path, and the one an attribution silently misses.
+#: `HybridRetriever.search` calls `newest_indexed_at()` once per query for its staleness report,
+#: and that is an uncached `SELECT max(indexed_at)`. It is store work, and it is inside end-to-end
+#: search latency, so leaving it untimed books a Postgres round trip as Python glue and UNDERSTATES
+#: the store's share — in the same direction as the "the store is cheap" hypothesis this metric
+#: exists to test. Same standard as the HNSW `set_config` widening, which is deliberately inside
+#: the dense timer because it is part of what a dense retrieval costs.
+#:
+#: `count()` is deliberately NOT timed: it is not on the query path, so its samples would not
+#: correspond one-to-one with queries and would break the per-query denominator that lets a
+#: caller assert "one sample per leg per query".
+LEG_META = "meta"
 
 #: How long schema DDL may WAIT FOR A LOCK before giving up (ms). Not a bound on the work — the
 #: HNSW build is deliberately unbounded, see `ensure_schema` — only on queueing. Short on purpose:
@@ -890,7 +908,7 @@ class PgVectorStore:
         estimates ONE matching row and picks an exact plan (a Bitmap Heap Scan + Sort, cost ~15)
         over `Index Scan using <table>_emb_idx`. The answers stay correct — an exact scan is an
         exact search — but the HNSW index is not consulted at all, which also makes the
-        `hnsw.ef_search` / `hnsw.iterative_scan` tuning in `query_dense` inert. On a 20,000-row
+        `hnsw.ef_search` / `hnsw.iterative_scan` tuning in `_query_dense` inert. On a 20,000-row
         corpus that costs a millisecond or two per query; on a large one it is a full scan plus a
         sort of every matching row, per query, until autovacuum's analyze lands.
 
@@ -1105,7 +1123,11 @@ class PgVectorStore:
                     f"{_ef_search_multiplier()} = {desired_ef}, above pgvector's maximum. The "
                     f"scan still covers k={k}, so only the over-fetch margin is reduced.",
                     RuntimeWarning,
-                    stacklevel=2,
+                    # 3, not 2: the timed `query_dense` wrapper sits between this frame and the
+                    # caller. At 2 the warning names this module's own line, so a `-W` filter
+                    # keyed on the caller stops selecting it and every call site collapses onto
+                    # one `__warningregistry__` entry under the default once-per-location action.
+                    stacklevel=3,
                 )
             widen_params = {
                 "default_ef": str(_PGVECTOR_DEFAULT_EF_SEARCH),
@@ -1164,7 +1186,7 @@ class PgVectorStore:
         self, text: str, k: int, source: str | None = None, vec: list[float] | None = None
     ) -> list[ScoredChunk]:
         t = self._table
-        # See query_dense: the caller-facing identifier is the relative `file`, so match it (with
+        # See `_query_dense`: the caller-facing identifier is the relative `file`, so match it (with
         # a `source` fall-back for legacy rows). Aliased `c.` here.
         where = (
             "AND (c.metadata->>'file' = %(source)s OR c.source = %(source)s)" if source else ""
@@ -1586,13 +1608,19 @@ class PgVectorStore:
         return self.supersession()[0]
 
     def newest_indexed_at(self) -> datetime | None:
-        row = self._with_retry(
-            lambda conn: conn.execute(
-                f"SELECT max(indexed_at) FROM {self._table} WHERE tenant_id = %s",
-                (self._tenant,),
-            ).fetchone()
-        )
-        return row[0] if row else None
+        """Newest `indexed_at` for this tenant. Timed: `HybridRetriever` calls it EVERY search.
+
+        Uncached, so this is a real round trip on the query path — see `LEG_META`. Timing it is
+        what stops a latency attribution from booking it as Python glue.
+        """
+        with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_META):
+            row = self._with_retry(
+                lambda conn: conn.execute(
+                    f"SELECT max(indexed_at) FROM {self._table} WHERE tenant_id = %s",
+                    (self._tenant,),
+                ).fetchone()
+            )
+            return row[0] if row else None
 
     def count(self) -> int:
         row = self._with_retry(

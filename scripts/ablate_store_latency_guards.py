@@ -92,17 +92,50 @@ ABLATIONS = [
 ]
 
 
-def run(test: str) -> int:
-    return subprocess.run(
+def run(test: str) -> tuple[int, str]:
+    proc = subprocess.run(
         [sys.executable, "-m", "pytest", f"{TESTS}::{test}", "-q", "--no-header", "-p",
          "no:cacheprovider"],
         cwd=ROOT, capture_output=True, text=True, env=os.environ,
-    ).returncode
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def collectable(tests: list[str]) -> tuple[bool, str]:
+    """Every named test must resolve BEFORE any mutation.
+
+    Without this, a renamed or misspelled test id makes pytest exit 4 forever, and an exit-code
+    check reads that as "the guard caught the mutation" for the rest of the file's life. The
+    ablation would report a perfect score having never run an assertion.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", TESTS, "--collect-only", "-q", "--no-header",
+         "-p", "no:cacheprovider"],
+        cwd=ROOT, capture_output=True, text=True, env=os.environ,
+    )
+    collected = proc.stdout
+    missing = [t for t in tests if t not in collected]
+    return (not missing), ", ".join(missing)
 
 
 def main() -> int:
     if not os.environ.get("RECALL_TEST_DSN"):
         print("RECALL_TEST_DSN must point at a throwaway database", file=sys.stderr)
+        return 2
+
+    # Refuse to mutate a dirty tree: the restore below rewrites these files from a snapshot taken
+    # at mutation time, so an unrelated uncommitted edit would be silently reverted to it.
+    for target in (STORE, OBS):
+        if subprocess.run(
+            ["git", "diff", "--quiet", "--", str(target)], cwd=ROOT
+        ).returncode != 0:
+            print(f"FAIL: {target.name} has uncommitted changes; commit or stash first",
+                  file=sys.stderr)
+            return 2
+
+    ok, missing = collectable([test for *_, test in ABLATIONS])
+    if not ok:
+        print(f"FAIL: these ablation tests do not resolve: {missing}", file=sys.stderr)
         return 2
 
     print(f"baseline: {len(ABLATIONS)} rules, requiring the suite green before ablating")
@@ -115,7 +148,7 @@ def main() -> int:
         print("FAIL: the suite is not green before ablation; fix that first", file=sys.stderr)
         return 2
 
-    reds = 0
+    reds, inconclusive = 0, 0
     for label, path, old, new, test in ABLATIONS:
         original = path.read_text(encoding="utf-8")
         if original.count(old) != 1:
@@ -123,18 +156,31 @@ def main() -> int:
             continue
         path.write_text(original.replace(old, new), encoding="utf-8")
         try:
-            code = run(test)
+            code, output = run(test)
         finally:
             path.write_text(original, encoding="utf-8")
-        verdict = "RED " if code != 0 else "GREEN"
-        if code != 0:
-            reds += 1
-        else:
-            print(f"  {verdict} {label}  <-- {test} DID NOT CATCH THIS")
-            continue
-        print(f"  {verdict} {label}  ({test})")
+            # Verify the restore, do not assume it. A partial write here leaves shipped library
+            # source mutated, and two of these mutations read as plausible code in a later diff.
+            if path.read_text(encoding="utf-8") != original:
+                print(f"FATAL: {path} was not restored; run `git checkout -- {path}`",
+                      file=sys.stderr)
+                return 3
 
-    print(f"\n{reds}/{len(ABLATIONS)} ablations caught")
+        # Exit 1 AND a real failure line. pytest exits 2 on a collection error, 3 internal,
+        # 4 usage, 5 nothing-collected — all non-zero, none of them an assertion that fired.
+        # Counting those as RED is how an ablation reports a perfect score having proved nothing.
+        if code == 1 and "1 failed" in output:
+            reds += 1
+            print(f"  RED   {label}  ({test})")
+        elif code == 0:
+            print(f"  GREEN {label}  <-- {test} DID NOT CATCH THIS")
+        else:
+            inconclusive += 1
+            print(f"  INCONCLUSIVE {label}: pytest exit {code}, no failure line")
+            print("    " + output.strip().splitlines()[-1] if output.strip() else "")
+
+    print(f"\n{reds}/{len(ABLATIONS)} ablations caught"
+          + (f", {inconclusive} INCONCLUSIVE" if inconclusive else ""))
     return 0 if reds == len(ABLATIONS) else 1
 
 

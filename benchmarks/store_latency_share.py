@@ -1,108 +1,166 @@
-"""Attribute end-to-end search latency to its four legs, in one process on one host.
+"""Attribute end-to-end search latency to its stages, to price a store swap.
 
-**Why this exists.** Every latency figure this project publishes is whole-`search()` wall time:
-`RESULTS.md` §10 reports 45 ms local and 246 ms cloud, §7a reports 66-90 ms, `SCALE.md` reports a
-46.9 ms p50. None of them says how much of that is the STORE. Answering "would a faster vector
-backend help?" from those numbers means subtracting figures measured on different machines, and
-RESULTS.md itself warns its latency columns are comparable only within one table.
+**The question.** RE-call's store is Postgres + pgvector. Would moving it to another backend
+(Redis, say) buy enough to be worth the port? That is decided by the store's SHARE of end-to-end
+latency, not by how fast the store is: a backend that is free still cannot remove more than the
+share it occupies.
 
-So this measures embed, dense, sparse and rerank together, in the same run, and prints what is
-left over. The leftover matters: if the four legs do not account for the total, the attribution is
-incomplete and saying "the store is N%" would be a guess dressed as a measurement. `residual_ms`
-is therefore reported, never absorbed, and a NEGATIVE residual aborts the run rather than
-rounding away — parts that exceed the whole mean the instrumentation double-counts.
+**Where the numbers come from.** `HybridRetriever` already records per-query stage timings and
+returns them on every result as `diagnostics.stage_ms` (`query_embedding`, `dense_retrieval`,
+`sparse_retrieval`, `fusion`, `reranking`). This benchmark READS that, rather than adding a
+parallel instrument. An earlier draft of this file did add one, on the false premise that no
+per-stage timing existed — it did, and had shipped; the premise came from reading a checkout 61
+commits behind master. The store-internal `recall_store_query_ms` metric is still used here, for
+the two things `stage_ms` cannot give:
+
+  1. `newest_indexed_at()`. `search()` calls it once per query for its staleness report and it is
+     an uncached `SELECT max(indexed_at)` — a real store round trip that sits OUTSIDE every
+     `stage_ms` bracket. Left unattributed it books store cost as Python glue and understates the
+     store's share, in the same direction as the "the store is cheap" hypothesis under test.
+  2. A CROSS-CHECK. `stage_ms["dense_retrieval"]` brackets the call from outside; the store metric
+     times the same work from inside. The second must nest within the first. Two independent
+     instruments that agree is evidence the measurement is real; one instrument is an assumption.
+
+**What is asserted rather than hoped.** Per configuration: one metric sample per leg per query
+(a leg that silently stops recording must not read as a leg that costs nothing); the store metric
+nests inside its stage bracket; the residual is non-negative (parts exceeding the whole means
+double counting); the sparse leg actually returns rows (issue #81 had it returning rows for 0 of
+150 real questions, so "hybrid" was silently dense-only); and no figure derived from a cross-stage
+ratio is emitted when the metric ring truncated, because a mean over a retained suffix and a mean
+over the run are different statistics.
+
+**Measurement hygiene.** Every configuration gets a discarded warm-up pass through the FULL
+pipeline, so no leg is measured warm against another measured cold, and configurations are
+interleaved across repetitions so the last one measured is not systematically the warmest.
 
 **What it does not measure.** The shipped best configuration uses a cloud embedder
-(`voyage-4-large`). This runs local embedders only, so the embed leg here is the local cost. To
-reason about the cloud case, take the dense/sparse/rerank figures from this run and substitute a
-cloud embed cost: that is a COMPOSITION, and must be labelled as one.
+(`voyage-4-large`); this runs local embedders only. To reason about the cloud case, substitute a
+cloud embed cost into these stage figures — that is a COMPOSITION and must be labelled as one.
 
-**The sparse leg is verified to fire, not assumed to.** Issue #81 found the sparse leg returning
-rows for 0 of 150 real questions, so "hybrid" was silently dense-only; #82 fixed it (0/150 ->
-150/150). A latency split taken in that state would report a real sparse cost for a leg
-contributing nothing, so `sparse_fire_rate` is measured and a rate of 0.0 aborts the run.
+**Prior work, and the number that should frame any result from this file.** Commit `9a5165b`
+(the #82 fix) already measured the legs on a 72k-chunk corpus: *"the sparse leg goes from
+effectively free (it matched nothing) to a median of 496 ms and p95 of 1205 ms, against 9.6 ms
+median for the dense leg"*. So the expensive leg at scale is the SPARSE one — Postgres `ts_rank`
+over a large match set — not the vector index, and the store's share is strongly corpus-size
+dependent. That commit also names the in-Postgres remedies (lexeme capping by document frequency,
+or a RUM index) and notes small memory corpora should not see it. Any run of this benchmark on a
+small corpus therefore measures the regime where the store is cheap BY CONSTRUCTION, and must not
+be quoted as a general result. That measurement lives only in a commit message, on a different
+host, with no embed or rerank leg, which is why a committed four-leg artifact is still worth having.
 
-Prior work: searched `docs_search(source_type="memory")` for latency attribution / store share /
-leg breakdown on 2026-08-04. No prior measurement exists — every hit was about retrieval QUALITY
-(best-config, reranker choice, near-miss signals), none about where the milliseconds go. The
-#81/#82 sparse-leg history above came out of that same search and is the reason for the guard.
+(Searched `docs_search(source_type="memory")` for latency attribution on 2026-08-04: no memo
+covers it; every hit was about retrieval QUALITY. The 9a5165b figure came from git, not memory.)
 
 Usage:
     python benchmarks/store_latency_share.py --embedder fastembed --filler 20000 \
-        --candidate-k 20 --candidate-k 250 --rerank
+        --candidate-k 20 --candidate-k 250 --rerank --repeats 3
 """
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from statistics import mean
 
-from recall.embeddings import Embedder, embedding_profile_id
+from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.eval.harness import _throwaway_store
-from recall.eval.scale import _make_embedder
+from recall.eval.scale import DEFAULT_DSN, _make_embedder
 from recall.eval.synthetic import generate
-from recall.observability import METRICS, percentile
+from recall.observability import HISTOGRAM_CAPACITY, METRICS, percentile
 from recall.rerank import CrossEncoderReranker, Reranker
-from recall.retriever import HybridRetriever
-from recall.store import LEG_DENSE, LEG_SPARSE, STORE_QUERY_METRIC, PgVectorStore
-from recall.timing import TimedEmbedder, TimedReranker
+from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
+from recall.store import (
+    LEG_DENSE,
+    LEG_META,
+    LEG_SPARSE,
+    STORE_QUERY_METRIC,
+    PgVectorStore,
+    warn_if_insecure_dsn,
+)
 
-DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
+#: The pressure arm: an order of magnitude above the shipped default, and the pool size the
+#: project's best measured configuration uses.
+WIDE_CANDIDATE_K = 250
+#: Slack for float accumulation across the summed stages. Below this a negative residual is
+#: arithmetic noise; at or beyond it, some interval is being counted twice.
+_RESIDUAL_TOLERANCE_MS = 0.01
+#: Below this sparse fire rate the "hybrid" label is not earned (issue #81 was 0/150).
+_MIN_SPARSE_FIRE_RATE = 0.05
 
 
 @dataclass
 class LegSplit:
-    """One configuration's latency attribution. All figures are ms per query."""
+    """One configuration's latency attribution.
+
+    Only the `*_ms` fields are milliseconds per query. `candidate_k`, `n_queries`, `n_chunks` and
+    `repeats` are counts; `store_share`, `sparse_fire_rate` are fractions in [0, 1].
+    """
 
     candidate_k: int
     reranked: bool
+    repeats: int
     n_queries: int
     n_chunks: int
     embedder: str
 
-    total_mean: float
-    total_p50: float
-    total_p95: float
+    total_ms_mean: float
+    total_ms_p50: float
+    total_ms_p95: float
 
-    embed_mean: float
-    dense_mean: float
-    sparse_mean: float
-    rerank_mean: float
-    residual_mean: float
+    embed_ms_mean: float
+    dense_ms_mean: float
+    sparse_ms_mean: float
+    fusion_ms_mean: float
+    rerank_ms_mean: float
+    #: `newest_indexed_at()`, the store round trip outside every `stage_ms` bracket.
+    meta_ms_mean: float
+    residual_ms_mean: float
 
-    store_mean: float
-    store_share_of_total: float
-    #: Fraction of queries for which the sparse leg returned at least one row. A hybrid split
-    #: measured while this is 0.0 is a dense-only split wearing a hybrid label (issue #81).
+    #: dense + sparse + meta. What a store swap could address.
+    store_ms_mean: float
+    store_ms_p50: float
+    #: Fraction of end-to-end latency spent in the store, in [0, 1].
+    store_share: float
+    #: The upper bound on a store swap: what the total becomes if the replacement store is FREE.
+    #: Unachievable by construction, which is what makes it a bound rather than a forecast.
+    total_ms_if_store_were_free: float
+
     sparse_fire_rate: float
-    #: The honest ceiling on a backend swap: what the total would become if the store cost ZERO.
-    #: Not achievable (a replacement store is not free), which is what makes it an upper bound.
-    total_if_store_were_free: float
-    best_case_speedup_pct: float
-
+    #: True when the metric ring evicted samples. When set, no ratio above is emitted.
     truncated: bool
+    #: max over queries of (store metric ms - its stage bracket ms). Must be <= 0: the store's
+    #: internal timer measures a strict subinterval of the retriever's bracket around the call.
+    max_nesting_violation_ms: float = 0.0
+    notes: list[str] = field(default_factory=list)
 
 
-def _drain(leg: str) -> tuple[list[float], bool]:
-    samples, total = METRICS.drain_histogram(STORE_QUERY_METRIC, leg=leg)
-    return samples, total > len(samples)
+def _drain(leg: str) -> tuple[list[float], int]:
+    return METRICS.drain_histogram(STORE_QUERY_METRIC, leg=leg)
+
+
+def _clear_legs() -> None:
+    for leg in (LEG_DENSE, LEG_SPARSE, LEG_META):
+        METRICS.drain_histogram(STORE_QUERY_METRIC, leg=leg)
 
 
 def _sparse_fire_rate(
-    store: PgVectorStore, queries: list[dict], candidate_k: int
+    store: PgVectorStore, embedder: Embedder, queries: list[dict], candidate_k: int
 ) -> float:
-    """Fraction of queries the sparse leg answers with at least one row.
+    """Fraction of queries whose sparse leg returns at least one row.
 
-    Probed separately and BEFORE the timed loop, then the samples it generates are drained, so
-    the probe does not enter the latency figures it exists to qualify.
+    Runs the SAME statement the retriever runs. `query_sparse` has two branches, and the one taken
+    depends on whether `vec` is passed (`vec` makes each hit carry its true dense cosine); probing
+    without it would certify a different statement than the pipeline executes. Samples are drained
+    afterwards so the probe cannot enter the latency figures it qualifies.
     """
-    fired = sum(1 for q in queries if store.query_sparse(q["query"], k=candidate_k))
-    for leg in (LEG_DENSE, LEG_SPARSE):
-        METRICS.drain_histogram(STORE_QUERY_METRIC, leg=leg)
+    fired = 0
+    for q in queries:
+        qvec = embed_query(embedder, q["query"])
+        if store.query_sparse(q["query"], k=candidate_k, vec=qvec):
+            fired += 1
+    _clear_legs()
     return fired / len(queries) if queries else 0.0
 
 
@@ -113,86 +171,161 @@ def measure(
     *,
     candidate_k: int,
     reranker: Reranker | None,
+    n_chunks: int,
+    repeats: int = 1,
     k: int = 5,
 ) -> LegSplit:
-    timed_emb = TimedEmbedder(embedder)
-    timed_rr = TimedReranker(reranker) if reranker is not None else None
+    if not queries:
+        raise ValueError("no queries to time")
     retr = HybridRetriever(
-        store, timed_emb, reranker=timed_rr, candidate_k=candidate_k
+        store, embedder, reranker=reranker, candidate_k=candidate_k, use_sparse=True
     )
 
-    for leg in (LEG_DENSE, LEG_SPARSE):  # clear anything a previous configuration left
-        METRICS.drain_histogram(STORE_QUERY_METRIC, leg=leg)
-
-    fire_rate = _sparse_fire_rate(store, queries, candidate_k)
-    if fire_rate == 0.0:
+    fire_rate = _sparse_fire_rate(store, embedder, queries, candidate_k)
+    if fire_rate < _MIN_SPARSE_FIRE_RATE:
         raise AssertionError(
-            "the sparse leg returned rows for 0 queries, so this is a dense-only pipeline and "
-            "its sparse latency buys nothing. That is issue #81; do not quote a hybrid split "
-            "from this run."
+            f"sparse leg returned rows for {fire_rate:.1%} of queries (floor "
+            f"{_MIN_SPARSE_FIRE_RATE:.0%}). This is a dense-only pipeline wearing a hybrid label "
+            "(issue #81); no hybrid split may be quoted from it."
         )
+
+    # Discarded warm-up through the FULL pipeline: warms both legs, the plan cache and the pool
+    # symmetrically. Warming only one leg biases the dense/sparse split, which is the quantity
+    # being published.
+    for q in queries:
+        retr.search(q["query"], k=k)
+    _clear_legs()
 
     totals: list[float] = []
-    for q in queries:
-        t0 = time.perf_counter()
-        retr.search(q["query"], k=k)
-        totals.append((time.perf_counter() - t0) * 1000.0)
+    stages: dict[str, list[float]] = {}
+    nesting_violation = 0.0
+    for _ in range(repeats):
+        for q in queries:
+            t0 = time.perf_counter()
+            res = retr.search(q["query"], k=k)
+            totals.append((time.perf_counter() - t0) * 1000.0)
+            for name, value in res.diagnostics.stage_ms.items():
+                stages.setdefault(name, []).append(value)
 
-    dense, dense_trunc = _drain(LEG_DENSE)
-    sparse, sparse_trunc = _drain(LEG_SPARSE)
+    n = len(queries) * repeats
+    dense_metric, dense_total = _drain(LEG_DENSE)
+    sparse_metric, sparse_total = _drain(LEG_SPARSE)
+    meta_metric, meta_total = _drain(LEG_META)
 
-    embed_mean = timed_emb.stats.mean_ms
-    rerank_mean = timed_rr.stats.mean_ms if timed_rr else 0.0
-    dense_mean = mean(dense) if dense else 0.0
-    sparse_mean = mean(sparse) if sparse else 0.0
-    total_mean = mean(totals)
-    store_mean = dense_mean + sparse_mean
-    residual = total_mean - (embed_mean + store_mean + rerank_mean)
+    # One sample per leg per query. Without this, a leg that stops recording reads exactly like a
+    # leg that costs nothing, and every other guard here stays green while the share goes to zero.
+    for label, samples, observed in (
+        (LEG_DENSE, dense_metric, dense_total),
+        (LEG_SPARSE, sparse_metric, sparse_total),
+        (LEG_META, meta_metric, meta_total),
+    ):
+        if observed != n:
+            raise AssertionError(
+                f"leg {label!r} recorded {observed} samples for {n} queries. The per-query "
+                "denominator does not hold, so no per-query mean may be quoted."
+            )
 
-    if residual < -0.01:
+    truncated = any(t > len(s) for s, t in (
+        (dense_metric, dense_total), (sparse_metric, sparse_total), (meta_metric, meta_total)
+    ))
+
+    # Nesting cross-check: the store's internal timer measures a subinterval of the retriever's
+    # bracket around the same call, so stage >= metric for every query. A violation means the two
+    # instruments are not timing what their names say.
+    for stage_key, metric_samples in (
+        ("dense_retrieval", dense_metric), ("sparse_retrieval", sparse_metric)
+    ):
+        for bracket, inner in zip(stages.get(stage_key, []), metric_samples):
+            nesting_violation = max(nesting_violation, inner - bracket)
+
+    def stage_mean(name: str) -> float:
+        return mean(stages[name]) if stages.get(name) else 0.0
+
+    embed_ms = stage_mean("query_embedding")
+    dense_ms = stage_mean("dense_retrieval")
+    sparse_ms = stage_mean("sparse_retrieval")
+    fusion_ms = stage_mean("fusion")
+    rerank_ms = stage_mean("reranking")
+    meta_ms = mean(meta_metric) if meta_metric else 0.0
+    total_ms = mean(totals)
+    if total_ms <= 0:
+        raise AssertionError("measured total is zero; the run did not time anything")
+
+    store_ms = dense_ms + sparse_ms + meta_ms
+    residual = total_ms - (embed_ms + dense_ms + sparse_ms + fusion_ms + rerank_ms + meta_ms)
+    if residual < -_RESIDUAL_TOLERANCE_MS:
         raise AssertionError(
-            f"attributed legs ({embed_mean + store_mean + rerank_mean:.3f} ms) exceed the measured "
-            f"total ({total_mean:.3f} ms) by {-residual:.3f} ms. Something is counted twice; the "
-            "split is not trustworthy and no share may be quoted from it."
+            f"attributed stages exceed the measured total by {-residual:.3f} ms. Some interval is "
+            "counted twice; no share may be quoted from this split."
         )
 
-    free = total_mean - store_mean
+    notes: list[str] = []
+    if truncated:
+        notes.append("metric ring evicted samples: ratios suppressed")
+    if nesting_violation > 0:
+        notes.append(f"nesting violated by {nesting_violation:.3f} ms")
+
+    store_p50 = percentile(
+        sorted(a + b + c for a, b, c in zip(dense_metric, sparse_metric, meta_metric)), 0.50
+    )
     return LegSplit(
         candidate_k=candidate_k,
         reranked=reranker is not None,
+        repeats=repeats,
         n_queries=len(queries),
-        n_chunks=store.count(),
+        n_chunks=n_chunks,
         embedder=embedding_profile_id(embedder),
-        total_mean=round(total_mean, 3),
-        total_p50=percentile(sorted(totals), 0.50),
-        total_p95=percentile(sorted(totals), 0.95),
-        embed_mean=round(embed_mean, 3),
-        dense_mean=round(dense_mean, 3),
-        sparse_mean=round(sparse_mean, 3),
-        rerank_mean=round(rerank_mean, 3),
-        residual_mean=round(residual, 3),
-        store_mean=round(store_mean, 3),
-        store_share_of_total=round(store_mean / total_mean, 4) if total_mean else 0.0,
+        total_ms_mean=round(total_ms, 3),
+        total_ms_p50=percentile(sorted(totals), 0.50),
+        total_ms_p95=percentile(sorted(totals), 0.95),
+        embed_ms_mean=round(embed_ms, 3),
+        dense_ms_mean=round(dense_ms, 3),
+        sparse_ms_mean=round(sparse_ms, 3),
+        fusion_ms_mean=round(fusion_ms, 3),
+        rerank_ms_mean=round(rerank_ms, 3),
+        meta_ms_mean=round(meta_ms, 3),
+        residual_ms_mean=round(residual, 3),
+        store_ms_mean=round(store_ms, 3),
+        store_ms_p50=store_p50,
+        # Suppressed rather than approximated when the sample basis is not comparable across
+        # stages: a ratio of a truncated suffix to a full-run mean is not the share it claims.
+        store_share=float("nan") if truncated else round(store_ms / total_ms, 4),
+        total_ms_if_store_were_free=round(total_ms - store_ms, 3),
         sparse_fire_rate=round(fire_rate, 4),
-        total_if_store_were_free=round(free, 3),
-        best_case_speedup_pct=round(100.0 * store_mean / total_mean, 2) if total_mean else 0.0,
-        truncated=dense_trunc or sparse_trunc,
+        truncated=truncated,
+        max_nesting_violation_ms=round(nesting_violation, 3),
+        notes=notes,
     )
 
 
 def to_markdown(splits: list[LegSplit]) -> str:
     rows = [
-        "| candidate_k | rerank | total mean | embed | dense | sparse | **store** | rerank | "
-        "residual | store share | best-case speedup |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| chunks | cand_k | rerank | total | embed | dense | sparse | meta | fusion | rerank | "
+        "**store** | resid | **store share** | sparse fire |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for s in splits:
+        share = "truncated" if s.truncated else f"{s.store_share:.1%}"
         rows.append(
-            f"| {s.candidate_k} | {'yes' if s.reranked else 'no'} | {s.total_mean:.1f} ms | "
-            f"{s.embed_mean:.1f} | {s.dense_mean:.1f} | {s.sparse_mean:.1f} | "
-            f"**{s.store_mean:.1f}** | {s.rerank_mean:.1f} | {s.residual_mean:.1f} | "
-            f"{s.store_share_of_total:.1%} | {s.best_case_speedup_pct:.1f}% |"
+            f"| {s.n_chunks} | {s.candidate_k} | {'yes' if s.reranked else 'no'} | "
+            f"{s.total_ms_mean:.1f} | {s.embed_ms_mean:.1f} | {s.dense_ms_mean:.1f} | "
+            f"{s.sparse_ms_mean:.1f} | {s.meta_ms_mean:.1f} | {s.fusion_ms_mean:.1f} | "
+            f"{s.rerank_ms_mean:.1f} | **{s.store_ms_mean:.1f}** | {s.residual_ms_mean:.1f} | "
+            f"**{share}** | {s.sparse_fire_rate:.0%} |"
         )
+    rows.append("")
+    rows.append(
+        "All figures are ms/query, means over `repeats x n_queries`, measured warm (each "
+        "configuration gets a discarded full-pipeline warm-up pass). `store` = dense + sparse + "
+        "meta, where meta is `newest_indexed_at()`, the per-search round trip that sits outside "
+        "every `stage_ms` bracket. `store share` is the ceiling on any store swap: a replacement "
+        "that cost nothing would remove exactly this fraction."
+    )
+    flagged = [s for s in splits if s.notes]
+    if flagged:
+        rows.append("")
+        for s in flagged:
+            rows.append(f"- ⚠️ candidate_k={s.candidate_k}: {'; '.join(s.notes)}")
     return "\n".join(rows)
 
 
@@ -202,17 +335,27 @@ def main() -> int:
     ap.add_argument("--embedder", default="fastembed", choices=["hashing", "fastembed"])
     ap.add_argument("--filler", type=int, default=0, help="filler chunks (index pressure)")
     ap.add_argument("--candidate-k", type=int, action="append", dest="candidate_ks")
-    ap.add_argument("--rerank", action="store_true", help="also measure with the cross-encoder")
-    ap.add_argument("--queries", type=int, default=100, help="answerable queries to time")
+    ap.add_argument("--rerank", action="store_true")
+    ap.add_argument("--queries", type=int, default=100)
+    ap.add_argument("--repeats", type=int, default=3, help="interleaved repetitions per config")
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--out", default="results/store_latency")
     args = ap.parse_args()
 
-    candidate_ks = args.candidate_ks or [20, 250]
+    candidate_ks = args.candidate_ks or [DEFAULT_CANDIDATE_K, WIDE_CANDIDATE_K]
+    # Refuse up front rather than warn after indexing: past the ring the leg means become means
+    # over a suffix, and the operator would learn it only after paying for the corpus build.
+    if args.queries * args.repeats > HISTOGRAM_CAPACITY:
+        ap.error(
+            f"--queries x --repeats = {args.queries * args.repeats} exceeds the metric ring "
+            f"({HISTOGRAM_CAPACITY}); leg means would be over a truncated suffix"
+        )
+    warn_if_insecure_dsn(args.dsn)
+
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-
     emb = _make_embedder(args.embedder)
+
     print(f"generating corpus (filler={args.filler}) ...")
     corpus = generate(
         out / "corpus",
@@ -226,20 +369,23 @@ def main() -> int:
     queries = [q for q in corpus.queries if q.get("answerable")][: args.queries]
     print(f"  {corpus.n_files} files, {corpus.n_chunks} chunks, {len(queries)} timed queries")
 
-    reranker: Reranker | None = None
-    if args.rerank:
-        reranker = CrossEncoderReranker()
+    reranker: Reranker | None = CrossEncoderReranker() if args.rerank else None
 
     t0 = time.perf_counter()
     print(f"indexing with {embedding_profile_id(emb)} ...")
     splits: list[LegSplit] = []
     with _throwaway_store(args.dsn, emb, corpus.root, "storelat_") as store:
-        print(f"  indexed {store.count()} chunks in {time.perf_counter() - t0:.1f}s")
-        for ck in candidate_ks:
-            for rr in ([None, reranker] if reranker is not None else [None]):
-                label = f"candidate_k={ck} rerank={'yes' if rr else 'no'}"
-                print(f"  measuring {label} ...")
-                splits.append(measure(store, emb, queries, candidate_k=ck, reranker=rr))
+        n_chunks = store.count()  # invariant across the sweep; one count, not one per config
+        print(f"  indexed {n_chunks} chunks in {time.perf_counter() - t0:.1f}s")
+        configs = [(ck, rr) for ck in candidate_ks for rr in ([None, reranker] if reranker else [None])]
+        for ck, rr in configs:
+            print(f"  measuring candidate_k={ck} rerank={'yes' if rr else 'no'} ...")
+            splits.append(
+                measure(
+                    store, emb, queries, candidate_k=ck, reranker=rr,
+                    n_chunks=n_chunks, repeats=args.repeats,
+                )
+            )
 
     (out / "splits.json").write_text(
         json.dumps([asdict(s) for s in splits], indent=2), encoding="utf-8"
@@ -247,9 +393,7 @@ def main() -> int:
     md = to_markdown(splits)
     (out / "SPLIT.md").write_text(md + "\n", encoding="utf-8")
     print("\n" + md)
-    if any(s.truncated for s in splits):
-        print("\nWARNING: metric ring evicted samples; means are over a suffix, not the run.")
-    return 0
+    return 1 if any(s.truncated or s.max_nesting_violation_ms > 0 for s in splits) else 0
 
 
 if __name__ == "__main__":

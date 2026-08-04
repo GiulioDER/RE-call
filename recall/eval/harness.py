@@ -655,11 +655,26 @@ def results_to_markdown(results: list[AblationResult]) -> str:
     lines.append("")
     lines.append("Cost/latency (mean wall time per call):")
     lines.append("")
-    lines.append("| embedder | fusion | embed ms/query | rerank ms/query |")
-    lines.append("|---|---|---|---|")
+    lines.append(
+        "| embedder | fusion | embed ms/query | dense ms/query | sparse ms/query | "
+        "rerank ms/query |"
+    )
+    lines.append("|---|---|---|---|---|---|")
     for r in results:
+        # A truncated mean is a different statistic from a full-run mean, so it is marked in the
+        # cell rather than left to a footnote a reader can skip. Only the two STORE legs can
+        # truncate: embed and rerank come from `TimingStats`, which is uncapped.
+        mark = "†" if r.store_latency_truncated else ""
         lines.append(
-            f"| {r.embedder} | {r.fusion} | {r.embed_ms_mean:.1f} | {r.rerank_ms_mean:.1f} |"
+            f"| {r.embedder} | {r.fusion} | {r.embed_ms_mean:.1f} | "
+            f"{r.dense_ms_mean:.1f}{mark} | {r.sparse_ms_mean:.1f}{mark} | "
+            f"{r.rerank_ms_mean:.1f} |"
+        )
+    if any(r.store_latency_truncated for r in results):
+        lines.append("")
+        lines.append(
+            "_† the metric ring evicted samples: this leg's figure is a mean over the retained "
+            "suffix, NOT over the run._"
         )
     return "\n".join(lines)
 
