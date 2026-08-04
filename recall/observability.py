@@ -186,16 +186,28 @@ class Metrics:
             self.observe(name, (time.perf_counter() - start) * 1000.0, **labels)
 
     def snapshot(self) -> dict[str, Any]:
-        """Current values: counters as ints, histograms summarised as count/p50/p95/p99."""
+        """Current values: counters as ints, histograms summarised as count/p50/p95/p99.
+
+        `count` is the RETAINED sample count and `observed` is every observation ever made, so
+        `observed > count` means the ring evicted and the percentiles describe a suffix rather
+        than the run. Both are reported because this is the operator-facing reader (the MCP
+        server surfaces it): publishing the retained count alone under the name `count` is the
+        same silent truncation `drain_histogram` returns its pair to expose, and a reader asking
+        "is p99 drifting?" needs to know whether p99 covers the window they think it does.
+        """
         with self._lock:
             counters = dict(self._counters)
             histograms = {k: sorted(v) for k, v in self._histograms.items()}
+            totals = dict(self._histogram_totals)
         summary: dict[str, Any] = {}
         for key, samples in histograms.items():
             if not samples:
                 continue
+            observed = totals.get(key, len(samples))
             summary[key] = {
                 "count": len(samples),
+                "observed": observed,
+                "truncated": observed > len(samples),
                 "p50": _percentile(samples, 0.50),
                 "p95": _percentile(samples, 0.95),
                 "p99": _percentile(samples, 0.99),

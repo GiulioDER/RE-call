@@ -141,6 +141,50 @@ def test_drain_isolates_consecutive_measurements(store):
     assert (len(second), total) == (2, 2), "the drain did not clear the previous series"
 
 
+def test_no_subclass_overrides_the_timed_public_query_methods():
+    """A subclass overriding the PUBLIC pair silently loses the timing, and nothing errors.
+
+    `GenerationStore` did exactly this, and `RECALL_ENV=production` selects it — so the metric
+    fired on a laptop and recorded nothing in production. An absent series and a free store are
+    the same reading, so the loss is invisible precisely where it matters most. Timing lives on
+    the public wrapper; subclasses override `_query_dense` / `_query_sparse`.
+    """
+    import recall.generation_store  # noqa: F401  (registers the subclass)
+    from recall.store import PgVectorStore
+
+    offenders = [
+        f"{cls.__name__}.{name}"
+        for cls in PgVectorStore.__subclasses__()
+        for name in ("query_dense", "query_sparse")
+        if name in vars(cls)
+    ]
+    assert not offenders, (
+        f"{offenders} override the TIMED public methods, so their store latency is never "
+        "recorded. Override _query_dense / _query_sparse instead."
+    )
+
+
+def test_snapshot_reveals_truncation_like_the_drain_does():
+    """The operator-facing reader must not report a suffix statistic under the run's name."""
+    metrics = Metrics()
+    for i in range(HISTOGRAM_CAPACITY + 10):
+        metrics.observe("m", float(i))
+
+    entry = metrics.snapshot()["histograms"]["m"]
+    assert entry["count"] == HISTOGRAM_CAPACITY
+    assert entry["observed"] == HISTOGRAM_CAPACITY + 10
+    assert entry["truncated"] is True
+
+
+def test_newest_indexed_at_is_timed_as_a_store_leg(store):
+    """It is a real round trip on every search; untimed, it books store cost as Python glue."""
+    store.newest_indexed_at()
+
+    samples, total = _series("meta")
+    assert total == 1
+    assert samples and samples[0] > 0
+
+
 def test_drain_reports_evicted_samples_rather_than_hiding_them():
     """Past the ring's capacity the retained samples are a suffix, and the caller must be told.
 
