@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
@@ -300,6 +300,32 @@ class GenerationStore(PgVectorStore):
             ).fetchall()
         )
         return frozenset(str(row[0]) for row in rows)
+
+    def sources_in_any_manifest(self) -> frozenset[str]:
+        """Every source URI the tenant's generations were BUILT FROM.
+
+        Chunk rows are not the corpus. An object that chunks to nothing (a frontmatter-only
+        document, say) is built as `empty_objects` and writes no row, so asking
+        `recall_chunks_v1` alone would call it a typo and refuse to erase it, leaving no
+        tombstone and letting the next build re-ingest it the moment its content changes.
+        The manifest is the record of what the corpus contains.
+        """
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT manifest FROM recall_generations "
+                "WHERE tenant_id = %s AND state != 'legacy_unverified'",
+                (self._tenant,),
+            ).fetchall()
+        )
+        uris: set[str] = set()
+        for (manifest,) in rows:
+            if not isinstance(manifest, Mapping):
+                continue
+            for entry in manifest.get("objects") or ():
+                uri = entry.get("uri") if isinstance(entry, Mapping) else None
+                if isinstance(uri, str):
+                    uris.add(uri)
+        return frozenset(uris)
 
     def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
         edges, unresolved, _candidates = self.supersession_all()

@@ -609,3 +609,67 @@ def test_forget_refuses_a_blank_source_before_erasing_anything(
         ).fetchone()[0]
     assert survived > 0, "the valid source was erased despite the malformed request"
     assert tombstones == 0
+
+
+@requires_db
+def test_forget_erases_a_source_that_chunked_to_nothing(manager, monkeypatch, capsys) -> None:
+    """Chunk rows are not the corpus; the manifest is.
+
+    An object whose body chunks to nothing is built as `empty_objects` and writes no row to
+    recall_chunks_v1. Checking only chunk rows therefore called it a typo, refused the
+    erasure, wrote no tombstone, and let the next build ingest it the moment its content
+    changed: the same class STAKES-001 closed, reached from a different direction.
+    """
+    embedder = _Embedder(1)
+    body = b"---\nstatus: current\n---\nreal content"
+    blank = b"---\nstatus: current\n---\n"
+    tenant = manager.tenant_id
+    manifest = IndexManifestV1(
+        tenant,
+        "corpus-v1",
+        (
+            ManifestObjectV1(f"s3://approved/corpora/{tenant}/memo.md", "v1", "text/markdown",
+                             len(body), hashlib.sha256(body).hexdigest()),
+            ManifestObjectV1(f"s3://approved/corpora/{tenant}/blank.md", "v1", "text/markdown",
+                             len(blank), hashlib.sha256(blank).hexdigest()),
+        ),
+    )
+    reader = S3ObjectReader(
+        _S3({
+            ("approved", f"corpora/{tenant}/memo.md", "v1"): body,
+            ("approved", f"corpora/{tenant}/blank.md", "v1"): blank,
+        }),
+        S3Allowlist.parse("approved/corpora/"),
+    )
+    # IndexManifestV1 sorts its objects by URI, so pick by name, not by position.
+    blank_uri = next(o.uri for o in manifest.objects if o.uri.endswith("blank.md"))
+
+    generation = manager.create(manifest, _pipeline("model-a"))
+    # Mirrors the real chunker: an empty body yields no chunks at all.
+    manager.build(generation.generation_id, reader, embedder,
+                  lambda text: [] if not text.strip() else [text])
+    manager.validate(generation.generation_id)
+    manager.promote(generation.generation_id, unsafe_development=True)
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        rows = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = %s",
+            (tenant, blank_uri),
+        ).fetchone()[0]
+    assert rows == 0, "fixture no longer produces a zero-chunk source"
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    cli_main(["--serving-dsn", TEST_DSN, "--tenant", tenant, "--embedder", "hashing",
+              "forget", blank_uri, "--yes"])
+    out = capsys.readouterr().out
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        tombstoned = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones "
+            "WHERE tenant_id = %s AND source_uri = %s",
+            (tenant, blank_uri),
+        ).fetchone()[0]
+    assert tombstoned == 1, "a source the corpus contains was refused as a typo"
+    assert "NOT erased" not in out

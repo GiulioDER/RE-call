@@ -637,19 +637,22 @@ def main(argv: list[str] | None = None) -> None:
                 summary += f", pruned {stats.deleted} source(s) no longer on disk"
             print(summary)
     elif args.cmd == "forget":
+        from recall.generation_store import GenerationStore
         from recall.generations import NoActiveGeneration
 
         generation_mode = os.environ.get("RECALL_ENV", "development").lower() == "production"
-        if generation_mode:
-            from recall.generation_store import GenerationStore
-
-            forget_store: PgVectorStore = GenerationStore(
-                args.dsn, embedder.dim, tenant=args.tenant
-            )
-        else:
-            forget_store = PgVectorStore(
-                args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
-            )
+        # Keep a GenerationStore-typed handle alongside the widened one: the corpus probe below
+        # exists only on the subclass, and narrowing here is what lets the type checker see it.
+        gen_store: GenerationStore | None = (
+            GenerationStore(args.dsn, embedder.dim, tenant=args.tenant)
+            if generation_mode
+            else None
+        )
+        forget_store: PgVectorStore = (
+            gen_store
+            if gen_store is not None
+            else PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant)
+        )
         with forget_store as store:
             store.check_schema()
             requested = list(dict.fromkeys(args.sources))
@@ -664,20 +667,23 @@ def main(argv: list[str] | None = None) -> None:
                 visible_now = set(store.source_content_hashes())
             except NoActiveGeneration:
                 visible_now = set()
-            if generation_mode:
-                # Widen the existence check, do not drop it. `source_content_hashes()` is
-                # scoped to ONE generation, so using it to FILTER meant a source that dropped
-                # out of the active generation was called "not found" and silently kept its
-                # rows and its absent tombstone. But an unfiltered request is not the answer
-                # either: forgetting a URI that was never indexed writes a permanent tombstone
-                # (nothing deletes one, and `build()` skips every manifest entry it matches),
-                # so an operator typo would irreversibly bar that URI from every future build.
-                known = store.sources_in_any_generation()
+            if gen_store is not None:
+                # Widen the existence check, do not drop it, and ask the right question.
+                # `source_content_hashes()` is scoped to ONE generation, so FILTERING on it
+                # called a source that had left the active generation "not found" and left it
+                # with its rows and no tombstone. But no check at all is not the answer either:
+                # forgetting a never-indexed URI writes a permanent tombstone (nothing deletes
+                # one, and `build()` skips every manifest entry it matches), so a typo would
+                # irreversibly bar that URI. The question is "does the corpus contain this",
+                # which the MANIFEST answers and chunk rows do not: an object that chunks to
+                # nothing is built as `empty_objects` and writes no row, yet is unquestionably
+                # part of the corpus and must be erasable.
+                known = gen_store.sources_in_any_generation() | gen_store.sources_in_any_manifest()
                 targets = [s for s in requested if s in known]
                 unseen = [s for s in requested if s not in known]
                 unseen_note = (
-                    "not found in any generation, so NOT erased and NOT tombstoned "
-                    f"(check for typos): {', '.join(unseen)}"
+                    "not present in any generation or manifest, so NOT erased and NOT "
+                    f"tombstoned (check for typos): {', '.join(unseen)}"
                 )
             else:
                 # The v0.8 table has no generations, so the probe covers everything the
@@ -698,18 +704,22 @@ def main(argv: list[str] | None = None) -> None:
                 # so a failure part way through leaves the earlier ones erased. Reporting from
                 # a finally means a partial erasure is never silent.
                 removed = 0
-                done = 0
+                erased: list[str] = []
                 try:
                     for source in targets:
                         removed += store.delete_sources([source])
-                        done += 1
+                        erased.append(source)
                 finally:
-                    if done == len(targets):
-                        print(f"forgot {removed} chunk(s) from {done} source(s)")
+                    if len(erased) == len(targets):
+                        print(f"forgot {removed} chunk(s) from {len(erased)} source(s)")
                     else:
+                        # Name them. On an irreversible path, "the rest" is not an answer the
+                        # operator can act on, and the survivors are otherwise recoverable only
+                        # by re-deriving the argument order by hand.
+                        missed = [s for s in targets if s not in set(erased)]
                         print(
-                            f"forgot {removed} chunk(s) from {done} of {len(targets)} "
-                            "source(s); the rest were NOT reached"
+                            f"forgot {removed} chunk(s) from {len(erased)} of {len(targets)} "
+                            f"source(s); NOT reached: {', '.join(missed)}"
                         )
                     if unseen:
                         print(unseen_note)

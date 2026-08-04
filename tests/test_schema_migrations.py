@@ -332,6 +332,10 @@ def _fresh_database(prefix: str = "migdb_"):
     """
     name = _name(prefix)
     parts = urlsplit(TEST_DSN)
+    if not parts.scheme:
+        # Same hazard the sibling helper guards: a libpq keyword/value DSN has no URI parts, so
+        # rebuilding it yields a string libpq cannot parse.
+        pytest.skip("non-URI RECALL_TEST_DSN; cannot derive an admin DSN")
     admin = urlunsplit(parts._replace(path="/postgres"))
     scratch = urlunsplit(parts._replace(path=f"/{name}"))
     with psycopg.connect(admin, autocommit=True) as conn:
@@ -411,17 +415,20 @@ def test_the_generated_serving_grants_are_sufficient_for_the_control_plane():
     from recall.control_plane import ControlPlane
 
     role = _name("cca_grantee_")
+    # Bind every name the cleanup touches BEFORE the try. The role is a LOGIN role with a known
+    # password, so a NameError in the finally would both mask the real failure and leak it into
+    # the cluster permanently, once per failing run.
+    generation = _name("g_")
+    physical = _name("cp_chunks_")
     parts = urlsplit(TEST_DSN)
     as_role = urlunsplit(parts._replace(netloc=f"{role}:probe@{parts.hostname}:{parts.port}"))
-    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-        conn.execute(f"CREATE ROLE {role} LOGIN PASSWORD 'probe' NOSUPERUSER NOBYPASSRLS")
-        conn.execute(f"GRANT CONNECT ON DATABASE {parts.path.lstrip('/')} TO {role}")
-        conn.execute(f"GRANT USAGE ON SCHEMA public TO {role}")
     try:
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(f"CREATE ROLE {role} LOGIN PASSWORD 'probe' NOSUPERUSER NOBYPASSRLS")
+            conn.execute(f"GRANT CONNECT ON DATABASE {parts.path.lstrip('/')} TO {role}")
+            conn.execute(f"GRANT USAGE ON SCHEMA public TO {role}")
         control = ControlPlane(TEST_DSN)
         control.apply_migrations()
-        generation = _name("g_")
-        physical = _name("cp_chunks_")
         with psycopg.connect(TEST_DSN, autocommit=True) as conn:
             conn.execute(f"CREATE TABLE {physical} (id text primary key)")
             # Grant ONLY what the generated list prescribes, nothing more.
@@ -438,14 +445,20 @@ def test_the_generated_serving_grants_are_sufficient_for_the_control_plane():
         assert as_serving.append_event("probe-tenant", _name("op_"), "index", {}) > 0
     finally:
         with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-            conn.execute(
-                "DELETE FROM recall_migration_events WHERE tenant_id = %s", ("probe-tenant",)
-            )
-            conn.execute("DELETE FROM recall_tenant_routes WHERE tenant_id = %s", ("probe-tenant",))
-            conn.execute(f"DROP TABLE IF EXISTS {physical}")
-            conn.execute(f"REASSIGN OWNED BY {role} TO CURRENT_USER")
-            conn.execute(f"DROP OWNED BY {role}")
-            conn.execute(f"DROP ROLE IF EXISTS {role}")
+            # Each statement independently, so one failure cannot skip DROP ROLE and strand a
+            # login role in the cluster.
+            for statement, params in (
+                ("DELETE FROM recall_migration_events WHERE tenant_id = %s", ("probe-tenant",)),
+                ("DELETE FROM recall_tenant_routes WHERE tenant_id = %s", ("probe-tenant",)),
+                (f"DROP TABLE IF EXISTS {physical}", None),
+                (f"REASSIGN OWNED BY {role} TO CURRENT_USER", None),
+                (f"DROP OWNED BY {role}", None),
+                (f"DROP ROLE IF EXISTS {role}", None),
+            ):
+                try:
+                    conn.execute(statement, params) if params else conn.execute(statement)
+                except psycopg.Error:
+                    pass
 
 
 def test_serving_grants_cover_every_table_the_migrator_manages():
@@ -458,3 +471,15 @@ def test_serving_grants_cover_every_table_the_migrator_manages():
     assert "GRANT USAGE ON SEQUENCE" in statements
     with pytest.raises(ValueError, match="role"):
         serving_grants("not a role")
+    # PostgreSQL grantee keywords are valid Python identifiers, so `.isidentifier()` alone let
+    # `--role public` grant every managed table to every role in the database.
+    for keyword in ("public", "PUBLIC", "current_user", "SESSION_USER", "current_role", "user"):
+        with pytest.raises(ValueError, match="grantee keyword"):
+            serving_grants(keyword)
+    # Identifiers are quoted, so PostgreSQL cannot case-fold them onto a different role.
+    assert '"Recall_Server"' in " ".join(serving_grants("Recall_Server"))
+    # recall_tenant_routes is read-only for the serving role: only the migration-role CLI
+    # writes it, and INSERT/UPDATE would let a tenant repoint its own active generation.
+    enterprise = serving_grants("recall_server", enterprise=True)
+    assert any('SELECT ON' in s and '"recall_tenant_routes"' in s for s in enterprise)
+    assert not any("INSERT" in s and '"recall_tenant_routes"' in s for s in enterprise)
