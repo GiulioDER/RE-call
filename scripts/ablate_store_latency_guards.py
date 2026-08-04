@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 STORE = ROOT / "recall" / "store.py"
 OBS = ROOT / "recall" / "observability.py"
+GEN = ROOT / "recall" / "generation_store.py"
 TESTS = "tests/test_store_query_latency.py"
 
 DENSE_TIMED = """        with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_DENSE):
@@ -89,6 +90,27 @@ ABLATIONS = [
         "total = self._histogram_totals.get(key, 0)",
         "test_drain_reports_evicted_samples_rather_than_hiding_them",
     ),
+    (
+        "a subclass cannot silently drop the timing by overriding the PUBLIC method",
+        GEN,
+        "def _query_dense(",
+        "def query_dense(",
+        "test_no_subclass_overrides_the_timed_public_query_methods",
+    ),
+    (
+        "the per-search freshness round trip is timed",
+        STORE,
+        "with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_META):",
+        "if True:",
+        "test_newest_indexed_at_is_timed_as_a_store_leg",
+    ),
+    (
+        "snapshot() reveals truncation, not just the drain path",
+        OBS,
+        '"truncated": observed > len(samples),',
+        '"truncated": False,',
+        "test_snapshot_reveals_truncation_like_the_drain_does",
+    ),
 ]
 
 
@@ -125,7 +147,7 @@ def main() -> int:
 
     # Refuse to mutate a dirty tree: the restore below rewrites these files from a snapshot taken
     # at mutation time, so an unrelated uncommitted edit would be silently reverted to it.
-    for target in (STORE, OBS):
+    for target in (STORE, OBS, GEN):
         if subprocess.run(
             ["git", "diff", "--quiet", "--", str(target)], cwd=ROOT
         ).returncode != 0:
@@ -161,10 +183,12 @@ def main() -> int:
             path.write_text(original, encoding="utf-8")
             # Verify the restore, do not assume it. A partial write here leaves shipped library
             # source mutated, and two of these mutations read as plausible code in a later diff.
-            if path.read_text(encoding="utf-8") != original:
-                print(f"FATAL: {path} was not restored; run `git checkout -- {path}`",
-                      file=sys.stderr)
-                return 3
+            # The check sets a flag rather than returning: a `return` inside `finally` discards
+            # any in-flight exception, which would hide the very failure that broke the restore.
+            restored = path.read_text(encoding="utf-8") == original
+        if not restored:
+            print(f"FATAL: {path} was not restored; run `git checkout -- {path}`", file=sys.stderr)
+            return 3
 
         # Exit 1 AND a real failure line. pytest exits 2 on a collection error, 3 internal,
         # 4 usage, 5 nothing-collected — all non-zero, none of them an assertion that fired.
