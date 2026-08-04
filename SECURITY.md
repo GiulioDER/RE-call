@@ -199,6 +199,29 @@ query set: exact binding and honest statistics are not the same thing as a well-
 set. It is also not an authorisation control. Tenant isolation is still RLS plus explicit
 predicates, and both assume the serving role is not compromised.
 
+## RLS bounds application mistakes, not a compromised serving role
+
+Tenant isolation rests on two independent mechanisms, and it is worth being exact about which
+threat each one addresses, because they are often quoted as if they were one control.
+
+**Explicit `WHERE tenant_id = %s` predicates** are the primary path. **Row-level security**
+(`ENABLE` + `FORCE`) is the backstop for a predicate that was forgotten, mis-joined, or handed the
+wrong variable. With one connection pool per process the tenant is scoped to a transaction via
+`SET LOCAL`, so it is the database, not application code, that discards it at COMMIT or ROLLBACK.
+A connection is verified clean before it returns to the pool and is discarded if it is not.
+
+**What that buys:** an application bug cannot serve one tenant's rows to another. That is a real
+and common class, and it is the one RLS is good at.
+
+**What it does not buy:** protection against a compromised serving role. Anything that can run
+arbitrary SQL as the serving role can call `set_config('recall.tenant_id', ...)` itself and read
+any tenant it names. A role holding `BYPASSRLS`, or a superuser, ignores the policy outright.
+
+The consequence for incident response is the part worth internalising: **treat a leaked serving
+DSN as a full corpus disclosure, not a partial one.** RLS will not have contained it, and reasoning
+about which tenants were "reachable" will understate the exposure. The security boundary is the
+credential. RLS is a correctness guard sitting behind that boundary, not a second one.
+
 ## Known gaps, tracked and open
 
 These are documented weaknesses, not undiscovered ones. They are recorded in
