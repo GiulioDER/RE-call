@@ -14,6 +14,11 @@ from typing import Any, Literal
 #: temporal verdicts (`expired`, `not_yet_valid`) are VALID-time: they say when a fact was true.
 #: `not_yet_known` says the memory had not been written yet, which is a different question and the
 #: one a "what did we know on Tuesday" query is actually asking. See `recall.trust.evaluate`.
+#: `unverified` is the DEGRADED-mode verdict and carries no trust claim at all. It is not a
+#: weaker `ok`: it says the trust gate never ran, because development mode retrieved without a
+#: certified threshold. It exists so a degraded hit cannot be mistaken for a judged one — the
+#: alternative, reusing `low_confidence`, would have made "we measured this and it scored badly"
+#: indistinguishable from "nobody measured anything". Strict mode never produces it.
 Verdict = Literal[
     "ok",
     "superseded",
@@ -24,6 +29,7 @@ Verdict = Literal[
     "invalid_metadata",
     "ambiguous_supersession",
     "not_entailed",
+    "unverified",
 ]
 
 
@@ -126,8 +132,26 @@ class TrustedResult:
     pipeline_fingerprint: str | None = None
     corpus_fingerprint: str | None = None
     query_set_digest: str | None = None
+    #: `trusted` | `degraded`. Carried IN BAND rather than derived, because every adapter that
+    #: rebuilds a result from its parts (LangChain documents, LlamaIndex nodes, the MCP JSON) has
+    #: to move it explicitly, and a derived property would silently reset to the safe-looking
+    #: value on the far side of any boundary that drops metadata. `refused` never appears here:
+    #: a strict refusal raises `TrustRefusal` and produces no result object at all.
+    trust_state: str = "trusted"
+    #: The stable `TrustFailureCode` value when degraded, else None. See `recall.trust_policy`.
+    failure_code: str | None = None
 
     @property
     def calibrated(self) -> bool:
-        """True only for a certified artifact exactly bound to this generation."""
-        return self.calibration_status == "certified" and self.calibration_id is not None
+        """True only for a certified artifact exactly bound to this generation.
+
+        Three independent conditions, all required. `trust_state` is in the conjunction on
+        purpose: a degraded result that somehow carried a certified status and an artifact id
+        would otherwise report as calibrated, which is precisely the failure this session exists
+        to make unrepresentable.
+        """
+        return (
+            self.calibration_status == "certified"
+            and self.calibration_id is not None
+            and self.trust_state == "trusted"
+        )

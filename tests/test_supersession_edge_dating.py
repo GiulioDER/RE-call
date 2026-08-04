@@ -467,7 +467,7 @@ def test_trusted_search_reads_edges_and_dates_in_one_call():
     """Two accessors meant two cache validations, so a concurrent index could hand back edges
     from one scan dated by the next. Reverting to the split form left the whole suite green."""
     from recall.calibration import Calibration
-    from recall.trust import trusted_search
+    from tests.conftest import dev_search as trusted_search
 
     store = _EdgeDatedStore()
     res = trusted_search(
@@ -485,7 +485,7 @@ def test_trusted_search_degrades_without_supersession_all_and_says_so(caplog):
     """The `getattr` fallback traded an AttributeError for a silent HALF answer. It must warn:
     hits are rewound, edges are not, and the caller asked about a past instant."""
     from recall.calibration import Calibration
-    from recall.trust import trusted_search
+    from tests.conftest import dev_search as trusted_search
 
     store = _NoEdgeDatesStore()
     with caplog.at_level("WARNING"):
@@ -502,7 +502,8 @@ def test_trusted_search_degrades_without_supersession_all_and_says_so(caplog):
 def test_no_warning_when_the_caller_never_asks_for_a_past_instant():
     """The degradation only matters to a point-in-time query. Everyone else must see nothing."""
     from recall.calibration import Calibration
-    from recall.trust import _WARNED_NO_EDGE_DATES, trusted_search
+    from recall.trust import _WARNED_NO_EDGE_DATES
+    from tests.conftest import dev_search as trusted_search
 
     store = _NoEdgeDatesStore()
     trusted_search(

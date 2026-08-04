@@ -288,7 +288,13 @@ def test_abstention_propagates_as_an_empty_result_list(table, tmp_path, monkeypa
         async with sem_backend(table, tmp_path) as be:
             await be.add(turn("Caroline: I adopted a dog named Rex."), "u1", timestamp=MAY_2023)
             control = await be.search("dog", "u1", top_k=5)
+            # The backend reaches the trust layer through `recall.eval._research_trust`, which
+            # binds `trusted_search` at import time. Patching `recall.trust` alone would leave
+            # the real function in place and make the assertion below vacuous.
+            import recall.eval._research_trust as research_mod
+
             monkeypatch.setattr(trust_mod, "trusted_search", abstaining)
+            monkeypatch.setattr(research_mod, "trusted_search", abstaining)
             return control, await be.search("dog", "u1", top_k=5)
 
     control, abstained = asyncio.run(scenario())

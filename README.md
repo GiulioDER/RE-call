@@ -202,7 +202,16 @@ on a laptop.
 | **Abuse bounds** | ✅ `recall_index` refuses before embedding anything if a request exceeds `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` | A client-callable indexer with no cap is an unbounded spend on a cloud embedder |
 | **Authentication** | ✅ bearer tokens on the HTTP transports, three scopes, one tenant per principal — see [docs/AUTH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/AUTH.md) | Starting an HTTP transport without tokens **refuses to boot** rather than warning. stdio stays unauthenticated by design: it is a private pipe, not a listener |
 | **Schema migrations** | ✅ ordered SQL, committed cryptographic checksums, advisory lock, resumable concurrent indexes, separate migration/serving roles | MCP startup is SELECT-only and refuses pending, drifted, or unknown versions; both supported PostgreSQL majors are tested |
+| **Trust policy** | ✅ **fails closed**: an absent, stale, mismatched or uncertified calibration refuses the search rather than answering from the 0.50 <!--@ citation-pending: source constant, not a measurement — `DEFAULT_GAP_THRESHOLD` in recall/guards.py --> default. Six stable failure codes; development mode must be asked for by name | The refusal is raised *before* retrieval runs, so it cannot carry corpus bytes — asserted with a store whose read methods raise if they are reached at all. See [docs/CALIBRATION.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md) |
+| **Readiness** | ✅ reported per tenant and per process, separately | One tenant's stale calibration cannot fail the process probe and evict a pod that is still serving every other tenant |
 | **HA / replication** | ❌ out of scope — this is a library over your Postgres | — |
+
+> **Upgrading to the strict trust policy.** This is a breaking change. Retrieval against a corpus
+> with no published, exactly-bound calibration now raises `TrustRefusal` rather than answering with
+> uncertified confidence numbers. Local and research workflows opt in with
+> `TrustPolicy.development()`, or `RECALL_TRUST_MODE=development` for the CLI, which still
+> retrieves but marks every hit `unverified` and refuses to claim an abstention. See the
+> [CHANGELOG](https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md).
 
 ## Retrieval quality: it depends on your corpus, and here is the rule
 
@@ -525,6 +534,28 @@ from recall.integrations.langchain import RecallRetriever   # or .llamaindex
 retriever = RecallRetriever.from_store(store, emb, k=5)
 docs = retriever.invoke("what is the rate limit?")          # LlamaIndex: .retrieve(...)
 ```
+
+Both adapters are **strict by default**, like everything else, and raise `TrustRefusal` when the
+gate cannot certify an answer. Pass `policy=TrustPolicy.development()` to `from_store` for local
+work against an uncalibrated corpus.
+
+Every document and node carries the trust and lineage identity in `metadata` —
+`recall_trust_state`, `recall_failure_code`, `recall_calibrated`, plus the tenant, generation,
+pipeline, corpus and query-set identifiers — because a framework will happily hand a single
+document to a chain that never sees the result object:
+
+```python
+doc = docs[0]
+doc.metadata["recall_trust_state"]   # "trusted" | "degraded"
+doc.metadata["recall_calibrated"]    # False unless a certified artifact backed this
+```
+
+The signal is also **in band**, in `page_content` itself, not only in metadata. LangChain's stock
+`stuff_documents_chain` and LlamaIndex's default node handling render the text alone into the
+prompt, so a warning that lives only in metadata never reaches the model. A degraded hit's text is
+prefixed with a warning saying the trust layer did not run — which is a different sentence from
+the one a *judged* hit gets, because "was not checked" and "was checked and failed" are different
+facts and the prompt is the only place the model will ever see either.
 
 Drop-in retrievers for both frameworks, so RE-call can be the `retriever=` behind any chain, agent
 or query engine. They differ from an ordinary vector retriever in exactly one way, and it is the

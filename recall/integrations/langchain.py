@@ -33,10 +33,11 @@ from typing import Any
 
 from recall.calibration import Calibration
 from recall.embeddings import Embedder
-from recall.integrations import trust_metadata
+from recall.integrations import result_trust_metadata, trust_metadata
 from recall.rerank import Reranker
 from recall.store import PgVectorStore
 from recall.trust import marked_text, servable_hits, trusted_search
+from recall.trust_policy import TrustPolicy
 from recall.types import TrustedHit, TrustedResult
 
 try:
@@ -66,6 +67,7 @@ def _hit_to_document(hit: TrustedHit, result: TrustedResult | None = None) -> Do
             embedding_profile=result.diagnostics.embedding_profile,
             retrieval_profile=result.diagnostics.retrieval_profile,
             index_generation=result.diagnostics.index_generation,
+            **result_trust_metadata(result),
         )
     return Document(page_content=marked_text(hit), metadata=metadata)
 
@@ -104,6 +106,7 @@ class RecallRetriever(BaseRetriever):
         entailment: Any | None = None,
         return_abstention_reason: bool = False,
         include_untrusted: bool = False,
+        policy: TrustPolicy | None = None,
     ) -> RecallRetriever:
         """Build a retriever that calls :func:`recall.trust.trusted_search` on each query.
 
@@ -125,6 +128,7 @@ class RecallRetriever(BaseRetriever):
                 calibration=calibration,
                 reranker=reranker,
                 entailment=entailment,
+                policy=policy,
             )
 
         return cls(

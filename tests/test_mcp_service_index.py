@@ -1,9 +1,9 @@
 import pytest
 
 from recall.embeddings import HashingEmbedder
-from recall_mcp.service import index_memory, search_memory
+from recall_mcp.service import index_memory
 
-from tests.conftest import requires_db
+from tests.conftest import dev_search_memory, requires_db
 
 
 def test_production_refuses_local_filesystem_ingestion_before_reading(monkeypatch) -> None:
@@ -21,7 +21,7 @@ def test_index_then_search(tmp_path, make_store, monkeypatch):
     stats = index_memory(store, emb, str(tmp_path))
     assert stats.chunks == 1
     assert stats.files == 1
-    result = search_memory(store, emb, "caching")
+    result = dev_search_memory(store, emb, "caching")
     assert any("caching" in h.text for h in result.hits)
 
 

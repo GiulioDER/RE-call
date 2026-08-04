@@ -149,7 +149,7 @@ def test_trusted_search_counts_searches_verdicts_and_abstentions(make_store):
     forever and reads as 'nothing is going wrong'."""
     from recall.embeddings import HashingEmbedder
     from recall.observability import METRICS
-    from recall.trust import trusted_search
+    from tests.conftest import dev_search as trusted_search
     from recall.types import Chunk
 
     store = make_store(64)

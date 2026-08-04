@@ -10,7 +10,7 @@ from recall.calibration import ENV_VAR, Calibration, load_for, save
 from recall.embeddings import HashingEmbedder
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.index import Indexer
-from recall.trust import trusted_search
+from tests.conftest import dev_search, dev_search_uncalibrated
 from tests.conftest import requires_db
 
 DOC = "The API rate limit is one hundred requests per second per client key.\n"
@@ -44,7 +44,7 @@ def test_legacy_calibration_on_disk_is_never_applied_automatically(tmp_path, mak
     embedder = HashingEmbedder(dim=64)
     save(Calibration(embedder=embedder.name, threshold=0.99, scale=0.05))
 
-    res = trusted_search(store, embedder, "API rate limit", k=5)
+    res = dev_search_uncalibrated(store, embedder, "API rate limit", k=5)
 
     assert res.calibrated is False
     assert res.calibration_status == "missing"
@@ -60,7 +60,7 @@ def test_explicit_calibration_still_wins_over_the_file(tmp_path, make_store):
     save(Calibration(embedder=embedder.name, threshold=0.99, scale=0.05))
     explicit = Calibration(embedder=embedder.name, threshold=0.01, scale=0.05)
 
-    res = trusted_search(store, embedder, "API rate limit", k=5, calibration=explicit)
+    res = dev_search(store, embedder, "API rate limit", k=5, calibration=explicit)
 
     # The file's 0.99 would abstain on everything; the explicit 0.01 must be what is used.
     assert res.calibrated is False
@@ -77,7 +77,7 @@ def test_no_calibration_file_behaves_exactly_as_before(tmp_path, make_store):
     store = make_store(64)
     _index(tmp_path, store)
 
-    res = trusted_search(store, HashingEmbedder(dim=64), "API rate limit", k=5)
+    res = dev_search(store, HashingEmbedder(dim=64), "API rate limit", k=5)
 
     assert res.calibrated is False
 
