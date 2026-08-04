@@ -59,6 +59,17 @@ def redacted_dsn(dsn: str) -> str:
 
 _T = TypeVar("_T")
 
+#: Wall time of one retrieval leg, in ms. ONE series with a `leg` label rather than two names,
+#: so the two legs of a hybrid query are compared without correlating separate metrics.
+#:
+#: This exists because every latency figure this project has published is whole-`search()` wall
+#: time, which folds the embedder, both store legs and the reranker into one number. Attributing
+#: that total needs the store to report its own share, and `observability.METRICS` already had the
+#: histogram machinery to receive it with no call site anywhere in the library.
+STORE_QUERY_METRIC = "recall_store_query_ms"
+LEG_DENSE = "dense"
+LEG_SPARSE = "sparse"
+
 #: How long schema DDL may WAIT FOR A LOCK before giving up (ms). Not a bound on the work — the
 #: HNSW build is deliberately unbounded, see `ensure_schema` — only on queueing. Short on purpose:
 #: waiting on a lock is never progress, the DDL is idempotent and retried on the next open, and a
@@ -1001,8 +1012,21 @@ class PgVectorStore:
     def query_dense(
         self, vector: list[float], k: int, source: str | None = None
     ) -> list[ScoredChunk]:
+        """Timed wrapper; the search itself is `_query_dense`.
+
+        The `k` check stays OUTSIDE the timer on purpose: a rejected call issues no statement, and
+        recording it would mix ~0 ms samples into a distribution meant to describe real queries.
+        Everything after it is inside, including the HNSW tuning statements, which are part of what
+        a dense retrieval costs and would flatter the measurement if excluded.
+        """
         if k <= 0:
             raise ValueError("k must be a positive int")
+        with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_DENSE):
+            return self._query_dense(vector, k, source)
+
+    def _query_dense(
+        self, vector: list[float], k: int, source: str | None = None
+    ) -> list[ScoredChunk]:
         t = self._table
         # Match the caller-facing identifier: recall_search surfaces the root-relative
         # `metadata->>'file'` (never the absolute `source` column), so a `source=` filter passed
@@ -1127,9 +1151,18 @@ class PgVectorStore:
         question containing a quote or a tsquery operator a search term rather than syntax.
         A question that normalises to no lexemes (empty, punctuation, stopwords only) yields a
         NULL tsquery, which matches nothing — the same answer as before, without an error.
+
+        Timed under `STORE_QUERY_METRIC{leg=sparse}`; see `query_dense` for why the `k` check sits
+        outside the timer.
         """
         if k <= 0:
             raise ValueError("k must be a positive int")
+        with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_SPARSE):
+            return self._query_sparse(text, k, source, vec)
+
+    def _query_sparse(
+        self, text: str, k: int, source: str | None = None, vec: list[float] | None = None
+    ) -> list[ScoredChunk]:
         t = self._table
         # See query_dense: the caller-facing identifier is the relative `file`, so match it (with
         # a `source` fall-back for legacy rows). Aliased `c.` here.

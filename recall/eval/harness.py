@@ -33,9 +33,10 @@ from recall.eval.metrics import (
     wilson_ci,
 )
 from recall.index import Indexer
+from recall.observability import METRICS
 from recall.rerank import CrossEncoderReranker, Reranker
 from recall.retriever import HybridRetriever
-from recall.store import PgVectorStore
+from recall.store import LEG_DENSE, LEG_SPARSE, STORE_QUERY_METRIC, PgVectorStore
 from recall.timing import TimedEmbedder, TimedReranker, TimingStats, timed_call
 from recall.trust import trusted_search
 from recall.types import ScoredChunk, TrustedHit, TrustedResult
@@ -62,6 +63,16 @@ class AblationResult:
     # constructors/tests are unaffected. rerank_ms_mean is 0.0 for configs without a reranker.
     embed_ms_mean: float = 0.0
     rerank_ms_mean: float = 0.0
+    #: The two store legs, same statistic and same run as the two above. Before these existed the
+    #: only published latency was whole-`search()` wall time, so the store's share could be got at
+    #: only by subtracting figures measured on different machines. `sparse_ms_mean` is 0.0 on the
+    #: `dense` fusion, where the leg genuinely does not run.
+    dense_ms_mean: float = 0.0
+    sparse_ms_mean: float = 0.0
+    #: True when the metric ring evicted samples, so a *_ms_mean above is a mean over the retained
+    #: suffix rather than over the run. Carried rather than silently tolerated: the two are
+    #: different statistics and only this flag distinguishes them.
+    store_latency_truncated: bool = False
 
 
 def _key(hit: ScoredChunk) -> str:
@@ -94,6 +105,18 @@ def _throwaway_store(
             store.close()
 
 
+def _drained_mean(leg: str) -> tuple[float, bool]:
+    """Mean ms for one store leg, plus whether the ring evicted samples before we read it.
+
+    Returns 0.0 for a leg that never ran (the `dense` fusion never calls the sparse leg), which
+    is the same convention `rerank_ms_mean` uses for a config with no reranker.
+    """
+    samples, total = METRICS.drain_histogram(STORE_QUERY_METRIC, leg=leg)
+    if not samples:
+        return 0.0, False
+    return mean(samples), total > len(samples)
+
+
 def _score_config(
     store: PgVectorStore, embedder: Embedder, queries: list[dict], fusion: str,
     reranker: Reranker | None,
@@ -107,6 +130,10 @@ def _score_config(
         reranker=timed_rr,
         use_sparse=(fusion != "dense"),
     )
+    # Drain first: `METRICS` is process-wide, so without this the previous configuration's
+    # samples are still in the ring and would be averaged into this one's.
+    for leg in (LEG_DENSE, LEG_SPARSE):
+        METRICS.drain_histogram(STORE_QUERY_METRIC, leg=leg)
     ps, rs, ms, ns, unans_gaps = [], [], [], [], []
     for q in queries:
         if q.get("trust"):
@@ -120,6 +147,8 @@ def _score_config(
             ns.append(ndcg_at_k(retrieved, q["relevant_ids"], 10))
         else:
             unans_gaps.append(res.gap_warning)
+    dense_ms, dense_truncated = _drained_mean(LEG_DENSE)
+    sparse_ms, sparse_truncated = _drained_mean(LEG_SPARSE)
     return AblationResult(
         embedder=embedding_profile_id(embedder), fusion=fusion,
         p_at_5=mean(ps) if ps else 0.0,
@@ -129,6 +158,9 @@ def _score_config(
         fcr_no_guard=1.0, fcr_with_guard=false_confident_rate(unans_gaps),
         embed_ms_mean=timed_emb.stats.mean_ms,
         rerank_ms_mean=timed_rr.stats.mean_ms if timed_rr else 0.0,
+        dense_ms_mean=dense_ms,
+        sparse_ms_mean=sparse_ms,
+        store_latency_truncated=dense_truncated or sparse_truncated,
     )
 
 
