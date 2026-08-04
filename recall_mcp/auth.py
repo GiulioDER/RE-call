@@ -344,7 +344,9 @@ def is_production(env: dict[str, str] | None = None) -> bool:
     return str(source.get("RECALL_ENV", "development")).strip().lower() == "production"
 
 
-def load_token_registry(path: str | os.PathLike[str]) -> TokenRegistry:
+def load_token_registry(
+    path: str | os.PathLike[str], *, env: dict[str, str] | None = None
+) -> TokenRegistry:
     """Read and validate the token file at `path`. Refuses outright in production.
 
     A static bearer token is a shared secret with no expiry, no issuer and no revocation path:
@@ -352,7 +354,10 @@ def load_token_registry(path: str | os.PathLike[str]) -> TokenRegistry:
     affordance, and the way it stops being one in production is that this function will not load
     it. Not a warning — a warning is what everybody scrolls past on a healthy-looking boot.
     """
-    if is_production():
+    # `env` threaded through, not read from os.environ. Every other function in this module
+    # takes an injected env; the one SECURITY decision reading the global instead meant an
+    # injected RECALL_ENV=production silently loaded development tokens.
+    if is_production(env):
         raise AuthConfigError(
             "static bearer tokens are development-only and RECALL_ENV=production is set. "
             "A static token has no expiry, no issuer and no revocation path. Configure external "
@@ -386,7 +391,11 @@ def token_registry_from_env(env: dict[str, str] | None = None) -> TokenRegistry 
     for the transport it is about to start — `build_auth` in `server.py` refuses it for HTTP and
     permits it for stdio.
     """
-    src = (env if env is not None else dict(os.environ)).get(_ENV_TOKENS_FILE)
+    source = env if env is not None else dict(os.environ)
+    src = source.get(_ENV_TOKENS_FILE)
     if not src:
         return None
-    return load_token_registry(src)
+    # The SAME env decides both the token file and whether static tokens are allowed at all.
+    # Reading the path from the injected dict and the mode from os.environ meant an injected
+    # RECALL_ENV=production loaded development tokens without firing the gate.
+    return load_token_registry(src, env=source)
