@@ -4,8 +4,12 @@ import uuid
 from datetime import UTC, datetime
 
 import psycopg
+import pytest
 
 from recall.control_plane import ControlPlane, IndexGeneration, TenantRoute
+from recall.schema import apply_migrations
+from recall.store import PgVectorStore
+from recall.types import Chunk
 from recall_mcp import stores as stores_module
 from recall_mcp.stores import StoreRegistry
 from tests.conftest import TEST_DSN, requires_db
@@ -22,8 +26,20 @@ def test_control_plane_migration_route_outbox_and_cutover() -> None:
     control.apply_migrations()
     control.apply_migrations()  # checksum verified idempotency
     try:
-        control.register_generation(active, f"chunks_active_{suffix}", "profile-a", 8)
-        control.register_generation(shadow, f"chunks_shadow_{suffix}", "profile-b", 8)
+        # Real physical tables holding the SAME corpus. Before the parity gate was wired,
+        # this test cut over between two table names that did not exist, which is what made
+        # the old `state == 'ready'` check look sufficient.
+        active_table, shadow_table = f"chunks_active_{suffix}", f"chunks_shadow_{suffix}"
+        for table in (active_table, shadow_table):
+            apply_migrations(TEST_DSN, table=table, dim=8)
+            with PgVectorStore(TEST_DSN, dim=8, table=table, tenant=tenant) as store:
+                store.upsert(
+                    [Chunk(id="c1", source="s3://x/one.md", text="body",
+                           metadata={"content_hash": "h1"})],
+                    [[1.0, 0, 0, 0, 0, 0, 0, 0]],
+                )
+        control.register_generation(active, active_table, "profile-a", 8)
+        control.register_generation(shadow, shadow_table, "profile-b", 8)
         control.set_generation_state(active, "ready", chunk_count=10, source_count=2)
         control.set_route(tenant, active, shadow)
         route = control.route(tenant)
@@ -57,6 +73,11 @@ def test_control_plane_migration_route_outbox_and_cutover() -> None:
                 "DELETE FROM recall_index_generations WHERE generation_id = ANY(%s)",
                 ([active, shadow],),
             )
+            for table in (f"chunks_active_{suffix}", f"chunks_shadow_{suffix}"):
+                conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+                conn.execute(
+                    "DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,)
+                )
 
 
 def test_set_route_establishes_tenant_before_forced_rls_write() -> None:
@@ -144,3 +165,59 @@ def test_enterprise_registry_opens_with_read_only_catalog_validation(monkeypatch
         assert store.ensure_called is False
     finally:
         registry.close()
+
+
+@requires_db
+def test_cutover_refuses_a_shadow_that_does_not_match_the_active_generation() -> None:
+    """`state = 'ready'` is an operator assertion, so something must check the tables.
+
+    `mark-ready` stores its `--chunks`/`--sources` argparse ints verbatim and compares them to
+    nothing, so an EMPTY generation could be marked ready and cut over, pointing every read
+    for the tenant at an empty index. `validate_generation_parity` existed for exactly this
+    and had no caller anywhere in the package.
+    """
+    suffix = uuid.uuid4().hex[:12]
+    active, shadow = f"g_active_{suffix}", f"g_shadow_{suffix}"
+    active_table, shadow_table = f"chunks_a_{suffix}", f"chunks_s_{suffix}"
+    tenant = f"tenant-{suffix}"
+    control = ControlPlane(TEST_DSN)
+    control.apply_migrations()
+    try:
+        for table in (active_table, shadow_table):
+            apply_migrations(TEST_DSN, table=table, dim=8)
+        # The active generation holds a corpus; the shadow is EMPTY but claims otherwise.
+        with PgVectorStore(TEST_DSN, dim=8, table=active_table, tenant=tenant) as store:
+            store.upsert(
+                [Chunk(id="c1", source="s3://x/one.md", text="body",
+                       metadata={"content_hash": "h1"})],
+                [[1.0, 0, 0, 0, 0, 0, 0, 0]],
+            )
+        control.register_generation(active, active_table, "profile-a", 8)
+        control.register_generation(shadow, shadow_table, "profile-a", 8)
+        control.set_generation_state(active, "ready", chunk_count=1, source_count=1)
+        # Fabricated counts, exactly as the CLI would accept them.
+        control.set_generation_state(shadow, "ready", chunk_count=1_000_000, source_count=120_000)
+        control.set_route(tenant, active, shadow)
+
+        with pytest.raises(RuntimeError, match="cutover refused"):
+            control.cutover(tenant)
+        # The route is untouched: the tenant still serves the generation that has the data.
+        route = control.route(tenant)
+        assert route is not None and route.active.generation_id == active
+
+        # The escape hatch exists, but it has to be asked for.
+        control.cutover(tenant, allow_divergent_corpus=True)
+        promoted = control.route(tenant)
+        assert promoted is not None and promoted.active.generation_id == shadow
+    finally:
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("DELETE FROM recall_tenant_routes WHERE tenant_id = %s", (tenant,))
+            conn.execute(
+                "DELETE FROM recall_index_generations WHERE generation_id = ANY(%s)",
+                ([active, shadow],),
+            )
+            for table in (active_table, shadow_table):
+                conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+                conn.execute(
+                    "DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,)
+                )
