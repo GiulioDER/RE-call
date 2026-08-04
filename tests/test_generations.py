@@ -454,3 +454,83 @@ def test_generation_cli_build_validate_promote_and_list(
     cli_main([*base, "generation", "list"])
     listing = capsys.readouterr().out
     assert generation_id in listing and "active" in listing
+
+
+@requires_db
+def test_forget_erases_a_source_that_has_left_the_active_generation(
+    manager, monkeypatch, capsys
+) -> None:
+    """Erasure must not be filtered by what the ACTIVE generation can currently see.
+
+    A source that dropped out of the newest build still has rows in the previous
+    generation, and it is exactly that source whose erasure request most needs the
+    tombstone: without one, `_is_tombstoned` returns False and the next build happily
+    re-ingests it. Filtering the request through `source_content_hashes()` (which is
+    scoped to one generation) classified such a source as "not found", so no tombstone
+    was written, nothing was deleted, and the command reported success.
+    """
+    embedder = _Embedder(1)
+    first_data = b"---\nstatus: current\n---\nthe memo to erase"
+    first_manifest = _manifest(manager.tenant_id, first_data, version="v1")
+    first = _ready(
+        manager, first_manifest, _pipeline("model-a"), _reader(first_manifest, first_data), embedder
+    )
+    manager.promote(first, unsafe_development=True)
+    memo_uri = first_manifest.objects[0].uri
+
+    # A newer generation built from a corpus that no longer contains memo.md.
+    second_data = b"a different document"
+    second_manifest = IndexManifestV1(
+        manager.tenant_id,
+        "corpus-v2",
+        (
+            ManifestObjectV1(
+                f"s3://approved/corpora/{manager.tenant_id}/notes.md",
+                "v2",
+                "text/markdown",
+                len(second_data),
+                hashlib.sha256(second_data).hexdigest(),
+            ),
+        ),
+    )
+    second_reader = S3ObjectReader(
+        _S3({("approved", f"corpora/{manager.tenant_id}/notes.md", "v2"): second_data}),
+        S3Allowlist.parse("approved/corpora/"),
+    )
+    second = _ready(manager, second_manifest, _pipeline("model-a"), second_reader, embedder)
+    manager.promote(second, unsafe_development=True)
+
+    store = GenerationStore(TEST_DSN, embedder.dim, tenant=manager.tenant_id)
+    try:
+        # Invisible to the active generation, which is what the old filter keyed on...
+        assert memo_uri not in store.source_content_hashes()
+    finally:
+        store.close()
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        # ...but its rows are still on disk in the previous generation.
+        before = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, memo_uri),
+        ).fetchone()[0]
+    assert before > 0
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    cli_main(
+        ["--serving-dsn", TEST_DSN, "--tenant", manager.tenant_id, "--embedder", "hashing",
+         "forget", memo_uri, "--yes"]
+    )
+    capsys.readouterr()
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        after = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, memo_uri),
+        ).fetchone()[0]
+        tombstoned = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, memo_uri),
+        ).fetchone()[0]
+    assert after == 0, "chunks in a non-active generation survived the erasure"
+    assert tombstoned == 1, "no tombstone was written, so the next build will re-ingest it"
