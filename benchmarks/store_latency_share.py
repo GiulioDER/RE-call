@@ -68,6 +68,7 @@ from statistics import mean
 
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.eval.harness import _throwaway_store
+from recall.eval.provenance import generated_at, model_stack
 from recall.eval.scale import DEFAULT_DSN, _make_embedder
 from recall.eval.synthetic import generate
 from recall.observability import HISTOGRAM_CAPACITY, METRICS, percentile
@@ -312,7 +313,7 @@ def measure(
     )
 
 
-def to_markdown(splits: list[LegSplit]) -> str:
+def to_markdown(splits: list[LegSplit], ctx: str = "") -> str:
     rows = [
         "| chunks | cand_k | rerank | total | embed | dense | sparse | meta | fusion | rerank | "
         "**store** | resid | **store share** | sparse fire |",
@@ -334,6 +335,18 @@ def to_markdown(splits: list[LegSplit]) -> str:
         "meta, where meta is `newest_indexed_at()`, the per-search round trip that sits outside "
         "every `stage_ms` bracket. `store share` is the ceiling on any store swap: a replacement "
         "that cost nothing would remove exactly this fraction."
+    )
+    rows.append("")
+    # The caveats travel WITH the numbers. A reader opens this file, not the module docstring or
+    # the commit message, and every sentence below changes how the headline may be read.
+    rows.append(
+        f"⚠️ **Scope.** Corpus is SYNTHETIC (`recall.eval.synthetic`), {ctx}. Two limits follow. "
+        "(1) The sparse leg here is not representative: commit `9a5165b` measured sparse median "
+        "**496 ms** on a real 72k-chunk corpus, where this run measures single-digit ms. The cost "
+        "is corpus-vocabulary dependent and neither figure generalises. (2) At `candidate_k=250` "
+        "the dense leg runs at `hnsw.ef_search = min(k x multiplier, 1000)` against 80 at k=20 — "
+        "so the k=250 row prices an OVER-FETCH SETTING inside the store, not Postgres against "
+        "another backend. A different engine re-pays that walk rather than removing it."
     )
     flagged = [s for s in splits if s.notes]
     if flagged:
@@ -401,10 +414,47 @@ def main() -> int:
                 )
             )
 
+    # Provenance is EMITTED, not stamped on afterwards. Latency is the most host- and
+    # stack-dependent quantity this repo publishes — the CHANGELOG attributes a 691.7 -> 2383.0
+    # rerank shift to "a slower shared CPU" — so an undated, unstacked latency artifact cannot be
+    # reproduced or even compared against itself. Wrapped in an object rather than left as a bare
+    # array so the `_provenance` key has somewhere to live; `results/ARTIFACTS.md` indexes it.
     (out / "splits.json").write_text(
-        json.dumps([asdict(s) for s in splits], indent=2), encoding="utf-8"
+        json.dumps(
+            {
+                "_provenance": {
+                    "generation": "post-#81/#84",
+                    "status": "current",
+                    "superseded_by": None,
+                    "backs": ["store latency share — the Redis-port decision"],
+                    "note": (
+                        "SYNTHETIC corpus (recall.eval.synthetic), so the sparse leg's cost is "
+                        "NOT representative: commit 9a5165b measured sparse median 496 ms on a "
+                        "real 72k-chunk corpus where this run measures single-digit ms. Do not "
+                        "generalise the sparse figure in either direction."
+                    ),
+                },
+                "artifact": "per-leg latency attribution behind the store-share figure",
+                "generated_at": generated_at(),
+                "embedder": embedding_profile_id(emb),
+                "corpus": "synthetic",
+                "n_chunks": n_chunks,
+                "filler": args.filler,
+                "seed": args.seed,
+                "queries": len(queries),
+                "repeats": args.repeats,
+                "stack": model_stack(),
+                "splits": [asdict(s) for s in splits],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
     )
-    md = to_markdown(splits)
+    md = to_markdown(
+        splits,
+        f"{n_chunks} chunks, embedder `{embedding_profile_id(emb)}`, seed {args.seed}, "
+        f"{len(queries)} queries x {args.repeats} repeats",
+    )
     (out / "SPLIT.md").write_text(md + "\n", encoding="utf-8")
     print("\n" + md)
     # `notes` is built from the unrounded violation, so the exit code reads `notes` rather

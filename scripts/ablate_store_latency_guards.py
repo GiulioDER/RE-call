@@ -172,20 +172,23 @@ def main() -> int:
 
     reds, inconclusive = 0, 0
     for label, path, old, new, test in ABLATIONS:
-        original = path.read_text(encoding="utf-8")
-        if original.count(old) != 1:
-            print(f"  SKIP  {label}: anchor matched {original.count(old)} times, expected 1")
+        original = path.read_bytes()
+        old_b, new_b = old.encode("utf-8"), new.encode("utf-8")
+        if original.count(old_b) != 1:
+            print(f"  SKIP  {label}: anchor matched {original.count(old_b)} times, expected 1")
             continue
-        path.write_text(original.replace(old, new), encoding="utf-8")
+        path.write_bytes(original.replace(old_b, new_b))
         try:
             code, output = run(test)
         finally:
-            path.write_text(original, encoding="utf-8")
+            path.write_bytes(original)
             # Verify the restore, do not assume it. A partial write here leaves shipped library
             # source mutated, and two of these mutations read as plausible code in a later diff.
             # The check sets a flag rather than returning: a `return` inside `finally` discards
             # any in-flight exception, which would hide the very failure that broke the restore.
-            restored = path.read_text(encoding="utf-8") == original
+            # BYTES, not text: read_text/write_text translate newlines, so a text
+            # comparison cannot observe a newline-only non-restore at all.
+            restored = path.read_bytes() == original
         if not restored:
             print(f"FATAL: {path} was not restored; run `git checkout -- {path}`", file=sys.stderr)
             return 3

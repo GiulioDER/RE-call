@@ -150,10 +150,11 @@ def test_no_subclass_overrides_the_timed_public_query_methods():
     the public wrapper; subclasses override the `_`-prefixed twin.
 
     Enumerating the method names inline is what let this recur: the first version of this guard
-    listed `query_dense` and `query_sparse`, and `newest_indexed_at` was added as a timed method
-    the same day — so the subclass dropped the timing again and the guard could not see it. It
-    iterates `TIMED_PUBLIC_METHODS` now, which is the list the timers themselves are declared
-    against, so a new timed method cannot be added without extending this guard.
+    listed `query_dense` and `query_sparse`, and `newest_indexed_at` became a timed method the
+    same day — so the subclass dropped the timing again and the guard could not see it. It
+    iterates `TIMED_PUBLIC_METHODS` now. That tuple is a hand-maintained declaration, so it is
+    only as wide as the hazard while it stays in step with the actual timer call sites; that is
+    what `test_timed_public_methods_matches_the_actual_timer_call_sites` checks.
     """
     import recall.generation_store  # noqa: F401  (registers the subclass)
     from recall.store import TIMED_PUBLIC_METHODS, PgVectorStore
@@ -167,6 +168,41 @@ def test_no_subclass_overrides_the_timed_public_query_methods():
     assert not offenders, (
         f"{offenders} override the TIMED public methods, so their store latency is never "
         "recorded. Override _query_dense / _query_sparse instead."
+    )
+
+
+def test_timed_public_methods_matches_the_actual_timer_call_sites():
+    """The declaration must equal what the code actually does, or the guard is only as good as
+    someone's memory.
+
+    `TIMED_PUBLIC_METHODS` sets the width of the subclass guard above. A hand-maintained tuple
+    that nothing checks is the SAME failure one level up: add a fourth timed public method, forget
+    the tuple, and a subclass can drop the timing again with every test still green. That is
+    exactly how this defect recurred twice. So derive the set from the source — every method whose
+    body opens `METRICS.timer(STORE_QUERY_METRIC, ...)` — and require the declaration to match it.
+    """
+    import ast
+    import inspect
+
+    import recall.store as store_mod
+
+    tree = ast.parse(inspect.getsource(store_mod))
+    timed: set[str] = set()
+    for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+        for fn in (n for n in cls.body if isinstance(n, ast.FunctionDef)):
+            for call in (n for n in ast.walk(fn) if isinstance(n, ast.Call)):
+                func = call.func
+                if not (isinstance(func, ast.Attribute) and func.attr == "timer"):
+                    continue
+                if any(
+                    isinstance(a, ast.Name) and a.id == "STORE_QUERY_METRIC" for a in call.args
+                ):
+                    timed.add(fn.name)
+
+    assert timed, "found no METRICS.timer(STORE_QUERY_METRIC, ...) call sites; the parse is wrong"
+    assert timed == set(store_mod.TIMED_PUBLIC_METHODS), (
+        f"TIMED_PUBLIC_METHODS is {sorted(store_mod.TIMED_PUBLIC_METHODS)} but the timers are "
+        f"actually on {sorted(timed)}. Update the tuple: the subclass guard is only as wide as it."
     )
 
 
