@@ -156,18 +156,35 @@ def test_no_subclass_overrides_the_timed_public_query_methods():
     only as wide as the hazard while it stays in step with the actual timer call sites; that is
     what `test_timed_public_methods_matches_the_actual_timer_call_sites` checks.
     """
-    import recall.generation_store  # noqa: F401  (registers the subclass)
-    from recall.store import TIMED_PUBLIC_METHODS, PgVectorStore
+    import importlib
+    import inspect
+    import pkgutil
 
-    def _descendants(cls: type) -> list[type]:
-        """TRANSITIVE: `__subclasses__()` is direct-only, so a grandchild would be invisible."""
-        out: list[type] = []
-        for sub in cls.__subclasses__():
-            out.append(sub)
-            out.extend(_descendants(sub))
-        return out
+    import recall
+    from recall.store import TIMED_PUBLIC_METHODS
 
-    subclasses = _descendants(PgVectorStore)
+    # Discovered by walking the package and matching the MRO BY NAME, not by
+    # `PgVectorStore.__subclasses__()`.
+    #
+    # Two reasons, and the second one is why this exists in this shape. (a) `__subclasses__()` is
+    # direct-only, so a grandchild would be invisible. (b) It is keyed on CLASS IDENTITY, and any
+    # test in the session that reloads or re-imports `recall.store` rebinds `PgVectorStore` to a
+    # NEW class object whose `__subclasses__()` is empty, while `GenerationStore` still inherits
+    # from the old one. That is not hypothetical: this guard passed locally and failed in CI's
+    # `floor` job, which collects ~120 more tests, with "found no subclasses" — the vacuity
+    # assertion catching the guard rather than the hazard. Name-matching the MRO survives it.
+    subclasses: list[type] = []
+    for mod in pkgutil.walk_packages(recall.__path__, prefix="recall."):
+        try:
+            module = importlib.import_module(mod.name)
+        except ImportError:
+            continue  # optional-extra module; not installed in every environment
+        for _, obj in inspect.getmembers(module, inspect.isclass):
+            if obj.__module__ != mod.name:
+                continue  # imported into this module, not defined here
+            if any(base.__name__ == "PgVectorStore" for base in obj.__mro__[1:]):
+                subclasses.append(obj)
+
     assert subclasses, "found no PgVectorStore subclasses; an import regression made this vacuous"
     offenders = [
         f"{cls.__name__}.{name}"
