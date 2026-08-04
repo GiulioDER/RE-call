@@ -95,7 +95,12 @@ pods.
 - `another RE-call schema migrator is already running`: wait for the active migration job. Do not
   run multiple jobs against the same database.
 - `checksum drift`: restore the released migration bytes. Never edit an applied SQL file; add a new
-  ordered migration.
+  ordered migration. One pre-release exception has already been taken: `0008_generation_foundation.sql`
+  was corrected in place before v1 shipped, because the bug it carried aborted the migration on any
+  database that held v0.8 data, so no populated install could have applied it and a later migration
+  could never have been reached to repair it. A database that applied the *earlier* 0008 (which means
+  an empty local or CI database) fails here and must be recreated. There is no in-place repair,
+  because the drift check runs before any work.
 - failed/interrupted concurrent index: rerun `schema apply`. An invalid index is dropped
   concurrently and rebuilt; a completed-but-unrecorded index is validated and adopted.
 - schema too new: deploy application code that knows the recorded versions. Do not delete ledger

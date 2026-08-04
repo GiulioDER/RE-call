@@ -10,8 +10,10 @@ Tenant routes never accept a physical table from a client. The runtime resolves 
 
 ## Operator sequence
 
-`recall-enterprise` reads its connection from `RECALL_DSN`, and every subcommand below
-except `cutover` performs DDL. Export it **only for the duration of these commands**:
+`recall-enterprise` reads its connection from `RECALL_DSN`. Of its subcommands, `migrate` and
+`create-generation` perform DDL; `mark-ready`, `set-route` and `cutover` are ordinary DML against
+the control-plane tables. Export the migration credential **only for the duration of the commands
+that need it**:
 
 ```console
 RECALL_DSN="$RECALL_MIGRATION_DSN" recall-enterprise migrate
