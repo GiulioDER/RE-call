@@ -6,6 +6,18 @@ from recall.cli import main
 from tests.conftest import TEST_DSN, requires_db
 
 
+@pytest.fixture(autouse=True)
+def _cli_development_mode(monkeypatch):
+    """These tests drive the CLI against throwaway tables with no published calibration.
+
+    The CLI is strict by default like everything else, so without this it would refuse before
+    reaching the index, forget and supersession behaviour under test. Setting the variable here
+    is the same deliberate opt-in a developer makes locally. The strict default itself is covered
+    separately in `tests/test_cli_trust_mode.py`.
+    """
+    monkeypatch.setenv("RECALL_TRUST_MODE", "development")
+
+
 @requires_db
 def test_cli_index_then_search(tmp_path, capsys, cli_table):
     # Runs against a uuid-named throwaway table via --table, NOT the default `chunks`.

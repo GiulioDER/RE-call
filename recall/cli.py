@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from recall.calibration import Calibration
+from recall.trust_policy import TrustPolicy
 from recall.embeddings import Embedder, HashingEmbedder
 from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
 from recall.lint import DEFAULT_GLOB
@@ -59,14 +60,56 @@ def _print_result(result: TrustedResult) -> None:
         )
 
 
+def _cli_policy() -> "TrustPolicy":
+    """The CLI's trust policy: strict unless `RECALL_TRUST_MODE=development` is set.
+
+    Strict by default even here. A local tool that silently degraded would teach the habit this
+    session removes, and the CLI is the surface most people meet first. Setting the variable is a
+    deliberate act that shows up in shell history; forgetting to set it produces a refusal that
+    names the remedy, which is the better failure.
+    """
+    from recall.trust_policy import TrustPolicy
+
+    return TrustPolicy.from_env()
+
+
+def _cli_trust(
+    embedder: Embedder, calibration: Calibration | None
+) -> tuple["TrustPolicy", Calibration | None]:
+    """Resolve the CLI's policy, and in development mode announce the threshold it falls back to.
+
+    In development mode with no calibration, every verdict degrades to `unverified` — correct for
+    a library caller, but it would stop the CLI demonstrating the trust layer at all (no
+    `superseded`, no `ABSTAIN`), which is most of what the CLI is for.
+
+    So it supplies a threshold and SAYS SO on stdout. The number is the same one the library used
+    to fall back to invisibly; printing it is the entire difference. A CLI that quietly taught
+    "0.50 is the threshold" is what requirement 14 removes, and a printed, explicitly uncertified
+    threshold teaches the opposite lesson.
+    """
+    policy = _cli_policy()
+    if calibration is None and not policy.strict:
+        from recall.calibration import Calibration as _Calibration
+        from recall.guards import DEFAULT_GAP_THRESHOLD
+
+        calibration = _Calibration(embedder=embedder.name, threshold=DEFAULT_GAP_THRESHOLD)
+        print(
+            f"[development] using an UNCERTIFIED demonstration threshold of "
+            f"{DEFAULT_GAP_THRESHOLD}. This is not a calibration: it is bound to no tenant, "
+            f"generation or corpus, and production refuses rather than assuming it."
+        )
+    return policy, calibration
+
+
 def _run_queries(
     store: PgVectorStore,
     embedder: Embedder,
     queries: list[str],
     calibration: Calibration | None,
 ) -> None:
+    policy, calibration = _cli_trust(embedder, calibration)
     for q in queries:
-        _print_result(trusted_search(store, embedder, q, calibration=calibration))
+        _print_result(trusted_search(store, embedder, q, calibration=calibration, policy=policy))
         print()
 
 
@@ -664,14 +707,16 @@ def main(argv: list[str] | None = None) -> None:
             )
         with store_context as store:
             store.check_schema()
+            _search_policy, _search_calibration = _cli_trust(embedder, calibration)
             _print_result(
                 trusted_search(
                     store,
                     embedder,
                     args.query,
                     k=args.k,
-                    calibration=calibration,
+                    calibration=_search_calibration,
                     entailment=entail_judge,
+                    policy=_search_policy,
                 )
             )
     elif args.cmd == "demo":

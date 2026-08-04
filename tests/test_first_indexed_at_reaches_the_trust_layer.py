@@ -22,7 +22,8 @@ from datetime import datetime, timezone
 
 from recall.calibration import Calibration
 from recall.retriever import HybridRetriever
-from recall.trust import _verdict, trusted_search
+from recall.trust import _verdict
+from tests.conftest import dev_search
 from recall.types import Chunk, ScoredChunk
 
 JAN = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -82,7 +83,7 @@ def test_a_reindexed_memory_is_visible_at_an_instant_before_the_reindex():
     """The capability, end to end. The memo was first written in January and re-indexed in
     August. Asked as of March it EXISTED, and answering `not_yet_known` would be the store
     claiming it never held a document it had held for two months."""
-    res = trusted_search(
+    res = dev_search(
         _Store(), _Embedder(), "q", k=1, calibration=CAL, known_as_of=MAR
     )
     assert res.hits[0].verdict == "ok"
@@ -90,7 +91,7 @@ def test_a_reindexed_memory_is_visible_at_an_instant_before_the_reindex():
 
 def test_the_same_memory_is_invisible_before_its_FIRST_write():
     """The control. Without it the test above passes on a build that ignores both columns."""
-    res = trusted_search(
+    res = dev_search(
         _Store(), _Embedder(), "q", k=1, calibration=CAL,
         known_as_of=datetime(2025, 6, 1, tzinfo=timezone.utc),
     )

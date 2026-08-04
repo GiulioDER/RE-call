@@ -19,7 +19,7 @@ import pytest
 
 from recall.embeddings import HashingEmbedder
 from recall.store import PgVectorStore
-from recall.trust import trusted_search
+from tests.conftest import dev_search
 from recall.types import Chunk
 
 from tests.conftest import TEST_DSN, requires_db
@@ -77,7 +77,7 @@ def test_a_stale_memory_is_not_served_as_ok_after_another_process_supersedes_it(
         writer.upsert([_chunk("v1", "limits_v1.md", "the rate limit is 100 rps")],
                       emb.embed(["the rate limit is 100 rps"]))
 
-        first = trusted_search(reader, emb, "the rate limit is 100 rps", k=5)
+        first = dev_search(reader, emb, "the rate limit is 100 rps", k=5)
         assert [h.verdict for h in first.hits] == ["ok"]  # nothing supersedes it yet
 
         writer.upsert(
@@ -85,7 +85,7 @@ def test_a_stale_memory_is_not_served_as_ok_after_another_process_supersedes_it(
             emb.embed(["revised ceiling for client requests"]),
         )
 
-        after = trusted_search(reader, emb, "the rate limit is 100 rps", k=5)
+        after = dev_search(reader, emb, "the rate limit is 100 rps", k=5)
         verdicts = {h.provenance.file: h.verdict for h in after.hits}
         assert verdicts.get("limits_v1.md") == "superseded", (
             "the reader served a superseded memory as trustworthy because its cached "

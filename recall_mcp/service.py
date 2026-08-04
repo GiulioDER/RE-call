@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
+from recall.trust_policy import TrustPolicy
 from recall.embeddings import (
     Embedder,
     FastEmbedEmbedder,
@@ -396,8 +397,15 @@ def search_memory(
     source: str | None = None,
     k: int = 5,
     calibration: Calibration | None = None,
+    policy: TrustPolicy | None = None,
 ) -> SearchResult:
     """Run a trust-evaluated hybrid search and format it into actionable self-recall guidance.
+
+    `policy` defaults to strict, which is the production default for the network service as well
+    as the library: a server that degrades by omission would be a server that degrades in
+    production. A strict refusal propagates as `TrustRefusal` rather than an empty `SearchResult`,
+    because a result object with no hits is indistinguishable from "the gate ran and found
+    nothing", and those are the two states this whole layer exists to keep apart.
 
     Every hit carries confidence + provenance + validity; superseded or out-of-window memories
     are demoted below valid ones, and when no valid hit remains the result abstains.
@@ -424,6 +432,7 @@ def search_memory(
             store, timed, query, k=k, source=source, calibration=calibration,
             reranker=_build_reranker(), candidate_k=profile.candidate_k,
             retrieval_profile=profile.name, index_generation=generation,
+            policy=policy,
         )
     hits = [
         SearchHit(

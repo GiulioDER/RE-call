@@ -13,6 +13,11 @@ from .conftest import TEST_DSN, requires_db
 
 def test_trusted_search_forwards_candidate_k(monkeypatch) -> None:  # EVAL-002 (unit, no DB)
     from recall import trust
+    from recall.trust_policy import TrustPolicy
+
+    # Development mode: this unit test fakes the retriever and never has a calibration,
+    # so strict would refuse before reaching the candidate_k plumbing under test.
+    _DEV = TrustPolicy.development()
 
     captured: dict[str, int] = {}
 
@@ -32,9 +37,9 @@ def test_trusted_search_forwards_candidate_k(monkeypatch) -> None:  # EVAL-002 (
 
     monkeypatch.setattr(trust, "HybridRetriever", _FakeRetriever)
 
-    trust.trusted_search(object(), object(), "q")
+    trust.trusted_search(object(), object(), "q", policy=_DEV)
     assert captured["candidate_k"] == DEFAULT_CANDIDATE_K  # unset -> library default (unchanged)
-    trust.trusted_search(object(), object(), "q", candidate_k=7)
+    trust.trusted_search(object(), object(), "q", candidate_k=7, policy=_DEV)
     assert captured["candidate_k"] == 7  # threaded through, not silently reverted to the default
 
 
@@ -47,7 +52,8 @@ def test_reused_result_abstain_equals_trusted_search(tmp_path) -> None:  # PERF-
     from recall.index import Indexer
     from recall.retriever import HybridRetriever
     from recall.store import PgVectorStore
-    from recall.trust import evaluate, trusted_search
+    from recall.trust import evaluate
+    from tests.conftest import dev_search
 
     corpus = tmp_path / "corpus"
     corpus.mkdir()
@@ -68,7 +74,7 @@ def test_reused_result_abstain_equals_trusted_search(tmp_path) -> None:  # PERF-
             res = retr.search(query, k=5)
             sup, unres = store.supersession() if res.hits else ({}, frozenset())
             reused = evaluate(res, sup, cal, datetime.now(timezone.utc), unres).abstained
-            fresh = trusted_search(store, emb, query, k=5, calibration=cal).abstained
+            fresh = dev_search(store, emb, query, k=5, calibration=cal).abstained
             assert reused == fresh, f"reuse diverged from trusted_search on {query!r}"
     finally:
         store.drop_table()
