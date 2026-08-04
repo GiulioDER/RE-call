@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta, timezone
@@ -386,8 +387,16 @@ def test_query_set_digest_is_canonical_and_rejects_duplicates() -> None:
 def _dsn_in_timezone(dsn: str, timezone: str) -> str:
     """The same DSN, but the session runs in `timezone` instead of the server default."""
     parts = urlsplit(dsn)
+    if not parts.scheme:
+        # RECALL_TEST_DSN is operator-supplied and may be libpq keyword/value form
+        # ("host=... dbname=..."), which urlsplit puts entirely in `path`. Rebuilding that as
+        # a URI yields a string libpq misparses, so say so rather than test a broken DSN.
+        pytest.skip("non-URI RECALL_TEST_DSN; cannot inject a session TimeZone")
     query = dict(parse_qsl(parts.query))
-    query["options"] = f"-c TimeZone={timezone}"
+    # Append: an existing `options` may carry settings the rest of the suite relies on, and
+    # overwriting it would silently change more than the timezone.
+    existing = query.get("options", "")
+    query["options"] = f"{existing} -c TimeZone={timezone}".strip()
     # quote_via=quote, not the default quote_plus: libpq reads a "+" literally, so a
     # plus-encoded space turns the option into a parameter named "+TimeZone".
     return urlunsplit(parts._replace(query=urlencode(query, quote_via=quote)))
@@ -507,12 +516,36 @@ def test_a_degenerate_timestamp_is_named_not_crashed() -> None:
     _require_utc_isoformat(datetime.now(UTC).isoformat(), "created_at")
 
 
-def test_the_naive_remediation_example_does_not_shift_the_instant() -> None:
-    """A naive value must be told to add an offset, not silently reinterpreted as local time.
+def test_the_remediation_example_is_advice_the_guard_itself_accepts() -> None:
+    """Whatever the message suggests must pass the guard, on any host.
 
-    Rendering it through `astimezone()` treats it as machine-local, so the suggested string
-    names a DIFFERENT instant and differs between machines.
+    Asserting a literal was useless: an earlier version of this test pinned
+    '2026-08-04T12:00:00+00:00', which the buggy code also produced whenever the machine's
+    local zone was UTC, i.e. on CI. It could only fail on a developer box in another zone,
+    which is the opposite of where a regression test needs to work. Pin the round trip
+    instead, which is host-independent, and cover the spellings `datetime.fromisoformat`
+    accepts rather than only the canonical one. `str()` on a naive datetime yields the
+    space-separated form, and that is the shape that actually reaches this guard.
+
+    The instant must be preserved too: reading a naive value as machine-local would name a
+    different moment on every host, so the suggestion is built with `replace(tzinfo=UTC)`,
+    never `astimezone()`.
     """
-    with pytest.raises(CalibrationBindingError) as excinfo:
-        _require_utc_isoformat("2026-08-04T12:00:00", "created_at")
-    assert "2026-08-04T12:00:00+00:00" in str(excinfo.value)
+    for naive in (
+        "2026-08-04T12:00:00",
+        "2026-08-04 12:00:00",
+        "2026-08-04T12:00",
+        "2026-08-04T12:00:00.123",
+        "2026-08-04",
+    ):
+        with pytest.raises(CalibrationBindingError) as excinfo:
+            _require_utc_isoformat(naive, "created_at")
+        match = re.search(r"\(e\.g\. '([^']*)'\)", str(excinfo.value))
+        assert match is not None, f"no suggestion offered for {naive!r}"
+        suggestion = match.group(1)
+        # The advice must work: feeding it back must not raise.
+        _require_utc_isoformat(suggestion, "created_at")
+        # And it must denote the same instant, not a local-time reinterpretation of it.
+        assert datetime.fromisoformat(suggestion) == datetime.fromisoformat(naive).replace(
+            tzinfo=UTC
+        )
