@@ -41,7 +41,7 @@ from recall.eval.metrics import wilson_ci
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
 from recall.trust import evaluate as trust_evaluate
-from recall.trust import trusted_search
+from recall.eval._research_trust import research_search
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 
@@ -201,14 +201,14 @@ def evaluate(dsn: str, master: str, questions: list[dict], embedder: Embedder,
                                    "expected": sorted(want), "got": files[:k]})
                 # Reuse the hybrid `res` already retrieved above for the abstain decision instead
                 # of a second full retrieval (PERF-003): abstained depends only on the hits +
-                # supersession + threshold, so this equals trusted_search at the same pool.
+                # supersession + threshold, so this equals research_search at the same pool.
                 sup, unres = store.supersession() if res.hits else ({}, frozenset())
                 false_abstain.append(
                     trust_evaluate(res, sup, cal, datetime.now(timezone.utc), unres).abstained
                 )
             else:
                 abstained.append(
-                    trusted_search(store, embedder, q["query"], k=k, calibration=cal).abstained
+                    research_search(store, embedder, q["query"], k=k, calibration=cal).abstained
                 )
 
         lat = sorted(latency)

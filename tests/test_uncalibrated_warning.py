@@ -21,7 +21,8 @@ import pytest
 from recall.calibration import ENV_VAR, Calibration, save
 from recall.embeddings import HashingEmbedder
 from recall.index import Indexer
-from recall.trust import _WARNED_UNCALIBRATED, trusted_search
+from recall.trust import _WARNED_UNCALIBRATED
+from tests.conftest import dev_search_uncalibrated
 from tests.conftest import requires_db
 
 DOC = "The API rate limit is one hundred requests per second per client key.\n"
@@ -57,7 +58,7 @@ def test_warns_when_the_embedder_has_no_calibration(tmp_path, make_store, caplog
     _index(tmp_path, store)
 
     with caplog.at_level(logging.WARNING):
-        trusted_search(store, HashingEmbedder(dim=64), "API rate limit", k=5)
+        dev_search_uncalibrated(store, HashingEmbedder(dim=64), "API rate limit", k=5)
 
     assert any("no calibration found" in r.message for r in caplog.records), (
         "an untuned constant gated abstention and nothing said so"
@@ -72,7 +73,7 @@ def test_warns_when_only_a_legacy_unbound_file_exists(tmp_path, make_store, capl
     save(Calibration(embedder=embedder.name, threshold=0.11, scale=0.05))
 
     with caplog.at_level(logging.WARNING):
-        trusted_search(store, embedder, "API rate limit", k=5)
+        dev_search_uncalibrated(store, embedder, "API rate limit", k=5)
 
     assert any("no calibration found" in r.message for r in caplog.records)
 
@@ -86,7 +87,7 @@ def test_does_not_warn_when_a_calibration_is_passed_explicitly(tmp_path, make_st
     explicit = Calibration(embedder=embedder.name, threshold=0.11, scale=0.05)
 
     with caplog.at_level(logging.WARNING):
-        trusted_search(store, embedder, "API rate limit", k=5, calibration=explicit)
+        dev_search_uncalibrated(store, embedder, "API rate limit", k=5, calibration=explicit)
 
     assert not any("no calibration found" in r.message for r in caplog.records)
 
@@ -101,7 +102,7 @@ def test_warns_once_per_embedder_not_once_per_query(tmp_path, make_store, caplog
 
     with caplog.at_level(logging.WARNING):
         for _ in range(5):
-            trusted_search(store, embedder, "API rate limit", k=5)
+            dev_search_uncalibrated(store, embedder, "API rate limit", k=5)
 
     hits = [r for r in caplog.records if "no calibration found" in r.message]
     assert len(hits) == 1, f"expected exactly one warning across five queries, got {len(hits)}"
@@ -147,7 +148,7 @@ def test_the_warning_names_the_embedder_and_the_remedy(tmp_path, make_store, cap
     embedder = HashingEmbedder(dim=64)
 
     with caplog.at_level(logging.WARNING):
-        trusted_search(store, embedder, "API rate limit", k=5)
+        dev_search_uncalibrated(store, embedder, "API rate limit", k=5)
 
     msg = next(r.getMessage() for r in caplog.records if "no calibration found" in r.getMessage())
     assert embedder.name in msg

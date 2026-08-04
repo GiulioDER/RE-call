@@ -171,3 +171,71 @@ def cli_table():
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute(f"DROP TABLE IF EXISTS {name}")
         conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = %s", (name,))
+
+
+def dev_search(*args, **kwargs):
+    """`trusted_search` in development mode, for tests that exercise UNCALIBRATED retrieval.
+
+    Strict is the library's production default as of the strict-trust work, so a plain
+    `PgVectorStore` with no generation and no published calibration now refuses rather than
+    scoring against the 0.50 floor. That is the point of the change, not a side effect of it.
+
+    Tests whose subject is the retrieval, supersession or provenance machinery still have to
+    reach that machinery, so they opt into development mode HERE, visibly, one call at a time.
+    Reading `dev_search` in a test is meant to prompt the question "why is this one not strict?",
+    and the answer is always the same: the test is about retrieval mechanics, not trust policy.
+    Tests whose subject IS trust policy call `trusted_search` directly and assert the refusal.
+
+    Two variants, because "development mode" and "no threshold at all" are different states and
+    conflating them is what makes these tests confusing to read:
+
+    - `dev_search` also supplies an explicit threshold, so the verdict machinery (superseded,
+      expired, ambiguous_supersession, low_confidence) actually runs. This is what tests of
+      retrieval mechanics need, and it reproduces exactly the behaviour they were written
+      against, since the threshold is the same 0.50 the library used to fall back to silently.
+    - `dev_search_uncalibrated` supplies none, so every hit degrades to `unverified`. Use it only
+      when the absence of a calibration is itself the subject of the test.
+    """
+    from recall.calibration import Calibration
+    from recall.guards import DEFAULT_GAP_THRESHOLD
+    from recall.trust import trusted_search
+    from recall.trust_policy import TrustPolicy
+
+    kwargs.setdefault("policy", TrustPolicy.development())
+    kwargs.setdefault(
+        "calibration",
+        Calibration(embedder="test-development", threshold=DEFAULT_GAP_THRESHOLD),
+    )
+    return trusted_search(*args, **kwargs)
+
+
+def dev_search_memory(*args, **kwargs):
+    """`recall_mcp.service.search_memory` in development mode with an explicit threshold.
+
+    The MCP service defaults to strict for the same reason the library does, so these tests have
+    to opt out the same way. See `dev_search`; this is the service-layer twin of it.
+    """
+    from recall.calibration import Calibration
+    from recall.guards import DEFAULT_GAP_THRESHOLD
+    from recall.trust_policy import TrustPolicy
+    from recall_mcp.service import search_memory
+
+    kwargs.setdefault("policy", TrustPolicy.development())
+    kwargs.setdefault(
+        "calibration",
+        Calibration(embedder="test-development", threshold=DEFAULT_GAP_THRESHOLD),
+    )
+    return search_memory(*args, **kwargs)
+
+
+def dev_search_uncalibrated(*args, **kwargs):
+    """`trusted_search` in development mode with NO threshold: every hit comes back unverified.
+
+    For tests whose subject is the absence of a calibration, rather than tests that merely need
+    to get past it. See `dev_search`.
+    """
+    from recall.trust import trusted_search
+    from recall.trust_policy import TrustPolicy
+
+    kwargs.setdefault("policy", TrustPolicy.development())
+    return trusted_search(*args, **kwargs)

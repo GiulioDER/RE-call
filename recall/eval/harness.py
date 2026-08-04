@@ -37,7 +37,7 @@ from recall.rerank import CrossEncoderReranker, Reranker
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder, TimedReranker, TimingStats, timed_call
-from recall.trust import trusted_search
+from recall.eval._research_trust import research_search
 from recall.types import ScoredChunk, TrustedHit, TrustedResult
 
 EVAL_DIR = Path(__file__).parent
@@ -180,7 +180,7 @@ class NearMissEvalResult:
     #                                different denominator than query_latency_ms_mean, so in the
     #                                stacked arm this can EXCEED the all-queries total mean.
     #                                0.0 for the threshold arm.
-    query_latency_ms_mean: float   # full trusted_search (+judge) wall time, mean over ALL queries
+    query_latency_ms_mean: float   # full research_search (+judge) wall time, mean over ALL queries
 
 
 def _loo_calibrations(
@@ -235,7 +235,7 @@ def run_nearmiss_eval(
 
     The calibration is built ONLY from the labeled answerable/unanswerable queries in
     `queries.json` — the near-miss set is a held-out challenge set and must never tune the
-    threshold it challenges. "Confident" for every arm means `trusted_search` did not abstain;
+    threshold it challenges. "Confident" for every arm means `research_search` did not abstain;
     the entailment arms share the SAME judge instance across embedders with no per-embedder
     adjustment — that transfer is the property under test.
 
@@ -299,7 +299,7 @@ def run_nearmiss_eval(
                     # hold a sample out (see _loo_calibrations).
                     use = loo_cal if (arm_is_fitted and loo_cal is not None) else arm_cal
                     t0 = time.perf_counter()
-                    res = trusted_search(store, emb, text, k=k, calibration=use,
+                    res = research_search(store, emb, text, k=k, calibration=use,
                                          entailment=timed)
                     q_times.append((time.perf_counter() - t0) * 1000.0)
                     return res
@@ -396,7 +396,7 @@ def run_trust_eval(
     measurements are unaffected BY CONSTRUCTION, for any embedder), simulating the re-sync/edit
     any living corpus performs constantly: the stale memory then carries the newest timestamp,
     and a per-document timestamp cannot see the supersession RELATION that makes it stale.
-    trust    = trusted_search with an in-run calibration (built from the labeled answerable/
+    trust    = research_search with an in-run calibration (built from the labeled answerable/
     unanswerable queries): a query counts as stale-trusted only if a stale id still carries
     verdict `ok`. Also reports successor accuracy, abstention accuracy, and the answerable-MRR
     regression check (trust must not change ordinary retrieval quality).
@@ -440,7 +440,7 @@ def run_trust_eval(
                     rec_flags.append(_key(newest) in stale)
                 else:
                     rec_flags.append(False)
-                tres = trusted_search(store, emb, q["query"], k=10, calibration=cal)
+                tres = research_search(store, emb, q["query"], k=10, calibration=cal)
                 ok_keys = [_tkey(h) for h in tres.hits if h.verdict == "ok"]
                 trust_flags.append(any(k in stale for k in ok_keys))
                 # coverage guards str_trust against its degenerate reading: a query that
@@ -457,7 +457,7 @@ def run_trust_eval(
                     continue
                 bres = retr.search(q["query"], k=10)
                 base_mrrs.append(mrr([_key(h) for h in bres.hits], q["relevant_ids"]))
-                tres = trusted_search(store, emb, q["query"], k=10, calibration=cal)
+                tres = research_search(store, emb, q["query"], k=10, calibration=cal)
                 trust_mrrs.append(mrr([_tkey(h) for h in tres.hits], q["relevant_ids"]))
 
             results.append(

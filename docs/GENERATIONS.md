@@ -98,3 +98,18 @@ and a replacement generation cannot recover the old binding.
 Rows from a v0.8 table remain readable through the legacy API and are registered as
 `legacy_unverified` evidence. They are never copied into `recall_chunks_v1`, selected as an active
 generation, or exposed through strict v1 generation search.
+
+## Generations and the strict trust gate
+
+A generation without a published, exactly-bound calibration cannot serve under the strict policy.
+Two consequences worth planning around:
+
+- **Promotion is not the last step.** A newly promoted generation has a fresh corpus fingerprint,
+  so any calibration bound to its predecessor is `CALIBRATION_STALE`. Calibrate and publish
+  against the new generation before promoting it, or the promotion will refuse every search.
+- **Privacy erasure stales calibration.** Erasure changes the effective corpus fingerprint by
+  design, which is what makes the old measurement no longer applicable. Expect `CALIBRATION_STALE`
+  after an erasure and recalibrate.
+
+A tenant in either state refuses only that tenant: `process_readiness` reports it under
+`tenants_unready` but stays ready, so the pod continues serving everyone else.

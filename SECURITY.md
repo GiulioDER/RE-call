@@ -169,6 +169,36 @@ and the local embedder (`FastEmbedEmbedder`) both load models via `sentence-tran
 cached. That is a network fetch of model artifacts, not of your corpus — but it does mean the first
 run of `make eval` (or any code path that constructs those classes) is not fully offline.
 
+## An uncertifiable answer is refused, not downgraded
+
+Retrieval used to fail **open**. When a generation's calibration was missing, stale, or never
+certified, `trusted_search` fell back to the library's 0.50 default and answered anyway. The
+caller received hits, confidence numbers and verdicts that looked exactly like a certified result,
+and nothing in the payload distinguished them. Anything automating on `verdict == "ok"` was acting
+on a threshold nobody had certified for that corpus.
+
+Strict mode is now the default for the library and the MCP service, and it refuses.
+
+**The refusal carries no corpus bytes, by construction rather than by filtering.** The gate is
+above `retriever.search(...)`, so a strict refusal is raised before any read reaches the store:
+there is no chunk text, source name, preview, or score to leak, because none was fetched. The
+regression test proves this with a store whose `query_dense` and `query_sparse` raise if they are
+called at all, so a refusal that touched the corpus fails the test whatever its message says. The
+query itself is also excluded from the refusal, since echoing it would put caller data into every
+log line and traceback that touches the exception.
+
+**An outage is not an empty answer.** `DEPENDENCY_UNAVAILABLE` is reported separately from every
+calibration verdict. The two are the same shape on the wire and opposite in meaning, and
+conflating them is how a caller concludes there is no prior decision on a question that was in
+fact settled. The shipped example agent treats a refusal as a reason **not** to proceed, for
+exactly this reason.
+
+**What it does not do.** Strict mode constrains what the library will claim. It does not verify
+the corpus, and it does not protect against a certified artifact measured on an unrepresentative
+query set: exact binding and honest statistics are not the same thing as a well-chosen labelled
+set. It is also not an authorisation control. Tenant isolation is still RLS plus explicit
+predicates, and both assume the serving role is not compromised.
+
 ## Known gaps, tracked and open
 
 These are documented weaknesses, not undiscovered ones. They are recorded in

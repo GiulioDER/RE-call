@@ -1,5 +1,5 @@
 from recall.types import Chunk
-from recall_mcp.service import search_memory
+from tests.conftest import dev_search_memory
 
 from tests.conftest import requires_db
 
@@ -20,7 +20,7 @@ def test_search_memory_answerable(make_store):
     store = make_store(3)
     store.upsert([Chunk("a", "notes.md", "cats")], [[1.0, 0.0, 0.0]])
     emb = DictEmbedder({"cats": [1.0, 0.0, 0.0]}, default=[0.0, 0.0, 1.0])
-    result = search_memory(store, emb, "cats")
+    result = dev_search_memory(store, emb, "cats")
     assert result.gap_warning is False
     assert result.hits and result.hits[0].source == "notes.md"
     assert "relevant" in result.advice.lower()
@@ -31,7 +31,7 @@ def test_search_memory_gap(make_store):
     store = make_store(3)
     store.upsert([Chunk("a", "notes.md", "cats")], [[1.0, 0.0, 0.0]])
     emb = DictEmbedder({}, default=[0.0, 0.0, 1.0])  # query orthogonal -> gap
-    result = search_memory(store, emb, "unicorns")
+    result = dev_search_memory(store, emb, "unicorns")
     assert result.gap_warning is True
     assert "gap" in result.advice.lower() or "unreliable" in result.advice.lower()
 
@@ -52,7 +52,7 @@ def test_search_memory_superseded_redirects_and_reports_fields(make_store):
         [[1.0, 0.0, 0.0], [0.9, 0.1, 0.0]],
     )
     emb = DictEmbedder({"cats": [1.0, 0.0, 0.0]}, default=[0.0, 0.0, 1.0])
-    result = search_memory(store, emb, "cats")
+    result = dev_search_memory(store, emb, "cats")
     assert result.abstained is False
     assert result.hits[0].verdict == "ok"
     assert result.hits[0].source == "v2.md"
@@ -84,7 +84,7 @@ def test_search_memory_abstains_when_only_superseded(make_store):
     # k=1 keeps only the top fused hit: the superseded v1 (the orthogonal successor ranks
     # below it), so no verdict-ok hit remains and the service must abstain
     emb = DictEmbedder({"cats": [1.0, 0.0, 0.0]}, default=[0.0, 0.0, 1.0])
-    result = search_memory(store, emb, "cats", k=1)
+    result = dev_search_memory(store, emb, "cats", k=1)
     assert result.abstained is True
     assert "do not answer" in result.advice.lower()
     assert result.reason != ""
