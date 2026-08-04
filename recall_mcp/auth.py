@@ -65,7 +65,12 @@ _log = get_logger("mcp.auth")
 SCOPE_READ = "recall:read"
 SCOPE_WRITE = "recall:write"
 SCOPE_FORGET = "recall:forget"
-ALL_SCOPES = (SCOPE_READ, SCOPE_WRITE, SCOPE_FORGET)
+#: Administrative operations: generation promotion and rollback, calibration publication, tenant
+#: status. Deliberately NOT implied by write. Indexing a document and promoting a generation for
+#: the whole tenant are different blast radii, and a token that can do the first should not be
+#: able to do the second by default.
+SCOPE_ADMIN = "recall:admin"
+ALL_SCOPES = (SCOPE_READ, SCOPE_WRITE, SCOPE_FORGET, SCOPE_ADMIN)
 
 #: Minimum accepted token length. 32 characters is ~192 bits at base64/hex alphabets — far past
 #: anything brute-forceable — and the floor is deliberately NOT configurable: an operator who can
@@ -326,8 +331,34 @@ def _warn_if_world_readable(path: Path) -> None:
         )
 
 
+def is_production(env: dict[str, str] | None = None) -> bool:
+    """Whether this process is configured as production. Default is development.
+
+    The default is the permissive one, deliberately, because the gate below demands an explicit
+    opt-in for the INSECURE mechanism rather than for the secure one. Defaulting to production
+    would mean an unconfigured laptop cannot start at all, and the usual response to that is a
+    developer setting `RECALL_ENV=development` permanently in their shell — which is the same
+    outcome with an extra step and less signal.
+    """
+    source = os.environ if env is None else env
+    return str(source.get("RECALL_ENV", "development")).strip().lower() == "production"
+
+
 def load_token_registry(path: str | os.PathLike[str]) -> TokenRegistry:
-    """Read and validate the token file at `path`."""
+    """Read and validate the token file at `path`. Refuses outright in production.
+
+    A static bearer token is a shared secret with no expiry, no issuer and no revocation path:
+    once leaked it stays valid until somebody notices and edits a file. That is a development
+    affordance, and the way it stops being one in production is that this function will not load
+    it. Not a warning — a warning is what everybody scrolls past on a healthy-looking boot.
+    """
+    if is_production():
+        raise AuthConfigError(
+            "static bearer tokens are development-only and RECALL_ENV=production is set. "
+            "A static token has no expiry, no issuer and no revocation path. Configure external "
+            "OIDC (RECALL_OIDC_ISSUER / RECALL_OIDC_AUDIENCE) instead, or leave RECALL_ENV unset "
+            "for local development."
+        )
     p = Path(path).expanduser()
     if not p.is_file():
         raise AuthConfigError(f"token file not found: {p}")
