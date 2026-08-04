@@ -88,6 +88,17 @@ LEG_SPARSE = "sparse"
 #: caller assert "one sample per leg per query".
 LEG_META = "meta"
 
+#: Public methods that carry a `METRICS.timer` and delegate to a private twin. A subclass MUST
+#: override the `_`-prefixed twin, NEVER the name listed here — overriding the public method
+#: silently drops the timing, and an absent series reads exactly like a store that costs nothing.
+#:
+#: This is a tuple rather than a docstring because `GenerationStore` made that mistake TWICE: once
+#: on the query legs, then again on `newest_indexed_at` immediately after the query legs were
+#: fixed. The guard could not catch the second one because it enumerated two method names inline
+#: instead of reading a list. `tests/test_store_query_latency.py` iterates this tuple, so adding a
+#: timed method here extends the guard in the same edit that creates the hazard.
+TIMED_PUBLIC_METHODS = ("query_dense", "query_sparse", "newest_indexed_at")
+
 #: How long schema DDL may WAIT FOR A LOCK before giving up (ms). Not a bound on the work — the
 #: HNSW build is deliberately unbounded, see `ensure_schema` — only on queueing. Short on purpose:
 #: waiting on a lock is never progress, the DDL is idempotent and retried on the next open, and a
@@ -1612,15 +1623,20 @@ class PgVectorStore:
 
         Uncached, so this is a real round trip on the query path — see `LEG_META`. Timing it is
         what stops a latency attribution from booking it as Python glue.
+
+        Subclasses override `_newest_indexed_at`, not this; see `TIMED_PUBLIC_METHODS`.
         """
         with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_META):
-            row = self._with_retry(
-                lambda conn: conn.execute(
-                    f"SELECT max(indexed_at) FROM {self._table} WHERE tenant_id = %s",
-                    (self._tenant,),
-                ).fetchone()
-            )
-            return row[0] if row else None
+            return self._newest_indexed_at()
+
+    def _newest_indexed_at(self) -> datetime | None:
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT max(indexed_at) FROM {self._table} WHERE tenant_id = %s",
+                (self._tenant,),
+            ).fetchone()
+        )
+        return row[0] if row else None
 
     def count(self) -> int:
         row = self._with_retry(

@@ -30,8 +30,10 @@ ratio is emitted when the metric ring truncated, because a mean over a retained 
 over the run are different statistics.
 
 **Measurement hygiene.** Every configuration gets a discarded warm-up pass through the FULL
-pipeline, so no leg is measured warm against another measured cold, and configurations are
-interleaved across repetitions so the last one measured is not systematically the warmest.
+pipeline, so no leg is measured warm against another measured cold, and each configuration is
+repeated `--repeats` times. NOTE: repetitions are nested INSIDE a configuration, not interleaved
+across them, so a slow drift over the run is still confounded with configuration order; the
+warm-up pass is what removes the first-touch component.
 
 **What it does not measure.** The shipped best configuration uses a cloud embedder
 (`voyage-4-large`); this runs local embedders only. To reason about the cloud case, substitute a
@@ -232,11 +234,16 @@ def measure(
     # Nesting cross-check: the store's internal timer measures a subinterval of the retriever's
     # bracket around the same call, so stage >= metric for every query. A violation means the two
     # instruments are not timing what their names say.
-    for stage_key, metric_samples in (
-        ("dense_retrieval", dense_metric), ("sparse_retrieval", sparse_metric)
-    ):
-        for bracket, inner in zip(stages.get(stage_key, []), metric_samples):
-            nesting_violation = max(nesting_violation, inner - bracket)
+    # `strict=True` matters more than it looks. `stages[...]` is a head-ordered list and the metric
+    # samples come from a TAIL-retaining ring, so on eviction the two do not merely differ in
+    # length, they MISALIGN — sample n-1023 would be compared against bracket 1, producing both
+    # false violations and false passes. Unequal lengths must raise, not be silently absorbed.
+    if not truncated:
+        for stage_key, metric_samples in (
+            ("dense_retrieval", dense_metric), ("sparse_retrieval", sparse_metric)
+        ):
+            for bracket, inner in zip(stages.get(stage_key, []), metric_samples, strict=True):
+                nesting_violation = max(nesting_violation, inner - bracket)
 
     def stage_mean(name: str) -> float:
         return mean(stages[name]) if stages.get(name) else 0.0
@@ -259,9 +266,18 @@ def measure(
             "counted twice; no share may be quoted from this split."
         )
 
-    notes: list[str] = []
     if truncated:
-        notes.append("metric ring evicted samples: ratios suppressed")
+        # FATAL, not suppressed. A partial suppression is where the asymmetry creeps back in: the
+        # first version NaN'd `store_share` while still emitting `store_ms_p50` (computed from the
+        # same misaligned samples) and `total_ms_if_store_were_free`, so a truncated run still
+        # published three figures derived from a basis it had just declared incomparable. And
+        # `float("nan")` serialises into `splits.json` as a bare `NaN`, which is not valid JSON.
+        raise AssertionError(
+            "the metric ring evicted samples, so the store legs are means over a retained suffix "
+            "while embed/rerank/total are means over the run. No figure may be derived from both."
+        )
+
+    notes: list[str] = []
     if nesting_violation > 0:
         notes.append(f"nesting violated by {nesting_violation:.3f} ms")
 
@@ -287,9 +303,7 @@ def measure(
         residual_ms_mean=round(residual, 3),
         store_ms_mean=round(store_ms, 3),
         store_ms_p50=store_p50,
-        # Suppressed rather than approximated when the sample basis is not comparable across
-        # stages: a ratio of a truncated suffix to a full-run mean is not the share it claims.
-        store_share=float("nan") if truncated else round(store_ms / total_ms, 4),
+        store_share=round(store_ms / total_ms, 4),
         total_ms_if_store_were_free=round(total_ms - store_ms, 3),
         sparse_fire_rate=round(fire_rate, 4),
         truncated=truncated,
@@ -337,7 +351,7 @@ def main() -> int:
     ap.add_argument("--candidate-k", type=int, action="append", dest="candidate_ks")
     ap.add_argument("--rerank", action="store_true")
     ap.add_argument("--queries", type=int, default=100)
-    ap.add_argument("--repeats", type=int, default=3, help="interleaved repetitions per config")
+    ap.add_argument("--repeats", type=int, default=3, help="repetitions per config")
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--out", default="results/store_latency")
     args = ap.parse_args()
@@ -393,7 +407,10 @@ def main() -> int:
     md = to_markdown(splits)
     (out / "SPLIT.md").write_text(md + "\n", encoding="utf-8")
     print("\n" + md)
-    return 1 if any(s.truncated or s.max_nesting_violation_ms > 0 for s in splits) else 0
+    # `notes` is built from the unrounded violation, so the exit code reads `notes` rather
+    # than the rounded field: otherwise a sub-microsecond violation prints a warning and
+    # exits 0, and the warning and the exit status disagree about the same run.
+    return 1 if any(s.notes for s in splits) else 0
 
 
 if __name__ == "__main__":

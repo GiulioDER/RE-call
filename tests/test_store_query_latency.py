@@ -147,15 +147,21 @@ def test_no_subclass_overrides_the_timed_public_query_methods():
     `GenerationStore` did exactly this, and `RECALL_ENV=production` selects it — so the metric
     fired on a laptop and recorded nothing in production. An absent series and a free store are
     the same reading, so the loss is invisible precisely where it matters most. Timing lives on
-    the public wrapper; subclasses override `_query_dense` / `_query_sparse`.
+    the public wrapper; subclasses override the `_`-prefixed twin.
+
+    Enumerating the method names inline is what let this recur: the first version of this guard
+    listed `query_dense` and `query_sparse`, and `newest_indexed_at` was added as a timed method
+    the same day — so the subclass dropped the timing again and the guard could not see it. It
+    iterates `TIMED_PUBLIC_METHODS` now, which is the list the timers themselves are declared
+    against, so a new timed method cannot be added without extending this guard.
     """
     import recall.generation_store  # noqa: F401  (registers the subclass)
-    from recall.store import PgVectorStore
+    from recall.store import TIMED_PUBLIC_METHODS, PgVectorStore
 
     offenders = [
         f"{cls.__name__}.{name}"
         for cls in PgVectorStore.__subclasses__()
-        for name in ("query_dense", "query_sparse")
+        for name in TIMED_PUBLIC_METHODS
         if name in vars(cls)
     ]
     assert not offenders, (

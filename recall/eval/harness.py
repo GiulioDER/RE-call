@@ -36,7 +36,7 @@ from recall.index import Indexer
 from recall.observability import METRICS
 from recall.rerank import CrossEncoderReranker, Reranker
 from recall.retriever import HybridRetriever
-from recall.store import LEG_DENSE, LEG_SPARSE, STORE_QUERY_METRIC, PgVectorStore
+from recall.store import LEG_DENSE, LEG_META, LEG_SPARSE, STORE_QUERY_METRIC, PgVectorStore
 from recall.timing import TimedEmbedder, TimedReranker, TimingStats, timed_call
 from recall.trust import trusted_search
 from recall.types import ScoredChunk, TrustedHit, TrustedResult
@@ -63,10 +63,13 @@ class AblationResult:
     # constructors/tests are unaffected. rerank_ms_mean is 0.0 for configs without a reranker.
     embed_ms_mean: float = 0.0
     rerank_ms_mean: float = 0.0
-    #: The two store legs, same statistic and same run as the two above. Before these existed the
-    #: only published latency was whole-`search()` wall time, so the store's share could be got at
-    #: only by subtracting figures measured on different machines. `sparse_ms_mean` is 0.0 on the
-    #: `dense` fusion, where the leg genuinely does not run.
+    #: The two store legs, same statistic and same run as the two above. (`HybridRetriever` also
+    #: records per-query stage timings in `diagnostics.stage_ms`; these are the process-wide
+    #: aggregate of the same intervals, which is what an ablation table wants.)
+    #:
+    #: 0.0 means the leg recorded NO SAMPLES. On the `dense` fusion that is expected, because the
+    #: sparse leg does not run. Anywhere else it means the leg was not timed — do not read it as
+    #: "free", which is the reading this whole metric exists to make impossible.
     dense_ms_mean: float = 0.0
     sparse_ms_mean: float = 0.0
     #: True when the metric ring evicted samples, so a *_ms_mean above is a mean over the retained
@@ -132,7 +135,9 @@ def _score_config(
     )
     # Drain first: `METRICS` is process-wide, so without this the previous configuration's
     # samples are still in the ring and would be averaged into this one's.
-    for leg in (LEG_DENSE, LEG_SPARSE):
+    # LEG_META included: `search()` records one per query too, and a series left undrained
+    # accumulates across every configuration — the exact contamination this drain prevents.
+    for leg in (LEG_DENSE, LEG_META, LEG_SPARSE):
         METRICS.drain_histogram(STORE_QUERY_METRIC, leg=leg)
     ps, rs, ms, ns, unans_gaps = [], [], [], [], []
     for q in queries:
