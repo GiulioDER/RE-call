@@ -30,6 +30,7 @@ import threading
 import time
 
 from recall.control_plane import ControlPlane, TenantRoute
+from recall.pool import DEFAULT_MIN_POOL_SIZE, SharedPool
 from recall.observability import get_logger
 from recall.store import DEFAULT_TABLE, PgVectorStore
 
@@ -73,6 +74,16 @@ class StoreRegistry:
         self._routes: dict[str, tuple[float, TenantRoute | None]] = {}
         self._lock = threading.Lock()
         self._closed = False
+        #: ONE pool for the process, shared by every tenant and every generation. The old
+        #: design opened one per (tenant, generation) and computed its own ceiling as
+        #: `len(allowed) * generations * pool_size`, which at the 1,000-tenant target is a
+        #: denial of service against your own database rather than a pool.
+        self._shared = SharedPool(
+            dsn,
+            min_size=min(DEFAULT_MIN_POOL_SIZE, pool_size),
+            max_size=pool_size,
+            statement_timeout_ms=statement_timeout_ms,
+        )
         self._listener_stop = threading.Event()
         self._listener: threading.Thread | None = None
         if control_plane is not None:
@@ -98,9 +109,15 @@ class StoreRegistry:
             return frozenset(tenant for tenant, _generation in self._stores)
 
     def max_connections(self) -> int:
-        """Worst-case connection count if every provisioned tenant becomes active at once."""
-        generations = 2 if self._control_plane is not None else 1
-        return len(self._allowed) * generations * self._pool_size
+        """Worst-case connection count for this process.
+
+        Now a CONSTANT, not a product. It used to be
+        `len(allowed_tenants) * generations * pool_size`, which grew with provisioning and had to
+        be checked against the server's `max_connections` at startup. One shared pool makes the
+        ceiling independent of how many tenants exist, which is what allows the 1,000-tenant
+        target to be a configuration question rather than a capacity one.
+        """
+        return self._shared.max_size
 
     def invalidate_route(self, tenant: str) -> None:
         """Drop only routing metadata. Acquired stores remain valid for in-flight requests."""
@@ -137,7 +154,7 @@ class StoreRegistry:
                     dim=self._dim,
                     tenant=tenant,
                     migration_target=self._table or DEFAULT_TABLE,
-                    pool_size=self._pool_size,
+                    shared_pool=self._shared,
                     statement_timeout_ms=self._statement_timeout_ms,
                 )
                 try:
@@ -169,7 +186,7 @@ class StoreRegistry:
                 dim=dimension,
                 table=table,
                 tenant=tenant,
-                pool_size=self._pool_size,
+                shared_pool=self._shared,
                 statement_timeout_ms=self._statement_timeout_ms,
                 generation_id=generation_id,
             )
@@ -240,3 +257,7 @@ class StoreRegistry:
                     "error closing store for tenant %r generation %r",
                     tenant, generation, exc_info=True,
                 )
+        # Those stores are views over the shared pool and own no connections, so their `close()`
+        # is a no-op on the sockets. The registry owns the pool, so shutdown is this line — and
+        # omitting it would leak the pool's background maintenance thread for the process's life.
+        self._shared.close()
