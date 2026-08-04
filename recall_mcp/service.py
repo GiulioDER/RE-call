@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 
@@ -17,14 +17,14 @@ from recall.embeddings import (
     embedding_profile_id,
 )
 from recall.guards import staleness
-from recall.observability import METRICS, get_logger
 from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
 from recall.index import Indexer, ShadowIndexTarget, candidate_files
+from recall.observability import METRICS, get_logger
+from recall.profiles import RetrievalAdmission, RetrievalProfile, resolve_retrieval_profile
+from recall.rerank import DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION, Reranker
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
-from recall.rerank import DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION, Reranker
-from recall.profiles import RetrievalAdmission, RetrievalProfile, resolve_retrieval_profile
 from recall.trust import trusted_search
 
 _log = get_logger("mcp.service")
@@ -198,10 +198,19 @@ class SearchResult(BaseModel):
     )
     reason: str = Field(description="Why the search abstained; empty otherwise.")
     calibrated: bool = Field(
-        description="True when a per-embedder calibration was applied to threshold/confidence."
+        description="True only for a certified calibration exactly bound to this generation."
     )
+    calibration_id: str | None = None
+    calibration_status: str = "missing"
+    tenant_id: str | None = None
+    generation_id: str | None = None
+    pipeline_fingerprint: str | None = None
+    corpus_fingerprint: str | None = None
+    query_set_digest: str | None = None
     gap_warning: bool = Field(description="True when the memory probably lacks a relevant answer.")
-    stale: bool = Field(description="True when the memory index is older than the freshness window.")
+    stale: bool = Field(
+        description="True when the memory index is older than the freshness window."
+    )
     advice: str = Field(description="What the agent should do with this result.")
     embed_ms: float | None = Field(
         default=None,
@@ -259,7 +268,9 @@ class MemoryStatsResult(BaseModel):
     newest_indexed_at: str | None = Field(
         description="ISO-8601 timestamp of the newest chunk, or null if memory is empty."
     )
-    stale: bool = Field(description="True when the newest chunk is older than the freshness window.")
+    stale: bool = Field(
+        description="True when the newest chunk is older than the freshness window."
+    )
     metrics: dict = Field(
         default_factory=dict,
         description="Process metrics since start: counters (searches, abstentions, gap warnings, "
@@ -470,8 +481,8 @@ def search_memory(
         )
     if not result.calibrated:
         advice += (
-            " NOTE: confidence is UNCALIBRATED (default threshold) — run `recall calibrate` "
-            "against a labeled query set for this embedder."
+            " NOTE: confidence is UNCALIBRATED (default threshold) — create and publish a "
+            "calibration for this exact tenant and generation before treating it as certified."
         )
     if result.staleness.stale:
         advice += " NOTE: the memory index is stale — consider re-indexing."
@@ -480,6 +491,13 @@ def search_memory(
         abstained=result.abstained,
         reason=result.reason,
         calibrated=result.calibrated,
+        calibration_id=result.calibration_id,
+        calibration_status=result.calibration_status,
+        tenant_id=result.tenant_id,
+        generation_id=result.generation_id,
+        pipeline_fingerprint=result.pipeline_fingerprint,
+        corpus_fingerprint=result.corpus_fingerprint,
+        query_set_digest=result.query_set_digest,
         gap_warning=result.gap_warning,
         stale=result.staleness.stale,
         advice=advice,
@@ -685,12 +703,10 @@ def forget_memory(
     )
 
 
-def memory_stats(
-    store: PgVectorStore, max_age: timedelta = timedelta(days=2)
-) -> MemoryStatsResult:
+def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -> MemoryStatsResult:
     """Report memory size and freshness (`stale` is True when the newest chunk is older than `max_age`, default 2 days)."""
     newest = store.newest_indexed_at()
-    stale = staleness(newest, datetime.now(timezone.utc), max_age).stale
+    stale = staleness(newest, datetime.now(UTC), max_age).stale
     return MemoryStatsResult(
         chunks=store.count(),
         newest_indexed_at=newest.isoformat() if newest else None,

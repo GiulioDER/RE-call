@@ -11,6 +11,7 @@ The failure is invisible on the DEFAULT embedder (bge-small's observed minimum i
 0.50 floor), so only a user who changes embedder is exposed — and got no signal at all. These tests
 pin the signal.
 """
+
 from __future__ import annotations
 
 import logging
@@ -21,7 +22,6 @@ from recall.calibration import ENV_VAR, Calibration, save
 from recall.embeddings import HashingEmbedder
 from recall.index import Indexer
 from recall.trust import _WARNED_UNCALIBRATED, trusted_search
-
 from tests.conftest import requires_db
 
 DOC = "The API rate limit is one hundred requests per second per client key.\n"
@@ -65,9 +65,7 @@ def test_warns_when_the_embedder_has_no_calibration(tmp_path, make_store, caplog
 
 
 @requires_db
-def test_does_not_warn_when_a_calibration_exists(tmp_path, make_store, caplog):
-    """A user who HAS calibrated must not be nagged — otherwise the warning becomes noise and the
-    next real one is ignored."""
+def test_warns_when_only_a_legacy_unbound_file_exists(tmp_path, make_store, caplog):
     store = make_store(64)
     _index(tmp_path, store)
     embedder = HashingEmbedder(dim=64)
@@ -76,7 +74,7 @@ def test_does_not_warn_when_a_calibration_exists(tmp_path, make_store, caplog):
     with caplog.at_level(logging.WARNING):
         trusted_search(store, embedder, "API rate limit", k=5)
 
-    assert not any("no calibration found" in r.message for r in caplog.records)
+    assert any("no calibration found" in r.message for r in caplog.records)
 
 
 @requires_db
@@ -151,8 +149,6 @@ def test_the_warning_names_the_embedder_and_the_remedy(tmp_path, make_store, cap
     with caplog.at_level(logging.WARNING):
         trusted_search(store, embedder, "API rate limit", k=5)
 
-    msg = next(
-        r.getMessage() for r in caplog.records if "no calibration found" in r.getMessage()
-    )
+    msg = next(r.getMessage() for r in caplog.records if "no calibration found" in r.getMessage())
     assert embedder.name in msg
     assert "recall calibrate" in msg

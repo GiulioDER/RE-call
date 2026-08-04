@@ -18,7 +18,13 @@ from psycopg.types.json import Jsonb
 
 from recall.embeddings import Embedder
 from recall.frontmatter import parse_frontmatter, validity_bounds
-from recall.lineage import GenerationState, IndexManifestV1, PipelineIdentity, canonical_json
+from recall.lineage import (
+    GenerationState,
+    IndexManifestV1,
+    PipelineIdentity,
+    canonical_json,
+    canonical_sha256,
+)
 from recall.manifest import S3ObjectReader
 from recall.types import Chunk
 
@@ -98,6 +104,20 @@ def _new_id(prefix: str) -> str:
 
 def _failure(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"[:2000]
+
+
+def _effective_corpus_fingerprint(
+    manifest: IndexManifestV1, tombstoned_sources: set[str]
+) -> str:
+    excluded = sorted({entry.uri for entry in manifest.objects} & tombstoned_sources)
+    if not excluded:
+        return manifest.corpus_fingerprint
+    return canonical_sha256(
+        {
+            "manifest_corpus_fingerprint": manifest.corpus_fingerprint,
+            "excluded_sources": excluded,
+        }
+    )
 
 
 def _record(row: tuple[Any, ...]) -> GenerationRecord:
@@ -246,6 +266,20 @@ class GenerationManager:
                 (self.tenant_id,),
             ).fetchone()
             parent = str(state[0]) if state and state[0] else None
+            manifest_sources = [entry.uri for entry in manifest.objects]
+            tombstones = (
+                {
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT source_uri FROM recall_source_tombstones "
+                        "WHERE tenant_id = %s AND source_uri = ANY(%s)",
+                        (self.tenant_id, manifest_sources),
+                    ).fetchall()
+                }
+                if manifest_sources
+                else set()
+            )
+            corpus_fingerprint = _effective_corpus_fingerprint(manifest, tombstones)
             conn.execute(
                 "INSERT INTO recall_generations "
                 "(tenant_id, generation_id, state, pipeline_identity, pipeline_fingerprint, "
@@ -257,7 +291,7 @@ class GenerationManager:
                     generation_id,
                     Jsonb(pipeline.to_dict()),
                     pipeline.fingerprint,
-                    manifest.corpus_fingerprint,
+                    corpus_fingerprint,
                     Jsonb(manifest.to_dict()),
                     manifest.digest,
                     manifest.corpus_version,
@@ -755,12 +789,17 @@ class GenerationManager:
             ).fetchone()
             selected = {str(item) for item in (state or ()) if item}
             mutable = conn.execute(
-                "SELECT generation_id FROM recall_generations "
+                "SELECT generation_id, manifest FROM recall_generations "
                 "WHERE tenant_id = %s AND state != 'legacy_unverified' "
                 "FOR UPDATE",
                 (self.tenant_id,),
             ).fetchall()
             selected.update(str(row[0]) for row in mutable)
+            manifests = {
+                str(row[0]): IndexManifestV1.from_dict(row[1])
+                for row in mutable
+                if isinstance(row[1], Mapping)
+            }
             self._audit(
                 conn,
                 "source_forgotten",
@@ -776,6 +815,23 @@ class GenerationManager:
                 "event_id = EXCLUDED.event_id, erased_at = EXCLUDED.erased_at",
                 (self.tenant_id, source_uri, event_id),
             )
+            tombstones = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT source_uri FROM recall_source_tombstones WHERE tenant_id = %s",
+                    (self.tenant_id,),
+                ).fetchall()
+            }
+            for generation_id, manifest in manifests.items():
+                conn.execute(
+                    "UPDATE recall_generations SET corpus_fingerprint = %s "
+                    "WHERE tenant_id = %s AND generation_id = %s",
+                    (
+                        _effective_corpus_fingerprint(manifest, tombstones),
+                        self.tenant_id,
+                        generation_id,
+                    ),
+                )
             removed = 0
             if selected:
                 result = conn.execute(

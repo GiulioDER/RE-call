@@ -15,8 +15,15 @@ from typing import Any, Literal
 #: `not_yet_known` says the memory had not been written yet, which is a different question and the
 #: one a "what did we know on Tuesday" query is actually asking. See `recall.trust.evaluate`.
 Verdict = Literal[
-    "ok", "superseded", "expired", "not_yet_valid", "not_yet_known", "low_confidence",
-    "invalid_metadata", "ambiguous_supersession", "not_entailed",
+    "ok",
+    "superseded",
+    "expired",
+    "not_yet_valid",
+    "not_yet_known",
+    "low_confidence",
+    "invalid_metadata",
+    "ambiguous_supersession",
+    "not_entailed",
 ]
 
 
@@ -109,7 +116,18 @@ class TrustedResult:
     hits: list[TrustedHit]  # verdict-ok hits first (original order kept within each group)
     abstained: bool
     reason: str  # non-empty only when abstained
-    calibrated: bool
     gap_warning: bool
     staleness: StalenessReport
     diagnostics: RetrievalDiagnostics = field(default_factory=RetrievalDiagnostics)
+    calibration_id: str | None = None
+    calibration_status: str = "missing"
+    tenant_id: str | None = None
+    generation_id: str | None = None
+    pipeline_fingerprint: str | None = None
+    corpus_fingerprint: str | None = None
+    query_set_digest: str | None = None
+
+    @property
+    def calibrated(self) -> bool:
+        """True only for a certified artifact exactly bound to this generation."""
+        return self.calibration_status == "certified" and self.calibration_id is not None

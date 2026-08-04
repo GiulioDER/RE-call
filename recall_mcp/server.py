@@ -3,8 +3,7 @@ from __future__ import annotations
 import os
 import threading
 from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Literal, TypeVar
 
 import anyio.to_thread
@@ -15,7 +14,6 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
 
-from recall.calibration import load_for
 from recall.control_plane import ControlPlane
 from recall.embeddings import embedding_profile_id
 from recall.readiness import check_enterprise_readiness
@@ -144,9 +142,7 @@ class RecallTokenVerifier:
             token=token,
             client_id=principal.name,
             scopes=sorted(principal.scopes),
-            expires_at=(
-                int(principal.expires_at.timestamp()) if principal.expires_at else None
-            ),
+            expires_at=(int(principal.expires_at.timestamp()) if principal.expires_at else None),
             claims={"tenant": principal.tenant, "principal": principal.name},
         )
 
@@ -173,7 +169,8 @@ def build_auth(
                 "RECALL_AUTH_TOKENS_FILE is set but transport is %r — stdio has no remote "
                 "caller to authenticate, so the tokens are unused and the single tenant "
                 "RECALL_TENANT=%r applies. Set RECALL_TRANSPORT=streamable-http to use them.",
-                transport, TENANT,
+                transport,
+                TENANT,
             )
         return None, None, None
 
@@ -222,7 +219,7 @@ async def _to_thread(fn: Callable[[], _T]) -> _T:
 
 def _make_lifespan(
     token_registry: TokenRegistry | None,
-) -> "Callable[[FastMCP], AbstractAsyncContextManager[dict]]":
+) -> Callable[[FastMCP], AbstractAsyncContextManager[dict]]:
     """Build the lifespan.
 
     Two shapes, decided by whether auth is on:
@@ -235,7 +232,7 @@ def _make_lifespan(
     """
 
     @asynccontextmanager
-    async def _lifespan(_server: FastMCP) -> "AsyncIterator[dict]":
+    async def _lifespan(_server: FastMCP) -> AsyncIterator[dict]:
         from recall.store import require_secure_dsn
 
         # FAIL CLOSED, unlike the CLI's warning: a server is unattended, so a stderr note about
@@ -299,7 +296,9 @@ def _make_lifespan(
         except Exception:
             _log.error(
                 "startup failed (dsn=%s, embedder=%r)",
-                redacted_dsn(DEFAULT_DSN), EMBEDDER_NAME, exc_info=True,
+                redacted_dsn(DEFAULT_DSN),
+                EMBEDDER_NAME,
+                exc_info=True,
             )
             raise
 
@@ -313,10 +312,11 @@ def _make_lifespan(
                 # and a bad DSN fail identically for every tenant, and finding that out on the
                 # first client request — per tenant, at request latency — turns a startup error
                 # into an intermittent runtime one.
-                probe = registry.get(sorted(registry.allowed_tenants)[0])
+                probe = registry.get(min(registry.allowed_tenants))
                 _log.info(
                     "auth enabled: %d tenant(s), up to %d pooled connections at full spread",
-                    len(registry.allowed_tenants), registry.max_connections(),
+                    len(registry.allowed_tenants),
+                    registry.max_connections(),
                 )
         except Exception:
             if store is not None:
@@ -326,12 +326,6 @@ def _make_lifespan(
             _log.error("schema check failed", exc_info=True)
             raise
 
-        calibration = load_for(embedding_profile_id(embedder))
-        if calibration is None:
-            _log.warning(
-                "no calibration for embedder %r — using the default threshold (results will "
-                "say calibrated=false). Run `recall calibrate` to fix.", embedder.name,
-            )
         if not probe.check_rls_effective():
             _log.warning(
                 "this database role bypasses row-level security (superuser or BYPASSRLS), so "
@@ -343,7 +337,6 @@ def _make_lifespan(
                 probe,
                 embedder,
                 control_plane=registry.control_plane if registry is not None else None,
-                calibration=calibration,
             )
             if not readiness.ready:
                 raise RuntimeError("enterprise readiness failed: " + "; ".join(readiness.failures))
@@ -365,7 +358,6 @@ def _make_lifespan(
                 "store": store,
                 "stores": registry,
                 "embedder": embedder,
-                "calibration": calibration,
                 "limiter": limiter,
                 "shadow_embedders": {},
                 "shadow_embedder_lock": threading.Lock(),
@@ -454,9 +446,13 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="recall_search",
-        annotations=ToolAnnotations(title="Search agent memory", readOnlyHint=True,
-                                    destructiveHint=False, idempotentHint=True,
-                                    openWorldHint=False),
+        annotations=ToolAnnotations(
+            title="Search agent memory",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
     )
     async def recall_search(query: str, source: str | None = None, k: int = 5) -> str:
         """Search the agent's OWN memory before acting, and get actionable guidance.
@@ -474,25 +470,31 @@ def build_server() -> FastMCP:
             k: max hits to return (default 5).
 
         Returns:
-            JSON of {query, abstained, reason, calibrated, gap_warning, stale, advice,
-            hits:[{source, score, confidence, verdict, superseded_by, valid_until,
-            indexed_at, text}]}.
+            JSON with abstention, calibration status and ID, tenant/generation/pipeline/corpus/
+            query-set identities, freshness, advice, and hits carrying provenance and verdicts.
         """
         state = _state()
         store = _require(SCOPE_READ)
         with METRICS.timer("recall_tool_latency_ms", tool="search"):
             return await _to_thread(
                 lambda: search_memory(
-                    store, state["embedder"], query, source=source, k=k,
-                    calibration=state.get("calibration"),
+                    store,
+                    state["embedder"],
+                    query,
+                    source=source,
+                    k=k,
                 ).model_dump_json(indent=2)
             )
 
     @mcp.tool(
         name="recall_index",
-        annotations=ToolAnnotations(title="Add to agent memory", readOnlyHint=False,
-                                    destructiveHint=False, idempotentHint=True,
-                                    openWorldHint=False),
+        annotations=ToolAnnotations(
+            title="Add to agent memory",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
     )
     async def recall_index(path: str) -> str:
         """Index a markdown file or folder into the agent's memory so it can be recalled later.
@@ -557,9 +559,13 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="recall_forget",
-        annotations=ToolAnnotations(title="Forget agent memory", readOnlyHint=False,
-                                    destructiveHint=True, idempotentHint=True,
-                                    openWorldHint=False),
+        annotations=ToolAnnotations(
+            title="Forget agent memory",
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
     )
     async def recall_forget(sources: list[str]) -> str:
         """Permanently delete indexed memory for the given source(s). IRREVERSIBLE.
@@ -589,9 +595,13 @@ def build_server() -> FastMCP:
 
     @mcp.tool(
         name="recall_stats",
-        annotations=ToolAnnotations(title="Memory freshness & size", readOnlyHint=True,
-                                    destructiveHint=False, idempotentHint=True,
-                                    openWorldHint=False),
+        annotations=ToolAnnotations(
+            title="Memory freshness & size",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
     )
     async def recall_stats() -> str:
         """Report how much memory exists and whether it is stale (freshness check).
@@ -602,9 +612,7 @@ def build_server() -> FastMCP:
             JSON of {chunks, newest_indexed_at, stale}.
         """
         store = _require(SCOPE_READ)
-        return await _to_thread(
-            lambda: memory_stats(store).model_dump_json(indent=2)
-        )
+        return await _to_thread(lambda: memory_stats(store).model_dump_json(indent=2))
 
     return mcp
 
@@ -621,7 +629,9 @@ def main() -> None:
         # misleading about what this process serves.
         _log.info(
             "starting %s server on %s:%s (authenticated)",
-            TRANSPORT, mcp.settings.host, mcp.settings.port,
+            TRANSPORT,
+            mcp.settings.host,
+            mcp.settings.port,
         )
     else:
         _log.info("starting stdio server", extra={"tenant": TENANT, "embedder": EMBEDDER_NAME})

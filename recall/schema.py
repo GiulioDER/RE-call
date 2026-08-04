@@ -29,11 +29,13 @@ GENERATION_TABLES = (
     "recall_ingest_jobs",
     "recall_audit_events",
     "recall_source_tombstones",
+    "recall_calibration_query_sets",
+    "recall_calibrations",
 )
 GLOBAL_MIGRATION_TARGET = "__global__"
 GLOBAL_MIGRATION_START = "0008"
 _MIGRATION_NAME = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
-_INDEX_MARKER = re.compile(r"^-- recall:concurrent-index ([A-Za-z_][A-Za-z0-9_]*)$", re.M)
+_INDEX_MARKER = re.compile(r"^-- recall:concurrent-index ([A-Za-z_][A-Za-z0-9_]*)$", re.MULTILINE)
 
 
 class SchemaError(RuntimeError):
@@ -183,7 +185,9 @@ def _ledger_exists(conn: Connection) -> bool:
     return bool(row and row[0])
 
 
-def _read_applied(conn: Connection, table: str) -> dict[str, tuple[str, str, str | None, str | None]]:
+def _read_applied(
+    conn: Connection, table: str
+) -> dict[str, tuple[str, str, str | None, str | None]]:
     if not _ledger_exists(conn):
         return {}
     rows = conn.execute(
@@ -209,15 +213,11 @@ def schema_status(dsn: str, *, table: str = DEFAULT_TABLE, dim: int) -> SchemaSt
         )
     states: list[MigrationState] = []
     for migration in migrations:
-        applied = (
-            global_applied if migration.version >= GLOBAL_MIGRATION_START else table_applied
-        )
+        applied = global_applied if migration.version >= GLOBAL_MIGRATION_START else table_applied
         row = applied.get(migration.version)
         if row is None:
             states.append(
-                MigrationState(
-                    migration.version, migration.filename, migration.checksum, "pending"
-                )
+                MigrationState(migration.version, migration.filename, migration.checksum, "pending")
             )
             continue
         checksum, state, applied_at, error = row
@@ -266,8 +266,7 @@ def _validate_existing_table(conn: Connection, table: str, dim: int) -> None:
     required = {"id", "source", "text", "metadata", "embedding", "indexed_at", "tsv"}
     if missing := sorted(required - columns):
         raise SchemaIncompatible(
-            f"table {table!r} is not a recall table compatible with v0.8; "
-            f"missing columns {missing}"
+            f"table {table!r} is not a recall table compatible with v0.8; missing columns {missing}"
         )
     actual_dim = columns_row[1] if columns_row else None
     if actual_dim is None:
@@ -326,9 +325,7 @@ def _validate_current_schema(conn: Connection, table: str, dim: int) -> None:
     _validate_generation_schema(conn, dim, enforce_dimension=table == DEFAULT_TABLE)
 
 
-def _validate_generation_schema(
-    conn: Connection, dim: int, *, enforce_dimension: bool
-) -> None:
+def _validate_generation_schema(conn: Connection, dim: int, *, enforce_dimension: bool) -> None:
     """Validate the global v1 generation boundary after migration 0008."""
     missing_tables = [
         table
@@ -350,9 +347,7 @@ def _validate_generation_schema(
             (policy, table),
         ).fetchone()
         if not state or state != (True, True, True, want, want, True, "*"):
-            raise SchemaIncompatible(
-                f"generation table {table!r} row-level-security policy drift"
-            )
+            raise SchemaIncompatible(f"generation table {table!r} row-level-security policy drift")
 
     rows = conn.execute(
         "SELECT c.relname, i.indisvalid FROM pg_index i "
@@ -524,9 +519,7 @@ def apply_migrations(
                     f"table {table!r} has unknown schema migration(s) {unknown}; upgrade RE-call"
                 )
             global_migrations = tuple(
-                migration
-                for migration in migrations
-                if migration.version >= GLOBAL_MIGRATION_START
+                migration for migration in migrations if migration.version >= GLOBAL_MIGRATION_START
             )
             if table != DEFAULT_TABLE and any(
                 migration.version not in global_existing for migration in global_migrations
@@ -542,9 +535,7 @@ def apply_migrations(
                     else table
                 )
                 existing = (
-                    global_existing
-                    if ledger_target == GLOBAL_MIGRATION_TARGET
-                    else table_existing
+                    global_existing if ledger_target == GLOBAL_MIGRATION_TARGET else table_existing
                 )
                 row = existing.get(migration.version)
                 if row is not None:
@@ -576,9 +567,7 @@ def apply_migrations(
                     "SELECT set_config('statement_timeout', %s, false)",
                     (prior_statement_timeout,),
                 )
-                conn.execute(
-                    "SELECT set_config('lock_timeout', %s, false)", (prior_lock_timeout,)
-                )
+                conn.execute("SELECT set_config('lock_timeout', %s, false)", (prior_lock_timeout,))
             finally:
                 conn.execute(
                     "SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (MIGRATION_LOCK_NAME,)
@@ -599,9 +588,7 @@ def check_schema(conn: Connection, *, table: str = DEFAULT_TABLE, dim: int) -> N
         )
     pending: list[str] = []
     for migration in migrations:
-        applied = (
-            global_applied if migration.version >= GLOBAL_MIGRATION_START else table_applied
-        )
+        applied = global_applied if migration.version >= GLOBAL_MIGRATION_START else table_applied
         row = applied.get(migration.version)
         if row is None or row[1] != "applied":
             pending.append(migration.version)

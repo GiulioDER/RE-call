@@ -9,28 +9,29 @@ step over `HybridRetriever.search()`:
 - a memory that is superseded or outside its validity window loses even with a top cosine:
   valid hits are ordered first (so a retrieved successor outranks the stale memory it replaced),
   and when NO valid hit remains the result is an explicit abstention with a reason;
-- the abstention threshold comes from `recall.calibration` when available; otherwise the default
-  gap threshold is used and the result is flagged ``calibrated=False``.
+- the abstention threshold comes from an exact v2 generation binding when available; otherwise
+  the default gap threshold is used and the result is flagged ``calibrated=False``.
 """
+
 from __future__ import annotations
 
 import re
 import time
 import unicodedata
 from dataclasses import replace
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from recall.observability import METRICS
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # avoid a runtime import cycle: entailment imports trust's abstain wording
     from recall.entailment import EntailmentJudge
 
 from recall.calibration import Calibration
-from recall.observability import get_logger
 from recall.embeddings import Embedder, embedding_profile_id
 from recall.frontmatter import validity_bounds
 from recall.guards import DEFAULT_GAP_THRESHOLD
+from recall.observability import get_logger
 from recall.rerank import Reranker
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
 from recall.store import EdgeCandidates, PgVectorStore
@@ -63,7 +64,7 @@ def _as_utc(value: datetime) -> datetime:
     module (`now`, `known_as_of`, and each candidate's date) all put a caller-supplied instant
     against a TIMESTAMPTZ from the store, and normalising some of them raises where normalising
     none of them did not."""
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _warn_no_edge_dates(store_type: str) -> None:
@@ -103,7 +104,7 @@ def _warn_uncalibrated(embedder_name: str) -> None:
     quantile on real queries, corpus quantile derived from self-queries at index time). Every one
     is a monotone function of the same score, and the score does not always order the classes
     correctly. So this does not silently pick a different constant — it says which model is
-    unmeasured and points at `recall calibrate`, and lets the caller decide.
+    unmeasured and points at generation-bound calibration, and lets the caller decide.
     """
     if embedder_name in _WARNED_UNCALIBRATED:
         return
@@ -112,8 +113,9 @@ def _warn_uncalibrated(embedder_name: str) -> None:
         "no calibration found for embedder %r — abstention will use the UNTUNED default cosine "
         "floor %.2f. That constant is not comparable across embedders (measured: 0th percentile "
         "of five top-1 distributions, 16th of a sixth), so on some models it never fires and on "
-        "others it discards a sixth of queries as empty retrieval. Run `recall calibrate` for "
-        "this embedder, or pass calibration= explicitly, to replace the guess with a measurement.",
+        "others it discards a sixth of queries as empty retrieval. Run `recall calibrate "
+        "--generation G --queries FILE --publish` for the active tenant generation to replace "
+        "the guess with an exact measurement.",
         embedder_name,
         DEFAULT_GAP_THRESHOLD,
     )
@@ -122,16 +124,16 @@ def _warn_uncalibrated(embedder_name: str) -> None:
 #: ANSI escape sequences a terminal ACTS on: CSI (`\x1b[…`), OSC (`\x1b]…` up to BEL or ST), and
 #: the two-character forms. Matched as whole sequences so nothing is left behind to re-arm.
 _ANSI_SEQUENCE = re.compile(
-    r"\x1b\[[0-?]*[ -/]*[@-~]"        # CSI — cursor moves, erases, colours
+    r"\x1b\[[0-?]*[ -/]*[@-~]"  # CSI — cursor moves, erases, colours
     r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC — window title, hyperlinks
-    r"|\x1b[@-Z\\-_]"                 # two-character escapes
+    r"|\x1b[@-Z\\-_]"  # two-character escapes
 )
 
 
 def resolve_successor(
     file: str,
     supersession: dict[str, str],
-    edge_candidates: "EdgeCandidates | None" = None,
+    edge_candidates: EdgeCandidates | None = None,
     known_as_of: datetime | None = None,
 ) -> str | None:
     """Terminal successor of `file` in the supersession chain, or None if it has none.
@@ -219,7 +221,7 @@ def _verdict(
     now: datetime,
     unresolved: frozenset[str] = frozenset(),
     known_as_of: datetime | None = None,
-    edge_candidates: "EdgeCandidates | None" = None,
+    edge_candidates: EdgeCandidates | None = None,
 ) -> tuple[Verdict, Validity]:
     meta = hit.chunk.metadata
     file = meta.get("file")
@@ -313,8 +315,7 @@ def terminal_safe(value: str | None) -> str:
         return ""
     cleaned = _ANSI_SEQUENCE.sub("", str(value))
     return "".join(
-        ch for ch in cleaned
-        if not unicodedata.category(ch).startswith(("Cc", "Cf", "Zl", "Zp"))
+        ch for ch in cleaned if not unicodedata.category(ch).startswith(("Cc", "Cf", "Zl", "Zp"))
     )
 
 
@@ -441,7 +442,11 @@ def evaluate(
     now: datetime,
     unresolved: frozenset[str] = frozenset(),
     known_as_of: datetime | None = None,
-    edge_candidates: "EdgeCandidates | None" = None,
+    edge_candidates: EdgeCandidates | None = None,
+    calibration_id: str | None = None,
+    calibration_status: str | None = None,
+    generation_binding: dict[str, str] | None = None,
+    query_set_digest: str | None = None,
 ) -> TrustedResult:
     """Pure trust evaluation of a retrieval result (no DB access, no clock reads).
 
@@ -485,7 +490,7 @@ def evaluate(
     A tz-naive `now` is interpreted as UTC.
     """
     if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
+        now = now.replace(tzinfo=UTC)
     if known_as_of is not None:
         # BOTH operands, and NOT only when `known_as_of` happened to be naive. Nesting the
         # `edge_candidates` half inside that branch left the mirror combination raising: an AWARE
@@ -550,10 +555,20 @@ def evaluate(
         hits=ok + rest,
         abstained=abstained,
         reason=abstain_reason(rest) if abstained else "",
-        calibrated=calibration is not None,
         gap_warning=result.gap_warning,
         staleness=result.staleness,
         diagnostics=result.diagnostics,
+        calibration_id=calibration_id,
+        calibration_status=(
+            calibration_status
+            if calibration_status is not None
+            else ("legacy_unbound" if calibration is not None else "missing")
+        ),
+        tenant_id=(generation_binding or {}).get("tenant_id"),
+        generation_id=(generation_binding or {}).get("generation_id"),
+        pipeline_fingerprint=(generation_binding or {}).get("pipeline_fingerprint"),
+        corpus_fingerprint=(generation_binding or {}).get("corpus_fingerprint"),
+        query_set_digest=query_set_digest,
     )
 
 
@@ -567,7 +582,7 @@ def trusted_search(
     reranker: Reranker | None = None,
     now: datetime | None = None,
     known_as_of: datetime | None = None,
-    entailment: "EntailmentJudge | None" = None,
+    entailment: EntailmentJudge | None = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
     retrieval_profile: str = "legacy",
     index_generation: str = "legacy",
@@ -608,30 +623,27 @@ def trusted_search(
     # single fallback resolution: the retriever's gap threshold and the verdict threshold must
     # always come from the same calibration (or the same uncalibrated default)
     #
-    # A calibration on disk is LOADED here when the caller passes none. It used to be read only
-    # by `recall.cli`, so a user who ran `recall calibrate`, saw calibration.json appear, and then
-    # used the library API got the uncalibrated default anyway — silently, while this module's own
-    # docstring promised the threshold "comes from recall.calibration when available". It was
-    # available; nothing fetched it.
-    #
-    # The cost of that gap is measurable, not theoretical: DEFAULT_GAP_THRESHOLD is 0.50, tuned
-    # for bge-small whose cosines run high. On text-embedding-3-small, whose top-1 cosines were
-    # measured between 0.41 and 0.76, it silently dropped 18 of 300 BEAM questions to EMPTY
-    # retrieval — a guaranteed zero, no warning, on a model the library advertises support for.
-    #
-    # Explicit `calibration=` still wins, and a corpus with no calibration file behaves exactly as
-    # before, so this cannot change a result for anyone who had not already calibrated.
-    if calibration is None:
-        from recall.calibration import load_for
-
-        # `name` is part of the Embedder protocol, but this reads it DEFENSIVELY: auto-loading is
-        # a convenience, and a convenience must never turn a search that worked into an
-        # AttributeError. A stub or a partial implementation simply does not get a calibration,
-        # which is exactly the behaviour it had before this feature existed.
-        name = embedding_profile_id(embedder)
-        calibration = load_for(name)
-        if calibration is None:
-            _warn_uncalibrated(name)
+    # Generation stores resolve through the tenant-scoped database repository. Legacy JSON is
+    # deliberately never auto-loaded: it has no tenant, generation, pipeline, corpus, or labelled
+    # query-set binding and therefore cannot establish that its threshold applies here.
+    calibration_id: str | None = None
+    calibration_status = "legacy_unbound" if calibration is not None else "missing"
+    query_set_digest: str | None = None
+    generation_binding: dict[str, str] | None = None
+    binding_reader = getattr(store, "generation_binding", None)
+    if callable(binding_reader):
+        generation_binding = binding_reader()
+    resolver = getattr(store, "resolve_calibration", None)
+    if calibration is None and callable(resolver):
+        resolution = resolver()
+        calibration_status = resolution.status.value
+        artifact = resolution.artifact
+        if artifact is not None:
+            calibration = artifact.runtime
+            calibration_id = artifact.calibration_id
+            query_set_digest = artifact.query_set_digest
+    elif calibration is None:
+        _warn_uncalibrated(embedding_profile_id(embedder))
     cal = calibration or _UNCALIBRATED
     retriever = HybridRetriever(
         store,
@@ -650,7 +662,7 @@ def trusted_search(
     # and a store without the method degrades to exactly the pre-change behaviour.
     supersession: dict[str, str] = {}
     unresolved: frozenset[str] = frozenset()
-    edge_candidates: "EdgeCandidates | None" = None
+    edge_candidates: EdgeCandidates | None = None
     if result.hits:
         fetch_all = getattr(store, "supersession_all", None) if known_as_of is not None else None
         if fetch_all is not None:
@@ -664,10 +676,14 @@ def trusted_search(
         result,
         supersession,
         calibration,
-        now or datetime.now(timezone.utc),
+        now or datetime.now(UTC),
         unresolved,
         known_as_of,
         edge_candidates,
+        calibration_id,
+        calibration_status,
+        generation_binding,
+        query_set_digest,
     )
     stage_ms = dict(trusted.diagnostics.stage_ms)
     stage_ms["trust_evaluation"] = round((time.perf_counter() - trust_started) * 1000.0, 3)
