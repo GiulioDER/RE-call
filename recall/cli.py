@@ -617,7 +617,10 @@ def main(argv: list[str] | None = None) -> None:
                 summary += f", pruned {stats.deleted} source(s) no longer on disk"
             print(summary)
     elif args.cmd == "forget":
-        if os.environ.get("RECALL_ENV", "development").lower() == "production":
+        from recall.generations import NoActiveGeneration
+
+        generation_mode = os.environ.get("RECALL_ENV", "development").lower() == "production"
+        if generation_mode:
             from recall.generation_store import GenerationStore
 
             forget_store: PgVectorStore = GenerationStore(
@@ -630,22 +633,41 @@ def main(argv: list[str] | None = None) -> None:
         with forget_store as store:
             store.check_schema()
             requested = list(dict.fromkeys(args.sources))
-            existing = store.source_content_hashes()
-            found = [s for s in requested if s in existing]
-            not_found = [s for s in requested if s not in existing]
+            try:
+                visible_now = set(store.source_content_hashes())
+            except NoActiveGeneration:
+                visible_now = set()
+            unseen = [s for s in requested if s not in visible_now]
+            if generation_mode:
+                # `source_content_hashes()` is scoped to ONE generation here, so it may only
+                # annotate the request, never filter it. A source that dropped out of the
+                # active generation still has rows in the previous one, and it is exactly that
+                # source whose erasure most needs the tombstone: without one the next build
+                # reads `_is_tombstoned() == False` and re-ingests it. Filtering reported
+                # success while writing no tombstone and deleting nothing.
+                targets = requested
+                unseen_note = (
+                    "not visible in the active generation; erased in every generation "
+                    f"that holds them: {', '.join(unseen)}"
+                )
+            else:
+                # The v0.8 table has no generations, so the probe covers everything the
+                # tenant owns and an absent source really is a typo.
+                targets = [s for s in requested if s in visible_now]
+                unseen_note = f"not found (check for typos): {', '.join(unseen)}"
             if not args.yes:
                 print(
-                    f"DRY RUN: would forget {len(found)} source(s): "
-                    f"{', '.join(found) if found else '(none)'}"
+                    f"DRY RUN: would forget {len(targets)} source(s): "
+                    f"{', '.join(targets) if targets else '(none)'}"
                 )
-                if not_found:
-                    print(f"not found (check for typos): {', '.join(not_found)}")
+                if unseen:
+                    print(unseen_note)
                 print("nothing deleted — re-run with --yes to actually delete.")
             else:
-                removed = store.delete_sources(found)
-                print(f"forgot {removed} chunk(s) from {len(found)} source(s)")
-                if not_found:
-                    print(f"not found (check for typos): {', '.join(not_found)}")
+                removed = store.delete_sources(targets)
+                print(f"forgot {removed} chunk(s) from {len(targets)} source(s)")
+                if unseen:
+                    print(unseen_note)
     elif args.cmd == "search":
         entail_judge = None
         if args.entail:
