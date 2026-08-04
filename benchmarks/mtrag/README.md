@@ -2,7 +2,14 @@
 
 This adapter evaluates RE-call on the fixed, four-domain public MTRAG-UN release used by
 MTRAGEval. It indexes the official passage-level ClapNQ, Cloud, FiQA, and Govt corpora and scores
-the released qrels with macro-averaged nDCG and Recall at 1, 3, 5, and 10.
+the released qrels with nDCG and Recall at 1, 3, 5, and 10.
+
+The headline `overall` figure is a **pooled mean over all judged queries**, so each domain counts
+in proportion to how many judged queries it has, not equally. It is not a macro average in the
+sense `recall/promotion.py` uses that word (the unweighted mean of the per-corpus figures); on the
+2026-08-04 baseline the two differ by 1.5% to 6.6% and disagree on one arm ordering. The
+per-domain figures are reported separately under `domains`, so the macro average is derivable from
+any archived metrics file.
 
 The frozen arms are declared in `run.py`. `recall_default_last` is the primary result; the
 reranked and recent-history arms are secondary or competitive configurations, not replacements

@@ -22,8 +22,10 @@ before that change can go green.
 | 3 | Archive with a SHA256 manifest and a provenance note | done, 29 files |
 | 4 | Commit the runner under version control | done, this branch |
 | 5 | Create this status file | done |
+| 6 | Fix AUD-1 (the "macro-averaged" label) | done, label corrected and pinned by a discriminating test |
 
-No implementation work and no new benchmark run were performed; both were out of scope.
+No new benchmark run was performed. Implementation work was out of scope for the salvage itself;
+the AUD-1 fix (item 6) was authorised separately after the audit surfaced it.
 
 ### Corrections to the inherited snapshot
 
@@ -111,10 +113,11 @@ four arms report zero.
 Full results are in the archive; the headline is reproduced here for handoff only, and the
 artifact is authoritative.
 
-**These are POOLED means over all 332 judged queries, not macro averages.** See the audit finding
-AUD-1 below; the distinction is worth 1.5 % to 6.6 % and the two definitions do not agree on one
-arm ordering. The `elapsed` column is per-arm total including prediction writing and scoring, not
-retrieval time alone (finding AUD-4).
+**These are POOLED means over all 332 judged queries, not macro averages.** Each domain counts in
+proportion to its judged-query count. The distinction is worth 1.5 % to 6.6 % and the two
+definitions do not agree on one arm ordering; see AUD-1 below, now fixed in the README and pinned
+by a test. The `elapsed` column is per-arm total including prediction writing and scoring, not
+retrieval time alone (finding AUD-4, open).
 
 | arm | nDCG@5 (pooled) | Recall@5 (pooled) | nDCG@10 (pooled) | elapsed (s) |
 |---|---|---|---|---|
@@ -137,17 +140,27 @@ on latency grounds may cite them.
 `benchmarks/mtrag/` and `tests/test_mtrag_benchmark.py` are committed on this branch. They existed
 in no ref of the repository before it.
 
-One change was necessary: the salvaged `run.py` failed `mypy` with two `var-annotated` errors, and
-`disallow_untyped_defs` applies to `benchmarks/`. Two local variable annotations were added. **The
+Two changes were made to the salvaged `run.py`. First, it failed `mypy` with two `var-annotated`
+errors and `disallow_untyped_defs` applies to `benchmarks/`, so two local variable annotations were
+added. Second, `score_predictions` gained a docstring as part of the AUD-1 fix below. **The
 committed `run.py` is therefore not byte-identical to the adapter that produced the run**, so its
 SHA256 no longer matches `adapter_sha256`. The byte-exact adapter is preserved at
 `…/runner/run.py` in the archive, and that is the copy the manifest's `adapter_sha256` refers to.
 
-The edit was proven behaviour-neutral rather than assumed: both files were compiled and every code
-object compared on opcodes, operands, names and argument layout. The fingerprints are identical.
-The comparison carries a negative control (mutate `0.0` to `1.0` in `ndcg_at` and confirm the
-comparison reports a difference), so the identical result is detection, not a check that cannot
-fail.
+Behaviour-neutrality was proven, not assumed. The annotation-only change was verified by compiling
+both files and comparing every code object on opcodes, operands, names and argument layout;
+fingerprints were identical. Adding the docstring then broke that equivalence in
+`score_predictions` (a docstring lands in `co_consts`), so bytecode identity was **replaced by a
+stronger check rather than quietly dropped**: both adapters were run over the real frozen
+predictions for all six arms, and every figure was required to equal the archived metrics file.
+
+> All six arms reproduce the archived scores exactly, to full float precision, under both the
+> archived and the committed adapter (`committed == archived == frozen` for every arm). Example:
+> `recall_default_last` overall nDCG@5 is `0.3700930547143303` from both.
+
+Both proofs carry a negative control (mutate `0.0` to `1.0` in `ndcg_at` for the bytecode check;
+reverse one task's context order for the reproduction check), each confirmed to report a
+difference, so a green result is detection rather than a check that cannot fail.
 
 Gates run on the change: `ruff check .` clean, `mypy` clean across 137 source files,
 `pytest tests/test_mtrag_benchmark.py` 3 passed, and the claim-gate suite
@@ -170,7 +183,7 @@ command I ran; where it says "reasoned", it is LLM adjudication only.
 
 | ID | Finding | Verdict | Basis |
 |---|---|---|---|
-| **AUD-1** | `benchmarks/mtrag/README.md` says the adapter reports "macro-averaged nDCG and Recall". `score_predictions` pools all 332 judged queries into one list and divides by 332, weighting each domain by its judged-query count (clapnq 83, cloud 86, fiqa 58, govt 105). This repo already defines macro as the *unweighted* mean of per-corpus values (`recall/promotion.py:63-71`). | **CONFIRMED, P1** | measured |
+| **AUD-1** | `benchmarks/mtrag/README.md` said the adapter reports "macro-averaged nDCG and Recall". `score_predictions` pools all 332 judged queries into one list and divides by 332, weighting each domain by its judged-query count (clapnq 83, cloud 86, fiqa 58, govt 105). This repo already defines macro as the *unweighted* mean of per-corpus values (`recall/promotion.py:63-71`). | **CONFIRMED, P1 → FIXED** | measured |
 | **AUD-2** | `preregistered_manifest.json` records `embedder_model` but no reranker model or revision, although two of the six arms rerank. The archived reranker identity had to be recovered by reading `recall/rerank.py`, not from the artifact. | **CONFIRMED, P2** | read |
 | **AUD-3** | `index_domain`'s completion guard (`final_count != seen`) compares row *counts*, never row *identity*. Re-running against a changed corpus under the same `--table-prefix` yields `final_count == seen` and the guard passes on a silently mixed index. | **CONFIRMED, P2** | reasoned |
 | **AUD-4** | Per-arm `elapsed_s` is evaluated after prediction writing and after `score_predictions` (which re-parses all four qrels files), so it is not retrieval wall time. The `latency_ms` p50/p95 are unaffected: those come from the in-loop list. | **CONFIRMED, P2** | read |
@@ -211,8 +224,28 @@ out of `recall/promotion.py` and on a measurement executed over the artifacts, s
 artifact-backed, and the pipeline forbids routing an artifact-backed verdict to three LLM skeptics
 to re-litigate.
 
-Decision needed: either correct the README wording to "pooled mean over judged queries", or add a
-true macro field and publish that. Both are one-line changes; neither was made here.
+**AUD-1 is fixed.** The label was corrected rather than the metric. Changing the aggregation would
+have invalidated the archived run's comparability without a re-run, for a figure that is already
+derivable: `domains[*]` is in every metrics file, so anyone wanting the macro average can compute
+it from what is archived. Three things changed:
+
+1. `benchmarks/mtrag/README.md` now states that `overall` is a pooled mean over judged queries,
+   says explicitly that it is not a macro average in `recall/promotion.py`'s sense, and records
+   the size of the gap.
+2. `score_predictions` gained a docstring stating the averaging semantics at the place the
+   arithmetic happens, so the next reader does not have to re-derive it from the loop.
+3. `test_score_predictions_is_macro_average` was **renamed and its fixture rebuilt**. This was the
+   load-bearing part. The old fixture used one judged query in each of two domains, where pooled
+   and macro both give 0.5, so a test whose name asserted "macro" passed identically under either
+   definition. It could not have failed. The replacement,
+   `test_score_predictions_overall_is_pooled_not_domain_macro`, uses three judged queries in
+   clapnq against one in cloud: pooled gives 0.75, domain macro gives 0.5, and the test asserts
+   both the pooled value and that it differs from the macro of the domain rows.
+
+The new test was proven able to fail: `score_predictions` was mutated on an isolated copy to
+compute the domain macro, and the test's assertions were replayed against it. Green on the real
+implementation, red on the mutant. The proof script refuses to report a result at all if the
+mutation fails to apply, so a silently unapplied mutation cannot read as success.
 
 ### Standing blockers
 
@@ -224,13 +257,10 @@ true macro field and publish that. Both are one-line changes; neither was made h
 
 ### What the next session should start with
 
-1. **Resolve AUD-1 before any of these numbers are published anywhere else.** A figure labelled
-   "macro" that is pooled is the exact defect class this project exists to catch, and it is
-   currently in a committed README. One line of wording, or one added field.
-2. Decide whether the MT-RAG baseline earns a `results/ARTIFACTS.md` row. It was deliberately not
+1. Decide whether the MT-RAG baseline earns a `results/ARTIFACTS.md` row. It was deliberately not
    added here. Adding one means satisfying `claim_gate.py` and the two artifact tests in the same
    commit, and a new gated section costs a marker per number.
-3. Resolve the latency reference host as an external dependency, or record explicitly that
+2. Resolve the latency reference host as an external dependency, or record explicitly that
    promotion stays blocked. It is not solvable on VPS2.
-4. Confirm whether an approved local generator exists. Until it does, the evidence boundary cannot
+3. Confirm whether an approved local generator exists. Until it does, the evidence boundary cannot
    be exercised end to end.
