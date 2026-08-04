@@ -150,7 +150,7 @@ def test_advice_carries_no_corpus_text_at_all():
     They are not lost: `reason` and each hit's `source` / `superseded_by` still carry them, as
     structured JSON fields a client renders as data rather than as guidance.
     """
-    from recall_mcp.service import search_memory
+    from tests.conftest import dev_search_memory as search_memory
 
     store = _OneHitStore(file="stale.md", successor=INJECTION)
     result = search_memory(store, _ConstantEmbedder(), "what is the rate limit?", k=5)
@@ -163,7 +163,7 @@ def test_advice_carries_no_corpus_text_at_all():
 
 def test_the_blocking_memory_is_still_identifiable_in_a_structured_field():
     """Moving the name out of `advice` must not cost the operator the diagnosis."""
-    from recall_mcp.service import search_memory
+    from tests.conftest import dev_search_memory as search_memory
 
     store = _OneHitStore(file="stale.md", successor=INJECTION)
     result = search_memory(store, _ConstantEmbedder(), "what is the rate limit?", k=5)

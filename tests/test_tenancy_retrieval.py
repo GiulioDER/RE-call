@@ -23,7 +23,7 @@ import pytest
 
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
-from recall.trust import trusted_search
+from tests.conftest import dev_search
 from recall.types import Chunk
 
 from tests.conftest import TEST_DSN, requires_db
@@ -107,11 +107,11 @@ def test_one_tenants_supersedes_edge_cannot_demote_another_tenants_memory(two_te
 
     # A authored the edge, so A's own copy is correctly superseded — this pins that the test
     # setup really did create a live edge, so B's `ok` below is isolation and not a no-op.
-    a_hit = next(h for h in trusted_search(a, embedder, "note", k=10).hits
+    a_hit = next(h for h in dev_search(a, embedder, "note", k=10).hits
                  if h.chunk.source == "shared.md")
     assert a_hit.verdict == "superseded"
 
-    b_hit = next(h for h in trusted_search(b, embedder, "note", k=10).hits
+    b_hit = next(h for h in dev_search(b, embedder, "note", k=10).hits
                  if h.chunk.source == "shared.md")
     assert b_hit.verdict == "ok"
     assert b_hit.validity.superseded_by is None
@@ -141,7 +141,7 @@ def test_another_tenants_same_named_file_cannot_make_an_edge_ambiguous(two_tenan
     # A sees exactly one `x.md`, so the edge resolves and nothing is unresolved.
     assert a.supersession() == ({"dir1/x.md": "new.md"}, frozenset())
 
-    hit = next(h for h in trusted_search(a, DictEmbedder({}, _vec(0)), "old", k=10).hits
+    hit = next(h for h in dev_search(a, DictEmbedder({}, _vec(0)), "old", k=10).hits
                if h.chunk.source == "dir1/x.md")
     assert hit.verdict == "superseded"
 

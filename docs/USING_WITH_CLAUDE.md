@@ -122,3 +122,36 @@ for the ~30-line pattern: search first; if a non-gap closed decision surfaces, b
 
 — Back to the [README](../README.md) · the [engineering writeup](WRITEUP.md) · the
 [case study](CASE_STUDY.md).
+
+## Strict trust: what the tools return when the gate cannot certify an answer
+
+The MCP service defaults to **strict**, like the library. A server that degraded by omission would
+be a server that degrades in production.
+
+`SearchResult` carries two additional fields:
+
+- `trust_state` — `trusted` or `degraded`. A strict server never returns `degraded`; it refuses.
+- `failure_code` — the stable code when the gate could not certify: `INDEX_NOT_READY`,
+  `LINEAGE_MISMATCH`, `CALIBRATION_MISSING`, `CALIBRATION_UNCERTIFIED`, `CALIBRATION_STALE`,
+  `DEPENDENCY_UNAVAILABLE`. `null` when trusted.
+
+A strict refusal propagates as `TrustRefusal` rather than an empty `SearchResult`, deliberately. A
+result object with no hits is indistinguishable from "the gate ran and found nothing", and keeping
+those two apart is the entire purpose of this layer.
+
+### What an agent should do with each
+
+| Situation | What it means | What the agent should do |
+|---|---|---|
+| `abstained: true`, no failure code | A working, certified gate found nothing it would stand behind | Say you do not know. This is a real answer |
+| `TrustRefusal` with any code | The gate could not run | Do **not** treat this as "no prior memory". Report the outage and do not proceed on the assumption that nothing was found |
+| `trust_state: degraded` | A development server answered without a certified threshold | Treat every hit as unverified context. There is no abstention decision to rely on |
+
+The failure between these is the one worth designing against: an agent that reads an outage as
+"nothing found" will re-litigate a decision that was in fact settled, confidently. See
+`examples/self_recall_agent.py`, whose refusal branch exists for exactly this.
+
+### Development mode
+
+Set `RECALL_TRUST_MODE=development` for local work against a corpus with no published calibration.
+Anything other than the exact string `development` stays strict, so a typo cannot open the gate.

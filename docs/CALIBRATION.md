@@ -101,3 +101,72 @@ checks. Grant the serving role DML on `recall_calibrations` and
 Calibration exports contain questions and raw retrieval scores. Treat them as corpus data. Creation,
 rejection, publication, import, and supersession are appended to `recall_audit_events`; administrative
 tools should use a meaningful actor identifier.
+
+## Strict trust policy: what happens when calibration is absent, stale or uncertified
+
+Before this, an absent or uncertified calibration was not an error. `trusted_search` fell back to
+the library's 0.50 default and answered anyway, so the caller received a normal-looking result
+whose verdicts came from a threshold nobody had certified for that corpus.
+
+That fallback is gone. `TrustPolicy` decides what happens instead, and **strict is the default**
+for the library and for the MCP service. Omitting a policy cannot open the gate.
+
+### The six failure codes
+
+| Code | Meaning | Remedy |
+|---|---|---|
+| `INDEX_NOT_READY` | No active generation for this tenant | Build and promote a generation |
+| `LINEAGE_MISMATCH` | Generation pipeline or corpus fingerprint is not what the artifact bound | Recalibrate against the current generation |
+| `CALIBRATION_MISSING` | No artifact bound to this tenant and generation | Calibrate against a labelled query set and publish |
+| `CALIBRATION_UNCERTIFIED` | An artifact exists but was never certified | Certify and publish a replacement; the rejected evidence is retained |
+| `CALIBRATION_STALE` | A certified artifact no longer binds to the current lineage | Recalibrate (a rebuild or privacy erasure changed the corpus fingerprint) |
+| `DEPENDENCY_UNAVAILABLE` | A dependency the gate needs was unreachable | Retry once healthy |
+
+These are an API. Automating on them is the intended use, so their spelling is pinned by test.
+
+`DRAFT` maps to `CALIBRATION_UNCERTIFIED` deliberately. A draft artifact is certified in the
+statistical sense but has not been published, so it is not the artifact an operator chose to serve.
+
+### Why the refusal happens before retrieval
+
+The gate sits above `retriever.search(...)`. A refusal raised before any `query_dense` call cannot
+leak chunk text, source names or previews, because none were ever fetched. The alternative,
+filtering the payload afterwards, would leave a sanitiser that someone eventually forgets to call.
+The regression test asserts this structurally, using a store whose retrieval methods raise if they
+are reached at all, rather than by inspecting the refusal's message.
+
+### An outage is not an empty answer
+
+`DEPENDENCY_UNAVAILABLE` exists because "the gate ran and found nothing" and "the gate could not
+run" are the same shape on the wire and opposite in meaning. Collapsing them is how a downstream
+agent concludes there is no prior decision on a question that was in fact settled. Every code's
+`advice` states that no trustworthy decision was possible; none of them says an answer was not
+found.
+
+### Development mode
+
+```python
+from recall.trust_policy import TrustPolicy
+
+result = trusted_search(store, embedder, "…", policy=TrustPolicy.development())
+```
+
+Development mode retrieves, but it cannot claim anything:
+
+- `trust_state=degraded`, and `calibrated` is `False` regardless of what the status says
+- `calibration_status` names the specific reason, and `failure_code` carries the stable code
+- with no threshold at all, every hit is `verdict=unverified` and `abstained` is forced `False`,
+  since an abstention is itself a trustworthy decision
+- if you pass an explicit `Calibration`, the verdicts it produces are kept (this is what abstention
+  benchmarks measure), but the result is still `degraded` and still not `calibrated`
+
+The CLI reads `RECALL_TRUST_MODE`; anything other than the exact string `development` is strict, so
+a typo cannot open the gate. In development the CLI prints the uncertified threshold it is using
+rather than inheriting one silently.
+
+### What this does not protect against
+
+Strict mode constrains what the library will *claim*. It does not verify the corpus, and it cannot
+help if an operator publishes a certified artifact measured on a query set that does not represent
+production traffic. A certified calibration means the binding is exact and the statistics were
+computed on a labelled set; it does not mean the labelled set was a good one.

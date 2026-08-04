@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from recall.embeddings import HashingEmbedder
 from recall.index import Indexer
-from recall.trust import trusted_search
+from tests.conftest import dev_search
 
 from tests.conftest import requires_db
 
@@ -26,7 +26,7 @@ def test_superseded_memory_loses_to_successor(tmp_path, make_store):
     store = make_store(64)
     _index(tmp_path, store, {"rate_v1.md": V1, "rate_v2.md": V2})
     # query worded closer to v1 — semantic similarity alone would return the stale memory
-    res = trusted_search(store, HashingEmbedder(dim=64), "API rate limit requests per second", k=5)
+    res = dev_search(store, HashingEmbedder(dim=64), "API rate limit requests per second", k=5)
     files = [h.provenance.file for h in res.hits]
     assert "rate_v1.md" in files and "rate_v2.md" in files
     assert res.hits[0].provenance.file == "rate_v2.md"
@@ -41,7 +41,7 @@ def test_superseded_memory_loses_to_successor(tmp_path, make_store):
 def test_expired_only_memory_abstains(tmp_path, make_store):
     store = make_store(64)
     _index(tmp_path, store, {"freeze.md": EXPIRED})
-    res = trusted_search(store, HashingEmbedder(dim=64), "deploy freeze winter release", k=5)
+    res = dev_search(store, HashingEmbedder(dim=64), "deploy freeze winter release", k=5)
     assert res.abstained is True
     assert any(h.verdict == "expired" for h in res.hits)
     assert res.reason != ""
@@ -51,7 +51,7 @@ def test_expired_only_memory_abstains(tmp_path, make_store):
 def test_provenance_populated_end_to_end(tmp_path, make_store):
     store = make_store(64)
     _index(tmp_path, store, {"rate_v1.md": V1})
-    res = trusted_search(store, HashingEmbedder(dim=64), "API rate limit requests per second", k=3)
+    res = dev_search(store, HashingEmbedder(dim=64), "API rate limit requests per second", k=3)
     h = res.hits[0]
     assert h.provenance.file == "rate_v1.md"
     assert h.provenance.ord == 0
@@ -69,7 +69,7 @@ def test_malformed_metadata_from_direct_upsert_does_not_crash_search(make_store)
                metadata={"file": "bad.md", "ord": 0, "valid_until": "June 2026"})],
         [[1.0] + [0.0] * 63],
     )
-    res = trusted_search(store, HashingEmbedder(dim=64), "deploy freeze notes", k=3)
+    res = dev_search(store, HashingEmbedder(dim=64), "deploy freeze notes", k=3)
     bad = next(h for h in res.hits if h.provenance.file == "bad.md")
     assert bad.verdict == "invalid_metadata"  # fail closed, no ValueError
 
@@ -80,7 +80,7 @@ def test_trusted_search_rejects_nonpositive_k(make_store):
 
     store = make_store(64)
     with pytest.raises(ValueError):
-        trusted_search(store, HashingEmbedder(dim=64), "anything", k=0)
+        dev_search(store, HashingEmbedder(dim=64), "anything", k=0)
 
 
 @requires_db
@@ -94,10 +94,10 @@ def test_entailment_judge_is_off_by_default_and_demotes_when_passed(tmp_path, ma
     store = make_store(64)
     _index(tmp_path, store, {"rate_v1.md": V1})
     emb = HashingEmbedder(dim=64)
-    plain = trusted_search(store, emb, "API rate limit requests per second", k=3)
+    plain = dev_search(store, emb, "API rate limit requests per second", k=3)
     assert plain.abstained is False  # no judge -> trust layer behavior untouched
 
-    judged = trusted_search(store, emb, "API rate limit requests per second", k=3,
+    judged = dev_search(store, emb, "API rate limit requests per second", k=3,
                             entailment=RejectAll())
     assert judged.abstained is True
     assert judged.hits[0].verdict == "not_entailed"
@@ -127,7 +127,7 @@ def test_ambiguous_supersession_target_is_not_served_as_ok(tmp_path, make_store)
     )
     Indexer(store, HashingEmbedder(dim=64)).index_path(tmp_path)
 
-    res = trusted_search(store, HashingEmbedder(dim=64), "deploy rollout switching", k=5)
+    res = dev_search(store, HashingEmbedder(dim=64), "deploy rollout switching", k=5)
     notes = [h for h in res.hits if h.provenance.file in ("a/notes.md", "b/notes.md")]
     assert notes, "both colliding memos should still be retrievable"
     for h in notes:

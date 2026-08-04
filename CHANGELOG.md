@@ -8,6 +8,54 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING: retrieval fails closed when it cannot certify an answer.** `trusted_search` used to
+  resolve calibration and then fall back to `cal = calibration or _UNCALIBRATED`, so a generation
+  whose calibration was missing, stale or uncertified still ran the retrieval, still returned
+  corpus text, and still stamped every hit with a verdict computed from the library's 0.50
+  default. Nothing in the payload said the number behind the answer had never been certified for
+  that corpus.
+
+  `TrustPolicy` now governs this, and **strict is the default for both the library and the network
+  service**, so omitting a policy cannot open the gate. In strict mode the refusal is raised
+  *before* retrieval runs, and that ordering is what guarantees a refusal cannot carry corpus
+  bytes: none were fetched. Callers get `TrustRefusal` carrying one of six stable, machine-readable
+  codes: `INDEX_NOT_READY`, `LINEAGE_MISMATCH`, `CALIBRATION_MISSING`, `CALIBRATION_UNCERTIFIED`,
+  `CALIBRATION_STALE`, `DEPENDENCY_UNAVAILABLE`.
+
+  A dependency fault maps to `DEPENDENCY_UNAVAILABLE` and never to `CALIBRATION_MISSING`: telling
+  an operator to recalibrate while the real fault is an unreachable control plane is wrong advice.
+  Every code's `advice` states that no trustworthy decision was possible, so an outage cannot be
+  mistaken for a working gate that found nothing.
+
+  **Migrating.** Local and research workflows opt in explicitly with `TrustPolicy.development()`,
+  or `RECALL_TRUST_MODE=development` for the CLI. Development mode still retrieves but degrades in
+  band: `trust_state=degraded`, every hit `verdict=unverified`, and `abstained` forced to `False`,
+  because abstaining is itself a trustworthy decision and no gate licensed it. Production callers
+  need a certified artifact bound to the tenant and generation.
+- `TrustedResult.calibrated` now also requires `trust_state == "trusted"`, so a degraded result
+  carrying a certified-looking status can never report as calibrated.
+
+### Added
+- **Tenant-scoped readiness.** `tenant_readiness` answers "can this tenant be served";
+  `process_readiness` answers "can this process serve anyone" and depends only on shared
+  dependencies. Unready tenants are reported but never counted, so one tenant's stale calibration
+  cannot fail a readiness probe and evict a pod still serving every other tenant correctly.
+  Neither function returns corpus text.
+- `verdict=unverified` for degraded hits, with its own in-band prompt warning. It is not a weaker
+  `ok`: it says the trust layer never ran, a distinction reusing `low_confidence` would have lost.
+- Trust and lineage identity now travels with LangChain documents and LlamaIndex nodes
+  (`recall_trust_state`, `recall_failure_code`, `recall_calibrated`, plus tenant, generation,
+  pipeline, corpus and query-set identifiers), so the signal survives a framework boundary that
+  drops the result object.
+- `recall/eval/_research_trust.py`: benchmark and evaluation harnesses opt into development mode in
+  one visible place, outside every serving path.
+
+### Fixed
+- The `recall_interop` benchmark backend produced its abstention behaviour entirely from the
+  library's 0.50 default, reached because no calibration was ever passed. The threshold is
+  unchanged; it is now named explicitly at the call site, where a reader can question it.
+
 ### Added
 - **Tenant and generation bound calibration artifacts.** Labelled query sets now have a canonical
   digest independent of input order and are stored separately from measured retrieval scores.
