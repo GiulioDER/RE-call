@@ -22,6 +22,8 @@ from recall.types import Chunk, ScoredChunk
 if TYPE_CHECKING:  # the pool extra is optional; the annotation must not require it at runtime
     from psycopg_pool import ConnectionPool
 
+    from recall.pool import SharedPool
+
 #: The built-in dev credentials shipped in the default DSN — safe only against a local database.
 _DEFAULT_CREDS = ("recall", "recall")
 #: "" covers a hostless/unix-socket DSN. Bracketed IPv6 is absent on purpose: urlsplit strips
@@ -470,6 +472,11 @@ class PgVectorStore:
     #: __init__ (the store tests do this to exercise the retry logic against a fake connection).
     #: Single-connection mode is the default, so None is also the honest value.
     _pool = None
+    #: Same reasoning for the shared-pool mode, and the same trap: `_with_retry` now reads
+    #: `_shared` before `_pool`, so an instance built without `__init__` would raise
+    #: AttributeError on the very first branch and mask whatever the test was actually asserting.
+    _shared = None
+    _owns_shared = False
 
     def __init__(
         self,
@@ -482,6 +489,7 @@ class PgVectorStore:
         statement_timeout_ms: int | None = None,
         connect_timeout_s: int | None = 10,
         generation_id: str = "legacy",
+        shared_pool: "SharedPool | None" = None,
     ) -> None:
         """Open a store against `dsn`.
 
@@ -532,8 +540,20 @@ class PgVectorStore:
         #: test can prove the cache still works, and so a rescan storm is visible as a metric.
         self._supersession_scans = 0
         self._closed = False
-        self._pool = self._open_pool(pool_size) if pool_size else None
-        self._conn = None if self._pool is not None else self._connect()
+        #: Third connection mode, and the one a multi-tenant server should use. When set, this
+        #: store owns no connections at all: every operation borrows from a process-wide pool and
+        #: runs in a transaction that carries the tenant as a `SET LOCAL`. See `recall.pool`.
+        self._shared = shared_pool
+        #: Views made by `for_tenant` must never close the pool out from under their siblings.
+        self._owns_shared = False
+        if shared_pool is not None:
+            if pool_size:
+                raise ValueError("pass either pool_size or shared_pool, not both")
+            self._pool = None
+            self._conn = None
+        else:
+            self._pool = self._open_pool(pool_size) if pool_size else None
+            self._conn = None if self._pool is not None else self._connect()
 
     def _connect_kwargs(self) -> dict:
         kw: dict = {"autocommit": True}
@@ -630,6 +650,8 @@ class PgVectorStore:
         """
         if self._closed:
             raise RuntimeError("store is closed")
+        if self._shared is not None:
+            return self._with_retry_shared(op)
         if self._pool is not None:
             return self._with_retry_pooled(op)
         try:
@@ -673,6 +695,71 @@ class PgVectorStore:
                     METRICS.increment("recall_db_reconnects_total", pooled="true")
         raise AssertionError("unreachable: the loop either returns or raises")  # pragma: no cover
 
+    def _with_retry_shared(self, op: Callable[["psycopg.Connection"], _T]) -> _T:
+        """Shared-pool variant: one transaction per operation, tenant scoped to that transaction.
+
+        The difference from `_with_retry_pooled` is not the retry, it is what the borrow means. A
+        per-tenant pool could set the tenant once per CONNECTION because no other tenant would
+        ever use it. A shared pool cannot, so the tenant is set per TRANSACTION with `SET LOCAL`
+        and the database discards it at COMMIT or ROLLBACK. `recall.pool` explains why that is the
+        property that makes sharing safe at all.
+
+        The retry predicate is deliberately the same narrow one as both other modes: an
+        `OperationalError` is only retried when the connection is observably dead. `QueryCanceled`
+        from `statement_timeout` is an `OperationalError` on a perfectly live connection, and
+        retrying it would silently escape the guard that fired.
+        """
+        shared = self._shared
+        assert shared is not None  # caller checked; restates the mode invariant for the checker
+        for attempt in (0, 1):
+            borrowed: "psycopg.Connection | None" = None
+            try:
+                with shared.tenant_transaction(self._tenant) as conn:
+                    borrowed = conn
+                    return op(conn)
+            except self._CONN_ERRORS:
+                dead = borrowed is not None and (
+                    borrowed.closed or getattr(borrowed, "broken", False)
+                )
+                if not dead or attempt == 1:
+                    raise
+                _log.warning("shared-pool database connection lost — retrying on another")
+                METRICS.increment("recall_db_reconnects_total", pooled="true")
+        raise AssertionError("unreachable: the loop either returns or raises")  # pragma: no cover
+
+    def for_tenant(self, tenant: str) -> "PgVectorStore":
+        """A view of this store bound to another tenant, sharing the same pool.
+
+        A VIEW, never a new pool — that is the whole point, and it is what makes 1,000 tenants a
+        configuration rather than 1,000 pools. The returned store shares `_shared`, so the process
+        holds one set of connections no matter how many tenants it serves.
+
+        Only available in shared-pool mode. In the other two modes the tenant is baked into the
+        connection's session state, so a "view" would silently read as the wrong tenant; refusing
+        is the honest answer rather than returning something that looks like a view and is not.
+
+        The view does not own the pool, so closing it is a no-op on the connections. Closing the
+        store that owns the pool closes it for every view, which is the correct coupling: they are
+        one process's connections.
+        """
+        if self._shared is None:
+            raise RuntimeError(
+                "for_tenant() requires shared-pool mode: in single-connection and per-store "
+                "pool modes the tenant is session state on the connection, so a view would "
+                "read as the wrong tenant. Construct the store with shared_pool=..."
+            )
+        if not isinstance(tenant, str) or not tenant.strip():
+            raise ValueError("tenant must be a non-empty str")
+        view = object.__new__(type(self))
+        view.__dict__.update(self.__dict__)
+        view._tenant = tenant
+        view._owns_shared = False
+        # A cache keyed by nothing tenant-specific would serve one tenant's supersession edges to
+        # another. Views start cold rather than inheriting.
+        view._supersession_cache = None
+        view._supersession_scans = 0
+        return view
+
     @property
     def table(self) -> str:
         return self._table
@@ -698,7 +785,13 @@ class PgVectorStore:
         and silently resurrect a connection nobody owns — a leak on first accidental reuse.
         """
         self._closed = True
-        if self._pool is not None:
+        if self._shared is not None:
+            # A view owns nothing; closing it must not take the process's connections with it.
+            # The owner closes the pool, and every view sharing it becomes unusable, which is the
+            # correct coupling: they are one process's connections, not one store's.
+            if self._owns_shared:
+                self._shared.close()
+        elif self._pool is not None:
             self._pool.close()  # also stops the pool's background maintenance thread
         else:
             self._direct.close()
@@ -1580,7 +1673,14 @@ class PgVectorStore:
         """
         if self._closed:
             raise RuntimeError("store is closed")
-        if self._pool is not None:
+        if self._shared is not None:
+            # One transaction spanning the whole iteration, deliberately. A server-side cursor
+            # lives in the transaction that declared it, so the tenant `SET LOCAL` and the cursor
+            # have exactly the same lifetime here — which is what a streaming read needs, and is
+            # why this cannot go through `_with_retry_shared`'s per-operation transaction.
+            with self._shared.tenant_transaction(self._tenant) as conn:
+                yield conn
+        elif self._pool is not None:
             with self._pool.connection() as conn:
                 yield conn
         else:

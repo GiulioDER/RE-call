@@ -24,6 +24,7 @@ from recall.types import Chunk, ScoredChunk
 
 if TYPE_CHECKING:
     from recall.calibration_v2 import CalibrationResolution
+    from recall.pool import SharedPool
 
 
 class ImmutableGenerationError(RuntimeError):
@@ -42,6 +43,7 @@ class GenerationStore(PgVectorStore):
         migration_target: str = DEFAULT_TABLE,
         pool_size: int | None = None,
         statement_timeout_ms: int | None = None,
+        shared_pool: "SharedPool | None" = None,
     ) -> None:
         super().__init__(
             dsn,
@@ -50,6 +52,7 @@ class GenerationStore(PgVectorStore):
             tenant=tenant,
             pool_size=pool_size,
             statement_timeout_ms=statement_timeout_ms,
+            shared_pool=shared_pool,
         )
         self._migration_target = migration_target
         self._pinned_generation: ContextVar[str | None] = ContextVar(

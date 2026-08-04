@@ -165,7 +165,25 @@ def test_a_tenant_outside_the_provisioned_set_is_refused():
 
 def test_connection_budget_is_computable_before_serving_traffic():
     """Bounded by configuration, not traffic — so it can be checked against max_connections."""
-    assert registry(("a", "b", "c")).max_connections() == 3 * 4
+    assert registry(("a", "b", "c")).max_connections() == 4
+
+
+def test_connection_budget_does_not_grow_with_the_tenant_count():
+    """The property one shared pool exists to provide.
+
+    This used to be `len(allowed_tenants) * generations * pool_size`, so provisioning the
+    thousandth tenant silently multiplied the process's demand on the database, and the ceiling
+    had to be re-checked against the server's own `max_connections` every time. With one pool per
+    process the budget is a constant, which is what makes 1,000 tenants a configuration question
+    rather than a capacity one.
+
+    Asserting equality across a 300x range in tenant count, rather than just reading off the new
+    number, is what would catch a future refactor quietly reintroducing a per-tenant pool.
+    """
+    budgets = {
+        registry(tuple(f"t{i}" for i in range(n))).max_connections() for n in (1, 3, 50, 300)
+    }
+    assert budgets == {4}
 
 
 def test_nothing_is_opened_until_a_request_arrives():
