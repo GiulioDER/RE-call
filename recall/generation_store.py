@@ -309,11 +309,18 @@ class GenerationStore(PgVectorStore):
         `recall_chunks_v1` alone would call it a typo and refuse to erase it, leaving no
         tombstone and letting the next build re-ingest it the moment its content changes.
         The manifest is the record of what the corpus contains.
+
+        Restricted to states that represent a corpus the tenant actually holds. A
+        `building` or `failed` generation names objects that were never successfully
+        ingested (and, when failed, may not exist at the source at all), and erasure
+        writes a PERMANENT tombstone, so including them would let a never-built URI be
+        barred from every future build.
         """
         rows = self._with_retry(
             lambda conn: conn.execute(
                 "SELECT manifest FROM recall_generations "
-                "WHERE tenant_id = %s AND state != 'legacy_unverified'",
+                "WHERE tenant_id = %s "
+                "AND state IN ('validating', 'ready', 'active', 'retired')",
                 (self._tenant,),
             ).fetchall()
         )
@@ -326,6 +333,30 @@ class GenerationStore(PgVectorStore):
                 if isinstance(uri, str):
                     uris.add(uri)
         return frozenset(uris)
+
+    def sources_in_legacy_table(self) -> frozenset[str]:
+        """Every source still held in the adopted v0.8 table for this tenant.
+
+        Migration 0008 adopts a v0.8 install's rows IN PLACE: they never enter
+        `recall_chunks_v1`, and its `legacy_unverified` generation carries a
+        `{"legacy_table": ...}` manifest with no `objects`, so neither of the other two probes
+        can see them. Without this an erasure request for a legacy source was answered with
+        "check for typos" about data the tenant demonstrably holds.
+        """
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT to_regclass(%s) IS NOT NULL", (self._migration_target,)
+            ).fetchone()
+        )
+        if not rows or not rows[0]:
+            return frozenset()
+        found = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT DISTINCT source FROM {self._migration_target} WHERE tenant_id = %s",
+                (self._tenant,),
+            ).fetchall()
+        )
+        return frozenset(str(row[0]) for row in found)
 
     def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
         edges, unresolved, _candidates = self.supersession_all()
@@ -403,7 +434,10 @@ class GenerationStore(PgVectorStore):
             self._tenant,
             actor="generation-store-forget",
         )
-        return sum(manager.forget(source).chunks_removed for source in sources)
+        return sum(
+            manager.forget(source, legacy_table=self._migration_target).chunks_removed
+            for source in sources
+        )
 
     def touch_files(self, files: list[str]) -> int:
         raise ImmutableGenerationError("immutable generations cannot be touched")

@@ -447,6 +447,7 @@ def test_the_generated_serving_grants_are_sufficient_for_the_control_plane():
         with psycopg.connect(TEST_DSN, autocommit=True) as conn:
             # Each statement independently, so one failure cannot skip DROP ROLE and strand a
             # login role in the cluster.
+            failures: list[str] = []
             for statement, params in (
                 ("DELETE FROM recall_migration_events WHERE tenant_id = %s", ("probe-tenant",)),
                 ("DELETE FROM recall_tenant_routes WHERE tenant_id = %s", ("probe-tenant",)),
@@ -457,8 +458,15 @@ def test_the_generated_serving_grants_are_sufficient_for_the_control_plane():
             ):
                 try:
                     conn.execute(statement, params) if params else conn.execute(statement)
-                except psycopg.Error:
-                    pass
+                except psycopg.Error as exc:
+                    failures.append(f"{statement.split()[0]} {statement.split()[1]}: {exc}")
+            leaked = conn.execute(
+                "SELECT count(*) FROM pg_roles WHERE rolname = %s", (role,)
+            ).fetchone()[0]
+        if leaked:
+            # Never swallow this silently: it is a LOGIN role with a known password, and
+            # `_name()` appends a fresh uuid, so a silent leak accumulates one per failing run.
+            raise AssertionError(f"grants test leaked role {role} into the cluster: {failures}")
 
 
 def test_serving_grants_cover_every_table_the_migrator_manages():
@@ -476,10 +484,14 @@ def test_serving_grants_cover_every_table_the_migrator_manages():
     for keyword in ("public", "PUBLIC", "current_user", "SESSION_USER", "current_role", "user"):
         with pytest.raises(ValueError, match="grantee keyword"):
             serving_grants(keyword)
-    # Identifiers are quoted, so PostgreSQL cannot case-fold them onto a different role.
+    # The ROLE is quoted, so PostgreSQL cannot case-fold it onto a different role.
     assert '"Recall_Server"' in " ".join(serving_grants("Recall_Server"))
+    # The TABLE must NOT be quoted: the migrator creates it with unquoted DDL, so PostgreSQL
+    # folds it to lower case and a quoted GRANT would name an object nothing here can create.
+    assert "ON probe_table TO" in " ".join(serving_grants("recall_server", table="probe_table"))
+    assert '"probe_table"' not in " ".join(serving_grants("recall_server", table="probe_table"))
     # recall_tenant_routes is read-only for the serving role: only the migration-role CLI
     # writes it, and INSERT/UPDATE would let a tenant repoint its own active generation.
     enterprise = serving_grants("recall_server", enterprise=True)
-    assert any('SELECT ON' in s and '"recall_tenant_routes"' in s for s in enterprise)
-    assert not any("INSERT" in s and '"recall_tenant_routes"' in s for s in enterprise)
+    assert any("SELECT ON" in s and "recall_tenant_routes" in s for s in enterprise)
+    assert not any("INSERT" in s and "recall_tenant_routes" in s for s in enterprise)

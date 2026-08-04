@@ -114,6 +114,7 @@ def manager():
         conn.execute("DELETE FROM recall_ingest_jobs WHERE tenant_id = %s", (tenant,))
         conn.execute("DELETE FROM recall_tenant_state WHERE tenant_id = %s", (tenant,))
         conn.execute("DELETE FROM recall_generations WHERE tenant_id = %s", (tenant,))
+        conn.execute("DELETE FROM chunks WHERE tenant_id = %s", (tenant,))
 
 
 def _ready(manager: GenerationManager, manifest, pipeline, reader, embedder) -> str:
@@ -672,4 +673,88 @@ def test_forget_erases_a_source_that_chunked_to_nothing(manager, monkeypatch, ca
             (tenant, blank_uri),
         ).fetchone()[0]
     assert tombstoned == 1, "a source the corpus contains was refused as a typo"
+    assert "NOT erased" not in out
+
+
+@requires_db
+def test_forget_refuses_a_url_only_a_never_built_generation_names(
+    manager, monkeypatch, capsys
+) -> None:
+    """A manifest entry that was never ingested must not be tombstonable.
+
+    Widening the existence check to manifests fixed the zero-chunk case, but a `building` or
+    `failed` generation names objects that were never successfully ingested, and erasure
+    writes a PERMANENT tombstone. Including those states would let a URI that has never been
+    in the corpus be barred from every future build, with no way back.
+    """
+    embedder = _Embedder(1)
+    data = b"---\nstatus: current\n---\nnever built"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    uri = manifest.objects[0].uri
+    # create() only: the generation stays in `building` and no chunk row is ever written.
+    generation = manager.create(manifest, _pipeline("model-a"))
+    assert manager.get(generation.generation_id).state == "building"
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    cli_main(
+        ["--serving-dsn", TEST_DSN, "--tenant", manager.tenant_id, "--embedder", "hashing",
+         "forget", uri, "--yes"]
+    )
+    out = capsys.readouterr().out
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        tombstoned = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones WHERE tenant_id = %s",
+            (manager.tenant_id,),
+        ).fetchone()[0]
+    assert tombstoned == 0, "an unbuilt generation's manifest entry got a permanent tombstone"
+    assert "NOT tombstoned" in out
+
+
+@requires_db
+def test_forget_erases_rows_adopted_from_the_v08_table(manager, monkeypatch, capsys) -> None:
+    """Migration 0008 adopts a v0.8 install's rows IN PLACE, and they must stay erasable.
+
+    Those rows never enter recall_chunks_v1, and the `legacy_unverified` generation carries a
+    `{"legacy_table": ...}` manifest with no `objects`, so neither the chunk probe nor the
+    manifest probe can see them. Production `forget` answered an erasure request for one with
+    "check for typos" about data the tenant demonstrably holds, and widening the check alone
+    would have written the tombstone while leaving the rows on disk.
+    """
+    tenant = manager.tenant_id
+    uri = "/legacy/adopted-note.md"
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        conn.execute(
+            "INSERT INTO chunks (tenant_id, id, source, text, embedding) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            # `chunks` is vector(64) here: the CLI below runs with --embedder hashing.
+            (tenant, f"legacy-{uuid.uuid4().hex[:8]}", uri, "adopted body",
+             "[" + ",".join(["0.0"] * 63) + ",1.0]"),
+        )
+        seeded = conn.execute(
+            "SELECT count(*) FROM chunks WHERE tenant_id = %s AND source = %s", (tenant, uri)
+        ).fetchone()[0]
+    assert seeded == 1
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    cli_main(
+        ["--serving-dsn", TEST_DSN, "--tenant", tenant, "--embedder", "hashing",
+         "forget", uri, "--yes"]
+    )
+    out = capsys.readouterr().out
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        surviving = conn.execute(
+            "SELECT count(*) FROM chunks WHERE tenant_id = %s AND source = %s", (tenant, uri)
+        ).fetchone()[0]
+        tombstoned = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones "
+            "WHERE tenant_id = %s AND source_uri = %s",
+            (tenant, uri),
+        ).fetchone()[0]
+    assert surviving == 0, "the adopted v0.8 rows survived an erasure that reported success"
+    assert tombstoned == 1, "no tombstone, so a later build could reintroduce the source"
     assert "NOT erased" not in out

@@ -144,6 +144,11 @@ def serving_grants(
 
     Generating the list from `GENERATION_TABLES` / `CONTROL_PLANE_*` instead means a table
     added to those tuples cannot be forgotten here.
+
+    `role` is emitted QUOTED and is therefore case-sensitive: it must match the role as
+    stored. `CREATE ROLE recall_server` (unquoted) stores `recall_server`, so passing
+    `RECALL_SERVER` raises `UndefinedObject` rather than silently granting elsewhere.
+    `table` is emitted UNQUOTED, matching the migrator's own DDL.
     """
     if not role.isidentifier():
         raise ValueError("role must be a valid SQL identifier")
@@ -154,28 +159,33 @@ def serving_grants(
         # identifier check alone lets the statement target something other than a named role:
         # `public` grants to every role in the database, `current_user` to whoever runs it.
         raise ValueError(f"{role!r} is a PostgreSQL grantee keyword, not a role name")
-    # Quote both, so PostgreSQL does not case-fold them into a different object than the one
-    # the operator created. `CREATE ROLE "Recall_Server"` and an unquoted grant to
-    # Recall_Server are different roles.
+    # Quote the ROLE so PostgreSQL cannot case-fold it onto a different role than the one the
+    # operator created. This makes `--role` case-sensitive; see the docstring.
+    #
+    # Do NOT quote the TABLE. The migrator creates it with unquoted DDL (`__RECALL_TABLE__`
+    # substitution in `_render`) and `PgVectorStore` interpolates it unquoted everywhere else,
+    # so PostgreSQL folds every table this project creates to lower case. A quoted GRANT would
+    # name an object no code path here can produce: `--table Probe_Chunks` would emit
+    # `ON "Probe_Chunks"` against a table actually called `probe_chunks`, and fail with
+    # UndefinedTable. Quoting is only correct if it is introduced everywhere at once.
     role = f'"{role}"'
-    table = f'"{table}"'
     statements = [
-        f'GRANT SELECT ON "{LEDGER_TABLE}" TO {role};',
+        f"GRANT SELECT ON {LEDGER_TABLE} TO {role};",
         f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {role};",
         "GRANT SELECT, INSERT, UPDATE, DELETE ON "
-        + ", ".join(f'"{name}"' for name in GENERATION_TABLES)
+        + ", ".join(GENERATION_TABLES)
         + f" TO {role};",
     ]
     if enterprise:
         statements += [
             "GRANT SELECT ON "
-            + ", ".join(f'"{name}"' for name in CONTROL_PLANE_READ_TABLES)
+            + ", ".join(CONTROL_PLANE_READ_TABLES)
             + f" TO {role};",
             "GRANT SELECT, INSERT, UPDATE ON "
-            + ", ".join(f'"{name}"' for name in CONTROL_PLANE_WRITE_TABLES)
+            + ", ".join(CONTROL_PLANE_WRITE_TABLES)
             + f" TO {role};",
             "GRANT USAGE ON SEQUENCE "
-            + ", ".join(f'"{name}"' for name in CONTROL_PLANE_SEQUENCES)
+            + ", ".join(CONTROL_PLANE_SEQUENCES)
             + f" TO {role};",
         ]
     return tuple(statements)
