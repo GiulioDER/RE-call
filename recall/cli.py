@@ -116,6 +116,16 @@ def main(argv: list[str] | None = None) -> None:
     schema_sub.add_parser("status", help="show installed and required schema versions")
     schema_sub.add_parser("plan", help="show pending migrations without changing the database")
     schema_sub.add_parser("apply", help="apply pending migrations with the migration role")
+    p_schema_grants = schema_sub.add_parser(
+        "grants",
+        help="print the GRANT statements a serving role needs (prints SQL, runs none)",
+    )
+    p_schema_grants.add_argument("--role", required=True, help="the serving role name")
+    p_schema_grants.add_argument(
+        "--enterprise",
+        action="store_true",
+        help="also grant the enterprise control-plane tables and their sequence",
+    )
 
     p_manifest = sub.add_parser("manifest", help="create or verify immutable corpus manifests")
     manifest_sub = p_manifest.add_subparsers(dest="manifest_cmd", required=True)
@@ -278,6 +288,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.cmd == "schema":
         from recall.schema import apply_migrations, schema_plan, schema_status
 
+        if args.schema_cmd == "grants":
+            # Prints SQL for an operator to run as the object owner; touches no database, so
+            # it needs neither a DSN nor an embedder.
+            from recall.schema import serving_grants
+
+            for statement in serving_grants(
+                args.role, table=args.table, enterprise=args.enterprise
+            ):
+                print(statement)
+            return
         dim = args.dim if args.dim is not None else _make_embedder(args.embedder).dim
         inspect_dsn = args.migration_dsn or args.dsn
         if args.schema_cmd == "status":
@@ -633,27 +653,37 @@ def main(argv: list[str] | None = None) -> None:
         with forget_store as store:
             store.check_schema()
             requested = list(dict.fromkeys(args.sources))
+            # Reject a blank argument before anything commits. `recall forget "$A" "$B" --yes`
+            # with one variable unset otherwise erased the first source, raised out of the
+            # per-source loop, and printed nothing at all.
+            if any(not source.strip() for source in requested):
+                raise SystemExit(
+                    "forget: empty source argument (an unset shell variable?); nothing deleted"
+                )
             try:
                 visible_now = set(store.source_content_hashes())
             except NoActiveGeneration:
                 visible_now = set()
-            unseen = [s for s in requested if s not in visible_now]
             if generation_mode:
-                # `source_content_hashes()` is scoped to ONE generation here, so it may only
-                # annotate the request, never filter it. A source that dropped out of the
-                # active generation still has rows in the previous one, and it is exactly that
-                # source whose erasure most needs the tombstone: without one the next build
-                # reads `_is_tombstoned() == False` and re-ingests it. Filtering reported
-                # success while writing no tombstone and deleting nothing.
-                targets = requested
+                # Widen the existence check, do not drop it. `source_content_hashes()` is
+                # scoped to ONE generation, so using it to FILTER meant a source that dropped
+                # out of the active generation was called "not found" and silently kept its
+                # rows and its absent tombstone. But an unfiltered request is not the answer
+                # either: forgetting a URI that was never indexed writes a permanent tombstone
+                # (nothing deletes one, and `build()` skips every manifest entry it matches),
+                # so an operator typo would irreversibly bar that URI from every future build.
+                known = store.sources_in_any_generation()
+                targets = [s for s in requested if s in known]
+                unseen = [s for s in requested if s not in known]
                 unseen_note = (
-                    "not visible in the active generation; erased in every generation "
-                    f"that holds them: {', '.join(unseen)}"
+                    "not found in any generation, so NOT erased and NOT tombstoned "
+                    f"(check for typos): {', '.join(unseen)}"
                 )
             else:
                 # The v0.8 table has no generations, so the probe covers everything the
                 # tenant owns and an absent source really is a typo.
                 targets = [s for s in requested if s in visible_now]
+                unseen = [s for s in requested if s not in visible_now]
                 unseen_note = f"not found (check for typos): {', '.join(unseen)}"
             if not args.yes:
                 print(
@@ -664,10 +694,25 @@ def main(argv: list[str] | None = None) -> None:
                     print(unseen_note)
                 print("nothing deleted — re-run with --yes to actually delete.")
             else:
-                removed = store.delete_sources(targets)
-                print(f"forgot {removed} chunk(s) from {len(targets)} source(s)")
-                if unseen:
-                    print(unseen_note)
+                # One source per call: `delete_sources` commits a separate transaction each,
+                # so a failure part way through leaves the earlier ones erased. Reporting from
+                # a finally means a partial erasure is never silent.
+                removed = 0
+                done = 0
+                try:
+                    for source in targets:
+                        removed += store.delete_sources([source])
+                        done += 1
+                finally:
+                    if done == len(targets):
+                        print(f"forgot {removed} chunk(s) from {done} source(s)")
+                    else:
+                        print(
+                            f"forgot {removed} chunk(s) from {done} of {len(targets)} "
+                            "source(s); the rest were NOT reached"
+                        )
+                    if unseen:
+                        print(unseen_note)
     elif args.cmd == "search":
         entail_judge = None
         if args.entail:

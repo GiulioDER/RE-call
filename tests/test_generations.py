@@ -534,3 +534,78 @@ def test_forget_erases_a_source_that_has_left_the_active_generation(
         ).fetchone()[0]
     assert after == 0, "chunks in a non-active generation survived the erasure"
     assert tombstoned == 1, "no tombstone was written, so the next build will re-ingest it"
+
+
+@requires_db
+def test_forget_refuses_a_source_no_generation_ever_held(manager, monkeypatch, capsys) -> None:
+    """A typo must not write a tombstone, because a tombstone cannot be undone.
+
+    Nothing in the package deletes from `recall_source_tombstones`, there is no `unforget`
+    command, and `build()` skips every manifest entry a tombstone matches. So tombstoning an
+    unknown URI would silently and irreversibly bar it from every future build. Erasure must
+    widen its existence check to all generations, not abandon it.
+    """
+    embedder = _Embedder(1)
+    data = b"---\nstatus: current\n---\nkeep me"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    generation = _ready(manager, manifest, _pipeline("model-a"), _reader(manifest, data), embedder)
+    manager.promote(generation, unsafe_development=True)
+    typo = manifest.objects[0].uri + "d"
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    cli_main(
+        ["--serving-dsn", TEST_DSN, "--tenant", manager.tenant_id, "--embedder", "hashing",
+         "forget", typo, "--yes"]
+    )
+    out = capsys.readouterr().out
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        tombstones = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones WHERE tenant_id = %s",
+            (manager.tenant_id,),
+        ).fetchone()[0]
+    assert tombstones == 0, "a typo wrote an irreversible tombstone"
+    assert "NOT tombstoned" in out
+    # The real source is untouched and still erasable.
+    assert manager.get(generation).state == "active"
+
+
+@requires_db
+def test_forget_refuses_a_blank_source_before_erasing_anything(
+    manager, monkeypatch, capsys
+) -> None:
+    """`recall forget "$A" "$B" --yes` with one variable unset must erase nothing.
+
+    delete_sources commits one transaction per source, so validating late meant the first
+    source was erased, GenerationManager.forget raised on the empty string, the remaining
+    sources were never reached, and the report line never printed because it sat inside the
+    statement that raised.
+    """
+    embedder = _Embedder(1)
+    data = b"---\nstatus: current\n---\nkeep me"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    generation = _ready(manager, manifest, _pipeline("model-a"), _reader(manifest, data), embedder)
+    manager.promote(generation, unsafe_development=True)
+    real = manifest.objects[0].uri
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    with pytest.raises(SystemExit, match="empty source argument"):
+        cli_main(
+            ["--serving-dsn", TEST_DSN, "--tenant", manager.tenant_id, "--embedder", "hashing",
+             "forget", real, "", "--yes"]
+        )
+    capsys.readouterr()
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        survived = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, real),
+        ).fetchone()[0]
+        tombstones = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones WHERE tenant_id = %s",
+            (manager.tenant_id,),
+        ).fetchone()[0]
+    assert survived > 0, "the valid source was erased despite the malformed request"
+    assert tombstones == 0
