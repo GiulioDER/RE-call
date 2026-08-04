@@ -20,6 +20,7 @@ from recall.calibration_v2 import (
     CalibrationRepository,
     CalibrationStatus,
     CalibrationUncertified,
+    _require_utc_isoformat,
     canonical_query_set,
     canonical_sha256,
 )
@@ -446,7 +447,9 @@ def test_a_bundle_whose_timestamp_is_not_canonical_utc_is_refused_at_import(
         instant.astimezone(UTC).isoformat().replace("+00:00", "Z"),
     ):
         raw = dict(bundle["artifact"], created_at=spelling)
-        # Re-sign honestly, so this tests the rendering rule and not tamper detection.
+        # Re-sign the artifact too, so this stays a rendering test if construction and
+        # checksum verification are ever reordered. Today __post_init__ raises first, so
+        # verify_checksum() is never reached on this path and this re-signing is inert.
         immutable = {key: raw[key] for key in CalibrationArtifactV2.__dataclass_fields__ if key in raw}
         immutable.pop("lifecycle_state", None)
         immutable.pop("checksum", None)
@@ -479,3 +482,37 @@ def test_list_and_show_render_the_same_created_at(calibration_tenant) -> None:
     listed = {row["calibration_id"]: row["created_at"] for row in rome.list_records()}
     shown = rome.show_record(artifact.calibration_id)
     assert shown["created_at"] == listed[artifact.calibration_id] == artifact.created_at
+
+
+def test_a_degenerate_timestamp_is_named_not_crashed() -> None:
+    """The guard must reject, not explode, on a timestamp it cannot render.
+
+    `astimezone()` is not total: it raises OverflowError near datetime.min/max and OSError
+    for a naive value outside the platform's localtime range. Calling it on a value already
+    judged unusable turned the boundary check into an unnamed crash that escapes the CLI's
+    `except CalibrationError`.
+    """
+    for spelling in (
+        "9999-12-31T23:59:59-05:00",
+        "0001-01-01T00:00:00+02:00",
+        "1969-07-20T20:17:00",
+        "1970-01-01T00:00:00",
+        "not-a-timestamp",
+        "2026-08-04T12:00:00",
+    ):
+        with pytest.raises(CalibrationBindingError, match="created_at"):
+            _require_utc_isoformat(spelling, "created_at")
+
+    # The canonical form written by calibrate() still passes untouched.
+    _require_utc_isoformat(datetime.now(UTC).isoformat(), "created_at")
+
+
+def test_the_naive_remediation_example_does_not_shift_the_instant() -> None:
+    """A naive value must be told to add an offset, not silently reinterpreted as local time.
+
+    Rendering it through `astimezone()` treats it as machine-local, so the suggested string
+    names a DIFFERENT instant and differs between machines.
+    """
+    with pytest.raises(CalibrationBindingError) as excinfo:
+        _require_utc_isoformat("2026-08-04T12:00:00", "created_at")
+    assert "2026-08-04T12:00:00+00:00" in str(excinfo.value)

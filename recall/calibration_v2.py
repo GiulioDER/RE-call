@@ -89,10 +89,27 @@ def _require_utc_isoformat(value: str, field_name: str) -> None:
         parsed = datetime.fromisoformat(value)
     except ValueError:
         raise CalibrationBindingError(f"{field_name} must be an ISO-8601 timestamp") from None
-    if parsed.tzinfo is None or _utc_isoformat(parsed) != value:
+    if parsed.tzinfo is None:
+        # Suggest ADDING an offset rather than converting: astimezone() would read a naive
+        # value as machine-local, so the example would name a different instant and would
+        # differ between machines.
+        raise CalibrationBindingError(
+            f"{field_name} must carry a UTC offset (e.g. {value + '+00:00'!r}); "
+            "re-export the bundle"
+        )
+    try:
+        canonical = parsed.astimezone(UTC).isoformat()
+    except (OverflowError, OSError):
+        # astimezone() is not total: it overflows near datetime.min/max. Rendering a value
+        # already judged unusable would turn this boundary check into an unnamed crash that
+        # escapes the CLI's `except CalibrationError`.
+        raise CalibrationBindingError(
+            f"{field_name} is not a representable UTC instant"
+        ) from None
+    if canonical != value:
         raise CalibrationBindingError(
             f"{field_name} must be UTC in the form written by calibrate() "
-            f"(e.g. {_utc_isoformat(parsed)!r}); re-export the bundle"
+            f"(e.g. {canonical!r}); re-export the bundle"
         )
 
 
