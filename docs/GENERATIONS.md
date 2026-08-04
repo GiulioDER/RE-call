@@ -68,7 +68,8 @@ Promotion updates active and previous pointers in one transaction. Searches pin 
 for the whole retrieval operation, so a concurrent promotion or rollback cannot mix generations.
 Rollback atomically restores the previous ready generation.
 
-Calibration gates are delivered in the next implementation sessions. Until then, promotion is
+Generation-bound calibration artifacts are documented in [CALIBRATION.md](CALIBRATION.md). Strict
+trust enforcement is delivered in the next implementation session. Until then, promotion is
 intentionally unavailable in production. Development requires the conspicuous
 `--unsafe-development-promotion` flag:
 
@@ -90,7 +91,9 @@ recall --tenant acme generation gc --retention-days 7 --retain-previous 2
 Forget acquires a source-specific transaction lock, deletes the source from active, previous,
 ready, building, validating, retired, and failed v1 generations, then commits an audit event and a
 persistent tombstone. A concurrent build observes the tombstone and cannot reintroduce the source.
-Rollback and garbage collection do not remove tombstones.
+Rollback and garbage collection do not remove tombstones. The tombstone also changes each affected
+generation's effective corpus fingerprint, so a calibration measured before erasure becomes stale
+and a replacement generation cannot recover the old binding.
 
 Rows from a v0.8 table remain readable through the legacy API and are registered as
 `legacy_unverified` evidence. They are never copied into `recall_chunks_v1`, selected as an active

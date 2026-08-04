@@ -8,5 +8,6 @@
   "0007_tenant_index.sql": "4f29246e59de5253bfd0ac60f46e14ddd3e9f7c1a0d026057d3cf65c87f04593",
   "0008_generation_foundation.sql": "7d2a8bc1de707b8b052b446cc096b26d2aecdf305026095c52c58b4dce32fb07",
   "0009_chunks_v1_tsv_index.sql": "fd93c0cb5116d2cd36ce12255433cc2d64f113a51481b2e16e47054ae6c75eec",
-  "0010_chunks_v1_embedding_index.sql": "ad1c0b1ee4d924ffc3fc2241a44400c947ed98c08d5d3ed6293211266c99d774"
+  "0010_chunks_v1_embedding_index.sql": "ad1c0b1ee4d924ffc3fc2241a44400c947ed98c08d5d3ed6293211266c99d774",
+  "0011_calibration_binding.sql": "bed13caba2235734596b54512f397d60c0c7890257c1898adc5037e2fc47a2a4"
 }

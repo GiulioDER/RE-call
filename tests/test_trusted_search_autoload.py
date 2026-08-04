@@ -1,18 +1,5 @@
-"""`trusted_search` must READ a calibration on disk, not just accept one passed in.
+"""Legacy JSON remains importable evidence but is never selected by a search."""
 
-Before this, the threshold resolved as `calibration or _UNCALIBRATED` and `load_for()` was called
-only by `recall.cli`. A user who ran `recall calibrate`, saw calibration.json appear, and then
-used the library API silently got the uncalibrated default — while `recall.trust`'s own docstring
-promised the threshold "comes from recall.calibration when available".
-
-The cost was measured on a real corpus: `DEFAULT_GAP_THRESHOLD` is 0.50, right for bge-small,
-but `text-embedding-3-small` returns top-1 cosines between 0.41 and 0.76, so the floor sat inside
-the distribution and returned EMPTY retrieval for 18 of 300 benchmark questions — a guaranteed
-zero with no error anywhere.
-
-These tests are written against the DETECTION path: each one is constructed so that it fails if
-the auto-load is removed, rather than merely passing while the feature happens to be present.
-"""
 from __future__ import annotations
 
 import os
@@ -24,7 +11,6 @@ from recall.embeddings import HashingEmbedder
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.index import Indexer
 from recall.trust import trusted_search
-
 from tests.conftest import requires_db
 
 DOC = "The API rate limit is one hundred requests per second per client key.\n"
@@ -52,21 +38,17 @@ def _index(tmp_path, store):
 
 
 @requires_db
-def test_calibration_on_disk_is_applied_without_being_passed(tmp_path, make_store):
-    """A saved calibration reaches the result even though the caller passes none.
-
-    `calibrated` is the observable: it is `True` only when a Calibration object was resolved, so
-    this fails closed if the auto-load is reverted — the search would still succeed, but come back
-    flagged uncalibrated.
-    """
+def test_legacy_calibration_on_disk_is_never_applied_automatically(tmp_path, make_store):
     store = make_store(64)
     _index(tmp_path, store)
     embedder = HashingEmbedder(dim=64)
-    save(Calibration(embedder=embedder.name, threshold=0.11, scale=0.05))
+    save(Calibration(embedder=embedder.name, threshold=0.99, scale=0.05))
 
     res = trusted_search(store, embedder, "API rate limit", k=5)
 
-    assert res.calibrated is True, "a calibration on disk was ignored — auto-load is not wired"
+    assert res.calibrated is False
+    assert res.calibration_status == "missing"
+    assert res.hits, "the legacy file's threshold was applied automatically"
 
 
 @requires_db
@@ -81,7 +63,8 @@ def test_explicit_calibration_still_wins_over_the_file(tmp_path, make_store):
     res = trusted_search(store, embedder, "API rate limit", k=5, calibration=explicit)
 
     # The file's 0.99 would abstain on everything; the explicit 0.01 must be what is used.
-    assert res.calibrated is True
+    assert res.calibrated is False
+    assert res.calibration_status == "legacy_unbound"
     assert res.hits, "the file's threshold was applied instead of the explicit argument"
 
 
@@ -136,11 +119,7 @@ def test_loader_cache_invalidates_when_the_file_is_rewritten(tmp_path):
 
 
 def test_calibration_for_a_different_embedder_is_not_applied(tmp_path):
-    """A threshold from another model's cosine regime must never be used — cached or not.
-
-    This is the property that makes auto-loading safe at all: picking up whatever file happens to
-    be on disk would be dangerous if it were not embedder-checked first.
-    """
+    """The legacy loader itself still refuses another model's cosine regime."""
     path = tmp_path / "calibration.json"
     save(Calibration(embedder="bge-small", threshold=0.50, scale=0.05), path)
 
