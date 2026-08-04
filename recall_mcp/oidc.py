@@ -170,7 +170,13 @@ class OidcValidator:
             return self._fetcher()
         uri = self._jwks_uri or discover_jwks_uri(self._config.issuer)
         self._jwks_uri = uri
-        return json.loads(_http_get(uri))
+        document = json.loads(_http_get(uri))
+        # Checked rather than cast. `json.loads` returns Any, so silencing the type error would
+        # push a malformed JWKS downstream into an AttributeError on `.get("keys")` — an
+        # unreachable-IdP symptom wearing a crash's clothes.
+        if not isinstance(document, dict):
+            raise TokenRejected("jwks_unavailable", "JWKS document is not a JSON object")
+        return document
 
     def _load_keys(self, *, force: bool) -> dict[str, Any]:
         """Return kid -> key, refreshing when due. Serves stale keys inside the stale window."""
