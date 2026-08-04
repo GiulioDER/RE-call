@@ -43,8 +43,11 @@
     color:#f4f9ff;
     text-shadow:0 0 22px rgba(34,211,238,.30), 0 2px 0 rgba(0,0,0,.5);
   }
+  /* .mark shrink-wraps the wordmark so the rule spans exactly RE-call, and keeps doing so
+     if the text or the font size changes. Do not hardcode a px width here. */
+  .mark { width:fit-content; }
   .rule {
-    margin-top:24px; width:108px; height:4px; border-radius:2px;
+    margin-top:24px; width:100%; height:4px; border-radius:2px;
     background:linear-gradient(90deg,#22d3ee 0%,#5eead4 42%,#8b5cf6 100%);
     box-shadow:0 0 16px rgba(34,211,238,.55);
   }
@@ -80,8 +83,10 @@
   <div class="field"></div>
 
   <div class="head">
-    <div class="wm">RE&#8209;call</div>
-    <div class="rule"></div>
+    <div class="mark">
+      <div class="wm">RE&#8209;call</div>
+      <div class="rule"></div>
+    </div>
     <div class="kicker">agentic rag <span>&middot;</span> retrieval&#8209;augmented self&#8209;recall</div>
   </div>
 
