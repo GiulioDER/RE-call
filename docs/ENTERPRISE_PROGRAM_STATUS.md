@@ -11,6 +11,154 @@ before that change can go green.
 
 ---
 
+## 2026-08-05, gap matrix: 21 requirement areas audited against master
+
+### Session ledger
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | Audit 21 requirement areas against the merged program | done, every verdict carries a `file:line` or an explicit "no such symbol anywhere" |
+| 2 | Confirm or refute eight inherited leads | done, 6 confirmed, 1 sharpened, 1 refuted |
+| 3 | Decide the two-ledger question and record reasons | done, **keep separate**, with three follow-ups |
+| 4 | Produce the ordered backlog mapped to sessions 3 to 11 | done, 37 items |
+| 5 | Rebase onto #194, which landed the prior session's status file first | done, both entries kept |
+
+Read-only against the code. Nothing was fixed. Deliverable:
+[docs/superpowers/plans/2026-08-05-enterprise-gap-matrix.md](superpowers/plans/2026-08-05-enterprise-gap-matrix.md).
+
+### A concurrent session wrote the entry below, and it landed first
+
+The 2026-08-04 entry was **still being written while this audit ran**. It grew from 170 to 266 lines
+mid-session, gaining an AUD-1 fix, a corrected "macro-averaged" label and a rebuilt discriminating
+test. That session shipped it as #194, which merged before this one opened, so the 08-04 entry
+reached `master` on its own and this section was rebased on top of it.
+
+The add/add conflict that produced was resolved by keeping **both** entries, newest first, rather
+than by taking a side. `master`'s header and its whole 08-04 entry are carried through **byte for
+byte**, asserted rather than eyeballed: the resolution script compares the pre-entry and post-entry
+line ranges against the merged blob and refuses to write if either differs.
+
+The lesson for the next session that touches this file: it is a shared handoff, so two sessions will
+race it again. Read `origin/master`'s copy immediately before editing, never a snapshot taken earlier
+in the session, and append rather than rewrite.
+
+### Corrections to the inherited snapshot
+
+- **This file was untracked when this audit started.** The 2026-08-04 entry records creating it as
+  done, but at that point it existed only as an untracked working-tree file on the local branch
+  `bench/mtrag-symmetric-baseline`, in no ref. #194 has since committed it; see the note above.
+- **`bench/mtrag-symmetric-baseline` was local and unpushed when this audit ran.** The MT-RAG runner
+  commit existed on that branch only, with no remote and no PR. It has since shipped as #194 and is
+  on `origin/master`; this session never touched it.
+- **The audited tree is not PR 181.** Five PRs merged after it, four of which changed audited code:
+  #182 calibration binding, #184 strict trust, #185 shared pool and tenant-scoped readiness, #189
+  store latency instrumentation. Verdicts describe `origin/master` at `8147d96`, and the matrix says
+  per row where the current state is mostly later work.
+- **`recall/migrations/sql` holds 0001 to 0011, not 0001 to 0010.** `0011_calibration_binding.sql`
+  arrived with #182.
+
+### Verdict summary
+
+| Verdict | Count | Areas |
+|---|---|---|
+| Implemented and tested | 1 | 17 |
+| Implemented, insufficiently tested | 6 | 1, 3, 6, 7, 9, 16 |
+| Partially implemented | 10 | 2, 4, 5, 10, 11, 12, 13, 14, 15, 20 (12, 13 and 14 are "implemented, zero tests") |
+| Missing | 1 | 19 |
+| Intentionally rejected / out of scope | 0 | none |
+
+Areas 8 and 21 are counted above by their dominant state and neither fits one column cleanly: area 8
+is implemented in code with its **required record** missing, and area 21 is partial with two live
+contradictions. The matrix says so per row.
+
+### The findings that change what a later session should do first
+
+1. **`replay_pending` has no producer and no operator command.** `recall/control_plane.py:298` is its
+   only reference in the whole repository, and `recall-enterprise` has no `replay` subcommand
+   (`recall/enterprise_cli.py:22-41`). A crash between the event append and its completion
+   (`recall/index.py:625` and `:631`) leaves a pending row, and `cutover` then refuses forever
+   (`recall/control_plane.py:278-279`). The recovery mechanism exists, looks correct, and cannot be
+   invoked. This is session 3.
+2. **Erasure does not reach the outbox.** A pending event's payload holds full chunk text and vectors
+   (`recall/index.py:614-623`) and is cleared only on completion (`recall/control_plane.py:261`).
+   Nothing removes it on `recall_forget`. For a right-to-erasure path that is a policy question, not
+   only a bug.
+3. **The promotion gate has never been shown to pass.** `tests/test_promotion.py` is one test and it
+   asserts `not promoted`. A gate only ever observed to fail is compatible with a gate that refuses
+   everything.
+4. **Three whole areas have zero tests**: route notification and polling (12), dual writes (13),
+   atomic cross-generation forget (14). `ShadowIndexTarget`, `get_shadow`, `make_profile_embedder`,
+   `delete_sources_across`, `invalidate_route`, `replay_pending`, `RetrievalOverloaded`, `stage_ms`,
+   `check_enterprise_readiness` and `enterprise_cli` each have **no test reference anywhere** in
+   `tests/`.
+5. **The Qwen3 rejection record does not exist.** `git grep -in "qwen"` over tracked `*.md` returns
+   nothing. PR 181 describes the profile as "promotion gated"; no gate and no record are in the
+   repository.
+6. **`check_enterprise_readiness`'s calibration branch cannot fire.** PR 181 passed
+   `calibration=calibration`; commit `0341c15` (#182) removed the argument, and master calls the
+   function with three (`recall_mcp/server.py:336-339`). The parameter defaults to `None`
+   (`recall/readiness.py:160`), so every enterprise boot takes the `calibration is None` path at
+   `:195-196`: a permanent degraded-readiness warning, and the identity-mismatch **failure** at
+   `:198` is unreachable from the server. It reads as a calibration gate and is not one. Nothing
+   caught it because the function has no test.
+
+### Leads: what survived verification
+
+| Lead | Verdict |
+|---|---|
+| Profile registry is a dict literal in `service.py::make_embedder`, partly duplicated in `context.py` | **confirmed**: `recall_mcp/service.py:113-120` and `recall/context.py:37-41`, two independent literals, already differing in extent |
+| `cache_key` omits `context_version` and `artifact_digest` | **confirmed**: `recall/cache.py:26`; both are independently settable at `recall/embeddings.py:334-339` |
+| `latency_budget_ms` is enforced nowhere; only the promotion gate reads it | **sharpened**: `git grep` returns three hits, all inside `recall/profiles.py`. The gate's budget is a separate caller-supplied field (`recall/promotion.py:33`). **Nothing** reads the profile's value |
+| `recall/evidence.py` is complete but unexported and unreachable | **confirmed**: absent from `recall/__init__.py`; referenced only by `tests/test_evidence.py` and one prose line |
+| `recall/promotion.py` has no producer outside its test | **confirmed**: `tests/test_promotion.py:8-13` is the only construction site |
+| `FAST_PROFILE` and `QUALITY_PROFILE` share `candidate_k=20` | **refuted as a defect**: `docs/ENTERPRISE_RETRIEVAL.md:57-59` specifies "the same candidate pool" deliberately, so cost differences are attributable to the reranker alone |
+| `readiness.py`, `validate_generation_parity`, `replay_pending`, `enterprise_cli.py` have no tests | **confirmed, one narrowed**: `tenant_readiness` / `process_readiness` (later session) *are* covered by `tests/test_tenant_readiness.py`; `check_enterprise_readiness` is not. The other three have no test reference at all |
+| Two migration ledgers exist | **confirmed**: see the decision below |
+
+### The ledger decision
+
+**Keep `recall_schema_migrations` and `recall_schema_versions` separate. Do not merge.** Merging is a
+one-way door guarded by committed checksums (`recall/schema.py:53-54`); the two ledgers have
+different scoping (per target table with a `__global__` bucket, versus database-global) and different
+lifecycles (the control plane must exist before any generation does); and the enterprise deployment
+is opt-in, so merging would impose control-plane tables on every deployment.
+
+The split must be made deliberate rather than accidental, which needs three things it does not have:
+an advisory lock on `ControlPlane.apply_migrations` matching `recall/schema.py:24`; readiness that
+verifies **both** ledgers rather than only the one `check_schema` covers; and a paragraph in
+`docs/MIGRATIONS.md`, which currently never mentions the second ledger. Full reasoning in the matrix.
+
+### Documentation contradictions found on master
+
+Both are shipped, and each makes an operator following one document wrong according to the other.
+
+- `docs/ENTERPRISE_RETRIEVAL.md:13` sets `RECALL_DSN` to the **migration** role, and
+  `recall/enterprise_cli.py:14` reads it. `docs/MIGRATIONS.md:12` calls `RECALL_DSN` the deprecated
+  fallback for the **serving** DSN, with `RECALL_MIGRATION_DSN` as the schema owner.
+- `README.md:628-632` says strict calibration enforcement "has not landed yet"; #184 landed it and
+  `README.md:205` already marks it ✅.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** VPS2 has 12 cores under a permanent load average near 8 from unrelated live production. | External dependency. Do not work around it. | Latency is **PENDING**; promotion blocked on latency grounds. Quality and safety gates still run. | unchanged |
+| **No production corpus.** Everything measured is the public MT-RAG release. | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
+| **No approved local generator confirmed.** | Open | The generator-neutral evidence path stays unexercised end to end. | **now blocks backlog item 11** (session 5): the evidence boundary can be made reachable and tested against a fake generator, but the real path stays unexercised until this resolves |
+
+### What the next session should start with
+
+Session 3 of the backlog: give the migration outbox a drain. Add `recall-enterprise replay`, test
+`replay_pending` against the actual crash shape, test the `cutover` refusal branch, and decide what
+erases a pending event's payload when a tenant invokes erasure. Everything else in the program can
+wait behind a deadlock that has no shipped workaround.
+
+Two items carried forward from 2026-08-04 and still open: the MT-RAG baseline has no
+`results/ARTIFACTS.md` row (deliberately), and `bench/mtrag-symmetric-baseline` is still local and
+unpushed.
+
+---
+
 ## 2026-08-04 — MT-RAG symmetric baseline salvaged, validated, archived, runner committed
 
 ### Session ledger
