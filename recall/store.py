@@ -490,6 +490,7 @@ class PgVectorStore:
         connect_timeout_s: int | None = 10,
         generation_id: str = "legacy",
         shared_pool: "SharedPool | None" = None,
+        owns_pool: bool = False,
     ) -> None:
         """Open a store against `dsn`.
 
@@ -544,8 +545,12 @@ class PgVectorStore:
         #: store owns no connections at all: every operation borrows from a process-wide pool and
         #: runs in a transaction that carries the tenant as a `SET LOCAL`. See `recall.pool`.
         self._shared = shared_pool
-        #: Views made by `for_tenant` must never close the pool out from under their siblings.
-        self._owns_shared = False
+        #: Whether THIS store closes the shared pool. False by default because the common owner
+        #: is whoever constructed the pool (the registry), and a view made by `for_tenant` must
+        #: never close it out from under its siblings. Without an explicit flag this was
+        #: unreachable: nothing set it True, so the ownership branch in `close()` was dead code
+        #: and a library caller who built their own pool could not release it at all.
+        self._owns_shared = bool(owns_pool) and shared_pool is not None
         if shared_pool is not None:
             if pool_size:
                 raise ValueError("pass either pool_size or shared_pool, not both")
@@ -712,16 +717,27 @@ class PgVectorStore:
         shared = self._shared
         assert shared is not None  # caller checked; restates the mode invariant for the checker
         for attempt in (0, 1):
-            borrowed: "psycopg.Connection | None" = None
+            # Decided INSIDE the lease, deliberately. Reading `conn.closed` after the context
+            # manager exits inspects an object the pool has already taken back — and because a
+            # pool configured with a `reset` hook returns connections on a background worker
+            # thread, that read is a race in both directions: a genuinely dead connection usually
+            # still reports alive, and if the worker wins, a `QueryCanceled` from
+            # `statement_timeout` gets judged "dead" and re-run on a fresh transaction, which is
+            # exactly the escape from the timeout this predicate exists to prevent.
+            retryable = False
             try:
                 with shared.tenant_transaction(self._tenant) as conn:
-                    borrowed = conn
-                    return op(conn)
+                    try:
+                        return op(conn)
+                    except self._CONN_ERRORS:
+                        retryable = conn.closed or getattr(conn, "broken", False)
+                        raise
             except self._CONN_ERRORS:
-                dead = borrowed is not None and (
-                    borrowed.closed or getattr(borrowed, "broken", False)
-                )
-                if not dead or attempt == 1:
+                # The COMMIT happens in `tenant_transaction.__exit__`, i.e. OUTSIDE the inner try,
+                # so a failure there leaves `retryable` False and propagates unretried. That is
+                # required, not incidental: a connection error at commit time has an indeterminate
+                # outcome, and re-running the whole mutation could double-apply it.
+                if not retryable or attempt == 1:
                     raise
                 _log.warning("shared-pool database connection lost — retrying on another")
                 METRICS.increment("recall_db_reconnects_total", pooled="true")
@@ -754,11 +770,21 @@ class PgVectorStore:
         view.__dict__.update(self.__dict__)
         view._tenant = tenant
         view._owns_shared = False
-        # A cache keyed by nothing tenant-specific would serve one tenant's supersession edges to
-        # another. Views start cold rather than inheriting.
-        view._supersession_cache = None
-        view._supersession_scans = 0
+        view._reset_tenant_state()
         return view
+
+    def _reset_tenant_state(self) -> None:
+        """Drop every piece of state derived from the PREVIOUS tenant. Subclasses must extend.
+
+        `for_tenant` copies `__dict__` wholesale, which is what makes a view cheap and is also
+        what makes this hook necessary: anything tenant-derived is inherited by reference unless
+        it is named here. Enumerating by hand at the call site is how the supersession cache got
+        cleared and `GenerationStore._pinned_generation` did not — one tenant's pinned generation
+        then governed another tenant's reads. A hook a subclass can override turns that from a
+        list someone must remember to extend into one the subclass owns.
+        """
+        self._supersession_cache = None
+        self._supersession_scans = 0
 
     @property
     def table(self) -> str:

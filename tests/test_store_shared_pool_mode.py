@@ -134,3 +134,71 @@ class TestModeErrors:
         for bad in ("", "  "):
             with pytest.raises(ValueError):
                 store.for_tenant(bad)
+
+
+class TestAuditRegressions:
+    """Regressions for defects the CCA audit found in the first two commits of section A."""
+
+    def test_a_view_does_not_inherit_the_pinned_generation(self, pool, shared_table) -> None:
+        """F-02: `for_tenant` copied `__dict__`, sharing GenerationStore's ContextVar object.
+
+        A generation pinned while serving tenant A then governed queries issued through a view
+        bound to tenant B. RLS and the explicit predicate still held, so it was not disclosure —
+        it was worse-shaped: a wrong-generation result that reads like an honest answer.
+        """
+        from recall.generation_store import GenerationStore
+
+        acme = GenerationStore(TEST_DSN, dim=8, tenant="acme", shared_pool=pool)
+        globex = acme.for_tenant("globex")
+        assert globex._pinned_generation is not acme._pinned_generation
+
+        acme._pinned_generation.set("acme-generation-1")
+        assert globex._pinned_generation.get() is None, (
+            "a view observed the source tenant's pinned generation"
+        )
+
+    def test_closing_the_pool_is_sticky(self, shared_table) -> None:
+        """F-05: `close()` only nulled `_pool`, so the next use silently built a whole new one."""
+        from recall.pool import SharedPool
+
+        p = SharedPool(TEST_DSN, min_size=1, max_size=3)
+        with p.tenant_transaction("acme"):
+            pass
+        p.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            with p.tenant_transaction("acme"):
+                pass
+
+    def test_pooled_connections_carry_a_connect_timeout(self) -> None:
+        """F-04: the shared pool dropped a dead-host bound both other store modes set."""
+        from recall.pool import SharedPool
+
+        p = SharedPool(TEST_DSN, min_size=1, max_size=2, connect_timeout_s=7)
+        assert p._connect_kwargs["connect_timeout"] == 7
+
+    def test_an_explicit_connect_kwarg_still_wins(self) -> None:
+        from recall.pool import SharedPool
+
+        p = SharedPool(TEST_DSN, connect_timeout_s=7, connect_kwargs={"connect_timeout": 3})
+        assert p._connect_kwargs["connect_timeout"] == 3
+
+    def test_ownership_of_the_pool_is_representable(self, shared_table) -> None:
+        """F-09: `_owns_shared` was never set True, so the close() branch was dead code."""
+        from recall.pool import SharedPool
+
+        p = SharedPool(TEST_DSN, min_size=1, max_size=2)
+        owner = PgVectorStore(TEST_DSN, dim=8, table=shared_table, tenant="acme",
+                              shared_pool=p, owns_pool=True)
+        assert owner._owns_shared is True
+        assert owner.for_tenant("globex")._owns_shared is False, "a view must never own the pool"
+        owner.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            with p.tenant_transaction("acme"):
+                pass
+
+    def test_a_non_owning_store_does_not_close_the_pool(self, pool, shared_table) -> None:
+        store = PgVectorStore(TEST_DSN, dim=8, table=shared_table, tenant="acme", shared_pool=pool)
+        assert store._owns_shared is False
+        store.close()
+        with pool.tenant_transaction("acme"):  # must still work
+            pass

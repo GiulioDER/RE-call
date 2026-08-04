@@ -119,11 +119,28 @@ class SharedPool:
         self._dsn = dsn
         self._min_size = min_size
         self._max_size = max_size
-        self._connect_kwargs = dict(connect_kwargs or {})
+        # `connect_timeout` FIRST so an explicit caller kwarg still wins. Without it a pooled
+        # connection to a black-holed host hangs on the TCP handshake with no bound — a
+        # protection both other store modes set and this one had silently dropped.
+        self._connect_kwargs = {
+            "connect_timeout": int(connect_timeout_s),
+            **dict(connect_kwargs or {}),
+        }
         self._statement_timeout_ms = statement_timeout_ms
         self._connect_timeout_s = connect_timeout_s
         self._lock = threading.Lock()
+        #: A SEPARATE lock for the counter, not `_lock`. `close()` holds `_lock` while closing the
+        #: pool, and closing can drive connection returns through `_reset` on a worker thread —
+        #: which would then wait on a lock the closing thread already holds. One lock for both
+        #: jobs is a deadlock between shutdown and the guard.
+        self._counter_lock = threading.Lock()
         self._pool: ConnectionPool | None = None
+        #: Sticky. Without it `close()` merely nulled `_pool`, so the next `tenant_transaction`
+        #: read "not yet opened" and built a WHOLE NEW pool — fresh connections plus a scheduler
+        #: and worker threads — after shutdown, with nothing left to close it. The
+        #: single-connection mode already guards this class ("silently resurrect a connection
+        #: nobody owns"); the shared pool did not.
+        self._is_closed = False
         #: Observability for A.8 and the pool-saturation alert. Counting discards separately from
         #: leaks matters: a discard is the guard working, and only a leak is a defect.
         self.reset_discards = 0
@@ -164,8 +181,23 @@ class SharedPool:
         if conn.info.transaction_status != conn.info.transaction_status.IDLE:
             conn.rollback()
         leaked = _tenant_on(conn)
+        # `_tenant_on` runs a SELECT, and these connections are not autocommit, so the probe
+        # ITSELF opens a transaction. psycopg_pool checks the status after this hook and discards
+        # anything left non-IDLE — so without this rollback the guard destroyed every connection
+        # it inspected and the process-wide pool became a connect-per-operation loop against the
+        # database it exists to protect. `_configure` commits for exactly this reason twelve lines
+        # above; the same trap, missed twice in one file.
+        #
+        # Rollback BEFORE the raise, not after: on the leak path psycopg_pool discards the
+        # connection anyway, but leaving the ordering to that coincidence would mean the clean
+        # path's correctness depended on the error path's side effect.
+        conn.rollback()
         if leaked:
-            self.reset_discards += 1
+            with self._counter_lock:
+                # `+=` is a non-atomic read-modify-write and this hook runs on psycopg_pool's
+                # worker threads, so concurrent discards could undercount the one number an
+                # operator would alert on for tenant leaks.
+                self.reset_discards += 1
             _log.error(
                 "discarding pooled connection: tenant context survived the transaction",
                 extra={"leaked_tenant_len": len(leaked)},  # never the value itself
@@ -175,9 +207,13 @@ class SharedPool:
             )
 
     def open(self) -> "ConnectionPool":
+        if self._is_closed:
+            raise RuntimeError("pool is closed")
         if self._pool is not None:
             return self._pool
         with self._lock:
+            if self._is_closed:
+                raise RuntimeError("pool is closed")
             if self._pool is not None:
                 return self._pool
             try:
@@ -227,6 +263,7 @@ class SharedPool:
 
     def close(self) -> None:
         with self._lock:
+            self._is_closed = True
             if self._pool is not None:
                 self._pool.close()
                 self._pool = None
@@ -234,7 +271,12 @@ class SharedPool:
     def stats(self) -> dict[str, Any]:
         """Pool telemetry for the saturation alert. No tenant identifiers, no query text."""
         if self._pool is None:
-            return {"open": False, "max_size": self._max_size, "reset_discards": self.reset_discards}
+            return {
+                "open": False,
+                "closed": self._is_closed,
+                "max_size": self._max_size,
+                "reset_discards": self.reset_discards,
+            }
         raw = self._pool.get_stats()
         return {
             "open": True,
@@ -243,6 +285,16 @@ class SharedPool:
             "pool_available": raw.get("pool_available", 0),
             "requests_waiting": raw.get("requests_waiting", 0),
             "reset_discards": self.reset_discards,
+            # Churn. `connections_num` is the count of backends this pool has OPENED; on a healthy
+            # pool it stabilises near `pool_size` and stops growing, so its rate against the
+            # request rate is the direct detector for "the pool is not pooling".
+            #
+            # It is here because its absence is what hid a real defect: the reset hook was
+            # discarding every connection on return, and `stats()` reported a healthy `pool_size`
+            # throughout while `reset_discards` stayed 0 — a counter that only counts tenant
+            # leaks cannot distinguish "guard working" from "pool destroying itself".
+            "connections_num": raw.get("connections_num", 0),
+            "returns_bad": raw.get("returns_bad", 0),
         }
 
 

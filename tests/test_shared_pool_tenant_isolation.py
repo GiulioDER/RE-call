@@ -218,3 +218,74 @@ class TestPoolBounds:
         from recall.store import TENANT_GUC as STORE_GUC
 
         assert TENANT_GUC == STORE_GUC
+
+
+class TestConnectionsAreActuallyReused:
+    """The pool must POOL. Regression tests for the reset hook leaving connections INTRANS.
+
+    `_reset` probed the tenant GUC with `conn.execute(...)` on a non-autocommit connection and
+    never ended the implicit transaction that opened. psycopg_pool checks the transaction status
+    after the reset callback and discards anything left non-IDLE, so every connection was closed
+    on return and the process-wide pool was really a connect-per-operation loop against the
+    database it exists to protect.
+
+    None of the isolation tests above could see it: they assert the tenant is gone, and a
+    destroyed connection has no tenant either. The guard tests call `_reset` directly and so never
+    exercise the pool's return path at all. These two assert the property the others cannot —
+    that the same backend serves successive requests — which is what makes them the regression
+    tests for that bug rather than a restatement of the isolation claim.
+    """
+
+    def test_successive_transactions_reuse_a_bounded_set_of_backends(
+        self, pool: SharedPool
+    ) -> None:
+        """Ten operations must not mean ten backends.
+
+        The bound is the pool's own size, not one: with `min_size=2` the pool keeps two warm
+        connections and hands them out in turn, which is correct pooling. What the bug produced
+        was a NEW backend for every single operation, so the discriminating assertion is
+        "distinct backends <= pool size", not "== 1".
+        """
+        pids = []
+        for _ in range(10):
+            with pool.tenant_transaction("acme") as conn:
+                pids.append(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+        assert len(set(pids)) <= 2, (
+            f"pool churned: {len(set(pids))} distinct backends for 10 operations "
+            f"against a min_size=2 pool"
+        )
+
+    def test_the_pool_does_not_report_bad_returns(self, pool: SharedPool) -> None:
+        """`returns_bad` is the direct signal: it counts connections destroyed on return.
+
+        The companion bound is against `max_size`, not against the operation count and not
+        against `min_size`: psycopg_pool may legitimately grow the pool toward its ceiling. What
+        it must never do is open a backend PER OPERATION, which is what `connections_num` climbing
+        past `max_size` for a serial workload would mean.
+        """
+        operations = 10
+        for _ in range(operations):
+            with pool.tenant_transaction("acme"):
+                pass
+        stats = pool.stats()
+        assert stats["returns_bad"] == 0, f"connections discarded on return: {stats}"
+        assert stats["connections_num"] <= stats["max_size"], stats
+        assert stats["connections_num"] < operations, stats
+
+    def test_a_poisoned_connection_is_discarded_through_the_real_return_path(
+        self, pool: SharedPool
+    ) -> None:
+        """The guard, exercised through psycopg_pool rather than by calling `_reset` by hand.
+
+        This is the half the original guard test could not reach: it proves the discard actually
+        happens on return, and that the next caller gets a different, clean backend.
+        """
+        with pool.tenant_transaction("acme") as conn:
+            poisoned_pid = conn.execute("SELECT pg_backend_pid()").fetchone()[0]
+            # SESSION scope: survives the transaction. Exactly the bug class being guarded.
+            conn.execute(f"SELECT set_config('{TENANT_GUC}', 'leaked-tenant', false)")
+
+        with pool.tenant_transaction("globex") as conn:
+            assert conn.execute("SELECT pg_backend_pid()").fetchone()[0] != poisoned_pid
+            assert _tenant_now(conn) == "globex"
+        assert pool.reset_discards == 1
