@@ -2,49 +2,50 @@
 
 Why this exists alongside `auth.py`
 -----------------------------------
-`auth.py` holds STATIC bearer tokens: an operator provisions a file, and a token is a shared
-secret with no expiry and no issuer. That is fine for a laptop and unacceptable for a fleet — a
-leaked static token is valid until somebody notices and edits a file. This module takes identity
-from an external identity provider instead, so revocation, rotation and expiry belong to the IdP.
+`auth.py` holds STATIC bearer tokens: a shared secret with no expiry and no issuer, valid until
+somebody notices and edits a file. This module takes identity from an external provider instead,
+so revocation, rotation and expiry belong to the IdP.
 
-Static tokens remain, but development-only, and production configuration refuses them.
+Rejections are a taxonomy, not a boolean
+----------------------------------------
+Every refusal carries a stable `reason`, and the reasons are the API: alerting on `bad_signature`
+versus `unknown_kid` watches two different events (a forgery attempt versus a rotation this
+process has not caught up with).
 
-What "fail closed" means here
------------------------------
-Every ambiguity resolves to rejection, and each rejection carries a STABLE `reason` string. The
-reasons are the API: an operator alerting on `bad_signature` versus `unknown_kid` is watching for
-two very different events (a forgery attempt versus a rotation this process has not caught up
-with), and collapsing them into "invalid token" throws that distinction away.
+Two exception types, on purpose. `TokenRejected` states a fact about the TOKEN and maps to 401.
+`IdentityProviderUnavailable` states a fact about the IdP and maps to 503. Collapsing them means
+answering 401 for a server-side outage, which tells every client to re-authenticate against the
+provider that is already down.
 
-The rejections that matter most, and why each is separate
----------------------------------------------------------
-- **`algorithm_not_allowed`** covers algorithm confusion, which is the attack this class of code
-  exists to stop. The classic form re-signs the token with HS256 using the RSA *public* key as the
-  HMAC secret: the public key is, by definition, public, so a validator that infers the algorithm
-  from the token's own header is asking the attacker which lock to use. The allowlist is
-  asymmetric-only by default and is applied BEFORE any key lookup. `alg: none` falls out of the
-  same check.
-- **`missing_kid`** is enforced rather than worked around. A token without a key id forces the
-  validator to try every key, which turns key rotation into a signature-oracle and makes an
-  unknown-key rejection indistinguishable from a bad signature.
-- **`missing_expiry`** because a token with no `exp` never stops being valid, and "the IdP always
-  sets one" is an assumption about someone else's configuration.
-- **`missing_tenant`** because tenant identity is the isolation boundary. An empty tenant is not
-  "all tenants"; it is a token that cannot be authorised, and it must not reach the store layer
-  where an empty GUC reads as "match nothing" and returns a plausible empty answer.
+The four rejections that carry the most weight
+-----------------------------------------------
+- **`algorithm_not_allowed`** is checked before any key lookup, and the pinned algorithm — not the
+  whole allowlist — is what reaches `jwt.decode`. Membership in the allowlist is not agreement
+  with the selected key's family: with a mixed RSA/EC allowlist, `alg: ES256` against an RSA `kid`
+  otherwise reaches `ECAlgorithm.prepare_key(RSAPublicKey)` and raises a bare `TypeError` that is
+  not a `jwt.InvalidTokenError` and escapes every handler.
+- **`missing_kid`** is enforced. Trying every key turns rotation into a signature oracle.
+- **`missing_expiry`** because a token with no `exp` never stops being valid.
+- **`missing_tenant`** because tenant identity is the isolation boundary, and an empty tenant is
+  not "all tenants" — it must never reach the store, where an empty GUC reads as "match nothing".
 
-The JWKS cache and the stale window
------------------------------------
-Keys are cached and refreshed every `jwks_refresh_s` (15 minutes). If the IdP is unreachable at
-refresh time the cached keys keep working up to `max_stale_key_s` (1 hour), then validation fails
-closed. The two bounds encode a real trade-off: an IdP blip must not take the fleet down, and a
-key withdrawn by the IdP must stop working within a bounded time. Serving stale keys forever would
-mean revocation never propagates; refusing immediately would make the IdP a hard single point of
-failure for every request.
+The JWKS cache
+--------------
+Refreshed every `jwks_refresh_s`. If the IdP is unreachable the cached keys keep working up to
+`max_stale_key_s`, then validation fails closed: an IdP blip must not take the fleet down, and a
+withdrawn key must stop working in bounded time.
 
-An unknown `kid` triggers at most ONE out-of-band refresh, so a rotation is picked up without
-waiting out the interval. The bound matters: without it, an attacker presenting random kids has a
-free amplification channel against the IdP.
+Two properties that are easy to state and easy to get wrong, so both are pinned by test:
+
+1. **A failed fetch never updates `fetched_at`.** Otherwise each failure renews the stale window
+   and a withdrawn key works forever — a validator that never fails closed passes a suite whose
+   tests only ever fail once.
+2. **A forced refresh is bounded per PROCESS, not per call.** An unknown `kid` triggers an
+   out-of-band refresh so rotation is picked up without waiting the interval, but bounding that
+   per call bounds nothing an attacker controls: N requests with N random kids would be N fetches.
+
+Network IO happens OUTSIDE the cache lock (single-flight), so a slow IdP cannot serialise every
+request in the process behind one HTTP call.
 """
 
 from __future__ import annotations
@@ -52,25 +53,37 @@ from __future__ import annotations
 import json
 import threading
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import jwt
 from jwt.algorithms import RSAAlgorithm
 
+from recall.observability import get_logger
 from recall_mcp.auth import ALL_SCOPES, Principal
+
+_log = get_logger("mcp.oidc")
 
 #: Spec defaults. Named so a caller overriding one is visibly overriding a documented value.
 DEFAULT_CLOCK_SKEW_S = 60
 DEFAULT_JWKS_REFRESH_S = 15 * 60
 DEFAULT_MAX_STALE_KEY_S = 60 * 60
 
-#: Asymmetric only, deliberately. Including any HS* algorithm here alongside a public key is the
+#: Asymmetric only. Including any HS* algorithm alongside a published verification key IS the
 #: algorithm-confusion vulnerability, not a configuration preference.
 DEFAULT_ALGORITHMS = ("RS256", "RS384", "RS512", "ES256", "ES384", "PS256", "PS384", "PS512")
 
+#: Which JWK key types can serve which algorithm family. Selection is checked against this at key
+#: load time, so a family mismatch is a clean rejection rather than a library TypeError.
+_ALG_KTY = {"RS": "RSA", "PS": "RSA", "ES": "EC"}
+
 _HTTP_TIMEOUT_S = 10
+#: Floor between forced (unknown-kid) refreshes, as a fraction of the refresh interval.
+_FORCED_REFRESH_DIVISOR = 10
 
 
 class TokenRejected(Exception):
@@ -81,6 +94,14 @@ class TokenRejected(Exception):
         super().__init__(f"{reason}: {detail}" if detail else reason)
 
 
+class IdentityProviderUnavailable(TokenRejected):
+    """The IdP could not be consulted. A 503, not a 401.
+
+    Subclasses `TokenRejected` so an existing caller that catches only that still fails closed;
+    a caller that wants the distinction catches this first.
+    """
+
+
 @dataclass(frozen=True)
 class OidcConfig:
     issuer: str
@@ -89,46 +110,96 @@ class OidcConfig:
     clock_skew_s: int = DEFAULT_CLOCK_SKEW_S
     jwks_refresh_s: int = DEFAULT_JWKS_REFRESH_S
     max_stale_key_s: int = DEFAULT_MAX_STALE_KEY_S
-    #: Claim carrying the tenant. Configurable because IdPs differ; never taken from a request.
     tenant_claim: str = "tenant"
     scope_claim: str = "scope"
+    #: Require `azp` to name us when a token carries several audiences (OIDC Core 3.1.3.7).
+    require_azp_for_multi_audience: bool = True
 
     def __post_init__(self) -> None:
         if not self.issuer.strip() or not self.audience.strip():
             raise ValueError("issuer and audience are required")
+        object.__setattr__(self, "algorithms", tuple(self.algorithms))
+        if not self.algorithms:
+            raise ValueError("algorithms must not be empty: an allowlist that permits nothing "
+                             "rejects every token, which is an outage rather than a policy")
         weak = [a for a in self.algorithms if a.upper().startswith("HS") or a.lower() == "none"]
         if weak:
             raise ValueError(
                 f"refusing symmetric or unsigned algorithms in an OIDC allowlist: {weak}. "
-                "With a public verification key an HMAC algorithm IS the algorithm-confusion "
-                "attack, because the key an attacker needs to forge with is published."
+                "With a published verification key an HMAC algorithm IS the algorithm-confusion "
+                "attack, because the key an attacker needs to forge with is public."
             )
+        if self.jwks_refresh_s <= 0:
+            raise ValueError("jwks_refresh_s must be positive; 0 refetches on every request")
+        if self.clock_skew_s < 0:
+            raise ValueError("clock_skew_s must be >= 0; a negative skew narrows validity")
         if self.max_stale_key_s < self.jwks_refresh_s:
             raise ValueError("max_stale_key_s must be >= jwks_refresh_s")
+        if not self.tenant_claim.strip() or not self.scope_claim.strip():
+            raise ValueError("tenant_claim and scope_claim must be non-empty")
 
 
-def discover_jwks_uri(issuer: str, *, opener: Callable[[str], bytes] | None = None) -> str:
-    """Resolve the JWKS URI from the issuer's OIDC discovery document."""
-    fetch = opener or _http_get
-    url = issuer.rstrip("/") + "/.well-known/openid-configuration"
-    doc = json.loads(fetch(url))
-    if not isinstance(doc, dict):
-        raise TokenRejected("discovery_failed", "discovery document is not an object")
-    # The discovery document is fetched from the issuer, but a document that DISAGREES with the
-    # issuer it was fetched from cannot be trusted to name a key endpoint either.
-    if str(doc.get("issuer", "")).rstrip("/") != issuer.rstrip("/"):
-        raise TokenRejected("discovery_failed", "discovery issuer does not match configuration")
-    uri = doc.get("jwks_uri")
-    if not isinstance(uri, str) or not uri.startswith("https://"):
-        raise TokenRejected("discovery_failed", "jwks_uri missing or not https")
-    return uri
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects outright on identity endpoints.
+
+    `urlopen` follows 30x by default and its handler permits an https -> http downgrade, so a
+    scheme check on the URL we were handed says nothing about the URL actually fetched. Key
+    material is not something to retrieve over a connection we did not verify.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+        raise IdentityProviderUnavailable(
+            "discovery_failed", f"identity endpoint attempted a {code} redirect"
+        )
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def _http_get(url: str) -> bytes:
     if not url.startswith("https://"):
-        raise TokenRejected("discovery_failed", "refusing a non-https identity endpoint")
-    with urllib.request.urlopen(url, timeout=_HTTP_TIMEOUT_S) as response:  # noqa: S310
-        return bytes(response.read())
+        raise IdentityProviderUnavailable(
+            "discovery_failed", "refusing a non-https identity endpoint"
+        )
+    try:
+        with _OPENER.open(url, timeout=_HTTP_TIMEOUT_S) as response:
+            return bytes(response.read())
+    except urllib.error.HTTPError as exc:
+        # HTTPError IS the response object and owns the socket; the `with` above never ran.
+        exc.close()
+        raise IdentityProviderUnavailable("jwks_unavailable", f"identity endpoint {exc.code}") from exc
+
+
+def discover_jwks_uri(issuer: str, *, opener: Callable[[str], bytes] | None = None) -> str:
+    """Resolve the JWKS URI from the issuer's OIDC discovery document.
+
+    The returned URI is constrained to the issuer's own origin. Without that, a hostile or
+    compromised discovery document points this server's fetch at an internal address (a cloud
+    metadata endpoint, an admin port) and thereby chooses the key set that verifies every token —
+    which makes it a token-forgery path, not merely an information leak.
+    """
+    fetch = opener or _http_get
+    url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+    try:
+        doc = json.loads(fetch(url))
+    except IdentityProviderUnavailable:
+        raise
+    except Exception as exc:
+        raise IdentityProviderUnavailable("discovery_failed", "discovery document unreadable") from exc
+    if not isinstance(doc, dict):
+        raise IdentityProviderUnavailable("discovery_failed", "discovery document is not an object")
+    if str(doc.get("issuer", "")).rstrip("/") != issuer.rstrip("/"):
+        raise IdentityProviderUnavailable(
+            "discovery_failed", "discovery issuer does not match configuration"
+        )
+    uri = doc.get("jwks_uri")
+    if not isinstance(uri, str) or not uri.startswith("https://"):
+        raise IdentityProviderUnavailable("discovery_failed", "jwks_uri missing or not https")
+    if urllib.parse.urlparse(uri).netloc != urllib.parse.urlparse(issuer).netloc:
+        raise IdentityProviderUnavailable(
+            "discovery_failed", "jwks_uri is not on the issuer's origin"
+        )
+    return uri
 
 
 @dataclass
@@ -138,12 +209,78 @@ class _CachedKeys:
     ever_fetched: bool = False
 
 
+def _usable_keys(document: Any) -> dict[str, Any]:
+    """Parse a JWKS into kid -> key, refusing anything ambiguous.
+
+    Three refusals worth naming, because each one is silent if you skip it:
+
+    - A **duplicate `kid`** is rejected outright rather than last-one-wins. An IdP publishing two
+      keys under one id is a rotation bug or an attack; overwriting means the real key stops
+      verifying and the other one starts, with nothing logged.
+    - A key marked for **encryption** (`use: enc`, or `key_ops` without `verify`) is skipped. It
+      was not published to verify signatures, and accepting it widens the trusted set for free.
+    - A **family mismatch** is caught here rather than inside PyJWT, where it surfaces as a
+      `TypeError` that is not an `InvalidTokenError`.
+    """
+    if not isinstance(document, dict):
+        raise IdentityProviderUnavailable("jwks_unavailable", "JWKS document is not an object")
+    entries = document.get("keys")
+    if not isinstance(entries, list):
+        raise IdentityProviderUnavailable("jwks_unavailable", "JWKS 'keys' is not a list")
+
+    keys: dict[str, Any] = {}
+    dropped = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            dropped += 1
+            continue
+        kid = entry.get("kid")
+        if not isinstance(kid, str) or not kid:
+            dropped += 1  # a key we cannot name cannot be selected by `kid`
+            continue
+        use = entry.get("use")
+        ops = entry.get("key_ops")
+        if (use is not None and use != "sig") or (
+            isinstance(ops, list) and "verify" not in ops
+        ):
+            dropped += 1
+            continue
+        if kid in keys:
+            raise IdentityProviderUnavailable(
+                "jwks_unavailable", "JWKS publishes two keys under one key id"
+            )
+        kty = entry.get("kty")
+        try:
+            if kty == "RSA":
+                keys[kid] = RSAAlgorithm.from_jwk(json.dumps(entry))
+            elif kty == "EC":
+                from jwt.algorithms import ECAlgorithm
+
+                keys[kid] = ECAlgorithm.from_jwk(json.dumps(entry))
+            else:
+                dropped += 1
+        except Exception:
+            # Logged rather than silently swallowed: an unparseable published key otherwise
+            # reaches the operator as `unknown_kid`, which says "rotation" when the truth is
+            # "the IdP served something we cannot read".
+            dropped += 1
+            _log.warning("dropping unparseable JWKS entry", extra={"kid_len": len(kid)})
+    if dropped:
+        _log.warning("dropped %d unusable JWKS entries", dropped)
+    if entries and not keys:
+        raise IdentityProviderUnavailable("jwks_unavailable", "no usable keys in JWKS")
+    return keys
+
+
+def _kty_for(alg: str) -> str | None:
+    return _ALG_KTY.get(alg[:2].upper())
+
+
 class OidcValidator:
     """Validates a bearer JWT and returns a `Principal`. Tenant comes from the token, only.
 
-    `validate` deliberately takes no tenant argument. If it did, some call site would eventually
-    pass one from a request parameter and the isolation model would be decided there; not having
-    the parameter makes that unrepresentable rather than merely discouraged.
+    `validate` deliberately takes no tenant argument. With one, some call site would eventually
+    pass a request parameter and the isolation model would be decided there.
     """
 
     def __init__(
@@ -157,9 +294,17 @@ class OidcValidator:
         self._config = config
         self._jwks_uri = jwks_uri
         self._fetcher = _jwks_fetcher
-        self._clock = _clock or time.monotonic
+        # Wall clock, not monotonic: `max_stale_key_s` is a bound on how long a WITHDRAWN key may
+        # keep working, which is a fact about the outside world. CLOCK_MONOTONIC does not advance
+        # while a machine is suspended, so a snapshot-restored VM would silently extend it.
+        self._clock = _clock or time.time
         self._cache = _CachedKeys()
         self._lock = threading.Lock()
+        #: Held only while fetching, and never together with `_lock` around IO. Single-flight: one
+        #: thread fetches, the rest carry on with what is cached.
+        self._fetch_lock = threading.Lock()
+        self._last_forced_at = 0.0
+        self._missing_kids: set[str] = set()
 
     @property
     def config(self) -> OidcConfig:
@@ -167,53 +312,82 @@ class OidcValidator:
 
     def _fetch_jwks(self) -> dict:
         if self._fetcher is not None:
-            return self._fetcher()
-        uri = self._jwks_uri or discover_jwks_uri(self._config.issuer)
-        self._jwks_uri = uri
-        document = json.loads(_http_get(uri))
-        # Checked rather than cast. `json.loads` returns Any, so silencing the type error would
-        # push a malformed JWKS downstream into an AttributeError on `.get("keys")` — an
-        # unreachable-IdP symptom wearing a crash's clothes.
+            document = self._fetcher()
+        else:
+            uri = self._jwks_uri or discover_jwks_uri(self._config.issuer)
+            self._jwks_uri = uri
+            document = json.loads(_http_get(uri))
         if not isinstance(document, dict):
-            raise TokenRejected("jwks_unavailable", "JWKS document is not a JSON object")
+            raise IdentityProviderUnavailable("jwks_unavailable", "JWKS document is not an object")
         return document
 
-    def _load_keys(self, *, force: bool) -> dict[str, Any]:
-        """Return kid -> key, refreshing when due. Serves stale keys inside the stale window."""
+    def _snapshot(self) -> _CachedKeys:
         with self._lock:
-            now = self._clock()
-            age = now - self._cache.fetched_at
-            due = force or not self._cache.ever_fetched or age >= self._config.jwks_refresh_s
-            if not due:
-                return self._cache.keys
+            return self._cache
+
+    def _refresh(self, cached: _CachedKeys) -> dict[str, Any]:
+        """Fetch and install, OUTSIDE the cache lock. Falls back to stale keys inside the window.
+
+        The lock is taken only to read and to publish. Holding it across the HTTP call would make
+        one slow IdP serialise every request in the process, which is the same outage the stale
+        window exists to prevent, arriving as latency instead of as errors.
+        """
+        now = self._clock()
+        age = now - cached.fetched_at
+        if not self._fetch_lock.acquire(blocking=False):
+            # Another thread is already fetching. Serve what we have rather than queue behind it.
+            return cached.keys
+        try:
             try:
-                raw = self._fetch_jwks()
-            except TokenRejected:
-                raise
+                keys = _usable_keys(self._fetch_jwks())
             except Exception as exc:
-                # The IdP is unreachable. Keep serving what we have until the stale window closes,
-                # then fail closed: a key the IdP has withdrawn must stop working in bounded time.
-                if self._cache.ever_fetched and age <= self._config.max_stale_key_s:
-                    return self._cache.keys
-                raise TokenRejected(
+                # Every fetch-side failure lands here, including the TokenRejected subclasses this
+                # module raises for a malformed document. Routing those around the stale window
+                # would mean a JSON error page causes a total outage while an HTML one is survived.
+                if cached.ever_fetched and age <= self._config.max_stale_key_s:
+                    _log.warning("serving stale JWKS: identity provider unreachable")
+                    return cached.keys
+                raise IdentityProviderUnavailable(
                     "jwks_unavailable", "identity provider unreachable and cached keys are stale"
                 ) from exc
-            keys: dict[str, Any] = {}
-            for entry in (raw or {}).get("keys", []):
-                kid = entry.get("kid")
-                if not isinstance(kid, str) or not kid:
-                    continue  # a key we cannot name cannot be selected by `kid`
-                try:
-                    keys[kid] = RSAAlgorithm.from_jwk(json.dumps(entry))
-                except Exception:
-                    try:
-                        from jwt.algorithms import ECAlgorithm
+            with self._lock:
+                # `fetched_at` advances ONLY here, on success. Updating it on failure would renew
+                # the stale window at every failed attempt, so a withdrawn key would work forever.
+                self._cache = _CachedKeys(keys=keys, fetched_at=now, ever_fetched=True)
+                self._missing_kids.clear()
+                return keys
+        finally:
+            self._fetch_lock.release()
 
-                        keys[kid] = ECAlgorithm.from_jwk(json.dumps(entry))
-                    except Exception:
-                        continue
-            self._cache = _CachedKeys(keys=keys, fetched_at=now, ever_fetched=True)
+    def _keys_for(self, kid: str) -> dict[str, Any]:
+        cached = self._snapshot()
+        due = not cached.ever_fetched or (
+            self._clock() - cached.fetched_at >= self._config.jwks_refresh_s
+        )
+        keys = self._refresh(cached) if due else cached.keys
+        if kid in keys:
             return keys
+
+        # Unknown kid: refresh out of band so a rotation is picked up without waiting the
+        # interval. Bounded PER PROCESS, because bounding it per call bounds nothing an attacker
+        # controls — N requests with N random kids would be N fetches against the IdP.
+        now = self._clock()
+        floor = self._config.jwks_refresh_s / _FORCED_REFRESH_DIVISOR
+        with self._lock:
+            recently_missing = kid in self._missing_kids
+            too_soon = now - self._last_forced_at < floor
+            if not (recently_missing or too_soon):
+                self._last_forced_at = now
+                forced = True
+            else:
+                forced = False
+        if not forced:
+            return keys
+        keys = self._refresh(self._snapshot())
+        if kid not in keys:
+            with self._lock:
+                self._missing_kids.add(kid)
+        return keys
 
     def validate(self, token: str) -> Principal:
         cfg = self._config
@@ -224,29 +398,39 @@ class OidcValidator:
         except Exception as exc:
             raise TokenRejected("malformed", "token header is not decodable") from exc
 
-        # BEFORE any key lookup. Checking the algorithm after selecting a key would mean the
-        # token's own header had already influenced which key was chosen.
-        alg = str(header.get("alg", ""))
-        if alg not in cfg.algorithms:
-            raise TokenRejected("algorithm_not_allowed", f"alg {alg!r} is not in the allowlist")
+        # BEFORE any key lookup: checking after would mean the token's own header had already
+        # influenced which key was chosen.
+        alg = header.get("alg")
+        if not isinstance(alg, str) or alg not in cfg.algorithms:
+            shown = alg if isinstance(alg, str) else type(alg).__name__
+            raise TokenRejected("algorithm_not_allowed", f"alg {shown[:16]!r} is not allowed")
 
         kid = header.get("kid")
         if not isinstance(kid, str) or not kid:
             raise TokenRejected("missing_kid", "token header carries no key id")
 
-        keys = self._load_keys(force=False)
-        if kid not in keys:
-            # One out-of-band refresh, so a rotation is picked up without waiting the interval —
-            # and exactly one, so arbitrary kids cannot be used to hammer the IdP.
-            keys = self._load_keys(force=True)
+        keys = self._keys_for(kid)
         if kid not in keys:
             raise TokenRejected("unknown_kid", "no published key matches this token's key id")
+
+        key = keys[kid]
+        # Membership in the allowlist is not agreement with THIS key's family. Caught here, it is
+        # a clean rejection; left to PyJWT it is a TypeError that is not an InvalidTokenError and
+        # escapes every handler below.
+        expected = _kty_for(alg)
+        actual = type(key).__name__
+        if expected == "RSA" and "RSA" not in actual:
+            raise TokenRejected("algorithm_not_allowed", "algorithm does not match the key type")
+        if expected == "EC" and "Elliptic" not in actual and "EC" not in actual:
+            raise TokenRejected("algorithm_not_allowed", "algorithm does not match the key type")
 
         try:
             claims = jwt.decode(
                 token,
-                key=keys[kid],
-                algorithms=list(cfg.algorithms),
+                key=key,
+                # The PINNED algorithm, not the allowlist. The pre-check already reduced it to
+                # exactly one, and handing PyJWT the full list lets the header re-select a family.
+                algorithms=[alg],
                 audience=cfg.audience,
                 issuer=cfg.issuer,
                 leeway=cfg.clock_skew_s,
@@ -267,22 +451,54 @@ class OidcValidator:
         except jwt.InvalidSignatureError as exc:
             raise TokenRejected("bad_signature", "signature does not verify") from exc
         except jwt.InvalidTokenError as exc:
-            # Deliberately last: every specific reason above is more useful than this one, and a
-            # broad handler placed first would swallow all of them.
+            raise TokenRejected("invalid", "token failed validation") from exc
+        except Exception as exc:
+            # The contract is that EVERY ambiguity resolves to a TokenRejected. `InvalidKeyError`
+            # and `PyJWKError` are not `InvalidTokenError` subclasses, and a library that raises
+            # something new in a future version must not turn a 401 into a 500.
             raise TokenRejected("invalid", "token failed validation") from exc
 
-        tenant = claims.get(cfg.tenant_claim)
-        if not isinstance(tenant, str) or not tenant.strip():
+        self._check_authorized_party(claims)
+
+        raw_tenant = claims.get(cfg.tenant_claim)
+        if not isinstance(raw_tenant, str) or not raw_tenant.strip():
             raise TokenRejected(
                 "missing_tenant",
                 f"claim {cfg.tenant_claim!r} is absent or empty; an empty tenant is not a tenant",
             )
+        if raw_tenant != raw_tenant.strip():
+            # Rejected, not normalised. `auth.parse_principals` stores tenants verbatim and the
+            # registry does exact string membership, so silently trimming here would make one
+            # tenant id mean two different things depending on which factory built the Principal.
+            raise TokenRejected(
+                "malformed_tenant", "tenant claim has leading or trailing whitespace"
+            )
 
         return Principal(
-            name=str(claims.get("sub") or tenant),
-            tenant=tenant.strip(),
+            name=str(claims.get("sub") or raw_tenant),
+            tenant=raw_tenant,
             scopes=_parse_scope_claim(claims.get(cfg.scope_claim)),
+            # Carried onto the Principal, not merely checked here. The Principal is the object
+            # that travels; without this a five-minute JWT becomes a credential downstream code
+            # believes never expires.
+            expires_at=datetime.fromtimestamp(int(claims["exp"]), tz=timezone.utc),
         )
+
+    def _check_authorized_party(self, claims: dict) -> None:
+        """OIDC Core 3.1.3.7: a multi-audience token must name us in `azp`.
+
+        Without it, any other client of the same IdP that can obtain a token listing our audience
+        is a valid caller here — and the `tenant` claim it carries becomes our isolation boundary.
+        """
+        if not self._config.require_azp_for_multi_audience:
+            return
+        aud = claims.get("aud")
+        if isinstance(aud, (list, tuple)) and len(aud) > 1:
+            if claims.get("azp") != self._config.audience:
+                raise TokenRejected(
+                    "bad_audience",
+                    "multi-audience token is not authorised to this party",
+                )
 
 
 def _parse_scope_claim(raw: object) -> frozenset[str]:
@@ -290,8 +506,8 @@ def _parse_scope_claim(raw: object) -> frozenset[str]:
 
     Unknown scopes are dropped rather than rejected, unlike the static-token file. The file is OUR
     configuration, so a typo there is an operator error worth failing on; the token comes from an
-    IdP that legitimately issues scopes for other audiences, and refusing those would make this
-    service brittle to unrelated changes in someone else's authorisation server.
+    IdP that legitimately issues scopes for other audiences. The filter is an allowlist
+    intersection, so the failure direction is always LESS privilege.
     """
     if isinstance(raw, str):
         candidates = raw.split()
@@ -307,6 +523,7 @@ __all__ = [
     "DEFAULT_CLOCK_SKEW_S",
     "DEFAULT_JWKS_REFRESH_S",
     "DEFAULT_MAX_STALE_KEY_S",
+    "IdentityProviderUnavailable",
     "OidcConfig",
     "OidcValidator",
     "TokenRejected",

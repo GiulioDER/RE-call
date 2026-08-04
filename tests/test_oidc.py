@@ -314,12 +314,10 @@ class TestJwksRefreshAndStaleWindow:
             v.validate(_token(private))
         assert excinfo.value.reason == "jwks_unavailable"
 
-    def test_an_unknown_kid_triggers_exactly_one_refresh(self, keypair, other_keypair) -> None:
-        """Key rotation: a new kid must be picked up without waiting for the refresh interval.
-
-        Bounded to ONE refetch per validation, because an attacker who can present arbitrary kids
-        would otherwise have a free amplification channel against the IdP.
-        """
+    def test_a_rotation_is_picked_up_without_waiting_the_refresh_interval(
+        self, keypair, other_keypair
+    ) -> None:
+        """An unknown kid triggers an out-of-band refresh, so a new signing key works at once."""
         private, public = keypair
         other_private, other_public = other_keypair
         state = {"rotated": False, "calls": 0}
@@ -334,12 +332,83 @@ class TestJwksRefreshAndStaleWindow:
 
         state["rotated"] = True
         assert v.validate(_token(other_private, kid="key-2")).tenant == "acme"
-        assert state["calls"] == 2
+        assert state["calls"] == 2, "a rotation must not wait out the refresh interval"
 
-        before = state["calls"]
-        with pytest.raises(TokenRejected):
-            v.validate(_token(private, kid="key-999"))
-        assert state["calls"] == before + 1, "an unknown kid must not refetch more than once"
+    def test_unknown_kids_cannot_drive_unbounded_idp_traffic(self, keypair) -> None:
+        """The bound is per PROCESS, not per call.
+
+        The original version of this test asserted `calls == before + 1` inside a SINGLE
+        validate(), which reads as proving a rate limit while only describing one call. Measured
+        against that code, 200 requests with 200 random kids produced 200 JWKS fetches — the exact
+        amplification the module's docstring claimed to prevent. Sweeping many kids across
+        separate calls is what makes this test able to fail.
+        """
+        private, public = keypair
+        state = {"calls": 0}
+
+        def fetcher():
+            state["calls"] += 1
+            return _jwks(public)
+
+        v = OidcValidator(OidcConfig(issuer=ISSUER, audience=AUDIENCE), _jwks_fetcher=fetcher)
+        v.validate(_token(private))
+        baseline = state["calls"]
+
+        for i in range(50):
+            with pytest.raises(TokenRejected):
+                v.validate(_token(private, kid=f"unknown-{i}"))
+
+        assert state["calls"] - baseline <= 1, (
+            f"50 unknown kids caused {state['calls'] - baseline} IdP fetches"
+        )
+
+    def test_a_repeated_unknown_kid_is_not_refetched(self, keypair) -> None:
+        private, public = keypair
+        state = {"calls": 0}
+
+        def fetcher():
+            state["calls"] += 1
+            return _jwks(public)
+
+        v = OidcValidator(OidcConfig(issuer=ISSUER, audience=AUDIENCE), _jwks_fetcher=fetcher)
+        v.validate(_token(private))
+        for _ in range(5):
+            with pytest.raises(TokenRejected):
+                v.validate(_token(private, kid="ghost"))
+        assert state["calls"] <= 2
+
+    def test_a_failed_fetch_never_renews_the_stale_window(self, keypair) -> None:
+        """The property a single-failure test cannot see.
+
+        A validator that refreshed `fetched_at` on a FAILED fetch would serve a withdrawn key
+        forever and never fail closed — and it passed the whole suite, because every temporal test
+        advanced the clock once and failed once. This one fails repeatedly, which is what makes it
+        able to catch that.
+        """
+        private, public = keypair
+        state = {"fail": False, "now": 1000.0}
+
+        def fetcher():
+            if state["fail"]:
+                raise OSError("idp unreachable")
+            return _jwks(public)
+
+        v = OidcValidator(
+            OidcConfig(issuer=ISSUER, audience=AUDIENCE),
+            _jwks_fetcher=fetcher,
+            _clock=lambda: state["now"],
+        )
+        v.validate(_token(private))
+        state["fail"] = True
+
+        state["now"] += 1000  # inside the window
+        assert v.validate(_token(private)).tenant == "acme"
+        state["now"] += 1000  # still inside, and a SECOND failure
+        assert v.validate(_token(private)).tenant == "acme"
+        state["now"] += 2000  # now past 3600s from the last SUCCESSFUL fetch
+        with pytest.raises(TokenRejected) as excinfo:
+            v.validate(_token(private))
+        assert excinfo.value.reason == "jwks_unavailable"
 
 
 class TestRejectionsCarryNoSecrets:
