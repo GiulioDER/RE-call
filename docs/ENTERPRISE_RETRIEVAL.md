@@ -12,6 +12,8 @@ Three properties follow from that and are enforced by tests:
 
 * `query_mode` and `passage_mode` name the encoder that is actually called. A profile declaring `query_embed` gets `TextEmbedding.query_embed`, and a backend without that encoder refuses to start rather than falling back to the symmetric one.
 
+  ⚠️ **Naming a distinct encoder is not the same as getting distinct vectors, and on this deployment it does not.** Under fastembed 0.8.0, `BAAI/bge-small-en-v1.5` returns byte-identical vectors from `embed`, `query_embed` and `passage_embed`: the model applies no query instruction and `TextEmbedding.query_embed` delegates to it. `bge-small-symmetric-v1` and `bge-small-asymmetric-v1` share every other identity field and one provisioned artifact tree, so they cannot produce different vectors here, and **a paired comparison of the two is a null by construction rather than an experiment**. Reproduce with `benchmarks/check_profile_encoder_distinctness.py`, which carries its own positive control. The dispatch still has to be correct, because `qwen3-embedding-0.6b-384-v1` does use a distinct instruction-prefixed query encoder and a future backend could add one without changing a profile identifier. Giving BGE a query instruction would be a new experiment and needs registering.
+
 * The declared dimension is checked against the artifact at startup. An artifact that embeds at a different width is not that profile, and the process refuses rather than writing vectors no other process can interpret.
 
 Registered identifiers: `bge-small-symmetric-v1`, `bge-small-asymmetric-v1`, `bge-small-context-document-v1`, `bge-small-context-section-v1`, `bge-small-context-neighbor-v1`, and the rejected `qwen3-embedding-0.6b-384-v1`.

@@ -9,6 +9,19 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
+- **`benchmarks/check_profile_encoder_distinctness.py`, and the finding it exists to record.**
+  `bge-small-symmetric-v1` and `bge-small-asymmetric-v1` differ in two registry fields
+  (`query_mode`, `passage_mode`) and share every other identity field and one provisioned artifact
+  tree. Measured against that tree on the deployment host, offline: `embed`, `query_embed` and
+  `passage_embed` return **byte-identical** vectors for `BAAI/bge-small-en-v1.5` under fastembed
+  0.8.0, on all six probes, cosine exactly 1.0. The two profiles therefore cannot produce different
+  vectors, and **a paired promotion comparison of the two is a null by construction** rather than
+  an experiment — `results/promotion/decision.null-difference.json` is already that artifact.
+  No behaviour changes; `docs/ENTERPRISE_RETRIEVAL.md` now says so where a reader designing an
+  experiment will meet it, because "names a distinct encoder" and "gets distinct vectors" had been
+  the same sentence. The script carries a positive control and a determinism control, both
+  blocking, and the positive control is proven able to refuse by mutation rather than merely to run.
+
 - **`latency_budget_ms` now means something at request time.** It was declared on every retrieval
   profile, validated, and read by nothing. It now does two enforced things. It **bounds the
   admission wait**: a request that cannot acquire a running slot within the budget is shed with
