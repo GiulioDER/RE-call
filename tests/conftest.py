@@ -2,13 +2,88 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import uuid
 
-import psycopg
-import pytest
+# ─── Import-time environment neutralisation ──────────────────────────────────────────────────────
+# This block runs BEFORE the `recall.*` imports below, and that ordering is load-bearing — see
+# `_neutralise_deployment_env`. Nothing above it may import anything that can reach
+# `recall_mcp.server`, which is why the imports below it are exempted from the import-order rule.
 
-from recall.store import PgVectorStore
-from recall.schema import LEDGER_TABLE, apply_migrations
+#: Prefixes owning every variable that configures authentication. Matched as a PREFIX rather than
+#: enumerated, so a variable added to either family is neutralised without anyone remembering to
+#: come back here — the failure mode `recall_mcp.oidc.oidc_non_issuer_env_keys` documents about the
+#: hand-written tuple it replaced. `tests/test_mcp_tool_authorization.py` asserts that this rule
+#: still covers every key those modules actually read.
+_AUTH_ENV_PREFIXES = ("RECALL_AUTH_", "RECALL_OIDC_")
+
+#: Variables that break the IMPORT without carrying an auth-shaped name. The last three are not auth
+#: at all: `recall_mcp/server.py` parses them into module constants via `_read_int_env` at import, so
+#: `RECALL_PORT=99999`, `RECALL_POOL_SIZE=0` or `RECALL_STATEMENT_TIMEOUT_MS=abc` each raise
+#: `ValueError` during collection and take the same five modules to zero tests run. The transport was
+#: simply the first one anyone tripped over; the failure CLASS is "read at import", not "auth".
+_IMPORT_TIME_ENV_EXACT = (
+    "RECALL_TRANSPORT",
+    "RECALL_ENV",
+    "RECALL_PORT",
+    "RECALL_POOL_SIZE",
+    "RECALL_STATEMENT_TIMEOUT_MS",
+)
+
+
+def neutralised_env_keys(name: str) -> bool:
+    """Whether `name` is cleared by `_neutralise_deployment_env` below."""
+    return name in _IMPORT_TIME_ENV_EXACT or name.startswith(_AUTH_ENV_PREFIXES)
+
+
+def _neutralise_deployment_env() -> None:
+    """Clear the deployment env BEFORE any test module imports `recall_mcp.server`.
+
+    `recall_mcp/server.py` builds its server at module scope (`mcp = build_server()`) and parses
+    several env vars into module constants, all at import. A developer or CI shell carrying
+    `RECALL_TRANSPORT=streamable-http`, a partial OIDC block, or a bad `RECALL_PORT` therefore raises
+    during IMPORT, which pytest reports as a collection error: five modules — including the entire
+    MCP authorisation suite — run ZERO tests. A security file that silently does not execute is
+    worse than one that fails.
+
+    This cannot be a fixture, which is what the previous attempt was. Fixtures run after collection
+    and the import that raises happens during it, so the fixture whose docstring named collection
+    failure as the thing it prevented had never once been in a position to prevent it. It cannot be
+    module-scope code in the test file either: by then another module may already have imported
+    `recall_mcp.server` and failed. `conftest.py` is imported before any test module, so this is the
+    last point that is still early enough.
+
+    ⚠️ "Early enough" is a property of WHERE THIS CALL SITS, and the first version of it sat below
+    `from recall.store import PgVectorStore`. That was luck, not design: the day any `recall.*` module
+    acquires a transitive import of `recall_mcp.server`, the clearing happens after the crash it
+    exists to prevent, and nothing in the suite would look different. The call now runs above every
+    non-stdlib import, and the assertion below pins the precondition instead of trusting it.
+
+    `RECALL_TRANSPORT` makes the point twice over: `server.py` freezes it into the module-level
+    `TRANSPORT` constant at import and `build_server()` passes that to `build_auth()`, so a
+    `monkeypatch.delenv` would not have undone it even if it had run in time.
+
+    Clearing rather than preserving-and-restoring is deliberate. A test that needs one of these set
+    uses `monkeypatch.setenv`, and a suite whose behaviour depends on what the operator happened to
+    export is not a suite whose green means anything.
+    """
+    assert "recall_mcp.server" not in sys.modules, (
+        "recall_mcp.server was imported before conftest could neutralise the environment, so an "
+        "operator's RECALL_* settings have already been baked into its module constants. Move this "
+        "call earlier, or remove whatever now imports it during conftest import."
+    )
+    for key in [key for key in os.environ if neutralised_env_keys(key)]:
+        del os.environ[key]
+
+
+_neutralise_deployment_env()
+# ─── end import-time environment neutralisation ──────────────────────────────────────────────────
+
+import psycopg  # noqa: E402
+import pytest  # noqa: E402
+
+from recall.store import PgVectorStore  # noqa: E402
+from recall.schema import LEDGER_TABLE, apply_migrations  # noqa: E402
 
 #: The local dev database from docker-compose.yml — the same one the README quickstart uses.
 _LOCAL_DEV_DSN = "postgresql://recall:recall@localhost:5432/recall"
