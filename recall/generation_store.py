@@ -436,7 +436,24 @@ class GenerationStore(PgVectorStore):
         resolved: dict[str, list[str]] = {}
         for source, file in rows:
             for identifier in {file, source} & requested:
-                resolved.setdefault(str(identifier), []).append(str(source))
+                # De-duplicate, as the base implementation does. Now that this spans every
+                # generation and the legacy table, one source legitimately appears more than
+                # once: under different `metadata->>'file'` values in different generations, or
+                # in both recall_chunks_v1 and the adopted v0.8 table.
+                bucket = resolved.setdefault(str(identifier), [])
+                if str(source) not in bucket:
+                    bucket.append(str(source))
+        unresolved = requested - set(resolved)
+        if unresolved:
+            # Chunk rows are not the corpus. An object that chunks to nothing has no rows, and
+            # during a build NOTHING has rows yet for any object not already committed --
+            # `build()` opens a transaction per manifest entry. Resolving on rows alone meant
+            # an erasure issued through MCP mid-build was answered "not found", wrote no
+            # tombstone, and the build then indexed the content the user asked to erase, while
+            # the CLI (which consults the manifest) erased it. The two surfaces must agree.
+            in_manifest = self.sources_in_any_manifest()
+            for identifier in unresolved & in_manifest:
+                resolved[identifier] = [identifier]
         return resolved
 
     def iter_chunks(self, batch_size: int = 1000) -> Iterator[Chunk]:
