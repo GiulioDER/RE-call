@@ -10,11 +10,11 @@ from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
 from recall.trust_policy import TrustPolicy
+from recall.embedding_registry import find_registered_profile, registered_profile_ids
 from recall.embeddings import (
     Embedder,
     FastEmbedEmbedder,
     HashingEmbedder,
-    Qwen3EmbeddingEmbedder,
     embedding_profile_id,
 )
 from recall.guards import staleness
@@ -100,7 +100,14 @@ DEFAULT_MAX_INDEX_BYTES = 20_000_000  # 20 MB
 
 
 def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
-    """Return the embedder backend by name ('fastembed' local default, or offline 'hashing')."""
+    """Return the embedder backend by name ('fastembed' local default, or offline 'hashing').
+
+    Environment parsing only. The profile vocabulary, every identity field and the construction
+    itself belong to `recall.embedding_registry`; this function used to carry a second copy of
+    the vocabulary as a profile-ID -> context-version dict literal, which is how a profile could
+    exist here and be missing from `context_policy_for_profile`'s map: no error, wrong context
+    mode, vectors that silently disagree with the ones already stored.
+    """
     values = dict(os.environ) if env is None else env
     profile = values.get("RECALL_EMBED_PROFILE", "").strip()
     if profile and name != "fastembed":
@@ -110,37 +117,30 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     if name == "fastembed":
         if not profile:
             return FastEmbedEmbedder()
-        context_versions = {
-            "bge-small-symmetric-v1": "raw-v1",
-            "bge-small-asymmetric-v1": "raw-v1",
-            "bge-small-context-document-v1": "context-document-v1",
-            "bge-small-context-section-v1": "context-section-v1",
-            "bge-small-context-neighbor-v1": "context-neighbor-v1",
-            "qwen3-embedding-0.6b-384-v1": "raw-v1",
-        }
-        if profile not in context_versions:
-            raise ValueError(f"unknown RECALL_EMBED_PROFILE: {profile!r}")
-        artifact_digest = values.get("RECALL_MODEL_SHA256", "")
-        if profile == "qwen3-embedding-0.6b-384-v1":
-            path = values.get("RECALL_QWEN_MODEL_PATH", "")
-            if not path or not artifact_digest:
-                raise ValueError(
-                    "Qwen3 profile requires RECALL_QWEN_MODEL_PATH and RECALL_MODEL_SHA256"
-                )
-            return Qwen3EmbeddingEmbedder(path, artifact_digest)
-        cache_dir = values.get("RECALL_MODEL_CACHE", "")
-        if not cache_dir or not artifact_digest:
+        entry = find_registered_profile(profile)
+        if entry is None:
+            # Kept as an env-facing message: the operator set a variable, and naming the
+            # variable is more useful than naming the registry they have never heard of.
             raise ValueError(
-                "explicit BGE profiles require RECALL_MODEL_CACHE and RECALL_MODEL_SHA256"
+                f"unknown RECALL_EMBED_PROFILE: {profile!r} "
+                f"(registered: {', '.join(registered_profile_ids())})"
             )
-        return FastEmbedEmbedder(
-            asymmetric=profile != "bge-small-symmetric-v1",
-            profile_id=profile,
-            cache_dir=cache_dir,
-            artifact_sha256=artifact_digest,
-            require_local=True,
-            context_version=context_versions[profile],
-        )
+        artifact_digest = values.get("RECALL_MODEL_SHA256", "")
+        artifact_path = values.get(entry.artifact_path_env, "")
+        if not artifact_path or not artifact_digest:
+            raise ValueError(
+                f"profile {profile!r} requires {entry.artifact_path_env} and RECALL_MODEL_SHA256"
+            )
+        if entry.rejected:
+            record = entry.rejection
+            assert record is not None  # `rejected` is exactly `rejection is not None`
+            _log.warning(
+                "embedding profile %s was REJECTED on %s (%s) and is being loaded anyway; "
+                "the measured reason was %s",
+                entry.profile_id, record.decided_on, record.reason,
+                ", ".join(f"{k}={v}" for k, v in record.measurements),
+            )
+        return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest)
     raise ValueError(f"unknown embedder: {name!r} (use 'fastembed' or 'hashing')")
 
 
@@ -273,6 +273,13 @@ class ForgetResult(BaseModel):
         "caller can never mistake 'matched nothing' for 'successfully forgotten'.",
     )
     message: str = Field(description="Human-readable summary of what was forgotten.")
+    outbox_events_scrubbed: int = Field(
+        default=0,
+        description="Pending migration-outbox records whose payload was scrubbed of these "
+        "sources. -1 means the chunk deletion succeeded but the scrub FAILED and must be "
+        "re-run before the next replay. On an irreversible path the receipt has to name "
+        "every store that was swept, so that 'not consulted' cannot read as 'clean'.",
+    )
 
 
 class MemoryStatsResult(BaseModel):
@@ -669,6 +676,7 @@ def forget_memory(
     store: PgVectorStore,
     sources: list[str],
     shadow_store: PgVectorStore | None = None,
+    control_plane: ControlPlane | None = None,
 ) -> ForgetResult:
     """Permanently delete every indexed chunk for the given sources; return what actually went away.
 
@@ -677,6 +685,16 @@ def forget_memory(
     exist for this tenant is reported in `sources_not_found`, never silently folded into a "0
     removed, success" result — a typo'd source name must be visibly distinguishable from one
     that was actually forgotten.
+
+    **Erasure reaches the migration outbox too, when a control plane is supplied.** It did not,
+    and that was a hole in "permanently delete" rather than a missing nicety: while a shadow
+    migration is in flight, `recall_migration_events.payload` holds the full text and vectors of
+    every chunk in the batch. Deleting from both chunk tables and stopping there left the erased
+    text sitting in the outbox, and a later `replay` would have written it back into both
+    generations. The scrub runs AFTER the deletes, so a crash between them leaves the outbox
+    entry, which replay converges and the next erasure removes; the reverse order could scrub the
+    replay record and then fail to delete, which loses the shadow write with nothing left to
+    replay it from.
     """
     if not sources:
         raise ValueError("sources must be a non-empty list")
@@ -708,6 +726,29 @@ def forget_memory(
         )
     else:
         chunks_removed = store.delete_sources(to_delete) if to_delete else 0
+    outbox_events_scrubbed = 0
+    if control_plane is not None:
+        # NOT gated on `to_delete`. That gate made the scrub unable to fire in exactly the state
+        # it was written for: a crash between `append_event` and the two `replace_sources` calls
+        # leaves the batch's full text and vectors in the outbox with ZERO rows in either chunk
+        # table, so `sources_for_identifiers` resolves nothing, `to_delete` is empty, and the
+        # caller was told "no matching source(s) found" while the text sat waiting for a replay
+        # to write it back into both generations. Three auditors found this independently.
+        #
+        # Keyed on the union of what was requested and what resolved: an identifier the caller
+        # supplied may itself be the absolute source the payload records, which is the only
+        # handle available when no chunk row survives to resolve it.
+        try:
+            outbox_events_scrubbed = control_plane.erase_sources_from_pending(
+                store.tenant, sorted({*requested, *to_delete})
+            )
+        except Exception:
+            # The deletes above are committed and irreversible. Losing the ForgetResult to a
+            # bookkeeping failure would tell the caller nothing was deleted when everything was,
+            # and a retry would then report the sources as not found. Report the shortfall
+            # instead, and keep it in the receipt.
+            _log.exception("outbox scrub failed after chunk deletion for tenant %r", store.tenant)
+            outbox_events_scrubbed = -1
     if found and not_found:
         message = (
             f"Forgot {chunks_removed} chunk(s) from {len(found)} source(s); "
@@ -717,11 +758,19 @@ def forget_memory(
         message = f"Forgot {chunks_removed} chunk(s) from {len(found)} source(s)."
     else:
         message = f"No matching source(s) found — nothing deleted: {', '.join(not_found)}."
+    if outbox_events_scrubbed < 0:
+        message += (
+            " WARNING: the chunk deletion succeeded but scrubbing the migration outbox failed; "
+            "re-run this forget before the next replay or the text may be restored."
+        )
+    elif outbox_events_scrubbed:
+        message += f" Scrubbed {outbox_events_scrubbed} pending replay record(s)."
     return ForgetResult(
         chunks_removed=chunks_removed,
         sources_removed=found,
         sources_not_found=not_found,
         message=message,
+        outbox_events_scrubbed=outbox_events_scrubbed,
     )
 
 

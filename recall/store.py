@@ -61,6 +61,51 @@ def redacted_dsn(dsn: str) -> str:
 
 _T = TypeVar("_T")
 
+#: Wall time of one retrieval leg, in ms. ONE series with a `leg` label rather than two names,
+#: so the two legs of a hybrid query are compared without correlating separate metrics.
+#:
+#: Recorded by `PgVectorStore`, and inherited by `GenerationStore` because that subclass overrides
+#: the PRIVATE `_query_*` methods — overriding the public pair would silently drop the timing on
+#: the `RECALL_ENV=production` path.
+#:
+#: Scope, stated precisely because an earlier version of this comment overstated it: `METRICS.timer`
+#: was ALREADY used for tool-level latency in `recall_mcp/server.py` (`recall_tool_latency_ms`).
+#: What had no series was any leg INSIDE `recall/`. Note also that `HybridRetriever` records
+#: per-query stage timings in `diagnostics.stage_ms`, so this metric is not the only per-leg
+#: measurement — it adds process-wide aggregation (percentiles an operator can read via MCP) and
+#: `LEG_META`, which no `stage_ms` bracket covers.
+STORE_QUERY_METRIC = "recall_store_query_ms"
+LEG_DENSE = "dense"
+LEG_SPARSE = "sparse"
+#: The THIRD store round trip on the search path, and the one an attribution silently misses.
+#: `HybridRetriever.search` calls `newest_indexed_at()` once per query for its staleness report,
+#: and that is an uncached `SELECT max(indexed_at)`. It is store work, and it is inside end-to-end
+#: search latency, so leaving it untimed books a Postgres round trip as Python glue and UNDERSTATES
+#: the store's share — in the same direction as the "the store is cheap" hypothesis this metric
+#: exists to test. Same standard as the HNSW `set_config` widening, which is deliberately inside
+#: the dense timer because it is part of what a dense retrieval costs.
+#:
+#: `count()` is deliberately NOT timed: it is not on the query path, so its samples would not
+#: correspond one-to-one with queries and would break the per-query denominator that lets a
+#: caller assert "one sample per leg per query".
+LEG_META = "meta"
+
+#: Public methods that carry a `METRICS.timer` and delegate to a private twin. A subclass MUST
+#: override the `_`-prefixed twin, NEVER the name listed here — overriding the public method
+#: silently drops the timing, and an absent series reads exactly like a store that costs nothing.
+#:
+#: This is a tuple rather than a docstring because `GenerationStore` made that mistake TWICE: once
+#: on the query legs, then again on `newest_indexed_at` immediately after the query legs were
+#: fixed. The guard could not catch the second one because it enumerated two method names inline
+#: instead of reading a list. `tests/test_store_query_latency.py` iterates this tuple.
+#:
+#: The tuple is HAND-MAINTAINED, so it bounds the guard only while it stays in step with the real
+#: timer call sites — a declaration nothing checks is the same failure one level up, which is how
+#: this recurred twice already. `test_timed_public_methods_matches_the_actual_timer_call_sites`
+#: parses this module and requires this tuple to EQUAL the set of methods that actually open a
+#: `METRICS.timer` on `STORE_QUERY_METRIC`.
+TIMED_PUBLIC_METHODS = ("query_dense", "query_sparse", "newest_indexed_at")
+
 #: How long schema DDL may WAIT FOR A LOCK before giving up (ms). Not a bound on the work — the
 #: HNSW build is deliberately unbounded, see `ensure_schema` — only on queueing. Short on purpose:
 #: waiting on a lock is never progress, the DDL is idempotent and retried on the next open, and a
@@ -998,7 +1043,7 @@ class PgVectorStore:
         estimates ONE matching row and picks an exact plan (a Bitmap Heap Scan + Sort, cost ~15)
         over `Index Scan using <table>_emb_idx`. The answers stay correct — an exact scan is an
         exact search — but the HNSW index is not consulted at all, which also makes the
-        `hnsw.ef_search` / `hnsw.iterative_scan` tuning in `query_dense` inert. On a 20,000-row
+        `hnsw.ef_search` / `hnsw.iterative_scan` tuning in `_query_dense` inert. On a 20,000-row
         corpus that costs a millisecond or two per query; on a large one it is a full scan plus a
         sort of every matching row, per query, until autovacuum's analyze lands.
 
@@ -1120,8 +1165,21 @@ class PgVectorStore:
     def query_dense(
         self, vector: list[float], k: int, source: str | None = None
     ) -> list[ScoredChunk]:
+        """Timed wrapper; the search itself is `_query_dense`.
+
+        The `k` check stays OUTSIDE the timer on purpose: a rejected call issues no statement, and
+        recording it would mix ~0 ms samples into a distribution meant to describe real queries.
+        Everything after it is inside, including the HNSW tuning statements, which are part of what
+        a dense retrieval costs and would flatter the measurement if excluded.
+        """
         if k <= 0:
             raise ValueError("k must be a positive int")
+        with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_DENSE):
+            return self._query_dense(vector, k, source)
+
+    def _query_dense(
+        self, vector: list[float], k: int, source: str | None = None
+    ) -> list[ScoredChunk]:
         t = self._table
         # Match the caller-facing identifier: recall_search surfaces the root-relative
         # `metadata->>'file'` (never the absolute `source` column), so a `source=` filter passed
@@ -1200,7 +1258,11 @@ class PgVectorStore:
                     f"{_ef_search_multiplier()} = {desired_ef}, above pgvector's maximum. The "
                     f"scan still covers k={k}, so only the over-fetch margin is reduced.",
                     RuntimeWarning,
-                    stacklevel=2,
+                    # 3, not 2: the timed `query_dense` wrapper sits between this frame and the
+                    # caller. At 2 the warning names this module's own line, so a `-W` filter
+                    # keyed on the caller stops selecting it and every call site collapses onto
+                    # one `__warningregistry__` entry under the default once-per-location action.
+                    stacklevel=3,
                 )
             widen_params = {
                 "default_ef": str(_PGVECTOR_DEFAULT_EF_SEARCH),
@@ -1246,11 +1308,20 @@ class PgVectorStore:
         question containing a quote or a tsquery operator a search term rather than syntax.
         A question that normalises to no lexemes (empty, punctuation, stopwords only) yields a
         NULL tsquery, which matches nothing — the same answer as before, without an error.
+
+        Timed under `STORE_QUERY_METRIC{leg=sparse}`; see `query_dense` for why the `k` check sits
+        outside the timer.
         """
         if k <= 0:
             raise ValueError("k must be a positive int")
+        with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_SPARSE):
+            return self._query_sparse(text, k, source, vec)
+
+    def _query_sparse(
+        self, text: str, k: int, source: str | None = None, vec: list[float] | None = None
+    ) -> list[ScoredChunk]:
         t = self._table
-        # See query_dense: the caller-facing identifier is the relative `file`, so match it (with
+        # See `_query_dense`: the caller-facing identifier is the relative `file`, so match it (with
         # a `source` fall-back for legacy rows). Aliased `c.` here.
         where = (
             "AND (c.metadata->>'file' = %(source)s OR c.source = %(source)s)" if source else ""
@@ -1401,9 +1472,18 @@ class PgVectorStore:
         """Atomically erase tenant sources from active and shadow generation tables."""
         if not sources:
             return 0
+        from recall.control_plane import validate_table_name
+
         unique_tables = list(dict.fromkeys(tables))
-        if not unique_tables or any(not table.isidentifier() for table in unique_tables):
-            raise ValueError("all generation tables must be valid SQL identifiers")
+        if not unique_tables:
+            raise ValueError("at least one generation table is required")
+        # The SAME allowlist the control plane validates registry rows with, not a second,
+        # weaker one. This method interpolates every name into a DELETE, and it used to accept
+        # anything `str.isidentifier()` liked: non-ASCII, uppercase that PostgreSQL folds to
+        # something else, and names past the truncation point. It does NOT refuse unquoted SQL
+        # keywords such as `select`; those are a syntax error at query time, not an injection.
+        for table in unique_tables:
+            validate_table_name(table)
         self._supersession_cache = None
 
         def _op(conn: "psycopg.Connection") -> int:
@@ -1672,6 +1752,17 @@ class PgVectorStore:
         return self.supersession()[0]
 
     def newest_indexed_at(self) -> datetime | None:
+        """Newest `indexed_at` for this tenant. Timed: `HybridRetriever` calls it EVERY search.
+
+        Uncached, so this is a real round trip on the query path — see `LEG_META`. Timing it is
+        what stops a latency attribution from booking it as Python glue.
+
+        Subclasses override `_newest_indexed_at`, not this; see `TIMED_PUBLIC_METHODS`.
+        """
+        with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_META):
+            return self._newest_indexed_at()
+
+    def _newest_indexed_at(self) -> datetime | None:
         row = self._with_retry(
             lambda conn: conn.execute(
                 f"SELECT max(indexed_at) FROM {self._table} WHERE tenant_id = %s",

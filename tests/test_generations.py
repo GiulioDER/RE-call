@@ -114,6 +114,7 @@ def manager():
         conn.execute("DELETE FROM recall_ingest_jobs WHERE tenant_id = %s", (tenant,))
         conn.execute("DELETE FROM recall_tenant_state WHERE tenant_id = %s", (tenant,))
         conn.execute("DELETE FROM recall_generations WHERE tenant_id = %s", (tenant,))
+        conn.execute("DELETE FROM chunks WHERE tenant_id = %s", (tenant,))
 
 
 def _ready(manager: GenerationManager, manifest, pipeline, reader, embedder) -> str:
@@ -454,3 +455,471 @@ def test_generation_cli_build_validate_promote_and_list(
     cli_main([*base, "generation", "list"])
     listing = capsys.readouterr().out
     assert generation_id in listing and "active" in listing
+
+
+@requires_db
+def test_forget_erases_a_source_that_has_left_the_active_generation(
+    manager, monkeypatch, capsys
+) -> None:
+    """Erasure must not be filtered by what the ACTIVE generation can currently see.
+
+    A source that dropped out of the newest build still has rows in the previous
+    generation, and it is exactly that source whose erasure request most needs the
+    tombstone: without one, `_is_tombstoned` returns False and the next build happily
+    re-ingests it. Filtering the request through `source_content_hashes()` (which is
+    scoped to one generation) classified such a source as "not found", so no tombstone
+    was written, nothing was deleted, and the command reported success.
+    """
+    embedder = _Embedder(1)
+    first_data = b"---\nstatus: current\n---\nthe memo to erase"
+    first_manifest = _manifest(manager.tenant_id, first_data, version="v1")
+    first = _ready(
+        manager, first_manifest, _pipeline("model-a"), _reader(first_manifest, first_data), embedder
+    )
+    manager.promote(first, unsafe_development=True)
+    memo_uri = first_manifest.objects[0].uri
+
+    # A newer generation built from a corpus that no longer contains memo.md.
+    second_data = b"a different document"
+    second_manifest = IndexManifestV1(
+        manager.tenant_id,
+        "corpus-v2",
+        (
+            ManifestObjectV1(
+                f"s3://approved/corpora/{manager.tenant_id}/notes.md",
+                "v2",
+                "text/markdown",
+                len(second_data),
+                hashlib.sha256(second_data).hexdigest(),
+            ),
+        ),
+    )
+    second_reader = S3ObjectReader(
+        _S3({("approved", f"corpora/{manager.tenant_id}/notes.md", "v2"): second_data}),
+        S3Allowlist.parse("approved/corpora/"),
+    )
+    second = _ready(manager, second_manifest, _pipeline("model-a"), second_reader, embedder)
+    manager.promote(second, unsafe_development=True)
+
+    store = GenerationStore(TEST_DSN, embedder.dim, tenant=manager.tenant_id)
+    try:
+        # Invisible to the active generation, which is what the old filter keyed on...
+        assert memo_uri not in store.source_content_hashes()
+    finally:
+        store.close()
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        # ...but its rows are still on disk in the previous generation.
+        before = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, memo_uri),
+        ).fetchone()[0]
+    assert before > 0
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    cli_main(
+        ["--serving-dsn", TEST_DSN, "--tenant", manager.tenant_id, "--embedder", "hashing",
+         "forget", memo_uri, "--yes"]
+    )
+    capsys.readouterr()
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        after = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, memo_uri),
+        ).fetchone()[0]
+        tombstoned = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, memo_uri),
+        ).fetchone()[0]
+    assert after == 0, "chunks in a non-active generation survived the erasure"
+    assert tombstoned == 1, "no tombstone was written, so the next build will re-ingest it"
+
+
+@requires_db
+def test_forget_refuses_a_source_no_generation_ever_held(manager, monkeypatch, capsys) -> None:
+    """A typo must not write a tombstone, because a tombstone cannot be undone.
+
+    Nothing in the package deletes from `recall_source_tombstones`, there is no `unforget`
+    command, and `build()` skips every manifest entry a tombstone matches. So tombstoning an
+    unknown URI would silently and irreversibly bar it from every future build. Erasure must
+    widen its existence check to all generations, not abandon it.
+    """
+    embedder = _Embedder(1)
+    data = b"---\nstatus: current\n---\nkeep me"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    generation = _ready(manager, manifest, _pipeline("model-a"), _reader(manifest, data), embedder)
+    manager.promote(generation, unsafe_development=True)
+    typo = manifest.objects[0].uri + "d"
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    cli_main(
+        ["--serving-dsn", TEST_DSN, "--tenant", manager.tenant_id, "--embedder", "hashing",
+         "forget", typo, "--yes"]
+    )
+    out = capsys.readouterr().out
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        tombstones = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones WHERE tenant_id = %s",
+            (manager.tenant_id,),
+        ).fetchone()[0]
+    assert tombstones == 0, "a typo wrote an irreversible tombstone"
+    assert "NOT tombstoned" in out
+    # The real source is untouched and still erasable.
+    assert manager.get(generation).state == "active"
+
+
+@requires_db
+def test_forget_refuses_a_blank_source_before_erasing_anything(
+    manager, monkeypatch, capsys
+) -> None:
+    """`recall forget "$A" "$B" --yes` with one variable unset must erase nothing.
+
+    delete_sources commits one transaction per source, so validating late meant the first
+    source was erased, GenerationManager.forget raised on the empty string, the remaining
+    sources were never reached, and the report line never printed because it sat inside the
+    statement that raised.
+    """
+    embedder = _Embedder(1)
+    data = b"---\nstatus: current\n---\nkeep me"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    generation = _ready(manager, manifest, _pipeline("model-a"), _reader(manifest, data), embedder)
+    manager.promote(generation, unsafe_development=True)
+    real = manifest.objects[0].uri
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    with pytest.raises(SystemExit, match="empty source argument"):
+        cli_main(
+            ["--serving-dsn", TEST_DSN, "--tenant", manager.tenant_id, "--embedder", "hashing",
+             "forget", real, "", "--yes"]
+        )
+    capsys.readouterr()
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        survived = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, real),
+        ).fetchone()[0]
+        tombstones = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones WHERE tenant_id = %s",
+            (manager.tenant_id,),
+        ).fetchone()[0]
+    assert survived > 0, "the valid source was erased despite the malformed request"
+    assert tombstones == 0
+
+
+@requires_db
+def test_forget_erases_a_source_that_chunked_to_nothing(manager, monkeypatch, capsys) -> None:
+    """Chunk rows are not the corpus; the manifest is.
+
+    An object whose body chunks to nothing is built as `empty_objects` and writes no row to
+    recall_chunks_v1. Checking only chunk rows therefore called it a typo, refused the
+    erasure, wrote no tombstone, and let the next build ingest it the moment its content
+    changed: the same class STAKES-001 closed, reached from a different direction.
+    """
+    embedder = _Embedder(1)
+    body = b"---\nstatus: current\n---\nreal content"
+    blank = b"---\nstatus: current\n---\n"
+    tenant = manager.tenant_id
+    manifest = IndexManifestV1(
+        tenant,
+        "corpus-v1",
+        (
+            ManifestObjectV1(f"s3://approved/corpora/{tenant}/memo.md", "v1", "text/markdown",
+                             len(body), hashlib.sha256(body).hexdigest()),
+            ManifestObjectV1(f"s3://approved/corpora/{tenant}/blank.md", "v1", "text/markdown",
+                             len(blank), hashlib.sha256(blank).hexdigest()),
+        ),
+    )
+    reader = S3ObjectReader(
+        _S3({
+            ("approved", f"corpora/{tenant}/memo.md", "v1"): body,
+            ("approved", f"corpora/{tenant}/blank.md", "v1"): blank,
+        }),
+        S3Allowlist.parse("approved/corpora/"),
+    )
+    # IndexManifestV1 sorts its objects by URI, so pick by name, not by position.
+    blank_uri = next(o.uri for o in manifest.objects if o.uri.endswith("blank.md"))
+
+    generation = manager.create(manifest, _pipeline("model-a"))
+    # Mirrors the real chunker: an empty body yields no chunks at all.
+    manager.build(generation.generation_id, reader, embedder,
+                  lambda text: [] if not text.strip() else [text])
+    manager.validate(generation.generation_id)
+    manager.promote(generation.generation_id, unsafe_development=True)
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        rows = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = %s",
+            (tenant, blank_uri),
+        ).fetchone()[0]
+    assert rows == 0, "fixture no longer produces a zero-chunk source"
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    cli_main(["--serving-dsn", TEST_DSN, "--tenant", tenant, "--embedder", "hashing",
+              "forget", blank_uri, "--yes"])
+    out = capsys.readouterr().out
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        tombstoned = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones "
+            "WHERE tenant_id = %s AND source_uri = %s",
+            (tenant, blank_uri),
+        ).fetchone()[0]
+    assert tombstoned == 1, "a source the corpus contains was refused as a typo"
+    assert "NOT erased" not in out
+
+
+@requires_db
+def test_forget_refuses_a_url_only_a_failed_generation_names(manager, monkeypatch, capsys) -> None:
+    """A FAILED generation's manifest entries must not be tombstonable.
+
+    A failed build may name objects that never existed at the source, and a tombstone is
+    permanent, so admitting them would let a URI that was never in the corpus be barred from
+    every future build. `building` is deliberately NOT excluded: see the test below.
+    """
+    data = b"---\nstatus: current\n---\nnever built"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    uri = manifest.objects[0].uri
+    generation = manager.create(manifest, _pipeline("model-a"))
+    manager.fail(generation.generation_id, "the source object could not be fetched")
+    assert manager.get(generation.generation_id).state == "failed"
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    cli_main(
+        ["--serving-dsn", TEST_DSN, "--tenant", manager.tenant_id, "--embedder", "hashing",
+         "forget", uri, "--yes"]
+    )
+    out = capsys.readouterr().out
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        tombstoned = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones WHERE tenant_id = %s",
+            (manager.tenant_id,),
+        ).fetchone()[0]
+    assert tombstoned == 0, "a failed generation's manifest entry got a permanent tombstone"
+    assert "NOT tombstoned" in out
+
+
+@requires_db
+def test_forget_during_a_build_is_honoured_by_that_build(manager, monkeypatch, capsys) -> None:
+    """An erasure issued while a generation is BUILDING must land in that build.
+
+    `building` is the state a generation occupies for the whole of its ingest, and build()
+    re-checks `_is_tombstoned` per object exactly so a concurrent erasure takes effect.
+    Excluding `building` from the existence check made the request answer "check for typos",
+    write no tombstone, and let the build index the content the user asked to erase.
+    """
+    embedder = _Embedder(1)
+    data = b"---\nstatus: current\n---\nthe user asked for this to be erased"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    uri = manifest.objects[0].uri
+    generation = manager.create(manifest, _pipeline("model-a"))
+    assert manager.get(generation.generation_id).state == "building"
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    cli_main(
+        ["--serving-dsn", TEST_DSN, "--tenant", manager.tenant_id, "--embedder", "hashing",
+         "forget", uri, "--yes"]
+    )
+    capsys.readouterr()
+
+    stats = manager.build(
+        generation.generation_id, _reader(manifest, data), embedder, lambda text: [text]
+    )
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        surviving = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, uri),
+        ).fetchone()[0]
+        tombstoned = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones WHERE tenant_id = %s",
+            (manager.tenant_id,),
+        ).fetchone()[0]
+    assert tombstoned == 1, "the erasure was refused, so the build had nothing to honour"
+    assert stats.tombstoned_objects == 1
+    assert surviving == 0, "the build indexed content the user had asked to erase"
+
+
+@requires_db
+def test_forget_erases_rows_adopted_from_the_v08_table(manager, monkeypatch, capsys) -> None:
+    """Migration 0008 adopts a v0.8 install's rows IN PLACE, and they must stay erasable.
+
+    Those rows never enter recall_chunks_v1, and the `legacy_unverified` generation carries a
+    `{"legacy_table": ...}` manifest with no `objects`, so neither the chunk probe nor the
+    manifest probe can see them. Production `forget` answered an erasure request for one with
+    "check for typos" about data the tenant demonstrably holds, and widening the check alone
+    would have written the tombstone while leaving the rows on disk.
+    """
+    tenant = manager.tenant_id
+    uri = "/legacy/adopted-note.md"
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        conn.execute(
+            "INSERT INTO chunks (tenant_id, id, source, text, embedding) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            # `chunks` is vector(64) here: the CLI below runs with --embedder hashing.
+            (tenant, f"legacy-{uuid.uuid4().hex[:8]}", uri, "adopted body",
+             "[" + ",".join(["0.0"] * 63) + ",1.0]"),
+        )
+        seeded = conn.execute(
+            "SELECT count(*) FROM chunks WHERE tenant_id = %s AND source = %s", (tenant, uri)
+        ).fetchone()[0]
+    assert seeded == 1
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    cli_main(
+        ["--serving-dsn", TEST_DSN, "--tenant", tenant, "--embedder", "hashing",
+         "forget", uri, "--yes"]
+    )
+    out = capsys.readouterr().out
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        surviving = conn.execute(
+            "SELECT count(*) FROM chunks WHERE tenant_id = %s AND source = %s", (tenant, uri)
+        ).fetchone()[0]
+        tombstoned = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones "
+            "WHERE tenant_id = %s AND source_uri = %s",
+            (tenant, uri),
+        ).fetchone()[0]
+    assert surviving == 0, "the adopted v0.8 rows survived an erasure that reported success"
+    assert tombstoned == 1, "no tombstone, so a later build could reintroduce the source"
+    assert "NOT erased" not in out
+
+
+@requires_db
+def test_mcp_and_cli_erasure_agree_on_an_adopted_v08_tenant(manager) -> None:
+    """The two erasure surfaces must not disagree about the same tenant's data.
+
+    Migration 0008 adopts a v0.8 install's rows IN PLACE, so a tenant can hold data with no
+    active generation at all. `sources_for_identifiers` was scoped to the ACTIVE generation of
+    recall_chunks_v1, so the MCP `recall_forget` raised NoActiveGeneration and left the rows on
+    disk, while `recall forget` erased them. A hosted deployment exposes the MCP surface.
+    """
+    from recall_mcp.service import forget_memory
+
+    tenant = manager.tenant_id
+    uri = "/legacy/mcp-adopted.md"
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        for suffix in ("a", "b"):
+            conn.execute(
+                "INSERT INTO chunks (tenant_id, id, source, text, embedding) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (tenant, f"legacy-{suffix}-{uuid.uuid4().hex[:8]}", uri, "adopted body",
+                 "[" + ",".join(["0.0"] * 63) + ",1.0]"),
+            )
+
+    store = GenerationStore(TEST_DSN, 64, tenant=tenant)
+    try:
+        # The tenant genuinely has no active generation; this must resolve, not raise.
+        assert store.sources_for_identifiers([uri]) == {uri: [uri]}
+        result = forget_memory(store, [uri])
+    finally:
+        store.close()
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        surviving = conn.execute(
+            "SELECT count(*) FROM chunks WHERE tenant_id = %s AND source = %s", (tenant, uri)
+        ).fetchone()[0]
+        tombstoned = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones "
+            "WHERE tenant_id = %s AND source_uri = %s",
+            (tenant, uri),
+        ).fetchone()[0]
+    assert surviving == 0, "the MCP erasure surface left adopted v0.8 rows on disk"
+    assert tombstoned == 1
+    assert result.chunks_removed == 2
+    assert uri in result.sources_removed
+
+
+@requires_db
+def test_mcp_forget_during_a_build_is_honoured_by_that_build(manager) -> None:
+    """The MCP erasure surface must honour a mid-build erasure, as the CLI does.
+
+    `build()` opens a transaction per manifest entry, so mid-build NOTHING has rows yet for an
+    object it has not reached. Resolving erasure identifiers on chunk rows alone therefore
+    answered "not found", wrote no tombstone, and let the build index the very content the user
+    asked to erase -- while `recall forget`, which consults the manifest, erased it. Two
+    erasure surfaces disagreeing on the same request.
+    """
+    from recall_mcp.service import forget_memory
+
+    embedder = _Embedder(1)
+    data = b"---\nstatus: current\n---\nthe user asked for this to be erased"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    uri = manifest.objects[0].uri
+    generation = manager.create(manifest, _pipeline("model-a"))
+    assert manager.get(generation.generation_id).state == "building"
+
+    store = GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id)
+    try:
+        # No chunk rows exist yet, so this only resolves via the manifest.
+        assert store.sources_for_identifiers([uri]) == {uri: [uri]}
+        result = forget_memory(store, [uri])
+    finally:
+        store.close()
+    assert result.sources_removed == [uri]
+
+    stats = manager.build(
+        generation.generation_id, _reader(manifest, data), embedder, lambda text: [text]
+    )
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        surviving = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, uri),
+        ).fetchone()[0]
+        tombstoned = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones WHERE tenant_id = %s",
+            (manager.tenant_id,),
+        ).fetchone()[0]
+    assert tombstoned == 1, "the MCP erasure wrote no tombstone, so the build had nothing to honour"
+    assert stats.tombstoned_objects == 1
+    assert surviving == 0, "the build indexed content the user had asked to erase via MCP"
+
+class _AsymmetricEmbedder(_Embedder):
+    """Records which encoder the generation builder reached for.
+
+    Indexing writes PASSAGES. A generation built with the query encoder stores vectors from the
+    wrong side of an asymmetric model: same width, plausible cosines, quietly worse retrieval,
+    and no error anywhere to say so.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(1)
+        self.used: list[str] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.used.append("embed")
+        return super().embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        self.used.append("embed_query")
+        return super().embed([text])[0]
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        self.used.append("embed_passages")
+        return super().embed(texts)
+
+
+@requires_db
+def test_a_generation_is_built_with_the_passage_encoder(manager) -> None:
+    data = b"---\nstatus: current\n---\nan immutable memo indexed as a passage"
+    manifest = _manifest(manager.tenant_id, data)
+    embedder = _AsymmetricEmbedder()
+
+    _ready(manager, manifest, _pipeline("model-a"), _reader(manifest, data), embedder)
+
+    assert embedder.used == ["embed_passages"]

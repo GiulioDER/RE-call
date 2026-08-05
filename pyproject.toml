@@ -72,7 +72,13 @@ pool = ["psycopg-pool>=3.2"]
 # release walked in on `>=` and broke `master` 22 minutes after its last green run, with nothing in
 # this repo changed. Raising this cap is a PORT, not a bump.
 # Keep this in step with the `dev` extra below.
-mcp = ["mcp>=1.27.2,<2", "psycopg-pool>=3.2"]
+# PyJWT[crypto] is declared DIRECTLY, not inherited from `mcp`. `recall_mcp.server` now imports
+# `recall_mcp.oidc` unconditionally, which imports `jwt` and `jwt.algorithms.RSAAlgorithm` at module
+# level, so a missing PyJWT is an ImportError on EVERY server start including stdio. `mcp` happens
+# to pull `pyjwt[crypto]` transitively today, but nothing bounds it: a PyJWT 3.x satisfies that
+# transitive `>=2.10.1` and would break `jwt.decode` with nothing in this repo changed. The
+# `[crypto]` marker is load-bearing, not cosmetic — without it RSAAlgorithm does not import.
+mcp = ["mcp>=1.27.2,<2", "psycopg-pool>=3.2", "PyJWT[crypto]>=2.10.1,<3"]
 voyage = ["voyageai>=0.2"]
 s3 = ["boto3>=1.35"]
 # NB: rerank / entail / finetune pin the same sentence-transformers floor — bump all three together.
@@ -125,6 +131,9 @@ dev = [
     # `test` and `typecheck` install `.[dev]` only, so an uncapped floor here breaks both jobs
     # even with the extra capped.
     "mcp>=1.27.2,<2", "psycopg-pool>=3.2",
+    # Mirrors the `mcp` extra: `recall_mcp.oidc` imports jwt at module level, so tests/typecheck
+    # need it here too.
+    "PyJWT[crypto]>=2.10.1,<3",
     # langchain-core: the `test` and `typecheck` jobs install `.[dev]` only, so the LangChain
     # adapter's test and its mypy pass need it here too. Mirrors the `langchain` extra above.
     "langchain-core>=0.3",

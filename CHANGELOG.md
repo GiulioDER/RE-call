@@ -9,6 +9,84 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
+- **External OIDC identity for the MCP server's HTTP transports.** `RECALL_OIDC_ISSUER`,
+  `RECALL_OIDC_AUDIENCE` and `RECALL_OIDC_TENANTS` (required together), plus optional
+  `RECALL_OIDC_ALGORITHMS`. Revocation, rotation and expiry move to the IdP. See
+  [docs/AUTH.md](docs/AUTH.md).
+
+  `RECALL_OIDC_TENANTS` has **no default, and absent does not mean "every tenant"**: the IdP
+  vouches for identity and knows nothing about this deployment's topology, so a token naming an
+  unlisted tenant is refused (`tenant_not_allowed`) rather than opening a store nobody
+  provisioned. The check runs after signature verification, so it cannot be used to enumerate
+  the tenant list.
+
+### Changed
+- **New startup refusals on the MCP HTTP transports.** The server now refuses to boot when: no
+  mechanism is configured at all; `RECALL_OIDC_ISSUER` is set without `RECALL_OIDC_AUDIENCE` or
+  `RECALL_OIDC_TENANTS`; any other `RECALL_OIDC_*` key is set *without* `RECALL_OIDC_ISSUER`
+  (misspelling that one key otherwise reverted the deployment to static tokens silently);
+  `RECALL_OIDC_ISSUER` is not `https://`; `RECALL_OIDC_ALGORITHMS` names an algorithm the JWKS
+  loader cannot serve; or **both** `RECALL_OIDC_ISSUER` and `RECALL_AUTH_TOKENS_FILE` are set.
+
+  ⚠️ **Cutover ordering.** Because both-set refuses, remove `RECALL_AUTH_TOKENS_FILE` in the
+  *same* config revision that adds the OIDC variables — a two-step rollout fails at the
+  intermediate step. The conflict is checked before the transport branch, so stdio processes
+  sharing that environment file are refused too.
+- `RECALL_AUTH_ISSUER_URL` is now **optional** when `RECALL_OIDC_ISSUER` is set, defaulting to it.
+  `RECALL_AUTH_RESOURCE_URL` is still required.
+- `PyJWT[crypto]` is now declared directly on the `mcp` and `dev` extras rather than inherited
+  transitively from `mcp`, because `recall_mcp.server` imports the OIDC module unconditionally.
+
+- **`recall-enterprise` grew the five subcommands its own machinery already needed**: `replay`,
+  `parity`, `readiness`, `status` and `retire`. `ControlPlane.replay_pending` previously had one
+  reference in the entire repository, its own definition, so a crash between a shadow migration's
+  outbox append and its completion left a pending event, `cutover` then refused forever, and the
+  documented recovery could not be invoked. `validate_generation_parity` and
+  `check_enterprise_readiness` were likewise reachable only from Python.
+
+  An operator names a GENERATION, never a table: every physical table is resolved from
+  `recall_index_generations` and revalidated on read. `status` projects ids and counts server side
+  and never selects a pending event's payload, which holds corpus text and vectors.
+
+- **Right-to-erasure now reaches the migration outbox.** While a shadow migration is in flight, a
+  pending event's payload holds the full text and vectors of its batch. `recall_forget` deleted
+  from both chunk tables and stopped there, so erased text remained in `recall_migration_events`
+  and a later `replay` would have written it back into both generations. The scrub is keyed on the
+  sources the CALLER named rather than on what still had rows, because the case that most needs it
+  is the one where a crash left the payload as the only copy. `ForgetResult` gained
+  `outbox_events_scrubbed` so "the outbox was swept" and "the outbox was never consulted" stop
+  looking alike on an irreversible path. The `recall forget` CLI remains single-generation and does
+  not scrub the outbox; on an enterprise deployment use the MCP tool.
+
+- Enterprise readiness verifies **both** schema ledgers. `recall_schema_versions` is
+  database-global and nothing checked it, so a process could boot against a control plane that was
+  behind or whose applied SQL no longer matched the shipped bytes. `recall-enterprise migrate` also
+  takes an advisory lock, matching `recall schema apply`. See `docs/MIGRATIONS.md`.
+
+### Changed
+- **BREAKING (enterprise): physical table identifiers are now an allowlist**,
+  `^[a-z_][a-z0-9_]{0,45}$`. The previous gate was `str.isidentifier()`, which accepts non-ASCII,
+  accepts uppercase that PostgreSQL folds to something else (so the registry row and the real table
+  diverge), and accepts names past the point where two rows collapse onto one truncated table. The
+  46-byte ceiling is set by the longest derived identifier, not by PostgreSQL's 63: every index and
+  policy suffixes the table name, and `_tenant_isolation` is 17 bytes, so a longer name yields a
+  truncated index that `readiness_facts` then reports as missing.
+
+  **A registry row created under the old rule will refuse to serve.** Run `recall-enterprise
+  status` before upgrading: it lists any non-conforming row with the reason instead of failing on
+  it.
+
+- **BREAKING (enterprise): a retired or failed generation cannot serve.** `StoreRegistry` refuses
+  one per request, and the operator CLI refuses to open one, which matters because `replay` writes
+  through that path. `recall-enterprise retire` confirms against one tenant's route, because
+  `recall_tenant_routes` carries forced row level security and no role in this deployment may
+  enumerate every tenant's routes; the per-request refusal is what actually protects a request.
+
+- `recall-enterprise` reads `RECALL_MIGRATION_DSN` for its DDL subcommands and `RECALL_SERVING_DSN`
+  for its read-only ones, both falling back to `RECALL_DSN`. `readiness` reports which role it
+  evaluated, because its row level security verdict is about the connection it was given.
+
+### Added
 
 - `score_retrieval_on` (`"held"` default, `"all"` opt-in) selects the question population the
   RETRIEVAL metrics (`hit_at_k`, `mrr`, `latency_ms`, `misses`) are scored on, in BOTH
@@ -128,6 +206,21 @@ NOT — see the percentile fix above, which is a separate defect and does move n
   unchanged; it is now named explicitly at the call site, where a reader can question it.
 
 ### Added
+- **Per-leg store latency, so a backend swap can be priced.** `PgVectorStore` records
+  `recall_store_query_ms{leg=dense|sparse|meta}`. `meta` is `newest_indexed_at()`, the round trip
+  `HybridRetriever` makes on every search for its staleness report; it sits outside every
+  `diagnostics.stage_ms` bracket and was invisible to any attribution. `Metrics` gains
+  `drain_histogram(name, **labels) -> (retained_samples, total_observed)`, whose two values
+  disagree exactly when the capped ring evicted — which is what stops a mean over a suffix being
+  published under the name of a mean over the run. `Metrics.snapshot()` histogram entries gain
+  `observed` and `truncated` for the same reason, so the operator-facing reader and the drain
+  reader report the same fact. `AblationResult` gains `dense_ms_mean` / `sparse_ms_mean` /
+  `store_latency_truncated`, and `results_to_markdown` now renders them.
+- `benchmarks/store_latency_share.py` (not shipped in the wheel) attributes end-to-end search
+  latency across embed / dense / sparse / meta / fusion / rerank, reading `diagnostics.stage_ms`
+  and cross-checking it against the store-internal metric, which must nest inside it.
+
+
 - **Tenant and generation bound calibration artifacts.** Labelled query sets now have a canonical
   digest independent of input order and are stored separately from measured retrieval scores.
   Frozen `CalibrationArtifactV2` records bind tenant, generation, embedder, pipeline, corpus, and
@@ -170,6 +263,15 @@ NOT — see the percentile fix above, which is a separate defect and does move n
   `ensure_schema()` compatibility method now delegates to the same versioned migrator instead of
   maintaining a second runtime-DDL implementation. Production config separates
   `RECALL_SERVING_DSN` from `RECALL_MIGRATION_DSN`; `RECALL_DSN` remains a deprecated local fallback.
+- `GenerationStore` overrides `_query_dense` / `_query_sparse` instead of the public
+  `query_dense` / `query_sparse`, so it inherits the timed wrappers and the `k <= 0` check.
+  Overriding the public pair left the generation-scoped path — the one `RECALL_ENV=production`
+  selects — recording no store latency at all, and an absent series reads exactly like a free store.
+
+### Fixed
+- The `hnsw.ef_search` cap warning used `stacklevel=2`, which after the timed-wrapper split named
+  `recall/store.py` itself rather than the caller.
+
 
 ## [0.8.0] — 2026-08-02
 
