@@ -26,6 +26,28 @@ The identifier alone is not an identity. A re-provisioned artifact and a context
 
 Changing the fingerprint encoding invalidates every cache in existence at once. If that is ever wanted, bump the domain tag inside `EmbeddingProfile.fingerprint` so the change is legible.
 
+## Deterministic context modes
+
+Three context modes build the text handed to the embedder. They are declared by the profile (`bge-small-context-document-v1`, `bge-small-context-section-v1`, `bge-small-context-neighbor-v1`) and implemented in `recall/context.py`. `mode="none"` is the symmetric baseline and embeds the chunk as stored.
+
+**Embedding text is built separately from stored text, and the stored text never moves.** `chunk_text()` and the chunk row are untouched by every mode. The rendered passage is assembled from `StructuredChunk`, which carries source offsets and the heading hierarchy alongside the chunk's own bytes.
+
+| Rule | Behaviour |
+|---|---|
+| Title precedence | frontmatter `title`, then the first H1, then the root-relative basename. The frontmatter key must be **top level**; an indented `title:` belongs to a sub-object and is skipped |
+| Paths | root-relative only. An absolute path, a drive letter, a UNC path or any `..` segment is **refused**, in every mode including `none` |
+| Control characters | stripped from every structural field (title, source, section hierarchy). The chunk is content and is left exactly as stored |
+| Caps | title 256 characters, source 256, section hierarchy 512 |
+| Neighbour context | at most 200 characters from each adjacent chunk: the tail of the preceding one, the head of the following one. None is invented at a document's first or last chunk |
+| Degradation under a token limit | drop neighbour context first, shorten then drop section detail second, drop title detail last. **The complete current chunk is preserved at every rung**; it is never shortened to make room, and the last resort is the bare chunk |
+| Recorded identity | the mode and the policy version are written into each chunk's metadata (`context_mode`, `context_version`) and into the profile identity, where `context_version` is derived from the mode and is part of the cache fingerprint |
+
+**The load-bearing invariant: raw chunk content and raw content hashes are byte-identical across generations and across all three modes.** A context mode changes what is embedded and nothing else, so a cutover between generations built under different modes changes how the corpus is retrieved, never what it says. `tests/test_context_modes.py` asserts it over five corpus shapes (with frontmatter, without, no headings, nested headings, and across chunker boundaries) and `tests/test_context_modes_index.py` asserts it again against stored PostgreSQL rows, including a real dual write with the two generations on different modes.
+
+The one field that deliberately **does** change with the mode is `index_fingerprint`, the value the indexer compares to decide whether a file needs re-indexing. If it did not move, switching a generation's context mode would skip every unchanged file and leave vectors built under the old mode in place.
+
+Which mode retrieves best is not decided here, and no measurement in this repository claims it.
+
 ## Security boundary
 
 All model artifacts must exist locally before startup. An explicit embedding profile verifies the configured artifact tree against its SHA256 digest and requests local only loading. The artifact is verified before the backend library is even imported, so a missing or tampered tree fails the same way whether or not the optional extra is installed. The quality retrieval profile also requires a local reranker path and digest. Production should block outbound network access at the workload boundary.
