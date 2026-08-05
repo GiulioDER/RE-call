@@ -20,25 +20,27 @@ import json
 import sys
 from collections import defaultdict
 from statistics import mean
+from typing import Any
 
 PATH = sys.argv[1]
 TRIPLE = ("rl_f", "rb_llm", "rb_agg")
 
 
-def hm(vals):
+def hm(vals: list[float]) -> float:
     if any(v is None or v <= 0 for v in vals):
         return 0.0
     return len(vals) / sum(1.0 / v for v in vals)
 
 
-def slot(ann, key, which="composite"):
+def slot(ann: dict[str, Any], key: str, which: str = "composite") -> float | None:
     node = ann.get(key)
     if not node or which not in node or node[which] is None:
         return None
-    return node[which].get("value")
+    value = node[which].get("value")
+    return None if value is None else float(value)
 
 
-def main():
+def main() -> int:
     d = json.load(open(PATH, encoding="utf-8"))
     names = {}
     for m in d["models"]:
@@ -51,11 +53,11 @@ def main():
 
     tasks = {t["task_id"]: t for t in d["tasks"]}
 
-    def cls(tid):
+    def cls(tid: str) -> str:
         a = tasks.get(tid, {}).get("Answerability") or []
         return (a[0] if isinstance(a, list) and a else str(a)) or "UNKNOWN"
 
-    counts = defaultdict(int)
+    counts: defaultdict[str, int] = defaultdict(int)
     for t in d["tasks"]:
         a = t.get("Answerability") or []
         counts[(a[0] if isinstance(a, list) and a else "UNKNOWN")] += 1
@@ -64,10 +66,12 @@ def main():
         print(f"  {k:16} {v:>4}  ({v/len(d['tasks']):.1%})")
 
     # ---- per model: abstention behaviour on UNANSWERABLE, and metric means -------------
-    per = defaultdict(lambda: defaultdict(list))
+    per: defaultdict[str, defaultdict[str, list[Any]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     for ev in d["evaluations"]:
-        mid = names.get(ev["model_id"], ev["model_id"])
-        if str(mid).lower() == "target":
+        mid = str(names.get(ev["model_id"], ev["model_id"]))
+        if mid.lower() == "target":
             continue
         ann = ev.get("annotations") or {}
         c = cls(ev["task_id"])
@@ -139,13 +143,15 @@ def main():
     print(f"  baseline               RL_F {base[0]:.2f}  RB_llm {base[1]:.2f}  RB_alg {base[2]:.2f}"
           f"   HM {hm(list(base)):.4f}")
     for lift in (0.05, 0.10, 0.13, 0.15):
-        v = [min(1.0, x + lift) for x in base]
-        print(f"  +{lift:.2f} to all three    RL_F {v[0]:.2f}  RB_llm {v[1]:.2f}  RB_alg {v[2]:.2f}"
-              f"   HM {hm(v):.4f}   vs rank-1 0.586: {hm(v)-0.586:+.4f}")
+        lifted: list[float] = [min(1.0, x + lift) for x in base]
+        print(f"  +{lift:.2f} to all three    RL_F {lifted[0]:.2f}  RB_llm {lifted[1]:.2f}"
+              f"  RB_alg {lifted[2]:.2f}   HM {hm(lifted):.4f}"
+              f"   vs rank-1 0.586: {hm(lifted)-0.586:+.4f}")
     print("\n  for contrast, lifting RB_alg ALONE (the original thesis):")
     for rb in (0.44, 0.50, 0.53):
-        v = [base[0], base[1], rb]
-        print(f"    RB_alg -> {rb:.2f}   HM {hm(v):.4f}   vs rank-1 0.586: {hm(v)-0.586:+.4f}")
+        only_rb: list[float] = [base[0], base[1], rb]
+        print(f"    RB_alg -> {rb:.2f}   HM {hm(only_rb):.4f}"
+              f"   vs rank-1 0.586: {hm(only_rb)-0.586:+.4f}")
     return 0
 
 

@@ -15,28 +15,45 @@ benchmarks/PREREGISTRATION-mtrag-rbalg.md.
 
 import json
 import sys
+from dataclasses import dataclass
 from collections import Counter
 from statistics import mean, median
+from typing import Any
 
 PATH = sys.argv[1]
 TRIPLE = ("rl_f", "rb_llm", "rb_agg")
 RAW = ("RougeL", "Bert-Rec", "Bert-KPrec")
 
 
-def hm(vals):
+@dataclass(frozen=True)
+class Rec:
+    """One (model, task) evaluation, with the metrics kept optional until narrowed."""
+
+    model: str
+    ratio: float
+    plen: int
+    tlen: int
+    rb: float | None
+    rouge: float | None
+    brec: float | None
+    bkp: float | None
+
+
+def hm(vals: list[float]) -> float:
     if any(v is None or v <= 0 for v in vals):
         return 0.0
     return len(vals) / sum(1.0 / v for v in vals)
 
 
-def slot(ann, key, which):
+def slot(ann: dict[str, Any], key: str, which: str) -> float | None:
     node = ann.get(key)
     if not node or which not in node or node[which] is None:
         return None
-    return node[which].get("value")
+    value = node[which].get("value")
+    return None if value is None else float(value)
 
 
-def norm_tokens(s):
+def norm_tokens(s: str) -> list[str]:
     import re
     import string
 
@@ -46,7 +63,7 @@ def norm_tokens(s):
     return [x for x in s.split() if x]
 
 
-def main():
+def main() -> int:
     d = json.load(open(PATH, encoding="utf-8"))
 
     names = {}
@@ -83,8 +100,8 @@ def main():
 
     # ---------------- composite vs system, and the zero/one structure -------------------
     print(f"\n=== COMPOSITE STRUCTURE (all {len(d['evaluations'])} evaluations) ===")
-    have = Counter()
-    exact = {k: Counter() for k in TRIPLE}
+    have: Counter[tuple[str, bool, bool]] = Counter()
+    exact: dict[str, Counter[str]] = {k: Counter() for k in TRIPLE}
     for ev in d["evaluations"]:
         ann = ev.get("annotations") or {}
         for k in TRIPLE:
@@ -152,10 +169,12 @@ def main():
             r_ = slot(ann, "RougeL", "system")
             br = slot(ann, "Bert-Rec", "system")
             bk = slot(ann, "Bert-KPrec", "system")
-            if None in (rb, r_, br, bk) or rb in (0, 1):
+            if rb is None or r_ is None or br is None or bk is None:
+                continue
+            if rb in (0.0, 1.0):
                 continue  # 0 and 1 are the conditioning overriding the raw value
             recon = 0.0
-            vals = [r_, (br + 1) / 2, (bk + 1) / 2]
+            vals: list[float] = [r_, (br + 1) / 2, (bk + 1) / 2]
             if all(v > 0 for v in vals):
                 recon = 3 / sum(1 / v for v in vals)
             ok, miss = (ok + 1, miss) if abs(recon - rb) < 1e-3 else (ok, miss + 1)
@@ -175,7 +194,7 @@ def main():
 
     print(f"  tasks with a usable target length: {len(tgt_len)}/{len(d['tasks'])}")
 
-    recs = []
+    recs: list[Rec] = []
     for ev in d["evaluations"]:
         mid = names.get(ev["model_id"], ev["model_id"])
         if str(mid).lower() == "target":
@@ -188,61 +207,68 @@ def main():
         if pl == 0:
             continue
         ann = ev.get("annotations") or {}
-        rb = slot(ann, "rb_agg", "composite")
-        rouge = slot(ann, "RougeL", "system")
-        brec = slot(ann, "Bert-Rec", "system")
-        bkp = slot(ann, "Bert-KPrec", "system")
         recs.append(
-            dict(model=mid, ratio=pl / tl, plen=pl, tlen=tl, rb=rb, rouge=rouge, brec=brec, bkp=bkp)
+            Rec(
+                model=str(mid),
+                ratio=pl / tl,
+                plen=pl,
+                tlen=tl,
+                rb=slot(ann, "rb_agg", "composite"),
+                rouge=slot(ann, "RougeL", "system"),
+                brec=slot(ann, "Bert-Rec", "system"),
+                bkp=slot(ann, "Bert-KPrec", "system"),
+            )
         )
 
     print(f"  usable (non-target) records: {len(recs)}")
-    ratios = [r["ratio"] for r in recs]
+    ratios = [r.ratio for r in recs]
     print(f"  P1  median length ratio (pred/target) = {median(ratios):.3f}   mean = {mean(ratios):.3f}")
-    print(f"      median pred tokens = {median([r['plen'] for r in recs]):.0f}  "
-          f"median target tokens = {median([r['tlen'] for r in recs]):.0f}")
+    print(f"      median pred tokens = {median([r.plen for r in recs]):.0f}  "
+          f"median target tokens = {median([r.tlen for r in recs]):.0f}")
     print(f"      P1 PREDICTED >2.0, falsified if <=1.5  ->  "
           f"{'CONFIRMED' if median(ratios)>2.0 else ('FALSIFIED' if median(ratios)<=1.5 else 'INCONCLUSIVE')}")
 
     # P2: which of the three rb_agg components is the minimum
-    mins = Counter()
+    mins: Counter[str] = Counter()
     n_p2 = 0
     for r in recs:
-        if None in (r["rouge"], r["brec"], r["bkp"]):
+        if r.rouge is None or r.brec is None or r.bkp is None:
             continue
-        comp = {
-            "rouge": r["rouge"],
-            "bert_rec": (r["brec"] + 1) / 2,
-            "bert_kprec": (r["bkp"] + 1) / 2,
+        comp: dict[str, float] = {
+            "rouge": r.rouge,
+            "bert_rec": (r.brec + 1) / 2,
+            "bert_kprec": (r.bkp + 1) / 2,
         }
-        mins[min(comp, key=comp.get)] += 1
+        mins[min(comp, key=lambda k: comp[k])] += 1
         n_p2 += 1
     print(f"  P2  argmin over rb_agg components, n={n_p2}: "
           + ", ".join(f"{k}={v} ({v/n_p2:.1%})" for k, v in mins.most_common()))
-    share = mins["rouge"] / n_p2 if n_p2 else 0
+    share = mins["rouge"] / n_p2 if n_p2 else 0.0
     print(f"      P2 PREDICTED rouge is min >70%, falsified if <=50%  ->  "
           f"{'CONFIRMED' if share>0.70 else ('FALSIFIED' if share<=0.50 else 'INCONCLUSIVE')}")
 
-    # P3: rb_agg by length-ratio quartile
-    have_rb = [r for r in recs if r["rb"] is not None]
-    have_rb.sort(key=lambda r: r["ratio"])
-    n = len(have_rb)
+    # P3: rb_agg by length-ratio quartile. Narrowed to (ratio, rb) pairs so the optional
+    # never reaches the arithmetic.
+    pairs: list[tuple[float, float]] = sorted(
+        ((r.ratio, r.rb) for r in recs if r.rb is not None), key=lambda p: p[0]
+    )
+    n = len(pairs)
     q = n // 4
-    bands = [
-        ("Q1 shortest", have_rb[:q]),
-        ("Q2", have_rb[q : 2 * q]),
-        ("Q3", have_rb[2 * q : 3 * q]),
-        ("Q4 longest", have_rb[3 * q :]),
+    bands: list[tuple[str, list[tuple[float, float]]]] = [
+        ("Q1 shortest", pairs[:q]),
+        ("Q2", pairs[q : 2 * q]),
+        ("Q3", pairs[2 * q : 3 * q]),
+        ("Q4 longest", pairs[3 * q :]),
     ]
     print(f"  P3  rb_agg (composite) by length-ratio quartile, n={n}:")
     for label, band in bands:
         if band:
-            print(f"      {label:12} ratio {band[0]['ratio']:.2f}..{band[-1]['ratio']:.2f}  "
-                  f"mean rb_agg {mean(r['rb'] for r in band):.4f}  n={len(band)}")
+            print(f"      {label:12} ratio {band[0][0]:.2f}..{band[-1][0]:.2f}  "
+                  f"mean rb_agg {mean(rb for _, rb in band):.4f}  n={len(band)}")
     # band nearest ratio 1.0
-    near = sorted(have_rb, key=lambda r: abs(r["ratio"] - 1.0))[:q]
-    m_near = mean(r["rb"] for r in near)
-    m_q4 = mean(r["rb"] for r in bands[-1][1])
+    near = sorted(pairs, key=lambda p: abs(p[0] - 1.0))[:q]
+    m_near = mean(rb for _, rb in near)
+    m_q4 = mean(rb for _, rb in bands[-1][1])
     gap = m_near - m_q4
     print(f"      nearest-to-1.0 band mean rb_agg = {m_near:.4f}   Q4 = {m_q4:.4f}   gap = {gap:+.4f}")
     print(f"      P3 PREDICTED gap >= +0.10, falsified if < +0.03 or negative  ->  "

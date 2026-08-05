@@ -17,6 +17,7 @@ benchmarks/PREREGISTRATION-mtrag-rbalg.md.
 import json
 import sys
 from statistics import mean
+from typing import Any
 
 PATH = sys.argv[1] if len(sys.argv) > 1 else "RAG.json"
 
@@ -37,13 +38,13 @@ PUBLISHED = {
 TRIPLE = ("rl_f", "rb_llm", "rb_agg")
 
 
-def hm(vals):
+def hm(vals: list[float]) -> float:
     if any(v is None or v <= 0 for v in vals):
         return 0.0
     return len(vals) / sum(1.0 / v for v in vals)
 
 
-def composite(ann, key):
+def composite(ann: dict[str, Any], key: str) -> float | None:
     node = ann.get(key)
     if node is None:
         return None
@@ -55,7 +56,7 @@ def composite(ann, key):
     return None
 
 
-def main():
+def main() -> int:
     d = json.load(open(PATH, encoding="utf-8"))
 
     # model_id -> display name
@@ -68,7 +69,7 @@ def main():
         else:
             names[m] = m
 
-    per_model = {}
+    per_model: dict[str, dict[str, Any]] = {}
     for ev in d["evaluations"]:
         mid = ev["model_id"]
         ann = ev.get("annotations") or {}
@@ -93,7 +94,7 @@ def main():
         means = {k: mean(r[k] for r in rows) for k in TRIPLE}
         hm_of_means = hm([means[k] for k in TRIPLE])
         mean_of_hms = mean(hm([r[k] for k in TRIPLE]) for r in rows)
-        label = names.get(mid, mid)
+        label = str(names.get(str(mid), mid))
         pub = PUBLISHED.get(label)
         delta = (hm_of_means - pub) if pub is not None else None
         flag = ""
@@ -113,8 +114,11 @@ def main():
     # setdefault populates even for a model whose every row was skipped, and the exit code
     # ignored it entirely. A rename in a future RAG.json would then match nothing, print
     # VIOLATED, and still exit 0 -- total lookup failure reading exactly like a pass.
-    matched = sum(1 for m, blob in per_model.items()
-                  if blob["rows"] and names.get(m) in PUBLISHED)
+    matched = sum(
+        1
+        for m, blob in per_model.items()
+        if bool(blob["rows"]) and names.get(str(m)) in PUBLISHED
+    )
     complete = matched == len(PUBLISHED)
     print(f"models matched to published table: {matched}/{len(PUBLISHED)}")
     if not complete:
