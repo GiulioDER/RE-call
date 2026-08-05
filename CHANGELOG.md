@@ -9,6 +9,68 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
+- **`latency_budget_ms` now means something at request time.** It was declared on every retrieval
+  profile, validated, and read by nothing. It now does two enforced things. It **bounds the
+  admission wait**: a request that cannot acquire a running slot within the budget is shed with
+  `RetrievalOverloaded` *before the query is embedded*, so a refused request costs nothing.
+  Previously `queue_capacity` bounded how many threads could be parked and said nothing about how
+  long any of them waited, so a process could hold a client for minutes behind a slow reranked
+  query with every counter reading healthy. And it **labels an overrun**: a request that finishes
+  over budget still returns its answer and reports `total_ms`, `latency_budget_ms` and
+  `budget_exceeded` on the response.
+
+  Aborting mid-flight was considered and rejected: there is no cancellation point inside a
+  blocking cross-encoder `predict`, so the process would pay the whole cost and discard the answer.
+
+- **`RetrievalOverloaded` is a retryable refusal, not a bare `RuntimeError`.** It carries `reason`
+  (`queue_full` or `budget_exhausted`) and `retry_after_seconds`, matching how
+  `recall_mcp.limits.RateLimited` reports a refusal a client should come back from. Rejections are
+  counted as `recall_retrieval_rejected_total{profile,reason}`.
+
+- **`evidence_assembly` stage timing.** The response surface timed six stages and stopped at the
+  trust gate; assembling the client-facing evidence (provenance, validity, verdicts, advice) was
+  unattributed. All seven stages are now on `stage_ms`, and all seven are observed into `METRICS`
+  as `recall_retrieval_stage_ms{profile,stage}` alongside `recall_retrieval_total_ms{profile}`, so
+  per-stage percentiles exist across a population of queries rather than only per response.
+
+- **The quality profile's reranker is pinned by artifact digest.** `recall/rerank.py` pins
+  `cross-encoder/ms-marco-MiniLM-L-6-v2` at revision `c5ee24cb…` with artifact SHA256 `db6ad879…`,
+  and `RECALL_RERANK_SHA256` must now *agree* with the pin rather than define it. Verifying a tree
+  against a digest the operator supplied proves only that the tree hashes to its own hash.
+
+### Changed
+- **The MCP server refuses to start on a bad cost-profile configuration.** A contradictory
+  `RECALL_RETRIEVAL_PROFILE` / `RECALL_RERANK` pair, a quality profile with no
+  `RECALL_RERANK_PATH` / `RECALL_RERANK_SHA256`, or a reranker digest that is not the pinned one,
+  used to produce a server that came up clean and failed on its first client request. The check is
+  now the first thing the lifespan does, ahead of any I/O.
+
+- **Fast and quality carry separate concurrency budgets.** Both used to inherit `max_concurrency=4`
+  / `queue_capacity=16`. Fast is now 8 + 32 and quality 2 + 8; quality's per-request budget is six
+  times fast's, so an equal concurrency budget parked roughly six times the CPU-seconds behind the
+  same queue depth. `RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` still override, and now
+  default to the selected profile's value rather than to a shared constant — `.env.example` no
+  longer ships `4` / `16` as if they applied to both.
+
+  ⚠️ These values are a policy choice, not a measurement. Latency for this program is PENDING for
+  want of an idle reference host.
+
+- **One reranker per worker process, built under a lock.** The shared instance was memoised with
+  `lru_cache`, which is a cache lookup and not a construction lock: on a cold start under load,
+  every concurrent first request missed and loaded its own copy of the cross-encoder.
+
+### Fixed
+- **`RetrievalAdmission` leaked a queue slot on any failure after the slot was taken.** `__exit__`
+  does not run when `__enter__` raises, so a slot lost this way was lost permanently; after
+  `queue_capacity` of them the process refuses every request forever while reporting itself busy.
+  Latent before this release (nothing could fail between the two acquisitions) and live the moment
+  the budget-bounded wait was added.
+- **An empty `RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` / `RECALL_RERANK_THREADS` is now
+  read as unset rather than as a malformed integer.** A dotenv load puts an empty *string* in the
+  environment rather than omitting the key, so a copied `.env` with these left blank refused
+  startup.
+
+### Added
 - **External OIDC identity for the MCP server's HTTP transports.** `RECALL_OIDC_ISSUER`,
   `RECALL_OIDC_AUDIENCE` and `RECALL_OIDC_TENANTS` (required together), plus optional
   `RECALL_OIDC_ALGORITHMS`. Revocation, rotation and expiry move to the IdP. See

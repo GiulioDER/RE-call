@@ -11,6 +11,26 @@ RetrievalProfileName = Literal["legacy", "fast", "quality"]
 
 @dataclass(frozen=True)
 class RetrievalProfile:
+    """One fixed process cost profile.
+
+    ``latency_budget_ms`` is not decoration and not a promotion-gate input. At request time it
+    means exactly two things, both observable:
+
+    1. **It bounds the admission wait.** A request that cannot acquire a running slot within the
+       budget is shed with :class:`RetrievalOverloaded` *before anything is embedded*. Without
+       this, ``queue_capacity`` bounds how many threads may be parked and says nothing about how
+       long any of them waits, so a process could hold a client for minutes behind a slow
+       reranked query while every counter looked healthy.
+    2. **It labels an overrun.** A request that completes over budget is reported as such on the
+       result surface and counted in ``METRICS``; see ``recall_mcp.service.search_memory``.
+
+    What it deliberately does **not** do is abort a request in flight. There is no cancellation
+    point inside a blocking cross-encoder ``predict``, so a mid-flight abort would pay the whole
+    cost and then discard the answer: strictly worse than returning a slow one, and it would turn
+    a latency regression into an availability incident. Shedding happens at the door, where it is
+    free.
+    """
+
     name: RetrievalProfileName
     candidate_k: int
     returned_k: int
@@ -32,8 +52,25 @@ class RetrievalProfile:
                 raise ValueError(f"{label} must be positive")
 
 
-FAST_PROFILE = RetrievalProfile("fast", 20, 5, False, 250)
-QUALITY_PROFILE = RetrievalProfile("quality", 20, 5, True, 1500)
+#: Fast and quality carry SEPARATE concurrency budgets rather than one shared default.
+#:
+#: The two profiles run the same candidate pool by design (`docs/ENTERPRISE_RETRIEVAL.md`), so the
+#: only cost difference is the reranker — and it is a large one. Giving both the same
+#: `max_concurrency` would let quality park roughly six times fast's CPU-seconds behind the same
+#: queue depth, because each parked request holds its slot for up to six times as long. The
+#: budgets below hold `max_concurrency * latency_budget_ms` within the same order of magnitude
+#: (fast 8 x 250 = 2000, quality 2 x 1500 = 3000), which is the quantity a saturated process
+#: actually owes its clients.
+#:
+#: ⚠️ These are a POLICY choice, not a measurement. Latency on this program is PENDING for want of
+#: a 16-vCPU idle reference host, so no number here is claimed to be tuned to measured throughput.
+#: `RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` override them per deployment.
+FAST_PROFILE = RetrievalProfile("fast", 20, 5, False, 250, max_concurrency=8, queue_capacity=32)
+QUALITY_PROFILE = RetrievalProfile(
+    "quality", 20, 5, True, 1500, max_concurrency=2, queue_capacity=8
+)
+#: Legacy keeps 4/16 and an effectively infinite budget: it is the pre-profile behaviour, and a
+#: deployment that never opted into a profile must not acquire shedding it did not ask for.
 LEGACY_PROFILE = RetrievalProfile("legacy", 20, 5, False, 0x7FFFFFFF)
 
 
@@ -54,7 +91,10 @@ def resolve_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
 
     def _positive(name: str, default: int) -> int:
         raw = values.get(name)
-        if raw is None:
+        # Empty means UNSET, not malformed. `.env.example` ships these keys with no value, and a
+        # dotenv load puts an empty string in the environment rather than leaving the key out, so
+        # reading it as a bad integer would make the shipped example refuse startup.
+        if raw is None or not raw.strip():
             return default
         try:
             parsed = int(raw)
@@ -79,22 +119,84 @@ def resolve_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
 
 
 class RetrievalOverloaded(RuntimeError):
-    """The process has no safe capacity to begin another retrieval."""
+    """The process has no safe capacity to begin another retrieval.
+
+    ``reason`` is a stable machine-readable slug, not prose:
+
+    * ``queue_full`` — every queue slot is taken; the request was refused without waiting.
+    * ``budget_exhausted`` — the request queued, but could not start within
+      ``latency_budget_ms``, so it was shed rather than served late.
+
+    Both are RETRYABLE: nothing was consumed and no state changed. The message deliberately names
+    only the profile and the numbers involved. It never carries the query, because a rejection is
+    exactly the moment a message is most likely to be logged verbatim by a caller.
+    """
+
+    #: Ceiling on the retry hint, in seconds. The legacy profile's budget is a sentinel roughly
+    #: 24 days long; handing that to a client as "retry after" would be worse than silence.
+    MAX_RETRY_AFTER_SECONDS = 5.0
+
+    def __init__(self, message: str, *, reason: str, retry_after_seconds: float) -> None:
+        super().__init__(message)
+        self.reason = reason
+        #: Mirrors `recall_mcp.limits.RateLimited`: a structured, machine-readable field on the
+        #: exception IS this codebase's retryable status. Nothing was consumed and no state
+        #: changed, so the only question a client has is when to come back.
+        self.retry_after_seconds = retry_after_seconds
 
 
 class RetrievalAdmission:
-    """A bounded process-local queue acquired before query embedding begins."""
+    """A bounded process-local queue acquired before query embedding begins.
+
+    Two semaphores, not one. ``_slots`` bounds how many requests may be *in the process at all*
+    (running plus parked) and is taken non-blocking, so a saturated process refuses instantly
+    instead of growing an unbounded pile of waiters. ``_running`` bounds how many may execute
+    concurrently and is taken with the profile's latency budget as its timeout, so a parked
+    request is shed rather than served arbitrarily late.
+    """
 
     def __init__(self, profile: RetrievalProfile) -> None:
+        self.profile = profile
         self._slots = threading.BoundedSemaphore(
             profile.max_concurrency + profile.queue_capacity
         )
         self._running = threading.BoundedSemaphore(profile.max_concurrency)
 
+    @property
+    def _retry_after_seconds(self) -> float:
+        return min(
+            self.profile.latency_budget_ms / 1000.0,
+            RetrievalOverloaded.MAX_RETRY_AFTER_SECONDS,
+        )
+
     def __enter__(self) -> None:
         if not self._slots.acquire(blocking=False):
-            raise RetrievalOverloaded("retrieval queue is full")
-        self._running.acquire()
+            raise RetrievalOverloaded(
+                f"retrieval queue is full for profile {self.profile.name!r} "
+                f"({self.profile.max_concurrency} running + "
+                f"{self.profile.queue_capacity} queued)",
+                reason="queue_full",
+                retry_after_seconds=self._retry_after_seconds,
+            )
+        # The queue slot is held from here on, so every failure path below MUST return it.
+        # `__exit__` does not run when `__enter__` raises, which is why the release is explicit:
+        # a leaked slot is permanent, and after `queue_capacity` of them the process refuses
+        # every request forever while reporting itself as merely busy.
+        try:
+            admitted = self._running.acquire(
+                timeout=self.profile.latency_budget_ms / 1000.0
+            )
+        except BaseException:
+            self._slots.release()
+            raise
+        if not admitted:
+            self._slots.release()
+            raise RetrievalOverloaded(
+                f"waited longer than the {self.profile.latency_budget_ms} ms budget of profile "
+                f"{self.profile.name!r} for a running slot",
+                reason="budget_exhausted",
+                retry_after_seconds=self._retry_after_seconds,
+            )
 
     def __exit__(self, *exc: object) -> None:
         self._running.release()

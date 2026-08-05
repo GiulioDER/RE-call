@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
@@ -22,7 +24,12 @@ from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
 from recall.index import Indexer, ShadowIndexTarget, candidate_files
 from recall.observability import METRICS, get_logger
-from recall.profiles import RetrievalAdmission, RetrievalProfile, resolve_retrieval_profile
+from recall.profiles import (
+    RetrievalAdmission,
+    RetrievalOverloaded,
+    RetrievalProfile,
+    resolve_retrieval_profile,
+)
 from recall.rerank import DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION, Reranker
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
@@ -235,7 +242,27 @@ class SearchResult(BaseModel):
     index_generation: str = "legacy"
     candidate_pool_size: int = 20
     reranking_ran: bool = False
-    stage_ms: dict[str, float] = Field(default_factory=dict)
+    stage_ms: dict[str, float] = Field(
+        default_factory=dict,
+        description="Per-stage wall time in milliseconds: query_embedding, dense_retrieval, "
+        "sparse_retrieval, fusion, reranking, trust_evaluation, evidence_assembly. Stage names "
+        "are library constants and carry no corpus-derived text.",
+    )
+    total_ms: float = Field(
+        default=0.0,
+        description="Wall time for the whole request, admission wait included. Larger than the "
+        "sum of stage_ms: the stages do not cover queueing or the supersession fetch.",
+    )
+    latency_budget_ms: int = Field(
+        default=0,
+        description="The active profile's per-request budget. A request that cannot START within "
+        "it is shed before embedding; one that finishes over it is reported below.",
+    )
+    budget_exceeded: bool = Field(
+        default=False,
+        description="True when total_ms exceeded latency_budget_ms. The answer is still served — "
+        "aborting mid-flight would pay the whole cost and return nothing.",
+    )
     hits: list[SearchHit]
 
 
@@ -345,6 +372,31 @@ def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str] | Non
     return (model, revision)
 
 
+def _validate_quality_reranker_config(values: dict[str, str]) -> tuple[str, str]:
+    """`(model_path, digest)` for the quality profile, or raise. No model is loaded.
+
+    The digest must EQUAL the pin. Accepting whatever the operator typed would make the
+    `local_files_only` verification self-referential: it would prove the tree matches the hash of
+    itself, which every tree does. The check that means something compares it against a value
+    chosen elsewhere.
+    """
+    from recall.rerank import PINNED_RERANKER_SHA256
+
+    model_path = values.get("RECALL_RERANK_PATH", "")
+    digest = values.get("RECALL_RERANK_SHA256", "")
+    if not model_path or not digest:
+        raise ValueError(
+            "quality profile requires RECALL_RERANK_PATH and RECALL_RERANK_SHA256"
+        )
+    if digest.strip().lower() != PINNED_RERANKER_SHA256:
+        raise ValueError(
+            f"RECALL_RERANK_SHA256 does not match the reranker pinned to the quality profile "
+            f"(expected {PINNED_RERANKER_SHA256}). A different artifact tree is a different "
+            f"model and needs its own registered experiment, not a reused profile."
+        )
+    return model_path, digest
+
+
 def _new_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pragma: no cover
     """Instantiate the configured reranker, or None. Imports torch only when actually enabled."""
     values = dict(os.environ) if env is None else env
@@ -352,12 +404,7 @@ def _new_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pr
     if profile.name == "fast":
         return None
     if profile.name == "quality":
-        model_path = values.get("RECALL_RERANK_PATH", "")
-        digest = values.get("RECALL_RERANK_SHA256", "")
-        if not model_path or not digest:
-            raise ValueError(
-                "quality profile requires RECALL_RERANK_PATH and RECALL_RERANK_SHA256"
-            )
+        model_path, digest = _validate_quality_reranker_config(values)
         from recall.rerank import CrossEncoderReranker
 
         return CrossEncoderReranker(
@@ -376,18 +423,65 @@ def _new_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pr
     return CrossEncoderReranker(model=model, revision=revision)
 
 
-@lru_cache(maxsize=1)
-def _shared_reranker() -> "Reranker | None":  # pragma: no cover
-    return _new_reranker()
+#: ONE reranker per worker process, built once, keyed by the resolved profile.
+#:
+#: `lru_cache` was not enough and the difference is not academic. A cache lookup is not a
+#: construction lock: N threads arriving on a cold cache all miss, all call the factory, and all
+#: load their own copy of a cross-encoder. That is hundreds of megabytes per surplus copy, at the
+#: one moment the process is least able to afford it — a cold start under load. The lock makes
+#: "one per worker" a property of the code rather than of the arrival pattern.
+#:
+#: Keyed by profile rather than stored in a single slot so a process whose profile changes (only
+#: tests do this; production selects one profile per process) cannot be served a reranker built
+#: for the other one.
+_RERANKER_LOCK = threading.Lock()
+_RERANKERS: dict[str, "Reranker | None"] = {}
 
 
-def _build_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pragma: no cover
-    return _new_reranker(env) if env is not None else _shared_reranker()
+def _reset_reranker_cache() -> None:
+    """Drop the per-process reranker. For tests — a server should never need this."""
+    with _RERANKER_LOCK:
+        _RERANKERS.clear()
+
+
+def _build_reranker(env: dict[str, str] | None = None) -> "Reranker | None":
+    if env is not None:  # explicit environment: an ad-hoc instance, never the shared one
+        return _new_reranker(env)
+    name = resolve_retrieval_profile().name
+    with _RERANKER_LOCK:
+        if name not in _RERANKERS:
+            _RERANKERS[name] = _new_reranker()
+        return _RERANKERS[name]
 
 
 @lru_cache(maxsize=8)
 def _admission(profile: RetrievalProfile) -> RetrievalAdmission:
+    """The admission queue for one profile.
+
+    Memoised on the whole frozen profile, so fast and quality hold SEPARATE budgets: saturating
+    one cannot shed requests on the other. In production only one profile is ever resolved, so
+    this is one queue; the isolation matters for any process that resolves both.
+    """
     return RetrievalAdmission(profile)
+
+
+def startup_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalProfile:
+    """Resolve and fully validate the process profile. Called once, at server startup.
+
+    Resolution alone used to happen on the first search, which meant a contradictory
+    `RECALL_RETRIEVAL_PROFILE` / `RECALL_RERANK` pair, or a quality profile with no pinned
+    reranker artifact, produced a server that started clean and failed on its first client
+    request. "Refuses startup" has to mean startup.
+
+    Deliberately does NOT import torch or load the model: this runs before the store is opened,
+    and a config error should be reported in milliseconds. Everything checked here is the part a
+    misconfiguration gets wrong; the artifact itself is verified when the reranker is built.
+    """
+    values = dict(os.environ) if env is None else env
+    profile = resolve_retrieval_profile(values)
+    if profile.reranker:
+        _validate_quality_reranker_config(values)
+    return profile
 
 
 def search_memory(
@@ -424,16 +518,33 @@ def search_memory(
     profile = resolve_retrieval_profile()
     k = max(1, min(k, MAX_SEARCH_K))
     if profile.name != "legacy":
+        # A client cannot buy its way onto a bigger result set than the process profile allows.
+        # Selection is process level by design: `k` is clamped, never escalated.
         k = min(k, profile.returned_k)
     timed = TimedEmbedder(embedder)  # measure embedding latency without altering trusted_search
     generation = str(getattr(store, "generation_id", "legacy"))
-    with _admission(profile):
-        result = trusted_search(
-            store, timed, query, k=k, source=source, calibration=calibration,
-            reranker=_build_reranker(), candidate_k=profile.candidate_k,
-            retrieval_profile=profile.name, index_generation=generation,
-            policy=policy,
+    request_started = time.perf_counter()
+    try:
+        with _admission(profile):
+            result = trusted_search(
+                store, timed, query, k=k, source=source, calibration=calibration,
+                reranker=_build_reranker(), candidate_k=profile.candidate_k,
+                retrieval_profile=profile.name, index_generation=generation,
+                policy=policy,
+            )
+    except RetrievalOverloaded as exc:
+        # Counted where it happens, with library-authored labels only. The request cost nothing:
+        # admission is taken BEFORE the embedder, which is the entire reason the gate is there
+        # and not one layer down.
+        METRICS.increment(
+            "recall_retrieval_rejected_total", profile=profile.name, reason=exc.reason
         )
+        raise
+    # `evidence_assembly` is the last stage and the one the surface did not carry. It brackets
+    # turning trusted hits into the client-facing evidence: provenance, validity, verdicts and
+    # the library-authored advice. It is small, and that is the point — a stage nobody measures
+    # is a stage nobody can rule out when a p95 moves.
+    assembly_started = time.perf_counter()
     hits = [
         SearchHit(
             chunk_id=h.chunk.id,
@@ -506,6 +617,28 @@ def search_memory(
         )
     if result.staleness.stale:
         advice += " NOTE: the memory index is stale — consider re-indexing."
+
+    stage_ms = dict(result.diagnostics.stage_ms)
+    stage_ms["evidence_assembly"] = round(
+        (time.perf_counter() - assembly_started) * 1000.0, 3
+    )
+    total_ms = round((time.perf_counter() - request_started) * 1000.0, 3)
+    budget_exceeded = total_ms > profile.latency_budget_ms
+    for stage, value in stage_ms.items():
+        # Labels are library constants (`profile.name` is a Literal, stage names are ours). No
+        # corpus-derived string can reach a metric label through here.
+        METRICS.observe(
+            "recall_retrieval_stage_ms", value, profile=profile.name, stage=stage
+        )
+    METRICS.observe("recall_retrieval_total_ms", total_ms, profile=profile.name)
+    if budget_exceeded:
+        METRICS.increment("recall_retrieval_budget_exceeded_total", profile=profile.name)
+        # Numbers and the profile name only. An over-budget request is exactly the one an
+        # operator wants to grep for, so it is also exactly the wrong place to put the query.
+        _log.warning(
+            "retrieval took %.1f ms against the %d ms budget of profile %r",
+            total_ms, profile.latency_budget_ms, profile.name,
+        )
     return SearchResult(
         query=query,
         abstained=result.abstained,
@@ -530,7 +663,10 @@ def search_memory(
         index_generation=result.diagnostics.index_generation,
         candidate_pool_size=result.diagnostics.candidate_pool_size,
         reranking_ran=result.diagnostics.reranking_ran,
-        stage_ms=result.diagnostics.stage_ms,
+        stage_ms=stage_ms,
+        total_ms=total_ms,
+        latency_budget_ms=profile.latency_budget_ms,
+        budget_exceeded=budget_exceeded,
         hits=hits,
     )
 
