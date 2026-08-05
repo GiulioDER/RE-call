@@ -47,9 +47,11 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   (provenance, validity, verdicts, advice) were unattributed. All eight stages are now on
   `stage_ms` and observed into `METRICS` as `recall_retrieval_stage_ms{profile,stage}` alongside
   `recall_retrieval_total_ms{profile}`, so per-stage percentiles exist across a population of
-  queries rather than only per response. `recall_retrieval_total_ms` is observed on **every** exit
-  including failures, with `recall_retrieval_failed_total{profile}` counting them: a timer that
-  records only on success hides the slow path worth finding.
+  queries rather than only per response. `recall_retrieval_total_ms` is observed on failures as
+  well as successes, with `recall_retrieval_failed_total{profile}` counting them: a timer that
+  records only on success hides the slow path worth finding. It excludes requests that were
+  **shed**, which did no work by construction and would otherwise make healthy load shedding
+  look like an outage; those appear only in `recall_retrieval_rejected_total{profile,reason}`.
 
 - **The quality profile's reranker is pinned by artifact digest.** `recall/rerank.py` pins
   artifact SHA256 `db6ad879…`, and `RECALL_RERANK_SHA256` must now *equal* the pin rather than
