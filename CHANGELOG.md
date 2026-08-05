@@ -9,6 +9,39 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
+- **Subject-to-tenant binding for OIDC (`RECALL_OIDC_SUBJECT_TENANTS`).** The tenant allowlist
+  bounds *which* tenants exist; it never bound *who* may name one, so any subject able to obtain a
+  token from the issuer with the right audience reached every provisioned tenant. A bound subject
+  naming another tenant is now refused with `subject_tenant_mismatch`, an unknown subject with
+  `subject_not_bound`, and a token carrying no `sub` with `missing_subject`. Checked after
+  signature verification, so it cannot be used to enumerate subjects.
+
+  ⚠️ **BREAKING: an existing OIDC deployment will not boot until it answers this.** Either set
+  `RECALL_OIDC_SUBJECT_TENANTS`, or set `RECALL_OIDC_TRUST_TENANT_CLAIM=1` to declare that your IdP
+  mints `tenant` from an authoritative subject-to-organisation mapping and never from a
+  user-editable attribute. Setting both refuses. There is deliberately no default, because a
+  warning about this would land in a startup journal nobody reads.
+
+  The tenant is everything after the **last** colon of each pair, so a subject may itself contain
+  them (`system:serviceaccount:ns:sa:my-tenant`).
+
+- **`RECALL_AUTH_MODE=oidc|static`, which makes the static-to-OIDC cutover staged.** Both
+  mechanisms configured at once previously refused to boot. That was right when nobody had chosen,
+  and it also made the transition atomic and un-canaryable: the intermediate state of a two-step
+  rollout would not start, and because the conflict is checked before the transport branch it took
+  stdio processes with it. Precedence can now be *declared*; undeclared ambiguity still refuses.
+
+  Only the selected mechanism is built, not merely preferred. That matters because
+  `RECALL_ENV=production` refuses the static token file outright: a server that loaded it before
+  consulting the selector could never complete the flip. The OIDC block is still *validated*
+  whenever present, so step 1 rehearses it rather than deferring every OIDC error to the flip. The
+  inactive mechanism is logged as inactive on every boot, because the refusal that used to carry
+  that warning is gone.
+
+  ⚠️ Two limits, in `docs/AUTH.md`: step 1 cannot run under `RECALL_ENV=production` (the token
+  file is the active mechanism there and production refuses it), and rollback is a mode flip only
+  while the token file still exists.
+
 - **External OIDC identity for the MCP server's HTTP transports.** `RECALL_OIDC_ISSUER`,
   `RECALL_OIDC_AUDIENCE` and `RECALL_OIDC_TENANTS` (required together), plus optional
   `RECALL_OIDC_ALGORITHMS`. Revocation, rotation and expiry move to the IdP. See
@@ -26,12 +59,10 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   `RECALL_OIDC_TENANTS`; any other `RECALL_OIDC_*` key is set *without* `RECALL_OIDC_ISSUER`
   (misspelling that one key otherwise reverted the deployment to static tokens silently);
   `RECALL_OIDC_ISSUER` is not `https://`; `RECALL_OIDC_ALGORITHMS` names an algorithm the JWKS
-  loader cannot serve; or **both** `RECALL_OIDC_ISSUER` and `RECALL_AUTH_TOKENS_FILE` are set.
-
-  ⚠️ **Cutover ordering.** Because both-set refuses, remove `RECALL_AUTH_TOKENS_FILE` in the
-  *same* config revision that adds the OIDC variables — a two-step rollout fails at the
-  intermediate step. The conflict is checked before the transport branch, so stdio processes
-  sharing that environment file are refused too.
+  loader cannot serve; or both `RECALL_OIDC_ISSUER` and `RECALL_AUTH_TOKENS_FILE` are set
+  **without** `RECALL_AUTH_MODE` declaring which one is active (see above: that is the supported
+  way to stage a cutover, and it replaces the atomic single-revision swap this entry originally
+  prescribed).
 - `RECALL_AUTH_ISSUER_URL` is now **optional** when `RECALL_OIDC_ISSUER` is set, defaulting to it.
   `RECALL_AUTH_RESOURCE_URL` is still required.
 - `PyJWT[crypto]` is now declared directly on the `mcp` and `dev` extras rather than inherited
