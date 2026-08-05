@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -505,6 +506,20 @@ def _conversation_to_messages(conversation: dict[str, Any]) -> list[dict[str, st
     return [m for session in _conversation_to_session_messages(conversation) for m in session]
 
 
+def _read(obj: object, name: str) -> Any:
+    """`getattr` that cannot itself raise.
+
+    `getattr(x, name, None)` swallows only `AttributeError`, and `Mem0System.close` probes
+    attributes on a third-party object whose properties are free to raise anything. Since `close`
+    runs inside `finally` blocks, an escaping probe would replace the exception that explains the
+    run. Unreadable has to mean "nothing there", never "a new exception".
+    """
+    try:
+        return getattr(obj, name, None)
+    except Exception:  # noqa: BLE001 - a probe that raises has told us nothing, not something
+        return None
+
+
 class Mem0System:
     """Mem0 adapter. Feeds the conversation via `add`, retrieves via `search`. LLM on OpenRouter.
 
@@ -544,6 +559,7 @@ class Mem0System:
         self._k = k
         self._user: str | None = None
         self._mem: Any = None
+        self._closed = False
 
     def describe(self) -> dict[str, Any]:
         """This arm's configuration, for the results artifact. API keys are redacted."""
@@ -560,11 +576,111 @@ class Mem0System:
         }
 
     def _memory(self) -> Any:
+        if self._closed:
+            # Without this, `_memory()`'s laziness would quietly REBUILD after `close()`, taking
+            # the exclusive Qdrant lock again with no `__exit__` left to release it — the very
+            # defect `close` exists to fix, restored through a path that reports nothing.
+            raise RuntimeError("Mem0System used after close()")
         if self._mem is None:
             from mem0 import Memory
 
             self._mem = Memory.from_config(self._config)
         return self._mem
+
+    def close(self) -> None:
+        """Release the handles this system holds. Idempotent, and safe to call after a failure.
+
+        Not tidiness. In the local Qdrant configuration `mem0_config` pins, a `mem0.Memory` owns
+        EXCLUSIVE `portalocker` locks on its vector-store directories, held for as long as the
+        client objects live. Until this method existed there was no way to let go of them, so an
+        arm that raised mid-ingest kept its lock for the rest of the process and the next
+        `Mem0System` on the same path died with
+
+            RuntimeError: Storage folder ... is already accessed by another instance of Qdrant client
+
+        which reads like a code failure and is not one. That is exactly what happened on
+        2026-08-05: a run that ran out of OpenRouter credit left a lock held, and the resulting
+        error was investigated as a regression. The default `run_id="adhoc"` makes it easy to hit,
+        because every system built without an explicit run id shares one path.
+
+        What this releases, having checked rather than assumed:
+
+        - The primary Qdrant client, and with it the lock on this run's vector-store directory.
+        - `_telemetry_vector_store`'s client. `Memory.__init__` opens a SECOND Qdrant store
+          whenever `MEM0_TELEMETRY` is set, which is its default and which this project never
+          turns off. Its path comes from mem0's home directory, not from `run_id`, so EVERY run
+          and every concurrent process contends for that one lock — a wider collision than the
+          per-run one, and the reason closing only `vector_store` is not enough.
+        - `_entity_store`'s client, when it has a distinct one. For Qdrant, mem0 deliberately
+          hands it the primary client "to avoid RocksDB lock contention", so the stores are
+          deduped by identity and a shared client is closed exactly once.
+        - The SQLite history connection, via `Memory.close()`.
+
+        What it does NOT release, so the docstring cannot be read as a guarantee it is not making:
+        the LLM client's HTTP connection pool, mem0's process-global PostHog telemetry thread
+        (`atexit`-only), and the embedder's weights — which are held in a reference cycle, so
+        dropping `_mem` does not free them until a GC pass runs.
+
+        Two details a shorter implementation gets wrong. `Memory.close()` is NOT sufficient: it
+        closes the SQLite handle and returns, never touching any vector store, so every lock
+        survives it. And `__del__` is not a fallback: at interpreter shutdown qdrant-client's own
+        finaliser dies with `ModuleNotFoundError: import of msvcrt halted`, so a lock left to the
+        garbage collector can outlive the process's ability to release it.
+        """
+        memory, self._mem = self._mem, None
+        self._closed = True
+        if memory is None:
+            return
+        # Collect first, release second, so one unreadable store cannot hide the others. `_read`
+        # is total because these are attributes on a third-party object, and a property is free to
+        # raise: this runs inside `finally` blocks and `__exit__`, where a raise would REPLACE the
+        # exception that actually explains the run.
+        clients: list[tuple[str, Any]] = []
+        # `_entity_store`, the PRIVATE name, deliberately. `Memory.entity_store` is a lazy property
+        # that CONSTRUCTS the store on first access, so reading the public name here would build a
+        # vector store — and take a lock — in the middle of releasing them. Do not "use the public
+        # API" here; `test_close_reads_the_private_entity_store_not_the_lazy_property` pins it.
+        for store in ("vector_store", "_telemetry_vector_store", "_entity_store"):
+            client = _read(_read(memory, store), "client")
+            # Identity, not equality: a `VectorStore` may not define `__eq__`, and the entity store
+            # legitimately shares the primary client rather than owning a second one.
+            if client is not None and not any(client is seen for _, seen in clients):
+                clients.append((f"{store}.client", client))
+        # Each handle is released independently. A lock is what damages the NEXT run, so letting go
+        # of one must never be conditional on another closing cleanly.
+        releases = [(name, _read(client, "close")) for name, client in clients]
+        releases.append(("Memory.close", _read(memory, "close")))
+        for name, release in releases:
+            if release is None:
+                continue
+            try:
+                release()
+            except Exception as exc:  # noqa: BLE001 - a handle that will not close is not the caller's bug
+                # Warn rather than raise, and rather than stay silent. The entire cost of the
+                # 2026-08-05 incident was diagnostic; if a release fails, the next run hits the
+                # same baffling "already accessed" error, and this line is the breadcrumb that
+                # turns a second investigation into a one-line diagnosis.
+                #
+                # `name` is our own literal, never the handle's `repr`. `repr()` of a bound method
+                # embeds `repr(__self__)`, so interpolating the handle handed an arbitrary
+                # `__repr__` a path straight out of `close()` — from inside a `finally`, replacing
+                # the error that explains the run. The two conditions correlate, too: a handle that
+                # will not close is in a broken state, which is when its `__repr__` also raises.
+                # `name` is a better breadcrumb anyway: it names the leaked lock.
+                try:
+                    detail = repr(exc)
+                except Exception:  # noqa: BLE001 - an exception whose repr raises is still evidence
+                    detail = f"<unprintable {type(exc).__name__}>"
+                warnings.warn(f"Mem0System.close: {name} failed: {detail}", stacklevel=2)
+
+    def __enter__(self) -> Mem0System:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        # Returns None (falsy), so an exception raised in the body still propagates — including
+        # `pytest.skip`, which is a BaseException and therefore reaches here but not an
+        # `except Exception` clause.
+        self.close()
 
     def ingest(self, conversation: dict[str, Any]) -> None:
         # `conversation` here is the OUTER LOCOMO item (`sample_id` + nested `conversation`

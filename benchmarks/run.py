@@ -577,6 +577,20 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     print(json.dumps(agg, indent=2))
     print(f"full results -> {path}")
     print(f"incremental  -> {partial_path}")
+    # Release the arm's handles while the interpreter is still healthy. A `Mem0System` holds
+    # exclusive Qdrant locks for as long as it lives (see `Mem0System.close`), including one on a
+    # machine-global telemetry path that no `run_id` disambiguates. Process exit would drop them
+    # anyway; the point is to do it here rather than during finalisation, where qdrant-client's own
+    # finaliser dies with `ModuleNotFoundError: import of msvcrt halted`.
+    #
+    # SUCCESS PATH ONLY, deliberately, and it is not a guarantee: there is no `try/finally`, so an
+    # exception on the way here skips this and falls back to process exit. The honest fix, if that
+    # ever stops being good enough, is `with _build_system(...) as system:` around the body — not a
+    # second close bolted on elsewhere. Duck-typed because `MemorySystem` is a three-member
+    # protocol and `RecallSystem` has nothing to release: it holds a DSN string, not a connection.
+    close = getattr(system, "close", None)
+    if callable(close):
+        close()
     return 0
 
 

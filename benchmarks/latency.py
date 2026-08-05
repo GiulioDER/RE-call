@@ -85,21 +85,34 @@ def _run_arm(
     ingest_secs: list[float] = []
     retrieve_ms: list[float] = []
     warmed = False
-    for conv in convs:
-        t0 = time.perf_counter()
-        system.ingest(conv)
-        ingest_secs.append(time.perf_counter() - t0)
-        qs = _questions(conv, q_per, rng)
-        if not warmed:
-            for q in qs[:warmup]:
-                system.retrieve(q)  # discard: warm connections / caches
-            warmed = True
-        for q in qs:
-            for _ in range(reps):
-                t = time.perf_counter()
-                system.retrieve(q)
-                retrieve_ms.append((time.perf_counter() - t) * 1000.0)
-    return ingest_secs, retrieve_ms
+    try:
+        for conv in convs:
+            t0 = time.perf_counter()
+            system.ingest(conv)
+            ingest_secs.append(time.perf_counter() - t0)
+            qs = _questions(conv, q_per, rng)
+            if not warmed:
+                for q in qs[:warmup]:
+                    system.retrieve(q)  # discard: warm connections / caches
+                warmed = True
+            for q in qs:
+                for _ in range(reps):
+                    t = time.perf_counter()
+                    system.retrieve(q)
+                    retrieve_ms.append((time.perf_counter() - t) * 1000.0)
+        return ingest_secs, retrieve_ms
+    finally:
+        # This function builds an arm and then abandons it, so its handles have to be released
+        # here: a `Mem0System` left open holds exclusive Qdrant locks for the rest of the process
+        # (see `Mem0System.close`). Note the two arms as they run today do NOT collide on the
+        # per-run store — `recall` opens no Qdrant at all and each arm gets its own `run_id` — but
+        # mem0's telemetry store lives on one machine-global path, and a lock left to the garbage
+        # collector can outlive the process's ability to release it. Duck-typed on purpose:
+        # `MemorySystem` is deliberately three members, and `RecallSystem` has nothing to release
+        # — it holds a DSN string, not a connection.
+        close = getattr(system, "close", None)
+        if callable(close):
+            close()
 
 
 def main(argv: list[str] | None = None) -> int:

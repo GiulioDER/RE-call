@@ -417,6 +417,99 @@ def test_main_ingests_each_conversation_before_scoring_its_own_questions(
     assert [json.loads(line) for line in lines] == payload["outcomes"]
 
 
+def test_main_closes_the_system_it_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`main` builds an arm and must release its handles before returning.
+
+    A `Mem0System` holds exclusive Qdrant locks for as long as it lives (see `Mem0System.close`),
+    including one on a machine-global telemetry path that no `run_id` disambiguates. The process
+    exits immediately after this, and the OS drops file locks then regardless — so what this really
+    buys is that the handles go while the interpreter is still healthy, rather than during
+    finalisation, where qdrant-client's own finaliser dies with `ModuleNotFoundError: import of
+    msvcrt halted`.
+
+    Scope, stated so nobody reads more into it: this covers the SUCCESS path only. `main` has no
+    `try/finally`, so an exception on the way to `return 0` still skips the close and relies on
+    process exit. That is the deliberate trade — the alternative is re-indenting ~96 lines — and if
+    it ever stops being acceptable the fix is `with _build_system(...) as system:`, not another
+    close call somewhere else.
+    """
+    from benchmarks.systems import RecallSystem
+
+    closed: list[str] = []
+
+    class _ClosableSystem(RecallSystem):
+        name = "recall"
+
+        def ingest(self, conversation: dict[str, Any]) -> None:
+            return None
+
+        def retrieve(self, question: str) -> str:
+            return "ctx"
+
+        def ablation_preflight(
+            self, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+        ) -> list[dict[str, Any]]:
+            return []
+
+        def close(self) -> None:
+            closed.append("closed")
+
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str,
+        embedder: str = "fastembed", **_extra: object,
+    ) -> MemorySystem:
+        return _ClosableSystem("postgresql://x/y", embedder_name="hashing", k=k)
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    data = _write_fixture(tmp_path)
+    code = main(
+        ["--arm", "recall", "--data", str(data), "--conversations", "2",
+         "--out", str(tmp_path / "results")],
+        now=_NOW,
+    )
+
+    assert code == 0
+    assert closed == ["closed"]  # exactly once, and it did happen
+
+
+def test_main_does_not_require_the_system_to_be_closable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The close is duck-typed, so an arm without one must still run.
+
+    `MemorySystem` is deliberately a three-member protocol and `RecallSystem` has nothing to
+    release — it holds a DSN string, not a connection. A `main` that assumed `close()` existed
+    would break every such arm, so the absence of the attribute is the case worth pinning.
+    """
+    from benchmarks.systems import RecallSystem
+
+    def _no_op_preflight(
+        self: RecallSystem, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+    ) -> list[dict[str, Any]]:
+        return []
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(RecallSystem, "ingest", lambda self, conversation: None)
+    monkeypatch.setattr(RecallSystem, "retrieve", lambda self, question: "ctx")
+    monkeypatch.setattr(RecallSystem, "ablation_preflight", _no_op_preflight)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    assert not hasattr(RecallSystem, "close")  # the precondition this test exists for
+
+    data = _write_fixture(tmp_path)
+    code = main(
+        ["--arm", "recall", "--data", str(data), "--conversations", "2",
+         "--out", str(tmp_path / "results")],
+        now=_NOW,
+    )
+    assert code == 0
+
+
 def test_main_runs_the_ablation_preflight_once_before_the_first_retrieve_and_stamps_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
