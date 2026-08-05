@@ -11,6 +11,216 @@ before that change can go green.
 
 ---
 
+## 2026-08-05, context modes: three modes given a rule each, and two rules that were not enforced
+
+Backlog session 9. Branch cut fresh from `origin/master` at `fa673e5`, in a separate worktree
+(`…/RE-call-ctxmodes`) because the primary clone was mid-flight on someone else's work — see below.
+
+### Session ledger
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | Three deterministic context modes that never alter stored chunk text | done; `chunk_text()` and the stored row are byte-identical under every mode |
+| 2 | One test per rule, eight rules | done, 69 tests across two files |
+| 3 | The load-bearing invariant, per mode, over five corpus shapes | done at the function level and again against real PostgreSQL rows |
+| 4 | Prove every test can fail by mutation | done, **38 of 38 mutations killed, 0 unapplied** |
+| 5 | Decide which mode wins | **deliberately not done.** That is session 10's campaign; running it here would have measured the harness |
+
+`ruff check .` clean on 0.15.22 (inside CI's `>=0.5,<0.16` pin), `mypy` clean across 139 source
+files.
+
+### The primary clone was someone else's, again
+
+`C:/…/eva/work/RE-call` was on `codex/retrieval-profiles-bounded-cost` with **620 uncommitted
+insertions** across eight files, including `recall/profiles.py`, `recall_mcp/service.py` and two
+untracked test files — and `recall/profiles.py` is a file this session's brief also named. Nothing
+of theirs was branched over, committed, stashed or reverted; this session ran in its own worktree
+with its own `.venv` (the clone's venv is an editable install pinned to the clone's absolute path,
+so running from the worktree would have imported THEIR code while reporting mine).
+
+`origin/master` also moved twice mid-session, `fa673e5` to `c02645b` (#202, OIDC subject binding).
+Only `CHANGELOG.md` overlaps.
+
+**This is the third consecutive session to record the same thing.** Check `git worktree list` and
+`git status` in the primary clone before branching there; the answer has been "someone else is in
+it" every time.
+
+Two smaller races, both new, both worth the next session's attention:
+
+* **A subagent overwrote this session's mutation harness.** The architect gate wrote its own
+  one-off mutation script to `…/scratchpad/mutate.py`, the exact path the sweep runner lived at,
+  and the next sweep silently ran the subagent's single mutation instead of thirty-nine. It was
+  caught only because the output carried a `-x` flag and a `RESTORED` line the harness never
+  prints. The scratchpad is shared exactly like the clone is; the runner is now
+  `sweep_runner.py`, and a session that hands agents a working directory should assume they
+  write into it.
+* **The `CHANGELOG.md` conflict resolution committed its own conflict markers, and the guard that
+  should have prevented it is what caused it.** The resolver asserted `"\n=======\n" not in out`;
+  a bare `=======` is legal Markdown and occurs elsewhere in a 100k-line changelog, so the
+  assertion tripped, the script died **before writing anything**, and the `git add` on the next
+  shell line was not chained behind its exit code. `git rebase --continue` then committed the
+  markers. Repaired by rebasing both commits, and verified per commit rather than at the tip.
+  The shape is general: **a resolver's guard must match the marker PREFIXES (`^<<<<<<< `,
+  `^>>>>>>> `) rather than a substring that legal content can contain, and the command that
+  stages its output must be chained behind it.** A check that fails open is worse than no check,
+  because it also stops the work that would have succeeded.
+
+### What the shipped code actually did, measured before anything was changed
+
+The brief listed eight rules. Six were already enforced by `recall/context.py`. Two were not, and
+both were found by executing the shipped code against each rule rather than by reading it:
+
+| Rule | Shipped behaviour |
+|---|---|
+| Title precedence | **defective.** The frontmatter scan compared `key.strip()` and returns on its first hit, so an indented `title:` nested under any other mapping outranked the document's own when it appeared above it |
+| Root-relative paths only | **unenforced.** `/etc/passwd`, `C:\Users\…`, `//server/share` and `../../../etc/shadow` all reached the rendered `source:` field verbatim |
+| Caps 256 / 256 / 512 | held |
+| Neighbour ≤ 200 per side | held |
+| Complete chunk preserved | held |
+| Degradation order | held (verified by a monotonic budget sweep, not by reading the list) |
+| Mode and version recorded | held, in both metadata and the profile identity |
+| Raw text identical across modes | held |
+
+The second one matters beyond tidiness: an absolute path in the embedded text puts the host's
+filesystem layout into stored vectors, and makes one corpus embed differently on two machines.
+
+### What landed
+
+| Area | Change |
+|---|---|
+| Title | the frontmatter key must be top level; the basename fallback reads the whole path |
+| Paths | `root_relative_source` refuses absolute, drive-lettered, UNC and traversing paths, **in every mode including `none`** — the mode is chosen by the profile, so a guard reachable only on the contextual path is one the cheapest caller skips |
+| Caps | `TITLE_MAX_CHARS`, `SOURCE_MAX_CHARS`, `SECTION_MAX_CHARS`, `SECTION_DEGRADED_MAX_CHARS`, `NEIGHBOR_MAX_CHARS` replace literals at call sites |
+| Ladder | `DEGRADATION_ORDER` is now the order the ladder is BUILT from, and `DOCUMENT_DEGRADATION_ORDER` is a derived suffix of it |
+| Neighbours | folded to one line before the 200 is counted |
+| Docs | a "Deterministic context modes" section in `ENTERPRISE_RETRIEVAL.md`, and a `CHANGELOG.md` entry |
+
+### The audit found more than the session did, and four of its findings were mine
+
+The commit went through the tiered CCA pipeline at DEEP (forced: `RUN_STAKES` and `RUN_NUM` both
+fired on the diff). Ten auditors, 33 raw findings. **Deterministic coverage was NONE**: `cca_checks`
+is not installed in this environment and is not on the package registry, so no static backend was
+available and every verdict below rests on LLM adjudication plus my own re-execution. I verified
+each P1 myself by running it rather than by reading the report.
+
+| # | Finding | Verdict |
+|---|---|---|
+| 1 | The basename fallback split the guard's **truncated** return value. At a 264-character path the cut landed on a `/`, the basename was empty and the `title:` field vanished from the passage; at 261 the title was `not`, and two files in one deep directory got identical titles | CONFIRMED by execution, **fixed** |
+| 2 | The guard validated `normalised` and returned `normalised[:256]`, so truncation ran after the checks and could MANUFACTURE a `..`: `"a" * 253 + "/..x"` passed the traversal check and came back ending `/..` | CONFIRMED by execution, **fixed** |
+| 3 | `^[A-Za-z]:` refused `a:b/notes.md`, legal on Linux and macOS and exactly what `relative_to(root).as_posix()` produces; the refusal aborts a run whose earlier batches are already committed | CONFIRMED by execution, **fixed** |
+| 4 | `DEGRADATION_ORDER` read as the ladder's specification and was an independent second literal. Renaming the ladder's labels left all 52 tests green | CONFIRMED by mutation, **fixed** |
+| 5 | `metadata->>'content_hash'` is SQL NULL when the key is absent, so the content-hash arm of the load-bearing test compared NULL with NULL. Stripping `content_hash` from every stored row left the test **named for content hashes** green | CONFIRMED by execution against the database, **fixed** |
+| 6 | An adjacent chunk containing `\nsource: /etc/shadow` put a second `source:` line into this chunk's rendered passage, and the neighbour cap was the only one counting un-normalised characters | CONFIRMED by execution, **fixed** (folded) |
+
+The first three are one root cause: a cap applied after a check, in a function whose docstring
+argued carefully about ordering control-character stripping against the traversal check and then
+mutated its value after validating it. **The guard did not hold on its own output**, and it was
+written in the same session that added the guard.
+
+Findings 4 and 5 are the same class as each other and it is the class this repository keeps
+recording: a check that compares an object with itself. The order constant agreed with the ladder
+because both were transcribed from the same intention, not because anything bound them; the two
+content-hash arms agreed because both were absent.
+
+### The mutation sweep, twice, and what it caught that the first pass did not
+
+Every mutation is applied and restored **by bytes** (`write_text` rewrites LF as CRLF on Windows,
+which left ten files dirty for a previous session), and the harness refuses to report a result for
+a mutation whose search string is not found exactly once.
+
+| Pass | Result |
+|---|---|
+| First, 27 mutations | 17 killed, **8 survivors, 2 never applied** |
+| After fixing the survivors, 38 mutations | **38 killed, 0 unapplied** |
+
+The eight survivors were all mine, and five were the same defect:
+
+* three cap tests asserted `len(field) == TITLE_MAX_CHARS`, so raising the constant raised both
+  sides and the published cap could move while the test stayed green;
+* the neighbour test asserted `previous == chunks[0][-200:]` against a fixture of `"A" * 1000`,
+  whose first 200 characters equal its last 200 — the fixture could not tell a head from a tail;
+* the `index_fingerprint` test passed for the wrong reason: each mode was indexed under its own
+  profile, so the fingerprints differed whether or not the mode was part of them. It now holds one
+  legacy embedder fixed across four policies, which is the only arrangement that attributes the
+  difference to the mode.
+
+And after the audit's fix to finding 4, the ladder test became tautological in a new way: the
+ladder is now emitted FROM `DEGRADATION_ORDER`, so comparing what it emits against that constant
+compares the code with itself. The sweep caught that too. The expected rungs are now written out.
+
+### Decisions a reader should be able to reverse
+
+1. **`root_relative_source` refuses rather than sanitises, and raising aborts the run.** Every
+   caller in the package passes a root-relative path, so the refusal is unreachable in normal use.
+   The alternative — skip and count the file like `vanished_before_read` — was not taken, because
+   a source name the indexer cannot represent is a defect to see rather than a file to lose.
+2. **The rendered `field: value` form is not a parsed format.** The chunk is interpolated verbatim
+   because rule 5 requires it, so a document containing a line that looks like a field renders
+   one. Structural fields and neighbour excerpts cannot forge a line; the chunk can. Folding the
+   chunk would have been the alternative and it contradicts rule 5.
+3. **The source cap truncates the HEAD of a long path**, so two paths sharing 256 characters render
+   an identical `source:` field. Keeping the tail would disambiguate better (the leaf is what
+   identifies a document). Not changed here: it is a behaviour change with no finding behind it.
+4. **`index_fingerprint` deliberately depends on the mode** while nothing else stored does.
+
+### Carried forward, unfixed and recorded rather than lost
+
+**The one worth acting on: a dual-write re-index writes NOTHING to the shadow generation.**
+`Indexer.index_path` reads its skip set from the ACTIVE store alone (`recall/index.py:426`) and
+skips a file whose active fingerprint matches (`:459`), so `pending_shadow_chunks` stays empty and
+`_flush` returns before appending an outbox event. Measured against real PostgreSQL: a second
+dual-write run over the same corpus with the shadow emptied reported
+`IndexStats(files=0, chunks=0, skipped=3)` with `active 15 shadow 0` and `pending []`. Nothing in
+the return value, the logs or `pending_events()` distinguishes "the shadow is up to date" from "the
+shadow received nothing", and `cutover`'s `_require_non_empty_shadow` only catches a TOTALLY empty
+one — a shadow attached midway through a corpus is silently missing every file already indexed.
+**This is pre-existing on master and outside this diff**, which is why it was not fixed here.
+
+Also carried: the test role is a superuser in `docker-compose.yml` and in all three CI database
+jobs, so `FORCE ROW LEVEL SECURITY` is inert and every `set_config('recall.tenant_id', …)` in the
+suite is unfalsifiable there (this session added one negative control on `unprivileged_dsn` that
+does establish it); `recall/index.py` still stores the absolute host path in the `source` column,
+so the CHANGELOG's "filesystem layout in stored vectors" is fixed for the vectors and remains true
+of that column; `structure_chunks`'s `text_start`/`text_end` are code-point offsets into the
+frontmatter-stripped body but are stored beside the file path under names that do not say so; and
+a further 12 P3 findings (naming, positional tuple reads, an unused import idiom) were reported
+and deferred.
+
+### Gates run
+
+| Gate | Result |
+|---|---|
+| `ruff check .` | clean (0.15.22) |
+| `mypy` | clean, 139 source files |
+| `pytest -q`, before the audit fixes | 2412 passed, 36 skipped, 0 failed (12 m 10 s) |
+| Mutation sweep | 38 of 38 killed, 0 unapplied |
+
+The three `tests/test_bench_systems.py` failures the previous session recorded **did not occur
+here**, which supports its diagnosis: they are triggered by `fastembed` being installed locally,
+and this session's venv is a fresh `.[dev]` install without it. That is not a fix, only evidence
+about the cause.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** VPS2 has 12 cores under a permanent load average near 8 from unrelated live production. | External dependency. Do not work around it. | Latency is **PENDING**; promotion blocked on latency grounds. Quality and safety gates still run. | unchanged; this session measured nothing on VPS2 and cites no timing |
+| **No production corpus.** | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
+| **No approved local generator confirmed.** | Open | The generator-neutral evidence path stays unexercised end to end. | unchanged |
+
+### What the next session should start with
+
+1. **The dual-write skip defect above.** It is the only item here that can silently produce a
+   half-populated shadow generation and let a cutover promote it. It has a measured reproduction
+   and no shipped workaround.
+2. Backlog session 3, the outbox drain, is **done** (the 08-05 control-plane entry below). Session
+   4, making the documentation true, is still open and still names the `RECALL_DSN` contradiction.
+3. **Session 10's campaign is now unblocked**: the harness exists, every rule has a test, and every
+   test has been shown able to fail. Which of the three modes retrieves best is still unmeasured,
+   and this session deliberately measured nothing about it.
+
+---
+
 ## 2026-08-05, the missing link: the promotion gate has a producer, and it refuses
 
 Backlog session 10, taken ahead of session 4. Branch cut fresh from `origin/master` at `fa673e5`
