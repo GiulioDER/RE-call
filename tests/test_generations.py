@@ -775,19 +775,34 @@ def test_every_live_state_is_erasable_and_only_failed_is_not(manager) -> None:
     #     still reported the seven inside the ARRAY.
     #   * the non-greedy `(.*?)\]\)` stopped at the first `])`, including one inside a state
     #     literal, silently truncating the member list.
-    # Pinning the rendered text costs the tolerance for a benign tightening that the fragment
+    # Pinning the rendered SHAPE costs the tolerance for a benign tightening that the fragment
     # scrape was written to buy. That tolerance is what admitted all three, and this constraint
     # guards a PERMANENT tombstone, so any edit to it should be re-read against this map rather
     # than waved through. Narrowing was already caught; it is widening that must not slip.
-    expected_definition = (
-        "CHECK ((state = ANY (ARRAY["
-        + ", ".join(f"'{state}'::text" for state in erasable_by_state)
-        + "])))"
+    #
+    # Three assertions, each doing one job, because pinning the definition BYTE for byte did one
+    # job too many: it tied the verdict to this map's insertion order, so merely reordering the
+    # map (or the migration's ARRAY) without changing either one's CONTENTS went red, carrying
+    # the identical message a real widening carries. The only instruction that message offers is
+    # "update the map", which is precisely the reflex that must never be applied to a widening.
+    shape = re.fullmatch(r"CHECK \(\(state = ANY \(ARRAY\[(.*)\]\)\)\)", rows[0][1])
+    assert shape is not None, (
+        "the state constraint is no longer a plain membership test over `state` alone. It may "
+        "have gained a clause, an OR, or another column, and a sub-expression of it is NOT the "
+        f"domain. Re-read it against the map above before changing this.\n  {rows[0][1]}"
     )
-    assert rows[0][1] == expected_definition, (
-        "the schema's state domain and this sweep disagree, or the constraint is no longer a "
-        "plain membership test. Decide the erasability of anything new, update the map above, "
-        f"then re-derive this.\n  schema: {rows[0][1]}\n  sweep:  {expected_definition}"
+    literals = re.findall(r"'((?:[^']|'')*)'::text", shape.group(1))
+    # Proves the parse accounted for every byte of the member list rather than stopping early,
+    # which is how a `]` inside a literal silently truncated it before.
+    assert ", ".join(f"'{literal}'::text" for literal in literals) == shape.group(1), (
+        f"could not read the state list as a plain sequence of quoted literals: {shape.group(1)}"
+    )
+    schema_states = {literal.replace("''", "'") for literal in literals}
+    assert schema_states == set(erasable_by_state), (
+        "the schema's state domain and this sweep disagree "
+        f"(only in schema: {sorted(schema_states - set(erasable_by_state))}; "
+        f"only in sweep: {sorted(set(erasable_by_state) - schema_states)}); decide whether "
+        "each is erasable and update the map above"
     )
 
     for state, should_resolve in erasable_by_state.items():
