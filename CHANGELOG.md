@@ -9,6 +9,126 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
+- **`latency_budget_ms` now means something at request time.** It was declared on every retrieval
+  profile, validated, and read by nothing. It now does two enforced things. It **bounds the
+  admission wait**: a request that cannot acquire a running slot within the budget is shed with
+  `RetrievalOverloaded` *before the query is embedded*, so a refused request costs nothing.
+  Previously `queue_capacity` bounded how many threads could be parked and said nothing about how
+  long any of them waited, so a process could hold a client for minutes behind a slow reranked
+  query with every counter reading healthy. And it **labels an overrun**: a request that finishes
+  over budget still returns its answer and reports `total_ms`, `latency_budget_ms` and
+  `budget_exceeded` on the response.
+
+  The budget is charged **once**: `budget_exceeded` is computed on the work the request did
+  (`total_ms` minus the new `admission_wait` stage), not on end-to-end latency. The budget is
+  already spent as the admission timeout, so charging it again would label a fast retrieval slow
+  because another request was ahead of it. The legacy profile enforces no budget and reports
+  `latency_budget_ms` as `null` rather than the 24-day sentinel used internally.
+
+  Aborting mid-flight was considered and rejected: there is no cancellation point inside a
+  blocking cross-encoder `predict`, so the process would pay the whole cost and discard the answer.
+
+- **The MCP server now sizes its worker pool from the retrieval profile** (`worker_thread_budget`:
+  admission capacity plus eight reserved threads, raised at startup and never lowered). The
+  admission gate is entered inside an `anyio` worker thread, so its capacity is denominated in
+  threads: fast's 8 + 32 is exactly anyio's 40-token default, which would have meant the request
+  that should be shed never reached the gate at all. It would have waited in anyio's limiter,
+  which has no timeout and no counter, so `recall_retrieval_rejected_total` would have read zero
+  while clients waited unboundedly. The reserved headroom also keeps queued searches from
+  starving `recall_index`, `recall_forget`, `recall_stats` and bearer-token validation.
+
+- **`RetrievalOverloaded` is a retryable refusal, not a bare `RuntimeError`.** It carries `reason`
+  (`queue_full` or `budget_exhausted`) and `retry_after_seconds`, matching how
+  `recall_mcp.limits.RateLimited` reports a refusal a client should come back from. Rejections are
+  counted as `recall_retrieval_rejected_total{profile,reason}`.
+
+- **`admission_wait` and `evidence_assembly` stage timings.** The response surface timed five
+  stages and stopped at the trust gate; queueing and the assembly of the client-facing evidence
+  (provenance, validity, verdicts, advice) were unattributed. All eight stages are now on
+  `stage_ms` and observed into `METRICS` as `recall_retrieval_stage_ms{profile,stage}` alongside
+  `recall_retrieval_total_ms{profile}`, so per-stage percentiles exist across a population of
+  queries rather than only per response. `recall_retrieval_total_ms` is observed on failures as
+  well as successes, with `recall_retrieval_failed_total{profile}` counting them: a timer that
+  records only on success hides the slow path worth finding. It excludes requests that were
+  **shed**, which did no work by construction and would otherwise make healthy load shedding
+  look like an outage; those appear only in `recall_retrieval_rejected_total{profile,reason}`.
+
+- **The quality profile's reranker is pinned by artifact digest.** `recall/rerank.py` pins
+  artifact SHA256 `db6ad879…`, and `RECALL_RERANK_SHA256` must now *equal* the pin rather than
+  define it. Verifying a tree against a digest the operator supplied proves only that the tree
+  hashes to its own hash.
+
+  Two limits, both deliberate. The model name and revision recorded beside the digest are
+  **provenance, not a runtime check**: the quality profile loads locally with `local_files_only`,
+  where the Hub revision is unused. And the digest hashes a whole provisioned **tree**, path names
+  included, so it identifies one provisioned directory rather than the model in general; a
+  differently laid out copy of the same weights hashes differently and is refused. No shipped
+  command reproduces that tree, which is a real gap for operators outside the recorded deployment.
+
+### Changed
+- **⚠️ BREAKING for one configuration: a quality process whose `RECALL_RERANK_SHA256` is not the
+  pinned digest now refuses to start.** Previously that digest was passed straight to
+  `verify_artifact`, so a deployment whose value correctly described its *own* reranker tree
+  started and served every request. Such a deployment must now either provision the pinned tree
+  or stay on the legacy `RECALL_RERANK` switch.
+
+  The other new startup refusals are re-timings, not losses: a bad profile name, a contradictory
+  `RECALL_RETRIEVAL_PROFILE` / `RECALL_RERANK` pair, a non-integer or non-positive
+  concurrency/queue override, and a quality profile with no `RECALL_RERANK_PATH` /
+  `RECALL_RERANK_SHA256` all failed every *search* before this release. They now fail at startup,
+  which is the first thing the lifespan does, ahead of any I/O.
+
+  The legacy `RECALL_RERANK` path is **not** covered by the startup check: it resolves to the
+  legacy profile, whose reranker configuration is still discovered when the first search builds it.
+
+- **Fast and quality carry separate concurrency budgets.** Both used to inherit `max_concurrency=4`
+  / `queue_capacity=16`. Legacy still does; fast is now 8 + 32 and quality 2 + 8. Quality's
+  per-request budget is six times fast's, so an equal queue depth made its clients wait roughly six
+  times as long; the numbers hold `queue_capacity × latency_budget_ms` within one order of
+  magnitude (fast 8000 slot-ms, quality 12000).
+
+  ⚠️ **This silently changes capacity for anyone who adopts the new `.env.example`,** in opposite
+  directions per profile: fast 4/16 → 8/32 (double the concurrent load), quality 4/16 → 2/8
+  (admission capacity 20 → 10, so more `queue_full` rejections at the same traffic). Legacy is
+  unchanged. Re-state the values you actually want rather than adopting the blanks.
+
+  ⚠️ **Rollback note.** `RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` are now **commented
+  out** in `.env.example` rather than present-and-blank, because an empty value is read as unset by
+  this change and as a malformed integer by every build before it (`_positive` treated only an
+  absent key as unset). No *released* version reads these keys at all, so published-package users
+  are unaffected; the exposure is a rollback to an earlier build of the unreleased enterprise work,
+  which is what this program's own deployment runs.
+
+- **`max_concurrency + queue_capacity` is now capped at 256** and a larger value refuses at
+  resolution. Sizing the worker pool from the profile removed anyio's 40-token default as an
+  accidental ceiling on process thread count, which would otherwise have made
+  `RECALL_SEARCH_QUEUE` an unvalidated thread-count knob.
+
+  ⚠️ These values are a policy choice, not a measurement. Latency for this program is PENDING for
+  want of an idle reference host.
+
+- **One reranker per worker process, built under a lock, with failures cached.** The shared
+  instance was memoised with `lru_cache`, which is a cache lookup and not a construction lock: on
+  a cold start under load, every concurrent first request missed and loaded its own copy of the
+  cross-encoder. Only successes were cached, so a bad artifact re-ran the full tree SHA256 over a
+  several-hundred-megabyte model directory on every client search. The admission queue itself had
+  the same `lru_cache` defect and now uses the same lock.
+
+- **`RECALL_RERANK_THREADS` is read on the quality profile only.** It was documented as a general
+  inference-thread bound; the legacy `RECALL_RERANK` path never passed it to the cross-encoder.
+  The documentation now says so. Behaviour is unchanged.
+
+### Fixed
+- **`RetrievalAdmission` leaked a queue slot on any failure after the slot was taken.** `__exit__`
+  does not run when `__enter__` raises, so a slot lost this way was lost permanently; after
+  `queue_capacity` of them the process refuses every request forever while reporting itself busy.
+  Latent before this release (nothing could fail between the two acquisitions) and live the moment
+  the budget-bounded wait was added.
+- **An empty `RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` / `RECALL_RERANK_THREADS` is now
+  read as unset rather than as a malformed integer.** A dotenv load puts an empty *string* in the
+  environment rather than omitting the key, so a copied `.env` with these left blank refused
+  startup.
+
 - **Subject-to-tenant binding for OIDC (`RECALL_OIDC_SUBJECT_TENANTS`).** The tenant allowlist
   bounds *which* tenants exist; it never bound *who* may name one, so any subject able to obtain a
   token from the issuer with the right audience reached every provisioned tenant. A bound subject
