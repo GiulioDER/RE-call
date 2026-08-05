@@ -17,6 +17,7 @@ fails it:
 """
 from __future__ import annotations
 
+import ast
 import inspect
 import json
 from datetime import datetime, timedelta, timezone
@@ -145,6 +146,36 @@ def test_a_degraded_result_yields_an_empty_bundle_and_names_the_right_cause() ->
     assert bundle.reason_code == "no_trusted_evidence"
 
 
+def test_a_degraded_result_with_surviving_verdicts_yields_a_POPULATED_bundle() -> None:
+    """The other degraded shape — and the one the test above cannot reach.
+
+    `recall.trust` degrades in two ways and only one blanks the verdicts. With no calibration at
+    all, everything becomes `unverified` and the bundle empties (above). With a CALLER-supplied
+    uncertified `Calibration` under a development policy the verdicts are deliberately left alone,
+    so `ok` survives and the bundle is populated *while the result is degraded*. `recall/cli.py`
+    synthesises exactly that calibration, so the CLI reaches this shape by default.
+
+    This is written from the shape that VIOLATED the claim, because the test above was written
+    from the shape that satisfied it — which is why "a degraded result yields an empty bundle" read
+    as proven for a whole session. The bundle must therefore carry the trust state in band: its
+    emptiness cannot be relied on to signal degradation.
+    """
+    result = _result([_hit("ok-1"), _hit("ok-2")], trust_state="degraded")
+
+    bundle = build_evidence_bundle(result)
+
+    assert bundle.decision == "answer", "this shape is exactly the one that is NOT empty"
+    assert [item.chunk_id for item in bundle.items] == ["ok-1", "ok-2"]
+    assert bundle.trust_state == "degraded", "the bundle lost the only signal that says so"
+
+
+def test_the_bundle_carries_the_trust_state_on_the_abstain_path_too() -> None:
+    bundle = build_evidence_bundle(_result([], abstained=True, trust_state="degraded"))
+
+    assert bundle.items == ()
+    assert bundle.trust_state == "degraded"
+
+
 def test_retrieval_order_is_preserved_and_the_newest_memory_does_not_win() -> None:
     """The trust layer ordered these hits. This is a projection, not a second ranker."""
     result = _result([
@@ -178,10 +209,27 @@ def test_the_bundle_cannot_contain_a_passage_that_was_not_retrieved() -> None:
     no connection and no retriever, and `build_evidence_bundle` takes no argument through which one
     could be supplied. Asserted on the source and the signature, because a behavioural test can
     only show that it did not happen on one input.
+
+    Scanned as IMPORTS via `ast`, not as raw bytes. The first version of this test was a substring
+    search over the source, which made any docstring mentioning `recall.trust` fail the build — and
+    it did: adding a comment explaining how the trust layer degrades turned this red for a reason
+    that has nothing to do with the property. A guard that fires on prose is not guarding the code.
     """
     source = Path(evidence_module.__file__).read_text(encoding="utf-8")
-    for forbidden in ("recall.store", "recall.retriever", "recall.trust", "psycopg", "PgVector"):
-        assert forbidden not in source, f"the evidence module reached for {forbidden}"
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+
+    # An ALLOWLIST, not a denylist. The denylist that stood here first ("recall.store",
+    # "recall.retriever", "recall.trust", "psycopg") was strictly weaker AND unfireable: emptying
+    # it changed nothing, because this assertion already refuses everything not named below. A
+    # denylist also only forbids what someone thought of; this forbids a store reached by any
+    # name at all.
+    assert imported <= {"__future__", "json", "collections.abc", "dataclasses", "datetime",
+                        "typing", "recall.types"}, f"unexpected import: {imported}"
 
     assert set(inspect.signature(build_evidence_bundle).parameters) == {"result", "policy"}
 

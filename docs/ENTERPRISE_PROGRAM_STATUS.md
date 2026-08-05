@@ -11,6 +11,180 @@ before that change can go green.
 
 ---
 
+## 2026-08-05, the evidence boundary: reachable, and the delimiter it could not defend
+
+### Session ledger
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | Export the boundary from the package surface | done, 14 names on `recall.__all__` |
+| 2 | Wire additively into CLI, MCP, LangChain, LlamaIndex; a backward-compatibility test each | done; the CLI was the only surface missing the six identity fields |
+| 3 | Enforce the bundle contract (ok-only, order, no newest-wins, no dedup, no neighbours, abstain bypasses) | done, and **the "degraded yields empty" half of it was FALSE**; see below |
+| 4 | Enforce the prompt boundary | done, and **it was broken**: corpus text could close the delimiter |
+| 5 | Enforce validation | done, plus `normalize_citations` |
+| 6 | Orchestration | done, generator-neutral against a stub |
+| 7 | Frozen adversarial suite + recorded baseline | done, 52 trials, two controls |
+| 8 | Prove every new test can fail | done, **53 of 53 mutations killed**, three only after repair |
+| 9 | CCA audit at DEEP | done, 9 auditors, none died, 62 raw findings. It found more than the mutation sweep did |
+
+This is backlog item 11 (session 5). The standing blocker "no approved local generator confirmed"
+is unchanged and still blocks the end-to-end path; the neutral flow is tested against a stub, which
+is what the brief scoped.
+
+### The audit found four things the mutation sweep could not, and one of them was mine
+
+The mutation sweep proved every test I wrote could fail. It could not tell me a test was **built
+from the shape that passes**, and that is what happened.
+
+**`build_evidence_bundle` claimed a degraded result yields an EMPTY bundle. It does not.**
+`recall/trust.py` degrades in two shapes and only one blanks the verdicts: with no calibration at
+all every verdict becomes `unverified` and the bundle empties, but with a **caller-supplied
+uncertified `Calibration`** under a development policy the verdicts are deliberately left alone, so
+`ok` survives and the bundle is populated **while the result is degraded**. My contract test
+constructed only `unverified` hits, so it could never fail on the violating branch, and the claim
+read as proven for the whole session. Three auditors found it independently; one drove the real
+`trusted_search` end to end and observed a corpus sentinel inside the rendered generator prompt.
+
+The CLI reaches that branch **by default**: `_cli_trust` synthesises exactly such a calibration in
+development mode. So `recall search --evidence` was printing citable evidence from an uncertified
+retrieval, and `EvidenceBundle` carried no field that could say so.
+
+Fixed by making the signal representable rather than by narrowing the prose: `trust_state` and
+`failure_code` are now on the bundle, populated on both return paths, so the three non-MCP surfaces
+inherit them; the advice names the degradation; `_print_result` prints a `DEGRADED` flag. The new
+test is written **from the violating shape**, which is the part worth carrying forward.
+
+**A guard of mine could not fire, and a second one fired on prose.** The no-neighbour-retrieval test
+scanned the module's raw source for `recall.trust`. Adding a comment that *explains* how the trust
+layer degrades turned it red - a guard that fails on a docstring is not guarding the code. It now
+walks the AST and asserts on imports.
+
+**The injection rate was named by the wrong denominator.** 39 trials, but 13 of them (the whole
+`metadata` carrier) cannot inject by construction: an evidence item carries no corpus metadata
+dict, so that payload never reaches a rendered message. The suite's own docstring and its own test
+both said the arm was vacuous; the knowledge never reached the division. It put the **previous**
+renderer at 8/39 = 0.205 when its rate over payload-carrying trials was 8/26 = 0.308 -
+understating by a third the defect this session fixed. Confirmed with a `hypothesis` falsifying
+example whose shrink target was the suite exactly as shipped. The rate now divides by
+`carrying_trials`, and both numbers are recorded so the gap stays visible.
+
+**The suite did not exercise `chunk_id`**, the field a citation actually resolves to, even though a
+chunk id is minted from the file name. No live vulnerability - `_encode` escapes the whole encoded
+JSON, so the field was covered - but the baseline's SCOPE was narrower than the carrier it named,
+which a digest-pinned artifact makes expensive to widen later. Added as a fourth carrier.
+
+### The defect that justified the session
+
+`render_evidence_prompt` wrapped a `json.dumps` payload in `<evidence_data>` ... `</evidence_data>`.
+`json.dumps` escapes quotes, backslashes and control characters. It does **not** escape `<` or `>`,
+and the delimiter is built from exactly those two characters. A memory whose text, file name or
+chunk id contained the closing tag ended the region early, and everything after it arrived as free
+prose in the model's own instruction channel. **Delimiting without escaping the delimiter is not
+delimiting.**
+
+Reproduced before fixing (two closing tags in one rendered message), then fixed by escaping both
+brackets to their `\uXXXX` form, which is still valid JSON and parses back byte-identically. An
+auditor recorded the non-obvious reason the order is right: escaping **after** `json.dumps` is safe
+because an angle bracket can then only occur inside a string literal, so the substitution cannot
+corrupt the structure; escaping first would have altered the evidence.
+
+The invariant asserted is **no angle bracket inside the region**, not "the closing tag is absent".
+The weaker form is what the first mutation sweep exposed: escaping only `<` already prevents the
+closing tag from appearing, so dropping the `>` escape changed nothing any test could see. A
+boundary defined by one delimiter's exact spelling is inert against a variant spelling.
+
+### What was measured
+
+| Gate | Result |
+|---|---|
+| `ruff check .` | clean |
+| `mypy` | clean, 140 source files |
+| Mutation sweep | **53 of 53 killed** (3 survived the first pass; each was a real gap, closed and re-killed) |
+| Injection baseline | **0 escapes over 52 trials**; positive control 12, negative control 0 escapes AND 0 preservation |
+| CCA audit | DEEP, 9 auditors, none died, 62 raw findings; `cca_checks` installed, so definedness / nullability / taint / type / clock_leak had a deterministic backend and two numeric findings carry `hypothesis` artifacts |
+| Second mutation sweep, over the AUDIT FIXES | **17 of 17 killed**; 4 survived the first pass, and the rate one survived TWICE |
+| Full suite | **2627 passed, 3 failed, 13 skipped**; the 3 are `test_bench_systems.py`, failing identically on clean `origin/master` under the same DSN |
+
+**A second sweep, over the audit fixes, was needed and found four more.** A fix whose test was
+never shown to fail is a hypothesis. The one worth naming survived TWICE: with the boundary
+holding, the live injection numerator is zero, so 0/39 and 0/52 are the same number and **no
+assertion on the live rate can discriminate its denominator**. The first repair recomputed the rate
+inside the test, which pinned the artifact rather than the generator. The second drove
+`build_baseline()` and still could not tell the two divisors apart. It is killed now because both
+rates were routed through **one** `injection_rate()` helper, so the positive control — whose
+numerator is not zero — is what discriminates it. A guard on a quantity that is zero by design has
+to be anchored to one that is not.
+
+Two others in that sweep were guards of mine that could not fire: the CLI's `DEGRADED` flag had no
+test at all, and the import denylist was strictly subsumed by the allowlist beside it, so emptying
+it changed nothing. The denylist is gone; an allowlist forbids a store reached by any name.
+
+**The three mutation survivors are the part to carry forward**, because each was a test that could
+not discriminate: escaping only `<` was indistinguishable from escaping both; the
+abstain-consistency error was carried by a second, redundant error, so deleting the first changed
+nothing; and `payload_preserved` read 13/13 on both live arms, so a version stuck at `True` looked
+identical to a working one. The last needed a **negative control** - a renderer that ships no
+evidence at all, which must score a perfect escape rate and zero preservation.
+
+### Decisions a reader should be able to reverse
+
+1. **A degraded bundle may be non-empty, and is served with an in-band warning** rather than
+   refused. Strict mode (the production default) never reaches it, the abstention benchmarks
+   deliberately measure that branch, and refusing would make the CLI unable to demonstrate the
+   trust layer at all. Revisit if a generator path ever runs unattended.
+2. **`normalize_citations` collapses duplicates instead of rejecting the answer.** Only ever
+   subtractive, so it cannot mint the identifier that would then satisfy the citation check.
+3. **A generator declaring `insufficient_evidence` over a populated bundle is ACCEPTED.** Retrieved
+   is not the same as answers-the-question, and erroring would push a generator toward answering.
+4. **The bundle is a PREFIX of retrieval order under a token budget**, so one oversized passage at
+   rank 1 ends the selection rather than being skipped. First-fit would reorder by size, which is
+   the ranking this function exists not to do.
+5. **`recall_evidence` returns the prompt rather than consuming it.** No generator is chosen or
+   shipped; the client is the generator.
+
+### What the audit surfaced and this session did NOT fix
+
+1. **`render_evidence_prompt` is `asdict`-dominated** - measured 12.4 to 14.6x slower than an
+   explicit dict, 68 to 80% of the render, now on a per-request path. The fix trades that for a
+   dict literal that no longer tracks the dataclass; it needs a pinning test, and that is its own
+   change.
+2. **`EvidenceResult` ships every evidence byte twice** (escaped in `user_message`, raw in
+   `items[].text`), measured 1.80 to 1.92x the bytes of `recall_search`. Dropping `text` would save
+   32 to 36%, but it is a design decision about what `items[]` is for.
+3. **The budget loop is quadratic** - 1,338,640 characters fed to the tokenizer at `max_items=50`
+   for a 52,300 byte payload. Inert today: no shipped caller sets `max_tokens`. Reachable from the
+   library.
+4. **No memoisation between the two retrieval tools.** A consult-then-answer pair pays retrieval
+   twice and takes a second slot from quality's pool of two.
+5. **Assembly exceptions are invisible to the retrieval metrics** on both tools, not only the new
+   one.
+6. **Two auditors disagreed on whether the new artifact needs a `results/ARTIFACTS.md` row.** I
+   followed the one that quoted the file's own rule ("if the run is meant to replace a published
+   table") and cited `CLAIMS_BASELINE.json` as exact precedent: this is a ratchet, not a
+   measurement, and it replaces no table. Recorded because the other auditor's point - that the
+   artifact sits outside every provenance guard - is also true.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** | External dependency. Do not work around it. | Latency **PENDING**; promotion blocked on latency grounds. | unchanged; no timing here is cited for any promotion decision |
+| **No production corpus.** | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
+| **No approved local generator confirmed.** | Open | The generator-neutral path stays unexercised end to end. | unchanged. The boundary is now reachable and tested against a stub, which is as far as this blocker allows |
+
+### What the next session should start with
+
+1. **The four performance items above**, in that order. (1) and (2) are measured, bounded and
+   uncontroversial; (3) is latent until a caller sets a budget.
+2. **Decide whether `items[].text` should exist**, since it settles (2).
+3. `recall_evidence` has **no test of its authorization scope or its rate-limit debit** - the
+   registration test greps the server's source text, and every behavioural test calls the service
+   function directly, bypassing `_require`. A future edit dropping `_require(SCOPE_READ)` would
+   leave the suite green.
+4. The remaining gap-matrix backlog; item 11 is now closed.
+
+---
+
 ## 2026-08-05, retrieval profiles: a budget that does something, bounded cost, a complete result surface
 
 ### Session ledger
@@ -1179,7 +1353,7 @@ contradictions. The matrix says so per row.
 | Profile registry is a dict literal in `service.py::make_embedder`, partly duplicated in `context.py` | **confirmed**: `recall_mcp/service.py:113-120` and `recall/context.py:37-41`, two independent literals, already differing in extent |
 | `cache_key` omits `context_version` and `artifact_digest` | **confirmed**: `recall/cache.py:26`; both are independently settable at `recall/embeddings.py:334-339` |
 | `latency_budget_ms` is enforced nowhere; only the promotion gate reads it | **sharpened**: `git grep` returns three hits, all inside `recall/profiles.py`. The gate's budget is a separate caller-supplied field (`recall/promotion.py:33`). **Nothing** reads the profile's value |
-| `recall/evidence.py` is complete but unexported and unreachable | **confirmed**: absent from `recall/__init__.py`; referenced only by `tests/test_evidence.py` and one prose line |
+| `recall/evidence.py` is complete but unexported and unreachable | **confirmed**: absent from `recall/__init__.py`; referenced only by `tests/test_evidence.py` and one prose line → **RESOLVED 2026-08-05** (`codex/evidence-boundary-reachable`) |
 | `recall/promotion.py` has no producer outside its test | **confirmed**: `tests/test_promotion.py:8-13` is the only construction site |
 | `FAST_PROFILE` and `QUALITY_PROFILE` share `candidate_k=20` | **refuted as a defect**: `docs/ENTERPRISE_RETRIEVAL.md:57-59` specifies "the same candidate pool" deliberately, so cost differences are attributable to the reranker alone |
 | `readiness.py`, `validate_generation_parity`, `replay_pending`, `enterprise_cli.py` have no tests | **confirmed, one narrowed**: `tenant_readiness` / `process_readiness` (later session) *are* covered by `tests/test_tenant_readiness.py`; `check_enterprise_readiness` is not. The other three have no test reference at all |

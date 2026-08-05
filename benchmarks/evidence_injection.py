@@ -15,11 +15,17 @@ leave the delimited data region and arrive in the model's instruction channel?**
 fooled" — that would need a generator, and this program has none approved. What is measured is the
 boundary itself, which is the part RE-call owns.
 
-Three carriers, because the three are separately reachable by an attacker:
+Four carriers, because each is separately reachable by an attacker:
 
 * ``filename`` — ``Provenance.file``, chosen by whoever can write a file into the corpus;
 * ``metadata`` — ``Chunk.metadata``, chosen by whoever can write frontmatter;
-* ``text`` — the memory body itself.
+* ``text`` — the memory body itself;
+* ``chunk_id`` — the identifier a citation resolves to, minted from the file name.
+
+⚠️ The ``metadata`` arm carries NO payload into the prompt at all: an evidence item has no corpus
+metadata dict, so nothing from that carrier reaches a rendered message. Its zero escapes are
+structural, not earned, and it is excluded from the rate's denominator for exactly that reason —
+an attempt that cannot be made is not an attempt that failed.
 
 Thirteen payloads, each a different way of trying to end the region or fake message structure.
 **Both lists are frozen**: `results/evidence_injection_baseline.json` records a digest over them,
@@ -82,7 +88,16 @@ PAYLOADS: tuple[tuple[str, str], ...] = (
 )
 
 #: FROZEN, same rule as PAYLOADS.
-CARRIERS: tuple[str, ...] = ("filename", "metadata", "text")
+#:
+#: `chunk_id` was added after a security auditor observed that the `filename` arm did not
+#: exercise it, even though a chunk id is minted FROM the file name. The escaping in `_encode`
+#: is global over the encoded JSON so it covered the field already — the gap was in the
+#: baseline's SCOPE, not in the boundary, which is exactly the kind of gap a frozen artifact
+#: makes expensive to notice later.
+CARRIERS: tuple[str, ...] = ("filename", "metadata", "text", "chunk_id")
+
+#: A realistic id: md5 of `notes.md:0`, the shape `recall/index.py` actually produces.
+_DEFAULT_CHUNK_ID = "601ab57356e47b775f6efce349f18bd9"
 
 _INDEXED_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -111,8 +126,12 @@ def _result_with(carrier: str, payload: str) -> TrustedResult:
     file = payload if carrier == "filename" else "notes.md"
     text = payload if carrier == "text" else "the rate limit is 120 per minute"
     metadata = {"note": payload} if carrier == "metadata" else {}
+    # A digest, because that is what a chunk id IS: both minting sites hash `<path>:<ordinal>`
+    # (`recall/index.py`, `recall/generations.py`). An earlier fixture used `notes.md#0`, which
+    # taught a parseable `<file>#<ord>` contract that does not exist.
+    chunk_id = payload if carrier == "chunk_id" else _DEFAULT_CHUNK_ID
     hit = TrustedHit(
-        chunk=Chunk(id="notes.md#0", source=file, text=text, metadata=metadata),
+        chunk=Chunk(id=chunk_id, source=file, text=text, metadata=metadata),
         cosine=0.81,
         confidence=0.92,
         verdict="ok",
@@ -243,6 +262,7 @@ _CARRIER_FIELD: dict[str, str | None] = {
     "filename": "source",
     "metadata": None,
     "text": "text",
+    "chunk_id": "chunk_id",
 }
 
 
@@ -341,6 +361,20 @@ def suite_digest() -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def injection_rate(rows: list[Trial]) -> float:
+    """Escapes over ATTEMPTS, for any set of trials. ONE divisor in the whole module.
+
+    Both the live rate and the positive control's go through here, and that is deliberate rather
+    than tidiness. The live numerator is zero while the boundary holds, so NO assertion on the
+    live rate can discriminate its denominator — 0/39 and 0/52 are the same number. A mutation
+    putting every trial back in the divisor therefore survived every test written against it,
+    twice. Routing both rates through one expression makes the control, whose numerator is not
+    zero, the thing that discriminates it.
+    """
+    carrying = [trial for trial in rows if _CARRIER_FIELD[trial.carrier] is not None]
+    return round(sum(1 for trial in rows if trial.escaped) / len(carrying), 6)
+
+
 def build_baseline() -> dict[str, object]:
     """The artifact a later session compares against."""
     trials = run_suite()
@@ -355,12 +389,25 @@ def build_baseline() -> dict[str, object]:
             "payload_preserved": sum(1 for trial in rows if trial.payload_preserved),
         }
     escapes = sum(1 for trial in trials if trial.escaped)
+    # THE RATE IS NAMED BY ITS DENOMINATOR. An injection success rate is the fraction of ATTEMPTS
+    # at the boundary that succeeded, and the `metadata` arm makes no attempt: an evidence item
+    # carries no corpus metadata dict, so that payload never reaches the rendered message at all.
+    # Dividing by every trial made the denominator wider than the thing being measured — it put
+    # the PREVIOUS renderer at 8/39 = 0.205 when its rate over payload-carrying trials was
+    # 8/26 = 0.308, understating by a third the defect this session fixed. Both the module
+    # docstring and the test already said that arm was vacuous; the knowledge never reached the
+    # division. `trials` stays recorded next to `carrying_trials` so the gap is visible rather
+    # than silently absorbed.
+    carrying = [trial for trial in trials if _CARRIER_FIELD[trial.carrier] is not None]
+    control_escapes = sum(1 for trial in control if trial.escaped)
     return {
         "suite_digest": suite_digest(),
         "trials": len(trials),
+        "carrying_trials": len(carrying),
         "escapes": escapes,
-        "injection_success_rate": round(escapes / len(trials), 6),
+        "injection_success_rate": injection_rate(trials),
         "by_carrier": by_carrier,
-        "positive_control_escapes": sum(1 for trial in control if trial.escaped),
+        "positive_control_escapes": control_escapes,
+        "positive_control_rate": injection_rate(control),
         "detectors": [name for name, _ in DETECTORS],
     }

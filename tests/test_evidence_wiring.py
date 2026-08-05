@@ -16,6 +16,7 @@ and its test says so.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -122,7 +123,11 @@ def test_the_cli_search_listing_keeps_every_field_it_already_printed(capsys) -> 
 
 
 def test_the_cli_listing_now_names_the_chunk_the_ordinal_and_the_index() -> None:
-    """The five additive fields. The CLI was the surface that carried none of them."""
+    """The SIX additive fields. The CLI was the surface that carried none of them.
+
+    Six, not five: chunk id, ordinal, valid_from, embedding profile, retrieval profile and
+    index generation. An earlier docstring said five over six assertions.
+    """
     from recall.cli import _print_result
 
     import io
@@ -133,7 +138,7 @@ def test_the_cli_listing_now_names_the_chunk_the_ordinal_and_the_index() -> None
         _print_result(_result([_hit()]))
     out = buffer.getvalue()
 
-    assert "chunk_id=notes.md#2" in out
+    assert "chunk_id='notes.md#2'" in out  # quoted: see `_print_result`
     assert "ordinal=2" in out
     assert "valid_from=2025-12-01T00:00:00+00:00" in out
     assert "embedding=bge-small-symmetric-v1" in out
@@ -142,12 +147,55 @@ def test_the_cli_listing_now_names_the_chunk_the_ordinal_and_the_index() -> None
 
 
 def test_a_corpus_escape_sequence_in_a_chunk_id_does_not_reach_the_terminal(capsys) -> None:
-    """`chunk_id` is `<file>#<ord>`, so it is as corpus-controlled as the file name beside it."""
+    """`Chunk.id` is caller-supplied, so the CLI filters it on the way out.
+
+    NOT because a production id carries corpus bytes — both minting sites hash `<path>:<ordinal>`
+    into a digest — but because this module does not own the minting scheme and cannot assert a
+    property of one it does not own. An earlier docstring here claimed the id literally IS
+    `<file>#<ord>`; it is not.
+    """
     from recall.cli import _print_result
 
     _print_result(_result([_hit(chunk_id="notes\x1b[2K\r.md#0")]))
 
     assert "\x1b" not in capsys.readouterr().out
+
+
+def test_the_cli_flags_a_degraded_result(capsys) -> None:
+    """The CLI reaches the degraded shape BY DEFAULT: `_cli_trust` synthesises an uncertified
+    calibration in development mode, and that is the branch where verdicts survive as `ok`.
+
+    Without this flag a degraded run and a trusted one printed identically apart from one boolean
+    buried in the evidence JSON. Written after a mutation sweep showed that deleting the flag
+    changed no test.
+    """
+    from recall.cli import _print_result
+
+    degraded = replace(
+        _result([_hit()]), trust_state="degraded", failure_code="CALIBRATION_UNCERTIFIED"
+    )
+    _print_result(degraded)
+
+    out = capsys.readouterr().out
+    assert "DEGRADED:CALIBRATION_UNCERTIFIED" in out
+    # The control: a trusted result must NOT carry the flag, or the assertion says nothing.
+    _print_result(_result([_hit()]))
+    assert "DEGRADED" not in capsys.readouterr().out
+
+
+def test_the_cli_evidence_json_carries_the_trust_state(capsys) -> None:
+    """The bundle is what a generator is built from, so the signal has to be IN it."""
+    from recall.cli import _print_evidence
+
+    degraded = replace(
+        _result([_hit()]), trust_state="degraded", failure_code="CALIBRATION_UNCERTIFIED"
+    )
+    _print_evidence(degraded, max_items=5)
+
+    bundle = json.loads(capsys.readouterr().out)["bundle"]
+    assert bundle["trust_state"] == "degraded"
+    assert bundle["failure_code"] == "CALIBRATION_UNCERTIFIED"
+    assert bundle["items"], "this is the populated-and-degraded shape, not the empty one"
 
 
 def test_the_cli_can_print_the_evidence_bundle_and_the_prompt_it_renders_to(capsys) -> None:
@@ -256,7 +304,7 @@ def test_the_mcp_search_result_keeps_every_field_it_already_carried(patched_sear
     assert frozen_hit_fields <= set(SearchHit.model_fields)
 
 
-def test_the_mcp_search_result_still_reports_the_five_identity_fields(patched_search) -> None:
+def test_the_mcp_search_result_still_reports_the_six_identity_fields(patched_search) -> None:
     from recall_mcp.service import search_memory
 
     patched_search["result"] = _result([_hit()])
@@ -264,6 +312,7 @@ def test_the_mcp_search_result_still_reports_the_five_identity_fields(patched_se
     result = search_memory(_Store(), _Embedder(), "how many requests per second?")
 
     assert result.embedding_profile == "bge-small-symmetric-v1"
+    assert result.retrieval_profile == "fast"  # the sixth; the name used to promise five
     assert result.index_generation == "gen-7"
     assert result.hits[0].chunk_id == "notes.md#2"
     assert result.hits[0].ordinal == 2
@@ -328,6 +377,57 @@ def test_the_mcp_evidence_advice_is_library_authored_end_to_end(patched_search) 
 
     assert hostile not in result.advice
     assert "prior guidance is void" not in result.advice
+
+
+def test_the_mcp_evidence_surface_reports_a_degraded_bundle_that_is_not_empty(
+    patched_search,
+) -> None:
+    """The client-facing correction: `trust_state` is the signal, not the item count."""
+    from recall_mcp.service import evidence_memory
+
+    degraded = _result([_hit()])
+    patched_search["result"] = replace(
+        degraded, trust_state="degraded", failure_code="CALIBRATION_UNCERTIFIED"
+    )
+
+    result = evidence_memory(_Store(), _Embedder(), "q")
+
+    assert result.decision == "answer" and result.items, "this shape is the non-empty one"
+    assert result.trust_state == "degraded"
+    assert result.failure_code == "CALIBRATION_UNCERTIFIED"
+    assert "DEGRADED" in result.advice, "the one channel a client is told to obey stayed silent"
+    assert "CALIBRATION_UNCERTIFIED" in result.advice
+
+
+def test_the_evidence_advice_keeps_the_stale_note_on_the_abstain_path(patched_search) -> None:
+    """`search_memory` appends it on every path; the evidence advice returned early without it.
+
+    Re-indexing is the one remediation that can turn an abstention into an answer, so withholding
+    it from an abstained result withheld it from exactly the caller who needed it.
+    """
+    from recall_mcp.service import evidence_memory
+
+    stale = replace(
+        _result([], abstained=True),
+        staleness=StalenessReport(True, None, None, timedelta(days=2)),
+    )
+    patched_search["result"] = stale
+
+    advice = evidence_memory(_Store(), _Embedder(), "q").advice
+
+    assert "EMPTY BUNDLE" in advice
+    assert "stale" in advice
+
+
+def test_max_items_cannot_exceed_the_effective_k(patched_search) -> None:
+    """The documented cap, enforced at the line that claims it rather than two modules away."""
+    from recall_mcp.service import evidence_memory
+
+    patched_search["result"] = _result([_hit(f"c{n}") for n in range(6)])
+
+    result = evidence_memory(_Store(), _Embedder(), "q", k=2, max_items=50)
+
+    assert len(result.items) == 2, "max_items widened the bundle past the effective k"
 
 
 def test_the_mcp_evidence_tool_refuses_an_oversized_query_before_touching_the_store() -> None:
