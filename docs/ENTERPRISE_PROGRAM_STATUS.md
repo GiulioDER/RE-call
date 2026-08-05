@@ -22,7 +22,8 @@ before that change can go green.
 | 3 | Resource bounds: one reranker per worker, thread limits, bounded queues, rejection **before** embedding, separate fast/quality concurrency | done; the rejection ordering was already right and is now proven, the rest was not |
 | 4 | Result surface: profile, generation, pool size, rerank flag, and all seven stage timings | done, `evidence_assembly` was the missing bracket |
 | 5 | Safety: dense cosine preserved, no query or corpus text in logs | done, with a positive control on the detector |
-| 6 | Prove every new test can fail | done, **36 of 36 mutations killed** |
+| 6 | Prove every new test can fail | done, **48 of 48 mutations killed** |
+| 7 | CCA audit at DEEP, and act on it | done; **it invalidated the first version of item 3** and is reported first, below |
 
 This is backlog session 9 (items 25 to 28) plus the parts of areas 4, 5 and 6 the gap matrix marked
 untested. Backlog item 29 (the reranker's `local_files_only` / `artifact_sha256` offline path and
@@ -31,6 +32,87 @@ this session added the pin rather than the loader test. **Session 3, the outbox 
 first in the backlog and is still untouched.**
 
 `origin/master` did not move during this session; it was `98f2a85` at both ends.
+
+### The audit found the guard could not fire, and that is the headline
+
+The work above went through the tiered CCA pipeline at DEEP (forced: the diff trips the numeric
+path). Ten auditors, 46 raw findings. **The most important one invalidates the first version of
+this session's central claim**, so it is recorded before the claim rather than after it.
+
+**`queue_full` could never fire through the server, and the budget did not bound the client's
+wait.** Every MCP tool body runs inside `anyio.to_thread.run_sync`, so a request parked in
+`RetrievalAdmission` is holding a worker thread. anyio's default limiter is **40** tokens. Fast's
+`8 + 32` is also **40**. The 41st concurrent search therefore never reached `__enter__` at all: it
+waited in anyio's limiter, which has no timeout, no budget and no counter. A saturated process
+would have queued unboundedly while `recall_retrieval_rejected_total` read zero, which is exactly
+the scenario the budget was written to prevent.
+
+Three independent auditors found it and each measured `total_tokens == 40` rather than asserting
+it; I re-measured before acting. **A guard that reads as protection and cannot fire** is this
+project's standing lesson, and the first version of this session's work was an instance of it. The
+existing test proved the mechanism on a hand-built 1+1 profile and never through the server:
+**a positive control validates the MECHANISM, not the SCOPE.**
+
+Fixed by sizing the pool from the profile (`worker_thread_budget` = admission capacity plus eight
+reserved threads, raised at startup, never lowered), with the invariant asserted for every profile
+and the application of it tested separately, because asserting an invariant is not enforcing it.
+
+### What the rest of the audit changed
+
+| Finding | Verdict | Outcome |
+|---|---|---|
+| Admission capacity equals the anyio worker pool, so `queue_full` is unreachable | CONFIRMED, measured | fixed, above |
+| CHANGELOG mis-stated the one genuinely new startup refusal | CONFIRMED | fixed; see below |
+| `_validate_quality_reranker_config` compared a normalised digest and returned the raw one | CONFIRMED, measured | fixed, normalise once and return that |
+| Budget charged twice (admission timeout AND end-to-end deadline) | CONFIRMED | fixed, `budget_exceeded` now on served work; `admission_wait` is a stage |
+| `QUALITY_PROFILE != resolve_retrieval_profile("quality")`, so they minted two admission queues | CONFIRMED, measured | fixed both ways: constant matches its resolver, and the queue is keyed on `queue_identity` |
+| `_admission` still on `lru_cache`, the defect this diff fixed for the reranker | CONFIRMED | fixed, same lock |
+| A failed reranker construction was retried on every request, re-hashing the model tree | CONFIRMED | fixed, failures are cached |
+| `recall_retrieval_total_ms` was success-only | CONFIRMED | fixed, observed on every exit plus `recall_retrieval_failed_total` |
+| Legacy's 24-day sentinel shipped to clients as `latency_budget_ms` | CONFIRMED | fixed, `null` when no budget is enforced |
+| Running-slot leak in the one-bytecode window between acquire and its store | CONFIRMED | fixed, ownership flag rather than control flow |
+| `RECALL_RERANK_THREADS` documented as general; only read on quality | CONFIRMED | doc fixed, behaviour unchanged |
+| Docs claimed model+revision are pinned; only the digest is enforced | CONFIRMED | doc fixed, and the tree-vs-model limit stated |
+| `.env.example` blank keys break a rollback to the previous parser | CONFIRMED | keys commented out; rollback note in the CHANGELOG |
+| Two `### Added` blocks in `[Unreleased]` | **FALSE POSITIVE** | `HEAD~1` already had six such groups; it is the file's per-session convention, not something this diff introduced |
+| Per-request metric overhead (~87 us, 0.035% of the fast budget) | CONFIRMED, measured | no change; the auditor's own verdict was "not material" |
+
+**The CHANGELOG correction is the one worth naming.** I had written that a contradictory pair, a
+missing reranker path, or a non-pinned digest "used to produce a server that came up clean and
+failed on its first client request". That is true of four of the five newly refusing
+configurations, and **false of the fifth**: before this change the operator's digest was passed
+straight to `verify_artifact`, so a quality deployment whose digest correctly described its *own*
+reranker tree started **and served every request**. It is now a breaking change for that
+deployment, and the CHANGELOG says so.
+
+### What the audit surfaced and this session did NOT fix
+
+Recorded rather than acted on, with the reason:
+
+1. **No tenant dimension in admission.** One tenant can fill the queue, and the new shedding turns
+   that from queueing into active rejection for every other tenant. The rate limiter bounds call
+   RATE, not concurrency. This is a design decision about fairness, beyond the scope given.
+2. **The reranker pin is a tree digest of one provisioned directory**, not a portable model
+   identity, and no shipped command reproduces that tree. Documented as a limit; deciding between
+   "pin the tree" and "pin a portable identity" is a decision, not a bug fix.
+3. **`total_ms` includes the queue wait, so it is a weak cross-tenant load signal.** Low severity
+   and the field is genuinely useful; noted.
+4. **`RetrievalOverloaded`'s message discloses the process's admission parameters** to a client.
+5. **`retry_after_seconds` is a backoff hint derived from the budget, not a computed time to
+   success** the way `RateLimited`'s is. Honest documentation was chosen over inventing a drain
+   estimate this program cannot measure.
+6. **The legacy `RECALL_RERANK` path is still not validated at startup.** The claim is now scoped
+   to the profile path rather than the claim being widened.
+7. **`_RERANKERS` is keyed on the profile name, not the full reranker identity.** Unreachable with
+   a static process environment, which is the documented deployment model.
+
+⚠️ **Two auditors died mid-run on API errors** (`code-auditor`, `env-validator`), so general code
+quality and the full `.env.example` round trip were **not** covered. A skipped gate and a passing
+gate must not read the same, so: those two dimensions are unaudited for this change.
+
+⚠️ **Deterministic coverage for this run was NONE.** `cca_checks` is not installed in this venv, so
+no static backend was available and every verdict above rests on LLM adjudication plus whatever I
+re-executed myself. Everything marked "measured" is a command I ran.
 
 ### What `latency_budget_ms` means now
 
@@ -48,6 +130,13 @@ bounded how many threads could be parked and said nothing about how long any of 
 `total_ms`, `latency_budget_ms` and `budget_exceeded`, plus
 `recall_retrieval_budget_exceeded_total{profile}` and a warning carrying numbers only.
 
+**The budget is charged once.** `budget_exceeded` is computed on the work the request did
+(`total_ms` minus the `admission_wait` stage), not on end-to-end latency. Since the budget is
+already spent as the admission timeout, charging it again would label a fast retrieval slow
+because another request was ahead of it, and would saturate the counter under any queueing.
+The legacy profile enforces no budget and reports `latency_budget_ms` as `null` rather than the
+24-day sentinel used internally.
+
 **A mid-flight abort was rejected, deliberately.** There is no cancellation point inside a blocking
 cross-encoder `predict`. Aborting would pay the whole cost and then discard the answer, which turns
 a latency regression into an availability incident. Shedding happens at the door, where it is free.
@@ -59,11 +148,15 @@ resolved.
 ### A latent bug the new timeout would have made live
 
 `RetrievalAdmission.__enter__` acquired the queue slot and then the running slot. `__exit__` does
-not run when `__enter__` raises, so any failure between the two lost that queue slot permanently,
-and after `queue_capacity` of them the process refuses every request forever while reporting itself
-merely busy. It was unreachable before (nothing could fail between the two acquisitions) and would
-have become reachable the moment the timeout was added. The release is now explicit on every
-failure path, including `BaseException`.
+not run when `__enter__` raises, so any failure between the two lost that queue slot permanently.
+Once every one of the `max_concurrency + queue_capacity` permits has leaked the process refuses
+every request forever while reporting itself merely busy; partial leakage degrades proportionally.
+(An earlier draft of this entry said `queue_capacity` leaks were enough. The audit caught it: after
+32 leaks a fast process still serves 8 concurrent requests, with no queue depth left.) It was
+unreachable before (nothing could fail between the two acquisitions) and would have become
+reachable the moment the timeout was added. The release is now explicit on every failure path,
+including `BaseException`, and the running permit is released too when it was acquired but not yet
+recorded.
 
 The test that pins it discriminates on the *reason* of a second rejection, not on a count: a leaked
 slot makes the next attempt `queue_full` without waiting, and only a returned slot lets it reach the
@@ -71,10 +164,15 @@ budget wait again.
 
 ### What else landed
 
-**Separate concurrency budgets.** Both profiles inherited `max_concurrency=4` / `queue_capacity=16`.
-Fast is now 8 + 32 and quality 2 + 8. Quality's per-request budget is six times fast's, so an equal
-concurrency budget parks roughly six times the CPU-seconds behind the same queue depth; the new
-values hold `max_concurrency x latency_budget_ms` within one order of magnitude (2000 against 3000).
+**Separate concurrency budgets.** Both profiles inherited `max_concurrency=4` / `queue_capacity=16`;
+legacy still does. Fast is now 8 + 32 and quality 2 + 8. Quality's per-request budget is six times
+fast's, so an equal queue depth would make its clients wait roughly six times as long; the new
+values hold `queue_capacity x latency_budget_ms` within one order of magnitude (fast 8000
+slot-milliseconds, quality 12000). **Slot-milliseconds, not CPU-seconds:** an earlier draft of this
+entry called the quantity CPU-seconds, which is wrong by a factor of 1000 and names a factor
+(`max_concurrency`) the argument is not about. `latency_budget_ms` bounds a WAIT, not a service
+time, so nothing here is a claim about CPU consumed.
+
 **These are a policy choice and are labelled as one in the code, the doc and `.env.example`.** They
 are not tuned to measured throughput and cannot be until there is a reference host.
 
@@ -91,14 +189,20 @@ check cannot be silently moved below the store setup.
 
 **The quality reranker is pinned by digest.** `RECALL_RERANK_SHA256` used to be whatever the
 operator typed, which made the `local_files_only` verification self-referential: it proved the tree
-hashes to its own hash, which every tree does. `recall/rerank.py` now pins
-`cross-encoder/ms-marco-MiniLM-L-6-v2`, revision `c5ee24cb…`, artifact `db6ad879…`, and the
-environment must agree with it.
+hashes to its own hash, which every tree does. `recall/rerank.py` now pins artifact `db6ad879…` and
+the environment must equal it.
 
-**`evidence_assembly` timing.** Six stages were timed and the seventh, turning trusted hits into the
-client-facing evidence, was not. All seven are now on `stage_ms` and all seven are observed into
+Two limits the audit made explicit, both now in the docs. The model name and revision recorded
+beside the digest are **provenance, not a runtime check** (nothing reads them; the quality profile
+loads locally, where the Hub revision is unused). And the digest hashes a whole provisioned
+**tree**, path names included, so it identifies one directory rather than the model in general;
+no shipped command reproduces that tree elsewhere.
+
+**`admission_wait` and `evidence_assembly` timings.** Five stages were timed; queueing and the
+assembly of the client-facing evidence were not. All eight are now on `stage_ms` and observed into
 `METRICS` as `recall_retrieval_stage_ms{profile,stage}` alongside `recall_retrieval_total_ms`
-(backlog item 28). Every label is library-authored; no corpus-derived string can reach one.
+(backlog item 28), the latter on **every** exit including failures. Every label is
+library-authored; no corpus-derived string can reach one.
 
 **`RetrievalOverloaded` is now a retryable refusal** carrying `reason` and `retry_after_seconds`,
 following `recall_mcp.limits.RateLimited` rather than inventing a second convention (backlog item
@@ -134,8 +238,9 @@ numbers taken from VPS2 here are checksums.
 |---|---|
 | `ruff check .` | clean |
 | `mypy` | clean, 139 source files |
-| `pytest -q` | **2300 passed, 35 skipped, 0 failed** (9 m 39 s), against a throwaway pgvector container on port 5437 |
-| Mutation sweep | **36 of 36 killed** |
+| `pytest -q` | **2310 passed, 35 skipped, 0 failed** (7 m 57 s), against a throwaway pgvector container on port 5437 |
+| Mutation sweep | **48 of 48 killed** (47 of 48 on the first pass; see below) |
+| CCA audit | DEEP tier, 10 auditors, **2 died mid-run** (see the audit section) |
 
 The suite ran against a container created for this session rather than the shared dev database on
 5432, following the previous entry's finding that a test database provisioned before #196 must be
@@ -154,13 +259,21 @@ operator, not by the suite: nothing tests `.env.example` against the parser.
 
 ### Proving the tests can fail
 
-36 mutations, one narrow change each, across `profiles.py`, `service.py`, `server.py`, `rerank.py`,
+48 mutations, one narrow change each, across `profiles.py`, `service.py`, `server.py`, `rerank.py`,
 `retriever.py` and one against the test file's own leak detector. The harness aborts the entire run
 if a search string is absent or occurs more than once, and it restores by **bytes** rather than
 `write_text`, which is what left ten files spuriously dirty last session. A final pass asserts every
 touched file is byte-identical to its starting content; it was.
 
-Three are worth naming because they are the ones that separate a real guard from a description:
+**The sweep found a test of mine that could not discriminate**, which is the reason to run it at
+all. `the budget is charged twice, wait included` survived: the fixture queued a request for 200 ms
+and then ran a microsecond search, so even with the wait charged the total stayed inside the 250 ms
+budget and a double-charging implementation passed. The fixture now queues ~150 ms **and** does
+~150 ms of work, so wait plus work crosses the budget while the work alone does not, and it asserts
+both halves of that so a future edit cannot quietly return it to the vacuous shape. 48 of 48 after
+the repair.
+
+Three others are worth naming because they separate a real guard from a description:
 
 * **"the query is embedded before admission is taken"** inserts one `timed.embed([query])` above the
   admission block. The rejection still raises and the process still looks like it has working
@@ -221,6 +334,12 @@ which is the harness behaving as designed.
 4. Consider a test that parses `.env.example` through the resolvers that read those keys. This
    session created a startup-refusing example with a one-line documentation edit and caught it by
    reasoning, not by a gate.
+5. **Decide the tenant-fairness question in admission** (audit item 1 above). The shedding this
+   session added turns one tenant's saturation into every other tenant's rejection, and the rate
+   limiter bounds call rate rather than concurrency. This became a live question because of this
+   change, so it should not wait behind the whole backlog.
+6. **Re-run the two auditors that died**, `code-auditor` and `env-validator`. General code quality
+   and the `.env.example` round trip are unaudited for this change.
 
 ---
 

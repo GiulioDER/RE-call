@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -269,12 +270,104 @@ def test_admission_is_reusable_after_a_normal_exit() -> None:
         pass
 
 
-def test_the_legacy_profile_keeps_its_unbounded_wait() -> None:
-    """Legacy behaviour is preserved: no budget, so no budget-driven shedding."""
+def test_the_legacy_profile_waits_instead_of_shedding_under_contention() -> None:
+    """Legacy behaviour is preserved: it QUEUES behind a busy slot rather than shedding.
+
+    The earlier form of this test acquired an UNCONTENDED admission, which succeeds identically
+    for a 24-day budget and a 1 ms one, so it could not fail on the property it named. The wait
+    branch is only reached when the running slot is already taken, so the holder is the test.
+    """
     assert LEGACY_PROFILE.latency_budget_ms > 24 * 60 * 60 * 1000
-    admission = RetrievalAdmission(LEGACY_PROFILE)
-    with admission:
-        pass
+    admission = RetrievalAdmission(
+        replace(LEGACY_PROFILE, max_concurrency=1, queue_capacity=1)
+    )
+    held = threading.Event()
+    release = threading.Event()
+    admitted = threading.Event()
+
+    def hold() -> None:
+        with admission:
+            held.set()
+            release.wait(10)
+
+    def follow() -> None:
+        with admission:
+            admitted.set()
+
+    holder = threading.Thread(target=hold, daemon=True)
+    holder.start()
+    assert held.wait(5)
+    waiter = threading.Thread(target=follow, daemon=True)
+    waiter.start()
+    # Still waiting, not shed: a finite budget of 0.3 s would already have raised by now.
+    assert not admitted.wait(0.8)
+    assert waiter.is_alive()
+    release.set()
+    assert admitted.wait(5), "legacy must be admitted once the slot frees, never shed"
+    holder.join(5)
+    waiter.join(5)
+    assert not holder.is_alive() and not waiter.is_alive()
+
+
+# --------------------------------------------------------------------------------------------
+# The gate has to be REACHABLE, not merely correct
+# --------------------------------------------------------------------------------------------
+
+
+def test_admission_capacity_leaves_room_in_the_worker_pool() -> None:
+    """The queue_full branch is unreachable if admission capacity equals the thread pool.
+
+    Every MCP tool body runs inside `anyio.to_thread.run_sync`, so a request parked in
+    `RetrievalAdmission` is holding a worker thread. anyio's default limiter is 40 tokens. Fast's
+    8 + 32 is also 40, so the 41st concurrent search never reaches `__enter__` at all: it waits
+    in anyio's limiter, which has no timeout, no budget and no counter. The shed that the whole
+    design exists to produce would never fire, and `recall_retrieval_rejected_total` would sit at
+    zero while clients waited unboundedly.
+
+    This asserts the invariant rather than the constant, so it keeps holding if the profile
+    numbers move.
+    """
+    from recall_mcp.server import worker_thread_budget
+
+    for profile in (FAST_PROFILE, QUALITY_PROFILE, LEGACY_PROFILE):
+        capacity = profile.max_concurrency + profile.queue_capacity
+        assert worker_thread_budget(profile) > capacity, (
+            f"{profile.name}: worker pool must exceed admission capacity {capacity}"
+        )
+
+
+def test_startup_raises_the_worker_pool_above_the_admission_capacity() -> None:
+    """Asserting the invariant is not enforcing it. This runs the code that applies it."""
+    import anyio
+    import anyio.to_thread
+
+    from recall_mcp.server import apply_worker_thread_budget
+
+    async def _check() -> tuple[float, float]:
+        before = anyio.to_thread.current_default_thread_limiter().total_tokens
+        apply_worker_thread_budget(FAST_PROFILE)
+        return before, anyio.to_thread.current_default_thread_limiter().total_tokens
+
+    before, after = anyio.run(_check)
+    assert before == 40, "anyio's documented default; if this moved, re-derive the invariant"
+    assert after > FAST_PROFILE.max_concurrency + FAST_PROFILE.queue_capacity
+
+
+def test_the_worker_pool_is_never_lowered() -> None:
+    """A host that already sized its pool generously must not be shrunk by ours."""
+    import anyio
+    import anyio.to_thread
+
+    from recall_mcp.server import apply_worker_thread_budget
+
+    async def _check() -> tuple[float, float]:
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        limiter.total_tokens = 500
+        apply_worker_thread_budget(QUALITY_PROFILE)
+        return 500, limiter.total_tokens
+
+    before, after = anyio.run(_check)
+    assert after == before
 
 
 # --------------------------------------------------------------------------------------------
@@ -332,6 +425,87 @@ def test_startup_accepts_the_pinned_reranker_and_loads_nothing() -> None:
     assert profile.name == "quality"
     assert profile.reranker is True
     assert profile.inference_threads == 1
+
+
+def test_startup_returns_the_digest_it_validated_not_the_one_it_was_given() -> None:
+    """Validating a normalised value and returning the raw one re-opens the hole it closed.
+
+    `verify_artifact` rejects on LENGTH before it lowercases, so a digest that is correct except
+    for a trailing newline (what a dotenv literal block or a padded `.env` line produces) passes
+    the startup comparison and then raises on the first search. That is exactly the "starts
+    clean, refuses every search" failure `startup_retrieval_profile` exists to remove.
+    """
+    from recall.rerank import PINNED_RERANKER_SHA256
+    from recall_mcp.service import _validate_quality_reranker_config
+
+    model_path, digest = _validate_quality_reranker_config(
+        {
+            "RECALL_RERANK_PATH": "  /opt/recall-enterprise/models/ms-marco-MiniLM-L-6-v2  ",
+            "RECALL_RERANK_SHA256": f"  {PINNED_RERANKER_SHA256.upper()}\n",
+        }
+    )
+    assert digest == PINNED_RERANKER_SHA256
+    assert len(digest) == 64
+    assert model_path == "/opt/recall-enterprise/models/ms-marco-MiniLM-L-6-v2"
+
+
+def test_each_module_constant_equals_what_its_own_resolver_produces() -> None:
+    """A constant that disagrees with its own resolver is a trap for anything keyed on it.
+
+    `QUALITY_PROFILE` left `inference_threads` at the dataclass default while the resolver filled
+    in `1`, so the exported constant and the resolved profile were unequal objects describing the
+    same configuration.
+    """
+    for name, constant in (("fast", FAST_PROFILE), ("quality", QUALITY_PROFILE)):
+        assert resolve_retrieval_profile({"RECALL_RETRIEVAL_PROFILE": name}) == constant
+
+
+def test_a_queue_is_identified_by_what_defines_a_queue() -> None:
+    """`inference_threads` has nothing to do with admission and must not split a queue.
+
+    Memoising the admission on the WHOLE profile made an unrelated field part of a queue's
+    identity, so two profiles meaning one queue each got their own pair of semaphores and the
+    process-wide concurrency bound silently doubled. Asserted on two profiles that differ ONLY in
+    that field, so the fix cannot be satisfied by making the constants happen to agree.
+    """
+    import recall_mcp.service as service
+
+    one = replace(QUALITY_PROFILE, inference_threads=1)
+    four = replace(QUALITY_PROFILE, inference_threads=4)
+    assert one != four  # genuinely different objects, so this is not comparing a thing to itself
+    assert service._admission(one) is service._admission(four)
+    # ...and a profile that differs in something a queue IS made of still gets its own.
+    assert service._admission(one) is not service._admission(
+        replace(QUALITY_PROFILE, max_concurrency=3)
+    )
+
+
+def test_a_failed_reranker_construction_is_not_retried_on_every_request() -> None:
+    """A broken artifact must fail fast, not re-hash a model tree per client request.
+
+    Only successes were memoised, so a bad digest or a missing path re-ran the full artifact
+    verification on every search, holding both the construction lock and a running slot. A
+    misconfigured quality server turned each request into a multi-hundred-megabyte disk read.
+    """
+    import recall_mcp.service as service
+
+    calls = []
+
+    def failing_factory(env=None):
+        calls.append(1)
+        raise RuntimeError("model artifact checksum mismatch")
+
+    service._reset_reranker_cache()
+    original = service._new_reranker
+    service._new_reranker = failing_factory
+    try:
+        for _ in range(3):
+            with pytest.raises(RuntimeError, match="checksum mismatch"):
+                service._build_reranker()
+    finally:
+        service._new_reranker = original
+        service._reset_reranker_cache()
+    assert len(calls) == 1, f"the failed construction was retried {len(calls)} times"
 
 
 def test_the_pinned_reranker_is_the_measured_ms_marco_minilm() -> None:

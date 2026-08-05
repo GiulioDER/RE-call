@@ -5,7 +5,6 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from functools import lru_cache
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -244,24 +243,29 @@ class SearchResult(BaseModel):
     reranking_ran: bool = False
     stage_ms: dict[str, float] = Field(
         default_factory=dict,
-        description="Per-stage wall time in milliseconds: query_embedding, dense_retrieval, "
-        "sparse_retrieval, fusion, reranking, trust_evaluation, evidence_assembly. Stage names "
-        "are library constants and carry no corpus-derived text.",
+        description="Per-stage wall time in milliseconds: admission_wait, query_embedding, "
+        "dense_retrieval, sparse_retrieval, fusion, reranking, trust_evaluation, "
+        "evidence_assembly. Stage names are library constants and carry no corpus-derived text.",
     )
     total_ms: float = Field(
         default=0.0,
         description="Wall time for the whole request, admission wait included. Larger than the "
-        "sum of stage_ms: the stages do not cover queueing or the supersession fetch.",
+        "sum of the retrieval stages: the supersession fetch sits outside every bracket.",
     )
-    latency_budget_ms: int = Field(
-        default=0,
-        description="The active profile's per-request budget. A request that cannot START within "
-        "it is shed before embedding; one that finishes over it is reported below.",
+    latency_budget_ms: int | None = Field(
+        default=None,
+        description="The active profile's per-request budget, or null when no budget is "
+        "enforced (the legacy profile). A request that cannot START within it is shed before "
+        "embedding; one whose own work runs over it is reported below.",
     )
     budget_exceeded: bool = Field(
         default=False,
-        description="True when total_ms exceeded latency_budget_ms. The answer is still served — "
-        "aborting mid-flight would pay the whole cost and return nothing.",
+        description="True when this request's own work (total_ms minus admission_wait) exceeded "
+        "latency_budget_ms. Time spent queued is deliberately excluded: the budget is the "
+        "admission timeout, so charging it again end to end would spend the same allowance "
+        "twice and label a fast retrieval slow because another request was ahead of it. The "
+        "answer is still served — aborting mid-flight would pay the whole cost and return "
+        "nothing.",
     )
     hits: list[SearchHit]
 
@@ -382,13 +386,18 @@ def _validate_quality_reranker_config(values: dict[str, str]) -> tuple[str, str]
     """
     from recall.rerank import PINNED_RERANKER_SHA256
 
-    model_path = values.get("RECALL_RERANK_PATH", "")
-    digest = values.get("RECALL_RERANK_SHA256", "")
+    # Normalise ONCE, compare the normalised value, and return the normalised value. Validating
+    # one string and handing the loader a different one re-opens the hole this check closed:
+    # `verify_artifact` rejects on LENGTH before it lowercases, so a digest that is correct
+    # except for a trailing newline (what a dotenv literal block or a padded `.env` line
+    # produces) passed startup and then raised on the first search.
+    model_path = values.get("RECALL_RERANK_PATH", "").strip()
+    digest = values.get("RECALL_RERANK_SHA256", "").strip().lower()
     if not model_path or not digest:
         raise ValueError(
             "quality profile requires RECALL_RERANK_PATH and RECALL_RERANK_SHA256"
         )
-    if digest.strip().lower() != PINNED_RERANKER_SHA256:
+    if digest != PINNED_RERANKER_SHA256:
         raise ValueError(
             f"RECALL_RERANK_SHA256 does not match the reranker pinned to the quality profile "
             f"(expected {PINNED_RERANKER_SHA256}). A different artifact tree is a different "
@@ -435,7 +444,12 @@ def _new_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pr
 #: tests do this; production selects one profile per process) cannot be served a reranker built
 #: for the other one.
 _RERANKER_LOCK = threading.Lock()
-_RERANKERS: dict[str, "Reranker | None"] = {}
+#: Maps profile name to the built reranker, or to the exception that construction raised.
+#: FAILURES are cached too. Caching only successes meant a bad artifact re-ran the full
+#: tree-SHA256 over a several-hundred-megabyte model directory on EVERY client search, while
+#: holding both this lock and an admission running slot: a configuration error turned into a
+#: self-inflicted disk-and-CPU load that grew with traffic.
+_RERANKERS: dict[str, "Reranker | None | BaseException"] = {}
 
 
 def _reset_reranker_cache() -> None:
@@ -444,25 +458,48 @@ def _reset_reranker_cache() -> None:
         _RERANKERS.clear()
 
 
-def _build_reranker(env: dict[str, str] | None = None) -> "Reranker | None":
+def _build_reranker(
+    profile: RetrievalProfile | None = None, env: dict[str, str] | None = None
+) -> "Reranker | None":
     if env is not None:  # explicit environment: an ad-hoc instance, never the shared one
         return _new_reranker(env)
-    name = resolve_retrieval_profile().name
+    name = (profile or resolve_retrieval_profile()).name
     with _RERANKER_LOCK:
         if name not in _RERANKERS:
-            _RERANKERS[name] = _new_reranker()
-        return _RERANKERS[name]
+            try:
+                _RERANKERS[name] = _new_reranker()
+            except BaseException as exc:  # noqa: BLE001 - re-raised immediately below
+                _RERANKERS[name] = exc
+        cached = _RERANKERS[name]
+    if isinstance(cached, BaseException):
+        raise cached
+    return cached
 
 
-@lru_cache(maxsize=8)
+_ADMISSION_LOCK = threading.Lock()
+_ADMISSIONS: dict[tuple[str, int, int, int], RetrievalAdmission] = {}
+
+
 def _admission(profile: RetrievalProfile) -> RetrievalAdmission:
     """The admission queue for one profile.
 
-    Memoised on the whole frozen profile, so fast and quality hold SEPARATE budgets: saturating
-    one cannot shed requests on the other. In production only one profile is ever resolved, so
-    this is one queue; the isolation matters for any process that resolves both.
+    Keyed on `queue_identity` rather than on the whole profile, and built under a lock rather
+    than memoised with `lru_cache`, for the two reasons this module already argues for the
+    reranker. A cache lookup is not a construction lock, so concurrent cold-start callers could
+    each receive their own full-capacity queue; and an `lru_cache` keyed on the whole profile
+    made `inference_threads` part of a queue's identity, so two profiles that mean the same queue
+    got two of them. Both defects raise the enforced concurrency bound silently, which is the one
+    direction a bound must never move on its own.
+
+    Fast and quality still hold SEPARATE budgets: saturating one cannot shed requests on the
+    other. In production only one profile is resolved, so this is one queue.
     """
-    return RetrievalAdmission(profile)
+    key = profile.queue_identity
+    with _ADMISSION_LOCK:
+        existing = _ADMISSIONS.get(key)
+        if existing is None:
+            existing = _ADMISSIONS[key] = RetrievalAdmission(profile)
+        return existing
 
 
 def startup_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalProfile:
@@ -524,21 +561,41 @@ def search_memory(
     timed = TimedEmbedder(embedder)  # measure embedding latency without altering trusted_search
     generation = str(getattr(store, "generation_id", "legacy"))
     request_started = time.perf_counter()
+    admission_wait_ms = 0.0
     try:
-        with _admission(profile):
-            result = trusted_search(
-                store, timed, query, k=k, source=source, calibration=calibration,
-                reranker=_build_reranker(), candidate_k=profile.candidate_k,
-                retrieval_profile=profile.name, index_generation=generation,
-                policy=policy,
+        try:
+            with _admission(profile):
+                # The wait ends here, so this is where it is measured. It becomes a stage of its
+                # own rather than an unattributed part of the total: a request that was slow
+                # because it queued and one that was slow because it retrieved are different
+                # operational problems, and a single number cannot tell them apart.
+                admission_wait_ms = (time.perf_counter() - request_started) * 1000.0
+                result = trusted_search(
+                    store, timed, query, k=k, source=source, calibration=calibration,
+                    reranker=_build_reranker(profile), candidate_k=profile.candidate_k,
+                    retrieval_profile=profile.name, index_generation=generation,
+                    policy=policy,
+                )
+        except RetrievalOverloaded as exc:
+            # Counted where it happens, with library-authored labels only. The request cost
+            # nothing: admission is taken BEFORE the embedder, which is the entire reason the
+            # gate is there and not one layer down.
+            METRICS.increment(
+                "recall_retrieval_rejected_total", profile=profile.name, reason=exc.reason
             )
-    except RetrievalOverloaded as exc:
-        # Counted where it happens, with library-authored labels only. The request cost nothing:
-        # admission is taken BEFORE the embedder, which is the entire reason the gate is there
-        # and not one layer down.
-        METRICS.increment(
-            "recall_retrieval_rejected_total", profile=profile.name, reason=exc.reason
+            raise
+    except BaseException:
+        # The total is observed on EVERY exit, not only the successful one. `recall.observability`
+        # states the rule for `METRICS.timer` in as many words: a timer that only records on
+        # success hides exactly the slow path worth finding. A store stall that ends in
+        # DEPENDENCY_UNAVAILABLE after thirty seconds is the request an operator most needs in
+        # the population, and it was contributing nothing.
+        METRICS.observe(
+            "recall_retrieval_total_ms",
+            round((time.perf_counter() - request_started) * 1000.0, 3),
+            profile=profile.name,
         )
+        METRICS.increment("recall_retrieval_failed_total", profile=profile.name)
         raise
     # `evidence_assembly` is the last stage and the one the surface did not carry. It brackets
     # turning trusted hits into the client-facing evidence: provenance, validity, verdicts and
@@ -619,11 +676,25 @@ def search_memory(
         advice += " NOTE: the memory index is stale — consider re-indexing."
 
     stage_ms = dict(result.diagnostics.stage_ms)
+    stage_ms["admission_wait"] = round(admission_wait_ms, 3)
     stage_ms["evidence_assembly"] = round(
         (time.perf_counter() - assembly_started) * 1000.0, 3
     )
-    total_ms = round((time.perf_counter() - request_started) * 1000.0, 3)
-    budget_exceeded = total_ms > profile.latency_budget_ms
+    elapsed_ms = (time.perf_counter() - request_started) * 1000.0
+    total_ms = round(elapsed_ms, 3)
+    # The budget is charged ONCE. It is the admission timeout, so a request may legitimately wait
+    # almost the whole budget before it starts; comparing the budget against a total that
+    # includes that wait spends the same allowance twice, and a request whose own retrieval was
+    # fast gets labelled slow because someone else was ahead of it. The verdict is therefore
+    # computed on the work this request actually did. `total_ms` still reports client-visible
+    # latency, which is a different and also necessary number.
+    #
+    # Compared UNROUNDED: rounding to three decimals first would put a measurement of 250.0004 ms
+    # on the safe side of a 250 ms threshold. The magnitude is half a microsecond here; the habit
+    # is what matters, since the same pattern at a coarser rounding is silent.
+    served_ms = elapsed_ms - admission_wait_ms
+    budget = profile.enforced_budget_ms
+    budget_exceeded = budget is not None and served_ms > budget
     for stage, value in stage_ms.items():
         # Labels are library constants (`profile.name` is a Literal, stage names are ours). No
         # corpus-derived string can reach a metric label through here.
@@ -636,8 +707,9 @@ def search_memory(
         # Numbers and the profile name only. An over-budget request is exactly the one an
         # operator wants to grep for, so it is also exactly the wrong place to put the query.
         _log.warning(
-            "retrieval took %.1f ms against the %d ms budget of profile %r",
-            total_ms, profile.latency_budget_ms, profile.name,
+            "retrieval served in %.1f ms against the %d ms budget of profile %r "
+            "(%.1f ms queued, %.1f ms total)",
+            served_ms, budget, profile.name, admission_wait_ms, total_ms,
         )
     return SearchResult(
         query=query,
@@ -665,7 +737,7 @@ def search_memory(
         reranking_ran=result.diagnostics.reranking_ran,
         stage_ms=stage_ms,
         total_ms=total_ms,
-        latency_budget_ms=profile.latency_budget_ms,
+        latency_budget_ms=profile.enforced_budget_ms,
         budget_exceeded=budget_exceeded,
         hits=hits,
     )
