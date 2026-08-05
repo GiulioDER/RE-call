@@ -152,6 +152,14 @@ def test_temporal_adapter_puts_the_intervals_where_recall_reads_them(monkeypatch
         })
 
         with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            # The chunk table carries FORCE row level security keyed on `recall.tenant_id`, so
+            # this verification read returns NO ROWS without the GUC and the assertion below
+            # reports "the adapter wrote nothing" when the adapter wrote fine. It only ever
+            # passed because the suite ran as a superuser, for whom the policy is inert.
+            # `temporal`, not `default`: that is the tenant `RecallTemporal` opens its store with
+            # (`benchmarks/membench/recall_temporal.py:75`), and naming the wrong one here fails
+            # exactly like naming none.
+            conn.execute("SELECT set_config('recall.tenant_id', 'temporal', false)")
             rows = conn.execute(
                 f"SELECT metadata->>'file', metadata->>'valid_from', metadata->>'valid_until' "
                 f"FROM {table} ORDER BY 1"

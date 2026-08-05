@@ -15,6 +15,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
 
+from recall.calibration import load_for as calibration_load_for
 from recall.control_plane import ControlPlane
 from recall.embeddings import embedding_profile_id
 from recall.readiness import check_enterprise_readiness
@@ -519,10 +520,29 @@ def _make_lifespan(
                 "role for defence in depth."
             )
         if enterprise:
+            # The calibration argument is supplied again. #182 removed it, and because the
+            # parameter defaults to None every enterprise boot since then took the
+            # `calibration is None` path: a permanent degraded-readiness warning that said
+            # nothing about the real calibration state, and an identity-mismatch FAILURE that
+            # could not be reached from this call site at all. A check that reads as a gate and
+            # cannot fail is worse than no check, so the argument comes back rather than the
+            # branch being deleted. `load_for` returns None for a calibration belonging to a
+            # different embedder, so the warning now means "there is none", which is actionable,
+            # instead of "this call site does not pass one", which was not.
+            #
+            # Stated precisely, because the first version of this comment overclaimed: what is
+            # repaired is the WARNING, not the identity-mismatch FAILURE. `load_for(P)` returns
+            # None exactly when the stored calibration names another embedder and otherwise
+            # constructs `Calibration(embedder=P)`, so `calibration.embedder != P` is still
+            # unreachable FROM HERE. That branch guards direct library callers, who may pass any
+            # Calibration, and `tests/test_enterprise_readiness.py` exercises it there. Making it
+            # reachable from startup needs an identity-agnostic loader, which is a separate
+            # change.
             readiness = check_enterprise_readiness(
                 probe,
                 embedder,
                 control_plane=registry.control_plane if registry is not None else None,
+                calibration=calibration_load_for(embedding_profile_id(embedder)),
             )
             if not readiness.ready:
                 raise RuntimeError("enterprise readiness failed: " + "; ".join(readiness.failures))
@@ -774,9 +794,12 @@ def build_server() -> FastMCP:
         registry: StoreRegistry | None = state.get("stores")
         tenant = _current_tenant(state)
         shadow = registry.get_shadow(tenant) if registry is not None and tenant is not None else None
+        control = registry.control_plane if registry is not None else None
         with METRICS.timer("recall_tool_latency_ms", tool="forget"):
             return await _to_thread(
-                lambda: forget_memory(store, sources, shadow).model_dump_json(indent=2)
+                lambda: forget_memory(
+                    store, sources, shadow, control
+                ).model_dump_json(indent=2)
             )
 
     @mcp.tool(

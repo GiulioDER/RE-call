@@ -174,6 +174,12 @@ def test_v08_table_is_adopted_without_rewriting_existing_data():
 
         apply_migrations(TEST_DSN, table=table, dim=DIM)
         with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            # Adoption assigns the legacy row to tenant `default` AND turns on forced row level
+            # security, so this verification read needs the GUC. Without it the policy matches
+            # nothing, `fetchone()` returns None, and the assertion fails with a TypeError that
+            # says nothing about tenancy. Invisible while the suite ran as a superuser, for whom
+            # the policy is inert.
+            conn.execute("SELECT set_config('recall.tenant_id', 'default', false)")
             row = conn.execute(
                 f"SELECT tenant_id, id, source, text, first_indexed_at FROM {table}"
             ).fetchone()
@@ -182,6 +188,7 @@ def test_v08_table_is_adopted_without_rewriting_existing_data():
                 "WHERE conrelid = %s::regclass AND contype = 'p'",
                 (table,),
             ).fetchone()
+        assert row is not None, "the adopted row is not visible to this connection"
         assert row[:4] == ("default", "old", "memo.md", "preserve me")
         assert row[4] is None
         assert key == (2,)
@@ -285,6 +292,16 @@ def test_serving_check_detects_policy_and_index_drift_without_repairing_it():
 
 @requires_db
 def test_serving_role_has_dml_but_cannot_run_ddl():
+    # This one genuinely needs `CREATEROLE`: its subject is a privilege boundary between two
+    # roles, so it has to make the second role. Skipped rather than failed when `RECALL_TEST_DSN`
+    # names a role that cannot create one, which is now a supported way to run the suite. It is
+    # not weakened: on any DSN that CAN provision (CI's included) it runs exactly as before.
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        may_provision = conn.execute(
+            "SELECT rolsuper OR rolcreaterole FROM pg_roles WHERE rolname = current_user"
+        ).fetchone()
+    if not (may_provision and may_provision[0]):
+        pytest.skip("RECALL_TEST_DSN's role cannot CREATE ROLE, which this test's subject requires")
     with _target() as table:
         apply_migrations(TEST_DSN, table=table, dim=DIM)
         role = _name("recall_serve_")
@@ -412,6 +429,18 @@ def test_the_generated_serving_grants_are_sufficient_for_the_control_plane():
     the documentation literally produced `permission denied` at startup readiness. This pins
     the generated list against the operations that actually run.
     """
+    # Like its sibling `test_serving_role_has_dml_but_cannot_run_ddl`, this test's subject is a
+    # privilege boundary, so it has to CREATE the second role. Skipped rather than failed when
+    # `RECALL_TEST_DSN` names a role that cannot, which is now a supported way to run the suite
+    # (an unprivileged DSN is what makes every RLS assertion in it non-vacuous). Unchanged on any
+    # DSN that can provision, CI's included.
+    with psycopg.connect(TEST_DSN, autocommit=True) as _probe:
+        _may = _probe.execute(
+            "SELECT rolsuper OR rolcreaterole FROM pg_roles WHERE rolname = current_user"
+        ).fetchone()
+    if not (_may and _may[0]):
+        pytest.skip("RECALL_TEST_DSN's role cannot CREATE ROLE, which this test's subject requires")
+
     from recall.control_plane import ControlPlane
 
     role = _name("cca_grantee_")
