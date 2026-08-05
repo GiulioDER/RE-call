@@ -126,18 +126,31 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
         )
 
         answerable_held = [x for x in held if x.get("answerable")]
+        # RETRIEVAL is scored on EVERY answerable question, not just the held half.
+        #
+        # The fit/held split exists for one thing: the abstention threshold is fitted on `fit`, so
+        # scoring abstention on `fit` as well would fit and score on the same data. `hit_at_k` and
+        # `mrr` never read `cal` — they compare retrieved files against gold files — so the split
+        # buys them nothing and halves their sample. Measured on PEPs: n=44 of 88 answerable, wide
+        # enough (CI [0.534, 0.800] around 0.682) that ONE question moves the rate by 0.023, so a
+        # real four-point effect is indistinguishable from noise.
+        #
+        # Abstention still uses `held` ONLY — `false_abstain` below filters these results back
+        # down by id. Widening retrieval must not widen that.
+        answerable_all = [x for x in questions if x.get("answerable")]
+        held_ids = {x["id"] for x in answerable_held}
 
         def score_arm(
             retriever: BM25Retriever | HybridRetriever,
-            collect: list[RetrievalResult] | None = None,
+            collect: list[tuple[str, RetrievalResult]] | None = None,
         ) -> dict:
             hits, reciprocal, latency, misses = [], [], [], []
-            for q in answerable_held:
+            for q in answerable_all:
                 t = time.perf_counter()
                 res = retriever.search(q["query"], k=k)
                 latency.append((time.perf_counter() - t) * 1000)
                 if collect is not None:
-                    collect.append(res)
+                    collect.append((q["id"], res))
                 files = _files_of(res)
                 want = set(q["relevant_files"])
                 hits.append(any(f in want for f in files[:k]))
@@ -166,7 +179,7 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
         # to compare it to; a reader cannot tell whether the embedding stack earned it or
         # whether keyword matching alone would have. BM25 is the thirty-year-old anchor, and
         # dense-only / sparse-only say which leg of the hybrid is carrying it.
-        hybrid_results: list[RetrievalResult] = []
+        hybrid_results: list[tuple[str, RetrievalResult]] = []
         arms = {
             "bm25": score_arm(BM25Retriever(store)),
             "dense": score_arm(
@@ -201,9 +214,12 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
         # gap_threshold — so at the same candidate_k this equals a fresh research_search.
         supersession, unresolved = store.supersession()
         now = datetime.now(timezone.utc)
+        # `held_ids` filter: `hybrid_results` now covers EVERY answerable question, but the
+        # threshold was fitted on `fit`, so scoring abstention over all of them would fit and
+        # score on the same data. Retrieval gets the wider sample; abstention keeps the split.
         false_abstain = [
             trust_evaluate(res, supersession, cal, now, unresolved).abstained
-            for res in hybrid_results
+            for qid, res in hybrid_results if qid in held_ids
         ]
 
         # Completeness, as a recorded expected/actual pair rather than a bare assertion. A
@@ -236,8 +252,14 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
             corpus_report["table"] = table
         return {
             "corpus": corpus_report,
+            # The two metric families have DIFFERENT denominators, so both are named here rather
+            # than left for a reader to infer from `held_out`. `arms.*.hit_at_k` is over every
+            # answerable question; `false_abstain` is over the held answerable half only, because
+            # the threshold was fitted on the other half.
             "questions": {"total": len(questions), "answerable": len(answerable),
-                          "unanswerable": len(unanswerable), "held_out": len(held)},
+                          "unanswerable": len(unanswerable), "held_out": len(held),
+                          "retrieval_scored_on": len(answerable_all),
+                          "abstention_scored_on": len(answerable_held)},
             "candidate_k": candidate_k,
             "threshold": cal.threshold,
             "arms": arms,
