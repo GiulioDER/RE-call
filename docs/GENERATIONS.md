@@ -39,7 +39,7 @@ Create and verify a manifest:
 ```bash
 recall --tenant acme manifest create --corpus-version 2026-08-03 \
   --objects inventory.json --output manifest.json
-recall manifest verify manifest.json
+recall --tenant acme manifest verify manifest.json
 ```
 
 `inventory.json` is an array of objects with `uri`, `version_id`, `media_type`, `size`, and
