@@ -758,6 +758,50 @@ def test_erasure_reaches_the_outbox_when_the_payload_is_the_ONLY_copy(enterprise
         shadow.close()
 
 
+def test_the_scrub_still_reaches_a_payload_whose_sources_list_is_malformed(enterprise) -> None:
+    """A server-side filter must not narrow WHICH events get scrubbed.
+
+    The optimisation added `jsonb_exists_any(payload -> 'sources', ...)` so a forget would stop
+    dragging every pending payload back to filter in Python. But jsonb null is not SQL NULL, so
+    `{"sources": null}` and any non-array `sources` were filtered out server side and never
+    reached the chunk-derived fallback meant to handle exactly them. Before the optimisation that
+    shape raised a loud TypeError; after it, erasure reported "0 scrubbed, success" and left the
+    text in place. Silent is worse than loud on an irreversible path.
+    """
+    erased = "/corpus/malformed-event.md"
+    operation_id = f"op-malformed-{uuid.uuid4().hex[:8]}"
+    payload = {
+        "active_generation": enterprise.active_id,
+        "shadow_generation": enterprise.shadow_id,
+        "sources": None,  # jsonb null, not SQL NULL
+        "active_chunks": [{"id": "x#0", "source": erased, "text": "contents of " + erased,
+                           "metadata": {}, "embedding": [0.0] * DIM}],
+        "chunks": [{"id": "x#0", "source": erased, "text": "contents of " + erased,
+                    "metadata": {}, "embedding": [0.0] * DIM}],
+    }
+    with psycopg.connect(enterprise.dsn, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (enterprise.tenant,))
+        conn.execute(
+            "INSERT INTO recall_migration_events "
+            "(tenant_id, operation_id, operation_kind, payload, active_count) "
+            "VALUES (%s, %s, 'index', %s::jsonb, 1)",
+            (enterprise.tenant, operation_id, __import__("json").dumps(payload)),
+        )
+        assert conn.execute(
+            "SELECT jsonb_typeof(payload -> 'sources') FROM recall_migration_events "
+            "WHERE tenant_id = %s AND operation_id = %s",
+            (enterprise.tenant, operation_id),
+        ).fetchone()[0] == "null", "the fixture must really store a jsonb null"
+
+    changed = enterprise.control.erase_sources_from_pending(enterprise.tenant, [erased])
+    assert changed == 1, "a malformed sources list hid the event from the scrub"
+
+    remaining = enterprise.control.pending_events(enterprise.tenant)
+    serialised = "".join(str(e.payload) for e in remaining)
+    assert erased not in serialised, "the erased source survives in the outbox"
+    assert "contents of" not in serialised, "the erased text survives in the outbox"
+
+
 def test_retire_refuses_a_tenant_it_cannot_check(enterprise) -> None:
     """An absent route must not be the quiet path through the only check `retire` has.
 

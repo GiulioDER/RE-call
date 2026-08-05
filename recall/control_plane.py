@@ -209,7 +209,7 @@ class ControlPlane:
 
     @staticmethod
     @lru_cache(maxsize=1)
-    def bundled_migrations() -> list[tuple[int, str, str]]:
+    def bundled_migrations() -> tuple[tuple[int, str, str], ...]:
         """`(version, sql, sha256)` for every control-plane migration shipped in this package."""
         directory = Path(__file__).with_name("sql")
         bundled: list[tuple[int, str, str]] = []
@@ -218,7 +218,7 @@ class ControlPlane:
             bundled.append(
                 (int(path.name.split("_", 1)[0]), sql, hashlib.sha256(sql.encode("utf-8")).hexdigest())
             )
-        return bundled
+        return tuple(bundled)
 
     def apply_migrations(self) -> None:
         """Apply checked, immutable SQL migrations using the caller's migration role.
@@ -476,7 +476,12 @@ class ControlPlane:
                 "SELECT operation_id, payload FROM recall_migration_events "
                 "WHERE tenant_id = %s AND status = 'pending' "
                 "AND (jsonb_exists_any(payload -> 'sources', %s) "
-                "     OR payload -> 'sources' IS NULL) "
+                # `payload -> 'sources' IS NULL` is NOT enough: jsonb null is not SQL
+                # NULL, so `{"sources": null}` and a non-array `sources` were filtered out
+                # server side and never reached the chunk-derived fallback below. Selecting
+                # on the TYPE keeps the optimisation for well-formed arrays while letting
+                # every malformed shape through to be scrubbed.
+                "     OR jsonb_typeof(payload -> 'sources') IS DISTINCT FROM 'array') "
                 "ORDER BY sequence_id FOR UPDATE",
                 (tenant, list(erased)),
             ).fetchall()
@@ -500,9 +505,7 @@ class ControlPlane:
                 if not present & erased:
                     continue
                 remaining = [s for s in declared_list if s not in erased]
-                if declared_list and not remaining:
-                    remaining = []
-                elif not declared_list:
+                if not declared_list:
                     remaining = sorted(present - erased)
                 if not remaining:
                     # active_count goes to 0 with the payload. Leaving it at N would make a
@@ -526,17 +529,22 @@ class ControlPlane:
                             if not (isinstance(r, dict) and r.get("source") in erased)
                         ]
                 surviving = scrubbed.get("active_chunks")
-                conn.execute(
-                    "UPDATE recall_migration_events SET payload = %s::jsonb, "
-                    "active_count = %s "
-                    "WHERE tenant_id = %s AND operation_id = %s",
-                    (
-                        json.dumps(scrubbed),
-                        len(surviving) if isinstance(surviving, list) else 0,
-                        tenant,
-                        operation_id,
-                    ),
-                )
+                if isinstance(surviving, list):
+                    # Only when the payload HAS active chunks. Zeroing the count for a
+                    # payload that never described any would be a value change dressed as
+                    # a consistency fix.
+                    conn.execute(
+                        "UPDATE recall_migration_events SET payload = %s::jsonb, "
+                        "active_count = %s "
+                        "WHERE tenant_id = %s AND operation_id = %s",
+                        (json.dumps(scrubbed), len(surviving), tenant, operation_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE recall_migration_events SET payload = %s::jsonb "
+                        "WHERE tenant_id = %s AND operation_id = %s",
+                        (json.dumps(scrubbed), tenant, operation_id),
+                    )
                 changed += 1
         return changed
 
