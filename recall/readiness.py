@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from recall.calibration import Calibration
-from recall.control_plane import SERVABLE_STATES, ControlPlane
+from recall.control_plane import SERVABLE_ACTIVE_STATES, ControlPlane
 from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
 from recall.store import PgVectorStore
 from recall.trust_policy import TrustFailureCode, TrustState, code_for_status
@@ -203,7 +203,7 @@ def check_enterprise_readiness(
                 failures.append("active generation embedding profile does not match runtime")
             if route.active.dimension != embedder.dim:
                 failures.append("active generation vector dimension does not match runtime")
-            if route.active.state not in SERVABLE_STATES:
+            if route.active.state not in SERVABLE_ACTIVE_STATES:
                 failures.append(
                     f"active generation is {route.active.state} and cannot serve requests"
                 )
@@ -216,7 +216,12 @@ def check_enterprise_readiness(
         try:
             ledger = control_plane.ledger_state()
         except Exception as exc:
-            failures.append(f"control plane ledger query failed: {type(exc).__name__}")
+            # `str(exc)` included: these are catalog/permission errors naming a TABLE, not a
+            # DSN, and "InsufficientPrivilege" alone does not tell an operator which GRANT
+            # is missing. `redacted_dsn` guards the connection-string case elsewhere.
+            failures.append(
+                f"control plane ledger query failed: {type(exc).__name__}: {exc}"
+            )
         else:
             if not ledger.current:
                 failures.append(f"control plane schema is not current: {ledger.describe()}")
@@ -236,7 +241,10 @@ def check_enterprise_readiness(
     try:
         store.check_schema()
     except Exception as exc:
-        failures.append(f"chunk table schema is not current: {type(exc).__name__}")
+        # Same reasoning: SchemaTooOld names the pending migration versions, and
+        # MigrationChecksumMismatch names the file. Dropping that left the operator with
+        # a class name and no next step.
+        failures.append(f"chunk table schema is not current: {type(exc).__name__}: {exc}")
     if calibration is None:
         warnings.append(
             "no profile matched calibration is loaded, so abstention capability is degraded"

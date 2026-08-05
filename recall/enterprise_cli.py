@@ -14,13 +14,14 @@ names the table.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
 
 import psycopg
 
-from recall.control_plane import ControlPlane, IndexGeneration
+from recall.control_plane import SERVABLE_STATES, ControlPlane, IndexGeneration
 from recall.migration import validate_generation_parity
 from recall.store import PgVectorStore, require_secure_dsn
 
@@ -47,6 +48,16 @@ def _open(dsn: str, generation: IndexGeneration, tenant: str) -> PgVectorStore:
     that reached the registry by some other route than `create-generation` is refused here rather
     than interpolated into a query.
     """
+    if generation.state not in SERVABLE_STATES:
+        # `retire_generation` delegates its real protection to "the serving path refuses a
+        # retired generation". This is a write path (`replay` calls `replace_sources` through
+        # it) and it was not covered by that refusal, so retiring a generation still left a
+        # command that would write into it. A `failed` generation is one whose DDL did not
+        # finish, so the target may be half-built.
+        raise SystemExit(
+            f"generation {generation.generation_id!r} is {generation.state!r}; refusing to open "
+            f"it. Route the tenant at a servable generation first."
+        )
     return PgVectorStore(
         dsn,
         dim=generation.dimension,
@@ -118,15 +129,18 @@ def _parser() -> argparse.ArgumentParser:
 
 def _cmd_replay(control: ControlPlane, dsn: str, tenant: str) -> int:
     """Open exactly the generations the pending events name, then drain in sequence order."""
-    pending = control.pending_events(tenant)
-    if not pending:
+    # Summaries, not payloads. Each payload carries every chunk's text AND embedding for a
+    # batch, and all this needs is two generation ids per event; pulling the full outbox to read
+    # them moved megabytes per event, three times over, in the command whose whole purpose is to
+    # run when the outbox is at its largest.
+    summaries = control.pending_event_summaries(tenant)
+    if not summaries:
         print(f"no pending migration events for tenant {tenant!r}")
         return 0
     wanted: set[str] = set()
-    for event in pending:
-        payload = event.payload or {}
+    for summary in summaries:
         for key in ("active_generation", "shadow_generation"):
-            value = payload.get(key)
+            value = summary.get(key)
             if isinstance(value, str) and value:
                 wanted.add(value)
     stores: dict[str, PgVectorStore] = {}
@@ -138,7 +152,7 @@ def _cmd_replay(control: ControlPlane, dsn: str, tenant: str) -> int:
     finally:
         for store in stores.values():
             store.close()
-    remaining = len(control.pending_events(tenant))
+    remaining = control.pending_count(tenant)
     print(f"replayed {completed} event(s) for tenant {tenant!r}; {remaining} still pending")
     return 0 if remaining == 0 else 1
 
@@ -149,13 +163,13 @@ def _cmd_parity(control: ControlPlane, dsn: str, tenant: str) -> int:
         raise SystemExit(f"tenant {tenant!r} has no route")
     if route.shadow is None:
         raise SystemExit(f"tenant {tenant!r} has no shadow generation to compare")
-    active = _open(dsn, route.active, tenant)
-    shadow = _open(dsn, route.shadow, tenant)
-    try:
+    # ExitStack, because opening the shadow can fail (bad table, dimension mismatch, timeout)
+    # and the active store is already open by then. The previous `finally` covered only the
+    # comparison, which was the one call that could not leak.
+    with contextlib.ExitStack() as stack:
+        active = stack.enter_context(_open(dsn, route.active, tenant))
+        shadow = stack.enter_context(_open(dsn, route.shadow, tenant))
         parity = validate_generation_parity(active, shadow)
-    finally:
-        active.close()
-        shadow.close()
     print(f"active chunks: {parity.active_chunks}\nshadow chunks: {parity.shadow_chunks}")
     for label, values in (
         ("missing from shadow", parity.missing_sources),
@@ -222,23 +236,20 @@ def _cmd_status(control: ControlPlane, tenant: str | None, as_json: bool) -> int
     }
     if tenant:
         route = control.route(tenant)
-        pending = control.pending_events(tenant)
+        pending = control.pending_event_summaries(tenant)
         report["tenant"] = tenant
         report["route"] = None if route is None else {
             "active": route.active.generation_id,
             "shadow": None if route.shadow is None else route.shadow.generation_id,
             "updated_at": route.updated_at.isoformat(),
         }
-        # Operation ids and counts only. The payload of a pending event holds corpus text and
-        # vectors, and an operator status command is not a retrieval path.
+        # Operation ids and counts only, and the QUERY projects them too. Saying "we do not
+        # print the payload" while selecting it still moves the corpus text out of the
+        # database and into this process; an operator status command is not a retrieval path,
+        # so it must not read one.
         report["pending_events"] = [
-            {
-                "sequence_id": event.sequence_id,
-                "operation_id": event.operation_id,
-                "operation_kind": event.operation_kind,
-                "active_count": event.active_count,
-                "shadow_count": event.shadow_count,
-            }
+            {k: event[k] for k in
+             ("sequence_id", "operation_id", "operation_kind", "active_count", "shadow_count")}
             for event in pending
         ]
     if as_json:

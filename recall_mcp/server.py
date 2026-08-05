@@ -343,6 +343,15 @@ def _make_lifespan(
             # branch being deleted. `load_for` returns None for a calibration belonging to a
             # different embedder, so the warning now means "there is none", which is actionable,
             # instead of "this call site does not pass one", which was not.
+            #
+            # Stated precisely, because the first version of this comment overclaimed: what is
+            # repaired is the WARNING, not the identity-mismatch FAILURE. `load_for(P)` returns
+            # None exactly when the stored calibration names another embedder and otherwise
+            # constructs `Calibration(embedder=P)`, so `calibration.embedder != P` is still
+            # unreachable FROM HERE. That branch guards direct library callers, who may pass any
+            # Calibration, and `tests/test_enterprise_readiness.py` exercises it there. Making it
+            # reachable from startup needs an identity-agnostic loader, which is a separate
+            # change.
             readiness = check_enterprise_readiness(
                 probe,
                 embedder,

@@ -711,6 +711,96 @@ def test_erasure_reaches_a_pending_outbox_payload(enterprise) -> None:
         shadow.close()
 
 
+def test_erasure_reaches_the_outbox_when_the_payload_is_the_ONLY_copy(enterprise) -> None:
+    """The state the scrub exists for, which the first version of it could not reach.
+
+    Three auditors found this independently. `forget_memory` gated the scrub on `to_delete`, and
+    `to_delete` is resolved from the CHUNK TABLES. After a crash between `append_event` and the
+    two `replace_sources` calls, the erased source has NO rows in either table, so the gate was
+    closed exactly when the payload was the only copy: forget answered "no matching source(s)
+    found", the text stayed in the outbox, and the next replay wrote it into both generations.
+
+    The neighbouring test seeds both chunk tables before creating the event, so `to_delete` is
+    never empty there and it passes with or without the gate. This one does NOT seed them, which
+    is the whole point: it is red against the gated implementation and green against the fixed
+    one.
+    """
+    embedder = HashingEmbedder(dim=DIM)
+    only_in_outbox = "/corpus/never-written.md"
+    active = enterprise.store(enterprise.active_id, enterprise.active_table)
+    shadow = enterprise.store(enterprise.shadow_id, enterprise.shadow_table)
+    try:
+        _crash_shaped_event(enterprise, [only_in_outbox], embedder)
+        assert (active.count(), shadow.count()) == (0, 0), (
+            "this test is only meaningful while the chunk tables are empty"
+        )
+        pending = enterprise.control.pending_events(enterprise.tenant)
+        assert len(pending) == 1 and only_in_outbox in str(pending[0].payload)
+
+        result = forget_memory(active, [only_in_outbox], shadow, enterprise.control)
+
+        # The chunk tables really had nothing, so this half is honestly reported as not-found.
+        assert result.chunks_removed == 0
+        # The outbox is the half that matters, and it must say so in the receipt.
+        assert result.outbox_events_scrubbed == 1, (
+            "the outbox was not swept, so a later replay would restore the erased text"
+        )
+        assert enterprise.control.pending_events(enterprise.tenant) == []
+
+        # And the decisive check: replaying now must not resurrect it.
+        enterprise.control.replay_pending(
+            enterprise.tenant,
+            {enterprise.active_id: active, enterprise.shadow_id: shadow},
+        )
+        assert (active.count(), shadow.count()) == (0, 0), "replay restored erased text"
+    finally:
+        active.close()
+        shadow.close()
+
+
+def test_retire_refuses_a_tenant_it_cannot_check(enterprise) -> None:
+    """An absent route must not be the quiet path through the only check `retire` has.
+
+    The refusal was `if row is not None and ...`, so a mistyped `--tenant` skipped it entirely and
+    retired the generation unconditionally, printing success. `recall_index_generations` is not
+    tenant scoped, so that is a fleet-wide state change made on no evidence at all.
+    """
+    with pytest.raises(KeyError, match="no route"):
+        enterprise.control.retire_generation(enterprise.active_id, "tenant-that-does-not-exist")
+    generation = enterprise.control.generation(enterprise.active_id)
+    assert generation is not None and generation.state == "ready", (
+        "the generation was retired against a tenant the control plane cannot check"
+    )
+
+
+def test_the_operator_cli_will_not_open_a_retired_generation(enterprise) -> None:
+    """`replay` WRITES through `_open`, and the serving-path refusal did not cover it."""
+    from recall.enterprise_cli import _open
+
+    enterprise.control.set_generation_state(enterprise.shadow_id, "retired")
+    retired = enterprise.control.generation(enterprise.shadow_id)
+    assert retired is not None
+    with pytest.raises(SystemExit, match="retired"):
+        _open(enterprise.dsn, retired, enterprise.tenant)
+
+
+def test_a_database_ahead_of_the_package_is_degraded_not_fatal(enterprise) -> None:
+    """Migrate forward, roll the application back: that must not brick the fleet.
+
+    `unknown` means the DATABASE has migrations this package does not ship, which is the normal
+    state during a staged rollout. `missing` and a checksum mismatch stay fatal.
+    """
+    from recall.control_plane import ControlPlaneLedgerState
+
+    ahead = ControlPlaneLedgerState(True, missing=(), unknown=(99,), checksum_mismatches=())
+    assert ahead.current, "a database ahead of the package must still be servable"
+    assert ahead.ahead
+    behind = ControlPlaneLedgerState(True, missing=(1,), unknown=(), checksum_mismatches=())
+    assert not behind.current
+    drifted = ControlPlaneLedgerState(True, missing=(), unknown=(), checksum_mismatches=(1,))
+    assert not drifted.current
+
+
 def test_erasing_every_source_in_an_event_voids_it_rather_than_blocking_cutover(enterprise):
     embedder = HashingEmbedder(dim=DIM)
     source = "/corpus/only.md"
@@ -1110,11 +1200,12 @@ def test_index_root_confinement_refuses_a_path_outside_the_root(tmp_path, monkey
 
 def test_the_physical_table_allowlist_refuses_what_isidentifier_allowed() -> None:
     """`str.isidentifier()` was the old gate. These are the three classes it let through."""
-    for accepted in ("chunks_g2026_08", "_staging", "c" * 63):
+    for accepted in ("chunks_g2026_08", "_staging", "c" * 46):
         assert validate_table_name(accepted) == accepted
     for refused, why in (
         ("Chunks_G1", "PostgreSQL folds unquoted uppercase, so the row and the table diverge"),
         ("café_chunks", "non-ASCII is a valid Python identifier"),
+        ("c" * 47, "47 + the 17-byte _tenant_isolation suffix exceeds PostgreSQL's 63"),
         ("c" * 64, "PostgreSQL truncates at 63 bytes, so two rows could map to one table"),
         ("chunks; DROP TABLE users", "not an identifier at all"),
         ("", "empty"),
