@@ -9,6 +9,7 @@ restating whatever the shipped dataset happens to contain.
 from __future__ import annotations
 
 import json
+import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -415,6 +416,270 @@ def test_main_ingests_each_conversation_before_scoring_its_own_questions(
     # the incremental sidecar ends up holding exactly the same records as the final artifact
     lines = (out / f"{_STAMP_2CONV}.partial.jsonl").read_text(encoding="utf-8").splitlines()
     assert [json.loads(line) for line in lines] == payload["outcomes"]
+
+
+def test_main_closes_the_system_it_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`main` builds an arm and must release its handles before returning.
+
+    A `Mem0System` holds exclusive Qdrant locks for as long as it lives (see `Mem0System.close`),
+    including one on a machine-global telemetry path that no `run_id` disambiguates. The process
+    exits immediately after this, and the OS drops file locks then regardless — so what this really
+    buys is that the handles go while the interpreter is still healthy, rather than during
+    finalisation, where qdrant-client's own finaliser dies with `ModuleNotFoundError: import of
+    msvcrt halted`.
+
+    Scope, stated so nobody reads more into it: this covers the SUCCESS path only. `main` has no
+    `try/finally`, so an exception on the way to `return 0` still skips the close and relies on
+    process exit. That is the deliberate trade — the alternative is re-indenting ~96 lines — and if
+    it ever stops being acceptable the fix is `with _build_system(...) as system:`, not another
+    close call somewhere else.
+    """
+    from benchmarks.systems import RecallSystem
+
+    out = tmp_path / "results"
+    closed: list[bool] = []
+
+    class _ClosableSystem(RecallSystem):
+        name = "recall"
+
+        def ingest(self, conversation: dict[str, Any]) -> None:
+            return None
+
+        def retrieve(self, question: str) -> str:
+            return "ctx"
+
+        def ablation_preflight(
+            self, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+        ) -> list[dict[str, Any]]:
+            return []
+
+        def close(self) -> None:
+            # Records WHETHER THE ARTIFACT WAS ALREADY WRITTEN, not merely that close ran. The
+            # ordering is what makes a failing `close()` harmless: everything is on disk by then,
+            # so the worst case is a bad exit status rather than a destroyed run. Asserting only
+            # `closed == [...]` is order-blind, and a mutant that moves the close above the write
+            # survives it.
+            closed.append(any(out.glob("*.json")))
+
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str,
+        embedder: str = "fastembed", **_extra: object,
+    ) -> MemorySystem:
+        return _ClosableSystem("postgresql://x/y", embedder_name="hashing", k=k)
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    data = _write_fixture(tmp_path)
+    code = main(
+        ["--arm", "recall", "--data", str(data), "--conversations", "2", "--out", str(out)],
+        now=_NOW,
+    )
+
+    assert code == 0
+    assert closed == [True]  # closed exactly once, and AFTER the artifact was written
+
+
+def test_a_failing_close_cannot_turn_a_finished_run_into_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Teardown of an already-written artifact must not change the run's verdict.
+
+    By the time the close runs, both the results JSON and the incremental sidecar are on disk and
+    their paths have been printed. If a raising `close()` propagated, `main` would never reach
+    `return 0`, so a complete run would exit non-zero — and a wrapper or retry loop reading that
+    status would re-run it, re-spending LLM credit on work that already succeeded.
+    """
+    from benchmarks.systems import RecallSystem
+
+    out = tmp_path / "results"
+
+    class _UnclosableSystem(RecallSystem):
+        name = "recall"
+
+        def ingest(self, conversation: dict[str, Any]) -> None:
+            return None
+
+        def retrieve(self, question: str) -> str:
+            return "ctx"
+
+        def ablation_preflight(
+            self, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+        ) -> list[dict[str, Any]]:
+            return []
+
+        def close(self) -> None:
+            raise RuntimeError("teardown exploded")
+
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str,
+        embedder: str = "fastembed", **_extra: object,
+    ) -> MemorySystem:
+        return _UnclosableSystem("postgresql://x/y", embedder_name="hashing", k=k)
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    data = _write_fixture(tmp_path)
+    with pytest.warns(UserWarning, match="closing _UnclosableSystem failed"):
+        code = main(
+            ["--arm", "recall", "--data", str(data), "--conversations", "2", "--out", str(out)],
+            now=_NOW,
+        )
+
+    assert code == 0                       # the run succeeded, and says so
+    assert any(out.glob("*.json"))         # with its artifact intact
+    assert any(out.glob("*.partial.jsonl"))
+
+
+def test_a_failing_close_cannot_fail_the_run_under_warnings_as_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same guarantee, under `-W error`, where the report itself becomes a raise.
+
+    This needs its own test because `pytest.warns` installs `catch_warnings` plus
+    `simplefilter("always")`, so it NEUTRALISES warnings-as-errors inside its block. The test
+    above therefore cannot see this failure mode however it is run, including under `-W error`:
+    the one filter it is closest to is the one it suppresses.
+    """
+    from benchmarks.systems import RecallSystem
+
+    out = tmp_path / "results"
+
+    class _Unprintable(RuntimeError):
+        def __repr__(self) -> str:
+            raise ValueError("repr exploded")
+
+        def __str__(self) -> str:
+            raise ValueError("str exploded")
+
+    class _UnclosableSystem(RecallSystem):
+        name = "recall"
+
+        def ingest(self, conversation: dict[str, Any]) -> None:
+            return None
+
+        def retrieve(self, question: str) -> str:
+            return "ctx"
+
+        def ablation_preflight(
+            self, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+        ) -> list[dict[str, Any]]:
+            return []
+
+        def close(self) -> None:
+            # Both escape routes at once: the handler warns (which raises under `-W error`) and
+            # interpolates the exception (whose `__repr__` raises).
+            raise _Unprintable()
+
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str,
+        embedder: str = "fastembed", **_extra: object,
+    ) -> MemorySystem:
+        return _UnclosableSystem("postgresql://x/y", embedder_name="hashing", k=k)
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    data = _write_fixture(tmp_path)
+    with warnings.catch_warnings():
+        # Narrow, not `simplefilter("error")`: turning EVERY warning into an error would fail this
+        # test on any unrelated dependency DeprecationWarning raised anywhere in the run, and that
+        # failure would read as a regression of the teardown guard. Only the report itself is
+        # promoted, which is the property under test.
+        warnings.simplefilter("ignore")
+        warnings.filterwarnings("error", message="benchmarks.run: closing", category=UserWarning)
+        code = main(
+            ["--arm", "recall", "--data", str(data), "--conversations", "2", "--out", str(out)],
+            now=_NOW,
+        )
+
+    assert code == 0
+    assert any(out.glob("*.json"))
+    # The run surviving is half the contract; the breadcrumb surviving is the other half. Without
+    # this, replacing the stderr fallback with a bare `pass` — the thing the helper's docstring
+    # calls unacceptable — leaves the whole suite green.
+    err = capsys.readouterr().err
+    assert "closing _UnclosableSystem failed" in err
+    assert "<unprintable _Unprintable>" in err  # and the repr fallback produced the detail
+
+
+def test_main_does_not_require_the_system_to_be_closable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The close is duck-typed, so an arm without one must still run, and run SILENTLY.
+
+    `MemorySystem` is deliberately a three-member protocol and `RecallSystem` has nothing to
+    release — it holds a DSN string, not a connection. A `main` that assumed `close()` existed
+    would break every such arm.
+
+    `_recall_stub_build` pins the embedder to `hashing`, and that is load-bearing rather than
+    copied habit: the real `_build_system` defaults to `fastembed`, an OPTIONAL extra, so letting
+    it run makes this pass wherever that extra happens to be installed and fail in the `floor` CI
+    job, which installs the declared minimums without extras. That is exactly how it did fail.
+    Nothing here is about embedders.
+    """
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    # On the INSTANCE, which is what `main` probes. A class-level assert alone would still hold if
+    # `__init__` ever bound a `self.close`, and the test would stop covering the closeless path
+    # without ever going red.
+    assert not hasattr(_recall_stub_build("recall", "m", _FAKE_KEY, 5, "stamp"), "close")
+
+    data = _write_fixture(tmp_path)
+    # Not merely "does not crash". Dropping the `getattr` guard while KEEPING the surrounding
+    # try/except still returns 0, and every closeless arm would then report a teardown failure on
+    # every successful run. So assert the breadcrumb is ABSENT.
+    #
+    # It is asserted on STDERR, and the promotion below is what puts it there. `_warn_teardown_failed`
+    # catches `BaseException` around its own `warnings.warn` — deliberately, so `-W error` cannot
+    # turn a diagnostic into a failed run — so promoting the warning does not raise out of `main`;
+    # it diverts the message to the helper's stderr fallback. Promotion and stderr are therefore
+    # one mechanism, not two, and checking either alone is checking half of it:
+    #
+    #   - promotion + `assert code == 0` alone: the mutant that keeps the try/except and drops
+    #     only the `getattr` guard SURVIVES, because the promoted warning is swallowed and nothing
+    #     observes it. (The cruder mutant, a bare `system.close()` with no try/except at all, is
+    #     caught either way: its AttributeError propagates straight out of `main`.)
+    #   - `record=True` + a recorded-warnings assert: works, but then the stderr channel is
+    #     unreachable by construction, so a companion stderr assert is inert and kills no mutant.
+    #
+    # This form has one live assertion that covers both a warn-based reporter (via the fallback)
+    # and any future one that writes stderr directly. Everything else stays ignored, so an
+    # unrelated warning cannot fail this test.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        warnings.filterwarnings("error", message="benchmarks.run: closing", category=UserWarning)
+
+        # POSITIVE CONTROL, before relying on the breadcrumb's absence. The arming above depends
+        # on two production details this test duplicates: the message prefix and the warning
+        # category. If either drifts, the promotion stops matching, the fallback is never reached,
+        # and the negative assert below passes VACUOUSLY — the test goes inert without going red,
+        # which is exactly the failure it was rewritten to escape. So prove the mechanism fires
+        # here, in this test, rather than trusting a neighbour to notice.
+        run_module._warn_teardown_failed(object(), RuntimeError("probe"))
+        armed = capsys.readouterr().err  # also drains, so the assert below sees only `main`
+        assert "benchmarks.run: closing" in armed, (
+            "the promotion is not armed: the message prefix or warning category has drifted, and "
+            "the absence assertion below would prove nothing"
+        )
+
+        code = main(
+            ["--arm", "recall", "--data", str(data), "--conversations", "2",
+             "--out", str(tmp_path / "results")],
+            now=_NOW,
+        )
+
+    assert code == 0
+    assert "benchmarks.run: closing" not in capsys.readouterr().err
 
 
 def test_main_runs_the_ablation_preflight_once_before_the_first_retrieve_and_stamps_it(
