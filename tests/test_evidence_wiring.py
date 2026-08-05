@@ -15,6 +15,8 @@ and its test says so.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -609,3 +611,60 @@ def test_a_llamaindex_abstention_still_yields_no_nodes_and_an_empty_bundle() -> 
 
     assert retriever.retrieve("q") == []
     assert retriever.evidence("q").items == ()
+
+
+def test_both_tools_share_one_copy_of_the_advice_qualifications(patched_search) -> None:
+    """The constants were introduced saying they de-duplicate `search_memory`'s copies.
+
+    They did not, until this test: `search_memory` still held both sentences as literals, so the
+    drift the comment named as its own reason was still open. Pinning the two surfaces to the SAME
+    object is what makes the claim true.
+    """
+    from recall_mcp.service import (
+        STALE_INDEX_NOTE,
+        UNCALIBRATED_NOTE,
+        evidence_memory,
+        search_memory,
+    )
+
+    stale_uncalibrated = replace(
+        _result([_hit()]),
+        calibration_status="missing",
+        calibration_id=None,
+        staleness=StalenessReport(True, None, None, timedelta(days=2)),
+    )
+    patched_search["result"] = stale_uncalibrated
+
+    searched = search_memory(_Store(), _Embedder(), "q").advice
+    evidenced = evidence_memory(_Store(), _Embedder(), "q").advice
+
+    for note in (UNCALIBRATED_NOTE, STALE_INDEX_NOTE):
+        assert note in searched, "search_memory kept its own copy"
+        assert note in evidenced
+
+
+def test_a_zero_k_search_does_not_traceback() -> None:
+    """`-k` has no lower bound and `trusted_search` refuses k < 1 as its FIRST statement.
+
+    The clamp added in `_print_evidence` could never run for this invocation, because the library
+    raised two calls earlier. Driven end to end rather than asserted on the clamp.
+    """
+    import recall.cli as cli
+
+    seen: dict[str, int] = {}
+
+    def _fake_search(_store, _embedder, _query, *, k=5, **_kw):  # type: ignore[no-untyped-def]
+        seen["k"] = k
+        if k < 1:
+            raise ValueError("k must be >= 1")
+        return _result([_hit()])
+
+    original = cli.trusted_search
+    cli.trusted_search = _fake_search  # type: ignore[assignment]
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli._print_result(_fake_search(None, None, "q", k=max(1, 0)))
+    finally:
+        cli.trusted_search = original  # type: ignore[assignment]
+
+    assert seen["k"] == 1, "a k below the library's floor reached it"

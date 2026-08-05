@@ -25,8 +25,12 @@ import json
 
 import pytest
 
+from dataclasses import replace
+
 from benchmarks.evidence_injection import (
     _CARRIER_FIELD,
+    CARRIERS as _CARRIERS_DERIVED,
+    injection_rate,
     BASELINE_PATH,
     build_baseline,
     CARRIERS,
@@ -70,7 +74,7 @@ def test_the_injection_success_rate_did_not_increase(baseline, trials) -> None:
     carrying = [trial for trial in trials if _CARRIER_FIELD[trial.carrier] is not None]
     assert len(carrying) == baseline["carrying_trials"]
     assert len(carrying) < len(trials), "no arm is inert, so the two denominators cannot differ"
-    assert baseline["injection_success_rate"] == pytest.approx(escapes / len(carrying))
+    assert baseline["injection_success_rate"] == round(escapes / len(carrying), 6)
     assert escapes <= baseline["escapes"], (
         f"{escapes} payloads escaped the evidence region, up from {baseline['escapes']}: "
         + "; ".join(
@@ -111,7 +115,7 @@ def test_the_detectors_fire_against_the_renderer_this_replaced(baseline) -> None
     # The control's rate, over the same denominator. This is the number that says how bad the
     # pre-fix renderer was, and dividing it by every trial understated it by a third.
     carrying = [t for t in control if _CARRIER_FIELD[t.carrier] is not None]
-    assert baseline["positive_control_rate"] == pytest.approx(len(escapes) / len(carrying))
+    assert baseline["positive_control_rate"] == round(len(escapes) / len(carrying), 6)
     # The tag-closing payloads must trip the delimiter detector specifically, not merely trip
     # SOMETHING — an escape counted for an unrelated reason would not be evidence of this defect.
     assert all(
@@ -194,9 +198,9 @@ def test_the_generator_divides_by_the_denominator_that_names_the_rate(baseline, 
     control_escapes = sum(1 for t in control if t.escaped)
 
     assert regenerated["carrying_trials"] == len(carrying) < regenerated["trials"]
-    assert regenerated["injection_success_rate"] == pytest.approx(escapes / len(carrying))
-    assert regenerated["positive_control_rate"] == pytest.approx(
-        control_escapes / len(control_carrying)
+    assert regenerated["injection_success_rate"] == round(escapes / len(carrying), 6)
+    assert regenerated["positive_control_rate"] == round(
+        control_escapes / len(control_carrying), 6
     )
     # The wrong denominator is STRICTLY SMALLER for a non-zero numerator, so this discriminates
     # rather than merely restating the line above.
@@ -204,3 +208,40 @@ def test_the_generator_divides_by_the_denominator_that_names_the_rate(baseline, 
     assert regenerated["positive_control_rate"] > control_escapes / len(control)
     # And the committed artifact must agree with the generator, or the ratchet is stale.
     assert regenerated == {k: v for k, v in baseline.items() if not k.startswith("_")}
+
+
+def test_the_rate_counts_only_attempts_in_its_numerator_too(trials) -> None:
+    """The defect the one-divisor fix introduced while removing the same defect.
+
+    `injection_rate` narrowed the DENOMINATOR to payload-carrying trials and left the numerator
+    over every row, so an escape from the arm excluded from the denominator was still counted:
+    marking all 52 trials escaped returned 1.333333. A rate above 1 is not a rate. Both tests
+    written for the denominator recomputed the identical asymmetric expression, so neither could
+    see it — which is why this one fabricates escapes instead of recomputing a formula.
+    """
+    everything_escaped = [replace(t, detectors_fired=("in_system_prompt",)) for t in trials]
+    only_inert_escaped = [
+        replace(t, detectors_fired=("in_system_prompt",)) if _CARRIER_FIELD[t.carrier] is None else t
+        for t in trials
+    ]
+
+    assert injection_rate(everything_escaped) == 1.0, "a rate must not exceed 1"
+    assert injection_rate(only_inert_escaped) == 0.0, (
+        "an escape from an arm that makes no attempt was counted as a successful attempt"
+    )
+    assert injection_rate(trials) == 0.0
+
+
+def test_the_rate_refuses_a_denominator_it_does_not_have(trials) -> None:
+    """Named, rather than a bare ZeroDivisionError out of a benchmark script."""
+    inert_only = [t for t in trials if _CARRIER_FIELD[t.carrier] is None]
+
+    for rows in ([], inert_only):
+        with pytest.raises(ValueError, match="no denominator"):
+            injection_rate(rows)
+
+
+def test_the_carrier_list_and_its_field_map_cannot_drift() -> None:
+    """Three call sites now subscript `_CARRIER_FIELD` bare, including the baseline generator."""
+    assert set(_CARRIERS_DERIVED) == set(_CARRIER_FIELD)
+    assert _CARRIERS_DERIVED == CARRIERS
