@@ -7,16 +7,22 @@ better.
 | | |
 |---|---|
 | preregistration (written 2026-08-04, before any arm ran) | [`benchmarks/PREREGISTRATION-peps-rerank-pool.md`](../../benchmarks/PREREGISTRATION-peps-rerank-pool.md) |
+| runner (produces the reports) | [`scripts/run_peps_arms.sh`](../../scripts/run_peps_arms.sh) |
 | scorer (re-derives every figure below) | [`benchmarks/score_peps_rerank_pool.py`](../../benchmarks/score_peps_rerank_pool.py) |
 | verdict memo | `closed-hypothesis-recall-rerank-pool-interaction-2026-08-05` |
 
 ```
-python -m benchmarks.score_peps_rerank_pool     # exit 0 iff every published figure reproduces
+PEPS_CORPUS=/path/to/peps scripts/run_peps_arms.sh   # both arms, verifies each artifact
+python -m benchmarks.score_peps_rerank_pool          # exit 0 iff every published figure reproduces
 ```
 
-The scorer asserts the invariants, the arm rates, the deltas and the McNemar counts, so it is a
-regression guard on these numbers rather than a report. Its guards were mutation-tested: corrupting
-a published rate or a McNemar count makes it exit 1.
+Both are guards rather than reports. The runner checks the apparatus invariant on each report as it
+lands, so an arm that completes but scored the wrong population fails there instead of quietly
+becoming a published number; it also takes a lock, because a duplicate driver racing the first is
+what killed the original ck250 arm. The scorer asserts the arm rates, the deltas and the McNemar
+counts. Guards on both were mutation-tested rather than assumed: tampering with `candidate_k`,
+`false_abstain.n`, `retrieval_scored_on`, the miss sets, a published rate or a McNemar count each
+produce exit 1, and the untampered control exits 0.
 
 **Prior work searched** (`docs_search(source_type='memory')`, plus the closed-hypotheses index):
 the 2026-07-22 `RE-call retrieval levers` closure (rerank +0.043 within noise, pool 20 to 100
