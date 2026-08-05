@@ -159,6 +159,16 @@ def main(argv: list[str] | None = None) -> None:
     schema_sub.add_parser("status", help="show installed and required schema versions")
     schema_sub.add_parser("plan", help="show pending migrations without changing the database")
     schema_sub.add_parser("apply", help="apply pending migrations with the migration role")
+    p_schema_grants = schema_sub.add_parser(
+        "grants",
+        help="print the GRANT statements a serving role needs (prints SQL, runs none)",
+    )
+    p_schema_grants.add_argument("--role", required=True, help="the serving role name")
+    p_schema_grants.add_argument(
+        "--enterprise",
+        action="store_true",
+        help="also grant the enterprise control-plane tables and their sequence",
+    )
 
     p_manifest = sub.add_parser("manifest", help="create or verify immutable corpus manifests")
     manifest_sub = p_manifest.add_subparsers(dest="manifest_cmd", required=True)
@@ -321,6 +331,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.cmd == "schema":
         from recall.schema import apply_migrations, schema_plan, schema_status
 
+        if args.schema_cmd == "grants":
+            # Prints SQL for an operator to run as the object owner; touches no database, so
+            # it needs neither a DSN nor an embedder.
+            from recall.schema import serving_grants
+
+            for statement in serving_grants(
+                args.role, table=args.table, enterprise=args.enterprise
+            ):
+                print(statement)
+            return
         dim = args.dim if args.dim is not None else _make_embedder(args.embedder).dim
         inspect_dsn = args.migration_dsn or args.dsn
         if args.schema_cmd == "status":
@@ -660,35 +680,98 @@ def main(argv: list[str] | None = None) -> None:
                 summary += f", pruned {stats.deleted} source(s) no longer on disk"
             print(summary)
     elif args.cmd == "forget":
-        if os.environ.get("RECALL_ENV", "development").lower() == "production":
-            from recall.generation_store import GenerationStore
+        from recall.generation_store import GenerationStore
+        from recall.generations import NoActiveGeneration
 
-            forget_store: PgVectorStore = GenerationStore(
-                args.dsn, embedder.dim, tenant=args.tenant
-            )
-        else:
-            forget_store = PgVectorStore(
-                args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
-            )
+        generation_mode = os.environ.get("RECALL_ENV", "development").lower() == "production"
+        # Keep a GenerationStore-typed handle alongside the widened one: the corpus probe below
+        # exists only on the subclass, and narrowing here is what lets the type checker see it.
+        gen_store: GenerationStore | None = (
+            GenerationStore(args.dsn, embedder.dim, tenant=args.tenant)
+            if generation_mode
+            else None
+        )
+        forget_store: PgVectorStore = (
+            gen_store
+            if gen_store is not None
+            else PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant)
+        )
         with forget_store as store:
             store.check_schema()
             requested = list(dict.fromkeys(args.sources))
-            existing = store.source_content_hashes()
-            found = [s for s in requested if s in existing]
-            not_found = [s for s in requested if s not in existing]
+            # Reject a blank argument before anything commits. `recall forget "$A" "$B" --yes`
+            # with one variable unset otherwise erased the first source, raised out of the
+            # per-source loop, and printed nothing at all.
+            if any(not source.strip() for source in requested):
+                raise SystemExit(
+                    "forget: empty source argument (an unset shell variable?); nothing deleted"
+                )
+            if gen_store is not None:
+                # Widen the existence check, do not drop it, and ask the right question.
+                # `source_content_hashes()` is scoped to ONE generation, so FILTERING on it
+                # called a source that had left the active generation "not found" and left it
+                # with its rows and no tombstone. But no check at all is not the answer either:
+                # forgetting a never-indexed URI writes a permanent tombstone (nothing deletes
+                # one, and `build()` skips every manifest entry it matches), so a typo would
+                # irreversibly bar that URI. The question is "does the corpus contain this",
+                # which the MANIFEST answers and chunk rows do not: an object that chunks to
+                # nothing is built as `empty_objects` and writes no row, yet is unquestionably
+                # part of the corpus and must be erasable.
+                known = (
+                    gen_store.sources_in_any_generation()
+                    | gen_store.sources_in_any_manifest()
+                    | gen_store.sources_in_legacy_table()
+                )
+                targets = [s for s in requested if s in known]
+                unseen = [s for s in requested if s not in known]
+                unseen_note = (
+                    "not present in any generation, manifest, or the adopted v0.8 table, so "
+                    f"NOT erased and NOT tombstoned (check for typos): {', '.join(unseen)}"
+                )
+            else:
+                # The v0.8 table has no generations, so the probe covers everything the
+                # tenant owns and an absent source really is a typo. Computed here rather than
+                # above because the generation branch never reads it, and on a GenerationStore
+                # it costs an active-generation lookup plus a DISTINCT scan.
+                try:
+                    visible_now = set(store.source_content_hashes())
+                except NoActiveGeneration:
+                    visible_now = set()
+                targets = [s for s in requested if s in visible_now]
+                unseen = [s for s in requested if s not in visible_now]
+                unseen_note = f"not found (check for typos): {', '.join(unseen)}"
             if not args.yes:
                 print(
-                    f"DRY RUN: would forget {len(found)} source(s): "
-                    f"{', '.join(found) if found else '(none)'}"
+                    f"DRY RUN: would forget {len(targets)} source(s): "
+                    f"{', '.join(targets) if targets else '(none)'}"
                 )
-                if not_found:
-                    print(f"not found (check for typos): {', '.join(not_found)}")
+                if unseen:
+                    print(unseen_note)
                 print("nothing deleted — re-run with --yes to actually delete.")
             else:
-                removed = store.delete_sources(found)
-                print(f"forgot {removed} chunk(s) from {len(found)} source(s)")
-                if not_found:
-                    print(f"not found (check for typos): {', '.join(not_found)}")
+                # One source per call: `delete_sources` commits a separate transaction each,
+                # so a failure part way through leaves the earlier ones erased. Reporting from
+                # a finally means a partial erasure is never silent.
+                removed = 0
+                erased: list[str] = []
+                try:
+                    for source in targets:
+                        removed += store.delete_sources([source])
+                        erased.append(source)
+                finally:
+                    if len(erased) == len(targets):
+                        print(f"forgot {removed} chunk(s) from {len(erased)} source(s)")
+                    else:
+                        # Name them. On an irreversible path, "the rest" is not an answer the
+                        # operator can act on, and the survivors are otherwise recoverable only
+                        # by re-deriving the argument order by hand.
+                        missed = [s for s in targets if s not in set(erased)]
+                        print(
+                            f"forgot {removed} chunk(s) from {len(erased)} of {len(targets)} "
+                            f"source(s); NOT reached: {', '.join(missed)}"
+                        )
+                    if unseen:
+                        print(unseen_note)
     elif args.cmd == "search":
         entail_judge = None
         if args.entail:

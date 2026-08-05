@@ -121,7 +121,7 @@ jobs:
           path: dist/
 
       - name: Publish
-        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247  # release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # release/v1
         with:
           # A tag push always goes to PyPI. A manual run goes wherever it was asked to.
           repository-url: ${{ (github.event_name == 'push' || inputs.target == 'pypi') && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
@@ -141,7 +141,7 @@ jobs:
     permissions:
       contents: write  # the only thing in this workflow that needs it: creating the Release
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0  # the tag object, so `git tag -l --format` can read its subject
 

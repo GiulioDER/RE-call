@@ -32,6 +32,31 @@ GENERATION_TABLES = (
     "recall_calibration_query_sets",
     "recall_calibrations",
 )
+#: Enterprise control-plane objects, created by `recall/sql/001_enterprise_control_plane.sql`
+#: through `ControlPlane.apply_migrations()` rather than by the versioned migrator. The serving
+#: process reads the first two on every routed request and appends to the third on every shadow
+#: flush, so they belong in the serving role's grants even though a different framework creates
+#: them.
+#: `recall_tenant_routes` is READ-only for the serving role. Only `set_route` and `cutover`
+#: write it, and both are reached solely from `recall/enterprise_cli.py` on the migration-role
+#: path, so granting the serving role INSERT/UPDATE here would let it repoint its own tenant's
+#: active generation.
+CONTROL_PLANE_READ_TABLES = (
+    "recall_index_generations",
+    "recall_schema_versions",
+    "recall_tenant_routes",
+)
+CONTROL_PLANE_WRITE_TABLES = ("recall_migration_events",)
+#: PostgreSQL accepts these in a grantee position and they are all valid Python identifiers, so
+#: `.isidentifier()` alone would let `--role public` silently grant every managed table to every
+#: role in the database from a command documented as least-privilege.
+_RESERVED_GRANTEES = frozenset(
+    {"public", "current_user", "session_user", "current_role", "user", "none"}
+)
+#: `recall_migration_events.sequence_id` is `bigserial`, so INSERT additionally needs USAGE on
+#: its sequence. It is the only sequence in the shipped schema, and the omission of this one line
+#: is why table-level grants alone still failed.
+CONTROL_PLANE_SEQUENCES = ("recall_migration_events_sequence_id_seq",)
 GLOBAL_MIGRATION_TARGET = "__global__"
 GLOBAL_MIGRATION_START = "0008"
 _MIGRATION_NAME = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
@@ -104,6 +129,66 @@ def _validate_target(table: str, dim: int) -> None:
         raise ValueError("table must be a valid SQL identifier")
     if not isinstance(dim, int) or dim <= 0:
         raise ValueError("dim must be a positive int")
+
+
+def serving_grants(
+    role: str, *, table: str = DEFAULT_TABLE, enterprise: bool = False
+) -> tuple[str, ...]:
+    """The GRANT statements a serving role needs, derived from the table constants.
+
+    No migration emits a GRANT, because the role name is a deployment decision the packaged
+    SQL cannot know. That left the privilege list as prose in `docs/MIGRATIONS.md`, and prose
+    drifted: it named ten objects and missed the four enterprise control-plane tables the
+    serving process reads on every routed request, plus the one sequence in the schema. An
+    operator who followed it got `permission denied` at startup readiness.
+
+    Generating the list from `GENERATION_TABLES` / `CONTROL_PLANE_*` instead means a table
+    added to those tuples cannot be forgotten here.
+
+    `role` is emitted QUOTED and is therefore case-sensitive: it must match the role as
+    stored. `CREATE ROLE recall_server` (unquoted) stores `recall_server`, so passing
+    `RECALL_SERVER` raises `UndefinedObject` rather than silently granting elsewhere.
+    `table` is emitted UNQUOTED, matching the migrator's own DDL.
+    """
+    if not role.isidentifier():
+        raise ValueError("role must be a valid SQL identifier")
+    if not table.isidentifier():
+        raise ValueError("table must be a valid SQL identifier")
+    if role.casefold() in _RESERVED_GRANTEES:
+        # These are legal Python identifiers AND legal PostgreSQL grantee keywords, so an
+        # identifier check alone lets the statement target something other than a named role:
+        # `public` grants to every role in the database, `current_user` to whoever runs it.
+        raise ValueError(f"{role!r} is a PostgreSQL grantee keyword, not a role name")
+    # Quote the ROLE so PostgreSQL cannot case-fold it onto a different role than the one the
+    # operator created. This makes `--role` case-sensitive; see the docstring.
+    #
+    # Do NOT quote the TABLE. The migrator creates it with unquoted DDL (`__RECALL_TABLE__`
+    # substitution in `_render`) and `PgVectorStore` interpolates it unquoted everywhere else,
+    # so PostgreSQL folds every table this project creates to lower case. A quoted GRANT would
+    # name an object no code path here can produce: `--table Probe_Chunks` would emit
+    # `ON "Probe_Chunks"` against a table actually called `probe_chunks`, and fail with
+    # UndefinedTable. Quoting is only correct if it is introduced everywhere at once.
+    role = f'"{role}"'
+    statements = [
+        f"GRANT SELECT ON {LEDGER_TABLE} TO {role};",
+        f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {role};",
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON "
+        + ", ".join(GENERATION_TABLES)
+        + f" TO {role};",
+    ]
+    if enterprise:
+        statements += [
+            "GRANT SELECT ON "
+            + ", ".join(CONTROL_PLANE_READ_TABLES)
+            + f" TO {role};",
+            "GRANT SELECT, INSERT, UPDATE ON "
+            + ", ".join(CONTROL_PLANE_WRITE_TABLES)
+            + f" TO {role};",
+            "GRANT USAGE ON SEQUENCE "
+            + ", ".join(CONTROL_PLANE_SEQUENCES)
+            + f" TO {role};",
+        ]
+    return tuple(statements)
 
 
 def _migration_root() -> resources.abc.Traversable:

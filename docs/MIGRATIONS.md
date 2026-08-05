@@ -9,10 +9,37 @@ values are committed in
 
 - `RECALL_SERVING_DSN`: unprivileged credential used by indexing, search, forget, and MCP.
 - `RECALL_MIGRATION_DSN`: schema-owner credential used only by `recall schema apply`.
+- `RECALL_DSN`: deprecated development fallback for BOTH, kept so single-variable
+  deployments keep working.
+
+`recall-enterprise` follows the same split. Its DDL subcommands (`migrate`,
+`create-generation`) read `RECALL_MIGRATION_DSN`; its read-only ones (`readiness`,
+`status`, `parity`, `replay`) read `RECALL_SERVING_DSN`; both fall back to `RECALL_DSN`.
+That split is load-bearing for `readiness`, which reports whether row level security
+constrains "the runtime database role": the check reads `current_user` of the connection
+it was given, so run on the migration role it would certify a credential that never
+serves a request. The command prints the role it evaluated, so the verdict names its own
+subject.
 - `RECALL_DSN`: deprecated development fallback for the serving DSN.
+- `RECALL_ENV`: `development` (default) | `test` | `production`.
 
 Keep the two credentials distinct outside a disposable local database. The MCP process never reads
 the migration DSN.
+
+`RECALL_ENV` is what selects the production code paths, and it **fails open**. Set it explicitly on
+every production process: left unset, it resolves to `development` and silently disables all of the
+following. A misspelling behaves worse than either, because it is not handled consistently — `prod`
+or a stray trailing space degrades the seven `== "production"` comparisons below to development
+silently, while `GenerationManager` validates its value and raises `ValueError`, so the same typo
+is loud in one place and mute in the rest.
+
+| Set to `production` | Left at the default |
+|---|---|
+| `recall search` / `recall forget` use the v1 `GenerationStore` | they use the legacy v0.8 `chunks` table |
+| MCP server serves generation-routed reads | serves the legacy table |
+| `recall index` / `demo` / `code` and the MCP `recall_index` tool refuse local-filesystem indexing | accepted |
+| generations require a pinned, verified embedder identity | an unverified embedder can build one |
+| `generation promote` is blocked | promotion is permitted |
 
 ```bash
 recall --serving-dsn "$RECALL_SERVING_DSN" --table chunks schema --dim 384 status
@@ -35,6 +62,43 @@ not renamed or converted into a generation table. Migration 0008 records its ten
 0011 are database-global and are recorded once under the `__global__` ledger target. Apply them
 through the default `chunks` target before provisioning custom evaluation tables.
 
+## The second ledger: `recall_schema_versions`
+
+There are **two** migration ledgers, deliberately, and a deployment running the optional
+enterprise control plane has both.
+
+| | `recall_schema_migrations` | `recall_schema_versions` |
+|---|---|---|
+| SQL | `recall/migrations/sql/0001…0011` | `recall/sql/001_enterprise_control_plane.sql` |
+| Applied by | `recall schema apply` (`RECALL_MIGRATION_DSN`) | `recall-enterprise migrate` (`RECALL_MIGRATION_DSN`) |
+| Scope | per target table, plus a `__global__` bucket | database-global |
+| Checksums | committed in `recall/migrations/checksums.json` | computed from the shipped file |
+| Verified at startup | `check_schema` | `ControlPlane.ledger_state`, through readiness |
+
+They stay separate for three reasons. Merging is a one-way door: both sets are checksum-immutable
+by design, so renumbering the control-plane SQL into the `0001…0011` sequence changes what every
+already-migrated database must agree with, with `MigrationChecksumMismatch` waiting at the end of
+it. They have different lifecycles: the control-plane tables must exist before any generation
+does, while generation chunk tables are created per generation by `recall-enterprise
+create-generation`, which is exactly why the first ledger is scoped per target table. And the
+enterprise deployment is opt in (`RECALL_ENTERPRISE_CONTROL_PLANE` defaults off), so merging would
+impose control-plane tables on every deployment that does not want them.
+
+Two ledgers need two things a single one would have given for free, and both are now present
+rather than assumed:
+
+- **Both are locked.** `recall-enterprise migrate` takes a PostgreSQL advisory lock
+  (`recall-control-plane-migrations-v1`) for the same reason `recall schema apply` takes
+  `recall-schema-migrations-v1`, and refuses rather than waiting when another migrator holds it.
+  Two concurrent `migrate` jobs previously interleaved, and `CREATE TABLE IF NOT EXISTS` followed
+  by a ledger `INSERT` is not atomic across sessions.
+- **Both are verified.** Enterprise readiness checks `recall_schema_versions` as well as
+  `recall_schema_migrations`. Verifying only one is how a process boots against a control plane
+  that is behind, or whose applied SQL no longer matches the bytes the installed package ships.
+
+`recall-enterprise status` prints the control-plane ledger's state, and
+`recall-enterprise readiness <tenant>` exits non-zero when either ledger is not current.
+
 ## Role split
 
 The exact bootstrap syntax varies on managed PostgreSQL. The intended privileges are equivalent to:
@@ -53,15 +117,24 @@ REVOKE CREATE ON SCHEMA public FROM recall_server;
 
 After `recall schema apply`, grant the serving role only the objects it uses:
 
-```sql
-GRANT SELECT ON recall_schema_migrations TO recall_server;
-GRANT SELECT, INSERT, UPDATE, DELETE ON chunks TO recall_server;
-GRANT SELECT, INSERT, UPDATE, DELETE ON
-  recall_generations, recall_tenant_state, recall_chunks_v1, recall_ingest_jobs,
-  recall_audit_events, recall_source_tombstones, recall_calibration_query_sets,
-  recall_calibrations TO recall_server;
--- These tables use application-generated text IDs and no sequence.
+Do not copy a list from this page. Generate it, so it cannot drift out of step with the tables
+the code actually creates:
+
+```bash
+recall schema grants --role recall_server
+recall schema grants --role recall_server --enterprise   # if RECALL_ENTERPRISE_CONTROL_PLANE is on
 ```
+
+The command prints SQL and runs nothing, so it needs no DSN. Run the output as the object owner.
+
+`--enterprise` adds the four control-plane tables (`recall_index_generations`,
+`recall_schema_versions`, `recall_tenant_routes`, `recall_migration_events`) and, critically,
+`GRANT USAGE ON SEQUENCE recall_migration_events_sequence_id_seq`. The serving process reads the
+first two on every routed request and appends to `recall_migration_events` on every shadow flush.
+That table is the one object in the schema with a `bigserial` key, so table privileges alone are
+not enough: the INSERT fails with `permission denied for sequence` until the sequence is granted.
+An earlier version of this section listed ten objects and omitted all of these, which meant an
+operator who followed it exactly got `permission denied` at startup readiness.
 
 The migration role must own the managed objects (or be a member of their owner role) and have
 `CREATE` on the target schema. The serving role must not own the table, be a superuser, carry
@@ -79,7 +152,12 @@ pods.
 - `another RE-call schema migrator is already running`: wait for the active migration job. Do not
   run multiple jobs against the same database.
 - `checksum drift`: restore the released migration bytes. Never edit an applied SQL file; add a new
-  ordered migration.
+  ordered migration. One pre-release exception has already been taken: `0008_generation_foundation.sql`
+  was corrected in place before v1 shipped, because the bug it carried aborted the migration on any
+  database that held v0.8 data, so no populated install could have applied it and a later migration
+  could never have been reached to repair it. A database that applied the *earlier* 0008 (which means
+  an empty local or CI database) fails here and must be recreated. There is no in-place repair,
+  because the drift check runs before any work.
 - failed/interrupted concurrent index: rerun `schema apply`. An invalid index is dropped
   concurrently and rebuilt; a completed-but-unrecorded index is validated and adopted.
 - schema too new: deploy application code that knows the recorded versions. Do not delete ledger
