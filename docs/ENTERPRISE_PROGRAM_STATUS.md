@@ -256,6 +256,234 @@ Two items carried forward and still open: the MT-RAG baseline has no `results/AR
 
 ---
 
+---
+## 2026-08-05, embedding profile identity: one registry, a cache that cannot alias, the Qwen rejection published
+
+### Session ledger
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | Collapse the two profile vocabularies into one registry | done, `recall/embedding_registry.py`; both dict literals are gone |
+| 2 | Asymmetric semantics, with the legacy `embed()`-only fallback preserved | done, the declared encoder mode is now the dispatch key |
+| 3 | Cache keyed on the complete immutable identity | done, `EmbeddingProfile.fingerprint`; `cache_key` refuses a bare profile ID |
+| 4 | Offline enforcement, proven rather than asserted | done, unit tests plus a real-loader run on VPS2 |
+| 5 | Preserve and publish the Qwen rejection | done, registry record plus `ENTERPRISE_RETRIEVAL.md`, tied together by a test |
+| 6 | Prove every new test can fail | done, 67 of 67; 66 by mutation here, 1 on VPS2 because it skips on Windows |
+
+This is backlog session 8 (items 22, 23, 24), plus item 9 from session 4 and the
+symlink-escape half of item 29, taken ahead of session 3.
+The previous entry names session 3, the outbox drain, as what to start with. It is untouched and
+still first in the backlog.
+
+### Two other sessions landed work while this one ran
+
+`origin/master` moved four times during this session: #192 and #191/#190 (dependabot), then
+**#197** (OIDC wiring, 22 CCA audit fixes) and **#196** (erasure and control-plane fixes). #196 and
+#197 together touched 26 files, four of which this session also touched: `.env.example`,
+`docs/ENTERPRISE_RETRIEVAL.md`, `recall/generations.py` and `tests/test_generations.py`.
+
+The branch was rebased onto `cd0cbe0`. Three of the four auto-merged; `tests/test_generations.py`
+was an add/add conflict at the tail, where both sides appended tests. It was resolved by keeping
+**both**, upstream's first, and the resolution script asserts every test function from each side is
+present by name in the result and that no conflict marker survives, rather than trusting a reading
+of the diff. Nine upstream tests and one of this session's are all present.
+
+Everything below was re-verified on the rebased tree, not on the tree the work was written against.
+
+### What landed
+
+**One registry.** `recall/embedding_registry.py` owns `profile_id`, `model_name`, `dimension`,
+`query_mode`, `passage_mode`, `context_mode`, `normalization`, `instruction_version`,
+`chunker_version`, the artifact digest and the backend, for all six registered IDs. The two
+literals it replaces were `recall_mcp/service.py:113-120` (profile to context version, six entries)
+and `recall/context.py:37-41` (profile to context mode, three entries plus a silent default).
+
+Two properties do the work, and both are tested:
+
+* `context_version` is **derived** from `context_mode` rather than declared next to it, matching
+  what `Indexer.__init__` already enforces. The two values cannot disagree because there is only
+  one of them.
+* A profile added to the registry needs no second edit. The test adds a seventh profile to the
+  registry alone and asserts that both `context_policy_for_profile` and `make_embedder` already
+  know it. That test is red against the old arrangement, which is what makes it a guard rather
+  than a description.
+
+`make_embedder` is now environment parsing only. `RegisteredProfile.build` is the single
+construction site, and `RegisteredProfile.identity` the single constructor of a runtime
+`EmbeddingProfile` for a registered ID.
+
+**Asymmetric semantics.** `query_mode` and `passage_mode` are dispatch keys handed to the backend,
+not documentation of one: `FastEmbedEmbedder` resolves `getattr(model, mode)` and refuses a mode
+the backend does not have, rather than falling back to the symmetric encoder. Dimension discovery
+goes through the passage encoder, and a probed width that contradicts the registry refuses
+startup. `GenerationManager.build` was still indexing with `embedder.embed`; it now uses
+`embed_passages`. The `Embedder` protocol is unchanged and an `embed()`-only embedder still works
+through both helpers, which six tests pin.
+
+**Cache identity.** `EmbeddingProfile.fingerprint()` is a SHA256 over the complete identity, and
+`cache_key` now takes the profile rather than its ID. The signature deliberately refuses a bare
+string: the old call passed the profile ID, so the unsafe call is the one that used to be correct,
+and a `str | EmbeddingProfile` union would have let every existing caller keep the weaker key.
+
+This answers backlog item 24 as a side effect. `normalization`, `instruction_version`,
+`chunker_version` and `dependencies` were read by nothing; they are now key material, so a change
+in any of them re-partitions the cache instead of silently serving vectors produced under the old
+value.
+
+⚠️ **The change invalidates every existing embedding cache entry.** Old entries were keyed by
+profile ID and are simply not found. The cost is one re-embed of whatever was cached; nothing is
+served under a key that no longer describes it.
+
+**Offline enforcement.** Artifact verification moved ahead of the backend import, so a missing or
+tampered tree fails the same way whether or not the optional extra is installed. Startup is proven
+to complete with connections refused, and to refuse on a missing artifact, a checksum mismatch, a
+malformed digest, an empty tree and a symlink escaping the artifact root.
+
+**The Qwen rejection.** Registered, marked rejected, and carrying the measurement that decided it.
+`RejectionRecord` refuses to be constructed without one, because a verdict with no number is an
+opinion the next session re-litigates. A test asserts `ENTERPRISE_RETRIEVAL.md` carries every
+number the registry carries, so neither copy can be deleted quietly.
+
+### What was measured
+
+**The real loader, offline, on VPS2.** Root SSH, not qwen-mcp: this program lives in
+`/opt/recall-enterprise`, which is outside qwen-mcp's four file roots. The check ran against
+fastembed 0.8.0 and the artifact provisioned at
+`/opt/recall-enterprise/models/bge-fastembed-cache`, from `/var/tmp/recall-profile-check`
+(scratch, left in place). `/opt/recall-enterprise` was not modified.
+
+| Check | Result |
+|---|---|
+| `artifact_tree_sha256` of the provisioned tree | `9a443d711e06…c919c`, **equal to the digest recorded in `manifest.json` on 2026-08-03** |
+| Socket block fires (positive control) | yes, on `create_connection`, `getaddrinfo` and `socket.connect` |
+| `bge-small-symmetric-v1` loads with connections refused | yes, dim 384, both encoders return 384 |
+| `bge-small-asymmetric-v1`, `bge-small-context-section-v1` | both load, dim 384 |
+| Checksum mismatch | refused |
+| Missing artifact | refused |
+| Deployment identity fingerprint | `c992f9f018d68570acb82d27233599cc20a2d65ed485b0e2fcfb18201cceacc7` |
+
+The digest agreement is worth naming: the manifest value was produced by a different tool months
+earlier, so this is an independent confirmation of the tree-hash implementation, not a
+self-comparison.
+
+**Finding: `bge-small-asymmetric-v1` is asymmetric in name only.** Under fastembed 0.8.0,
+`embed`, `query_embed` and `passage_embed` return **byte-identical** vectors for
+`BAAI/bge-small-en-v1.5` (`embed == query == passage`, cosine 1.0). `TextEmbedding.query_embed`
+delegates to the model implementation, and this one applies no query prefix.
+
+Nothing in this session depends on that being false, and nothing here changes it. What it means:
+
+* the three context profiles and `bge-small-asymmetric-v1` currently differ from
+  `bge-small-symmetric-v1` in the passage TEXT they embed, not in the encoder they use;
+* the dispatch still has to be correct, because `qwen3-embedding-0.6b-384-v1` does use a distinct
+  instruction-prefixed query encoder, and because a future fastembed or model could add one
+  without changing a profile ID;
+* a claim that this deployment uses a distinct query encoder for BGE would be **false**. If a BGE
+  query instruction is wanted, that is a new experiment and needs registering. It was not done
+  here: new model behaviour is out of scope for this session.
+
+**Finding: the socket block has to be a `socket.socket` subclass.** Replacing `socket.socket` with
+a function looks stricter and is unusable: `ssl` builds `class SSLSocket(socket)` at import time,
+so the swap turns any later `import ssl` into a `TypeError`. The first VPS2 run failed exactly
+that way, because fastembed's import chain reaches `requests`. The local test now uses the same
+instrument as the VPS2 check, so the unit test and the real run are measuring the same thing.
+
+### Proving the tests can fail
+
+67 tests across the six touched files plus one in `test_generations.py`, every one shown red.
+Not a coverage number: a mutation harness applied one narrow change at a time, recorded which tests turned red,
+and restored. It refuses to report anything if a mutation's search string is absent, so a silently
+unapplied mutation cannot read as "the tests survived it".
+
+| Route | Tests | How |
+|---|---|---|
+| Wide sweep, 57 mutations | 64 | one mutation per guard, across `embedding_registry`, `embeddings`, `cache`, `context`, `index`, `service`, `timing`, `generations`, `calibration`, `readiness`, and the published document |
+| Two targeted mutations | 2 | see below |
+| Run on VPS2 | 1 | `test_a_symlink_escaping_the_artifact_root_is_refused` **skips on Windows**, and a skipped test is never red. Run on Linux against the current module: the guard refuses, and with the guard removed it does not. A skip is not a pass, and this is the difference |
+
+**The sweep found a test of mine that could not discriminate.** `make_embedder hardcodes the
+artifact path variable` survived: the Qwen test set no digest, so `make_embedder` refused for the
+missing digest rather than the missing path, and it passed identically whether or not the profile's
+own variable was read. The test now supplies a real provisioned tree and a real digest, so the only
+thing missing is `RECALL_QWEN_MODEL_PATH`, and the mutation kills it.
+
+**Two survivors were bad mutations, not weak tests**, and both needed aiming at what the test
+actually asserts. Relaxing `strict=True` on the FastEmbed side changed nothing the test reaches,
+because that branch only runs when no digest is supplied, which never happens on the registry path;
+all four strict resolves have to go before a missing artifact stops raising `FileNotFoundError`.
+And dropping the relative path from the tree digest left the NUL separator behind, so an added file
+still moved the hash by one byte; the separator has to go with it. Both kill their test once
+aimed correctly.
+
+⚠️ The harness restores with `Path.write_text`, which rewrites LF as CRLF on Windows, so it left
+ten files dirty in `git status` with no content diff. Line endings were normalised afterwards and
+`git status` verified back to exactly this session's files. A next session running it should
+restore by BYTES.
+
+### Gates run
+
+| Gate | Result |
+|---|---|
+| `ruff check .` | clean |
+| `mypy` | clean, 139 source files |
+| `pytest -q` | 2263 passed, 35 skipped, 0 failed on the rebased tree (14 m 03 s, dedicated database) |
+
+**The local suite needed a dedicated database, and then a FRESH one.** Two things bit, in order.
+
+First, contamination: a `ConcurrentMigrator: another RE-call schema migrator is already running`
+cascade across 74 tests, from another Python process on this machine holding the migration
+advisory lock on the shared `localhost:5432` container. Nothing was killed, because a process that
+might belong to a concurrent session is not mine to kill; the suite moved to a throwaway container
+via `RECALL_TEST_DSN`.
+
+Second, after the rebase, **2273 errors, all one cause**:
+`MigrationChecksumMismatch: applied migration 0008_generation_foundation.sql checksum drift`. #196
+edited an already-applied migration, and the throwaway database still had the previous version in
+its ledger. That is the checksum guard working exactly as designed, not a defect in either change,
+but it means **a test database provisioned before #196 must be recreated, not reused**. A next
+session on this machine should expect both.
+
+### Decisions a reader should be able to reverse
+
+1. **A rejected profile warns, it does not refuse.** `make_embedder` logs a warning naming the
+   verdict and the measurement, then builds it. Refusing outright (with an explicit override
+   variable) would be the fail-closed choice and is one line; it was not taken because it changes
+   operator-facing behaviour beyond what was asked. VPS2's active profile is
+   `bge-small-symmetric-v1`, so nothing live is affected either way.
+2. **Calibration is still keyed by profile ID alone.** `load_for` matches `Calibration.embedder`
+   against the profile ID, so two different artifacts under one ID share a threshold. The
+   fingerprint now exists and would be the stricter key. Not changed here: calibration artifacts
+   on disk carry the ID, and calibration semantics were out of scope.
+3. **The default `FastEmbedEmbedder()` still claims `bge-small-symmetric-v1` with a
+   `legacy-unverified` digest.** That is a legacy identity sharing a registered ID. Left alone
+   deliberately: every evaluation harness and published results table labels that embedder, and
+   renaming it would move published labels and orphan existing calibration files. Readiness
+   already fails it for the unpinned digest.
+4. **`EmbedderIdentity` in `recall/lineage.py` overlaps with `EmbeddingProfile` and was not
+   merged.** They serve different layers (manifest provenance against runtime encoder identity).
+   Worth a deliberate decision at some point rather than drift.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** VPS2 has 12 cores under a permanent load average near 8 from unrelated live production. | External dependency. Do not work around it. | Latency is **PENDING**; promotion blocked on latency grounds. Quality and safety gates still run. | unchanged. The VPS2 work this session was correctness only and cites no timing |
+| **No production corpus.** | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
+| **No approved local generator confirmed.** | Open | The generator-neutral evidence path stays unexercised end to end. | unchanged |
+
+### What the next session should start with
+
+1. **Session 3 of the backlog, unchanged: give the migration outbox a drain.** `replay_pending`
+   still has no producer and no operator command, and `cutover` still refuses forever after a
+   crash between the event append and its completion. It remains the only item that can deadlock a
+   production migration with no shipped workaround.
+2. Decide item 1 above: should a rejected profile refuse to start?
+3. If the asymmetric BGE profiles are meant to use a distinct query encoder, register that as an
+   experiment. Today they do not, and the registry now says exactly which encoder each profile
+   claims, so the gap is visible rather than assumed.
+
+---
+
 ## 2026-08-05, gap matrix: 21 requirement areas audited against master
 
 ### Session ledger

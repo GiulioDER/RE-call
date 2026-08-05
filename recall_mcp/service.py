@@ -10,11 +10,11 @@ from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
 from recall.trust_policy import TrustPolicy
+from recall.embedding_registry import find_registered_profile, registered_profile_ids
 from recall.embeddings import (
     Embedder,
     FastEmbedEmbedder,
     HashingEmbedder,
-    Qwen3EmbeddingEmbedder,
     embedding_profile_id,
 )
 from recall.guards import staleness
@@ -100,7 +100,14 @@ DEFAULT_MAX_INDEX_BYTES = 20_000_000  # 20 MB
 
 
 def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
-    """Return the embedder backend by name ('fastembed' local default, or offline 'hashing')."""
+    """Return the embedder backend by name ('fastembed' local default, or offline 'hashing').
+
+    Environment parsing only. The profile vocabulary, every identity field and the construction
+    itself belong to `recall.embedding_registry`; this function used to carry a second copy of
+    the vocabulary as a profile-ID -> context-version dict literal, which is how a profile could
+    exist here and be missing from `context_policy_for_profile`'s map: no error, wrong context
+    mode, vectors that silently disagree with the ones already stored.
+    """
     values = dict(os.environ) if env is None else env
     profile = values.get("RECALL_EMBED_PROFILE", "").strip()
     if profile and name != "fastembed":
@@ -110,37 +117,30 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     if name == "fastembed":
         if not profile:
             return FastEmbedEmbedder()
-        context_versions = {
-            "bge-small-symmetric-v1": "raw-v1",
-            "bge-small-asymmetric-v1": "raw-v1",
-            "bge-small-context-document-v1": "context-document-v1",
-            "bge-small-context-section-v1": "context-section-v1",
-            "bge-small-context-neighbor-v1": "context-neighbor-v1",
-            "qwen3-embedding-0.6b-384-v1": "raw-v1",
-        }
-        if profile not in context_versions:
-            raise ValueError(f"unknown RECALL_EMBED_PROFILE: {profile!r}")
-        artifact_digest = values.get("RECALL_MODEL_SHA256", "")
-        if profile == "qwen3-embedding-0.6b-384-v1":
-            path = values.get("RECALL_QWEN_MODEL_PATH", "")
-            if not path or not artifact_digest:
-                raise ValueError(
-                    "Qwen3 profile requires RECALL_QWEN_MODEL_PATH and RECALL_MODEL_SHA256"
-                )
-            return Qwen3EmbeddingEmbedder(path, artifact_digest)
-        cache_dir = values.get("RECALL_MODEL_CACHE", "")
-        if not cache_dir or not artifact_digest:
+        entry = find_registered_profile(profile)
+        if entry is None:
+            # Kept as an env-facing message: the operator set a variable, and naming the
+            # variable is more useful than naming the registry they have never heard of.
             raise ValueError(
-                "explicit BGE profiles require RECALL_MODEL_CACHE and RECALL_MODEL_SHA256"
+                f"unknown RECALL_EMBED_PROFILE: {profile!r} "
+                f"(registered: {', '.join(registered_profile_ids())})"
             )
-        return FastEmbedEmbedder(
-            asymmetric=profile != "bge-small-symmetric-v1",
-            profile_id=profile,
-            cache_dir=cache_dir,
-            artifact_sha256=artifact_digest,
-            require_local=True,
-            context_version=context_versions[profile],
-        )
+        artifact_digest = values.get("RECALL_MODEL_SHA256", "")
+        artifact_path = values.get(entry.artifact_path_env, "")
+        if not artifact_path or not artifact_digest:
+            raise ValueError(
+                f"profile {profile!r} requires {entry.artifact_path_env} and RECALL_MODEL_SHA256"
+            )
+        if entry.rejected:
+            record = entry.rejection
+            assert record is not None  # `rejected` is exactly `rejection is not None`
+            _log.warning(
+                "embedding profile %s was REJECTED on %s (%s) and is being loaded anyway; "
+                "the measured reason was %s",
+                entry.profile_id, record.decided_on, record.reason,
+                ", ".join(f"{k}={v}" for k, v in record.measurements),
+            )
+        return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest)
     raise ValueError(f"unknown embedder: {name!r} (use 'fastembed' or 'hashing')")
 
 
