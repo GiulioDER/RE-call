@@ -94,7 +94,7 @@ PAYLOADS: tuple[tuple[str, str], ...] = (
 #: is global over the encoded JSON so it covered the field already — the gap was in the
 #: baseline's SCOPE, not in the boundary, which is exactly the kind of gap a frozen artifact
 #: makes expensive to notice later.
-CARRIERS: tuple[str, ...] = ("filename", "metadata", "text", "chunk_id")
+CARRIERS: tuple[str, ...] = ()  # derived from _CARRIER_FIELD below; see that mapping
 
 #: A realistic id: md5 of `notes.md:0`, the shape `recall/index.py` actually produces.
 _DEFAULT_CHUNK_ID = "601ab57356e47b775f6efce349f18bd9"
@@ -122,7 +122,7 @@ class Trial:
 
 
 def _result_with(carrier: str, payload: str) -> TrustedResult:
-    """One trusted hit carrying `payload` in exactly one of the three carriers."""
+    """One trusted hit carrying `payload` in exactly one of the carriers."""
     file = payload if carrier == "filename" else "notes.md"
     text = payload if carrier == "text" else "the rate limit is 120 per minute"
     metadata = {"note": payload} if carrier == "metadata" else {}
@@ -265,6 +265,11 @@ _CARRIER_FIELD: dict[str, str | None] = {
     "chunk_id": "chunk_id",
 }
 
+#: DERIVED, not written twice. The two lists had to be edited together and nothing checked it,
+#: and this commit added two more unguarded `_CARRIER_FIELD[...]` lookups — so a carrier added
+#: to one list alone would now KeyError while GENERATING the baseline.
+CARRIERS = tuple(_CARRIER_FIELD)
+
 
 def _preserved(user: str, carrier: str, payload: str) -> bool:
     field = _CARRIER_FIELD[carrier]
@@ -372,7 +377,16 @@ def injection_rate(rows: list[Trial]) -> float:
     zero, the thing that discriminates it.
     """
     carrying = [trial for trial in rows if _CARRIER_FIELD[trial.carrier] is not None]
-    return round(sum(1 for trial in rows if trial.escaped) / len(carrying), 6)
+    if not carrying:
+        raise ValueError('no payload-carrying trials: the rate has no denominator')
+    # BOTH halves over `carrying`. The first version of this helper narrowed the DENOMINATOR
+    # and left the numerator over every row, so an escape from an arm excluded from the
+    # denominator was still counted: marking all 52 trials escaped returned 1.333333, a rate
+    # above 1. That is the same asymmetry this helper was written to remove, reproduced inside
+    # the removal, and neither test caught it because both recomputed the identical expression.
+    rate = round(sum(1 for trial in carrying if trial.escaped) / len(carrying), 6)
+    assert 0.0 <= rate <= 1.0, f'a rate outside [0, 1] is not a rate: {rate}'
+    return rate
 
 
 def build_baseline() -> dict[str, object]:

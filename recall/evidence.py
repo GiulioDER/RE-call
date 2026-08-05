@@ -238,10 +238,12 @@ def build_evidence_bundle(
         # There WERE trusted candidates and the budget took all of them.
         empty_reason = "evidence_budget_exhausted"
     else:
-        # There were none. `abstained` is False here on exactly one path: a DEGRADED result, where
-        # the trust gate never ran, every verdict is `unverified` and `abstained` was forced False
-        # because abstaining is itself a judgement nobody licensed. Reporting that as a budget
-        # problem would name the wrong cause for the one case where the cause matters most.
+        # There were none. Several shapes reach here and the bundle cannot tell them apart:
+        # retrieval returned nothing, every candidate was demoted, or the trust gate could not
+        # run (a degraded result forces `abstained` False because abstaining is itself a
+        # judgement nobody licensed). What they share is that no `ok` hit survived, which is
+        # what this code names. Reporting it as a budget problem named a cause that is false
+        # for all of them. An earlier version of this comment claimed 'exactly one path'.
         empty_reason = "no_trusted_evidence"
     return EvidenceBundle(
         query=result.query,

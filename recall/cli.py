@@ -869,7 +869,11 @@ def main(argv: list[str] | None = None) -> None:
                 store,
                 embedder,
                 args.query,
-                k=args.k,
+                # `-k` has no lower bound and `trusted_search`
+                # refuses k < 1 as its FIRST statement, so `-k 0` tracebacked out of the
+                # library before any of this command's own guards were reached. Clamped at
+                # the source; the clamp in `_print_evidence` stays as defence in depth.
+                k=max(1, args.k),
                 calibration=_search_calibration,
                 entailment=entail_judge,
                 policy=_search_policy,

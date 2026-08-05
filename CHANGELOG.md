@@ -23,8 +23,8 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
   All four are additive: existing fields, metadata keys and tools are unchanged, and each of the
   four carries a test asserting a frozen list of its pre-existing keys. The CLI listing also gains
-  the chunk id, the ordinal, `valid_from` and the embedding/retrieval/generation identity — the
-  three other surfaces already carried all five.
+  six identity fields — chunk id, ordinal, `valid_from`, embedding profile, retrieval profile
+  and index generation — which the three other surfaces already carried.
 
 - **`normalize_citations`, and `GenerationResult.citations_normalized`.** A generator that cites
   the same chunk twice is redundant, not unsound, so `generate_from_evidence` now collapses

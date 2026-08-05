@@ -153,7 +153,9 @@ evidence at all, which must score a perfect escape rate and zero preservation.
    32 to 36%, but it is a design decision about what `items[]` is for.
 3. **The budget loop is quadratic** - 1,338,640 characters fed to the tokenizer at `max_items=50`
    for a 52,300 byte payload. Inert today: no shipped caller sets `max_tokens`. Reachable from the
-   library.
+   library. One free part WAS taken: the per-candidate tuple allocation moved inside the branch
+   that reads it, so it no longer runs on the budget-free path both shipped callers use. The
+   quadratic RENDER, which is the actual cost, is untouched.
 4. **No memoisation between the two retrieval tools.** A consult-then-answer pair pays retrieval
    twice and takes a second slot from quality's pool of two.
 5. **Assembly exceptions are invisible to the retrieval metrics** on both tools, not only the new

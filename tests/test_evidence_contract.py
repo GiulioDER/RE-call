@@ -223,13 +223,17 @@ def test_the_bundle_cannot_contain_a_passage_that_was_not_retrieved() -> None:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
 
-    # An ALLOWLIST, not a denylist. The denylist that stood here first ("recall.store",
-    # "recall.retriever", "recall.trust", "psycopg") was strictly weaker AND unfireable: emptying
-    # it changed nothing, because this assertion already refuses everything not named below. A
-    # denylist also only forbids what someone thought of; this forbids a store reached by any
-    # name at all.
+    # An ALLOWLIST, not a denylist. The denylist that stood here first was unfireable — emptying
+    # it changed no test, because this assertion already refuses everything not named below —
+    # and it only forbade what someone had thought of, while this forbids a store reached under
+    # any name. It is NOT strictly dominant: a raw-source scan also matched inside a dynamic
+    # `__import__("recall.store")`, which produces no import node. That hole is closed by the
+    # separate byte-level assertion below rather than by keeping a guard that cannot fire.
     assert imported <= {"__future__", "json", "collections.abc", "dataclasses", "datetime",
                         "typing", "recall.types"}, f"unexpected import: {imported}"
+    # The one thing an AST import walk cannot see, and the only thing the old denylist caught
+    # that this does not.
+    assert "__import__" not in source, "a dynamic import would bypass the allowlist above"
 
     assert set(inspect.signature(build_evidence_bundle).parameters) == {"result", "policy"}
 
