@@ -41,6 +41,28 @@ def _adapters(names: list[str]) -> list[CorpusAdapter]:
     return [ADAPTERS[name]() for name in names]
 
 
+def scope_questions(
+    frozen: "list[FrozenQuestion]", corpus: str
+) -> "list[FrozenQuestion]":
+    """The frozen questions one adapter owns.
+
+    A named function rather than an inline comprehension so a test can exercise THIS code instead
+    of restating it. The first test written for this defect re-implemented the expression against
+    the adapter, which meant it passed with the fix reverted — a guard that could not fire, in the
+    fix for a bug about a filter that matched nothing.
+
+    `startswith` as well as equality: `MtragAdapter` stamps `mtrag:<domain>` so the gate
+    stratifies per domain, and an equality-only filter made `--corpus mtrag` match nothing at all.
+    The colon matters — without it, a future `labelled_v2` corpus would be swept into `labelled`.
+    """
+    prefix = f"{corpus}:"
+    return [
+        question
+        for question in frozen
+        if question.corpus == corpus or question.corpus.startswith(prefix)
+    ]
+
+
 def cmd_freeze(args: argparse.Namespace) -> int:
     if args.out.exists() and not args.force:
         raise SystemExit(
@@ -107,6 +129,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     from recall.embeddings import embedding_profile
     from recall.eval.promotion.search import StoreSearch
 
+    # Refused HERE, before the embedder is built. Moving the DSN out of argv removed the only
+    # thing asserting one exists, and `PgVectorStore` does not validate it: `None` reaches psycopg
+    # as an AttributeError after a model load, and an EMPTY string — the ordinary shape of an
+    # unset systemd or CI variable — is a valid libpq conninfo that resolves to the LOCAL
+    # DEFAULTS. On a host with peer or trust auth that connects to the operator's own database,
+    # where this command then creates, indexes and drops a table.
+    if not args.dsn:
+        raise SystemExit(
+            "no DSN. Pass --dsn, or set $RECALL_SERVING_DSN or $RECALL_DSN. An empty value is "
+            "refused rather than passed through: libpq reads an empty conninfo as 'use the local "
+            "defaults', which would index this corpus into whatever database happens to be there."
+        )
     frozen, header = read_manifest(args.manifest)
     if args.expected_digest and header.get("digest") != args.expected_digest:
         raise SystemExit(
@@ -117,15 +151,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     reason = adapter.unavailable_reason()
     if reason is not None:
         raise SystemExit(reason)
-    # `startswith` as well as equality: `MtragAdapter` stamps `mtrag:<domain>` as the corpus
-    # so the gate stratifies per domain, and an equality-only filter made `--corpus mtrag`
-    # match nothing at all — the corpus was wired and unrunnable.
-    prefix = f"{adapter.name}:"
-    scoped = [
-        question
-        for question in frozen
-        if question.corpus == adapter.name or question.corpus.startswith(prefix)
-    ]
+    scoped = scope_questions(frozen, adapter.name)
     if not scoped:
         raise SystemExit(
             f"the manifest holds no question for corpus {adapter.name!r}; it covers "
