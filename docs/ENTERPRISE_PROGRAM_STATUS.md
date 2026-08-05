@@ -141,19 +141,19 @@ The related defect was in the arithmetic. `_cosine` computed entirely in float32
 values **above 1.0** for byte-identical vectors (31.9% of 20000 trials, max `1.000000119209`) and
 returned exactly `1.0` for vectors differing in 382 of 384 components (a 3e-5 rad rotation). The
 published "cosine exactly 1.0" was not a property that implementation reliably produced. It now
-computes in float64 and clamps; reverting it to float32 turns **10 of the 27 new tests** red.
+computes in float64 and clamps; reverting it to float32 turns **11 of the 28 new tests** red.
 
 Every guard was shown able to fail by mutation, applied and restored **by bytes**, with the file
 verified byte-identical afterwards: sensitivity, coverage, provisioning, digest binding, the float64
-cosine, the usage-versus-refusal exit split, the AST delegation check, the verdict's use of it, and
-the artifact's schema stamp. **8 of 8 killed**, after two rounds.
+cosine, the usage-versus-help exit split, the AST delegation check, the verdict's use of it, the
+schema stamp and the provenance stamp. **10 of 10 killed** in one sweep.
 
-The two the first round got wrong are worth recording, because both were defects in the SWEEP
-rather than in the code. One mutation's search string did not match, and the harness aborted that
-row rather than reporting a survival, which is the behaviour that makes the other rows mean
-anything. And "delete the schema key" **survived**: the test read the committed artifact FILE, so
-it could not see the emitter losing the key. A test that pins an artifact does not pin the code
-that writes it.
+Two earlier rounds got this wrong, and both errors were in the SWEEP rather than in the code, which
+is why the count is stated from a single clean run rather than accumulated across rounds. One
+mutation's search string did not match and the harness aborted that row instead of reporting a
+survival, which is the behaviour that makes the other rows mean anything. And "delete the schema
+key" **survived**, because the test read the committed artifact FILE and could not see the emitter
+losing the key: a test that pins an artifact does not pin the code that writes it.
 
 **No timing is reported and none is citable.** VPS2 showed a load average of 9.37 / 8.79 / 9.46 on
 12 cores while this ran, from unrelated live production. The only numbers taken from VPS2 here are
@@ -248,10 +248,10 @@ where the schema is currently at `0010`).
 |---|---|
 | `ruff check .` | clean, ruff 0.15.22 |
 | `mypy` | clean, 149 source files |
-| `pytest tests/test_bench_profile_encoder_distinctness.py` | **27 passed** (new file) |
+| `pytest tests/test_bench_profile_encoder_distinctness.py` | **28 passed** (new file) |
 | `pytest` on the four suites reading the edited documents | 81 passed |
 | `benchmarks/claim_gate.py` | exit 0 |
-| Mutation sweep over the new guards | **8 of 8 killed** (two rounds), file restored byte-identical |
+| Mutation sweep over the new guards | **10 of 10 killed**, one clean sweep, file restored byte-identical |
 | CCA audit | DEEP tier, 5 auditors, **31 findings**; then the anti-regression and architect gates, **2 regressions + 8 more**; see below |
 
 ### The audit found the apparatus, not the conclusion, and that is the second headline
@@ -267,10 +267,10 @@ The conclusion survived every finding. The apparatus did not:
 | Finding | Outcome |
 |---|---|
 | **Both controls varied the TEXT and never the ENCODER**, so a text-keyed cache would have passed them, and the harness's resolution on the decision axis was never demonstrated | fixed: the sensitivity control, plus delegation-chain introspection |
-| **`_cosine` computed in float32**: above 1.0 for byte-identical vectors, blind below 3e-5 rad | fixed: float64 and clamped. Reverting it turns 7 tests red |
+| **`_cosine` computed in float32**: above 1.0 for byte-identical vectors, blind below 3e-5 rad | fixed: float64 and clamped. Reverting it turns 11 of 28 tests red |
 | **fastembed 0.8.0's artifact-miss path `rmtree`s and `unlink`s BEFORE checking `local_files_only`**, and the default `--cache-dir` was the production tree with "run as root" in the instructions | fixed: `assert_provisioned` refuses that state before the loader is constructed, and the run instruction now uses a copy. **I had already run the first version as root against the live tree**; it survived only because the tree resolves cleanly |
 | **Nothing bound the result to the artifact** it was attributed to: no digest, no width check | fixed, both, before any encoding |
-| **No test seam and no companion test.** The only proof a control could refuse was a copy hand-edited on the host and deleted | fixed: `model_factory`, and 21 tests against a stub backend so CI runs them without the `fastembed` extra |
+| **No test seam and no companion test.** The only proof a control could refuse was a copy hand-edited on the host and deleted | fixed: `model_factory`, and a test file now carrying 28 tests against a stub backend, so CI runs them without the `fastembed` extra |
 | **"The only frozen manifest anywhere is `labelled`"** came from a glob that cannot match `manifest.jsonl` | fixed above; the ladder has one and three corpora freeze from a clean clone |
 | **The CHANGELOG called the existing null-difference decision "already that artifact"** while this entry argued the real pairing differs in exactly the way that matters | fixed; both now say same KIND, not same artifact |
 | Argparse usage errors exited 2, the same code as a refused control | fixed, usage is 64 |

@@ -155,6 +155,22 @@ class ControlRefused(Exception):
         return {"refused": self.reason, **self.detail}
 
 
+def script_sha256() -> str:
+    """This file's own digest, over LF-normalised bytes.
+
+    Provenance that travels IN the artifact rather than in a paragraph beside it, so a reader of
+    an archived result can identify the code that produced it with one command:
+    `git show <rev>:benchmarks/check_profile_encoder_distinctness.py | sha256sum`.
+
+    Normalised because git stores this file with LF while a Windows working copy holds CRLF.
+    Comparing a working copy against a git blob across that boundary is precisely the mistake that
+    made one claim in `docs/ENTERPRISE_PROGRAM_STATUS.md` wrong three times, so this value is
+    defined to be the one that matches on either platform.
+    """
+    crlf, lf = bytes([13, 10]), bytes([10])
+    return hashlib.sha256(Path(__file__).read_bytes().replace(crlf, lf)).hexdigest()
+
+
 def _package_version(name: str) -> str:
     """Never let recording the environment destroy a completed measurement.
 
@@ -629,6 +645,8 @@ def measure(
         # the filename. It sits in results/promotion/ beside decisions and is NOT one: no arm
         # was scored and no gate was evaluated.
         "schema": "recall-encoder-distinctness-v1",
+        # Which code produced this result. See `script_sha256`.
+        "script_sha256": script_sha256(),
         "environment": environment,
         "resolved_encoders": resolved,
         "coverage_control": coverage,

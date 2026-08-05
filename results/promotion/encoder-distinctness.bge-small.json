@@ -1,5 +1,6 @@
 {
   "schema": "recall-encoder-distinctness-v1",
+  "script_sha256": "883ea471d35932aec56501bd88c9852961848a391de2d32f389119f9d4dc767e",
   "environment": {
     "python": "3.12.3",
     "platform": "Linux-6.8.0-136-generic-x86_64-with-glibc2.39",
