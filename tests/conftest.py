@@ -66,6 +66,106 @@ requires_db = pytest.mark.skipif(
     reason="pgvector DB not reachable (run `docker compose up -d`)",
 )
 
+#: Role provisioned by `unprivileged_dsn` when `TEST_DSN` turns out to be privileged.
+UNPRIVILEGED_ROLE = "recall_rls_probe"
+_UNPRIVILEGED_PASSWORD = "recall_rls_probe"  # noqa: S105 - throwaway local test role
+
+
+def role_is_unprivileged(dsn: str) -> bool:
+    """True when this DSN's role is provably neither superuser nor BYPASSRLS.
+
+    Fails CLOSED. The earlier form was `not (row and row[0])`, which reported a MISSING row as
+    unprivileged: absence of evidence read as evidence of safety, in the one helper whose entire
+    job is to prove a negative capability. Every RLS assertion in the suite rests on this answer,
+    so an unknown privilege must never be the safe one.
+    """
+    with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as conn:
+        row = conn.execute(
+            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"
+        ).fetchone()
+    if row is None:  # pragma: no cover - current_user is always in pg_roles
+        raise RuntimeError("could not determine whether current_user is privileged")
+    return not row[0]
+
+
+@pytest.fixture(scope="session")
+def unprivileged_dsn() -> str:
+    """A DSN whose role is provably neither superuser nor `BYPASSRLS`.
+
+    Row level security is INERT for a superuser and for a `BYPASSRLS` role. An isolation test run
+    on such a role passes whether or not a single policy exists, which makes it a check that
+    cannot fail, the most expensive kind, because it reads as protection. `docker-compose.yml`
+    ships `POSTGRES_USER=recall`, which IS the cluster superuser, so the default developer
+    configuration is exactly the one where these assertions mean nothing.
+
+    Two paths, and the caller cannot tell them apart:
+
+    - `RECALL_TEST_DSN` already points at an unprivileged role. Use it as is.
+    - It points at a privileged one. Provision `recall_rls_probe` (`NOSUPERUSER NOBYPASSRLS`),
+      grant it the connected role's privileges so it can reach objects that role already owns,
+      and hand back a DSN for it.
+
+    Provisioning needs `CREATEROLE` or superuser. A role that has neither, and is itself
+    privileged, cannot produce an unprivileged DSN at all; that skips, rather than quietly
+    falling back to the privileged DSN, which is how this check would become vacuous again.
+
+    Every test that uses this fixture still asserts the property itself. A fixture named
+    "unprivileged" is a claim; `SELECT rolsuper OR rolbypassrls` is evidence.
+    """
+    if not _db_available():
+        pytest.skip("pgvector DB not reachable")
+    if role_is_unprivileged(TEST_DSN):
+        return TEST_DSN
+
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        owner = conn.execute("SELECT current_user").fetchone()[0]
+        may_provision = conn.execute(
+            "SELECT rolsuper OR rolcreaterole FROM pg_roles WHERE rolname = current_user"
+        ).fetchone()
+        if not (may_provision and may_provision[0]):
+            pytest.skip(
+                f"RECALL_TEST_DSN role {owner!r} bypasses RLS and cannot create a role to "
+                "stand in for one; point RECALL_TEST_DSN at an unprivileged role"
+            )
+        exists = conn.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname = %s", (UNPRIVILEGED_ROLE,)
+        ).fetchone()
+        if not exists:
+            conn.execute(
+                f"CREATE ROLE {UNPRIVILEGED_ROLE} LOGIN PASSWORD '{_UNPRIVILEGED_PASSWORD}' "
+                f"NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE"
+            )
+        # Membership in the connected role, so the probe reaches the objects that role owns,
+        # but WITH SET FALSE so it cannot `SET ROLE` back into it. That distinction is the whole
+        # security of this fixture: on the shipped docker-compose the connected role IS the
+        # cluster superuser, and a member that can SET ROLE to a superuser is a superuser, for
+        # whom every RLS policy below is inert. `rolsuper` on the probe stays false either way,
+        # so the fixture's own self-check cannot see the difference; the grant option is what
+        # makes the check honest.
+        #
+        # FORCE ROW LEVEL SECURITY binds an owner too, so inheriting ownership privileges does
+        # not reopen the bypass on the tables under test.
+        try:
+            conn.execute(f'GRANT "{owner}" TO {UNPRIVILEGED_ROLE} WITH SET FALSE')
+        except psycopg.errors.SyntaxError:
+            # WITH SET requires PostgreSQL 16. On 15 and earlier, membership always implies
+            # SET ROLE, so refuse rather than silently provisioning an escalatable probe.
+            pytest.skip(
+                "this PostgreSQL is too old for GRANT ... WITH SET FALSE; point "
+                "RECALL_TEST_DSN at an unprivileged role instead"
+            )
+        conn.execute(f"GRANT USAGE, CREATE ON SCHEMA public TO {UNPRIVILEGED_ROLE}")
+
+    parts = conninfo_to_dict(TEST_DSN)
+    parts["user"] = UNPRIVILEGED_ROLE
+    parts["password"] = _UNPRIVILEGED_PASSWORD
+    dsn = make_conninfo(**parts)
+    if not role_is_unprivileged(dsn):  # pragma: no cover - provisioning contradicted itself
+        pytest.fail(f"provisioned role {UNPRIVILEGED_ROLE} is still privileged")
+    return dsn
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _bootstrap_default_test_schema():

@@ -1472,9 +1472,18 @@ class PgVectorStore:
         """Atomically erase tenant sources from active and shadow generation tables."""
         if not sources:
             return 0
+        from recall.control_plane import validate_table_name
+
         unique_tables = list(dict.fromkeys(tables))
-        if not unique_tables or any(not table.isidentifier() for table in unique_tables):
-            raise ValueError("all generation tables must be valid SQL identifiers")
+        if not unique_tables:
+            raise ValueError("at least one generation table is required")
+        # The SAME allowlist the control plane validates registry rows with, not a second,
+        # weaker one. This method interpolates every name into a DELETE, and it used to accept
+        # anything `str.isidentifier()` liked: non-ASCII, uppercase that PostgreSQL folds to
+        # something else, and names past the truncation point. It does NOT refuse unquoted SQL
+        # keywords such as `select`; those are a syntax error at query time, not an injection.
+        for table in unique_tables:
+            validate_table_name(table)
         self._supersession_cache = None
 
         def _op(conn: "psycopg.Connection") -> int:

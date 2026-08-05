@@ -65,6 +65,15 @@ class _Store:
     def check_rls_effective(self) -> bool:
         return True
 
+    def check_schema(self) -> None:
+        """A healthy chunk-table ledger.
+
+        `check_enterprise_readiness` now verifies BOTH schema ledgers, so it calls this. Without
+        it the fake raised `AttributeError`, and every test in this file failed on a chunk-table
+        schema complaint while claiming to be about profile identity. Returning cleanly is the
+        right stand-in: the subject here is the identity comparison, and a fake that failed the
+        schema check would mask the branch each test exists to exercise."""
+
 
 def _identity(profile_id: str = "bge-small-asymmetric-v1") -> EmbeddingProfile:
     return registered_profile(profile_id).identity(artifact_digest=DIGEST)

@@ -129,7 +129,39 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   environment rather than omitting the key, so a copied `.env` with these left blank refused
   startup.
 
-### Added
+- **Subject-to-tenant binding for OIDC (`RECALL_OIDC_SUBJECT_TENANTS`).** The tenant allowlist
+  bounds *which* tenants exist; it never bound *who* may name one, so any subject able to obtain a
+  token from the issuer with the right audience reached every provisioned tenant. A bound subject
+  naming another tenant is now refused with `subject_tenant_mismatch`, an unknown subject with
+  `subject_not_bound`, and a token carrying no `sub` with `missing_subject`. Checked after
+  signature verification, so it cannot be used to enumerate subjects.
+
+  ⚠️ **BREAKING: an existing OIDC deployment will not boot until it answers this.** Either set
+  `RECALL_OIDC_SUBJECT_TENANTS`, or set `RECALL_OIDC_TRUST_TENANT_CLAIM=1` to declare that your IdP
+  mints `tenant` from an authoritative subject-to-organisation mapping and never from a
+  user-editable attribute. Setting both refuses. There is deliberately no default, because a
+  warning about this would land in a startup journal nobody reads.
+
+  The tenant is everything after the **last** colon of each pair, so a subject may itself contain
+  them (`system:serviceaccount:ns:sa:my-tenant`).
+
+- **`RECALL_AUTH_MODE=oidc|static`, which makes the static-to-OIDC cutover staged.** Both
+  mechanisms configured at once previously refused to boot. That was right when nobody had chosen,
+  and it also made the transition atomic and un-canaryable: the intermediate state of a two-step
+  rollout would not start, and because the conflict is checked before the transport branch it took
+  stdio processes with it. Precedence can now be *declared*; undeclared ambiguity still refuses.
+
+  Only the selected mechanism is built, not merely preferred. That matters because
+  `RECALL_ENV=production` refuses the static token file outright: a server that loaded it before
+  consulting the selector could never complete the flip. The OIDC block is still *validated*
+  whenever present, so step 1 rehearses it rather than deferring every OIDC error to the flip. The
+  inactive mechanism is logged as inactive on every boot, because the refusal that used to carry
+  that warning is gone.
+
+  ⚠️ Two limits, in `docs/AUTH.md`: step 1 cannot run under `RECALL_ENV=production` (the token
+  file is the active mechanism there and production refuses it), and rollback is a mode flip only
+  while the token file still exists.
+
 - **External OIDC identity for the MCP server's HTTP transports.** `RECALL_OIDC_ISSUER`,
   `RECALL_OIDC_AUDIENCE` and `RECALL_OIDC_TENANTS` (required together), plus optional
   `RECALL_OIDC_ALGORITHMS`. Revocation, rotation and expiry move to the IdP. See
@@ -147,16 +179,63 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   `RECALL_OIDC_TENANTS`; any other `RECALL_OIDC_*` key is set *without* `RECALL_OIDC_ISSUER`
   (misspelling that one key otherwise reverted the deployment to static tokens silently);
   `RECALL_OIDC_ISSUER` is not `https://`; `RECALL_OIDC_ALGORITHMS` names an algorithm the JWKS
-  loader cannot serve; or **both** `RECALL_OIDC_ISSUER` and `RECALL_AUTH_TOKENS_FILE` are set.
-
-  ⚠️ **Cutover ordering.** Because both-set refuses, remove `RECALL_AUTH_TOKENS_FILE` in the
-  *same* config revision that adds the OIDC variables — a two-step rollout fails at the
-  intermediate step. The conflict is checked before the transport branch, so stdio processes
-  sharing that environment file are refused too.
+  loader cannot serve; or both `RECALL_OIDC_ISSUER` and `RECALL_AUTH_TOKENS_FILE` are set
+  **without** `RECALL_AUTH_MODE` declaring which one is active (see above: that is the supported
+  way to stage a cutover, and it replaces the atomic single-revision swap this entry originally
+  prescribed).
 - `RECALL_AUTH_ISSUER_URL` is now **optional** when `RECALL_OIDC_ISSUER` is set, defaulting to it.
   `RECALL_AUTH_RESOURCE_URL` is still required.
 - `PyJWT[crypto]` is now declared directly on the `mcp` and `dev` extras rather than inherited
   transitively from `mcp`, because `recall_mcp.server` imports the OIDC module unconditionally.
+
+- **`recall-enterprise` grew the five subcommands its own machinery already needed**: `replay`,
+  `parity`, `readiness`, `status` and `retire`. `ControlPlane.replay_pending` previously had one
+  reference in the entire repository, its own definition, so a crash between a shadow migration's
+  outbox append and its completion left a pending event, `cutover` then refused forever, and the
+  documented recovery could not be invoked. `validate_generation_parity` and
+  `check_enterprise_readiness` were likewise reachable only from Python.
+
+  An operator names a GENERATION, never a table: every physical table is resolved from
+  `recall_index_generations` and revalidated on read. `status` projects ids and counts server side
+  and never selects a pending event's payload, which holds corpus text and vectors.
+
+- **Right-to-erasure now reaches the migration outbox.** While a shadow migration is in flight, a
+  pending event's payload holds the full text and vectors of its batch. `recall_forget` deleted
+  from both chunk tables and stopped there, so erased text remained in `recall_migration_events`
+  and a later `replay` would have written it back into both generations. The scrub is keyed on the
+  sources the CALLER named rather than on what still had rows, because the case that most needs it
+  is the one where a crash left the payload as the only copy. `ForgetResult` gained
+  `outbox_events_scrubbed` so "the outbox was swept" and "the outbox was never consulted" stop
+  looking alike on an irreversible path. The `recall forget` CLI remains single-generation and does
+  not scrub the outbox; on an enterprise deployment use the MCP tool.
+
+- Enterprise readiness verifies **both** schema ledgers. `recall_schema_versions` is
+  database-global and nothing checked it, so a process could boot against a control plane that was
+  behind or whose applied SQL no longer matched the shipped bytes. `recall-enterprise migrate` also
+  takes an advisory lock, matching `recall schema apply`. See `docs/MIGRATIONS.md`.
+
+### Changed
+- **BREAKING (enterprise): physical table identifiers are now an allowlist**,
+  `^[a-z_][a-z0-9_]{0,45}$`. The previous gate was `str.isidentifier()`, which accepts non-ASCII,
+  accepts uppercase that PostgreSQL folds to something else (so the registry row and the real table
+  diverge), and accepts names past the point where two rows collapse onto one truncated table. The
+  46-byte ceiling is set by the longest derived identifier, not by PostgreSQL's 63: every index and
+  policy suffixes the table name, and `_tenant_isolation` is 17 bytes, so a longer name yields a
+  truncated index that `readiness_facts` then reports as missing.
+
+  **A registry row created under the old rule will refuse to serve.** Run `recall-enterprise
+  status` before upgrading: it lists any non-conforming row with the reason instead of failing on
+  it.
+
+- **BREAKING (enterprise): a retired or failed generation cannot serve.** `StoreRegistry` refuses
+  one per request, and the operator CLI refuses to open one, which matters because `replay` writes
+  through that path. `recall-enterprise retire` confirms against one tenant's route, because
+  `recall_tenant_routes` carries forced row level security and no role in this deployment may
+  enumerate every tenant's routes; the per-request refusal is what actually protects a request.
+
+- `recall-enterprise` reads `RECALL_MIGRATION_DSN` for its DDL subcommands and `RECALL_SERVING_DSN`
+  for its read-only ones, both falling back to `RECALL_DSN`. `readiness` reports which role it
+  evaluated, because its row level security verdict is about the connection it was given.
 
 ### Changed
 - **BREAKING: retrieval fails closed when it cannot certify an answer.** `trusted_search` used to
