@@ -4,9 +4,24 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Protocol
 
-ContextMode = Literal["none", "document", "section", "neighbor"]
+from recall.embedding_registry import (
+    CONTEXT_POLICY_VERSION,
+    ContextMode,
+    find_registered_profile,
+)
+
+__all__ = [
+    "ContextMode",
+    "ContextPolicy",
+    "StructuredChunk",
+    "Tokenizer",
+    "context_policy_for_profile",
+    "contextual_passages",
+    "document_title",
+    "structure_chunks",
+]
 
 
 class Tokenizer(Protocol):
@@ -16,7 +31,7 @@ class Tokenizer(Protocol):
 @dataclass(frozen=True)
 class ContextPolicy:
     mode: ContextMode = "none"
-    version: str = "v1"
+    version: str = CONTEXT_POLICY_VERSION
     max_tokens: int | None = None
     tokenizer: Tokenizer | None = None
 
@@ -34,12 +49,20 @@ class StructuredChunk:
 
 
 def context_policy_for_profile(profile_id: str) -> ContextPolicy:
-    modes: dict[str, ContextMode] = {
-        "bge-small-context-document-v1": "document",
-        "bge-small-context-section-v1": "section",
-        "bge-small-context-neighbor-v1": "neighbor",
-    }
-    return ContextPolicy(mode=modes.get(profile_id, "none"))
+    """The context policy a registered profile indexes under.
+
+    Reads `recall.embedding_registry`, which is the only place a profile's context mode is
+    written down. This used to be a second dict literal over the same vocabulary as the one in
+    `make_embedder`, listing three of the six profiles and silently defaulting the rest.
+
+    An UNREGISTERED id still gets `mode="none"`, deliberately: `hashing-64`, a fine-tuned `st:`
+    model and every evaluation embedder reach this function through
+    `embedding_profile_id(embedder)` and index raw chunk text. Refusing here would break them
+    without protecting anything, because the hazard the default used to hide (a registered
+    profile present in one map and absent from the other) no longer has a second map to hide in.
+    """
+    entry = find_registered_profile(profile_id)
+    return ContextPolicy(mode=entry.context_mode if entry is not None else "none")
 
 
 def _clean(value: str, limit: int) -> str:

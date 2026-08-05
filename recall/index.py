@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from recall.cache import EmbeddingCache, embed_with_cache
 from recall.context import ContextPolicy, StructuredChunk, contextual_passages
+from recall.embedding_registry import context_version_for
 from recall.control_plane import ControlPlane
 from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
 from recall.frontmatter import parse_frontmatter, validity_bounds
@@ -339,10 +340,11 @@ class Indexer:
         self._max_prune_fraction = _prune_fraction_from_env()
         self._context_policy = context_policy
         self._shadow = shadow
-        expected_context = (
-            "raw-v1" if context_policy.mode == "none"
-            else f"context-{context_policy.mode}-{context_policy.version}"
-        )
+        # One derivation, in `recall.embedding_registry`. This used to be a third inline copy of
+        # the same f-string; a registry that spelled a context version differently from the two
+        # copies here would have made every context profile unindexable, and only an integration
+        # test would have noticed.
+        expected_context = context_version_for(context_policy.mode, context_policy.version)
         profile = embedding_profile(embedder)
         if profile.artifact_digest != "legacy-unverified" and profile.context_version != expected_context:
             raise ValueError(
@@ -350,9 +352,8 @@ class Indexer:
                 f"index context {expected_context!r}"
             )
         if shadow is not None:
-            shadow_expected = (
-                "raw-v1" if shadow.context_policy.mode == "none"
-                else f"context-{shadow.context_policy.mode}-{shadow.context_policy.version}"
+            shadow_expected = context_version_for(
+                shadow.context_policy.mode, shadow.context_policy.version
             )
             shadow_profile = embedding_profile(shadow.embedder)
             if shadow_profile.context_version != shadow_expected:
