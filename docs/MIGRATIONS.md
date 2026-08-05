@@ -35,6 +35,43 @@ not renamed or converted into a generation table. Migration 0008 records its ten
 0011 are database-global and are recorded once under the `__global__` ledger target. Apply them
 through the default `chunks` target before provisioning custom evaluation tables.
 
+## The second ledger: `recall_schema_versions`
+
+There are **two** migration ledgers, deliberately, and a deployment running the optional
+enterprise control plane has both.
+
+| | `recall_schema_migrations` | `recall_schema_versions` |
+|---|---|---|
+| SQL | `recall/migrations/sql/0001…0011` | `recall/sql/001_enterprise_control_plane.sql` |
+| Applied by | `recall schema apply` (`RECALL_MIGRATION_DSN`) | `recall-enterprise migrate` (`RECALL_DSN`) |
+| Scope | per target table, plus a `__global__` bucket | database-global |
+| Checksums | committed in `recall/migrations/checksums.json` | computed from the shipped file |
+| Verified at startup | `check_schema` | `ControlPlane.ledger_state`, through readiness |
+
+They stay separate for three reasons. Merging is a one-way door: both sets are checksum-immutable
+by design, so renumbering the control-plane SQL into the `0001…0011` sequence changes what every
+already-migrated database must agree with, with `MigrationChecksumMismatch` waiting at the end of
+it. They have different lifecycles: the control-plane tables must exist before any generation
+does, while generation chunk tables are created per generation by `recall-enterprise
+create-generation`, which is exactly why the first ledger is scoped per target table. And the
+enterprise deployment is opt in (`RECALL_ENTERPRISE_CONTROL_PLANE` defaults off), so merging would
+impose control-plane tables on every deployment that does not want them.
+
+Two ledgers need two things a single one would have given for free, and both are now present
+rather than assumed:
+
+- **Both are locked.** `recall-enterprise migrate` takes a PostgreSQL advisory lock
+  (`recall-control-plane-migrations-v1`) for the same reason `recall schema apply` takes
+  `recall-schema-migrations-v1`, and refuses rather than waiting when another migrator holds it.
+  Two concurrent `migrate` jobs previously interleaved, and `CREATE TABLE IF NOT EXISTS` followed
+  by a ledger `INSERT` is not atomic across sessions.
+- **Both are verified.** Enterprise readiness checks `recall_schema_versions` as well as
+  `recall_schema_migrations`. Verifying only one is how a process boots against a control plane
+  that is behind, or whose applied SQL no longer matches the bytes the installed package ships.
+
+`recall-enterprise status` prints the control-plane ledger's state, and
+`recall-enterprise readiness <tenant>` exits non-zero when either ledger is not current.
+
 ## Role split
 
 The exact bootstrap syntax varies on managed PostgreSQL. The intended privileges are equivalent to:
