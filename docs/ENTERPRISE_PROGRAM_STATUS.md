@@ -285,7 +285,7 @@ numbers taken from VPS2 here are checksums.
 |---|---|
 | `ruff check .` | clean |
 | `mypy` | clean, 139 source files |
-| `pytest -q` | **2316 passed, 35 skipped, 0 failed** (7 m 48 s), against a throwaway pgvector container on port 5437 |
+| `pytest -q` | **2316 passed, 35 skipped, 0 failed** (7 m 48 s) on the branch; **2464 passed, 36 skipped, 0 failed** (10 m 14 s) after merging `origin/master`. Throwaway pgvector container on port 5437 |
 | Mutation sweep | **54 of 54 killed** (two repairs along the way; see below) |
 | CCA audit | DEEP tier, 10 auditors, **2 died mid-run**; anti-regression and architect gates both REVISE, then satisfied |
 
