@@ -4,7 +4,8 @@ import os
 import threading
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import Literal, TypeVar
+from dataclasses import dataclass
+from typing import Literal, Protocol, TypeVar
 
 import anyio.to_thread
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -29,6 +30,15 @@ from recall_mcp.auth import (
     token_registry_from_env,
 )
 from recall_mcp.limits import limiter_from_env
+from recall_mcp.oidc import (
+    ENV_AUDIENCE,
+    ENV_ISSUER,
+    ENV_TENANTS,
+    IdentityProviderUnavailable,
+    OidcValidator,
+    TokenRejected,
+    oidc_validator_from_env,
+)
 from recall_mcp.service import (
     forget_memory,
     index_memory,
@@ -119,6 +129,18 @@ _T = TypeVar("_T")
 _log = get_logger("mcp")
 
 
+class TenantProvisioning(Protocol):
+    """Whatever decided which tenants exist. `TokenRegistry` and `ProvisionedTenants` both satisfy it.
+
+    The lifespan needs the tenant set and nothing else about how authentication works, so this is
+    the whole surface. Keeping it this narrow is what lets a second identity mechanism land
+    without the store layer learning that it exists.
+    """
+
+    @property
+    def tenants(self) -> frozenset[str]: ...
+
+
 class RecallTokenVerifier:
     """Adapts `TokenRegistry` to the MCP SDK's `TokenVerifier` protocol.
 
@@ -147,9 +169,68 @@ class RecallTokenVerifier:
         )
 
 
+class OidcTokenVerifier:
+    """Adapts `OidcValidator` to the MCP SDK's `TokenVerifier` protocol.
+
+    The static counterpart above looks a token up in a table. This one verifies a signature
+    against an external provider, but the OUTPUT is identical by construction: an `AccessToken`
+    whose tenant travels in `claims`. Everything downstream — `StoreRegistry`, the per-tool scope
+    check — is written against that shape and cannot tell the two apart, which is the point.
+
+    One thing is lost at this boundary and cannot be recovered: `verify_token` returns an
+    `AccessToken` or `None`, so the 401/503 distinction the validator is careful to preserve has
+    nowhere to go. It survives into the log instead, because "the IdP is unreachable" and
+    "somebody is forging tokens" call for opposite responses and both arrive here as a refusal.
+    """
+
+    def __init__(self, validator: OidcValidator) -> None:
+        self._validator = validator
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        try:
+            principal = self._validator.validate(token)
+        except IdentityProviderUnavailable as exc:
+            # Distinct message, deliberately: this is an outage on our side of the trust
+            # relationship, and reading it as a wave of forgeries would send an operator hunting
+            # an attacker while the IdP stays down.
+            _log.warning(
+                "refusing tokens: the identity provider could not be consulted (reason=%s)",
+                exc.reason,
+            )
+            return None
+        except TokenRejected as exc:
+            # `exc.reason` is a stable slug and never contains token material; the exception's
+            # detail is deliberately not logged, and neither is the token.
+            _log.warning("rejected a bearer token (reason=%s)", exc.reason)
+            return None
+        return AccessToken(
+            token=token,
+            client_id=principal.name,
+            scopes=sorted(principal.scopes),
+            expires_at=(int(principal.expires_at.timestamp()) if principal.expires_at else None),
+            claims={"tenant": principal.tenant, "principal": principal.name},
+        )
+
+
+@dataclass(frozen=True)
+class ProvisionedTenants:
+    """The tenant set a deployment serves, when it did not come from a token file.
+
+    `_make_lifespan` needs exactly one thing from the auth configuration: which tenants may have a
+    store. `TokenRegistry` supplies that via `.tenants`, and this supplies the same for OIDC, so
+    the lifespan does not branch on which mechanism is in use.
+    """
+
+    tenants: frozenset[str]
+
+
 def build_auth(
     transport: str = TRANSPORT, env: dict[str, str] | None = None
-) -> tuple[RecallTokenVerifier | None, AuthSettings | None, TokenRegistry | None]:
+) -> tuple[
+    RecallTokenVerifier | OidcTokenVerifier | None,
+    AuthSettings | None,
+    TenantProvisioning | None,
+]:
     """Resolve the auth configuration for `transport`, failing closed on the HTTP ones.
 
     This is the function that makes an unauthenticated network listener impossible to create by
@@ -159,12 +240,29 @@ def build_auth(
     afterwards.
     """
     e = env if env is not None else dict(os.environ)
+    # Both are read BEFORE any transport branch, so a conflicting pair is refused on stdio too.
+    # Deferring the conflict to whenever someone first starts an HTTP listener would let a
+    # misconfiguration sit in a chart looking fine until the day it decides which trust model
+    # applies.
+    validator = oidc_validator_from_env(e)
     registry = token_registry_from_env(e)
 
+    if validator is not None and registry is not None:
+        raise AuthConfigError(
+            f"{ENV_ISSUER} and RECALL_AUTH_TOKENS_FILE are both set, and this server will not "
+            f"choose between them. They are two trust models: one where the IdP owns revocation, "
+            f"expiry and rotation, and one where a static shared secret is valid until somebody "
+            f"edits a file. Whichever won silently, the other would sit in the configuration "
+            f"looking effective. Unset one."
+        )
+
+    configured = validator is not None or registry is not None
     if transport not in HTTP_TRANSPORTS:
+        # Configured but inapplicable. Silence here would let an operator believe stdio is
+        # access-controlled when the pipe itself is the only boundary. Two messages rather than
+        # one generic one: an operator needs to know WHICH knob is inert, and "authentication is
+        # unused" leaves them checking both.
         if registry is not None:
-            # Configured but inapplicable. Silence here would let an operator believe stdio is
-            # access-controlled when the pipe itself is the only boundary.
             _log.warning(
                 "RECALL_AUTH_TOKENS_FILE is set but transport is %r — stdio has no remote "
                 "caller to authenticate, so the tokens are unused and the single tenant "
@@ -172,23 +270,41 @@ def build_auth(
                 transport,
                 TENANT,
             )
+        if validator is not None:
+            _log.warning(
+                "%s is set but transport is %r — stdio has no remote caller to authenticate, so "
+                "the OIDC configuration is unused and the single tenant RECALL_TENANT=%r "
+                "applies. Set RECALL_TRANSPORT=streamable-http to use it.",
+                ENV_ISSUER,
+                transport,
+                TENANT,
+            )
         return None, None, None
 
-    if registry is None:
+    if not configured:
         raise AuthConfigError(
             f"transport {transport!r} opens a network listener, so authentication is required. "
-            f"Set RECALL_AUTH_TOKENS_FILE to a JSON file of principals (see docs/AUTH.md), or "
-            f"use RECALL_TRANSPORT=stdio for a private single-client pipe."
+            f"Set {ENV_ISSUER} (with {ENV_AUDIENCE} and {ENV_TENANTS}) to take identity from an "
+            f"OIDC provider, or RECALL_AUTH_TOKENS_FILE to a JSON file of principals for "
+            f"development (see docs/AUTH.md), or use RECALL_TRANSPORT=stdio for a private "
+            f"single-client pipe."
         )
 
-    issuer = e.get("RECALL_AUTH_ISSUER_URL")
+    # With an IdP there is exactly one right answer for the metadata issuer, and requiring an
+    # operator to restate it is a chance to state it differently — at which point clients are
+    # directed to a provider that did not sign the tokens this server accepts.
+    issuer = e.get("RECALL_AUTH_ISSUER_URL") or (
+        validator.config.issuer if validator is not None else ""
+    )
     resource = e.get("RECALL_AUTH_RESOURCE_URL")
     if not issuer or not resource:
         raise AuthConfigError(
             "RECALL_AUTH_ISSUER_URL and RECALL_AUTH_RESOURCE_URL are required for an HTTP "
             "transport. They are published in this server's protected-resource metadata so a "
             "client knows where to get a token and which audience it is for; set both to this "
-            "server's own public URL if you are provisioning tokens by hand."
+            "server's own public URL if you are provisioning tokens by hand. With "
+            f"{ENV_ISSUER} set, the issuer defaults to the provider and only "
+            "RECALL_AUTH_RESOURCE_URL is required."
         )
     settings = AuthSettings(
         issuer_url=AnyHttpUrl(issuer),
@@ -198,6 +314,21 @@ def build_auth(
         # else). Scope is enforced per tool in `_require`, against what that tool actually does.
         required_scopes=[],
     )
+    if validator is not None:
+        allowed = validator.config.allowed_tenants
+        if allowed is None:
+            # `oidc_validator_from_env` refuses to build a validator without an allowlist, so
+            # reaching this means someone added a second construction path. Raised rather than
+            # asserted: `python -O` strips an assert, and this one stands between a token-borne
+            # tenant and `StoreRegistry`. A guard that a flag can remove is not a guard.
+            raise AuthConfigError(
+                "an OIDC validator reached build_auth with no tenant allowlist; refusing to "
+                "serve, because every tenant the IdP asserts would otherwise open a store"
+            )
+        return OidcTokenVerifier(validator), settings, ProvisionedTenants(allowed)
+
+    if registry is None:  # pragma: no cover - `configured` above already excluded this
+        raise AuthConfigError("no authentication mechanism resolved")
     return RecallTokenVerifier(registry), settings, registry
 
 
@@ -218,7 +349,7 @@ async def _to_thread(fn: Callable[[], _T]) -> _T:
 
 
 def _make_lifespan(
-    token_registry: TokenRegistry | None,
+    token_registry: TenantProvisioning | None,
 ) -> Callable[[FastMCP], AbstractAsyncContextManager[dict]]:
     """Build the lifespan.
 
