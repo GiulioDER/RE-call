@@ -49,9 +49,9 @@ should check `git worktree list` and `git status` in the primary clone before br
 | Area | Change |
 |---|---|
 | Operator CLI | `replay`, `parity`, `readiness`, `status`, `retire`. `replay` opens only the generations the pending events name; `status` prints operation ids and counts and never a payload |
-| Identifier allowlist | `validate_table_name` was `str.isidentifier()`; now `^[a-z_][a-z0-9_]{0,62}$`. `delete_sources_across` had a **second, weaker** copy of the check and now calls the same one |
-| Retired generations | `StoreRegistry` refuses to open a generation outside `SERVABLE_STATES`, per request |
-| Erasure | `forget_memory` scrubs erased sources out of pending outbox payloads. An event left with no sources is completed rather than left to block `cutover` |
+| Identifier allowlist | `validate_table_name` was `str.isidentifier()`; now `^[a-z_][a-z0-9_]{0,45}$`, a 46-byte ceiling set by the longest derived suffix (`_tenant_isolation`, 17 bytes) rather than by the 63-byte identifier limit. `delete_sources_across` had a **second, weaker** copy of the check and now calls the same one |
+| Retired generations | `StoreRegistry` refuses a generation outside the servable set, per request, and the operator CLI refuses one too (`replay` writes through that path). The ACTIVE slot uses `SERVABLE_ACTIVE_STATES` = `{ready, active}`, matching `set_route`'s own gate; the SHADOW slot also allows `building` |
+| Erasure | `forget_memory` scrubs erased sources out of pending outbox payloads, keyed on the sources the CALLER named, and reports `outbox_events_scrubbed`. An event left with no sources is completed rather than left to block `cutover` |
 | Readiness | Verifies **both** ledgers; an unreachable control plane is a failure rather than a traceback; a retired active generation fails; the `calibration` argument is passed again from `recall_mcp/server.py` |
 | Control-plane migrator | Advisory lock `recall-control-plane-migrations-v1`, refusing rather than waiting |
 | Docs | `docs/MIGRATIONS.md` documents the second ledger; `docs/ENTERPRISE_RETRIEVAL.md` documents the new commands, the retirement rule, and corrects "polling fallback" to what it is, a cache TTL |
