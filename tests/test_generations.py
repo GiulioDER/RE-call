@@ -739,23 +739,36 @@ def test_every_live_state_is_erasable_and_only_failed_is_not(manager) -> None:
         # objects; `sources_in_legacy_table()` is what finds them, not this query.
         "legacy_unverified": False,
     }
-    # A state added to the schema must force a decision here rather than fall outside the
-    # sweep unnoticed.
-    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-        allowed = conn.execute(
-            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-            "WHERE conrelid = 'recall_generations'::regclass AND contype = 'c' "
-            "AND pg_get_constraintdef(oid) LIKE '%%state%%'"
-        ).fetchone()[0]
-    schema_states = {s for s in erasable_by_state if f"'{s}'::text" in allowed}
-    missing = {
-        s for s in re.findall(r"'([a-z_]+)'::text", allowed)
-    } - set(erasable_by_state)
-    assert not missing, (
-        f"the schema allows states this sweep never exercises: {sorted(missing)}; decide "
-        "whether each is erasable and add it above"
+    # A state added to EITHER domain must force a decision here rather than fall outside the
+    # sweep unnoticed. Both are checked because they fail differently: the enum is what the
+    # code can produce, the CHECK constraint is what the database will accept, and a state
+    # can be added to one without the other.
+    assert {s.value for s in GenerationState} == set(erasable_by_state), (
+        "GenerationState and this sweep disagree; decide whether the new state is erasable "
+        "and add it above"
     )
-    assert schema_states == set(erasable_by_state)
+    # Selected BY NAME. Filtering on `LIKE '%state%'` matched any other check constraint whose
+    # text merely mentions the column, and `fetchone()` has no ORDER BY, so an unrelated
+    # constraint could become the one parsed.
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        rows = conn.execute(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'recall_generations'::regclass "
+            "AND conname = 'recall_generations_state_check'"
+        ).fetchall()
+    assert len(rows) == 1, f"expected exactly one state CHECK constraint, found {len(rows)}"
+    # `[^']+`, not `[a-z_]+`: a name carrying a digit or a capital (`archived_v2`) did not
+    # match, so `schema_states` came back short, the difference was empty, and the assertion
+    # passed while exercising nothing. The positive control (an all-lowercase name) fired
+    # correctly throughout, which is precisely why the gap survived: it validated the
+    # mechanism and said nothing about its scope.
+    schema_states = set(re.findall(r"'([^']+)'::text", rows[0][0]))
+    assert schema_states == set(erasable_by_state), (
+        "the schema's state domain and this sweep disagree "
+        f"(only in schema: {sorted(schema_states - set(erasable_by_state))}; "
+        f"only in sweep: {sorted(set(erasable_by_state) - schema_states)}); decide whether "
+        "each is erasable and update the map above"
+    )
 
     for state, should_resolve in erasable_by_state.items():
         data = f"---\nstatus: current\n---\nnamed only by a {state} generation".encode()
