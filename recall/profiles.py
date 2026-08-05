@@ -8,6 +8,11 @@ from typing import Literal
 
 RetrievalProfileName = Literal["legacy", "fast", "quality"]
 
+#: The legacy profile's budget: a sentinel meaning "no budget is enforced", not a 24-day limit.
+#: Kept as a large int rather than `None` so the timeout arithmetic has no special case, but it
+#: must never reach a client as a number — see `RetrievalProfile.enforced_budget_ms`.
+NO_BUDGET_SENTINEL_MS = 0x7FFFFFFF
+
 
 @dataclass(frozen=True)
 class RetrievalProfile:
@@ -51,27 +56,53 @@ class RetrievalProfile:
             if value < 1:
                 raise ValueError(f"{label} must be positive")
 
+    @property
+    def enforced_budget_ms(self) -> int | None:
+        """The budget as a client should read it: `None` when no budget is enforced.
+
+        The legacy profile carries a sentinel so the admission timeout needs no special case.
+        Publishing that sentinel as a number invites a reader to do arithmetic on it, exactly as
+        `RetrievalOverloaded` already refuses to hand it back as a retry hint.
+        """
+        return None if self.latency_budget_ms >= NO_BUDGET_SENTINEL_MS else self.latency_budget_ms
+
+    @property
+    def queue_identity(self) -> tuple[str, int, int, int]:
+        """The fields that define an admission queue, and only those.
+
+        Memoising a queue on the WHOLE profile made `inference_threads` part of its identity,
+        which has nothing to do with admission: the exported `QUALITY_PROFILE` left it `None`
+        while the resolver filled in `1`, so the two were unequal and each got its own pair of
+        semaphores. The process-wide concurrency bound then quietly doubled, on the one profile
+        where a surplus concurrent request costs the most.
+        """
+        return (self.name, self.max_concurrency, self.queue_capacity, self.latency_budget_ms)
+
 
 #: Fast and quality carry SEPARATE concurrency budgets rather than one shared default.
 #:
 #: The two profiles run the same candidate pool by design (`docs/ENTERPRISE_RETRIEVAL.md`), so the
-#: only cost difference is the reranker — and it is a large one. Giving both the same
-#: `max_concurrency` would let quality park roughly six times fast's CPU-seconds behind the same
-#: queue depth, because each parked request holds its slot for up to six times as long. The
-#: budgets below hold `max_concurrency * latency_budget_ms` within the same order of magnitude
-#: (fast 8 x 250 = 2000, quality 2 x 1500 = 3000), which is the quantity a saturated process
-#: actually owes its clients.
+#: only cost difference is the reranker — and it is a large one. Giving both the same queue depth
+#: would let quality make its clients wait roughly six times as long, because each parked request
+#: may hold its slot for up to six times the budget. The numbers below hold
+#: `queue_capacity * latency_budget_ms` within the same order of magnitude (fast 32 x 250 = 8000
+#: slot-milliseconds, quality 8 x 1500 = 12000), which is the wait a saturated process actually
+#: owes its clients. Slot-milliseconds, not CPU-seconds: `latency_budget_ms` bounds the WAIT, it
+#: is not a service time, so nothing here is a claim about CPU consumed.
 #:
 #: ⚠️ These are a POLICY choice, not a measurement. Latency on this program is PENDING for want of
 #: a 16-vCPU idle reference host, so no number here is claimed to be tuned to measured throughput.
 #: `RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` override them per deployment.
 FAST_PROFILE = RetrievalProfile("fast", 20, 5, False, 250, max_concurrency=8, queue_capacity=32)
+#: `inference_threads=1` here, not left at the dataclass default, so the exported constant EQUALS
+#: what `resolve_retrieval_profile` produces for an unconfigured quality process. A constant that
+#: disagrees with its own resolver is a trap for anything that keys on the profile.
 QUALITY_PROFILE = RetrievalProfile(
-    "quality", 20, 5, True, 1500, max_concurrency=2, queue_capacity=8
+    "quality", 20, 5, True, 1500, max_concurrency=2, queue_capacity=8, inference_threads=1
 )
 #: Legacy keeps 4/16 and an effectively infinite budget: it is the pre-profile behaviour, and a
 #: deployment that never opted into a profile must not acquire shedding it did not ask for.
-LEGACY_PROFILE = RetrievalProfile("legacy", 20, 5, False, 0x7FFFFFFF)
+LEGACY_PROFILE = RetrievalProfile("legacy", 20, 5, False, NO_BUDGET_SENTINEL_MS)
 
 
 def resolve_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalProfile:
@@ -180,13 +211,23 @@ class RetrievalAdmission:
             )
         # The queue slot is held from here on, so every failure path below MUST return it.
         # `__exit__` does not run when `__enter__` raises, which is why the release is explicit:
-        # a leaked slot is permanent, and after `queue_capacity` of them the process refuses
-        # every request forever while reporting itself as merely busy.
+        # a leaked permit is permanent, and once all `max_concurrency + queue_capacity` of them
+        # have leaked the process refuses every request forever while reporting itself as merely
+        # busy. (Partial leakage degrades proportionally: after `queue_capacity` leaks the process
+        # still serves `max_concurrency` concurrent requests, with no queue depth left.)
+        #
+        # `admitted` is bound BEFORE the acquire so the handler can tell "never acquired" from
+        # "acquired". An asynchronous exception (a signal on the main thread) can land between
+        # the acquire returning and its result being stored, and releasing only `_slots` there
+        # would leak the running permit instead, which is the same permanent loss one line down.
+        admitted = False
         try:
             admitted = self._running.acquire(
                 timeout=self.profile.latency_budget_ms / 1000.0
             )
         except BaseException:
+            if admitted:
+                self._running.release()
             self._slots.release()
             raise
         if not admitted:

@@ -194,6 +194,7 @@ def test_a_concurrent_first_request_storm_builds_exactly_one_reranker(monkeypatc
 #: Every stage of a retrieval, in execution order. A response missing one of these is a response
 #: whose latency cannot be attributed, which is the state this program exists to leave behind.
 EXPECTED_STAGES = {
+    "admission_wait",
     "query_embedding",
     "dense_retrieval",
     "sparse_retrieval",
@@ -273,6 +274,110 @@ def test_an_over_budget_request_is_labelled_and_counted(make_store, monkeypatch)
     assert result.total_ms > result.latency_budget_ms
     counters = METRICS.snapshot()["counters"]
     assert counters.get("recall_retrieval_budget_exceeded_total{profile=fast}") == 1
+
+
+@requires_db
+def test_the_budget_verdict_is_charged_once_not_twice(make_store, monkeypatch):
+    """The budget bounds the WAIT. It must not also be spent on the end-to-end total.
+
+    `latency_budget_ms` is the admission timeout, so a request may legitimately wait almost the
+    whole budget before it starts. Comparing the budget against a total that INCLUDES that wait
+    charges the same allowance twice: a request whose own retrieval was fast gets labelled over
+    budget because someone else was ahead of it, and the counter saturates under any queueing.
+    That destroys exactly the attribution the seven-stage surface exists to provide.
+    """
+    from recall_mcp.service import _admission
+
+    monkeypatch.setenv("RECALL_RETRIEVAL_PROFILE", "fast")
+    monkeypatch.delenv("RECALL_RERANK", raising=False)
+    monkeypatch.setenv("RECALL_SEARCH_CONCURRENCY", "1")
+    monkeypatch.setenv("RECALL_SEARCH_QUEUE", "1")
+    METRICS.reset()
+    store = make_store(3)
+    store.upsert([Chunk("a", "notes.md", "cats")], [[1.0, 0.0, 0.0]])
+
+    admission = _admission(resolve_retrieval_profile())
+    held = threading.Event()
+    release = threading.Event()
+
+    def occupy() -> None:
+        with admission:
+            held.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=occupy, daemon=True)
+    holder.start()
+    assert held.wait(5)
+    # The fixture has to make wait + work cross the 250 ms budget while the WORK alone stays under
+    # it, or the assertion is vacuous: with an instant search, charging the wait as well still
+    # lands inside the budget and a double-charging implementation passes. ~150 ms queued plus
+    # ~150 ms of work gives ~300 ms total against 250 ms of work allowance. (Found by mutation:
+    # an earlier fixture used a 200 ms wait and a microsecond search, and survived.)
+    threading.Timer(0.15, release.set).start()
+
+    class SlowEmbedder(CountingEmbedder):
+        def embed(self, texts):
+            time.sleep(0.15)
+            return super().embed(texts)
+
+    slow = SlowEmbedder({"cats": [1.0, 0.0, 0.0]}, default=[0.0, 0.0, 1.0])
+    result = dev_search_memory(store, slow, "cats")
+    holder.join(10)
+
+    assert result.stage_ms["admission_wait"] >= 100, "the wait must be measured, not assumed"
+    assert result.total_ms > 250, "wait + work must cross the budget, or this proves nothing"
+    served = result.total_ms - result.stage_ms["admission_wait"]
+    assert served < 250, "the work alone must stay inside the budget for this to discriminate"
+    assert result.budget_exceeded is False, "a fast retrieval was labelled slow because it queued"
+    counters = METRICS.snapshot()["counters"]
+    assert "recall_retrieval_budget_exceeded_total{profile=fast}" not in counters
+
+
+@requires_db
+def test_a_profile_with_no_budget_reports_none_rather_than_a_sentinel(make_store, monkeypatch):
+    """The legacy budget is a 24-day sentinel. Shipping it as a number invites arithmetic on it.
+
+    `RetrievalOverloaded` already refuses to hand that value to a client as a retry hint. The
+    same reasoning applies to the result surface, and this field is new, so nothing depends on
+    the sentinel spelling yet.
+    """
+    monkeypatch.delenv("RECALL_RETRIEVAL_PROFILE", raising=False)
+    monkeypatch.delenv("RECALL_RERANK", raising=False)
+    store = make_store(3)
+    store.upsert([Chunk("a", "notes.md", "cats")], [[1.0, 0.0, 0.0]])
+    embedder = CountingEmbedder({"cats": [1.0, 0.0, 0.0]}, default=[0.0, 0.0, 1.0])
+
+    result = dev_search_memory(store, embedder, "cats")
+    assert result.retrieval_profile == "legacy"
+    assert result.latency_budget_ms is None
+    assert result.budget_exceeded is False
+
+
+@requires_db
+def test_total_latency_is_recorded_even_when_the_search_raises(make_store, monkeypatch):
+    """A timer that only records on success hides the slow path worth finding.
+
+    `recall/observability.py` states this rule for `METRICS.timer` in as many words. The new
+    per-request total was emitted after the `with` block, so a store fault or a strict trust
+    refusal, the two slowest ways a request can end, contributed nothing to the histogram.
+    """
+    monkeypatch.setenv("RECALL_RETRIEVAL_PROFILE", "fast")
+    monkeypatch.delenv("RECALL_RERANK", raising=False)
+    METRICS.reset()
+    store = make_store(3)
+    store.upsert([Chunk("a", "notes.md", "cats")], [[1.0, 0.0, 0.0]])
+
+    class ExplodingEmbedder(CountingEmbedder):
+        def embed(self, texts):
+            raise RuntimeError("embedder is down")
+
+    embedder = ExplodingEmbedder({}, default=[0.0, 0.0, 1.0])
+    with pytest.raises(RuntimeError, match="embedder is down"):
+        dev_search_memory(store, embedder, "cats")
+
+    snapshot = METRICS.snapshot()
+    assert "recall_retrieval_total_ms{profile=fast}" in snapshot["histograms"]
+    assert snapshot["counters"].get("recall_retrieval_failed_total{profile=fast}") == 1
 
 
 # --------------------------------------------------------------------------------------------
