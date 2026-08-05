@@ -45,6 +45,42 @@ when it meant "the older one".
 | `wrrf/arm_A_rrf_pool20.json` | §9a's apparatus check — reproduces the published pool-20 column to Δ 0.0000 |
 | `store_latency/chunks_20k/splits.json` | the per-leg latency split behind the store-share figure — embed / dense / sparse / meta / fusion / rerank at 20,050 chunks, the evidence for whether a store backend swap could pay for itself. ⚠️ **SYNTHETIC corpus**, so the sparse leg does NOT generalise: `9a5165b` measured sparse median 496 ms on a real 72k-chunk corpus where this measures single-digit ms. Latency is the most host-dependent quantity here — read `stack` and `generated_at` before comparing it to anything. **Supersedes an earlier UNSTAMPED run of the same configuration**, whose figures (271.6 ms dense, 91.3%, 2.9%) appear in commit `66459ae`'s message and are reproducible from no file in the tree; superseded, not retracted — the shares agree to within 0.31 points |
 
+### Promotion decisions — what the gate was asked, and what it answered
+
+`recall/promotion.py`'s gate had no producer until `recall/eval/promotion/`. These are its first
+real inputs and its first real output. The directory holds three kinds of file, and only one of
+them is an artifact in this file's sense:
+
+| file | kind | |
+|---|---|---|
+| `promotion/labelled.manifest.jsonl` | **input**, frozen | question ids and input hashes, fixed BEFORE either arm ran. Carries its own digest and refuses an edited body. No `_provenance`, deliberately: a timestamp inside a digest-covered body makes the digest a function of the clock |
+| `promotion/{baseline,candidate}.*.jsonl` | **raw rows** | one record per question per arm. The filename carries the arm label, the embedding profile id, and the first 16 hex of the profile FINGERPRINT, so two arms sharing a profile id and differing in artifact digest cannot land in one ledger |
+| `promotion/decision.null-difference.json` | **artifact** | the decision, with `_provenance` |
+
+| artifact | backs |
+|---|---|
+| `promotion/decision.null-difference.json` | the end-to-end proof that the producer works and that the gate refuses a null difference. Baseline and candidate are the SAME configuration; all 25 rows share an `output_hash` across the two arms, so the delta is zero by construction rather than by measurement. `promoted: false` on **five** counts: the bootstrap interval does not clear zero, no corpus reaches Holm-corrected significance, the superseded trust rate was NOT MEASURED, security is not green (unverified is not green), and **latency is PENDING** |
+
+⚠️ **This run is DEGRADED, and the artifact says so twice.** `trust_verdicts` reads
+`{"unverified": 25}` for both arms: a plain store has no generation-bound certified calibration,
+so it ran under `--trust-policy development`. `recall/trust.py` overwrites **every** verdict with
+`unverified` in that mode, *after* the trust layer has computed the real one, so a superseded hit
+and a clean one leave identical rows. That is why `superseded_trust_rate` is `null` rather than
+`0.0`: a rate of zero would have satisfied the gate's zero-tolerance check by never having
+measured it. The same reason makes `false_confidence: 1.00` a fact about a degraded system and
+**not** a measurement of this library's abstention. The two arms stay comparable to each other;
+neither is comparable to a trusted run. A strict-mode run needs a generation-bound certified
+calibration, which no session has wired end to end yet.
+
+`n_manifest_questions: 25` beside `n_paired_questions: 14` is the other thing to read: the gate
+tested the 14 answerable questions and the digest covers all 25, and both numbers are recorded so
+a reader never has to assume they are the same.
+
+⚠️ **`latency` is PENDING, not measured.** `gate_input_p95_ms` is `null`, and that BLOCKS
+promotion. The figures under `observed_diagnostic_only` come from a developer laptop and describe
+it, not a reference environment; the program has no idle 16-vCPU reference host (see
+`docs/ENTERPRISE_PROGRAM_STATUS.md`'s standing blockers).
+
 ### Deliberately contaminated — evidence for the §9a retraction, never results
 
 These two exist to be *wrong in a known way*. A doubled corpus reproduces the withdrawn pool-100
