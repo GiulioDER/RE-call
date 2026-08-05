@@ -888,3 +888,38 @@ def test_mcp_forget_during_a_build_is_honoured_by_that_build(manager) -> None:
     assert tombstoned == 1, "the MCP erasure wrote no tombstone, so the build had nothing to honour"
     assert stats.tombstoned_objects == 1
     assert surviving == 0, "the build indexed content the user had asked to erase via MCP"
+
+class _AsymmetricEmbedder(_Embedder):
+    """Records which encoder the generation builder reached for.
+
+    Indexing writes PASSAGES. A generation built with the query encoder stores vectors from the
+    wrong side of an asymmetric model: same width, plausible cosines, quietly worse retrieval,
+    and no error anywhere to say so.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(1)
+        self.used: list[str] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.used.append("embed")
+        return super().embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        self.used.append("embed_query")
+        return super().embed([text])[0]
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        self.used.append("embed_passages")
+        return super().embed(texts)
+
+
+@requires_db
+def test_a_generation_is_built_with_the_passage_encoder(manager) -> None:
+    data = b"---\nstatus: current\n---\nan immutable memo indexed as a passage"
+    manifest = _manifest(manager.tenant_id, data)
+    embedder = _AsymmetricEmbedder()
+
+    _ready(manager, manifest, _pipeline("model-a"), _reader(manifest, data), embedder)
+
+    assert embedder.used == ["embed_passages"]
