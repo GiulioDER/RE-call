@@ -321,7 +321,7 @@ def build_auth(
     if mode == "oidc" and not has_oidc:
         raise AuthConfigError(f"RECALL_AUTH_MODE=oidc but {ENV_ISSUER} is not set")
     if mode == "static" and not has_static:
-        raise AuthConfigError("RECALL_AUTH_MODE=static but RECALL_AUTH_TOKENS_FILE is not set")
+        raise AuthConfigError(f"RECALL_AUTH_MODE=static but {ENV_TOKENS_FILE} is not set")
 
     if has_oidc and has_static and not mode:
         # The ambiguity guard, narrowed rather than removed. Refusing was right when nobody chose;
@@ -329,7 +329,7 @@ def build_auth(
         # precisely "both configured". Declaring precedence is a choice, so it is allowed; leaving
         # it undeclared still is not.
         raise AuthConfigError(
-            f"{ENV_ISSUER} and RECALL_AUTH_TOKENS_FILE are both set, and this server will not "
+            f"{ENV_ISSUER} and {ENV_TOKENS_FILE} are both set, and this server will not "
             f"guess between them. They are two trust models: one where the IdP owns revocation, "
             f"expiry and rotation, and one where a static shared secret is valid until somebody "
             f"edits a file. Set RECALL_AUTH_MODE=oidc or =static to declare which is active "
@@ -355,7 +355,7 @@ def build_auth(
 
     if has_oidc and has_static:
         # Precedence was declared, so the refusal no longer carries the warning. The log has to.
-        inactive = "RECALL_AUTH_TOKENS_FILE" if use_oidc else ENV_ISSUER
+        inactive = ENV_TOKENS_FILE if use_oidc else ENV_ISSUER
         _log.warning(
             "both authentication mechanisms are configured; RECALL_AUTH_MODE=%s is active, so "
             "%s is set but NOT enforcing anything. Remove it once the cutover has settled.",
@@ -371,9 +371,10 @@ def build_auth(
         # unused" leaves them checking both.
         if registry is not None:
             _log.warning(
-                "RECALL_AUTH_TOKENS_FILE is set but transport is %r — stdio has no remote "
+                "%s is set but transport is %r — stdio has no remote "
                 "caller to authenticate, so the tokens are unused and the single tenant "
                 "RECALL_TENANT=%r applies. Set RECALL_TRANSPORT=streamable-http to use them.",
+                ENV_TOKENS_FILE,
                 transport,
                 TENANT,
             )
@@ -400,11 +401,16 @@ def build_auth(
     # With an IdP there is exactly one right answer for the metadata issuer, and requiring an
     # operator to restate it is a chance to state it differently — at which point clients are
     # directed to a provider that did not sign the tokens this server accepts.
-    # Defaulted from the OIDC block whenever one is PRESENT, not only when it is selected
-    # (DEPLOY-004). Keyed on selection, `RECALL_AUTH_ISSUER_URL` was optional under mode=oidc and
-    # required again the instant somebody flipped back to static — so "rollback is flipping it
-    # back" was false for any deployment that took the documented option of omitting it.
-    issuer = e.get("RECALL_AUTH_ISSUER_URL") or (oidc.config.issuer if oidc is not None else "")
+    # Defaulted from the OIDC block ONLY when OIDC is the selected mechanism. Defaulting whenever
+    # a block was merely present (the first attempt at DEPLOY-004's rollback asymmetry) advertised
+    # the IdP as this resource's authorization server while static bearer tokens were the thing
+    # actually enforcing — sending clients to a provider whose tokens this server would refuse,
+    # which is the exact misdirection the paragraph below exists to prevent. The rollback
+    # asymmetry is real and is answered in docs/AUTH.md by keeping RECALL_AUTH_ISSUER_URL set
+    # explicitly for the duration of a cutover; a wrong default is worse than a required value.
+    issuer = e.get("RECALL_AUTH_ISSUER_URL") or (
+        validator.config.issuer if validator is not None else ""
+    )
     resource = e.get("RECALL_AUTH_RESOURCE_URL")
     if not issuer or not resource:
         raise AuthConfigError(

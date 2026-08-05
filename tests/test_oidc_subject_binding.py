@@ -253,13 +253,105 @@ def test_a_malformed_subject_map_entry_refuses_to_start(malformed):
         build_auth("streamable-http", env=oidc_env(RECALL_OIDC_SUBJECT_TENANTS=malformed))
 
 
+def test_the_derived_key_list_only_ever_contains_oidc_keys():
+    """It filters on the VALUE prefix, not just the `ENV_` name prefix.
+
+    Importing `auth.ENV_TOKENS_FILE` into the oidc module — one plausible line, and `server.py`
+    already imports that alias — would otherwise put `RECALL_AUTH_TOKENS_FILE` on this list, and
+    the stray-key guard would then refuse **every static-token deployment** as a partial OIDC
+    block. Found by mutating exactly that.
+    """
+    import recall_mcp.oidc as oidc_module
+
+    oidc_module.ENV_A_NON_OIDC_ALIAS = "RECALL_AUTH_TOKENS_FILE"
+    try:
+        keys = oidc_module.oidc_non_issuer_env_keys()
+    finally:
+        del oidc_module.ENV_A_NON_OIDC_ALIAS
+    assert keys, "the derivation found nothing at all"
+    assert all(k.startswith("RECALL_OIDC_") for k in keys), keys
+    assert "RECALL_OIDC_ISSUER" not in keys, "the issuer is what switches OIDC on, not a stray"
+
+
+def test_a_key_added_after_the_derivation_is_still_covered():
+    """The first version was a module-level constant, so it saw only constants defined ABOVE it.
+
+    That swapped a remembered enumeration for a remembered definition ORDER, which nothing
+    enforced: a new key declared below the line was silently dropped and the whole OIDC suite
+    stayed green. A function reads globals when called, so position stops mattering.
+    """
+    import recall_mcp.oidc as oidc_module
+
+    oidc_module.ENV_A_LATE_OIDC_KNOB = "RECALL_OIDC_A_LATE_KNOB"
+    try:
+        assert "RECALL_OIDC_A_LATE_KNOB" in oidc_module.oidc_non_issuer_env_keys()
+        with pytest.raises(AuthConfigError, match="RECALL_OIDC_A_LATE_KNOB"):
+            oidc_module.oidc_env_present({"RECALL_OIDC_A_LATE_KNOB": "v"})
+    finally:
+        del oidc_module.ENV_A_LATE_OIDC_KNOB
+
+
+def test_a_config_can_be_rebuilt_from_another_configs_binding():
+    """The `Mapping` check, not `dict`: this class normalises to a MappingProxyType.
+
+    An exact-dict guard made OidcConfig reject its own output, so `dataclasses.replace` and
+    building one config from another's binding raised "must be a mapping" about a mapping.
+    """
+    import dataclasses
+
+    first = OidcConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        allowed_tenants=frozenset({"acme"}),
+        subject_tenants={"alice@corp": frozenset({"acme"})},
+    )
+    second = OidcConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        allowed_tenants=frozenset({"acme"}),
+        subject_tenants=first.subject_tenants,
+    )
+    assert second.subject_tenants == first.subject_tenants
+    assert dataclasses.replace(first, audience="other").subject_tenants == first.subject_tenants
+
+
+@pytest.mark.parametrize("entry", ["a::b", "alice::acme"])
+def test_a_doubled_separator_is_refused(entry):
+    """`a::b` used to bind a subject with a trailing colon, which can never match a `sub`."""
+    from recall_mcp.server import build_auth
+
+    with pytest.raises(AuthConfigError, match="trailing colon"):
+        build_auth("streamable-http", env=oidc_env(RECALL_OIDC_SUBJECT_TENANTS=entry))
+
+
+def test_a_forgotten_tenant_is_caught_by_the_allowlist_cross_check():
+    """The residual cost of splitting on the LAST colon, and what actually catches it.
+
+    `system:serviceaccount:recall:etl` with the tenant forgotten parses as a shorter subject bound
+    to `etl`. The parser cannot know that was a mistake; the allowlist cross-check can, because
+    `etl` was never provisioned. Pinned so the cross-check is not later moved or removed on the
+    grounds that the parser validates the entry.
+    """
+    from recall_mcp.server import build_auth
+
+    with pytest.raises(AuthConfigError, match="not in allowed_tenants"):
+        build_auth(
+            "streamable-http",
+            env=oidc_env(RECALL_OIDC_SUBJECT_TENANTS="system:serviceaccount:recall:etl"),
+        )
+
+
 def test_a_subject_containing_colons_is_bindable():
     """The tenant is everything after the LAST colon, so the subject may contain them.
 
     Kubernetes mints `system:serviceaccount:ns:sa`, and URN- and URL-shaped subjects are ordinary.
     Splitting on the FIRST colon made every such deployment unable to use the binding at all,
     which pushed exactly those operators onto the trust flag: the unsafe path this feature exists
-    to replace. It also mis-parsed silently, reading `urn:acme` as subject `urn`.
+    to replace.
+
+    (An earlier version of this docstring also claimed the change fixed a silent misparse of
+    `urn:acme` into subject `urn`. It did not: rpartition yields exactly the same result there. A
+    one-colon entry is inherently ambiguous and no choice of split side resolves it.)
     """
     from recall_mcp.server import build_auth
 
