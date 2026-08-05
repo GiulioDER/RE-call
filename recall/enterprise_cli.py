@@ -38,6 +38,13 @@ def _parser() -> argparse.ArgumentParser:
     route.add_argument("--shadow-generation")
     cutover = commands.add_parser("cutover")
     cutover.add_argument("tenant")
+    cutover.add_argument(
+        "--allow-divergent-corpus",
+        action="store_true",
+        help="promote even though the shadow's sources differ from the active generation's. "
+        "Needed when the corpus itself changed (documents added or removed) rather than only "
+        "the embedder; it skips the parity comparison, not the pending-event or ready checks.",
+    )
     return parser
 
 
@@ -85,7 +92,7 @@ def main() -> None:
             args.tenant, args.active_generation, args.shadow_generation
         )
     elif args.command == "cutover":
-        control.cutover(args.tenant)
+        control.cutover(args.tenant, allow_divergent_corpus=args.allow_divergent_corpus)
 
 
 if __name__ == "__main__":

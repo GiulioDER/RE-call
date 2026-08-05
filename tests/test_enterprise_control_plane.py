@@ -221,3 +221,45 @@ def test_cutover_refuses_a_shadow_that_does_not_match_the_active_generation() ->
                 conn.execute(
                     "DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,)
                 )
+
+
+@requires_db
+def test_cutover_refuses_an_empty_shadow_even_when_the_active_is_also_empty() -> None:
+    """Set-difference parity passes vacuously on two empty generations: 0 == 0.
+
+    That is the exact case the gate exists to stop, so it cannot be the case it waves through.
+    The declared `mark-ready` counts are never consulted by parity, so without this an empty
+    shadow with a fabricated chunk_count of 999999 was promoted whenever the active happened to
+    be empty too, and the gate reported success having verified nothing.
+    """
+    suffix = uuid.uuid4().hex[:12]
+    active, shadow = f"g_active_{suffix}", f"g_shadow_{suffix}"
+    active_table, shadow_table = f"chunks_ea_{suffix}", f"chunks_es_{suffix}"
+    tenant = f"tenant-{suffix}"
+    control = ControlPlane(TEST_DSN)
+    control.apply_migrations()
+    try:
+        for table in (active_table, shadow_table):
+            apply_migrations(TEST_DSN, table=table, dim=8)  # both remain EMPTY
+        control.register_generation(active, active_table, "profile-a", 8)
+        control.register_generation(shadow, shadow_table, "profile-a", 8)
+        control.set_generation_state(active, "ready", chunk_count=0, source_count=0)
+        control.set_generation_state(shadow, "ready", chunk_count=999_999, source_count=999_999)
+        control.set_route(tenant, active, shadow)
+
+        with pytest.raises(RuntimeError, match="holds no rows"):
+            control.cutover(tenant)
+        route = control.route(tenant)
+        assert route is not None and route.active.generation_id == active
+    finally:
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("DELETE FROM recall_tenant_routes WHERE tenant_id = %s", (tenant,))
+            conn.execute(
+                "DELETE FROM recall_index_generations WHERE generation_id = ANY(%s)",
+                ([active, shadow],),
+            )
+            for table in (active_table, shadow_table):
+                conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+                conn.execute(
+                    "DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,)
+                )
