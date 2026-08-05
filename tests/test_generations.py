@@ -760,33 +760,34 @@ def test_every_live_state_is_erasable_and_only_failed_is_not(manager) -> None:
             "     WHERE attrelid = 'recall_generations'::regclass AND attname = 'state') "
             "    = ANY(conkey)"
         ).fetchall()
-    # Scoped to the MEMBERSHIP sub-expression. Scraping every `'...'::text` in the whole
-    # definition swept up literals that are not states at all: a benign tightening such as
-    # `AND (manifest->>'legacyTable' IS NULL OR state = 'legacy_unverified')` contributed
-    # `legacyTable`, turning this red with a message telling the reader to add a non-state to
-    # the erasability map, which cannot be followed to green (the enum check rejects it, and
-    # the CHECK constraint then rejects the UPDATE). `(?:[^']|'')*` so a name containing a
-    # doubled quote is read whole rather than truncated.
-    memberships = {}
-    for name, definition in rows:
-        match = re.search(r"state = ANY \(ARRAY\[(.*?)\]\)", definition)
-        if match is None:
-            continue
-        memberships[name] = {
-            literal.replace("''", "'")
-            for literal in re.findall(r"'((?:[^']|'')*)'::text", match.group(1))
-        }
-    assert len(memberships) == 1, (
-        "expected exactly one CHECK constraint stating the state domain as a membership test "
-        f"over recall_generations.state, found {len(memberships)}: {sorted(memberships)}. "
-        f"(constraints covering that column: {sorted(name for name, _ in rows)})"
+    assert len(rows) == 1, (
+        "expected exactly one CHECK constraint covering recall_generations.state, found "
+        f"{len(rows)}: {sorted(name for name, _ in rows)}"
     )
-    schema_states = next(iter(memberships.values()))
-    assert schema_states == set(erasable_by_state), (
-        "the schema's state domain and this sweep disagree "
-        f"(only in schema: {sorted(schema_states - set(erasable_by_state))}; "
-        f"only in sweep: {sorted(set(erasable_by_state) - schema_states)}); decide whether "
-        "each is erasable and update the map above"
+    # The WHOLE definition is pinned, rather than a sub-expression scraped out of it. Three
+    # separate defects came from reading a fragment and treating it as the domain, and each
+    # failed OPEN, which is the direction that leaves a live state's erasability undecided:
+    #   * `state = ANY (ARRAY[` has no left boundary, so it also matched inside
+    #     `prev_state = ANY (ARRAY[`, and `re.search` takes the FIRST hit. The same constraint
+    #     with the same widened domain passed or failed on the order of its conjuncts alone.
+    #   * a sub-expression is the domain only in a CONJUNCTIVE position. `... OR state =
+    #     'archived_v2'` widened what the database accepts to eight states while the scrape
+    #     still reported the seven inside the ARRAY.
+    #   * the non-greedy `(.*?)\]\)` stopped at the first `])`, including one inside a state
+    #     literal, silently truncating the member list.
+    # Pinning the rendered text costs the tolerance for a benign tightening that the fragment
+    # scrape was written to buy. That tolerance is what admitted all three, and this constraint
+    # guards a PERMANENT tombstone, so any edit to it should be re-read against this map rather
+    # than waved through. Narrowing was already caught; it is widening that must not slip.
+    expected_definition = (
+        "CHECK ((state = ANY (ARRAY["
+        + ", ".join(f"'{state}'::text" for state in erasable_by_state)
+        + "])))"
+    )
+    assert rows[0][1] == expected_definition, (
+        "the schema's state domain and this sweep disagree, or the constraint is no longer a "
+        "plain membership test. Decide the erasability of anything new, update the map above, "
+        f"then re-derive this.\n  schema: {rows[0][1]}\n  sweep:  {expected_definition}"
     )
 
     for state, should_resolve in erasable_by_state.items():
