@@ -270,7 +270,16 @@ def run_corpus(
             arm: report["arms"][arm]["hit_at_5"]["rate"] for arm in ("bm25", "dense", "sparse", "hybrid")
         }
         scores[label]["mrr_hybrid"] = report["arms"]["hybrid"]["mrr"]
+        # Record the denominator of the RATES stored above, not the size of the fit/held split.
+        # `held_out` is `len(questions[1::2])`; the rates are over `retrieval_scored_on`, which
+        # follows `labelled.evaluate(score_retrieval_on=...)`. Under the default they coincide
+        # for an all-answerable set like BEIR, and under `"all"` they differ by 2x — so recording
+        # `held_out` beside a rate it does not divide is how an artifact silently mislabels its
+        # own n. Both are kept: `held_out` for continuity with the committed pre-change records,
+        # `retrieval_scored_on` because it is the one that names these rates.
         scores[label]["held_out"] = report["questions"]["held_out"]
+        scores[label]["retrieval_scored_on"] = report["questions"]["retrieval_scored_on"]
+        scores[label]["score_retrieval_on"] = report["questions"]["score_retrieval_on"]
 
     return {
         "status": "ok",

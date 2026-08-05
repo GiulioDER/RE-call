@@ -1,16 +1,18 @@
-"""`recall.eval.labelled`: retrieval is scored on ALL answerable questions, abstention on the held half.
+"""`recall.eval.labelled`: which questions each metric family is scored on.
 
 `evaluate` splits `fit, held = questions[::2], questions[1::2]` and fits the abstention threshold
 on `fit`. That split is load-bearing for `false_abstain` — scoring it on `fit` too would fit and
 score on the same data — and pure cost for `hit_at_k` / `mrr`, which never read the calibration at
-all. Scoring retrieval on the held half alone halved its sample for nothing: on the PEPs arm that
-was n=44 of 88, wide enough (CI [0.534, 0.800] around 0.682) that one question moved the rate by
-0.023 and a real four-point effect was indistinguishable from noise.
+all. Scoring retrieval on the held half alone halves its sample for nothing: on the PEPs arm that
+is n=44 of 88, wide enough (CI [0.534, 0.800] around 0.682) that one question moves the rate by
+0.023 and a real four-point effect is indistinguishable from noise.
 
-So the two metric families have DIFFERENT denominators on purpose, and this pins both. There are
-two ways to break it and each has its own assertion:
+`score_retrieval_on="all"` is therefore available and `"held"` is the DEFAULT, because the default
+decides what every already-published figure means. Three metric families, three denominators, and
+each is pinned here. There are three ways to break it:
 
-  * revert retrieval to the held half        -> arm `n` drops to the abstention count
+  * flip the DEFAULT to "all"                -> published README/gap numbers silently change
+  * ignore the flag                          -> arm `n` does not move between the two modes
   * "fix" the split by widening EVERYTHING   -> `false_abstain` n rises to the retrieval count
 
 THE FIXTURE IS THE TEST. `_QUESTIONS` is built so the two counts DISAGREE (5 retrieval vs 2
@@ -22,6 +24,7 @@ property directly, so a later edit to `_QUESTIONS` cannot quietly remove it.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 from recall.embeddings import HashingEmbedder
 from recall.eval.labelled import evaluate
@@ -46,6 +49,7 @@ _QUESTIONS = [
 
 _ANSWERABLE_TOTAL = 5
 _ANSWERABLE_HELD = 2
+_HELD_UNANSWERABLE = 1
 
 
 def _corpus(tmp_path):
@@ -88,11 +92,14 @@ def test_retrieval_scores_every_answerable_question_abstention_only_the_held_hal
     table = "lab_split_" + uuid.uuid4().hex[:8]
     store = PgVectorStore(TEST_DSN, dim=emb.dim, table=table)
     try:
-        rep = evaluate(TEST_DSN, corpus, _QUESTIONS, emb, k=3, table=table)
+        rep = evaluate(TEST_DSN, corpus, _QUESTIONS, emb, k=3, table=table,
+                       score_retrieval_on="all")
 
-        # The report NAMES both denominators rather than leaving them to be inferred.
+        # THREE denominators, each named after the metric it divides.
+        assert rep["questions"]["score_retrieval_on"] == "all"
         assert rep["questions"]["retrieval_scored_on"] == _ANSWERABLE_TOTAL
-        assert rep["questions"]["abstention_scored_on"] == _ANSWERABLE_HELD
+        assert rep["questions"]["false_abstain_scored_on"] == _ANSWERABLE_HELD
+        assert rep["questions"]["abstention_accuracy_scored_on"] == _HELD_UNANSWERABLE
 
         # Retrieval: every arm, not just `hybrid`. An arm scored on a different set than its
         # siblings would make the between-arm delta unattributable, which is the whole point of
@@ -103,31 +110,55 @@ def test_retrieval_scores_every_answerable_question_abstention_only_the_held_hal
         # Abstention: still the held half. This is the assertion that fails if someone widens
         # the split everywhere instead of only where it was free.
         assert rep["false_abstain"]["n"] == _ANSWERABLE_HELD
+        # Each label must equal the n of the metric it names — a label computed independently of
+        # its value can drift from it, which is the defect this whole block exists to prevent.
+        assert rep["false_abstain"]["n"] == rep["questions"]["false_abstain_scored_on"]
+        assert rep["abstention_accuracy"]["n"] == rep["questions"]["abstention_accuracy_scored_on"]
+        assert rep["abstention_accuracy"]["n"] == _HELD_UNANSWERABLE
     finally:
         store.drop_table()
         store.close()
 
 
 @requires_db
-def test_widening_retrieval_did_not_change_the_abstention_denominator(tmp_path) -> None:
-    """The rerank arm must not move either denominator.
+def test_default_mode_scores_retrieval_on_the_held_half(tmp_path) -> None:
+    """The DEFAULT must stay `held`, because the default decides what a published number means.
 
-    `hybrid_results` is collected during the `hybrid` arm and reused for `false_abstain`, so the
-    two are coupled through a mutable list. Passing `rerank=True` adds another `score_arm` call
-    against the same collector-free path; this pins that it cannot perturb the abstention sample.
+    `README.md` states a PEPs table over "44 held-out answerable questions" and ships the
+    reproduce command in the same file; `gap_run` records per-corpus rates for 17 BEIR corpora.
+    Flipping this default silently changes what all of those figures mean, with no diff in their
+    provenance. So the widened sample is opt-in, and this test is what stops it drifting back.
     """
     corpus = _corpus(tmp_path)
     emb = HashingEmbedder(dim=64)
-    table = "lab_split_rr_" + uuid.uuid4().hex[:8]
+    table = "lab_split_def_" + uuid.uuid4().hex[:8]
     store = PgVectorStore(TEST_DSN, dim=emb.dim, table=table)
     try:
-        plain = evaluate(TEST_DSN, corpus, _QUESTIONS, emb, k=3, table=table)
-        assert plain["false_abstain"]["n"] == _ANSWERABLE_HELD
-        assert plain["arms"]["hybrid"]["hit_at_3"]["n"] == _ANSWERABLE_TOTAL
-        # The abstention rate itself must be reproducible across runs on one index — it is the
-        # apparatus invariant the PEPs re-run is checked against.
+        rep = evaluate(TEST_DSN, corpus, _QUESTIONS, emb, k=3, table=table)
+        assert rep["questions"]["score_retrieval_on"] == "held"
+        assert rep["questions"]["retrieval_scored_on"] == _ANSWERABLE_HELD
+        for name, arm in rep["arms"].items():
+            assert arm["hit_at_3"]["n"] == _ANSWERABLE_HELD, f"{name} scored on the wrong set"
+        # Abstention is identical in BOTH modes — that is the apparatus invariant the PEPs
+        # re-run is checked against, so it is pinned here rather than merely remembered.
+        assert rep["false_abstain"]["n"] == _ANSWERABLE_HELD
+        assert rep["abstention_accuracy"]["n"] == _HELD_UNANSWERABLE
+
+        # Same index, same questions, twice: the abstention leg must be reproducible.
         again = evaluate(TEST_DSN, corpus, _QUESTIONS, emb, k=3, table=table)
-        assert again["false_abstain"] == plain["false_abstain"]
+        assert again["false_abstain"] == rep["false_abstain"]
     finally:
         store.drop_table()
         store.close()
+
+
+def test_rejects_an_unknown_score_retrieval_on() -> None:
+    """A typo must fail loudly, not silently fall through to one of the two modes.
+
+    No database: the guard is argument validation and runs before any connection is opened.
+    """
+    import pytest
+
+    with pytest.raises(ValueError, match="score_retrieval_on"):
+        evaluate(TEST_DSN, Path("."), _QUESTIONS, HashingEmbedder(dim=64),
+                 score_retrieval_on="everything")

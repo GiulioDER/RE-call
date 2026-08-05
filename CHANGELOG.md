@@ -8,6 +8,28 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Added
+
+- `recall.eval.labelled`: `score_retrieval_on` (`"held"` default, `"all"` opt-in) selects the
+  question population the RETRIEVAL metrics (`hit_at_k`, `mrr`, `latency_ms`) are scored on, plus
+  a `--score-retrieval-on` CLI flag. `"all"` doubles the sample and is methodologically free —
+  those metrics never read the calibration, so the fit/held split halves them for nothing — but
+  it is NOT the default, because the default decides what every already-published figure means.
+- The report's `questions` block now names one denominator per metric family, each read off the
+  list actually scored: `retrieval_scored_on`, `false_abstain_scored_on`,
+  `abstention_accuracy_scored_on`, and the `score_retrieval_on` mode that produced them.
+  `results/gap/*.json` records the retrieval denominator and mode alongside its rates.
+
+### Fixed
+
+- `abstention_scored_on` (added and removed within this unreleased window) named the abstention
+  family but reported `false_abstain`'s denominator, while `abstention_accuracy` is scored on the
+  held UNANSWERABLE questions — a third, unnamed denominator. Split into two correctly-named keys.
+
+**Abstention behaviour is unchanged in both modes**: `false_abstain` is always scored on the held
+answerable half, because its threshold is fitted on the other one. Published numbers are unaffected
+by this release: the default reproduces them exactly.
+
 ### Changed
 - **BREAKING: retrieval fails closed when it cannot certify an answer.** `trusted_search` used to
   resolve calibration and then fall back to `cal = calibration or _UNCALIBRATED`, so a generation

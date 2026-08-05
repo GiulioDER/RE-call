@@ -89,9 +89,29 @@ def _rate(flags: list[bool]) -> dict:
     }
 
 
+#: Which questions the RETRIEVAL metrics (`hit_at_k`, `mrr`, `latency_ms`) are scored on.
+#:
+#: `"held"` is the default and reproduces every number this repo has published. `"all"` scores
+#: every answerable question instead, which is methodologically free — `hit_at_k` and `mrr` never
+#: read the calibration, so the fit/held split buys them nothing and halves their sample — but it
+#: is NOT the default, because the default decides what a published figure MEANS. Silently
+#: widening it would change the value of `README.md`'s PEPs table under a reproduce command that
+#: ships in the same file, and would move `results/gap/*.json` across 17 corpora without changing
+#: one byte of their provenance. Opt in per run, and record which mode produced the artifact.
+#:
+#: Abstention is unaffected by this setting: it is always scored on the held half, because its
+#: threshold is fitted on the other one.
+SCORE_RETRIEVAL_ON = ("held", "all")
+
+
 def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, k: int = 5,
              rerank: bool = False, glob: str = "**/*.md",
-             candidate_k: int = DEFAULT_CANDIDATE_K, table: str | None = None) -> dict:
+             candidate_k: int = DEFAULT_CANDIDATE_K, table: str | None = None,
+             score_retrieval_on: str = "held") -> dict:
+    if score_retrieval_on not in SCORE_RETRIEVAL_ON:
+        raise ValueError(
+            f"score_retrieval_on must be one of {SCORE_RETRIEVAL_ON}, got {score_retrieval_on!r}"
+        )
     answerable = [q for q in questions if q.get("answerable")]
     unanswerable = [q for q in questions if not q.get("answerable")]
 
@@ -111,7 +131,8 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
 
         # Calibrate on THIS corpus: a threshold from another corpus's cosine regime does not
         # transfer (FINDINGS section 2), and an uncalibrated run would measure the default, not
-        # the system. Fitted on half the questions, scored on the other half.
+        # the system. The threshold is fitted on half the questions and ABSTENTION is scored on
+        # the other half. Retrieval follows `score_retrieval_on` (default `"held"`, the same half).
         fit, held = questions[::2], questions[1::2]
         retr = HybridRetriever(store, embedder, candidate_k=candidate_k)
 
@@ -126,26 +147,23 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
         )
 
         answerable_held = [x for x in held if x.get("answerable")]
-        # RETRIEVAL is scored on EVERY answerable question, not just the held half.
+        # The retrieval population, per `score_retrieval_on`. See that constant for why `"held"`
+        # is the default. On PEPs the two differ by 2x (44 vs 88 answerable), and at 44 the CI is
+        # [0.534, 0.800] around 0.682 — one question moves the rate by 0.023, so a real
+        # four-point effect is indistinguishable from noise. `"all"` is the cure and is opt-in.
         #
-        # The fit/held split exists for one thing: the abstention threshold is fitted on `fit`, so
-        # scoring abstention on `fit` as well would fit and score on the same data. `hit_at_k` and
-        # `mrr` never read `cal` — they compare retrieved files against gold files — so the split
-        # buys them nothing and halves their sample. Measured on PEPs: n=44 of 88 answerable, wide
-        # enough (CI [0.534, 0.800] around 0.682) that ONE question moves the rate by 0.023, so a
-        # real four-point effect is indistinguishable from noise.
-        #
-        # Abstention still uses `held` ONLY — `false_abstain` below filters these results back
-        # down by id. Widening retrieval must not widen that.
-        answerable_all = [x for x in questions if x.get("answerable")]
-        held_ids = {x["id"] for x in answerable_held}
+        # Abstention uses `held` ONLY in BOTH modes: `false_abstain` filters these results back
+        # down by id below. Widening retrieval must never widen that, or the threshold would be
+        # fitted and scored on the same questions.
+        scored = answerable if score_retrieval_on == "all" else answerable_held
+        answerable_held_ids = {x["id"] for x in answerable_held}
 
         def score_arm(
             retriever: BM25Retriever | HybridRetriever,
             collect: list[tuple[str, RetrievalResult]] | None = None,
         ) -> dict:
             hits, reciprocal, latency, misses = [], [], [], []
-            for q in answerable_all:
+            for q in scored:
                 t = time.perf_counter()
                 res = retriever.search(q["query"], k=k)
                 latency.append((time.perf_counter() - t) * 1000)
@@ -172,7 +190,7 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
                 "misses": misses,
             }
 
-        # Every arm runs against the SAME index, the same held-out questions and the same
+        # Every arm runs against the SAME index, the SAME question set (see `scored`) and the same
         # calibration — only the ranking stage differs, so a delta is attributable.
         #
         # The three baselines are not decoration. `hybrid` on its own is a number with nothing
@@ -208,7 +226,8 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
                            candidate_k=candidate_k).abstained
             for q in held if not q.get("answerable")
         ]
-        # Answerable held questions were already retrieved for the `hybrid` arm; reuse those
+        # `hybrid_results` holds (question id, RetrievalResult) for every question the arms
+        # scored; the held answerable subset is selected by `answerable_held_ids`. Reuse those
         # RetrievalResults for the abstain decision instead of retrieving a second time (PERF-003).
         # `abstained` depends only on the hits + supersession + threshold — not the retriever's
         # gap_threshold — so at the same candidate_k this equals a fresh research_search.
@@ -219,7 +238,7 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
         # score on the same data. Retrieval gets the wider sample; abstention keeps the split.
         false_abstain = [
             trust_evaluate(res, supersession, cal, now, unresolved).abstained
-            for qid, res in hybrid_results if qid in held_ids
+            for qid, res in hybrid_results if qid in answerable_held_ids
         ]
 
         # Completeness, as a recorded expected/actual pair rather than a bare assertion. A
@@ -252,14 +271,19 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
             corpus_report["table"] = table
         return {
             "corpus": corpus_report,
-            # The two metric families have DIFFERENT denominators, so both are named here rather
-            # than left for a reader to infer from `held_out`. `arms.*.hit_at_k` is over every
-            # answerable question; `false_abstain` is over the held answerable half only, because
-            # the threshold was fitted on the other half.
+            # THREE metric families, THREE different denominators. Each is named after the
+            # metric it actually divides, and each is read off the list that was scored rather
+            # than recomputed from a definition — a count derived independently of the value it
+            # labels can drift from it, which is the whole defect this block exists to prevent.
+            #   retrieval_*            -> arms.*.hit_at_k, arms.*.mrr, arms.*.latency_ms
+            #   false_abstain_*        -> false_abstain          (held ANSWERABLE)
+            #   abstention_accuracy_*  -> abstention_accuracy    (held UNANSWERABLE)
             "questions": {"total": len(questions), "answerable": len(answerable),
                           "unanswerable": len(unanswerable), "held_out": len(held),
-                          "retrieval_scored_on": len(answerable_all),
-                          "abstention_scored_on": len(answerable_held)},
+                          "score_retrieval_on": score_retrieval_on,
+                          "retrieval_scored_on": len(scored),
+                          "false_abstain_scored_on": len(false_abstain),
+                          "abstention_accuracy_scored_on": len(abstained)},
             "candidate_k": candidate_k,
             "threshold": cal.threshold,
             "arms": arms,
@@ -286,6 +310,11 @@ def main() -> None:
     ap.add_argument("--candidate-k", type=int, default=20,
                     help="candidates each leg contributes before fusion; the pool a "
                          "reranker sees is their union (default: 20)")
+    ap.add_argument("--score-retrieval-on", default="held", choices=list(SCORE_RETRIEVAL_ON),
+                    help="which questions the RETRIEVAL metrics are scored on. 'held' (default) "
+                         "reproduces every published number; 'all' scores every answerable "
+                         "question, which doubles the sample and is methodologically free but "
+                         "changes what hit@k MEANS. Abstention always uses the held half.")
     ap.add_argument("--dsn", default=DEFAULT_DSN)
     ap.add_argument("--table",
                     help="index into this named table and KEEP it after the run (default: an "
@@ -303,7 +332,8 @@ def main() -> None:
 
     report = evaluate(args.dsn, Path(args.corpus), questions, _make_embedder(args.embedder),
                       k=args.k, rerank=args.rerank, glob=args.glob,
-                      candidate_k=args.candidate_k, table=args.table)
+                      candidate_k=args.candidate_k, table=args.table,
+                      score_retrieval_on=args.score_retrieval_on)
     print(json.dumps(report, indent=2))
 
 
