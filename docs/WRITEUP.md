@@ -74,7 +74,7 @@ threshold it abstains at is not a constant you can hard-code — which the evalu
 
 ### 2.3 Exposed as an MCP server
 
-`recall_mcp` exposes `recall_search` / `recall_index` / `recall_stats` over the Model Context
+`recall_mcp` exposes `recall_search` / `recall_evidence` / `recall_index` / `recall_forget` / `recall_stats` over the Model Context
 Protocol (stdio), so any MCP client (e.g. Claude Desktop) can use the memory directly. The
 self-recall loop then lives at the agent's own tool-call layer.
 
