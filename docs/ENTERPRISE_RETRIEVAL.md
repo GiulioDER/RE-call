@@ -36,13 +36,19 @@ Tenant routes never accept a physical table from a client. The runtime resolves 
 
 ## Operator sequence
 
-`recall-enterprise` reads its connection from `RECALL_DSN`. Of its subcommands, `migrate` and
-`create-generation` perform DDL; `mark-ready`, `set-route` and `cutover` are ordinary DML against
-the control-plane tables. Export the migration credential **only for the duration of the commands
-that need it**:
+`recall-enterprise` picks its credential by subcommand, so the operator no longer has to.
+`migrate` and `create-generation` perform DDL and read `RECALL_MIGRATION_DSN`; `readiness`,
+`status`, `parity` and `replay` only read and take `RECALL_SERVING_DSN`; `mark-ready`, `set-route`,
+`cutover` and `retire` are DML against the control-plane tables and take the migration credential.
+All of them fall back to `RECALL_DSN`, so a single-variable deployment keeps working.
+
+The split matters most for `readiness`, which reports whether row level security constrains "the
+runtime database role". That check reads `current_user` of the connection it was handed, so on the
+migration role a green verdict would certify a credential that never serves a request. The command
+prints the role it evaluated, so the verdict names its own subject.
 
 ```console
-RECALL_DSN="$RECALL_MIGRATION_DSN" recall-enterprise migrate
+RECALL_MIGRATION_DSN="$RECALL_MIGRATION_DSN" recall-enterprise migrate
 ```
 
 > ⚠️ `RECALL_DSN` is also the deprecated fallback the serving process and the MCP server
@@ -74,7 +80,7 @@ recall-enterprise mark-ready g2026_08 --chunks 1000000 --sources 120000
 recall-enterprise set-route acme g2026_07 --shadow-generation g2026_08
 ```
 
-While a shadow route exists, indexing prepares both vector sets before either generation changes. It records a durable ordered event, applies the active and shadow writes, then clears the event payload on completion. A crash leaves an idempotent replay record. Forget operations delete from both generation tables in one database transaction.
+While a shadow route exists, indexing prepares both vector sets before either generation changes. It records a durable ordered event, applies the active and shadow writes, then clears the event payload on completion. A crash leaves an idempotent replay record. The `recall_forget` MCP tool deletes from both generation tables in one database transaction, then scrubs the erased sources out of any pending replay record, so a later replay cannot restore them. The scrub is keyed on the sources the caller named, not on what still had rows, because the case that most needs it is the one where a crash left the text in the outbox and nowhere else. One window remains and is reported rather than hidden: the deletes commit before the scrub, so a crash between them leaves the outbox entry, and the result carries `outbox_events_scrubbed = -1` when the scrub failed after the deletion succeeded. ⚠️ The `recall forget` CLI is single-generation and does NOT scrub the outbox; on an enterprise deployment use the MCP tool.
 
 Cutover refuses to proceed while any migration event is pending or while the shadow is not ready:
 
@@ -82,11 +88,27 @@ Cutover refuses to proceed while any migration event is pending or while the sha
 recall-enterprise cutover acme
 ```
 
-The route update is transactional and sends a content free PostgreSQL notification. Service processes invalidate their cached route immediately, with a five second polling fallback. Existing requests keep their acquired store object. New requests use the new generation.
+A crash that left an event pending blocks cutover until the outbox is drained. Drain it, then compare the two generations before promoting:
+
+```console
+recall-enterprise status --tenant acme
+recall-enterprise replay acme
+recall-enterprise parity acme
+```
+
+`replay` opens only the generations the pending events name, resolving each physical table from `recall_index_generations`, and exits non-zero if anything is still pending afterwards. `parity` exits non-zero when the generations disagree on sources, raw content hashes or chunk counts, and also when either generation has an invalid required index or does not have row level security forced. `status` reports generations, the tenant's route and the outbox depth; it never prints a pending event's payload, which holds corpus text and vectors. It also lists any registry row whose `physical_table` the identifier allowlist rejects, rather than failing on it: such a row cannot serve, and the command an operator uses to find it must not be the command that dies on it. Run `recall-enterprise status` before upgrading.
+
+`readiness` runs the startup checks for one tenant without starting a server, and exits non-zero when any of them fails. Run it with `RECALL_SERVING_DSN` set: its row level security verdict is about the role it connects as, and it prints that role so the result names its own subject.
+
+```console
+recall-enterprise readiness acme
+```
+
+The route update is transactional and sends a content free PostgreSQL notification. Service processes invalidate their cached route immediately. The fallback is a five second cache TTL on the route, not a poll: a process whose notification never arrives picks the new route up within that window on its next request. Existing requests keep their acquired store object. New requests use the new generation.
 
 ## Runtime configuration
 
-Set `RECALL_ENTERPRISE_CONTROL_PLANE=1` only on authenticated HTTP deployments. Enterprise readiness then fails startup when a route is missing, the profile or dimension differs, required indexes are invalid, row level security is ineffective, model identity is unverified, or stored rows lack profile metadata.
+Set `RECALL_ENTERPRISE_CONTROL_PLANE=1` only on authenticated HTTP deployments. Enterprise readiness then fails startup when a route is missing, the control plane is unreachable, the profile or dimension differs, the active generation is not `ready` or `active`, either schema ledger is not current, required indexes are invalid, row level security is ineffective, model identity is unverified, a loaded calibration names a different embedding profile, or stored rows lack profile metadata. A database carrying migrations this package does not ship is reported as degraded rather than fatal (readiness returns `degraded=true` with a warning the server logs), so migrating forward and then rolling the application back does not refuse to boot.
 
 Choose one service cost profile per process:
 
@@ -138,3 +160,11 @@ The registry pins the artifact digest for this profile. A different artifact tre
 ## Rollback and retirement
 
 Cutover swaps the previous active generation into the shadow route. Restore it with `set-route` if rollback is required. Keep the old table for seven days and two successful backup cycles. Removal is an explicit operator migration after the rollback period. Never allow a request field to name a retired table.
+
+After the rollback window, retire the old generation:
+
+```console
+recall-enterprise retire g2026_07 --tenant acme
+```
+
+Retirement is confirmed one tenant at a time, and the reason is the isolation model rather than convenience: `recall_tenant_routes` carries forced row level security keyed on the tenant, and neither the migration role nor the runtime role may enumerate every tenant's routes to prove a generation is globally unrouted. The command therefore refuses while the named tenant's route references the generation, and the serving path refuses a retired or failed generation independently, per request. That second refusal is the one that protects a request; weakening the isolation model to make a single global check possible would have cost more than it bought.
