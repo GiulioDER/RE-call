@@ -7,23 +7,35 @@ from pathlib import Path
 
 from recall.embeddings import (
     Embedder,
+    EmbeddingProfile,
     EmbeddingPurpose,
     embed_passages,
     embed_query,
-    embedding_profile_id,
+    embedding_profile,
 )
 
 
 def cache_key(
-    name: str, dim: int, text: str, purpose: EmbeddingPurpose = "legacy"
+    profile: EmbeddingProfile, dim: int, text: str, purpose: EmbeddingPurpose = "legacy"
 ) -> str:
-    """Content-address a chunk's embedding by (embedder name, dim, text).
+    """Content-address an embedding by (complete profile identity, purpose, dim, text).
 
-    Including ``name`` and ``dim`` means switching embedder or model can never return a vector
-    computed by a different backend — the key simply misses and the text is re-embedded.
+    Takes the whole `EmbeddingProfile`, not its ID. The ID alone is not an identity: a
+    re-provisioned artifact or a context-mode change moves the vectors while the ID stays fixed,
+    and a key that misses those serves a vector computed by different weights, or from different
+    text, and nothing downstream can tell, and a cache hit is a plausible vector of the right width.
+    `EmbeddingProfile.fingerprint` covers every field; see it for what is in the identity and why.
+
+    Deliberately typed to REFUSE a bare string. The previous signature accepted the profile ID,
+    so the unsafe call is the one that used to be correct, and a `str | EmbeddingProfile` union
+    would have let every existing caller keep the weaker key without noticing.
+
+    ``purpose`` separates the query, passage and legacy encoders: with an asymmetric model the
+    same text embeds to different vectors under each, so one key space per purpose is the
+    difference between a cache and a correctness bug.
     """
     h = hashlib.sha256()
-    for part in (name, purpose, str(dim), text):
+    for part in (profile.fingerprint(), purpose, str(dim), text):
         h.update(part.encode("utf-8"))
         h.update(b"\x00")
     return h.hexdigest()
@@ -92,8 +104,8 @@ def embed_with_cache(
 
     if cache is None:
         return _embed(texts)
-    profile_id = embedding_profile_id(embedder)
-    keys = [cache_key(profile_id, embedder.dim, t, purpose) for t in texts]
+    profile = embedding_profile(embedder)
+    keys = [cache_key(profile, embedder.dim, t, purpose) for t in texts]
     results: list[list[float] | None] = [cache.get(k) for k in keys]
     miss_idx = [i for i, r in enumerate(results) if r is None]
     if miss_idx:
