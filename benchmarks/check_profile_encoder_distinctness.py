@@ -1,6 +1,6 @@
 """Do two registered embedding profiles actually produce different vectors?
 
-Prior work: [[project-recall-embedding-profile-registry-2026-08-05]] — SEARCHED before writing
+Prior work: [[project-recall-embedding-profile-registry-2026-08-05]]. SEARCHED before writing
 this, `docs_search(source_type="memory", "bge-small asymmetric symmetric embedding profile
 query_embed passage_embed identical vectors RE-call")`, no gap_warning, top-3 cosine
 0.809/0.689/0.672. Session 8 already measured this on VPS2 and recorded "the asymmetric profiles
@@ -50,7 +50,7 @@ METHOD IDENTITIES: if all three names resolve to one function, the cache hypothe
 If they are distinct functions that nevertheless agree byte for byte, that is a different and more
 interesting finding, and the verdict says so rather than eliding it.
 
-⚠️ Run it against a COPY of the artifact tree, never the provisioned one, and not as root.
+Run it against a COPY of the artifact tree, never the provisioned one, and not as root.
 fastembed 0.8.0's artifact-miss path deletes files before it checks `local_files_only`, so a
 mis-pointed `--cache-dir` destroys operator data. `assert_provisioned` refuses that state before
 the loader is constructed, and `--expect-artifact-sha256` is what makes a copy as good as the
@@ -62,8 +62,8 @@ benchmarks.check_profile_encoder_distinctness --cache-dir /var/tmp/tree
 --expect-artifact-sha256 <digest>
 
 Exit codes, all distinct, because "no measurement", "a measurement that said no" and "you typed
-the flag wrong" must never be confusable:  0 a verdict was produced (whichever verdict) ·
-2 a control refused, so there is no measurement · 64 usage error.
+the flag wrong" must never be confusable:  0 a verdict was produced (whichever verdict);
+2 a control refused, so there is no measurement; 64 usage error.
 """
 from __future__ import annotations
 
@@ -196,7 +196,14 @@ def artifact_tree_sha256(path: str) -> str:
 
 
 def assert_provisioned(cache_dir: str) -> dict[str, Any]:
-    """Refuse a tree fastembed would take its DESTRUCTIVE fallback path on.
+    """Refuse a tree with no model snapshot, before a loader whose miss path DELETES sees it.
+
+    Scope, stated because the first docstring claimed more: this checks that the tree holds SOME
+    `models--*` snapshot and SOME `.onnx` graph. It does NOT check that they are the snapshot for
+    `model_name`, and fastembed's destructive path is keyed on the model name, so a tree correctly
+    provisioned for model A opened with `--model-name B` still passes here. The blast radius of
+    that case is near zero (B's paths do not exist to delete), but the guard is narrower than
+    "refuses every state that reaches the delete path".
 
     ⚠️ This guard is not tidiness. In fastembed 0.8.0 the artifact-miss path runs `shutil.rmtree`
     on `<cache_dir>/tmp/<model>` and `unlink` on `<cache_dir>/<model>.tar.gz` **before** it checks
@@ -279,6 +286,44 @@ def compare(left: Any, right: Any) -> dict[str, Any]:
     }
 
 
+def calls_base_encoder(source: str) -> bool:
+    """Does this source actually CALL `self.embed(...)`, rather than mention one?
+
+    An AST walk, not a substring test. The first version asked `"self.embed(" in source` over the
+    concatenated `inspect.getsource` of the whole delegation chain, and the anti-regression gate
+    reproduced the consequence: a docstring reading "deliberately does NOT call self.embed(text)"
+    and a comment reading "used to be `yield from self.embed(texts)`" both made it True, so a
+    NEGATION read as a confirmation and the verdict escalated from "not settled" to "cannot produce
+    different vectors". That mattered because on the real backend the three names are three
+    distinct functions, so this check is the ONLY support for that escalation.
+
+    Patching the pattern was available and is the wrong move: this repository has a recorded case
+    of one domain check rewritten five times, producing a new defect each time, and the lesson is
+    that three rounds on the same parser means the MECHANISM is wrong. Comments never enter an AST,
+    and a docstring is a constant rather than a call, so both classes of false positive are
+    excluded by construction rather than by a better regex.
+    """
+    import ast
+    import textwrap
+
+    try:
+        tree = ast.parse(textwrap.dedent(source))
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if (
+            isinstance(function, ast.Attribute)
+            and function.attr == BASE_ENCODER
+            and isinstance(function.value, ast.Name)
+            and function.value.id == "self"
+        ):
+            return True
+    return False
+
+
 def resolved_encoders(model: Any) -> dict[str, Any]:
     """Which underlying function each declared encoder name resolves to.
 
@@ -330,9 +375,7 @@ def resolved_encoders(model: Any) -> dict[str, Any]:
             # resolves to `OnnxTextEmbedding`, which does NOT override these two: they come from
             # `TextEmbeddingBase` and both `yield from self.embed(...)` with no instruction. So
             # byte-identity here is a property of the LIBRARY, not of one provisioned host.
-            "source_delegates_to_base": (
-                name != BASE_ENCODER and f"self.{BASE_ENCODER}(" in source
-            ),
+            "source_delegates_to_base": name != BASE_ENCODER and calls_base_encoder(source),
             "source_available": bool(source),
             "delegation_chain": [getattr(m, "__qualname__", None) for m in chain],
         }
@@ -582,6 +625,10 @@ def measure(
         all(row[f"bytes_{BASE_ENCODER}_eq_{name}"] for name in ASYMMETRIC_ENCODERS) for row in rows
     )
     return {
+        # Named so a reader can tell this from a `PromotionDecision` without inferring from
+        # the filename. It sits in results/promotion/ beside decisions and is NOT one: no arm
+        # was scored and no gate was evaluated.
+        "schema": "recall-encoder-distinctness-v1",
         "environment": environment,
         "resolved_encoders": resolved,
         "coverage_control": coverage,
@@ -623,6 +670,13 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit as exit_signal:
         # argparse exits 2 on a usage error, which is this script's "a control refused" code. A
         # mistyped flag and a failed control must not be the same observation.
+        #
+        # But argparse also raises SystemExit(0) for `--help`, and the first version of this fix
+        # caught that too, so a CORRECT invocation started reporting a usage error. The
+        # anti-regression gate measured it: `--help` exited 0 before the fix and 64 after. Fixing
+        # a collision by breaking the success path is drift past the finding.
+        if exit_signal.code in (0, None):
+            raise
         raise SystemExit(EXIT_USAGE) from exit_signal
 
     try:

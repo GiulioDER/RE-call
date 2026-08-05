@@ -25,11 +25,13 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   tables, making their deltas tie-break noise around zero, which is worse rather than equivalent.
   No behaviour changes; `docs/ENTERPRISE_RETRIEVAL.md` now says so where a reader designing an
   experiment will meet it, because "names a distinct encoder" and "gets distinct vectors" had been
-  the same sentence. Four controls, all blocking (positive, determinism, coverage, and a
+  the same sentence. Five controls, all blocking (positive, determinism, coverage, identity binding, and a
   sensitivity control that requires a deliberate 1e-4 rad rotation to be reported as different),
-  each proven able to refuse by mutation rather than merely to run, and covered by
+  each proven able to refuse by mutation rather than merely to run (8 of 8 guards killed), and covered by
   `tests/test_bench_profile_encoder_distinctness.py` against a stub backend so CI exercises them
-  without the `fastembed` extra. Run output archived under `/var/lib/recall-benchmarks/`.
+  without the `fastembed` extra. Run output committed at `results/promotion/encoder-distinctness.bge-small.json`
+  (schema `recall-encoder-distinctness-v1`, not a `PromotionDecision`) and archived under
+  `/var/lib/recall-benchmarks/`.
 
 - **`latency_budget_ms` now means something at request time.** It was declared on every retrieval
   profile, validated, and read by nothing. It now does two enforced things. It **bounds the

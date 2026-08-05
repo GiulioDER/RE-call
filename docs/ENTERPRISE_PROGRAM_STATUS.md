@@ -99,7 +99,8 @@ command, and only the other three depend on host data. What is absent everywhere
 question set, whose entire value is that it predates any candidate result, and the calibration
 without which `superseded_trust_rate` is `null` rather than a number.
 
-> Host paths and database names are deliberately not written out here. This repository is public,
+> Host paths and database names with no prior art in this repository are deliberately not
+> written out here. This repository is public,
 > and the CCA security auditor found that five such strings in the first draft of this entry had no
 > prior art anywhere in it. The operator runbook is the place for them; a handoff needs to say what
 > exists, not where.
@@ -119,7 +120,7 @@ is the documented fallback and is stated here rather than left to be inferred.
 
 The script does not import the `recall` package. The subject is what the BACKEND does, and asking
 the code under test whether its own two configurations differ is the self-comparison this program
-keeps recording. Two controls, both blocking:
+keeps recording. Five controls, all blocking:
 
 | Control | Result |
 |---|---|
@@ -129,7 +130,7 @@ keeps recording. Two controls, both blocking:
 | **Sensitivity: a deliberate 1e-4 rad rotation must be reported as DIFFERENT** | fired, cosine `0.999999995`. **This is the control the first version did not have** |
 | Identity: artifact digest bound, vector width matched | fired, digest equals the manifest's, `local_files_only` confirmed consumed |
 
-**The fourth row is the finding of this session's own audit.** The first version's two controls both
+**The sensitivity row is the finding of this session's own audit.** The first version's two controls both
 varied the TEXT and held the ENCODER fixed, at a cosine of 0.65, while the probes vary the ENCODER
 and hold the text fixed, and the null is drawn on that axis. So it established that the comparator
 separates grossly different vectors and never that it could see a small difference between two
@@ -140,11 +141,19 @@ The related defect was in the arithmetic. `_cosine` computed entirely in float32
 values **above 1.0** for byte-identical vectors (31.9% of 20000 trials, max `1.000000119209`) and
 returned exactly `1.0` for vectors differing in 382 of 384 components (a 3e-5 rad rotation). The
 published "cosine exactly 1.0" was not a property that implementation reliably produced. It now
-computes in float64 and clamps; reverting that one line turns 7 of the 21 new tests red.
+computes in float64 and clamps; reverting it to float32 turns **10 of the 27 new tests** red.
 
-All six guards were shown able to fail by mutation, applied and restored **by bytes**, with the file
+Every guard was shown able to fail by mutation, applied and restored **by bytes**, with the file
 verified byte-identical afterwards: sensitivity, coverage, provisioning, digest binding, the float64
-cosine, and the usage-versus-refusal exit split. 6 of 6 killed.
+cosine, the usage-versus-refusal exit split, the AST delegation check, the verdict's use of it, and
+the artifact's schema stamp. **8 of 8 killed**, after two rounds.
+
+The two the first round got wrong are worth recording, because both were defects in the SWEEP
+rather than in the code. One mutation's search string did not match, and the harness aborted that
+row rather than reporting a survival, which is the behaviour that makes the other rows mean
+anything. And "delete the schema key" **survived**: the test read the committed artifact FILE, so
+it could not see the emitter losing the key. A test that pins an artifact does not pin the code
+that writes it.
 
 **No timing is reported and none is citable.** VPS2 showed a load average of 9.37 / 8.79 / 9.46 on
 12 cores while this ran, from unrelated live production. The only numbers taken from VPS2 here are
@@ -152,15 +161,31 @@ digests, byte comparisons and cosines.
 
 ### Archived
 
-`/var/lib/recall-benchmarks/2026-08-05-embedding-profile-distinctness/`, six files, with
-`MANIFEST.sha256` covering all of them and `sha256sum -c` passing. The archived script is
-byte-identical to the committed one (`2b04d6af93e2…12cf0`), which is the check the MT-RAG salvage
-entry below had to do the hard way after a runner survived only as untracked files in `/var/tmp`.
+`/var/lib/recall-benchmarks/2026-08-05-embedding-profile-distinctness/`, with `MANIFEST.sha256`
+covering every file and `sha256sum -c` passing. The archived script and test file are byte-identical
+to the committed ones, `868bf676ca78…780fc` and `829b09d81c17…a5da1`, **read back from the archive
+after the last edit rather than recorded when it was first written.**
 
-`precondition_audit.json` (schema `recall-precondition-audit-v1`) is the machine-readable
-deliverable. It is deliberately **not** a `PromotionDecision`: no arm was scored, so emitting that
-schema would have described a gate evaluation that never happened. A refusal to run and a run that
-refused must not read the same.
+⚠️ That distinction is the point, because the first version of this paragraph got it wrong: it
+carried `2b04d6af93e2…12cf0`, which is the digest of the script **before** the audit rewrote 694
+lines of it. So the paragraph asserting an integrity check was itself stale, in a document arguing
+that undemonstrated claims are the failure mode. The architect gate caught it by hashing both
+revisions. A digest quoted from memory is not an integrity check; one read back from the artifact
+is.
+
+Two machine-readable artifacts, and neither is a `PromotionDecision`. No arm was scored, so
+emitting that schema would have described a gate evaluation that never happened, and a refusal to
+run must not read like a run that refused.
+
+| Artifact | Where | Schema |
+|---|---|---|
+| The precondition verdicts and their evidence | archive only | `recall-precondition-audit-v1` |
+| The measurement itself | **in the repository**, `results/promotion/encoder-distinctness.bge-small.json`, and in the archive | `recall-encoder-distinctness-v1` |
+
+The second is committed so the finding survives without host access, and it carries an explicit
+`schema` key because it sits in `results/promotion/`, the directory promotion decisions are written
+into, where a reader should not have to infer the kind from the filename. A test asserts both the
+schema and the absence of `promoted` / `bootstrap_interval`.
 
 ### What was deliberately not done
 
@@ -208,11 +233,11 @@ where the schema is currently at `0010`).
 |---|---|
 | `ruff check .` | clean, ruff 0.15.22 |
 | `mypy` | clean, 149 source files |
-| `pytest tests/test_bench_profile_encoder_distinctness.py` | **21 passed** (new file) |
+| `pytest tests/test_bench_profile_encoder_distinctness.py` | **27 passed** (new file) |
 | `pytest` on the four suites reading the edited documents | 81 passed |
 | `benchmarks/claim_gate.py` | exit 0 |
-| Mutation sweep over the new guards | **6 of 6 killed**, file restored byte-identical |
-| CCA audit | DEEP tier, 5 auditors, **31 findings**; see below |
+| Mutation sweep over the new guards | **8 of 8 killed** (two rounds), file restored byte-identical |
+| CCA audit | DEEP tier, 5 auditors, **31 findings**; then the anti-regression and architect gates, **2 regressions + 8 more**; see below |
 
 ### The audit found the apparatus, not the conclusion, and that is the second headline
 
@@ -1469,6 +1494,9 @@ Nothing in this session depends on that being false, and nothing here changes it
 
 * the three context profiles and `bge-small-asymmetric-v1` currently differ from
   `bge-small-symmetric-v1` in the passage TEXT they embed, not in the encoder they use;
+  **[corrected 2026-08-05, see the top entry: `bge-small-asymmetric-v1` does NOT belong in this
+  sentence. Its `context_mode` is `none`, the same as the symmetric profile, so its passage text
+  is identical too. Only the three context profiles differ in text.]**
 * the dispatch still has to be correct, because `qwen3-embedding-0.6b-384-v1` does use a distinct
   instruction-prefixed query encoder, and because a future fastembed or model could add one
   without changing a profile ID;

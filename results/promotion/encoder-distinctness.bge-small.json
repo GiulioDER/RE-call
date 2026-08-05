@@ -1,4 +1,5 @@
 {
+  "schema": "recall-encoder-distinctness-v1",
   "environment": {
     "python": "3.12.3",
     "platform": "Linux-6.8.0-136-generic-x86_64-with-glibc2.39",
