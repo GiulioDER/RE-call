@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import re
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -708,6 +709,38 @@ def test_a_handle_whose_repr_also_raises_still_warns_and_does_not_propagate() ->
     assert memory.closed == 1  # and the other handle was still released
 
 
+def test_close_stays_total_under_warnings_as_errors() -> None:
+    """`-W error` must not let the diagnostic abort the thing it was added to protect.
+
+    `warnings.warn` raises under warnings-as-errors. Sitting unguarded inside the release loop, it
+    turned the FIRST failed handle into an abort of every later one, so a wedged primary client
+    left the machine-global telemetry lock and the SQLite handle both open — precisely inverting
+    "letting go of one must never be conditional on another closing cleanly". It also escaped
+    `latency.py`'s `finally` and `__exit__`, replacing the error that explains the run.
+
+    Not hypothetical: `-W error` and `PYTHONWARNINGS=error` are ordinary CI settings, and this
+    suite already emits live warnings from mem0.
+    """
+    from benchmarks.systems import Mem0System
+
+    class _Wedged:
+        def close(self) -> None:
+            raise RuntimeError("handle wedged")
+
+    telemetry = _RecordingClient()
+    memory = _RecordingMemory(client=_Wedged(), telemetry_client=telemetry)
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    system._mem = memory
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        system.close()  # must not raise, even though the report cannot be delivered
+
+    # The handles after the wedged one were still released. That is the whole invariant.
+    assert telemetry.closed == 1
+    assert memory.closed == 1
+
+
 def test_an_exception_whose_own_repr_raises_still_warns() -> None:
     """The other half of the same hazard: `BaseException.__repr__` formats `args`.
 
@@ -787,6 +820,7 @@ def test_the_attribute_path_close_walks_still_exists_in_mem0() -> None:
     assert re.search(r"self\.client\s*=", qdrant), "mem0's Qdrant store no longer exposes `client`"
 
 
+@pytest.mark.filterwarnings("ignore::ResourceWarning")
 def test_close_releases_the_real_qdrant_storage_lock(tmp_path: Path) -> None:
     """The end-to-end proof, against the real lock rather than a mock of it.
 
@@ -797,6 +831,12 @@ def test_close_releases_the_real_qdrant_storage_lock(tmp_path: Path) -> None:
 
     Uses a real `QdrantClient` but NOT a real `mem0.Memory`, deliberately: building one loads the
     HuggingFace embedder (~56s here). The lock is the thing under test, and it is real.
+
+    The `ResourceWarning` filter is for an UPSTREAM leak, not ours, and is scoped to this one test
+    rather than the module so it cannot hide anything else. qdrant-client opens the `.lock` file
+    and only then attempts to lock it, so the constructor that loses the race raises without
+    closing its own handle. Verified in isolation: a plain open/close cycle is clean under
+    `-W error`, and the warning appears exactly at the contention assertion below.
     """
     qdrant_client = pytest.importorskip("qdrant_client")
     from benchmarks.systems import Mem0System
@@ -1341,9 +1381,15 @@ def test_a_urllib_style_http_error_still_matches_on_code() -> None:
     error = urllib.error.HTTPError(
         "https://openrouter.ai/api/v1/chat/completions", 402, "Payment Required", {}, None
     )
-    assert error.code == 402
-    with pytest.raises(pytest.skip.Exception):
-        _skip_if_the_account_cannot_pay(error)
+    # `HTTPError` is file-like (it subclasses `addinfourl`), so an un-closed one emits a
+    # `ResourceWarning` on collection — a real leak in this test, not a third-party wart, and it
+    # fails the suite under `-W error`.
+    try:
+        assert error.code == 402
+        with pytest.raises(pytest.skip.Exception):
+            _skip_if_the_account_cannot_pay(error)
+    finally:
+        error.close()
 
 
 def test_a_probe_that_raises_is_treated_as_no_evidence() -> None:

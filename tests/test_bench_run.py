@@ -437,7 +437,8 @@ def test_main_closes_the_system_it_built(
     """
     from benchmarks.systems import RecallSystem
 
-    closed: list[str] = []
+    out = tmp_path / "results"
+    closed: list[bool] = []
 
     class _ClosableSystem(RecallSystem):
         name = "recall"
@@ -454,7 +455,12 @@ def test_main_closes_the_system_it_built(
             return []
 
         def close(self) -> None:
-            closed.append("closed")
+            # Records WHETHER THE ARTIFACT WAS ALREADY WRITTEN, not merely that close ran. The
+            # ordering is what makes a failing `close()` harmless: everything is on disk by then,
+            # so the worst case is a bad exit status rather than a destroyed run. Asserting only
+            # `closed == [...]` is order-blind, and a mutant that moves the close above the write
+            # survives it.
+            closed.append(any(out.glob("*.json")))
 
     def _fake_build(
         arm: str, model: str, openrouter_key: str, k: int, run_id: str,
@@ -468,13 +474,65 @@ def test_main_closes_the_system_it_built(
 
     data = _write_fixture(tmp_path)
     code = main(
-        ["--arm", "recall", "--data", str(data), "--conversations", "2",
-         "--out", str(tmp_path / "results")],
+        ["--arm", "recall", "--data", str(data), "--conversations", "2", "--out", str(out)],
         now=_NOW,
     )
 
     assert code == 0
-    assert closed == ["closed"]  # exactly once, and it did happen
+    assert closed == [True]  # closed exactly once, and AFTER the artifact was written
+
+
+def test_a_failing_close_cannot_turn_a_finished_run_into_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Teardown of an already-written artifact must not change the run's verdict.
+
+    By the time the close runs, both the results JSON and the incremental sidecar are on disk and
+    their paths have been printed. If a raising `close()` propagated, `main` would never reach
+    `return 0`, so a complete run would exit non-zero — and a wrapper or retry loop reading that
+    status would re-run it, re-spending LLM credit on work that already succeeded.
+    """
+    from benchmarks.systems import RecallSystem
+
+    out = tmp_path / "results"
+
+    class _UnclosableSystem(RecallSystem):
+        name = "recall"
+
+        def ingest(self, conversation: dict[str, Any]) -> None:
+            return None
+
+        def retrieve(self, question: str) -> str:
+            return "ctx"
+
+        def ablation_preflight(
+            self, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+        ) -> list[dict[str, Any]]:
+            return []
+
+        def close(self) -> None:
+            raise RuntimeError("teardown exploded")
+
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str,
+        embedder: str = "fastembed", **_extra: object,
+    ) -> MemorySystem:
+        return _UnclosableSystem("postgresql://x/y", embedder_name="hashing", k=k)
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    data = _write_fixture(tmp_path)
+    with pytest.warns(UserWarning, match="closing _UnclosableSystem failed"):
+        code = main(
+            ["--arm", "recall", "--data", str(data), "--conversations", "2", "--out", str(out)],
+            now=_NOW,
+        )
+
+    assert code == 0                       # the run succeeded, and says so
+    assert any(out.glob("*.json"))         # with its artifact intact
+    assert any(out.glob("*.partial.jsonl"))
 
 
 def test_main_does_not_require_the_system_to_be_closable(
