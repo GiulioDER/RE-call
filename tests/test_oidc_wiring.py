@@ -9,13 +9,19 @@ documents the property that follows from it — the tenant set is decided by con
 traffic, so no request can grow the process's pool count. A token-borne tenant would break that,
 so the deployment names its tenants and a token may only select from them.
 
-Helpers are defined locally rather than imported from `test_oidc.py`: these two files have no
-reason to move together, and the repo already avoids cross-module test imports for that reason.
+Helpers are defined locally rather than imported from `test_oidc.py` because these two files have
+no reason to move together: this one pins deployment wiring, that one pins the validator's refusal
+taxonomy, and a shared token factory would make a change to either an edit to both.
+
+(An earlier version of this docstring also claimed the repo avoids cross-module test imports. It
+does not — `test_calibration_v2.py` imports helpers straight from `test_generations.py` — and the
+coupling argument stands on its own without a false premise propping it up.)
 """
 
 from __future__ import annotations
 
 import json
+import threading
 import time
 
 import jwt
@@ -125,6 +131,90 @@ def other_key():
     return rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 
+def test_a_cold_cache_makes_concurrent_callers_wait_not_fail(keypair):
+    """BUG-001. Genuine tokens must not be refused while the first JWKS fetch is in flight.
+
+    `_refresh` takes the fetch lock non-blocking and serves the cache to whoever loses, which is
+    right when the cache is warm and wrong when it is empty: `{}` is not "what we have". Every
+    loser then reports `unknown_kid` for a valid token — a 401 that reads as a forgery while the
+    IdP is merely slow, on every restart and every rollout with concurrent traffic.
+
+    Latent until the verifier moved off the event loop: serialised coroutines never raced.
+    """
+    private, public = keypair
+    jwks = jwks_for(public)
+    fetches = []
+
+    def slow_fetch() -> dict:
+        fetches.append(1)
+        time.sleep(0.3)
+        return jwks
+
+    validator = OidcValidator(
+        OidcConfig(issuer=ISSUER, audience=AUDIENCE, allowed_tenants=frozenset({"acme"})),
+        _jwks_fetcher=slow_fetch,
+    )
+    token = token_for(private)
+    results: list[str] = []
+    barrier = threading.Barrier(5)
+
+    def run() -> None:
+        barrier.wait()
+        try:
+            results.append(validator.validate(token).tenant)
+        except TokenRejected as exc:
+            results.append(f"rejected:{exc.reason}")
+
+    threads = [threading.Thread(target=run, daemon=True) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+        assert not t.is_alive(), "a caller blocked forever waiting for the JWKS fetch"
+
+    assert results == ["acme"] * 5, f"a valid token was refused during the first fetch: {results}"
+    assert len(fetches) == 1, f"single-flight broken: {len(fetches)} concurrent fetches"
+
+
+def test_an_allowlist_given_as_a_bare_string_is_refused():
+    """BUG-002. `frozenset("acme")` is {"a","c","e","m"}.
+
+    That allowlist refuses the tenant the operator named and admits four one-letter tenants nobody
+    provisioned, and it passes the empty and padded checks because single characters are neither.
+    """
+    with pytest.raises(ValueError, match="not a single string"):
+        OidcConfig(issuer=ISSUER, audience=AUDIENCE, allowed_tenants="acme")
+
+
+def test_provisioned_tenants_given_as_a_bare_string_is_refused():
+    """BUG-002, second instance: the same coercion, one layer up, feeding StoreRegistry."""
+    from recall_mcp.server import ProvisionedTenants
+
+    with pytest.raises(AuthConfigError, match="not a single string"):
+        ProvisionedTenants("acme")
+
+
+def test_a_trailing_slash_on_the_issuer_does_not_reject_every_token():
+    """BUG-003. Discovery rstrips both sides and tolerates it; `jwt.decode` is an exact compare.
+
+    So the un-normalised form booted, discovered its JWKS, and then refused every genuine token as
+    `bad_issuer`: a total authentication outage from one trailing character, reported as though
+    the IdP were signing the wrong tokens.
+    """
+    assert OidcConfig(issuer=ISSUER + "/", audience=AUDIENCE).issuer == ISSUER
+
+
+@pytest.mark.parametrize("bad", ["RS255", "rs256", "EdDSA"])
+def test_an_unserviceable_algorithm_is_refused_at_construction(bad):
+    """BUG-004. Each boots healthy and then refuses every token at request time.
+
+    `rs256` is compared case-sensitively against the header; `EdDSA` passes the symmetric filter
+    while `_usable_keys` loads no OKP key to match it.
+    """
+    with pytest.raises(ValueError, match="cannot verify"):
+        OidcConfig(issuer=ISSUER, audience=AUDIENCE, algorithms=(bad,))
+
+
 def test_an_empty_allowlist_is_refused_at_construction():
     """An allowlist that permits nothing rejects every token: an outage, not a policy.
 
@@ -202,6 +292,34 @@ def test_oidc_without_a_tenant_allowlist_refuses_to_start():
     env = oidc_env()
     del env["RECALL_OIDC_TENANTS"]
     with pytest.raises(AuthConfigError, match="RECALL_OIDC_TENANTS"):
+        build_auth("streamable-http", env=env)
+
+
+@pytest.mark.parametrize(
+    "stray", ["RECALL_OIDC_AUDIENCE", "RECALL_OIDC_TENANTS", "RECALL_OIDC_ALGORITHMS"]
+)
+def test_an_oidc_block_without_its_issuer_refuses_to_start(stray, tmp_path):
+    """DEPLOY-001. The issuer is the only key that switches OIDC on.
+
+    Misspell it and the other three are never read, so the server boots on static tokens with a
+    complete-looking OIDC block doing nothing — the same "sits in the configuration looking
+    effective" hazard the both-set conflict refuses, arriving through the one door that guard
+    cannot watch. The misspelling is invited: the variable next door is RECALL_AUTH_ISSUER_URL.
+    """
+    from recall_mcp.server import build_auth
+
+    path = tmp_path / "tokens.json"
+    path.write_text(
+        json.dumps({"principals": [{"name": "a", "token": "t" * 40, "tenant": "acme"}]}),
+        encoding="utf-8",
+    )
+    env = {
+        "RECALL_AUTH_TOKENS_FILE": str(path),
+        "RECALL_AUTH_RESOURCE_URL": RESOURCE,
+        "RECALL_OIDC_ISSUER_URL": ISSUER,  # the typo: _URL does not exist for this variable
+        stray: "acme" if stray == "RECALL_OIDC_TENANTS" else "recall-api",
+    }
+    with pytest.raises(AuthConfigError, match="RECALL_OIDC_ISSUER"):
         build_auth("streamable-http", env=env)
 
 
@@ -313,6 +431,101 @@ def test_the_rejection_reason_reaches_the_log(keypair, other_key, caplog):
     with caplog.at_level("WARNING"):
         verify(verifier, token_for(other_key))
     assert any("bad_signature" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "exp",
+    [
+        1786000000000,  # milliseconds, the units bug an IdP actually ships
+        10**12,
+        10**19,  # past time_t entirely
+    ],
+)
+def test_an_unrepresentable_expiry_is_a_rejection_not_a_crash(keypair, exp):
+    """NUM-001. PyJWT's expiry check is `exp <= now - leeway`, which any far-future value passes.
+
+    So an `exp` in milliseconds is a correctly signed token carrying an expiry that
+    `datetime.fromtimestamp` cannot represent. `OSError` and `OverflowError` are not
+    `InvalidTokenError`, so this escaped every handler and left `validate` as a 500 on a genuine
+    token — falsifying the module's opening contract that every ambiguity becomes a
+    `TokenRejected`.
+    """
+    private, _ = keypair
+    validator = make_validator(keypair, allowed_tenants=frozenset({"acme"}))
+    with pytest.raises(TokenRejected) as excinfo:
+        validator.validate(token_for(private, exp=exp))
+    assert excinfo.value.reason == "malformed_expiry"
+
+
+def test_the_verifier_never_raises_on_a_validator_defect(keypair):
+    """NUM-001, defence in depth. The SDK does not wrap `verify_token`.
+
+    Any escape here is a 500 where a 401 belongs, so authentication must fail CLOSED whatever the
+    validator does. Proved with a validator that raises something outside the taxonomy entirely.
+    """
+    from recall_mcp.server import OidcTokenVerifier
+
+    class Exploding:
+        config = OidcConfig(issuer=ISSUER, audience=AUDIENCE, allowed_tenants=frozenset({"acme"}))
+
+        def validate(self, token: str):
+            raise RuntimeError("a defect the taxonomy does not cover")
+
+    assert verify(OidcTokenVerifier(Exploding()), "any-token") is None
+
+
+def test_verifying_a_token_does_not_block_the_event_loop(keypair):
+    """PERF-001. `validate` is synchronous and its JWKS path does blocking HTTPS IO.
+
+    Called inline from an `async def`, it stalls the whole loop for up to two 10s timeouts, and
+    the single-flight `acquire(blocking=False)` that exists to prevent that outage is inert here:
+    it lets the other THREADS carry on with cached keys, and under an event loop there are no
+    other threads, only coroutines that never get scheduled.
+
+    So this measures the LOOP, not the call. A ticker counts how often it is scheduled while one
+    token is verified against a deliberately slow key fetch. Blocked, it stays near zero.
+    """
+    import asyncio
+
+    from recall_mcp.server import OidcTokenVerifier
+
+    private, public = keypair
+    jwks = jwks_for(public)
+
+    def slow_fetch() -> dict:
+        time.sleep(0.4)  # a blocking fetch, exactly like urlopen
+        return jwks
+
+    validator = OidcValidator(
+        OidcConfig(issuer=ISSUER, audience=AUDIENCE, allowed_tenants=frozenset({"acme"})),
+        _jwks_fetcher=slow_fetch,
+    )
+    verifier = OidcTokenVerifier(validator)
+
+    async def scenario():
+        ticks = 0
+        stop = False
+
+        async def ticker() -> None:
+            nonlocal ticks
+            while not stop:
+                await asyncio.sleep(0.005)
+                ticks += 1
+
+        task = asyncio.ensure_future(ticker())
+        access = await verifier.verify_token(token_for(private))
+        stop = True
+        await task
+        return access, ticks
+
+    access, ticks = asyncio.run(scenario())
+    assert access is not None, "the token itself is valid; this test is about the loop"
+    # 0.4s of blocking fetch against a 5ms tick is ~80 opportunities. Ten is far below that and
+    # far above the 0-1 a fully blocked loop manages, so it discriminates without being flaky.
+    assert ticks >= 10, (
+        f"the event loop was blocked during token verification (only {ticks} ticks); "
+        "validate() must run off the loop"
+    )
 
 
 def test_an_unavailable_idp_is_logged_as_an_outage_not_a_forgery(keypair, caplog):

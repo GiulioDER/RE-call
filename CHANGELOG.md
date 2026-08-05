@@ -8,6 +8,35 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Added
+- **External OIDC identity for the MCP server's HTTP transports.** `RECALL_OIDC_ISSUER`,
+  `RECALL_OIDC_AUDIENCE` and `RECALL_OIDC_TENANTS` (required together), plus optional
+  `RECALL_OIDC_ALGORITHMS`. Revocation, rotation and expiry move to the IdP. See
+  [docs/AUTH.md](docs/AUTH.md).
+
+  `RECALL_OIDC_TENANTS` has **no default, and absent does not mean "every tenant"**: the IdP
+  vouches for identity and knows nothing about this deployment's topology, so a token naming an
+  unlisted tenant is refused (`tenant_not_allowed`) rather than opening a store nobody
+  provisioned. The check runs after signature verification, so it cannot be used to enumerate
+  the tenant list.
+
+### Changed
+- **New startup refusals on the MCP HTTP transports.** The server now refuses to boot when: no
+  mechanism is configured at all; `RECALL_OIDC_ISSUER` is set without `RECALL_OIDC_AUDIENCE` or
+  `RECALL_OIDC_TENANTS`; any other `RECALL_OIDC_*` key is set *without* `RECALL_OIDC_ISSUER`
+  (misspelling that one key otherwise reverted the deployment to static tokens silently);
+  `RECALL_OIDC_ISSUER` is not `https://`; `RECALL_OIDC_ALGORITHMS` names an algorithm the JWKS
+  loader cannot serve; or **both** `RECALL_OIDC_ISSUER` and `RECALL_AUTH_TOKENS_FILE` are set.
+
+  ⚠️ **Cutover ordering.** Because both-set refuses, remove `RECALL_AUTH_TOKENS_FILE` in the
+  *same* config revision that adds the OIDC variables — a two-step rollout fails at the
+  intermediate step. The conflict is checked before the transport branch, so stdio processes
+  sharing that environment file are refused too.
+- `RECALL_AUTH_ISSUER_URL` is now **optional** when `RECALL_OIDC_ISSUER` is set, defaulting to it.
+  `RECALL_AUTH_RESOURCE_URL` is still required.
+- `PyJWT[crypto]` is now declared directly on the `mcp` and `dev` extras rather than inherited
+  transitively from `mcp`, because `recall_mcp.server` imports the OIDC module unconditionally.
+
 ### Changed
 - **BREAKING: retrieval fails closed when it cannot certify an answer.** `trusted_search` used to
   resolve calibration and then fall back to `cal = calibration or _UNCALIBRATED`, so a generation
