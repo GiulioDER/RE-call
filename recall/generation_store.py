@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
@@ -29,6 +29,22 @@ if TYPE_CHECKING:
 
 class ImmutableGenerationError(RuntimeError):
     pass
+
+
+#: The generation states whose manifests describe the CORPUS, for erasure purposes.
+#:
+#: One list, read by every query that answers "does the tenant hold this source". It was
+#: written twice once, and the second copy was unguarded: the test that pins the `failed`
+#: exclusion drives the CLI, so adding `failed` to the other copy left the whole forget
+#: suite green while an MCP erasure could tombstone a URI only a failed build ever named.
+#: A tombstone is permanent and bars that URI from every future build, so admitting a URI
+#: that was never in the corpus is irreversible. Dropping a state is the mirror harm:
+#: a genuine right-to-erasure request answered "check for typos".
+#:
+#: `failed` is the only exclusion. `building` MUST be included: it is the state a
+#: generation occupies for the whole of its ingest, and `build()` re-checks `_is_tombstoned`
+#: per object exactly so an erasure issued mid-build lands.
+LIVE_MANIFEST_STATES = ("building", "validating", "ready", "active", "retired")
 
 
 class GenerationStore(PgVectorStore):
@@ -327,45 +343,6 @@ class GenerationStore(PgVectorStore):
         )
         return frozenset(str(row[0]) for row in rows)
 
-    def sources_in_any_manifest(self) -> frozenset[str]:
-        """Every source URI the tenant's generations were BUILT FROM.
-
-        Chunk rows are not the corpus. An object that chunks to nothing (a frontmatter-only
-        document, say) is built as `empty_objects` and writes no row, so asking
-        `recall_chunks_v1` alone would call it a typo and refuse to erase it, leaving no
-        tombstone and letting the next build re-ingest it the moment its content changes.
-        The manifest is the record of what the corpus contains.
-
-        Only `failed` is excluded. A failed generation may name objects that never
-        existed at the source, and a tombstone is permanent, so admitting them would
-        let a URI that was never in the corpus be barred from every future build.
-
-        `building` MUST be included: it is the state a generation occupies for the
-        whole of its ingest, and `build()` re-checks `_is_tombstoned` per object
-        exactly so an erasure issued mid-build lands. Excluding it meant a
-        right-to-erasure request during a build was answered "check for typos" and
-        the build then indexed the very content the user asked to erase. A URI in a
-        building manifest is not a typo: the operator put it there. The typo guard is
-        the union failing to match at all, not this state list.
-        """
-        rows = self._with_retry(
-            lambda conn: conn.execute(
-                "SELECT manifest FROM recall_generations "
-                "WHERE tenant_id = %s "
-                "AND state IN ('building', 'validating', 'ready', 'active', 'retired')",
-                (self._tenant,),
-            ).fetchall()
-        )
-        uris: set[str] = set()
-        for (manifest,) in rows:
-            if not isinstance(manifest, Mapping):
-                continue
-            for entry in manifest.get("objects") or ():
-                uri = entry.get("uri") if isinstance(entry, Mapping) else None
-                if isinstance(uri, str):
-                    uris.add(uri)
-        return frozenset(uris)
-
     def sources_in_legacy_table(self) -> frozenset[str]:
         """Every source still held in the adopted v0.8 table for this tenant.
 
@@ -409,6 +386,47 @@ class GenerationStore(PgVectorStore):
                 ).fetchall()
             )
         )
+
+    def manifest_uris_matching(self, identifiers: list[str]) -> frozenset[str]:
+        """Which of `identifiers` any live generation's manifest names.
+
+        The one question BOTH erasure surfaces ask, so the live-state list has a single
+        reader per query and the `failed` exclusion is pinned wherever an erasure resolves.
+        Asking it wholesale and intersecting in Python is what let the two surfaces drift
+        onto separate copies of that list, with only one of them under a test.
+
+        The membership test runs in SQL rather than materialising every manifest: pulling the
+        tenant's whole manifest set into Python to answer "is this one URI in it" costs
+        seconds on a tenant with many generations, and is paid by any erasure request
+        containing a single unresolved identifier, a typo included.
+
+        Two guards that look redundant and are not. `jsonb_typeof(g.manifest->'objects')`
+        sits in WHERE while `jsonb_array_elements` sits in FROM, which reads like the trap
+        where the guard cannot fire; it references only `g`, so it is a baserel restriction
+        applied at the scan node BEFORE the lateral function scan. It is load-bearing for a
+        JSON `null` or a JSON scalar `objects`, which make `jsonb_array_elements` raise
+        `cannot extract elements from a scalar` and would abort an erasure request rather
+        than answer it. A MISSING `objects` key does not need it: that yields SQL NULL and
+        zero rows. `jsonb_typeof(entry->'uri') = 'string'` keeps this identical to the Python
+        path it replaced: `->>` casts a JSON number to text, so without it a manifest
+        carrying `{"uri": 123}` made the identifier `123` resolve, and a resolved identifier
+        is what `forget()` turns into a permanent tombstone.
+        """
+        if not identifiers:
+            return frozenset()
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT DISTINCT entry->>'uri' FROM recall_generations g, "
+                "jsonb_array_elements(g.manifest->'objects') entry "
+                "WHERE g.tenant_id = %s "
+                "AND g.state = ANY(%s) "
+                "AND jsonb_typeof(g.manifest->'objects') = 'array' "
+                "AND jsonb_typeof(entry->'uri') = 'string' "
+                "AND entry->>'uri' = ANY(%s)",
+                (self._tenant, list(LIVE_MANIFEST_STATES), identifiers),
+            ).fetchall()
+        )
+        return frozenset(str(row[0]) for row in rows)
 
     def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
         edges, unresolved, _candidates = self.supersession_all()
@@ -475,8 +493,7 @@ class GenerationStore(PgVectorStore):
             # an erasure issued through MCP mid-build was answered "not found", wrote no
             # tombstone, and the build then indexed the content the user asked to erase, while
             # the CLI (which consults the manifest) erased it. The two surfaces must agree.
-            in_manifest = self.sources_in_any_manifest()
-            for identifier in unresolved & in_manifest:
+            for identifier in self.manifest_uris_matching(sorted(unresolved)):
                 resolved[identifier] = [identifier]
         return resolved
 
