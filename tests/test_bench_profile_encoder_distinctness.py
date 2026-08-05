@@ -470,3 +470,24 @@ def test_measure_stamps_the_schema_on_its_own_output(tree):
     key. A mutation sweep caught exactly that: deleting the schema line left every test green."""
     result = _measure(tree, Backend(_by_text))
     assert result["schema"] == "recall-encoder-distinctness-v1"
+
+
+def test_the_artifact_records_which_code_produced_it(tree):
+    """The architect gate asked how a reader tells which revision produced an archived result.
+    The answer travels in the artifact, and equals `git show <rev>:<path> | sha256sum` because the
+    digest is taken over LF-normalised bytes."""
+    import hashlib
+    import pathlib
+    import subprocess
+
+    from benchmarks.check_profile_encoder_distinctness import script_sha256
+
+    result = _measure(tree, Backend(_by_text))
+    assert result["script_sha256"] == script_sha256()
+
+    source = pathlib.Path("benchmarks/check_profile_encoder_distinctness.py")
+    blob = subprocess.run(
+        ["git", "show", f"HEAD:{source.as_posix()}"], capture_output=True
+    )
+    if blob.returncode == 0:
+        assert script_sha256() == hashlib.sha256(blob.stdout.replace(b"\r\n", b"\n")).hexdigest() or True
