@@ -336,6 +336,33 @@ def test_readiness_facts_report_a_present_but_invalid_index_as_invalid(enterpris
         store.close()
 
 
+
+def _seed_both_generations(enterprise, sources=("/corpus/a.md",)):
+    """Put the SAME corpus in both generations, which is what cutover now requires.
+
+    `cutover` refuses an empty shadow and compares source sets and content hashes against the
+    active generation (master's pre-cutover parity gate). A test that promotes between two empty
+    tables was asserting a route swap the real command will no longer perform.
+    """
+    embedder = HashingEmbedder(dim=DIM)
+    chunks, vectors = _chunks(list(sources), embedder)
+    for generation_id, table in (
+        (enterprise.active_id, enterprise.active_table),
+        (enterprise.shadow_id, enterprise.shadow_table),
+    ):
+        store = enterprise.store(generation_id, table)
+        try:
+            store.upsert(chunks, vectors)
+        finally:
+            store.close()
+    enterprise.control.set_generation_state(
+        enterprise.active_id, "ready", chunk_count=len(chunks), source_count=len(sources)
+    )
+    enterprise.control.set_generation_state(
+        enterprise.shadow_id, "ready", chunk_count=len(chunks), source_count=len(sources)
+    )
+
+
 # --------------------------------------------------------------------------------------------
 # 4. The outbox: crash recovery, replay, idempotency, cutover refusal
 # --------------------------------------------------------------------------------------------
@@ -478,10 +505,8 @@ def test_append_event_is_idempotent_on_operation_id(enterprise) -> None:
 
 def test_cutover_is_refused_while_an_event_is_pending(enterprise) -> None:
     """The refusal branch the handoff records as unexercised."""
+    _seed_both_generations(enterprise)
     enterprise.control.set_route(enterprise.tenant, enterprise.active_id, enterprise.shadow_id)
-    enterprise.control.set_generation_state(
-        enterprise.shadow_id, "ready", chunk_count=1, source_count=1
-    )
     enterprise.control.append_event(
         enterprise.tenant, "op-blocking", "index", {"sources": ["/corpus/a.md"]}
     )
@@ -507,10 +532,8 @@ def test_cutover_is_refused_while_the_shadow_is_not_ready(enterprise) -> None:
 
 def test_generation_rollback_restores_the_previous_active(enterprise) -> None:
     """Cutover swaps; `set-route` swaps back. The old table must still be servable."""
+    _seed_both_generations(enterprise)
     enterprise.control.set_route(enterprise.tenant, enterprise.active_id, enterprise.shadow_id)
-    enterprise.control.set_generation_state(
-        enterprise.shadow_id, "ready", chunk_count=0, source_count=0
-    )
     enterprise.control.cutover(enterprise.tenant)
     after = enterprise.control.route(enterprise.tenant)
     assert after is not None and after.active.generation_id == enterprise.shadow_id
@@ -865,7 +888,16 @@ def test_erasing_every_source_in_an_event_voids_it_rather_than_blocking_cutover(
     enterprise.control.set_generation_state(
         enterprise.shadow_id, "ready", chunk_count=0, source_count=0
     )
-    enterprise.control.cutover(enterprise.tenant)  # no longer deadlocked
+    # The outbox no longer blocks: cutover now refuses for a DIFFERENT reason (both generations
+    # are legitimately empty after erasing every source). Asserting the new reason is a sharper
+    # statement of the property than asserting success would be, because it shows the pending
+    # event is gone rather than merely that some cutover succeeded.
+    with pytest.raises(RuntimeError) as refusal:
+        enterprise.control.cutover(enterprise.tenant)
+    assert "pending" not in str(refusal.value), (
+        f"the voided event still blocks cutover: {refusal.value}"
+    )
+    assert "holds no rows" in str(refusal.value), refusal.value
 
 
 # --------------------------------------------------------------------------------------------

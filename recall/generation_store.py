@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
@@ -54,6 +54,8 @@ class GenerationStore(PgVectorStore):
             statement_timeout_ms=statement_timeout_ms,
             shared_pool=shared_pool,
         )
+        if not migration_target.isidentifier():
+            raise ValueError("migration_target must be a valid SQL identifier")
         self._migration_target = migration_target
         self._pinned_generation: ContextVar[str | None] = ContextVar(
             f"recall_generation_{uuid.uuid4().hex}", default=None
@@ -308,6 +310,106 @@ class GenerationStore(PgVectorStore):
         )
         return {str(source): str(digest) for source, digest in rows}
 
+    def sources_in_any_generation(self) -> frozenset[str]:
+        """Every source this tenant has indexed, across ALL generations.
+
+        `source_content_hashes()` is scoped to one generation, so it answers "can I read this
+        now", not "does this exist". Erasure needs the second question: a source that dropped
+        out of the active generation must still be erasable, while one that was never indexed
+        must still be refused as a typo, because forgetting it writes a permanent tombstone
+        that bars that URI from every future build.
+        """
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT DISTINCT source_uri FROM recall_chunks_v1 WHERE tenant_id = %s",
+                (self._tenant,),
+            ).fetchall()
+        )
+        return frozenset(str(row[0]) for row in rows)
+
+    def sources_in_any_manifest(self) -> frozenset[str]:
+        """Every source URI the tenant's generations were BUILT FROM.
+
+        Chunk rows are not the corpus. An object that chunks to nothing (a frontmatter-only
+        document, say) is built as `empty_objects` and writes no row, so asking
+        `recall_chunks_v1` alone would call it a typo and refuse to erase it, leaving no
+        tombstone and letting the next build re-ingest it the moment its content changes.
+        The manifest is the record of what the corpus contains.
+
+        Only `failed` is excluded. A failed generation may name objects that never
+        existed at the source, and a tombstone is permanent, so admitting them would
+        let a URI that was never in the corpus be barred from every future build.
+
+        `building` MUST be included: it is the state a generation occupies for the
+        whole of its ingest, and `build()` re-checks `_is_tombstoned` per object
+        exactly so an erasure issued mid-build lands. Excluding it meant a
+        right-to-erasure request during a build was answered "check for typos" and
+        the build then indexed the very content the user asked to erase. A URI in a
+        building manifest is not a typo: the operator put it there. The typo guard is
+        the union failing to match at all, not this state list.
+        """
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT manifest FROM recall_generations "
+                "WHERE tenant_id = %s "
+                "AND state IN ('building', 'validating', 'ready', 'active', 'retired')",
+                (self._tenant,),
+            ).fetchall()
+        )
+        uris: set[str] = set()
+        for (manifest,) in rows:
+            if not isinstance(manifest, Mapping):
+                continue
+            for entry in manifest.get("objects") or ():
+                uri = entry.get("uri") if isinstance(entry, Mapping) else None
+                if isinstance(uri, str):
+                    uris.add(uri)
+        return frozenset(uris)
+
+    def sources_in_legacy_table(self) -> frozenset[str]:
+        """Every source still held in the adopted v0.8 table for this tenant.
+
+        Migration 0008 adopts a v0.8 install's rows IN PLACE: they never enter
+        `recall_chunks_v1`, and its `legacy_unverified` generation carries a
+        `{"legacy_table": ...}` manifest with no `objects`, so neither of the other two probes
+        can see them. Without this an erasure request for a legacy source was answered with
+        "check for typos" about data the tenant demonstrably holds.
+        """
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT to_regclass(%s) IS NOT NULL", (self._migration_target,)
+            ).fetchone()
+        )
+        if not rows or not rows[0]:
+            return frozenset()
+        found = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT DISTINCT source FROM {self._migration_target} WHERE tenant_id = %s",
+                (self._tenant,),
+            ).fetchall()
+        )
+        return frozenset(str(row[0]) for row in found)
+
+    def _legacy_rows_for_identifiers(self, identifiers: list[str]) -> list[tuple[Any, ...]]:
+        """(source, file) pairs for the adopted v0.8 rows matching any requested identifier."""
+        exists = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT to_regclass(%s) IS NOT NULL", (self._migration_target,)
+            ).fetchone()
+        )
+        if not exists or not exists[0]:
+            return []
+        return list(
+            self._with_retry(
+                lambda conn: conn.execute(
+                    f"SELECT DISTINCT source, metadata->>'file' FROM {self._migration_target} "
+                    "WHERE tenant_id = %s "
+                    "AND (metadata->>'file' = ANY(%s) OR source = ANY(%s))",
+                    (self._tenant, identifiers, identifiers),
+                ).fetchall()
+            )
+        )
+
     def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
         edges, unresolved, _candidates = self.supersession_all()
         return edges, unresolved
@@ -332,22 +434,50 @@ class GenerationStore(PgVectorStore):
         )
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+        """Resolve erasure identifiers to source URIs, across everything the tenant holds.
+
+        Scoped to the ACTIVE generation this used to disagree with the CLI about what could be
+        erased, and to raise `NoActiveGeneration` on a tenant whose rows were adopted in place
+        by migration 0008 and never entered `recall_chunks_v1` — so the MCP `recall_forget`
+        left that data on disk while `recall forget` erased it. Its one consumer,
+        `forget_memory`, deletes through `GenerationManager.forget`, which sweeps every
+        generation anyway, so resolving narrower than that only ever lost erasures.
+        """
         if not identifiers:
             return {}
-        generation_id = self._generation_id()
-        rows = self._with_retry(
-            lambda conn: conn.execute(
-                "SELECT DISTINCT source_uri, metadata->>'file' FROM recall_chunks_v1 "
-                "WHERE tenant_id = %s AND generation_id = %s "
-                "AND (metadata->>'file' = ANY(%s) OR source_uri = ANY(%s))",
-                (self._tenant, generation_id, identifiers, identifiers),
-            ).fetchall()
+        rows = list(
+            self._with_retry(
+                lambda conn: conn.execute(
+                    "SELECT DISTINCT source_uri, metadata->>'file' FROM recall_chunks_v1 "
+                    "WHERE tenant_id = %s "
+                    "AND (metadata->>'file' = ANY(%s) OR source_uri = ANY(%s))",
+                    (self._tenant, identifiers, identifiers),
+                ).fetchall()
+            )
         )
+        rows += self._legacy_rows_for_identifiers(identifiers)
         requested = set(identifiers)
         resolved: dict[str, list[str]] = {}
         for source, file in rows:
             for identifier in {file, source} & requested:
-                resolved.setdefault(str(identifier), []).append(str(source))
+                # De-duplicate, as the base implementation does. Now that this spans every
+                # generation and the legacy table, one source legitimately appears more than
+                # once: under different `metadata->>'file'` values in different generations, or
+                # in both recall_chunks_v1 and the adopted v0.8 table.
+                bucket = resolved.setdefault(str(identifier), [])
+                if str(source) not in bucket:
+                    bucket.append(str(source))
+        unresolved = requested - set(resolved)
+        if unresolved:
+            # Chunk rows are not the corpus. An object that chunks to nothing has no rows, and
+            # during a build NOTHING has rows yet for any object not already committed --
+            # `build()` opens a transaction per manifest entry. Resolving on rows alone meant
+            # an erasure issued through MCP mid-build was answered "not found", wrote no
+            # tombstone, and the build then indexed the content the user asked to erase, while
+            # the CLI (which consults the manifest) erased it. The two surfaces must agree.
+            in_manifest = self.sources_in_any_manifest()
+            for identifier in unresolved & in_manifest:
+                resolved[identifier] = [identifier]
         return resolved
 
     def iter_chunks(self, batch_size: int = 1000) -> Iterator[Chunk]:
@@ -384,7 +514,10 @@ class GenerationStore(PgVectorStore):
             self._tenant,
             actor="generation-store-forget",
         )
-        return sum(manager.forget(source).chunks_removed for source in sources)
+        return sum(
+            manager.forget(source, legacy_table=self._migration_target).chunks_removed
+            for source in sources
+        )
 
     def touch_files(self, files: list[str]) -> int:
         raise ImmutableGenerationError("immutable generations cannot be touched")

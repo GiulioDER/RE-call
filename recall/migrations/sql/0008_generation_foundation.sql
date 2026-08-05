@@ -182,6 +182,14 @@ INSERT INTO recall_tenant_state (tenant_id)
 SELECT DISTINCT tenant_id FROM __RECALL_TABLE__
 ON CONFLICT (tenant_id) DO NOTHING;
 
+-- Drain the deferred foreign key checks queued by the insert above. recall_tenant_state
+-- declares both its generation foreign keys DEFERRABLE INITIALLY DEFERRED, so every
+-- inserted row queues a trigger event that would otherwise stay pending until COMMIT, and
+-- PostgreSQL refuses ALTER TABLE on a relation with pending trigger events. Without this
+-- the FORCE restore below aborts with ObjectInUse and the whole migration rolls back --
+-- but only when the legacy table has rows, so an empty database never sees it.
+SET CONSTRAINTS ALL IMMEDIATE;
+
 ALTER TABLE __RECALL_TABLE__ FORCE ROW LEVEL SECURITY;
 ALTER TABLE recall_generations FORCE ROW LEVEL SECURITY;
 ALTER TABLE recall_tenant_state FORCE ROW LEVEL SECURITY;

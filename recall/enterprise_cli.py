@@ -124,6 +124,14 @@ def _parser() -> argparse.ArgumentParser:
     cutover = commands.add_parser("cutover")
     cutover.add_argument("tenant")
 
+    cutover.add_argument(
+        "--allow-divergent-corpus",
+        action="store_true",
+        help="promote even though the shadow's sources differ from the active generation's. "
+        "Needed when the corpus itself changed (documents added or removed) rather than only "
+        "the embedder; it skips the parity comparison, not the pending-event or ready checks.",
+    )
+
     replay = commands.add_parser(
         "replay", help="drain this tenant's pending migration outbox"
     )
@@ -367,7 +375,8 @@ def main() -> None:
             args.tenant, args.active_generation, args.shadow_generation
         )
     elif args.command == "cutover":
-        control.cutover(args.tenant)
+
+        control.cutover(args.tenant, allow_divergent_corpus=args.allow_divergent_corpus)
     elif args.command == "replay":
         raise SystemExit(_cmd_replay(control, dsn, args.tenant))
     elif args.command == "parity":
@@ -383,6 +392,7 @@ def main() -> None:
     elif args.command == "retire":
         control.retire_generation(args.generation_id, args.tenant)
         print(f"retired {args.generation_id}")
+
 
 
 if __name__ == "__main__":
