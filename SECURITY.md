@@ -234,10 +234,23 @@ unauthenticated listener cannot be created by accident. Each token maps to a pri
 tenant and scopes, and the tenant selects its own connection pool, so a principal cannot reach
 another tenant's rows (`recall_mcp/auth.py`, `recall_mcp/stores.py`; see docs/AUTH.md).
 
-What remains open is lifecycle, not enforcement: the token file is read at startup, so there is
-**no revocation or rotation without a restart**, and a leaked token is valid until it is removed.
-There is no proof-of-possession — terminate TLS in front of the server. `stdio` remains
-unauthenticated by design: it is a private pipe to one client, not a listener.
+Two mechanisms satisfy that requirement: the static token file, and an external OIDC provider
+(`RECALL_OIDC_ISSUER`). The static file is development-only and is refused under
+`RECALL_ENV=production`.
+
+What remains open on the **static** path is lifecycle, not enforcement: that file is read at
+startup, so there is **no revocation or rotation without a restart**, and a leaked token is valid
+until it is removed. Under **OIDC** those belong to the IdP, and a JWKS key roll is picked up
+without a restart. Neither path offers proof-of-possession, so a stolen credential works until it
+expires; terminate TLS in front of the server. `stdio` remains unauthenticated by design: it is a
+private pipe to one client, not a listener.
+
+**A known gap you opt into.** `RECALL_OIDC_TRUST_TENANT_CLAIM=1` declares that your IdP mints the
+`tenant` claim from an authoritative subject-to-organisation mapping. That claim selects the RLS
+namespace, and **this server cannot verify the declaration**: if the claim is settable from a
+user-editable profile attribute or a client-requested claim, it is caller-controlled and a
+cross-tenant read follows. `RECALL_OIDC_SUBJECT_TENANTS` pins the mapping here instead and does not
+rest on that promise. One of the two is required to boot, and there is no default.
 
 **Requests are bounded individually and in aggregate; the limiter is per process.**
 Each `recall_index` request is measured — candidate file count and total bytes — BEFORE anything
