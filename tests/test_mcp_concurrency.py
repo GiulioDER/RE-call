@@ -31,10 +31,24 @@ def _tools(server):
     return {t.name: t for t in server._tool_manager.list_tools()}
 
 
+#: The four tools that predate the evidence boundary. Kept as their own name so the additive claim
+#: — "a tool was ADDED, none was changed or removed" — is a control this test asserts rather than
+#: something a reader has to infer from a rewritten set literal.
+ORIGINAL_TOOLS = {"recall_search", "recall_index", "recall_forget", "recall_stats"}
+ALL_TOOLS = ORIGINAL_TOOLS | {"recall_evidence"}
+
+
 def test_every_tool_is_async():
-    """A sync tool is awaited inline by FastMCP — the whole point of the change."""
+    """A sync tool is awaited inline by FastMCP — the whole point of the change.
+
+    The set is asserted EXACTLY, not as a superset, so a tool added later still trips this and has
+    to be shown async on purpose. `recall_evidence` did trip it, which is the test working:
+    adding it was deliberate, so the expectation moves and the control below records that the four
+    it joined are all still there.
+    """
     tools = _tools(build_server())
-    assert set(tools) == {"recall_search", "recall_index", "recall_forget", "recall_stats"}
+    assert ORIGINAL_TOOLS <= set(tools), "an existing tool disappeared from the server"
+    assert set(tools) == ALL_TOOLS
     for name, tool in tools.items():
         assert tool.is_async, f"{name} is sync and would block the event loop"
         assert inspect.iscoroutinefunction(tool.fn), name
@@ -84,9 +98,14 @@ def test_concurrent_tool_bodies_overlap():
     assert elapsed < 0.6, f"tool bodies serialised: {elapsed:.2f}s for 4x200ms"
 
 
-@pytest.mark.parametrize("name", ["recall_search", "recall_index", "recall_forget", "recall_stats"])
+@pytest.mark.parametrize("name", sorted(ALL_TOOLS))
 def test_tools_still_declare_their_schema(name):
-    """Async-ifying must not change the wire contract clients depend on."""
+    """Async-ifying must not change the wire contract clients depend on.
+
+    Driven off `ALL_TOOLS` rather than a second hand-written list: a new tool that was added to one
+    list and forgotten in the other would be held to the async rule and exempted from the schema
+    rule, which is the quieter half of the same omission.
+    """
     tool = _tools(build_server())[name]
     assert tool.description
     assert tool.parameters["type"] == "object"
