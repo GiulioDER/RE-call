@@ -3,21 +3,27 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
 import psycopg
 import pytest
 from psycopg.types.json import Jsonb
 
 from recall.calibration_v2 import (
+    CalibrationArtifactV2,
     CalibrationBindingError,
     CalibrationNotFound,
     CalibrationRepository,
     CalibrationStatus,
     CalibrationUncertified,
+    _require_utc_isoformat,
     canonical_query_set,
+    canonical_sha256,
 )
 from recall.cli import main as cli_main
 from recall.generation_store import GenerationStore
@@ -376,3 +382,176 @@ def test_query_set_digest_is_canonical_and_rejects_duplicates() -> None:
     assert first_digest == second_digest
     with pytest.raises(CalibrationBindingError, match="duplicate"):
         canonical_query_set([{"query": "a", "answerable": True}] * 2)
+
+
+def _dsn_in_timezone(dsn: str, timezone: str) -> str:
+    """The same DSN, but the session runs in `timezone` instead of the server default."""
+    parts = urlsplit(dsn)
+    if not parts.scheme:
+        # RECALL_TEST_DSN is operator-supplied and may be libpq keyword/value form
+        # ("host=... dbname=..."), which urlsplit puts entirely in `path`. Rebuilding that as
+        # a URI yields a string libpq misparses, so say so rather than test a broken DSN.
+        pytest.skip("non-URI RECALL_TEST_DSN; cannot inject a session TimeZone")
+    query = dict(parse_qsl(parts.query))
+    # Append: an existing `options` may carry settings the rest of the suite relies on, and
+    # overwriting it would silently change more than the timezone. Recover it WITHOUT
+    # form-decoding, because parse_qsl turns a literal "+" into a space while libpq reads "+"
+    # literally, so a round trip through it would corrupt e.g. `search_path=a+b`.
+    existing = ""
+    for pair in parts.query.split("&"):
+        key, _, value = pair.partition("=")
+        if key == "options":
+            existing = unquote(value)
+    query["options"] = f"{existing} -c TimeZone={timezone}".strip()
+    # quote_via=quote, not the default quote_plus: libpq reads a "+" literally, so a
+    # plus-encoded space turns the option into a parameter named "+TimeZone".
+    return urlunsplit(parts._replace(query=urlencode(query, quote_via=quote)))
+
+
+@requires_db
+def test_a_calibration_reads_back_under_a_non_utc_session_timezone(calibration_tenant) -> None:
+    """`created_at` is checksummed as a string but stored as `timestamptz`.
+
+    psycopg renders a `timestamptz` in the *connection's* TimeZone, so a calibration
+    written by one session and read by another whose TimeZone differs recomputes a
+    different digest and raises `CalibrationBindingError` on every read. The suite's
+    own database runs UTC, which is exactly why this needs an explicit non-UTC
+    session: under UTC the defect is invisible.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    generation_id = _ready(manager, embedder, b"answer corpus", "v1")
+
+    written = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+    artifact = written.calibrate(generation_id, _labels(), embedder)
+    published = written.publish(artifact.calibration_id)
+
+    rome = CalibrationRepository(_dsn_in_timezone(TEST_DSN, "Europe/Rome"), tenant, actor="pytest")
+
+    # The stored instant must survive the round trip as the same string.
+    assert rome.get(published.calibration_id).created_at == published.created_at
+    # And the serving path must still resolve it, not fail closed on a digest mismatch.
+    assert rome.resolve(generation_id).status == CalibrationStatus.CERTIFIED
+    # The listing renders the same instant too.
+    listed = {row["calibration_id"]: row["created_at"] for row in rome.list_records()}
+    assert listed[published.calibration_id] == published.created_at
+
+
+@requires_db
+def test_a_bundle_whose_timestamp_is_not_canonical_utc_is_refused_at_import(
+    calibration_tenant, tmp_path: Path
+) -> None:
+    """An artifact is only storable if its `created_at` survives the timestamptz round trip.
+
+    The column keeps the instant and discards the rendering, and `created_at` is inside the
+    checksum as a *string*. So a bundle carrying any other valid ISO-8601 spelling of the
+    same instant (a non-UTC offset, or the `Z`-plus-milliseconds form a JavaScript producer
+    emits) would import cleanly and then be unreadable by every later `get`/`publish`/
+    `resolve`. Refuse it at the boundary instead of committing a row nothing can read.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    generation_id = _ready(manager, embedder, b"answer corpus", "v1")
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+    artifact = repository.calibrate(generation_id, _labels(), embedder)
+    bundle = json.loads(repository.export_bundle(artifact.calibration_id, tmp_path / "b.json").read_text(encoding="utf-8"))
+
+    instant = datetime.fromisoformat(bundle["artifact"]["created_at"])
+    for spelling in (
+        instant.astimezone(timezone(timedelta(hours=2))).isoformat(),
+        instant.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+    ):
+        raw = dict(bundle["artifact"], created_at=spelling)
+        # Re-sign the artifact too, so this stays a rendering test if construction and
+        # checksum verification are ever reordered. Today __post_init__ raises first, so
+        # verify_checksum() is never reached on this path and this re-signing is inert.
+        immutable = {key: raw[key] for key in CalibrationArtifactV2.__dataclass_fields__ if key in raw}
+        immutable.pop("lifecycle_state", None)
+        immutable.pop("checksum", None)
+        raw["checksum"] = canonical_sha256(immutable)
+        # Re-sign the envelope too, or import stops at the bundle checksum and never reaches
+        # the artifact, which would test tamper detection instead of the rendering rule.
+        rebuilt = dict(bundle, artifact=raw)
+        rebuilt["bundle_checksum"] = canonical_sha256(
+            {key: value for key, value in rebuilt.items() if key != "bundle_checksum"}
+        )
+        forged = tmp_path / "forged.json"
+        forged.write_text(json.dumps(rebuilt), encoding="utf-8")
+        with pytest.raises(CalibrationBindingError, match="created_at"):
+            repository.import_bundle(forged)
+
+
+@requires_db
+def test_list_and_show_render_the_same_created_at(calibration_tenant) -> None:
+    """`calibration list` and `calibration show` must not disagree about the same field.
+
+    `show_record` reads the row through `to_jsonb`, which Postgres renders in the session
+    TimeZone as a string, so the datetime-normalising loop never sees it.
+    """
+    tenant, manager = calibration_tenant
+    embedder = _CalibrationEmbedder()
+    generation_id = _ready(manager, embedder, b"answer corpus", "v1")
+    rome = CalibrationRepository(_dsn_in_timezone(TEST_DSN, "Europe/Rome"), tenant, actor="pytest")
+    artifact = rome.calibrate(generation_id, _labels(), embedder)
+
+    listed = {row["calibration_id"]: row["created_at"] for row in rome.list_records()}
+    shown = rome.show_record(artifact.calibration_id)
+    assert shown["created_at"] == listed[artifact.calibration_id] == artifact.created_at
+
+
+def test_a_degenerate_timestamp_is_named_not_crashed() -> None:
+    """The guard must reject, not explode, on a timestamp it cannot render.
+
+    `astimezone()` is not total: it raises OverflowError near datetime.min/max and OSError
+    for a naive value outside the platform's localtime range. Calling it on a value already
+    judged unusable turned the boundary check into an unnamed crash that escapes the CLI's
+    `except CalibrationError`.
+    """
+    for spelling in (
+        "9999-12-31T23:59:59-05:00",
+        "0001-01-01T00:00:00+02:00",
+        "1969-07-20T20:17:00",
+        "1970-01-01T00:00:00",
+        "not-a-timestamp",
+        "2026-08-04T12:00:00",
+    ):
+        with pytest.raises(CalibrationBindingError, match="created_at"):
+            _require_utc_isoformat(spelling, "created_at")
+
+    # The canonical form written by calibrate() still passes untouched.
+    _require_utc_isoformat(datetime.now(UTC).isoformat(), "created_at")
+
+
+def test_the_remediation_example_is_advice_the_guard_itself_accepts() -> None:
+    """Whatever the message suggests must pass the guard, on any host.
+
+    Asserting a literal was useless: an earlier version of this test pinned
+    '2026-08-04T12:00:00+00:00', which the buggy code also produced whenever the machine's
+    local zone was UTC, i.e. on CI. It could only fail on a developer box in another zone,
+    which is the opposite of where a regression test needs to work. Pin the round trip
+    instead, which is host-independent, and cover the spellings `datetime.fromisoformat`
+    accepts rather than only the canonical one. `str()` on a naive datetime yields the
+    space-separated form, and that is the shape that actually reaches this guard.
+
+    The instant must be preserved too: reading a naive value as machine-local would name a
+    different moment on every host, so the suggestion is built with `replace(tzinfo=UTC)`,
+    never `astimezone()`.
+    """
+    for naive in (
+        "2026-08-04T12:00:00",
+        "2026-08-04 12:00:00",
+        "2026-08-04T12:00",
+        "2026-08-04T12:00:00.123",
+        "2026-08-04",
+    ):
+        with pytest.raises(CalibrationBindingError) as excinfo:
+            _require_utc_isoformat(naive, "created_at")
+        match = re.search(r"\(e\.g\. '([^']*)'\)", str(excinfo.value))
+        assert match is not None, f"no suggestion offered for {naive!r}"
+        suggestion = match.group(1)
+        # The advice must work: feeding it back must not raise.
+        _require_utc_isoformat(suggestion, "created_at")
+        # And it must denote the same instant, not a local-time reinterpretation of it.
+        assert datetime.fromisoformat(suggestion) == datetime.fromisoformat(naive).replace(
+            tzinfo=UTC
+        )

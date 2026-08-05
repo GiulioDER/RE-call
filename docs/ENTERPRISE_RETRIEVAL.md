@@ -10,11 +10,21 @@ Tenant routes never accept a physical table from a client. The runtime resolves 
 
 ## Operator sequence
 
-Set `RECALL_DSN` to the migration role connection, then apply the immutable migrations:
+`recall-enterprise` reads its connection from `RECALL_DSN`. Of its subcommands, `migrate` and
+`create-generation` perform DDL; `mark-ready`, `set-route` and `cutover` are ordinary DML against
+the control-plane tables. Export the migration credential **only for the duration of the commands
+that need it**:
 
 ```console
-recall-enterprise migrate
+RECALL_DSN="$RECALL_MIGRATION_DSN" recall-enterprise migrate
 ```
+
+> ⚠️ `RECALL_DSN` is also the deprecated fallback the serving process and the MCP server
+> read when `RECALL_SERVING_DSN` is unset (see [MIGRATIONS.md](MIGRATIONS.md#configuration)).
+> Exporting it globally as the migration role therefore hands a schema-owner credential to
+> every serving process, which is exactly what the role split in
+> [SECURITY.md](../SECURITY.md) forbids. Set it per command, never in the serving
+> environment.
 
 The database operator must install pgvector once in a new database before the restricted
 migration role creates a generation:

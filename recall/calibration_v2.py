@@ -60,6 +60,62 @@ def _frozen_json(value: Any) -> Any:
     return value
 
 
+def _utc_isoformat(value: Any) -> str:
+    """Render a stored timestamp as the UTC ISO string the checksum was computed over.
+
+    `created_at` is part of `immutable_payload()`, so its *string* form is inside the
+    artifact checksum, but the column is `timestamptz` and psycopg decodes it in the
+    connection's TimeZone. Rendering it as-is makes the recomputed digest depend on the
+    session's `TimeZone`, so an artifact written by one session fails `verify_checksum()`
+    in another. `calibrate()` always writes `datetime.now(UTC).isoformat()`, so
+    normalising back to UTC on read restores the exact bytes that were hashed.
+    """
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat()
+    return str(value)
+
+
+def _require_utc_isoformat(value: str, field_name: str) -> None:
+    """Refuse a timestamp the `timestamptz` round trip would not return unchanged.
+
+    The column keeps the instant and discards the rendering, while the *string* is what the
+    artifact checksum covers. Any other valid ISO-8601 spelling of the same instant (a non-UTC
+    offset, or the `Z`-plus-milliseconds form a JavaScript producer emits) would therefore
+    store cleanly and then fail `verify_checksum()` on every later read. Enforcing the
+    canonical form at construction keeps that failure at the boundary, where it names the
+    cause, instead of committing a row nothing can read back.
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise CalibrationBindingError(f"{field_name} must be an ISO-8601 timestamp") from None
+    if parsed.tzinfo is None:
+        # `replace(tzinfo=UTC)`, not `astimezone()`: astimezone would read a naive value as
+        # machine-local, naming a different instant on every host. Not string concatenation
+        # either: `fromisoformat` accepts spellings the canonical form does not (a space
+        # separator, minute precision, milliseconds, a bare date), and appending an offset to
+        # those produced advice this very guard then rejected. `str()` on a naive datetime
+        # yields the space-separated form, so that was the likely shape to hit it.
+        raise CalibrationBindingError(
+            f"{field_name} must carry a UTC offset "
+            f"(e.g. {parsed.replace(tzinfo=UTC).isoformat()!r}); re-export the bundle"
+        )
+    try:
+        canonical = parsed.astimezone(UTC).isoformat()
+    except (OverflowError, OSError):
+        # astimezone() is not total: it overflows near datetime.min/max. Rendering a value
+        # already judged unusable would turn this boundary check into an unnamed crash that
+        # escapes the CLI's `except CalibrationError`.
+        raise CalibrationBindingError(
+            f"{field_name} is not a representable UTC instant"
+        ) from None
+    if canonical != value:
+        raise CalibrationBindingError(
+            f"{field_name} must be UTC in the form written by calibrate() "
+            f"(e.g. {canonical!r}); re-export the bundle"
+        )
+
+
 def _require_digest(value: str, field_name: str) -> None:
     if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
         raise CalibrationBindingError(f"{field_name} must be a lowercase SHA-256 digest")
@@ -111,6 +167,7 @@ class CalibrationArtifactV2:
             "checksum",
         ):
             _require_digest(str(getattr(self, field_name)), field_name)
+        _require_utc_isoformat(str(self.created_at), "created_at")
         numeric = (self.threshold, self.scale, self.separability, *self.separability_ci)
         if not all(math.isfinite(value) for value in numeric):
             raise CalibrationBindingError("calibration statistics must be finite")
@@ -319,7 +376,7 @@ class CalibrationRepository:
             certification_reason=str(row[15]),
             lifecycle_state=str(row[16]),
             scores=dict(scores),
-            created_at=row[18].isoformat() if isinstance(row[18], datetime) else str(row[18]),
+            created_at=_utc_isoformat(row[18]),
             created_by=str(row[19]),
             checksum=str(row[20]),
         )
@@ -558,7 +615,7 @@ class CalibrationRepository:
                 "pipeline_fingerprint": row[4],
                 "corpus_fingerprint": row[5],
                 "query_set_digest": row[6],
-                "created_at": row[7].isoformat(),
+                "created_at": _utc_isoformat(row[7]),
             }
             for row in rows
         ]
@@ -575,7 +632,13 @@ class CalibrationRepository:
         value = dict(row[0])
         for key, item in tuple(value.items()):
             if isinstance(item, datetime):
-                value[key] = item.isoformat()
+                value[key] = _utc_isoformat(item)
+        # `to_jsonb` renders a timestamptz as a STRING already formatted in the session
+        # TimeZone, so the loop above never sees it and `show` would otherwise disagree with
+        # `list` about the same field. Re-render it as the checksummed form.
+        created_at = value.get("created_at")
+        if isinstance(created_at, str):
+            value["created_at"] = _utc_isoformat(datetime.fromisoformat(created_at))
         return value
 
     def export_bundle(self, calibration_id: str, path: str | Path) -> Path:
