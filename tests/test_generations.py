@@ -747,22 +747,41 @@ def test_every_live_state_is_erasable_and_only_failed_is_not(manager) -> None:
         "GenerationState and this sweep disagree; decide whether the new state is erasable "
         "and add it above"
     )
-    # Selected BY NAME. Filtering on `LIKE '%state%'` matched any other check constraint whose
-    # text merely mentions the column, and `fetchone()` has no ORDER BY, so an unrelated
-    # constraint could become the one parsed.
+    # Found by the COLUMN it covers, not by name. `LIKE '%state%'` matched any constraint whose
+    # text merely mentions the column; hardcoding `conname` traded that for a different
+    # brittleness, since a later migration that drops and re-adds the constraint under another
+    # name would report "found 0" and blame the wrong thing. `state = ANY(conkey)` (membership,
+    # not equality) also keeps working if the constraint grows to cover a second column.
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         rows = conn.execute(
-            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-            "WHERE conrelid = 'recall_generations'::regclass "
-            "AND conname = 'recall_generations_state_check'"
+            "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'recall_generations'::regclass AND contype = 'c' "
+            "AND (SELECT attnum FROM pg_attribute "
+            "     WHERE attrelid = 'recall_generations'::regclass AND attname = 'state') "
+            "    = ANY(conkey)"
         ).fetchall()
-    assert len(rows) == 1, f"expected exactly one state CHECK constraint, found {len(rows)}"
-    # `[^']+`, not `[a-z_]+`: a name carrying a digit or a capital (`archived_v2`) did not
-    # match, so `schema_states` came back short, the difference was empty, and the assertion
-    # passed while exercising nothing. The positive control (an all-lowercase name) fired
-    # correctly throughout, which is precisely why the gap survived: it validated the
-    # mechanism and said nothing about its scope.
-    schema_states = set(re.findall(r"'([^']+)'::text", rows[0][0]))
+    # Scoped to the MEMBERSHIP sub-expression. Scraping every `'...'::text` in the whole
+    # definition swept up literals that are not states at all: a benign tightening such as
+    # `AND (manifest->>'legacyTable' IS NULL OR state = 'legacy_unverified')` contributed
+    # `legacyTable`, turning this red with a message telling the reader to add a non-state to
+    # the erasability map, which cannot be followed to green (the enum check rejects it, and
+    # the CHECK constraint then rejects the UPDATE). `(?:[^']|'')*` so a name containing a
+    # doubled quote is read whole rather than truncated.
+    memberships = {}
+    for name, definition in rows:
+        match = re.search(r"state = ANY \(ARRAY\[(.*?)\]\)", definition)
+        if match is None:
+            continue
+        memberships[name] = {
+            literal.replace("''", "'")
+            for literal in re.findall(r"'((?:[^']|'')*)'::text", match.group(1))
+        }
+    assert len(memberships) == 1, (
+        "expected exactly one CHECK constraint stating the state domain as a membership test "
+        f"over recall_generations.state, found {len(memberships)}: {sorted(memberships)}. "
+        f"(constraints covering that column: {sorted(name for name, _ in rows)})"
+    )
+    schema_states = next(iter(memberships.values()))
     assert schema_states == set(erasable_by_state), (
         "the schema's state domain and this sweep disagree "
         f"(only in schema: {sorted(schema_states - set(erasable_by_state))}; "
