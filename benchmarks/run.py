@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import warnings
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -588,9 +589,17 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     # ever stops being good enough, is `with _build_system(...) as system:` around the body — not a
     # second close bolted on elsewhere. Duck-typed because `MemorySystem` is a three-member
     # protocol and `RecallSystem` has nothing to release: it holds a DSN string, not a connection.
+    #
+    # Guarded: by this point the artifact and its sidecar are written and their paths printed, so
+    # a teardown failure must not change the run's verdict. Unguarded, a complete run would exit
+    # non-zero and a wrapper reading that status would re-run it, re-spending LLM credit on work
+    # that already succeeded.
     close = getattr(system, "close", None)
     if callable(close):
-        close()
+        try:
+            close()
+        except Exception as exc:  # noqa: BLE001 - a wedged handle is not a failed benchmark run
+            warnings.warn(f"benchmarks.run: closing {type(system).__name__} failed: {exc!r}")
     return 0
 
 

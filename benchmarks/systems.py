@@ -671,7 +671,14 @@ class Mem0System:
                     detail = repr(exc)
                 except Exception:  # noqa: BLE001 - an exception whose repr raises is still evidence
                     detail = f"<unprintable {type(exc).__name__}>"
-                warnings.warn(f"Mem0System.close: {name} failed: {detail}", stacklevel=2)
+                try:
+                    warnings.warn(f"Mem0System.close: {name} failed: {detail}", stacklevel=2)
+                except Exception:  # noqa: BLE001 - see below
+                    # `warnings.warn` RAISES under `-W error` / `PYTHONWARNINGS=error`. Unguarded,
+                    # the report would abort the loop and strand every handle after this one —
+                    # inverting the rule three lines up, and escaping the `finally` blocks this
+                    # method is called from. A diagnostic must never cost more than it explains.
+                    pass
 
     def __enter__(self) -> Mem0System:
         return self
