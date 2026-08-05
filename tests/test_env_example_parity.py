@@ -58,16 +58,35 @@ def test_env_example_documents_every_auth_variable_the_code_reads():
     )
 
 
-def test_the_parity_check_can_fail():
-    """The gate above is only worth having if a missing variable actually trips it.
+def test_the_scanner_actually_reads_the_source():
+    """The gate is worthless if `_referenced_in_code` returns nothing, and it would still be green.
 
-    Written because this file exists to catch a drift a green suite had already tolerated twice: a
-    parity test that cannot fail would be the third instance of the same mistake.
+    An earlier version of this test did set arithmetic over a hardcoded invented name and never
+    called the scanner at all: stubbing `_referenced_in_code` to `return set()` left the whole file
+    passing. That is precisely the failure this module was written to prevent, committed inside the
+    prevention. So assert the scanner finds a name that is definitely in the source.
     """
-    documented = set(_VAR.findall(ENV_EXAMPLE.read_text(encoding="utf-8")))
-    invented = "RECALL_AUTH_A_VARIABLE_THAT_IS_NOT_DOCUMENTED"
-    assert invented not in documented
-    assert sorted({invented} - documented - UNDOCUMENTED_ON_PURPOSE) == [invented]
+    referenced = _referenced_in_code()
+    assert "RECALL_OIDC_ISSUER" in referenced
+    assert "RECALL_AUTH_TOKENS_FILE" in referenced
+    assert len(referenced) >= 5, f"the scanner found suspiciously little: {sorted(referenced)}"
+
+
+def test_the_parity_check_fails_on_a_genuinely_undocumented_variable(tmp_path, monkeypatch):
+    """End to end: an undocumented auth variable in a scanned file must trip the gate.
+
+    Exercises the real scan over a real file rather than simulating the set difference, so a dead
+    scanner, a broken regex and a too-greedy allowlist each show up here.
+    """
+    package = tmp_path / "recall_mcp"
+    package.mkdir()
+    (package / "planted.py").write_text(
+        'CONFIG = os.environ["RECALL_AUTH_UNDOCUMENTED_KNOB"]\n', encoding="utf-8"
+    )
+    monkeypatch.setattr("tests.test_env_example_parity.ROOT", tmp_path)
+
+    missing = sorted(_referenced_in_code() - UNDOCUMENTED_ON_PURPOSE)
+    assert "RECALL_AUTH_UNDOCUMENTED_KNOB" in missing
 
 
 @pytest.mark.parametrize(

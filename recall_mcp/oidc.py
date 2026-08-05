@@ -70,6 +70,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
@@ -235,10 +236,15 @@ class OidcConfig:
                 )
 
         if self.subject_tenants is not None:
-            if not isinstance(self.subject_tenants, dict):
+            if not isinstance(self.subject_tenants, Mapping):
                 # `.items()` on a non-mapping raises AttributeError, which is not the ValueError
                 # `oidc_validator_from_env` translates into AuthConfigError, so it would escape
                 # the class this module promises for configuration errors.
+                #
+                # `Mapping`, not `dict`: this class normalises to a MappingProxyType below, so an
+                # exact-dict check made OidcConfig reject its OWN output — `dataclasses.replace`,
+                # `copy.deepcopy` and constructing one config from another's binding all went from
+                # working to raising, with a message saying a mapping was not a mapping.
                 raise ValueError("subject_tenants must be a mapping of sub -> tenants")
             if not self.subject_tenants:
                 raise ValueError(
@@ -273,6 +279,14 @@ class OidcConfig:
             for subject, tenants in self.subject_tenants.items():
                 if not tenants:
                     raise ValueError(f"subject_tenants[{subject!r}] names no tenant")
+                mistyped = sorted(repr(t) for t in tenants if not isinstance(t, str))
+                if mistyped:
+                    # Checked before `.strip()` below, which would otherwise raise AttributeError
+                    # and escape the ValueError-to-AuthConfigError translation this whole block
+                    # exists to stay inside.
+                    raise ValueError(
+                        f"subject_tenants[{subject!r}] names non-string tenant(s) {mistyped}"
+                    )
                 padded = sorted(t for t in tenants if not t or t != t.strip())
                 if padded:
                     # `validate` REFUSES a padded tenant claim rather than trimming it, so a
@@ -754,20 +768,34 @@ ENV_ALGORITHMS = "RECALL_OIDC_ALGORITHMS"
 ENV_SUBJECT_TENANTS = "RECALL_OIDC_SUBJECT_TENANTS"
 ENV_TRUST_TENANT_CLAIM = "RECALL_OIDC_TRUST_TENANT_CLAIM"
 
-#: Every OIDC key EXCEPT the issuer, which is the one that switches the mechanism on.
-#:
-#: DERIVED, not hand-listed. The hand-written tuple this replaces named three keys, and the two
-#: added with the subject binding were not among them — so pinning a subject map and mistyping the
-#: issuer booted on static tokens with a complete-looking OIDC block, which is precisely the
-#: hazard the guard using this list exists to refuse. An enumeration that must be remembered is
-#: one that will be forgotten.
-ENV_OIDC_NON_ISSUER_KEYS = tuple(
-    sorted(
-        value
-        for name, value in list(globals().items())
-        if name.startswith("ENV_") and isinstance(value, str) and value != ENV_ISSUER
+def oidc_non_issuer_env_keys() -> tuple[str, ...]:
+    """Every OIDC env key EXCEPT the issuer, which is the one that switches the mechanism on.
+
+    DERIVED, not hand-listed. The hand-written tuple this replaces named three keys, and the two
+    added with the subject binding were not among them, so pinning a subject map and mistyping the
+    issuer booted on static tokens with a complete-looking OIDC block. An enumeration that must be
+    remembered is one that will be forgotten.
+
+    Two things the first attempt at this got wrong, both found by mutation:
+
+    - It filtered on the NAME prefix `ENV_` and not on the VALUE. Importing `auth.ENV_TOKENS_FILE`
+      into this module — one plausible line, and `server.py` already imports that alias — would
+      have added `RECALL_AUTH_TOKENS_FILE` to the list and refused **every static deployment** as
+      a partial OIDC block. The value predicate is the load-bearing one.
+    - It was a module-level constant, so it saw only the constants defined ABOVE it. That replaced
+      a remembered enumeration with a remembered definition ORDER, which nothing enforced. A
+      function reads the module's globals when called, so a constant added anywhere is included.
+    """
+    return tuple(
+        sorted(
+            value
+            for name, value in list(globals().items())
+            if name.startswith("ENV_")
+            and isinstance(value, str)
+            and value.startswith("RECALL_OIDC_")
+            and value != ENV_ISSUER
+        )
     )
-)
 
 
 def _csv(raw: str) -> list[str]:
@@ -791,9 +819,22 @@ def _parse_subject_tenants(raw: str) -> dict[str, frozenset[str]] | None:
         # `system:serviceaccount:ns:sa`, and URN- and URL-shaped subjects are common — while a
         # tenant id is ours and is required not to. Splitting on the FIRST colon made every such
         # subject unconfigurable, which pushed exactly those deployments onto the trust flag: the
-        # unsafe path this feature exists to replace. It also mis-parsed silently, reading
-        # `urn:acme` as subject `urn` bound to tenant `acme`.
+        # unsafe path this feature exists to replace.
+        #
+        # The trade is real and worth stating: the tenant is the LAST segment, so a subject that
+        # contains colons and whose tenant was FORGOTTEN parses as a shorter subject bound to the
+        # wrong tenant rather than as an error. What catches that is not this parser but the
+        # cross-check against `allowed_tenants` in `OidcConfig`, which refuses a binding naming a
+        # tenant this deployment never provisioned. A one-colon entry stays inherently ambiguous
+        # under either split; that is not fixable by choosing a side.
         subject, separator, tenant = entry.rpartition(":")
+        if subject.strip().endswith(":"):
+            # `a::b`. Whatever was meant, the subject is not `a:`, and a trailing colon can never
+            # match a `sub` either.
+            raise AuthConfigError(
+                f"{ENV_SUBJECT_TENANTS} entry {entry!r} leaves a trailing colon on the subject; "
+                f"remove the doubled separator"
+            )
         if not separator or not subject.strip() or not tenant.strip():
             raise AuthConfigError(
                 f"{ENV_SUBJECT_TENANTS} entry {entry!r} is malformed; expected `sub:tenant` "
@@ -823,7 +864,7 @@ def oidc_env_present(env: dict[str, str] | None = None) -> bool:
     # issuer while the others are correct otherwise boots the server on static tokens with a
     # complete-looking OIDC block in its environment, doing nothing. The misspelling is actively
     # invited by the neighbouring RECALL_AUTH_ISSUER_URL.
-    stray = sorted(k for k in ENV_OIDC_NON_ISSUER_KEYS if source.get(k, "").strip())
+    stray = sorted(k for k in oidc_non_issuer_env_keys() if source.get(k, "").strip())
     if stray:
         raise AuthConfigError(
             f"{', '.join(stray)} set without {ENV_ISSUER}. OIDC is switched on by {ENV_ISSUER} "
@@ -952,6 +993,10 @@ __all__ = [
     "OidcConfig",
     "OidcValidator",
     "TokenRejected",
+    "ENV_SUBJECT_TENANTS",
+    "ENV_TRUST_TENANT_CLAIM",
     "discover_jwks_uri",
+    "oidc_env_present",
+    "oidc_non_issuer_env_keys",
     "oidc_validator_from_env",
 ]
