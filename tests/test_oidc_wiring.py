@@ -301,7 +301,17 @@ def test_oidc_without_a_tenant_allowlist_refuses_to_start():
 
 
 @pytest.mark.parametrize(
-    "stray", ["RECALL_OIDC_AUDIENCE", "RECALL_OIDC_TENANTS", "RECALL_OIDC_ALGORITHMS"]
+    "stray",
+    [
+        "RECALL_OIDC_AUDIENCE",
+        "RECALL_OIDC_TENANTS",
+        "RECALL_OIDC_ALGORITHMS",
+        # Every key added since. The guard's key list is DERIVED from the ENV_* constants rather
+        # than hand-written precisely because these two were forgotten when they were added, which
+        # reopened the hazard through the newest variable.
+        "RECALL_OIDC_SUBJECT_TENANTS",
+        "RECALL_OIDC_TRUST_TENANT_CLAIM",
+    ],
 )
 def test_an_oidc_block_without_its_issuer_refuses_to_start(stray, tmp_path):
     """DEPLOY-001. The issuer is the only key that switches OIDC on.
@@ -320,11 +330,17 @@ def test_an_oidc_block_without_its_issuer_refuses_to_start(stray, tmp_path):
     )
     env = {
         "RECALL_AUTH_TOKENS_FILE": str(path),
+        # RECALL_AUTH_ISSUER_URL is SET on purpose. Without it, `build_auth` raises the unrelated
+        # protected-resource-metadata error, whose text also contains the literal string
+        # "RECALL_OIDC_ISSUER" — so a `match=` on the bare variable name passed against a build
+        # that had stopped enforcing this guard entirely. The test was green for 24 hours while
+        # the guard was dead. Match the guard's own sentence, not a substring it shares.
+        "RECALL_AUTH_ISSUER_URL": RESOURCE,
         "RECALL_AUTH_RESOURCE_URL": RESOURCE,
         "RECALL_OIDC_ISSUER_URL": ISSUER,  # the typo: _URL does not exist for this variable
         stray: "acme" if stray == "RECALL_OIDC_TENANTS" else "recall-api",
     }
-    with pytest.raises(AuthConfigError, match="RECALL_OIDC_ISSUER"):
+    with pytest.raises(AuthConfigError, match="set without RECALL_OIDC_ISSUER"):
         build_auth("streamable-http", env=env)
 
 

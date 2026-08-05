@@ -25,6 +25,7 @@ from recall_mcp.auth import (
     SCOPE_READ,
     SCOPE_WRITE,
     AuthConfigError,
+    ENV_TOKENS_FILE,
     TokenRegistry,
     authorize,
     token_registry_from_env,
@@ -37,6 +38,7 @@ from recall_mcp.oidc import (
     IdentityProviderUnavailable,
     OidcValidator,
     TokenRejected,
+    oidc_env_present,
     oidc_validator_from_env,
 )
 from recall_mcp.service import (
@@ -290,16 +292,26 @@ def build_auth(
     - `RECALL_OIDC_ISSUER` (with `RECALL_OIDC_AUDIENCE` and `RECALL_OIDC_TENANTS`) — identity from
       an external provider. With this set, `RECALL_AUTH_ISSUER_URL` defaults to the provider.
 
-    Both together raises: they are two trust models, and whichever won silently, the other would
-    sit in the configuration looking effective.
+    Both together raises **only when `RECALL_AUTH_MODE` is unset**. They are two trust models, so
+    an undeclared precedence means one of them sits in the configuration looking effective;
+    declaring it with `RECALL_AUTH_MODE=oidc|static` is a choice, and it is what makes a staged
+    cutover possible. A mode naming a mechanism that is not configured also raises, as does a mode
+    outside that pair.
+
+    Only the SELECTED mechanism is constructed. The OIDC block is still validated whenever it is
+    present, because doing so has no side effect and step 1 of a cutover is supposed to rehearse
+    it; the token file is not, because `load_token_registry` refuses under `RECALL_ENV=production`
+    and that refusal must not fire for a file that is standing down.
     """
     e = env if env is not None else dict(os.environ)
     # Presence is decided from the ENV KEYS, before either mechanism is built, because building
     # one can raise for its own reasons: `load_token_registry` refuses under RECALL_ENV=production,
     # and that fired before the selector could say "we are not using the token file", which is
     # exactly the state a production cutover passes through.
-    has_oidc = bool(e.get(ENV_ISSUER, "").strip())
-    has_static = bool(e.get("RECALL_AUTH_TOKENS_FILE", "").strip())
+    # `oidc_env_present` rather than a raw key read: it also refuses a PARTIAL block, and that
+    # check must not depend on whether we go on to build a validator (SEC-001).
+    has_oidc = oidc_env_present(e)
+    has_static = bool(e.get(ENV_TOKENS_FILE, "").strip())
 
     mode = e.get("RECALL_AUTH_MODE", "").strip().lower()
     if mode and mode not in {"oidc", "static"}:
@@ -324,10 +336,21 @@ def build_auth(
             f"(that is the supported way to stage a cutover), or unset one of them."
         )
 
-    # Build ONLY the selected mechanism. Preferring one after building both would reintroduce the
-    # production failure above, and would read a token file the operator has already stood down.
     use_oidc = has_oidc and mode != "static"
-    validator = oidc_validator_from_env(e) if use_oidc else None
+
+    # The OIDC block is VALIDATED whenever it is present, even when static is selected, and only
+    # the static side is conditionally loaded. The asymmetry is the point (SEC-002):
+    #
+    # - Loading the token file has a side effect that must not happen when it is standing down:
+    #   `load_token_registry` refuses under RECALL_ENV=production, which would abort the very
+    #   cutover the selector exists to enable.
+    # - Building the OIDC config has NO such effect. It performs no network IO by design, so
+    #   skipping it buys nothing and costs the whole point of cutover step 1, which docs/AUTH.md
+    #   describes as "add every OIDC variable, change nothing. Verify." Unparsed, a malformed
+    #   subject binding or algorithm list would surface only at the step-2 flip, which is the
+    #   moment with the least rollback slack.
+    oidc = oidc_validator_from_env(e) if has_oidc else None
+    validator = oidc if use_oidc else None
     registry = token_registry_from_env(e) if not use_oidc else None
 
     if has_oidc and has_static:
@@ -377,9 +400,11 @@ def build_auth(
     # With an IdP there is exactly one right answer for the metadata issuer, and requiring an
     # operator to restate it is a chance to state it differently — at which point clients are
     # directed to a provider that did not sign the tokens this server accepts.
-    issuer = e.get("RECALL_AUTH_ISSUER_URL") or (
-        validator.config.issuer if validator is not None else ""
-    )
+    # Defaulted from the OIDC block whenever one is PRESENT, not only when it is selected
+    # (DEPLOY-004). Keyed on selection, `RECALL_AUTH_ISSUER_URL` was optional under mode=oidc and
+    # required again the instant somebody flipped back to static — so "rollback is flipping it
+    # back" was false for any deployment that took the documented option of omitting it.
+    issuer = e.get("RECALL_AUTH_ISSUER_URL") or (oidc.config.issuer if oidc is not None else "")
     resource = e.get("RECALL_AUTH_RESOURCE_URL")
     if not issuer or not resource:
         raise AuthConfigError(

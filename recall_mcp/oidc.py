@@ -36,6 +36,11 @@ is added, and one was.)
   `bad_signature` would enumerate the tenant list to a caller holding no credential.
 - **`malformed_expiry`** because PyJWT's expiry check passes any far-future value, so an `exp` in
   milliseconds is a valid signature over an unrepresentable instant.
+- **`subject_tenant_mismatch`** (with `subject_not_bound` and `missing_subject`) when a
+  subject-to-tenant binding is configured. The allowlist above bounds WHICH tenants exist; this
+  bounds WHO may name one, and it is the only thing standing between a genuine token from another
+  subject of the same IdP and a cross-tenant read. Checked after the signature, for the same
+  enumeration reason as `tenant_not_allowed`.
 
 The JWKS cache
 --------------
@@ -67,6 +72,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from types import MappingProxyType
 from typing import Any, Callable
 
 import jwt
@@ -141,6 +147,11 @@ class OidcConfig:
     #: Nothing here can verify that an IdP derived that claim from an authoritative mapping rather
     #: than from a user-editable profile attribute, so a deployment that cannot make that promise
     #: pins the mapping here instead.
+    #:
+    #: None is permissive so the validator stays usable on its own terms, as for `allowed_tenants`.
+    #: The decision lives elsewhere than that field's, though: `oidc_validator_from_env` refuses
+    #: None unless `RECALL_OIDC_TRUST_TENANT_CLAIM=1` makes trusting the claim an explicit choice,
+    #: rather than `build_auth`.
     subject_tenants: dict[str, frozenset[str]] | None = None
 
     def __post_init__(self) -> None:
@@ -224,19 +235,52 @@ class OidcConfig:
                 )
 
         if self.subject_tenants is not None:
+            if not isinstance(self.subject_tenants, dict):
+                # `.items()` on a non-mapping raises AttributeError, which is not the ValueError
+                # `oidc_validator_from_env` translates into AuthConfigError, so it would escape
+                # the class this module promises for configuration errors.
+                raise ValueError("subject_tenants must be a mapping of sub -> tenants")
             if not self.subject_tenants:
                 raise ValueError(
                     "subject_tenants must not be empty: a binding that names no subject refuses "
                     "every token. Leave it None to trust the tenant claim instead."
                 )
+            for subject, tenants in self.subject_tenants.items():
+                # The SAME guards allowed_tenants carries, because this field is the other half of
+                # the same isolation boundary and the failure modes are identical.
+                if isinstance(tenants, (str, bytes)):
+                    raise ValueError(
+                        f"subject_tenants[{subject!r}] must be a collection of tenant ids, not a "
+                        f"single string (a string would be split into its characters)"
+                    )
+                if not isinstance(subject, str) or not subject or subject != subject.strip():
+                    # `validate` looks the subject up VERBATIM against the `sub` claim, so a key
+                    # that is empty, padded or not a string can never match: it reads as
+                    # provisioning while refusing every request.
+                    raise ValueError(
+                        f"subject_tenants key {subject!r} is empty, padded or not a string, so it "
+                        f"could never match a `sub` claim"
+                    )
             object.__setattr__(
                 self,
                 "subject_tenants",
-                {s: frozenset(t) for s, t in self.subject_tenants.items()},
+                # A read-only view: `allowed_tenants` beside it is a frozenset and cannot be
+                # widened in place, and this is the same boundary. A plain dict on a frozen
+                # dataclass let `config.subject_tenants[x] = ...` add an unvalidated binding at
+                # runtime, bypassing every check above.
+                MappingProxyType({s: frozenset(t) for s, t in self.subject_tenants.items()}),
             )
             for subject, tenants in self.subject_tenants.items():
                 if not tenants:
                     raise ValueError(f"subject_tenants[{subject!r}] names no tenant")
+                padded = sorted(t for t in tenants if not t or t != t.strip())
+                if padded:
+                    # `validate` REFUSES a padded tenant claim rather than trimming it, so a
+                    # padded value here could never match.
+                    raise ValueError(
+                        f"subject_tenants[{subject!r}] names {padded}, which is empty or padded "
+                        f"and could never match a tenant claim"
+                    )
                 if self.allowed_tenants is not None:
                     # Un-matchable configuration, same treatment as a padded allowlist entry: the
                     # allowlist would refuse that tenant anyway, so a binding pointing at it reads
@@ -710,6 +754,21 @@ ENV_ALGORITHMS = "RECALL_OIDC_ALGORITHMS"
 ENV_SUBJECT_TENANTS = "RECALL_OIDC_SUBJECT_TENANTS"
 ENV_TRUST_TENANT_CLAIM = "RECALL_OIDC_TRUST_TENANT_CLAIM"
 
+#: Every OIDC key EXCEPT the issuer, which is the one that switches the mechanism on.
+#:
+#: DERIVED, not hand-listed. The hand-written tuple this replaces named three keys, and the two
+#: added with the subject binding were not among them — so pinning a subject map and mistyping the
+#: issuer booted on static tokens with a complete-looking OIDC block, which is precisely the
+#: hazard the guard using this list exists to refuse. An enumeration that must be remembered is
+#: one that will be forgotten.
+ENV_OIDC_NON_ISSUER_KEYS = tuple(
+    sorted(
+        value
+        for name, value in list(globals().items())
+        if name.startswith("ENV_") and isinstance(value, str) and value != ENV_ISSUER
+    )
+)
+
 
 def _csv(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
@@ -719,24 +778,60 @@ def _parse_subject_tenants(raw: str) -> dict[str, frozenset[str]] | None:
     """`sub:tenant,sub:tenant,...` into a mapping, or None when unset.
 
     A subject may appear more than once; the tenants accumulate, because one service account
-    legitimately serves several tenants. A malformed entry REFUSES rather than being skipped: a
+    legitimately serves several tenants. A malformed PAIR refuses rather than being skipped: a
     skipped pair is a subject that silently cannot authenticate, or worse, one whose absence from
-    the map is read as "not bound" and refuses at request time for a reason naming nothing.
+    the map is read as "not bound" and refuses at request time for a reason naming nothing. Empty
+    list items are tolerated, so a trailing comma is not a boot failure.
     """
     if not raw:
         return None
     mapping: dict[str, set[str]] = {}
     for entry in _csv(raw):
-        subject, separator, tenant = entry.partition(":")
-        if not separator or not subject.strip() or not tenant.strip() or ":" in tenant:
+        # Split on the LAST colon. A `sub` legitimately contains colons — Kubernetes issues
+        # `system:serviceaccount:ns:sa`, and URN- and URL-shaped subjects are common — while a
+        # tenant id is ours and is required not to. Splitting on the FIRST colon made every such
+        # subject unconfigurable, which pushed exactly those deployments onto the trust flag: the
+        # unsafe path this feature exists to replace. It also mis-parsed silently, reading
+        # `urn:acme` as subject `urn` bound to tenant `acme`.
+        subject, separator, tenant = entry.rpartition(":")
+        if not separator or not subject.strip() or not tenant.strip():
             raise AuthConfigError(
                 f"{ENV_SUBJECT_TENANTS} entry {entry!r} is malformed; expected `sub:tenant` "
-                f"pairs separated by commas, e.g. alice@corp:acme,svc-etl:globex"
+                f"pairs separated by commas, e.g. alice@corp:acme,svc-etl:globex. The tenant is "
+                f"everything after the LAST colon, so a subject may itself contain colons "
+                f"(system:serviceaccount:ns:sa:my-tenant binds that service account to my-tenant)."
             )
         mapping.setdefault(subject.strip(), set()).add(tenant.strip())
     if not mapping:
         raise AuthConfigError(f"{ENV_SUBJECT_TENANTS} is set but names no subject")
     return {s: frozenset(t) for s, t in mapping.items()}
+
+
+def oidc_env_present(env: dict[str, str] | None = None) -> bool:
+    """Whether an OIDC block is configured, refusing a PARTIAL one.
+
+    Separate from `oidc_validator_from_env` because presence has to be decided before the caller
+    knows whether it will build a validator, and this check must not depend on that decision.
+    Gating it behind "are we building OIDC?" is how it silently stopped running once `build_auth`
+    learned to select a mechanism: the issuer is the only key that switches OIDC on, so a
+    misspelling of THAT key made the whole block invisible, including this guard.
+    """
+    source = dict(os.environ) if env is None else env
+    if source.get(ENV_ISSUER, "").strip():
+        return True
+    # A partially-configured block is refused rather than ignored (DEPLOY-001). Misspelling the
+    # issuer while the others are correct otherwise boots the server on static tokens with a
+    # complete-looking OIDC block in its environment, doing nothing. The misspelling is actively
+    # invited by the neighbouring RECALL_AUTH_ISSUER_URL.
+    stray = sorted(k for k in ENV_OIDC_NON_ISSUER_KEYS if source.get(k, "").strip())
+    if stray:
+        raise AuthConfigError(
+            f"{', '.join(stray)} set without {ENV_ISSUER}. OIDC is switched on by {ENV_ISSUER} "
+            f"alone, so this configuration authenticates nobody through the provider while "
+            f"appearing to. Set {ENV_ISSUER} (check the spelling: it is not "
+            f"RECALL_AUTH_ISSUER_URL, which is the metadata issuer), or unset the rest."
+        )
+    return False
 
 
 def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator | None:
@@ -751,23 +846,9 @@ def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator 
     the server from booting — the same reasoning as the stale-key window, applied to startup.
     """
     source = dict(os.environ) if env is None else env
-    issuer = source.get(ENV_ISSUER, "").strip()
-    if not issuer:
-        # A partially-configured block is refused rather than ignored (DEPLOY-001). The issuer is
-        # the only key that switches OIDC on, so misspelling THAT one while the others are correct
-        # used to return None: the server booted on static tokens with a complete-looking OIDC
-        # block in its environment, doing nothing. The misspelling is actively invited by the
-        # neighbouring RECALL_AUTH_ISSUER_URL. That is the same hazard as the both-set conflict
-        # below — configuration that reads as effective and is not — so it fails the same way.
-        stray = sorted(k for k in (ENV_AUDIENCE, ENV_TENANTS, ENV_ALGORITHMS) if source.get(k, "").strip())
-        if stray:
-            raise AuthConfigError(
-                f"{', '.join(stray)} set without {ENV_ISSUER}. OIDC is switched on by "
-                f"{ENV_ISSUER} alone, so this configuration authenticates nobody through the "
-                f"provider while appearing to. Set {ENV_ISSUER} (check the spelling: it is not "
-                f"RECALL_AUTH_ISSUER_URL, which is the metadata issuer), or unset the rest."
-            )
+    if not oidc_env_present(source):
         return None
+    issuer = source.get(ENV_ISSUER, "").strip()
 
     audience = source.get(ENV_AUDIENCE, "").strip()
     if not audience:
