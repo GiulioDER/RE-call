@@ -74,3 +74,88 @@ def test_the_scale_report_uses_the_same_convention():
     got = _percentiles(samples)
 
     assert got == {"p50": 50.0, "p95": 95.0, "p99": 99.0}
+
+
+def test_the_shared_latency_report_uses_the_same_convention():
+    """The helper both eval harnesses publish through — not the harnesses themselves.
+
+    They each published `{"p50": lat[len(lat) // 2], "p95": lat[int(0.95 * len(lat))]}`, the same
+    1-based-rank-as-0-based-index error in both slots. This file pins the FORMULA; that
+    `labelled` and `longmemeval_perq` actually publish through it is a separate claim and is
+    pinned end to end in tests/test_eval_latency_percentiles.py.
+
+    n=100 is the size that makes the failure unmissable rather than arguable.
+    """
+    from recall.eval.metrics import latency_report
+
+    samples = [float(i) for i in range(1, 101)]
+
+    assert latency_report(samples) == {"p50": 50.0, "p95": 95.0}
+    # The old expressions, evaluated here so the disagreement is visible rather than asserted:
+    # index 50 -> 51.0 and index 95 -> 96.0, both one rank above the definition.
+    assert samples[len(samples) // 2] == 51.0
+    assert samples[int(0.95 * len(samples))] == 96.0
+
+
+@pytest.mark.parametrize("n", [2, 20, 44])
+def test_each_slot_is_pinned_at_a_size_where_it_actually_discriminates(n):
+    """p50 and p95 fail at DIFFERENT sizes, so no single fixture pins both.
+
+    Measured: `n // 2` is one rank high for every EVEN n, while `int(0.95 * n)` is one rank high
+    only when n is a multiple of 20. A fixture at n=2 separates the two p50 implementations and
+    says nothing whatever about p95, because there the old and new p95 index coincide — so a
+    docstring claiming n=2 "separates the two implementations" would be true of one slot and
+    false of the other. n=20 is the smallest size at which the p95 slot can fail. n=44 is the
+    PEPs arm, where p50 moves and p95 does not, which is why that published table needed its p50
+    annotated and not its p95.
+    """
+    from recall.eval.metrics import latency_report
+
+    samples = [float(i) for i in range(1, n + 1)]
+    got = latency_report(samples)
+
+    assert got["p50"] == _nearest_rank(samples, 0.50)
+    assert got["p95"] == _nearest_rank(samples, 0.95)
+    # And the disagreement with the replaced expression, at each size, asserted rather than implied.
+    assert (got["p50"] != samples[len(samples) // 2]) is (n % 2 == 0)
+    assert (got["p95"] != samples[int(0.95 * n)]) is (n % 20 == 0)
+
+
+def test_the_percentile_helper_can_return_an_unrounded_sample():
+    """`ndigits=None`, because rounding twice is not rounding once.
+
+    `percentile` rounds to 3 dp by default, and a publisher that quantises to 0.1 ms on top of
+    that disagrees with a single round on about one value in two hundred. `latency_report` says
+    it publishes "to 0.1 ms", so it has to be able to round exactly once, or that is a label the
+    function does not honour.
+    """
+    x = 1402.6496351897192
+
+    assert percentile([x], 0.50, ndigits=None) == x
+    assert percentile([x], 0.50) == round(x, 3)          # the default is unchanged
+    assert round(percentile([x], 0.50, ndigits=None), 1) == round(x, 1) == 1402.6
+    assert round(percentile([x], 0.50), 1) == 1402.7, "the double round this parameter avoids"
+
+
+def test_the_latency_report_rounds_once():
+    """The same value through the shipped helper — the assertion that would have failed."""
+    from recall.eval.metrics import latency_report
+
+    x = 1402.6496351897192
+    assert latency_report([x]) == {"p50": 1402.6, "p95": 1402.6} == {"p50": round(x, 1),
+                                                                    "p95": round(x, 1)}
+
+
+def test_the_latency_report_takes_an_unsorted_sample_and_reports_nothing_on_an_empty_one():
+    """It sorts internally — the callers hand it raw per-question timings, not a sorted list.
+
+    A percentile helper that silently assumes sorted input is a landmine: the wrong answer it
+    returns is still a plausible latency. And an empty sample reports `{}`, which is what both
+    harnesses already published for a run with no timed queries — a latency of 0.0 ms would read
+    as an instantaneous system rather than as an unmeasured one.
+    """
+    from recall.eval.metrics import latency_report
+
+    assert latency_report([30.0, 10.0, 20.0]) == latency_report([10.0, 20.0, 30.0])
+    assert latency_report([30.0, 10.0, 20.0]) == {"p50": 20.0, "p95": 30.0}
+    assert latency_report([]) == {}

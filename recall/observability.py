@@ -185,19 +185,27 @@ class Metrics:
             self._histograms.clear()
 
 
-def percentile(sorted_samples: list[float], q: float) -> float:
+def percentile(sorted_samples: list[float], q: float, *, ndigits: int | None = 3) -> float:
     """Nearest-rank percentile: the smallest sample with at least `q` of the data at or below it.
 
     The index is `ceil(q*n) - 1`, NOT `int(q*n)`. `int(q*n)` IS the 1-based nearest rank, so
     using it as a 0-based index reports the next sample up — one whole rank too high, every
     time. On 100 samples that returns the maximum for p99 and the 96th value for p95, which
     reads as a worse tail than the data contains and makes p99 indistinguishable from max.
+
+    `ndigits=None` returns the selected sample unrounded. A caller that rounds again for
+    publication needs that: rounding twice is not rounding once (`round(round(1402.6496, 3), 1)`
+    is 1402.7, `round(1402.6496, 1)` is 1402.6), so a publisher that quantises to 0.1 ms and
+    reads through the 3-dp default disagrees with its own stated precision on about one value in
+    two hundred. Rounding is a presentation concern and belongs at exactly one edge of the chain.
+    The 3-dp default is kept because `Metrics.snapshot` and `recall.eval.scale` publish it.
     """
     if not sorted_samples:
         return float("nan")
     n = len(sorted_samples)
     idx = min(n - 1, max(0, math.ceil(q * n) - 1))
-    return round(sorted_samples[idx], 3)
+    value = sorted_samples[idx]
+    return value if ndigits is None else round(value, ndigits)
 
 
 #: Was private until the off-by-one fix made it worth sharing with `recall.eval.scale`, which

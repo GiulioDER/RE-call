@@ -36,8 +36,14 @@ from typing import Any
 
 from recall.calibration import from_samples
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
+from recall.eval._scoring import (
+    DEFAULT_SCORE_RETRIEVAL_ON,
+    SCORE_RETRIEVAL_ON,
+    check_score_retrieval_on,
+    scores_retrieval,
+)
 from recall.eval.bm25 import BM25Retriever
-from recall.eval.metrics import wilson_ci
+from recall.eval.metrics import latency_report, wilson_ci
 from recall.index import Indexer
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
 from recall.store import PgVectorStore
@@ -89,29 +95,71 @@ def _rate(flags: list[bool]) -> dict:
     }
 
 
-#: Which questions the RETRIEVAL metrics (`hit_at_k`, `mrr`, `latency_ms`) are scored on.
-#:
-#: `"held"` is the default and reproduces every number this repo has published. `"all"` scores
-#: every answerable question instead, which is methodologically free — `hit_at_k` and `mrr` never
-#: read the calibration, so the fit/held split buys them nothing and halves their sample — but it
-#: is NOT the default, because the default decides what a published figure MEANS. Silently
-#: widening it would change the value of `README.md`'s PEPs table under a reproduce command that
-#: ships in the same file, and would move `results/gap/*.json` across 17 corpora without changing
-#: one byte of their provenance. Opt in per run, and record which mode produced the artifact.
-#:
-#: Abstention is unaffected by this setting: it is always scored on the held half, because its
-#: threshold is fitted on the other one.
-SCORE_RETRIEVAL_ON = ("held", "all")
+def check_question_ids(questions: list[dict]) -> None:
+    """Refuse a question set whose `id` field cannot carry the fit/held boundary.
+
+    `q["id"]` is LOAD-BEARING, not decoration. `evaluate` scores retrieval over `scored` (all
+    answerable questions under `score_retrieval_on="all"`) and then selects the held answerable
+    subset back out of those results BY ID, so that abstention keeps the split its threshold was
+    fitted under. Two ways that breaks, both silent without this check:
+
+      * a DUPLICATE id spanning the fit/held boundary makes the HELD question's id select the
+        FIT question's result out of `hybrid_results` — reachable under `score_retrieval_on=
+        "all"`, which is what puts fit questions in there — so `false_abstain` is scored on a
+        question the threshold was fitted on. That is fit-and-score-on-the-same-data, precisely
+        the defect the split exists to prevent, and nothing downstream would look wrong: the n
+        does not move, the rate is merely optimistic.
+      * a MISSING id raises `KeyError` from inside the set comprehension, after the corpus has
+        been indexed and the threshold fitted. On a corpus whose index costs hours that is a
+        very expensive way to learn about a typo.
+
+    Both are cheap to refuse up front, and this runs before any connection is opened. It is
+    deliberately WIDER than the contamination it prevents — an id is required on unanswerable
+    questions too, whose id `evaluate` never reads — because a question set with one rule is
+    easier to produce and to check than one with a rule per class. That widening is an input
+    contract change and is recorded in the CHANGELOG rather than left to be discovered.
+    """
+    if not isinstance(questions, list):
+        raise ValueError(
+            f"questions must be a list of objects, got {type(questions).__name__}. "
+            f"The labelled file is a JSON list; see the module docstring for the shape."
+        )
+    # `isinstance(q, dict)` first: a bare string or null in the list would otherwise die on
+    # `q.get` with an AttributeError, which is the raw traceback this guard exists to replace.
+    missing = [i for i, q in enumerate(questions)
+               if not isinstance(q, dict)
+               or not isinstance(q.get("id"), str) or not q["id"].strip()]
+    if missing:
+        raise ValueError(
+            f"{len(missing)} question(s) carry no usable 'id' (non-empty string required) — at "
+            f"index {missing[:5]}. The id selects the held-out half back out of the scored "
+            f"results, so abstention cannot keep its fit/held split without it."
+        )
+    # Report DISTINCT ids with the indexes that carry them. Counting occurrences while printing a
+    # de-duplicated sample makes the two disagree — three copies of one id read as "2 duplicate
+    # question id(s): ['q1']" — and sends the reader looking for ids that do not exist. The
+    # indexes are the fact they actually need: they say which side of `questions[::2]` each copy
+    # is on, i.e. whether this duplicate is the contaminating kind.
+    positions: dict[str, list[int]] = {}
+    for i, q in enumerate(questions):
+        positions.setdefault(q["id"], []).append(i)
+    duplicates = {qid: idx for qid, idx in positions.items() if len(idx) > 1}
+    if duplicates:
+        sample = dict(sorted(duplicates.items())[:5])
+        raise ValueError(
+            f"{len(duplicates)} duplicate question id(s) at {sample}. Ids select the held-out "
+            f"half out of the scored results, so a duplicate spanning the fit/held boundary "
+            f"(one even index, one odd) silently scores abstention on a question its threshold "
+            f"was fitted on."
+        )
 
 
 def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, k: int = 5,
              rerank: bool = False, glob: str = "**/*.md",
              candidate_k: int = DEFAULT_CANDIDATE_K, table: str | None = None,
-             score_retrieval_on: str = "held") -> dict:
-    if score_retrieval_on not in SCORE_RETRIEVAL_ON:
-        raise ValueError(
-            f"score_retrieval_on must be one of {SCORE_RETRIEVAL_ON}, got {score_retrieval_on!r}"
-        )
+             score_retrieval_on: str = DEFAULT_SCORE_RETRIEVAL_ON) -> dict:
+    check_score_retrieval_on(score_retrieval_on)
+    check_question_ids(questions)
     answerable = [q for q in questions if q.get("answerable")]
     unanswerable = [q for q in questions if not q.get("answerable")]
 
@@ -155,7 +203,14 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
         # Abstention uses `held` ONLY in BOTH modes: `false_abstain` filters these results back
         # down by id below. Widening retrieval must never widen that, or the threshold would be
         # fitted and scored on the same questions.
-        scored = answerable if score_retrieval_on == "all" else answerable_held
+        #
+        # The membership rule itself lives in `_scoring.scores_retrieval`, shared with
+        # `longmemeval_perq`. Written out here as `answerable if ... else answerable_held` it was
+        # a second, differently-shaped statement of the same rule, and the cross-harness test
+        # pinned the flag's NAME, DEFAULT and legal VALUES — never its MEANING.
+        scored = [q for i, q in enumerate(questions)
+                  if q.get("answerable")
+                  and scores_retrieval(is_held=i % 2 == 1, mode=score_retrieval_on)]
         answerable_held_ids = {x["id"] for x in answerable_held}
 
         def score_arm(
@@ -181,12 +236,10 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
                     # those apart, which a bare rate cannot.
                     misses.append({"id": q["id"], "query": q["query"],
                                    "expected": sorted(want), "got": files[:k]})
-            lat = sorted(latency)
             return {
                 f"hit_at_{k}": _rate(hits),
                 "mrr": round(statistics.mean(reciprocal), 4) if reciprocal else float("nan"),
-                "latency_ms": {"p50": round(lat[len(lat) // 2], 1),
-                               "p95": round(lat[int(0.95 * len(lat))], 1)} if lat else {},
+                "latency_ms": latency_report(latency),
                 "misses": misses,
             }
 
@@ -240,6 +293,18 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
             trust_evaluate(res, supersession, cal, now, unresolved).abstained
             for qid, res in hybrid_results if qid in answerable_held_ids
         ]
+        # The invariant itself, not merely the input shape that today guarantees it.
+        # `check_question_ids` closes the one contamination route we know about (a duplicate id);
+        # this fires on any other. It is worth a line because the failure is silent by
+        # construction — a fit question entering this sample does not move the n, it only makes
+        # the rate optimistic, so there is nothing else in the artifact to notice it by.
+        if len(false_abstain) != len(answerable_held):
+            raise ValueError(
+                f"false_abstain was scored on {len(false_abstain)} question(s) but the held "
+                f"answerable half has {len(answerable_held)}. The abstention threshold is fitted "
+                f"on the other half, so this sample must be exactly that half — no more (a fit "
+                f"question would be scored under its own fitted threshold) and no fewer."
+            )
 
         # Completeness, as a recorded expected/actual pair rather than a bare assertion. A
         # Postgres reset mid-build leaves committed-but-fewer rows, so "the table exists" and
@@ -310,9 +375,10 @@ def main() -> None:
     ap.add_argument("--candidate-k", type=int, default=20,
                     help="candidates each leg contributes before fusion; the pool a "
                          "reranker sees is their union (default: 20)")
-    ap.add_argument("--score-retrieval-on", default="held", choices=list(SCORE_RETRIEVAL_ON),
+    ap.add_argument("--score-retrieval-on", default=DEFAULT_SCORE_RETRIEVAL_ON,
+                    choices=list(SCORE_RETRIEVAL_ON),
                     help="which questions the RETRIEVAL metrics are scored on. 'held' (default) "
-                         "reproduces every published number; 'all' scores every answerable "
+                         "reproduces every published RATE; 'all' scores every answerable "
                          "question, which doubles the sample and is methodologically free but "
                          "changes what hit@k MEANS. Abstention always uses the held half.")
     ap.add_argument("--dsn", default=DEFAULT_DSN)
@@ -325,6 +391,11 @@ def main() -> None:
     args = ap.parse_args()
 
     questions = json.loads(Path(args.questions).read_text(encoding="utf-8"))
+    # BEFORE the comprehension below, which dereferences `q["id"]` itself: `evaluate` calls this
+    # too, but by then the CLI has already raised the bare `KeyError` the guard exists to
+    # replace. A guard that only protects the library path does not protect the path the README
+    # tells people to run.
+    check_question_ids(questions)
     missing = [q["id"] for q in questions
                if q.get("answerable") and not q.get("relevant_files")]
     if missing:

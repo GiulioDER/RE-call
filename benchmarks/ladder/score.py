@@ -3,8 +3,10 @@
 Prior work: [[project-recall-abstention-bounded-domain-2026-07-24]] — six abstention signals
 measured, all failed; this measures the axis they were measured on, not a seventh signal.
 
-Stdlib only, matching `recall/eval/metrics.py` and `recall/eval/gap_study.py`: the arithmetic that
-decides whether this benchmark lives should be readable without trusting a library.
+Stdlib only, matching `recall/eval/gap_study.py` — and `recall/eval/metrics.py`, which adds one
+first-party import (`recall.observability.percentile`) so the nearest-rank formula is not copied
+per publisher: the arithmetic that decides whether this benchmark lives should be readable
+without trusting a library.
 
 `answered_answerable` is NOT `correct_answer`. v1 has no judge, so answering an answerable question
 is scored as success without the content being verified. Every accuracy computed from this module
