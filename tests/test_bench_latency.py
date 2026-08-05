@@ -206,13 +206,20 @@ def test_an_arm_with_nothing_to_close_is_still_reclaimed(
     assert events == ["gc[]"]  # nothing to close, but the memory is still reclaimed
 
 
-def test_the_arm_is_released_and_reclaimed_even_when_the_run_raises(
+def test_the_teardown_still_runs_when_the_run_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The failure path is the one that matters: a crashed arm is exactly when residue is left.
+    """Both teardown steps RUN on the failure path. Deliberately not a reclamation claim.
 
-    `main` catches nothing, so an arm that dies mid-run would otherwise hand the next one both a
-    held lock and a resident model.
+    The collect runs there but frees nothing, and that is worth stating rather than implying:
+    while the exception propagates, its traceback holds the ARM'S OWN method frame, whose `self`
+    pins the arm. `_run_arm`'s `del` cannot reach that, so the cycle survives. Measured with the
+    real collector: the success path frees the arm, the failure path frees 0 objects.
+
+    Chasing it would be machinery for nothing. `main` catches nothing, so an arm that dies mid-run
+    ends the process, and there is no next arm to hand residue to. What this pins is the property
+    that does matter on that path: `close()` still releases the handles, while the interpreter is
+    still healthy rather than during finalisation.
     """
     events: list[str] = []
     with pytest.raises(RuntimeError, match="ingest exploded"):

@@ -133,6 +133,11 @@ def _run_arm(
             # only `system` deleted it still returns without freeing the arm, because the bound
             # method pins it independently; with both deleted the cycle goes.
             #
+            # This reclaims on the SUCCESS path only, which is the path that has a next arm. When
+            # the run raises, the propagating traceback holds the arm's own method frame, whose
+            # `self` pins the arm, and no `del` here can reach that. Not worth chasing: `main`
+            # catches nothing, so a crashed arm ends the process.
+            #
             # HERE and not in `Mem0System.close`: a library teardown should not run a full
             # collection to flatter a benchmark, and `RecallSystem` has no `close` at all yet
             # holds an embedder just the same. Bare `gc.collect()` is a full collection; a
