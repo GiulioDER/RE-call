@@ -19,7 +19,7 @@ There are two ways to configure it, and exactly one may be active:
 | Mechanism | Set | Use |
 |---|---|---|
 | **Static token file** | `RECALL_AUTH_TOKENS_FILE` | Development. Refused when `RECALL_ENV=production`. |
-| **OIDC provider** | `RECALL_OIDC_ISSUER` + `RECALL_OIDC_AUDIENCE` + `RECALL_OIDC_TENANTS` | Production. See [below](#taking-identity-from-an-oidc-provider). |
+| **OIDC provider** | `RECALL_OIDC_ISSUER` + `RECALL_OIDC_AUDIENCE` + `RECALL_OIDC_TENANTS`, **and** one of `RECALL_OIDC_SUBJECT_TENANTS` / `RECALL_OIDC_TRUST_TENANT_CLAIM` | Production. See [below](#taking-identity-from-an-oidc-provider). |
 
 ## Provisioning tokens
 
@@ -136,6 +136,8 @@ export RECALL_TRANSPORT=streamable-http
 export RECALL_OIDC_ISSUER=https://idp.example.com
 export RECALL_OIDC_AUDIENCE=recall-prod       # the audience this server accepts
 export RECALL_OIDC_TENANTS=acme,globex        # the tenants this deployment serves
+export RECALL_OIDC_SUBJECT_TENANTS=alice@corp:acme,svc-etl:globex   # who may name which tenant
+                                              # (or RECALL_OIDC_TRUST_TENANT_CLAIM=1; see below)
 export RECALL_AUTH_RESOURCE_URL=https://recall.example.com
 python -m recall_mcp.server
 ```
@@ -157,16 +159,44 @@ boot cleanly and then reject every token.
 | `tenant` | yes | **The isolation boundary.** Must be in `RECALL_OIDC_TENANTS`. Leading or trailing whitespace is refused, not trimmed. |
 | `scope` | no | Space-delimited string or JSON list. Unrecognised scopes are **dropped**, not refused, so a token with none gets a principal that can do nothing. |
 | `azp` | conditional | Required to name us when `aud` carries several audiences (OIDC Core 3.1.3.7). |
-| `sub` | no | Becomes the principal name in logs; falls back to the tenant. |
+| `sub` | conditional | **Required whenever `RECALL_OIDC_SUBJECT_TENANTS` is set** — it is the binding's lookup key, and its absence is refused with `missing_subject`. Under `RECALL_OIDC_TRUST_TENANT_CLAIM` it is optional and only names the principal in logs, falling back to the tenant. |
 
 `RECALL_AUTH_ISSUER_URL` is **not** required here: it defaults to `RECALL_OIDC_ISSUER`, because
 with a provider there is exactly one right answer and restating it is a chance to state it
 differently, at which point clients are sent to a provider that did not sign the tokens this
 server accepts.
 
-Setting `RECALL_OIDC_ISSUER` and `RECALL_AUTH_TOKENS_FILE` together **refuses to boot**. They are
-two trust models, and whichever won silently, the other would sit in the configuration looking
-effective.
+### Migrating from the static token file
+
+Setting `RECALL_OIDC_ISSUER` and `RECALL_AUTH_TOKENS_FILE` together refuses to boot **unless you
+declare which is active**, because two trust models with no stated precedence means one of them is
+sitting in the configuration looking effective. Declaring it is what makes a staged cutover
+possible:
+
+```bash
+RECALL_AUTH_MODE=static   # step 1: add every OIDC variable, change nothing. Verify.
+RECALL_AUTH_MODE=oidc     # step 2: flip one variable. Rollback is flipping it back.
+                          # step 3: remove RECALL_AUTH_TOKENS_FILE at leisure, then the mode.
+```
+
+The OIDC block is **validated** whenever it is present, even under `mode=static`, so step 1 is a
+real rehearsal: a malformed subject binding, an unserviceable algorithm or a missing decision fails
+there rather than at the flip. Only the *token file* is conditionally loaded, because loading it has
+a side effect that must not happen while it is standing down (see production, below).
+
+Two limits, stated because discovering them mid-cutover is the expensive way:
+
+- **`RECALL_ENV=production` cannot run step 1.** Production refuses the static token file outright,
+  and under `mode=static` that file is the active mechanism, so the rehearsal step is refused on
+  every transport including stdio. A production host still swaps in one revision; stage the cutover
+  somewhere the token file is allowed, and treat production as the flip alone.
+- **Rollback needs two things kept.** Flipping `mode` back to `static` is a rollback only while the
+  token file still exists, so do not remove it until you have renounced rollback. Set
+  `RECALL_AUTH_ISSUER_URL` explicitly for the duration too, rather than leaning on the OIDC default;
+  it is defaulted from the OIDC block whenever one is present, but an explicit value is one less
+  thing that changes meaning when the mode does.
+
+Without `RECALL_AUTH_MODE`, both-set still refuses. The guard was never wrong, only too broad.
 
 ### Why the tenant list is mandatory
 
@@ -176,23 +206,49 @@ is not forged merely because initech was never provisioned here — but admittin
 store for a namespace no operator configured, which is RE-call creating tenants on the say-so of a
 third party. A token naming an unlisted tenant is refused with reason `tenant_not_allowed`.
 
-### What the allowlist does not do
+### Who may name a tenant: one of these two is required
 
-It bounds **which** tenants exist. It does not bind **who** may name one. Any subject that can
-obtain a token from your issuer carrying `aud = RECALL_OIDC_AUDIENCE` reaches whichever provisioned
-tenant its `tenant` claim names, because nothing here correlates `sub` with `tenant`.
+The allowlist bounds **which** tenants exist. It does not bind **who** may name one: nothing
+correlates `sub` with `tenant`, so on its own, any subject that can obtain a token from your issuer
+with `aud = RECALL_OIDC_AUDIENCE` reaches whichever provisioned tenant its claim names.
 
-So the security of the whole scheme rests on a property of your IdP, and it is worth stating
-plainly: **the `tenant` claim must be minted by the IdP from an authoritative subject-to-organisation
-mapping.** If it can be set from a user-editable profile attribute, a client-requested claim, or a
-self-service app registration, then it is caller-controlled, and a caller-controlled claim selecting
-the RLS namespace is a cross-tenant read. The `azp` check covers only the multi-audience case; a
-same-audience token from another subject of the same IdP is indistinguishable from a legitimate one.
+The server therefore **refuses to boot** unless you answer the question one way or the other.
 
-That check runs **after** signature verification, deliberately. Ahead of it, the reply would
-differ between a forged token naming a real tenant (`bad_signature`) and one naming an unknown
-tenant (`tenant_not_allowed`), which enumerates your tenant list to a caller holding no credential
-at all.
+**Either pin the mapping here.** A subject reaching a tenant it is not bound to is refused with
+`subject_tenant_mismatch`, even though the tenant is provisioned and the token is genuine:
+
+```bash
+RECALL_OIDC_SUBJECT_TENANTS=alice@corp:acme,svc-etl:globex
+```
+
+Repeat a subject to give it several tenants (`svc-etl:acme,svc-etl:globex`). A subject absent from
+the map is refused with `subject_not_bound`, and with a binding configured a token carrying no
+`sub` is refused outright, because `sub` is the lookup key.
+
+**Or declare that your IdP is authoritative for the claim:**
+
+```bash
+RECALL_OIDC_TRUST_TENANT_CLAIM=1
+```
+
+This is a legitimate and common deployment, and it means exactly one thing: **the `tenant` claim is
+minted by the IdP from an authoritative subject-to-organisation mapping.** If it can be set from a
+user-editable profile attribute, a client-requested claim, or a self-service app registration, then
+it is caller-controlled, and a caller-controlled claim selecting the RLS namespace is a cross-tenant
+read. The `azp` check covers only the multi-audience case; a same-audience token from another
+subject of the same IdP is indistinguishable from a legitimate one.
+
+Setting both refuses to boot: they answer the same question differently, and whichever won, the
+other would sit in the configuration looking effective.
+
+The binding is checked **after** signature verification, for the same reason the tenant allowlist
+is: ahead of it, a forged token would answer "is this a known subject here?" for a caller holding
+no credential.
+
+The **allowlist** check runs after signature verification for the same reason. Ahead of it, the
+reply would differ between a forged token naming a real tenant (`bad_signature`) and one naming an
+unknown tenant (`tenant_not_allowed`), which enumerates your tenant list to a caller holding no
+credential at all.
 
 ### Rejection reasons
 

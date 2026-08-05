@@ -26,6 +26,7 @@ from recall_mcp.auth import (
     SCOPE_READ,
     SCOPE_WRITE,
     AuthConfigError,
+    ENV_TOKENS_FILE,
     TokenRegistry,
     authorize,
     token_registry_from_env,
@@ -38,6 +39,7 @@ from recall_mcp.oidc import (
     IdentityProviderUnavailable,
     OidcValidator,
     TokenRejected,
+    oidc_env_present,
     oidc_validator_from_env,
 )
 from recall_mcp.service import (
@@ -291,24 +293,75 @@ def build_auth(
     - `RECALL_OIDC_ISSUER` (with `RECALL_OIDC_AUDIENCE` and `RECALL_OIDC_TENANTS`) — identity from
       an external provider. With this set, `RECALL_AUTH_ISSUER_URL` defaults to the provider.
 
-    Both together raises: they are two trust models, and whichever won silently, the other would
-    sit in the configuration looking effective.
+    Both together raises **only when `RECALL_AUTH_MODE` is unset**. They are two trust models, so
+    an undeclared precedence means one of them sits in the configuration looking effective;
+    declaring it with `RECALL_AUTH_MODE=oidc|static` is a choice, and it is what makes a staged
+    cutover possible. A mode naming a mechanism that is not configured also raises, as does a mode
+    outside that pair.
+
+    Only the SELECTED mechanism is constructed. The OIDC block is still validated whenever it is
+    present, because doing so has no side effect and step 1 of a cutover is supposed to rehearse
+    it; the token file is not, because `load_token_registry` refuses under `RECALL_ENV=production`
+    and that refusal must not fire for a file that is standing down.
     """
     e = env if env is not None else dict(os.environ)
-    # Both are read BEFORE any transport branch, so a conflicting pair is refused on stdio too.
-    # Deferring the conflict to whenever someone first starts an HTTP listener would let a
-    # misconfiguration sit in a chart looking fine until the day it decides which trust model
-    # applies.
-    validator = oidc_validator_from_env(e)
-    registry = token_registry_from_env(e)
+    # Presence is decided from the ENV KEYS, before either mechanism is built, because building
+    # one can raise for its own reasons: `load_token_registry` refuses under RECALL_ENV=production,
+    # and that fired before the selector could say "we are not using the token file", which is
+    # exactly the state a production cutover passes through.
+    # `oidc_env_present` rather than a raw key read: it also refuses a PARTIAL block, and that
+    # check must not depend on whether we go on to build a validator (SEC-001).
+    has_oidc = oidc_env_present(e)
+    has_static = bool(e.get(ENV_TOKENS_FILE, "").strip())
 
-    if validator is not None and registry is not None:
+    mode = e.get("RECALL_AUTH_MODE", "").strip().lower()
+    if mode and mode not in {"oidc", "static"}:
         raise AuthConfigError(
-            f"{ENV_ISSUER} and RECALL_AUTH_TOKENS_FILE are both set, and this server will not "
-            f"choose between them. They are two trust models: one where the IdP owns revocation, "
+            f"RECALL_AUTH_MODE={mode!r} is not a valid mode; expected one of oidc, static"
+        )
+    if mode == "oidc" and not has_oidc:
+        raise AuthConfigError(f"RECALL_AUTH_MODE=oidc but {ENV_ISSUER} is not set")
+    if mode == "static" and not has_static:
+        raise AuthConfigError(f"RECALL_AUTH_MODE=static but {ENV_TOKENS_FILE} is not set")
+
+    if has_oidc and has_static and not mode:
+        # The ambiguity guard, narrowed rather than removed. Refusing was right when nobody chose;
+        # it also made the cutover atomic, because the intermediate state of a staged rollout is
+        # precisely "both configured". Declaring precedence is a choice, so it is allowed; leaving
+        # it undeclared still is not.
+        raise AuthConfigError(
+            f"{ENV_ISSUER} and {ENV_TOKENS_FILE} are both set, and this server will not "
+            f"guess between them. They are two trust models: one where the IdP owns revocation, "
             f"expiry and rotation, and one where a static shared secret is valid until somebody "
-            f"edits a file. Whichever won silently, the other would sit in the configuration "
-            f"looking effective. Unset one."
+            f"edits a file. Set RECALL_AUTH_MODE=oidc or =static to declare which is active "
+            f"(that is the supported way to stage a cutover), or unset one of them."
+        )
+
+    use_oidc = has_oidc and mode != "static"
+
+    # The OIDC block is VALIDATED whenever it is present, even when static is selected, and only
+    # the static side is conditionally loaded. The asymmetry is the point (SEC-002):
+    #
+    # - Loading the token file has a side effect that must not happen when it is standing down:
+    #   `load_token_registry` refuses under RECALL_ENV=production, which would abort the very
+    #   cutover the selector exists to enable.
+    # - Building the OIDC config has NO such effect. It performs no network IO by design, so
+    #   skipping it buys nothing and costs the whole point of cutover step 1, which docs/AUTH.md
+    #   describes as "add every OIDC variable, change nothing. Verify." Unparsed, a malformed
+    #   subject binding or algorithm list would surface only at the step-2 flip, which is the
+    #   moment with the least rollback slack.
+    oidc = oidc_validator_from_env(e) if has_oidc else None
+    validator = oidc if use_oidc else None
+    registry = token_registry_from_env(e) if not use_oidc else None
+
+    if has_oidc and has_static:
+        # Precedence was declared, so the refusal no longer carries the warning. The log has to.
+        inactive = ENV_TOKENS_FILE if use_oidc else ENV_ISSUER
+        _log.warning(
+            "both authentication mechanisms are configured; RECALL_AUTH_MODE=%s is active, so "
+            "%s is set but NOT enforcing anything. Remove it once the cutover has settled.",
+            "oidc" if use_oidc else "static",
+            inactive,
         )
 
     configured = validator is not None or registry is not None
@@ -319,9 +372,10 @@ def build_auth(
         # unused" leaves them checking both.
         if registry is not None:
             _log.warning(
-                "RECALL_AUTH_TOKENS_FILE is set but transport is %r — stdio has no remote "
+                "%s is set but transport is %r — stdio has no remote "
                 "caller to authenticate, so the tokens are unused and the single tenant "
                 "RECALL_TENANT=%r applies. Set RECALL_TRANSPORT=streamable-http to use them.",
+                ENV_TOKENS_FILE,
                 transport,
                 TENANT,
             )
@@ -348,6 +402,13 @@ def build_auth(
     # With an IdP there is exactly one right answer for the metadata issuer, and requiring an
     # operator to restate it is a chance to state it differently — at which point clients are
     # directed to a provider that did not sign the tokens this server accepts.
+    # Defaulted from the OIDC block ONLY when OIDC is the selected mechanism. Defaulting whenever
+    # a block was merely present (the first attempt at DEPLOY-004's rollback asymmetry) advertised
+    # the IdP as this resource's authorization server while static bearer tokens were the thing
+    # actually enforcing — sending clients to a provider whose tokens this server would refuse,
+    # which is the exact misdirection the paragraph below exists to prevent. The rollback
+    # asymmetry is real and is answered in docs/AUTH.md by keeping RECALL_AUTH_ISSUER_URL set
+    # explicitly for the duration of a cutover; a wrong default is worse than a required value.
     issuer = e.get("RECALL_AUTH_ISSUER_URL") or (
         validator.config.issuer if validator is not None else ""
     )

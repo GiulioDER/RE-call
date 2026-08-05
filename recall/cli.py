@@ -717,9 +717,12 @@ def main(argv: list[str] | None = None) -> None:
                 # which the MANIFEST answers and chunk rows do not: an object that chunks to
                 # nothing is built as `empty_objects` and writes no row, yet is unquestionably
                 # part of the corpus and must be erasable.
+                # Scoped to `requested`, and the SAME call the MCP surface makes. Asking the
+                # wholesale question here instead put the two surfaces on separate copies of
+                # the live-state list, and only this one was pinned by a test.
                 known = (
                     gen_store.sources_in_any_generation()
-                    | gen_store.sources_in_any_manifest()
+                    | gen_store.manifest_uris_matching(list(requested))
                     | gen_store.sources_in_legacy_table()
                 )
                 targets = [s for s in requested if s in known]
