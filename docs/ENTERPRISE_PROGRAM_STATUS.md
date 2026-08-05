@@ -22,8 +22,8 @@ before that change can go green.
 | 3 | Resource bounds: one reranker per worker, thread limits, bounded queues, rejection **before** embedding, separate fast/quality concurrency | done; the rejection ordering was already right and is now proven, the rest was not |
 | 4 | Result surface: profile, generation, pool size, rerank flag, and all seven stage timings | done, `evidence_assembly` was the missing bracket |
 | 5 | Safety: dense cosine preserved, no query or corpus text in logs | done, with a positive control on the detector |
-| 6 | Prove every new test can fail | done, **48 of 48 mutations killed** |
-| 7 | CCA audit at DEEP, and act on it | done; **it invalidated the first version of item 3** and is reported first, below |
+| 6 | Prove every new test can fail | done, **54 of 54 mutations killed**, all as clean assertion failures |
+| 7 | CCA audit at DEEP, plus the anti-regression and architect gates | done; **the audit invalidated the first version of item 3**, and the two gates then found six more, one of them inside the audit fix. Reported first, below |
 
 This is backlog session 9 (items 25 to 28) plus the parts of areas 4, 5 and 6 the gap matrix marked
 untested. Backlog item 29 (the reranker's `local_files_only` / `artifact_sha256` offline path and
@@ -70,7 +70,7 @@ and the application of it tested separately, because asserting an invariant is n
 | A failed reranker construction was retried on every request, re-hashing the model tree | CONFIRMED | fixed, failures are cached |
 | `recall_retrieval_total_ms` was success-only | CONFIRMED | fixed, observed on every exit plus `recall_retrieval_failed_total` |
 | Legacy's 24-day sentinel shipped to clients as `latency_budget_ms` | CONFIRMED | fixed, `null` when no budget is enforced |
-| Running-slot leak in the one-bytecode window between acquire and its store | CONFIRMED | fixed, ownership flag rather than control flow |
+| Running-slot leak in the window between acquire and its store | CONFIRMED | **NOT closed.** An ownership flag was added and the anti-regression gate then showed the branch cannot fire: CPython's exception table makes the acquire call the only interruptible point, where the flag is still false, and the real window is inside `Semaphore.acquire`. The guard is kept (correct, free) and the claim is withdrawn |
 | `RECALL_RERANK_THREADS` documented as general; only read on quality | CONFIRMED | doc fixed, behaviour unchanged |
 | Docs claimed model+revision are pinned; only the digest is enforced | CONFIRMED | doc fixed, and the tree-vs-model limit stated |
 | `.env.example` blank keys break a rollback to the previous parser | CONFIRMED | keys commented out; rollback note in the CHANGELOG |
@@ -84,6 +84,29 @@ configurations, and **false of the fifth**: before this change the operator's di
 straight to `verify_artifact`, so a quality deployment whose digest correctly described its *own*
 reranker tree started **and served every request**. It is now a breaking change for that
 deployment, and the CHANGELOG says so.
+
+### The two remaining gates then found six more, including one in the audit fix itself
+
+The anti-regression gate (`differential-review` over the fix diff) and the architect gate both
+returned **REVISE**. Running them mattered: three of their six findings are in code the audit
+itself never saw, which is this program's own lesson that **a fix can promote a dormant defect, so
+the audit goes after as well as before**.
+
+| Finding | Verdict | Outcome |
+|---|---|---|
+| **The `k` clamp had no test.** It is the entire mechanism behind "a client cannot request a more expensive profile", newly advertised in three documents, and deleting it left all 2345 tests green | CONFIRMED | fixed: a test with a legacy arm, so it discriminates the clamp rather than a small store |
+| **A shed request was counted as a failure and injected its budget-length wait into the served-latency histogram.** Measured by the reviewer, reproduced here | CONFIRMED | fixed: `RetrievalOverloaded` is matched before the general handler, so a shed appears only in `recall_retrieval_rejected_total`. It would otherwise have contaminated the p95 this program is blocked on, in exactly the overload regime that matters |
+| **Sizing the pool from the profile removed anyio's 40 as an accidental thread ceiling**, making `RECALL_SEARCH_QUEUE` an unvalidated thread-count knob (`=5000` would ask for 5008 threads) | CONFIRMED | fixed: `MAX_ADMISSION_CAPACITY = 256`, refused at resolution |
+| **Re-raising one cached exception instance grows its traceback per call**, and each retained frame pins its locals, which on this path include the query text | CONFIRMED, measured (4 → 7 → 10 → 13 → 16 frames) | fixed: cache `(type, args)` and raise a fresh instance. This was also a safety defect, not only a leak |
+| **`except BaseException` cached a `KeyboardInterrupt`**, turning a transient event into a process-lifetime outage | CONFIRMED | fixed: narrowed to `Exception` |
+| **`inference_threads` was plumbed but never shown to reach the reranker** | CONFIRMED | fixed: a recording stub asserts the kwarg, without needing the `rerank` extra |
+| `.env.example` rollback premise ("no version parses these keys strictly") | **REFUTED** | `git show 98f2a85:recall/profiles.py` parses them strictly, and the deployed VPS2 wheel is built from an ancestor. The fix stands; the CHANGELOG wording now says which builds are affected rather than implying released ones |
+
+**And one claim of mine was withdrawn rather than softened.** The ownership flag added for the
+running-permit leak **cannot fire**: CPython's exception table makes the acquire call the only
+interruptible point in that block, where the flag is still false, and the real window lives inside
+`Semaphore.acquire`. I had recorded that leak as fixed. It is not. The guard is kept because it is
+correct and free, and the claim is gone from the code comment, this document and the table above.
 
 ### What the audit surfaced and this session did NOT fix
 
@@ -155,8 +178,16 @@ every request forever while reporting itself merely busy; partial leakage degrad
 32 leaks a fast process still serves 8 concurrent requests, with no queue depth left.) It was
 unreachable before (nothing could fail between the two acquisitions) and would have become
 reachable the moment the timeout was added. The release is now explicit on every failure path,
-including `BaseException`, and the running permit is released too when it was acquired but not yet
-recorded.
+including `BaseException`.
+
+⚠️ **The running-permit half of this is NOT fixed, and the anti-regression gate is what caught the
+overclaim.** An ownership flag was added so the handler could release the running permit too. The
+gate then showed the branch cannot fire: CPython's exception table makes the acquire call the only
+interruptible point in that block, where the flag is still false, and the actual window lives
+inside `Semaphore.acquire` between its counter decrement and its return, which is not reachable
+from calling code. The flag is kept because it is correct and free, but **a guard that reads as
+protection and cannot fire is exactly what this program refuses to count**, so the claim is
+withdrawn rather than softened. The queue-permit leak, which was the reachable one, is closed.
 
 The test that pins it discriminates on the *reason* of a second rejection, not on a count: a leaked
 slot makes the next attempt `queue_full` without waiting, and only a returned slot lets it reach the
@@ -238,9 +269,9 @@ numbers taken from VPS2 here are checksums.
 |---|---|
 | `ruff check .` | clean |
 | `mypy` | clean, 139 source files |
-| `pytest -q` | **2310 passed, 35 skipped, 0 failed** (7 m 57 s), against a throwaway pgvector container on port 5437 |
-| Mutation sweep | **48 of 48 killed** (47 of 48 on the first pass; see below) |
-| CCA audit | DEEP tier, 10 auditors, **2 died mid-run** (see the audit section) |
+| `pytest -q` | **2316 passed, 35 skipped, 0 failed** (7 m 48 s), against a throwaway pgvector container on port 5437 |
+| Mutation sweep | **54 of 54 killed** (two repairs along the way; see below) |
+| CCA audit | DEEP tier, 10 auditors, **2 died mid-run**; anti-regression and architect gates both REVISE, then satisfied |
 
 The suite ran against a container created for this session rather than the shared dev database on
 5432, following the previous entry's finding that a test database provisioned before #196 must be
@@ -259,7 +290,7 @@ operator, not by the suite: nothing tests `.env.example` against the parser.
 
 ### Proving the tests can fail
 
-48 mutations, one narrow change each, across `profiles.py`, `service.py`, `server.py`, `rerank.py`,
+54 mutations, one narrow change each, across `profiles.py`, `service.py`, `server.py`, `rerank.py`,
 `retriever.py` and one against the test file's own leak detector. The harness aborts the entire run
 if a search string is absent or occurs more than once, and it restores by **bytes** rather than
 `write_text`, which is what left ten files spuriously dirty last session. A final pass asserts every
@@ -270,8 +301,14 @@ all. `the budget is charged twice, wait included` survived: the fixture queued a
 and then ran a microsecond search, so even with the wait charged the total stayed inside the 250 ms
 budget and a double-charging implementation passed. The fixture now queues ~150 ms **and** does
 ~150 ms of work, so wait plus work crosses the budget while the work alone does not, and it asserts
-both halves of that so a future edit cannot quietly return it to the vacuous shape. 48 of 48 after
-the repair.
+both halves of that so a future edit cannot quietly return it to the vacuous shape.
+
+**And one "kill" was not a kill.** `an interrupt during a cold build poisons the cache` reported
+red, but the run said `no tests ran`: the mutated code let a `KeyboardInterrupt` escape the test,
+which aborts the pytest session rather than failing an assertion. **A session that never finished
+is not evidence a test can fail** — the same class as a guard that is silent for an unrelated
+reason. The test now catches it explicitly and calls `pytest.fail`, so the mutation produces a red
+test. All 54 kills are clean assertion failures.
 
 Three others are worth naming because they separate a real guard from a description:
 

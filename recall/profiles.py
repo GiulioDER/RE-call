@@ -13,6 +13,15 @@ RetrievalProfileName = Literal["legacy", "fast", "quality"]
 #: must never reach a client as a number — see `RetrievalProfile.enforced_budget_ms`.
 NO_BUDGET_SENTINEL_MS = 0x7FFFFFFF
 
+#: Ceiling on `max_concurrency + queue_capacity`, refused at resolution.
+#:
+#: This exists because the MCP server sizes its worker pool FROM the profile. Before it did,
+#: anyio's 40-token default was an accidental but real ceiling on how many OS threads the search
+#: path could occupy; sizing the pool from the profile removes that ceiling and would otherwise
+#: turn `RECALL_SEARCH_QUEUE` into an unvalidated thread-count knob. 256 is far above any
+#: plausible per-process retrieval concurrency and far below a number that would exhaust a host.
+MAX_ADMISSION_CAPACITY = 256
+
 
 @dataclass(frozen=True)
 class RetrievalProfile:
@@ -135,14 +144,22 @@ def resolve_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
             raise ValueError(f"{name} must be positive")
         return parsed
 
+    max_concurrency = _positive("RECALL_SEARCH_CONCURRENCY", base.max_concurrency)
+    queue_capacity = _positive("RECALL_SEARCH_QUEUE", base.queue_capacity)
+    if max_concurrency + queue_capacity > MAX_ADMISSION_CAPACITY:
+        raise ValueError(
+            f"admission capacity {max_concurrency + queue_capacity} exceeds the "
+            f"{MAX_ADMISSION_CAPACITY} limit. The worker pool is sized from this number, so an "
+            f"unbounded queue would be an unbounded thread count."
+        )
     return RetrievalProfile(
         name=base.name,
         candidate_k=base.candidate_k,
         returned_k=base.returned_k,
         reranker=base.reranker,
         latency_budget_ms=base.latency_budget_ms,
-        max_concurrency=_positive("RECALL_SEARCH_CONCURRENCY", base.max_concurrency),
-        queue_capacity=_positive("RECALL_SEARCH_QUEUE", base.queue_capacity),
+        max_concurrency=max_concurrency,
+        queue_capacity=queue_capacity,
         inference_threads=(
             _positive("RECALL_RERANK_THREADS", 1) if base.reranker else None
         ),
@@ -217,9 +234,15 @@ class RetrievalAdmission:
         # still serves `max_concurrency` concurrent requests, with no queue depth left.)
         #
         # `admitted` is bound BEFORE the acquire so the handler can tell "never acquired" from
-        # "acquired". An asynchronous exception (a signal on the main thread) can land between
-        # the acquire returning and its result being stored, and releasing only `_slots` there
-        # would leak the running permit instead, which is the same permanent loss one line down.
+        # "acquired", and releases the running permit in the second case.
+        #
+        # ⚠️ Honest limit: this does NOT close the interrupt window, and a later reader should not
+        # believe it does. CPython's exception table for this block puts the only interruptible
+        # point at the acquire call itself, where `admitted` is still False, so the branch below
+        # cannot currently fire. The real window is INSIDE `Semaphore.acquire`, after it
+        # decrements its counter and before it returns, which is not reachable from here. The
+        # guard is kept because it is correct and costs nothing if CPython's codegen changes; it
+        # is not a fix, and the residual leak is recorded in ENTERPRISE_PROGRAM_STATUS.md.
         admitted = False
         try:
             admitted = self._running.acquire(

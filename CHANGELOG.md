@@ -92,8 +92,15 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
   ⚠️ **Rollback note.** `RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` are now **commented
   out** in `.env.example` rather than present-and-blank, because an empty value is read as unset by
-  this release and as a malformed integer by earlier ones. An `.env` copied from an intermediate
-  form of this file with those keys present-and-blank will fail every search after a rollback.
+  this change and as a malformed integer by every build before it (`_positive` treated only an
+  absent key as unset). No *released* version reads these keys at all, so published-package users
+  are unaffected; the exposure is a rollback to an earlier build of the unreleased enterprise work,
+  which is what this program's own deployment runs.
+
+- **`max_concurrency + queue_capacity` is now capped at 256** and a larger value refuses at
+  resolution. Sizing the worker pool from the profile removed anyio's 40-token default as an
+  accidental ceiling on process thread count, which would otherwise have made
+  `RECALL_SEARCH_QUEUE` an unvalidated thread-count knob.
 
   ⚠️ These values are a policy choice, not a measurement. Latency for this program is PENDING for
   want of an idle reference host.
