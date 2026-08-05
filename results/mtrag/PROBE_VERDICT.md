@@ -44,8 +44,8 @@ within-file contrast, and none of them is a claim about parity with a published 
 |---|---|---|---|
 | **P1** | median length ratio > 2.0 | **1.096** (mean 1.702) | **FALSIFIED** |
 | **P2** | RougeL is the min component > 70% | **99.0%** of 7,578 | **CONFIRMED** |
-| **P3** | RB_alg gap ≥ +0.10 by length band | **+0.1529** | **CONFIRMED** |
-| **P4** | correct IDK scores exactly 1.0 | **120/120 = 100%** | **CONFIRMED** |
+| **P3** | RB_alg gap ≥ +0.10 by length band | **+0.1529**, but **+0.078** once answerability conditioning is controlled (see correction) | **CONFIRMED as specified, interpretation corrected** |
+| **P4** | correct IDK scores exactly 1.0 | **72/72 model cells = 100%** (the 120/120 first published here pooled in 48 reference-model cells; see correction) | **CONFIRMED** |
 | **P5** | re-expression lifts RB_alg ≥ +0.10 | **not run, premise dead** | **WITHDRAWN** |
 
 ### P1 falsified: the models are not verbose
@@ -79,9 +79,64 @@ toward the reference length. And because the reference length is unknown at infe
 it means *predicting* the right length from the question and passages, which is a harder problem
 than the one P5 proposed to solve.
 
-**Ceiling:** if every response sat in the Q2 band, mean RB_alg would move from ~0.391 to 0.459,
-about **+0.068**. Applied to MTRAG-UN's published gpt-oss-120b row that is a harmonic mean of
-**0.545**, against the SemEval rank-1 of **0.586**. Length calibration alone does not win.
+#### CORRECTION, 2026-08-05: about half of that gap is the conditioning, not length
+
+The figures above use the **composite** RB_alg, which the answerability conditioning sets to 0 on
+a wrong IDK call. That control was not specified in the pre-registration and was not applied when
+this file was first committed (`1a6b189`). It should have been. Applying it:
+
+| band | zeroed-composite rate | UNANSWERABLE instances |
+|---|---|---|
+| Q1 shortest | 15.2% | 39 |
+| Q2 | 1.4% | 22 |
+| Q3 | 1.9% | 38 |
+| **Q4 longest** | **20.7%** | **396** |
+
+The longest quartile carries roughly ten times the unanswerable instances of any other band.
+**Models write long when they should have abstained**, and the short tail is largely IDK answers
+given to answerable questions. The inverted U is substantially the abstention gate wearing a
+length costume.
+
+P3 re-run with conditioning controlled:
+
+| subset | n | gap (near-1.0 minus Q4) |
+|---|---|---|
+| (a) all instances, **as preregistered** | 7,578 | **+0.1529** |
+| (b) ANSWERABLE tasks only | 6,381 | +0.0782 |
+| (c) composite > 0 only | 6,835 | +0.0755 |
+| (d) ANSWERABLE and composite > 0 | 6,146 | +0.0807 |
+
+**P3 stands as literally preregistered** (+0.1529 against a ≥0.10 prediction), because the
+pre-registration specified the contrast over all instances. **Its interpretation does not.** The
+length-only effect is roughly half the headline.
+
+**Corrected ceiling.** On subset (d), where conditioning cannot fire, overall mean RB_alg is
+0.4265 and the best band is 0.4617, so perfect length calibration is worth **+0.0352**, not the
++0.0679 first published here. **48% of the original figure was conditioning.** Applied to
+MTRAG-UN's published gpt-oss-120b row it gives a harmonic mean of **0.526** against the SemEval
+rank-1 of **0.586**. Length calibration alone does not win, and it loses by more than this file
+first said.
+
+**Two further corrections from the `bug-auditor` pass, both of which widen this into a range.**
+
+*The ceiling statistic is upward-biased by construction.* It takes the maximum of four band means
+minus the overall mean, which is positive even under the null. A 200-draw permutation null,
+shuffling only the length-ratio column, gives a null mean of +0.0037 on subset (d) and +0.0049 on
+(a), with p = 0.000 in both cases. The effect is real and highly significant, but the
+**bias-corrected** ceiling on (d) is **+0.0315**.
+
+*Subset (d)'s `composite > 0` filter is itself confounded.* It deletes exactly the
+wrongly-abstained-on-answerable cells that this correction identifies as the short tail. The
+unfiltered control, ANSWERABLE tasks with no composite filter, was computed for the gap but never
+for the ceiling. It gives **+0.0500**.
+
+**So the honest length-calibration ceiling is a range, +0.032 to +0.050, not a point.** Every value
+in it leaves the harmonic mean short of 0.586. The conclusion is unchanged; the precision claimed
+for it was not warranted.
+
+**This correction strengthens §2 rather than weakening it.** Length is not the lever; it is a
+*symptom* of the lever. That also makes response length a candidate **feature** for an
+unanswerability detector, which is a finding this probe was not looking for.
 
 ### P5 withdrawn, not redefined
 
@@ -92,7 +147,13 @@ question's name. A new lever needs a new pre-registration.
 ## 2. What P4 actually exposed
 
 A correct IDK on an UNANSWERABLE task scores **exactly 1.0 on `rl_f`, `rb_llm` and `rb_agg`
-simultaneously**, in 120 of 120 cells. Not "high". Exactly 1.0.
+simultaneously**, in **72 of 72 real-model cells**. Not "high". Exactly 1.0.
+
+> **CORRECTION, 2026-08-05.** This was first published as "120 of 120". That loop was the only one
+> of the five scripts without a `Target` guard, so it pooled 48 reference-answer cells in with the
+> 72 model cells. Found by a `bug-auditor` pass on the staged diff and confirmed against the file.
+> **The claim is unaffected** (72/72 models and 48/48 Target both score exactly 1.0, zero
+> exceptions) but the denominator was inflated 40% and the reportable figure is 72.
 
 And the published baselines are very bad at it:
 
@@ -116,9 +177,17 @@ touching nothing else is worth **+0.0595** mean harmonic mean, on a set where UN
 **6.5%** of tasks.
 
 On MTRAG-UN, UNANSWERABLE is **19.1%**, a 2.93× share, plus PARTIAL at 9.3% and UNDERSPECIFIED at
-15.4%. A naive linear scale gives +0.174, **but linear scaling is an approximation and not a
-measurement**, and MTRAG-UN is held out. The honest statement is directional: the lever is worth
-several times more there than the +0.0595 measured here.
+15.4%. A naive linear scale gives **+0.174 to +0.206** depending on the denominator, **but linear scaling
+is an approximation and not a measurement**, and MTRAG-UN is held out. The honest statement is
+directional: the lever is worth several times more there than the +0.0595 measured here.
+
+> **CORRECTION, 2026-08-05.** This first quoted a single +0.174, computed as 97/507 against
+> MTRAG's 55/842. Those denominators are inconsistent: MTRAG carries **no UNDERSPECIFIED bucket
+> at all** (verified: ANSWERABLE 709, PARTIAL 68, UNANSWERABLE 55, CONVERSATIONAL 10), while
+> MTRAG-UN's 507 includes 78 UNDERSPECIFIED tasks that are scored by a separate clarification
+> judge and **excluded from these three metrics**. On matched denominators the share is 97/429 =
+> 22.6%, a 3.46× ratio, and the scale is +0.206. The two bracket the answer rather than pinning
+> it, which is what the range now says.
 
 **What clears the bar,** on MTRAG-UN's published gpt-oss-120b RAG row (0.59 / 0.65 / 0.37,
 HM 0.5054):
@@ -159,5 +228,26 @@ per unit of effort than anything that moves RB_alg alone.
 - The abstention ceiling is an oracle bound. It assumes a perfect unanswerability detector and so
   is an upper limit, not a forecast. **How much of it a real detector recovers is unmeasured**,
   and that is the next pre-registration, not a conclusion of this one.
+- **P3's original interpretation was wrong and is corrected in §1.** The pre-registration did not
+  specify controlling for the answerability conditioning, and the first commit of this file did
+  not apply it. The length-only effect is about half the headline, and the ceiling drops from
+  +0.068 to +0.0352. The uncorrected figures are preserved above rather than rewritten.
+- The length ratio uses my own tokenizer, mirroring `run_algorithmic.py:normalize_text`. It is
+  used for **binning only** and is not the tokenizer any scorer uses.
+- **`Bert-Rec` is no longer an assumption.** It was first published as an unconfirmed inference
+  from the export's naming. `hm(RougeL, (Bert-Rec+1)/2, (Bert-KPrec+1)/2)` now reconstructs the
+  exported `rb_agg` on **7,446 of 7,446 unconditioned rows, 100.0%, within 1e-3**, which confirms
+  the naming, the rescaling and the component set at once. P2's attribution stands on measurement.
+
+### Audit trail
+
+A `bug-auditor` pass on the staged diff raised eleven findings. Checked against the file:
+**BUG-001** (P4 pooled the reference model) and **BUG-006** (mismatched scaling denominators) were
+real and are corrected above; **BUG-002** and **BUG-003** (ceiling selection bias and a confounded
+filter) were real and are answered with a permutation null and an unfiltered control; **BUG-004**
+(the invariant exited 0 on total lookup failure) and **BUG-010** (hard-coded header counts) were
+real and are fixed in the scripts; **BUG-011** turned out to be checkable and the check passed.
+**BUG-005** (multi-label answerability) and **BUG-007** (multi-reference targets) were **false
+positives**: all 842 tasks carry exactly one label and exactly one target, so neither can fire.
 - `Answerability` was read from the task metadata for stratification and diagnosis only, per §5 of
   the pre-registration. It reached no inference path, because nothing here performs inference.
