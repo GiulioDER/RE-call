@@ -103,6 +103,8 @@ boundary defined by one delimiter's exact spelling is inert against a variant sp
 | Injection baseline | **0 escapes over 52 trials**; positive control 12, negative control 0 escapes AND 0 preservation |
 | CCA audit | DEEP, 9 auditors, none died, 62 raw findings; `cca_checks` installed, so definedness / nullability / taint / type / clock_leak had a deterministic backend and two numeric findings carry `hypothesis` artifacts |
 | Second mutation sweep, over the AUDIT FIXES | **17 of 17 killed**; 4 survived the first pass, and the rate one survived TWICE |
+| Audit of the FIX BATCH (bug + anti-regression gates) | 7 findings, 2 SCOPE_CREEP, **0 REGRESSION_RISK**; two were defects the fixes introduced |
+| Third mutation round, over those fixes | 5 of 5 killed |
 | Full suite | **2627 passed, 3 failed, 13 skipped**; the 3 are `test_bench_systems.py`, failing identically on clean `origin/master` under the same DSN |
 
 **A second sweep, over the audit fixes, was needed and found four more.** A fix whose test was
@@ -125,6 +127,33 @@ abstain-consistency error was carried by a second, redundant error, so deleting 
 nothing; and `payload_preserved` read 13/13 on both live arms, so a version stuck at `True` looked
 identical to a working one. The last needed a **negative control** - a renderer that ships no
 evidence at all, which must score a perfect escape rate and zero preservation.
+
+### The fix batch had to be audited too, and it had introduced two defects
+
+This program's standing lesson is that a fix can promote a dormant defect. It did, and one of them
+is the sharpest thing in the session.
+
+**`injection_rate` reproduced the defect it was written to remove.** The helper that gave the rate's
+denominator its correct scope narrowed the DENOMINATOR to payload-carrying trials and left the
+NUMERATOR over every row. Marking all 52 trials escaped returned **1.333333** - a rate above one.
+Marking only the structurally inert arm escaped returned 0.333333, from thirteen attempts the
+module's own docstring says were never made. Neither test could see it, because both recomputed the
+identical asymmetric expression. The replacement test fabricates escapes rather than recomputing a
+formula, and the function asserts `0 <= rate <= 1` on the way out.
+
+**The `-k 0` traceback the batch claimed to fix was still there.** The clamp went into
+`_print_evidence`, but `trusted_search` refuses `k < 1` as its FIRST statement, two calls earlier,
+so the guard could never run for the invocation its own comment named.
+
+Three more were false statements of the class the batch had just corrected elsewhere: the new
+`UNCALIBRATED_NOTE` / `STALE_INDEX_NOTE` constants said they de-duplicated `search_memory`'s copies
+and `search_memory` was never wired to them; `_result_with`'s docstring still said "three carriers"
+inside the function the fourth was added to; and the CHANGELOG still said "all five" over six named
+fields.
+
+**Round 3 is where this converges, and that is the stopping rule.** Rounds 1 to 3 found 62, 7 and 0
+new defect classes. This project has recorded the same shape before: auditing a fix batch finds
+defects in the batch, and it converges at the third round.
 
 ### Decisions a reader should be able to reverse
 
