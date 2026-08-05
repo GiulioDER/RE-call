@@ -8,6 +8,56 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Added
+- **`recall-enterprise` grew the five subcommands its own machinery already needed**: `replay`,
+  `parity`, `readiness`, `status` and `retire`. `ControlPlane.replay_pending` previously had one
+  reference in the entire repository, its own definition, so a crash between a shadow migration's
+  outbox append and its completion left a pending event, `cutover` then refused forever, and the
+  documented recovery could not be invoked. `validate_generation_parity` and
+  `check_enterprise_readiness` were likewise reachable only from Python.
+
+  An operator names a GENERATION, never a table: every physical table is resolved from
+  `recall_index_generations` and revalidated on read. `status` projects ids and counts server side
+  and never selects a pending event's payload, which holds corpus text and vectors.
+
+- **Right-to-erasure now reaches the migration outbox.** While a shadow migration is in flight, a
+  pending event's payload holds the full text and vectors of its batch. `recall_forget` deleted
+  from both chunk tables and stopped there, so erased text remained in `recall_migration_events`
+  and a later `replay` would have written it back into both generations. The scrub is keyed on the
+  sources the CALLER named rather than on what still had rows, because the case that most needs it
+  is the one where a crash left the payload as the only copy. `ForgetResult` gained
+  `outbox_events_scrubbed` so "the outbox was swept" and "the outbox was never consulted" stop
+  looking alike on an irreversible path. The `recall forget` CLI remains single-generation and does
+  not scrub the outbox; on an enterprise deployment use the MCP tool.
+
+- Enterprise readiness verifies **both** schema ledgers. `recall_schema_versions` is
+  database-global and nothing checked it, so a process could boot against a control plane that was
+  behind or whose applied SQL no longer matched the shipped bytes. `recall-enterprise migrate` also
+  takes an advisory lock, matching `recall schema apply`. See `docs/MIGRATIONS.md`.
+
+### Changed
+- **BREAKING (enterprise): physical table identifiers are now an allowlist**,
+  `^[a-z_][a-z0-9_]{0,45}$`. The previous gate was `str.isidentifier()`, which accepts non-ASCII,
+  accepts uppercase that PostgreSQL folds to something else (so the registry row and the real table
+  diverge), and accepts names past the point where two rows collapse onto one truncated table. The
+  46-byte ceiling is set by the longest derived identifier, not by PostgreSQL's 63: every index and
+  policy suffixes the table name, and `_tenant_isolation` is 17 bytes, so a longer name yields a
+  truncated index that `readiness_facts` then reports as missing.
+
+  **A registry row created under the old rule will refuse to serve.** Run `recall-enterprise
+  status` before upgrading: it lists any non-conforming row with the reason instead of failing on
+  it.
+
+- **BREAKING (enterprise): a retired or failed generation cannot serve.** `StoreRegistry` refuses
+  one per request, and the operator CLI refuses to open one, which matters because `replay` writes
+  through that path. `recall-enterprise retire` confirms against one tenant's route, because
+  `recall_tenant_routes` carries forced row level security and no role in this deployment may
+  enumerate every tenant's routes; the per-request refusal is what actually protects a request.
+
+- `recall-enterprise` reads `RECALL_MIGRATION_DSN` for its DDL subcommands and `RECALL_SERVING_DSN`
+  for its read-only ones, both falling back to `RECALL_DSN`. `readiness` reports which role it
+  evaluated, because its row level security verdict is about the connection it was given.
+
 ### Changed
 - **BREAKING: retrieval fails closed when it cannot certify an answer.** `trusted_search` used to
   resolve calibration and then fall back to `cal = calibration or _UNCALIBRATED`, so a generation

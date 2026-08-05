@@ -133,6 +133,77 @@ def test_every_documented_subcommand_is_reachable() -> None:
     } <= choices
 
 
+def test_the_dsn_is_chosen_by_command_class(monkeypatch) -> None:
+    """A read-only subcommand must not run on the DDL credential, and vice versa.
+
+    `readiness` reports whether row level security constrains "the runtime database role", but
+    `check_rls_effective` reads `current_user` of the connection it was handed. Run on the
+    migration role, a green verdict certifies a credential that may never serve a request. Every
+    subcommand previously read one `RECALL_DSN`, which this repository defines two ways.
+    """
+    from recall.enterprise_cli import _SERVING_COMMANDS, _dsn
+
+    monkeypatch.setenv("RECALL_SERVING_DSN", "postgresql://serving@localhost/recall")
+    monkeypatch.setenv("RECALL_MIGRATION_DSN", "postgresql://migrating@localhost/recall")
+    monkeypatch.delenv("RECALL_DSN", raising=False)
+
+    for command in ("readiness", "status", "parity", "replay"):
+        assert "serving@" in _dsn(command), command
+    for command in ("migrate", "create-generation", "mark-ready", "set-route", "cutover", "retire"):
+        assert "migrating@" in _dsn(command), command
+
+    # The classification is not hand-maintained twice: every parser subcommand is in exactly one
+    # class, so a new one cannot silently default to the wrong credential unnoticed.
+    from recall.enterprise_cli import _parser
+
+    choices = set(_parser()._subparsers._group_actions[0].choices)
+    assert _SERVING_COMMANDS <= choices, _SERVING_COMMANDS - choices
+
+    # RECALL_DSN still works for single-variable deployments, both ways.
+    monkeypatch.delenv("RECALL_SERVING_DSN")
+    monkeypatch.delenv("RECALL_MIGRATION_DSN")
+    monkeypatch.setenv("RECALL_DSN", "postgresql://legacy@localhost/recall")
+    assert "legacy@" in _dsn("readiness")
+    assert "legacy@" in _dsn("migrate")
+
+    monkeypatch.delenv("RECALL_DSN")
+    with pytest.raises(SystemExit, match="RECALL_SERVING_DSN"):
+        _dsn("readiness")
+    with pytest.raises(SystemExit, match="RECALL_MIGRATION_DSN"):
+        _dsn("migrate")
+
+
+def test_status_names_an_unusable_registry_row_instead_of_dying_on_it(cli, capsys) -> None:
+    """The diagnostic must survive the thing it diagnoses.
+
+    The identifier allowlist validates on the way OUT, so a row written under the older
+    `str.isidentifier()` rule raises when read. Letting that escape made `status`, the one command
+    an operator would use to FIND the bad row, the command that crashes on it.
+    """
+    import json
+
+    bad = f"BadTable_{uuid.uuid4().hex[:6]}"  # uppercase: legal before, rejected now
+    with psycopg.connect(cli.dsn, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO recall_index_generations "
+            "(generation_id, physical_table, embedding_profile, dimension, state) "
+            "VALUES (%s, %s, 'profile-a', %s, 'ready')",
+            (f"g_legacy_{uuid.uuid4().hex[:8]}", bad, DIM),
+        )
+    try:
+        assert cli.run("status", "--json") == 0, "status died on a row it is meant to report"
+        report = json.loads(capsys.readouterr().out)
+        offenders = [r["physical_table"] for r in report["invalid_generations"]]
+        assert bad in offenders, report["invalid_generations"]
+        # And the valid rows are still listed, so the bad row does not hide the good ones.
+        assert cli.active_id in {g["generation_id"] for g in report["generations"]}
+    finally:
+        with psycopg.connect(cli.dsn, autocommit=True) as conn:
+            conn.execute(
+                "DELETE FROM recall_index_generations WHERE physical_table = %s", (bad,)
+            )
+
+
 def test_no_subcommand_accepts_a_physical_table_except_create_generation() -> None:
     """An operator names a GENERATION; the registry names the table.
 

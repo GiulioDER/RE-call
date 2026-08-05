@@ -9,7 +9,17 @@ values are committed in
 
 - `RECALL_SERVING_DSN`: unprivileged credential used by indexing, search, forget, and MCP.
 - `RECALL_MIGRATION_DSN`: schema-owner credential used only by `recall schema apply`.
-- `RECALL_DSN`: deprecated development fallback for the serving DSN.
+- `RECALL_DSN`: deprecated development fallback for BOTH, kept so single-variable
+  deployments keep working.
+
+`recall-enterprise` follows the same split. Its DDL subcommands (`migrate`,
+`create-generation`) read `RECALL_MIGRATION_DSN`; its read-only ones (`readiness`,
+`status`, `parity`, `replay`) read `RECALL_SERVING_DSN`; both fall back to `RECALL_DSN`.
+That split is load-bearing for `readiness`, which reports whether row level security
+constrains "the runtime database role": the check reads `current_user` of the connection
+it was given, so run on the migration role it would certify a credential that never
+serves a request. The command prints the role it evaluated, so the verdict names its own
+subject.
 
 Keep the two credentials distinct outside a disposable local database. The MCP process never reads
 the migration DSN.
@@ -43,7 +53,7 @@ enterprise control plane has both.
 | | `recall_schema_migrations` | `recall_schema_versions` |
 |---|---|---|
 | SQL | `recall/migrations/sql/0001…0011` | `recall/sql/001_enterprise_control_plane.sql` |
-| Applied by | `recall schema apply` (`RECALL_MIGRATION_DSN`) | `recall-enterprise migrate` (`RECALL_DSN`) |
+| Applied by | `recall schema apply` (`RECALL_MIGRATION_DSN`) | `recall-enterprise migrate` (`RECALL_MIGRATION_DSN`) |
 | Scope | per target table, plus a `__global__` bucket | database-global |
 | Checksums | committed in `recall/migrations/checksums.json` | computed from the shipped file |
 | Verified at startup | `check_schema` | `ControlPlane.ledger_state`, through readiness |

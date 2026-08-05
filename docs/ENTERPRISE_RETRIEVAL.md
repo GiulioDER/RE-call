@@ -10,7 +10,7 @@ Tenant routes never accept a physical table from a client. The runtime resolves 
 
 ## Operator sequence
 
-Set `RECALL_DSN` to the migration role connection, then apply the immutable migrations:
+Set `RECALL_MIGRATION_DSN` to the migration role connection, then apply the immutable migrations. (`RECALL_DSN` still works as a fallback for both credentials; see [MIGRATIONS.md](MIGRATIONS.md). Do not point it at the migration role on a serving host, because the MCP server falls back to it too.)
 
 ```console
 recall-enterprise migrate
@@ -54,9 +54,9 @@ recall-enterprise replay acme
 recall-enterprise parity acme
 ```
 
-`replay` opens only the generations the pending events name, resolving each physical table from `recall_index_generations`, and exits non-zero if anything is still pending afterwards. `parity` exits non-zero when the generations disagree on sources, raw content hashes or chunk counts, and also when either generation has an invalid required index or does not have row level security forced. `status` reports generations, the tenant's route and the outbox depth; it never prints a pending event's payload, which holds corpus text and vectors.
+`replay` opens only the generations the pending events name, resolving each physical table from `recall_index_generations`, and exits non-zero if anything is still pending afterwards. `parity` exits non-zero when the generations disagree on sources, raw content hashes or chunk counts, and also when either generation has an invalid required index or does not have row level security forced. `status` reports generations, the tenant's route and the outbox depth; it never prints a pending event's payload, which holds corpus text and vectors. It also lists any registry row whose `physical_table` the identifier allowlist rejects, rather than failing on it: such a row cannot serve, and the command an operator uses to find it must not be the command that dies on it. Run `recall-enterprise status` before upgrading.
 
-`readiness` runs the startup checks for one tenant without starting a server, and exits non-zero when any of them fails:
+`readiness` runs the startup checks for one tenant without starting a server, and exits non-zero when any of them fails. Run it with `RECALL_SERVING_DSN` set: its row level security verdict is about the role it connects as, and it prints that role so the result names its own subject.
 
 ```console
 recall-enterprise readiness acme
