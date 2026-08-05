@@ -517,9 +517,11 @@ production path fail closed when calibration is absent.
     "env": { "RECALL_SERVING_DSN": "postgresql://...", "RECALL_TENANT": "acme" } } } }
 ```
 
-Four tools: `recall_search` (verdict + confidence + provenance, or an explicit abstention),
-`recall_index`, `recall_forget` (permanently delete a source's chunks — irreversible,
-tenant-scoped), `recall_stats` (size, freshness, and the process metrics). Full guide →
+Five tools: `recall_search` (verdict + confidence + provenance, or an explicit abstention),
+`recall_evidence` (the same retrieval as a citable evidence bundle plus the prompt to answer it
+with — see below), `recall_index`, `recall_forget` (permanently delete a source's chunks —
+irreversible, tenant-scoped), `recall_stats` (size, freshness, and the process metrics). Full
+guide →
 [docs/USING_WITH_CLAUDE.md](https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md).
 
 ## Use it with LangChain or LlamaIndex
@@ -538,6 +540,14 @@ docs = retriever.invoke("what is the rate limit?")          # LlamaIndex: .retri
 Both adapters are **strict by default**, like everything else, and raise `TrustRefusal` when the
 gate cannot certify an answer. Pass `policy=TrustPolicy.development()` to `from_store` for local
 work against an uncalibrated corpus.
+
+Both also expose the **evidence boundary**, for when you are about to *answer* from memory rather
+than just retrieve from it. `retriever.evidence(query)` returns only the passages the trust layer
+cleared, in retrieval order, and `retriever.evidence_prompt(query)` renders them into a fixed
+library-authored system instruction plus a delimited, JSON-escaped data message — so corpus text
+reaches your model as data and never as an instruction. `recall.validate_answer` then checks the
+returned envelope structurally: at least one citation, every citation resolving to a supplied
+chunk id. It does **not** check that a cited passage supports the answer, and says so.
 
 Every document and node carries the trust and lineage identity in `metadata` —
 `recall_trust_state`, `recall_failure_code`, `recall_calibrated`, plus the tenant, generation,
