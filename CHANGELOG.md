@@ -41,6 +41,18 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   ⚠️ Two limits, in `docs/AUTH.md`: step 1 cannot run under `RECALL_ENV=production` (the token
   file is the active mechanism there and production refuses it), and rollback is a mode flip only
   while the token file still exists.
+- **The three deterministic context modes are now specified, enforced and tested rule by rule.**
+  `bge-small-context-document-v1`, `bge-small-context-section-v1` and
+  `bge-small-context-neighbor-v1` build embedding text separately from stored text. Named caps
+  (`TITLE_MAX_CHARS` 256, `SOURCE_MAX_CHARS` 256, `SECTION_MAX_CHARS` 512, `NEIGHBOR_MAX_CHARS`
+  200) and a labelled degradation ladder (`DEGRADATION_ORDER`: neighbour context dropped first,
+  section detail shortened then dropped, title detail last, the complete chunk always preserved)
+  replace the literals and the anonymous candidate list. 60 tests, one per rule, plus a
+  property-style test that raw chunk text and content hashes are byte-identical to the symmetric
+  baseline across five corpus shapes and, against real stored rows, across generations. See
+  [docs/ENTERPRISE_RETRIEVAL.md](docs/ENTERPRISE_RETRIEVAL.md).
+
+  No mode is recommended over another, and nothing here measures retrieval quality.
 
 - **External OIDC identity for the MCP server's HTTP transports.** `RECALL_OIDC_ISSUER`,
   `RECALL_OIDC_AUDIENCE` and `RECALL_OIDC_TENANTS` (required together), plus optional
@@ -231,6 +243,16 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ### Fixed
 - The `hnsw.ef_search` cap warning used `stacklevel=2`, which after the timed-wrapper split named
   `recall/store.py` itself rather than the caller.
+- **An indented `title:` in frontmatter outranked the document's own.** `document_title` compared
+  `key.strip()`, so a `title:` nested under any other mapping matched, and because the scan returns
+  on its first hit a nested key appearing above the real one won — embedding a sub-object's label
+  as the document's title. The frontmatter key must now be top level.
+- **`contextual_passages` embedded absolute paths verbatim.** "Root-relative paths only" was
+  documented and unenforced: an absolute POSIX path, a Windows drive letter, a UNC path or a `..`
+  traversal reached the rendered `source:` field, putting the host's filesystem layout into stored
+  vectors and making the embedding text for one corpus differ between two machines.
+  `root_relative_source` now refuses them, in every mode including `none` — the mode is chosen by
+  the profile, so a guard reachable only on the contextual path is one the cheapest caller skips.
 
 
 ## [0.8.0] — 2026-08-02
