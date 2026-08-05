@@ -51,6 +51,7 @@ request in the process behind one HTTP call.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -64,7 +65,7 @@ import jwt
 from jwt.algorithms import RSAAlgorithm
 
 from recall.observability import get_logger
-from recall_mcp.auth import ALL_SCOPES, Principal
+from recall_mcp.auth import ALL_SCOPES, AuthConfigError, Principal
 
 _log = get_logger("mcp.oidc")
 
@@ -114,6 +115,16 @@ class OidcConfig:
     scope_claim: str = "scope"
     #: Require `azp` to name us when a token carries several audiences (OIDC Core 3.1.3.7).
     require_azp_for_multi_audience: bool = True
+    #: Tenants this deployment provisioned, or None to accept whatever the IdP asserts.
+    #:
+    #: The IdP vouches for identity; it knows nothing about our topology. A token reading
+    #: `tenant: initech` is not forged merely because we never provisioned initech — but admitting
+    #: it would open a store for a namespace no operator configured, and `StoreRegistry` is built
+    #: on the property that its tenant set comes from configuration and never from traffic.
+    #:
+    #: None is permissive so the validator remains usable on its own terms; `build_auth` is what
+    #: refuses to DEPLOY without one, which is where the decision belongs.
+    allowed_tenants: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
         if not self.issuer.strip() or not self.audience.strip():
@@ -137,6 +148,23 @@ class OidcConfig:
             raise ValueError("max_stale_key_s must be >= jwks_refresh_s")
         if not self.tenant_claim.strip() or not self.scope_claim.strip():
             raise ValueError("tenant_claim and scope_claim must be non-empty")
+        if self.allowed_tenants is not None:
+            object.__setattr__(self, "allowed_tenants", frozenset(self.allowed_tenants))
+            if not self.allowed_tenants:
+                raise ValueError(
+                    "allowed_tenants must not be empty: an allowlist that permits no tenant "
+                    "rejects every token, which is an outage rather than a policy. Leave it None "
+                    "to accept any tenant the IdP asserts."
+                )
+            # `validate` REFUSES a padded tenant claim rather than trimming it, so a padded entry
+            # here could never match any token. That tenant would read as provisioned in the
+            # configuration and be refused at every single request.
+            unmatchable = sorted(t for t in self.allowed_tenants if not t or t != t.strip())
+            if unmatchable:
+                raise ValueError(
+                    f"allowed_tenants entries are empty or padded and could never match a "
+                    f"tenant claim: {unmatchable}"
+                )
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -481,6 +509,15 @@ class OidcValidator:
             raise TokenRejected(
                 "malformed_tenant", "tenant claim has leading or trailing whitespace"
             )
+        # AFTER the signature, deliberately. Reached before `jwt.decode`, this check would answer
+        # "does tenant X exist here?" for a caller holding no credential at all: a forgery naming
+        # a provisioned tenant would come back `bad_signature` while one naming an unprovisioned
+        # tenant came back `tenant_not_allowed`, and the difference enumerates the deployment.
+        if cfg.allowed_tenants is not None and raw_tenant not in cfg.allowed_tenants:
+            raise TokenRejected(
+                "tenant_not_allowed",
+                "the token is genuine, but names a tenant this deployment did not provision",
+            )
 
         return Principal(
             name=str(claims.get("sub") or raw_tenant),
@@ -526,14 +563,86 @@ def _parse_scope_claim(raw: object) -> frozenset[str]:
     return frozenset(scope for scope in candidates if scope in ALL_SCOPES)
 
 
+#: Env keys. Named here so `build_auth` and the error messages cannot drift apart.
+ENV_ISSUER = "RECALL_OIDC_ISSUER"
+ENV_AUDIENCE = "RECALL_OIDC_AUDIENCE"
+ENV_TENANTS = "RECALL_OIDC_TENANTS"
+ENV_ALGORITHMS = "RECALL_OIDC_ALGORITHMS"
+
+
+def _csv(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator | None:
+    """Build a validator from `RECALL_OIDC_*`, or None when the issuer is unset.
+
+    None means "OIDC not configured", exactly as `token_registry_from_env` returns None for "no
+    static tokens". Deciding whether that is acceptable belongs to the caller, which knows the
+    transport.
+
+    Constructing a validator performs NO network IO. Discovery and the first JWKS fetch happen on
+    the first token, so an IdP that is briefly unreachable delays a request rather than preventing
+    the server from booting — the same reasoning as the stale-key window, applied to startup.
+    """
+    source = dict(os.environ) if env is None else env
+    issuer = source.get(ENV_ISSUER, "").strip()
+    if not issuer:
+        return None
+
+    audience = source.get(ENV_AUDIENCE, "").strip()
+    if not audience:
+        raise AuthConfigError(
+            f"{ENV_ISSUER} is set, so {ENV_AUDIENCE} is required. It is the audience this server "
+            f"accepts; without it any token the IdP issued for any of its clients would verify "
+            f"here, and that token's tenant claim would become this server's isolation boundary."
+        )
+
+    raw_tenants = source.get(ENV_TENANTS, "").strip()
+    if not raw_tenants:
+        raise AuthConfigError(
+            f"{ENV_TENANTS} is required with {ENV_ISSUER}: a comma-separated list of the tenants "
+            f"this deployment serves. Absent is not 'every tenant' — the IdP vouches for identity "
+            f"and knows nothing about this deployment's topology, so without the list any tenant "
+            f"claim it signs would open a store no operator provisioned."
+        )
+    tenants = frozenset(_csv(raw_tenants))
+
+    algorithms = tuple(_csv(source.get(ENV_ALGORITHMS, ""))) or DEFAULT_ALGORITHMS
+    try:
+        config = OidcConfig(
+            issuer=issuer,
+            audience=audience,
+            algorithms=algorithms,
+            allowed_tenants=tenants,
+        )
+    except ValueError as exc:
+        # A ValueError out of a config constructor reads as a bug at the call site. Restated as
+        # AuthConfigError it joins the class this server already refuses to boot on.
+        raise AuthConfigError(f"invalid RECALL_OIDC_* configuration: {exc}") from exc
+
+    _log.info(
+        "OIDC identity configured: issuer=%s audience=%s, %d provisioned tenant(s)",
+        issuer,
+        audience,
+        len(tenants),
+    )
+    return OidcValidator(config)
+
+
 __all__ = [
     "DEFAULT_ALGORITHMS",
     "DEFAULT_CLOCK_SKEW_S",
     "DEFAULT_JWKS_REFRESH_S",
     "DEFAULT_MAX_STALE_KEY_S",
+    "ENV_ALGORITHMS",
+    "ENV_AUDIENCE",
+    "ENV_ISSUER",
+    "ENV_TENANTS",
     "IdentityProviderUnavailable",
     "OidcConfig",
     "OidcValidator",
     "TokenRejected",
     "discover_jwks_uri",
+    "oidc_validator_from_env",
 ]

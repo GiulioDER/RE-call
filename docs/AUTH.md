@@ -8,10 +8,18 @@ RE-call serves two transports with deliberately different security postures.
 | `streamable-http`, `sse` | TCP socket | **required, enforced at startup** | one tenant per token |
 
 `stdio` needs no authentication because there is no remote caller: the client owns the process and
-the pipe *is* the boundary. The HTTP transports open a socket, and starting one without tokens
-**raises `AuthConfigError` and refuses to boot**. That is a deliberate choice over logging a
-warning — a warning produces a server that comes up looking healthy with every memory in it
-readable by anything that can reach the port, and the warning is found afterwards.
+the pipe *is* the boundary. The HTTP transports open a socket, and starting one with no
+authentication configured at all **raises `AuthConfigError` and refuses to boot**. That is a
+deliberate choice over logging a warning — a warning produces a server that comes up looking
+healthy with every memory in it readable by anything that can reach the port, and the warning is
+found afterwards.
+
+There are two ways to configure it, and exactly one may be active:
+
+| Mechanism | Set | Use |
+|---|---|---|
+| **Static token file** | `RECALL_AUTH_TOKENS_FILE` | Development. Refused when `RECALL_ENV=production`. |
+| **OIDC provider** | `RECALL_OIDC_ISSUER` + `RECALL_OIDC_AUDIENCE` + `RECALL_OIDC_TENANTS` | Production. See [below](#taking-identity-from-an-oidc-provider). |
 
 ## Provisioning tokens
 
@@ -117,6 +125,55 @@ Authorization: Bearer <token>
 **Terminate TLS in front of this server.** A bearer token over plaintext HTTP is readable by every
 hop in between.
 
+## Taking identity from an OIDC provider
+
+The token file is a development affordance, and `load_token_registry` **refuses to load it when
+`RECALL_ENV=production`**. In production, identity comes from an external provider instead, so
+revocation, rotation and expiry belong to the IdP rather than to whoever remembers to edit a file.
+
+```bash
+export RECALL_TRANSPORT=streamable-http
+export RECALL_OIDC_ISSUER=https://idp.example.com
+export RECALL_OIDC_AUDIENCE=recall-prod       # the audience this server accepts
+export RECALL_OIDC_TENANTS=acme,globex        # the tenants this deployment serves
+export RECALL_AUTH_RESOURCE_URL=https://recall.example.com
+python -m recall_mcp.server
+```
+
+`RECALL_AUTH_ISSUER_URL` is **not** required here: it defaults to `RECALL_OIDC_ISSUER`, because
+with a provider there is exactly one right answer and restating it is a chance to state it
+differently, at which point clients are sent to a provider that did not sign the tokens this
+server accepts.
+
+Setting `RECALL_OIDC_ISSUER` and `RECALL_AUTH_TOKENS_FILE` together **refuses to boot**. They are
+two trust models, and whichever won silently, the other would sit in the configuration looking
+effective.
+
+### Why the tenant list is mandatory
+
+`RECALL_OIDC_TENANTS` has no default and absent does not mean "every tenant". The IdP vouches for
+*identity*; it knows nothing about this deployment's topology. A token reading `tenant: initech`
+is not forged merely because initech was never provisioned here — but admitting it would open a
+store for a namespace no operator configured, and the connection-budget property below depends on
+that never happening. A token naming an unlisted tenant is refused with reason
+`tenant_not_allowed`.
+
+That check runs **after** signature verification, deliberately. Ahead of it, the reply would
+differ between a forged token naming a real tenant (`bad_signature`) and one naming an unknown
+tenant (`tenant_not_allowed`), which enumerates your tenant list to a caller holding no credential
+at all.
+
+### Rejection reasons
+
+Every refusal carries a stable `reason` slug, and they are logged rather than collapsed into
+"invalid token", because `bad_signature` and `unknown_kid` are two different events: a forgery
+attempt, and a key rotation this process has not caught up with yet.
+
+`IdentityProviderUnavailable` is logged distinctly from a token rejection. The MCP SDK's
+`verify_token` can only return a token or `None`, so the 401/503 distinction cannot survive that
+hop — but "the IdP is unreachable" and "somebody is forging tokens" call for opposite responses,
+so it survives into the log.
+
 ## How tenant isolation actually works
 
 A `PgVectorStore` is bound to one tenant for its lifetime: the pool's `configure` hook sets
@@ -130,7 +187,8 @@ cross-tenant leaks happen: a connection returned to the pool mid-request, or an 
 `set_config` and the query, and the next caller inherits someone else's tenant.
 
 Pools are created on first use and bounded by *configuration*, not traffic: a tenant exists only
-if an operator provisioned a token for it, so the worst case is
+if an operator provisioned it — a token for it in the static file, or an entry in
+`RECALL_OIDC_TENANTS` — so the worst case is
 `len(tenants) × RECALL_POOL_SIZE` connections — a number you can compute at startup and check
 against the server's `max_connections`. It is logged when the server starts.
 
@@ -138,9 +196,10 @@ against the server's `max_connections`. It is logged when the server starts.
 > entirely, leaving only the query predicates. The server checks this at startup and warns.
 > Connect as an unprivileged role.
 
-## Limits of this scheme
+## Limits of the static token scheme
 
-Stated plainly, because the alternative is discovering them in production:
+Stated plainly, because the alternative is discovering them in production. Every one of these is a
+property of the **token file**, and the OIDC path above exists because of them:
 
 - **No revocation without a restart.** The token file is read at startup.
 - **No rotation protocol.** Overlapping validity is manual: add the new token, restart, migrate
@@ -156,6 +215,10 @@ Stated plainly, because the alternative is discovering them in production:
   see [SECURITY.md](../SECURITY.md)), but the buckets are in-memory and unshared, so N worker
   processes admit roughly N times each rate. A fleet needs a shared limiter.
 
-If you need any of those, put a real identity provider in front and supply the MCP SDK's
-`auth_server_provider` in place of the static verifier. This module is intended for the case it
-handles honestly: a small number of machine principals provisioned out of band.
+The first three are answered by [the OIDC path](#taking-identity-from-an-oidc-provider): the IdP
+owns revocation, rotation is a JWKS key roll the server picks up on its own, and `exp` is carried
+onto the principal rather than validated and discarded. The last two are not — rate limits are
+still per process, and a bearer JWT is still a bearer credential.
+
+The static file is intended for the case it handles honestly: a small number of machine principals
+provisioned out of band, in development. `RECALL_ENV=production` refuses it outright.
