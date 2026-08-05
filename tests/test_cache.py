@@ -1,4 +1,5 @@
 from recall.cache import EmbeddingCache, cache_key, embed_with_cache
+from recall.embeddings import EmbeddingProfile, legacy_embedding_profile
 
 
 class CountingEmbedder:
@@ -47,6 +48,11 @@ def test_cache_none_is_plain_embed(tmp_path):
 
 
 def test_cache_key_separates_embedders_and_dims():
-    assert cache_key("a", 2, "hello") != cache_key("b", 2, "hello")
-    assert cache_key("a", 2, "hello") != cache_key("a", 3, "hello")
-    assert cache_key("a", 2, "hello") == cache_key("a", 2, "hello")
+    """Same assertions as before the key took a whole profile: a different embedder or a
+    different width must never collide, and the key must stay deterministic for one identity."""
+    a = legacy_embedding_profile(CountingEmbedder())
+    b = EmbeddingProfile("b", "b", "legacy-unverified", 2, "legacy", "legacy")
+
+    assert cache_key(a, 2, "hello") != cache_key(b, 2, "hello")
+    assert cache_key(a, 2, "hello") != cache_key(a, 3, "hello")
+    assert cache_key(a, 2, "hello") == cache_key(a, 2, "hello")

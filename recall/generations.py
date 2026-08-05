@@ -16,7 +16,7 @@ import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
-from recall.embeddings import Embedder
+from recall.embeddings import Embedder, embed_passages
 from recall.frontmatter import parse_frontmatter, validity_bounds
 from recall.lineage import (
     GenerationState,
@@ -533,7 +533,12 @@ class GenerationManager:
                             },
                         )
                     )
-                embeddings = embedder.embed([chunk.text for chunk in chunks])
+                # PASSAGE encoding: these vectors are what a query is matched against. With an
+                # asymmetric model the query encoder produces a different vector for the same
+                # text, and a generation built with the wrong one is the right width, scores in
+                # range, and silently retrieves worse. Falls back to `embed` for an embedder
+                # that only implements the symmetric interface.
+                embeddings = embed_passages(embedder, [chunk.text for chunk in chunks])
                 with self._connect() as conn, conn.transaction():
                     self._source_lock(conn, self.tenant_id, entry.uri)
                     if self._is_tombstoned(conn, entry.uri):
