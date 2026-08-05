@@ -23,6 +23,22 @@ DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 #: next cold cache. Pinning makes the resolved artifact immutable (mirrors DEFAULT_QNLI_REVISION).
 DEFAULT_RERANKER_REVISION = "c5ee24cb16019beea0893ab7796b1df96625c6b8"
 
+#: The reranker the QUALITY retrieval profile is pinned to, as an identity rather than a name.
+#:
+#: `RECALL_RERANK_PATH` stays an operator variable because a filesystem layout is deployment
+#: specific. The DIGEST is not: a different artifact tree under the same model name is a different
+#: model, and the quality profile's whole claim — same candidate pool as fast, one extra stage,
+#: a 1500 ms budget — is a claim about a specific set of weights. So the digest is pinned here and
+#: the environment must AGREE with it rather than define it, mirroring how
+#: `recall.embedding_registry` pins each embedding profile's artifact.
+#:
+#: Value: the tree digest of the provisioned `ms-marco-MiniLM-L-6-v2` artifact, recomputed
+#: independently on VPS2 on 2026-08-05 and equal to the digest recorded in
+#: `/opt/recall-enterprise/manifest.json` on 2026-08-03.
+PINNED_RERANKER_MODEL = DEFAULT_RERANKER_MODEL
+PINNED_RERANKER_REVISION = DEFAULT_RERANKER_REVISION
+PINNED_RERANKER_SHA256 = "db6ad87969c7dc78320152e68a16118aeb4b2a6f7d8cc979c57f61ddb5e2ab2a"
+
 
 class CrossEncoderReranker:
     """Reorder hits by cross-encoder relevance. Requires `pip install recall[rerank]`.
