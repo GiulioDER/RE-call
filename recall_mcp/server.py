@@ -60,7 +60,8 @@ DEFAULT_DSN = os.environ.get(
 )
 #: Transport to serve. `stdio` is a private pipe between one client and this process — there is no
 #: network listener and no remote caller to authenticate, so auth is not required there. The HTTP
-#: transports open a socket, and `build_auth` refuses to start them without tokens.
+#: transports open a socket, and `build_auth` refuses to start them unless an authentication
+#: mechanism is configured — a static token file, or an OIDC provider.
 Transport = Literal["stdio", "sse", "streamable-http"]
 TRANSPORTS: tuple[Transport, ...] = ("stdio", "sse", "streamable-http")
 HTTP_TRANSPORTS = frozenset({"streamable-http", "sse"})
@@ -188,7 +189,14 @@ class OidcTokenVerifier:
 
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
-            principal = self._validator.validate(token)
+            # OFF THE LOOP (PERF-001). `validate` is synchronous, and on a cache miss it makes
+            # two blocking HTTPS calls — discovery, then JWKS — each bounded by a 10s timeout.
+            # Called inline from here that stops the entire server for up to 20s, and the
+            # single-flight `acquire(blocking=False)` written to prevent exactly that outage is
+            # inert against it: it lets other THREADS carry on with cached keys, and an event
+            # loop has none, only coroutines that never get scheduled. Even fully warm, RSA
+            # verification is ~2ms of uninterruptible loop time on every authenticated request.
+            principal = await _to_thread(lambda: self._validator.validate(token))
         except IdentityProviderUnavailable as exc:
             # Distinct message, deliberately: this is an outage on our side of the trust
             # relationship, and reading it as a wave of forgeries would send an operator hunting
@@ -203,12 +211,27 @@ class OidcTokenVerifier:
             # detail is deliberately not logged, and neither is the token.
             _log.warning("rejected a bearer token (reason=%s)", exc.reason)
             return None
+        except Exception:
+            # Defence in depth (NUM-001). The validator's contract is that every ambiguity
+            # resolves to a TokenRejected, but this is the boundary where a breach of it turns a
+            # 401 into a 500: the SDK does not wrap `verify_token`. A failure to authenticate
+            # must fail CLOSED as a refusal, never as a stack trace.
+            _log.warning("rejected a bearer token (reason=validator_error)", exc_info=True)
+            return None
         return AccessToken(
             token=token,
             client_id=principal.name,
             scopes=sorted(principal.scopes),
             expires_at=(int(principal.expires_at.timestamp()) if principal.expires_at else None),
-            claims={"tenant": principal.tenant, "principal": principal.name},
+            # `subject` and `iss` are populated (SEC-007) because the SDK's session-principal
+            # comparison is built from client_id + subject + claims["iss"], and silently degrades
+            # to whichever of those the verifier supplied. Both are known here, verified.
+            subject=principal.name,
+            claims={
+                "tenant": principal.tenant,
+                "principal": principal.name,
+                "iss": self._validator.config.issuer,
+            },
         )
 
 
@@ -223,6 +246,27 @@ class ProvisionedTenants:
 
     tenants: frozenset[str]
 
+    def __post_init__(self) -> None:
+        # Coerced and checked here rather than trusted from the caller (DAT-002). This type is
+        # the carrier of "the tenant set comes from configuration, never from traffic", and an
+        # annotation is not an enforcement: a plain `set` passed in stays mutable, and an empty
+        # one reaches `min(registry.allowed_tenants)` in the lifespan. Every future provisioning
+        # mechanism passes through here, so the check belongs here and not in each of them.
+        if isinstance(self.tenants, (str, bytes)):
+            # `frozenset("acme")` is {"a","c","e","m"} (BUG-002), and that set is handed straight
+            # to StoreRegistry as `allowed_tenants`. The emptiness check below would not catch it:
+            # single characters are neither empty nor padded.
+            raise AuthConfigError(
+                "provisioned tenants must be a collection of tenant ids, not a single string "
+                "(a string would be split into its characters)"
+            )
+        object.__setattr__(self, "tenants", frozenset(self.tenants))
+        if not self.tenants:
+            raise AuthConfigError(
+                "a provisioned tenant set must not be empty: an authenticated server that can "
+                "serve no tenant refuses every request it authenticates"
+            )
+
 
 def build_auth(
     transport: str = TRANSPORT, env: dict[str, str] | None = None
@@ -234,10 +278,20 @@ def build_auth(
     """Resolve the auth configuration for `transport`, failing closed on the HTTP ones.
 
     This is the function that makes an unauthenticated network listener impossible to create by
-    accident. Starting an HTTP transport without `RECALL_AUTH_TOKENS_FILE` raises instead of
-    warning, because the failure mode of a warning here is a server that comes up looking healthy
-    with every memory in it world-readable — and the warning lands in a journal nobody reads until
+    accident. Starting an HTTP transport with NO mechanism configured raises instead of warning,
+    because the failure mode of a warning here is a server that comes up looking healthy with
+    every memory in it world-readable — and the warning lands in a journal nobody reads until
     afterwards.
+
+    Two mechanisms, exactly one of which may be active:
+
+    - `RECALL_AUTH_TOKENS_FILE` — static bearer tokens. Development only; `load_token_registry`
+      refuses to load it under `RECALL_ENV=production`.
+    - `RECALL_OIDC_ISSUER` (with `RECALL_OIDC_AUDIENCE` and `RECALL_OIDC_TENANTS`) — identity from
+      an external provider. With this set, `RECALL_AUTH_ISSUER_URL` defaults to the provider.
+
+    Both together raises: they are two trust models, and whichever won silently, the other would
+    sit in the configuration looking effective.
     """
     e = env if env is not None else dict(os.environ)
     # Both are read BEFORE any transport branch, so a conflicting pair is refused on stdio too.
@@ -357,7 +411,8 @@ def _make_lifespan(
 
     - **Unauthenticated (stdio).** One store bound to `RECALL_TENANT`, exactly as before. There is
       one caller on the other end of the pipe and it gets one namespace.
-    - **Authenticated (HTTP).** A `StoreRegistry` over the tenants the token file provisions.
+    - **Authenticated (HTTP).** A `StoreRegistry` over the tenants the deployment provisions —
+      the token file's principals, or `RECALL_OIDC_TENANTS`. This function does not know which.
       Nothing is opened until a request for that tenant arrives, so a server configured for ten
       tenants that only ever serves one holds one pool, not ten.
     """
