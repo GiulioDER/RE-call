@@ -18,41 +18,43 @@ import re
 import string
 import sys
 from statistics import mean
+from typing import Any
 
 PATH = sys.argv[1]
 
 
-def norm_tokens(s):
+def norm_tokens(s: str) -> list[str]:
     s = "".join(ch for ch in s.lower() if ch not in set(string.punctuation))
     return [x for x in re.sub(r"\b(a|an|the)\b", " ", s).split() if x]
 
 
-def slot(ann, key):
+def slot(ann: dict[str, Any], key: str) -> float | None:
     node = ann.get(key)
     if not node or "composite" not in node or node["composite"] is None:
         return None
-    return node["composite"].get("value")
+    value = node["composite"].get("value")
+    return None if value is None else float(value)
 
 
-def report(label, rows):
-    rows = sorted(rows, key=lambda r: r["ratio"])
+def report(label: str, rows: list[dict[str, Any]]) -> float:
+    rows = sorted(rows, key=lambda r: float(r["ratio"]))
     n = len(rows)
     q = n // 4
     qs = [("Q1 shortest", rows[:q]), ("Q2", rows[q:2*q]), ("Q3", rows[2*q:3*q]), ("Q4 longest", rows[3*q:])]
-    overall = mean(r["rb"] for r in rows)
+    overall = float(mean(float(r["rb"]) for r in rows))
     print(f"\n--- {label}   n={n}   overall mean rb_agg = {overall:.4f}")
-    best = None
+    best: tuple[str, float] = ("", float("-inf"))
     for lab, b in qs:
-        m = mean(r["rb"] for r in b)
+        m = float(mean(float(r["rb"]) for r in b))
         print(f"    {lab:12} ratio {b[0]['ratio']:5.2f}..{b[-1]['ratio']:6.2f}   mean {m:.4f}   n={len(b)}")
-        if best is None or m > best[1]:
+        if m > best[1]:
             best = (lab, m)
     print(f"    best band: {best[0]} at {best[1]:.4f}")
     print(f"    CEILING if every response sat in the best band: {best[1]-overall:+.4f} on RB_alg")
     return best[1] - overall
 
 
-def main():
+def main() -> int:
     d = json.load(open(PATH, encoding="utf-8"))
     names = {}
     for m in d["models"]:
@@ -61,13 +63,13 @@ def main():
         )
     tasks = {t["task_id"]: t for t in d["tasks"]}
 
-    def cls(tid):
+    def cls(tid: str) -> str:
         a = tasks.get(tid, {}).get("Answerability") or []
         return a[0] if isinstance(a, list) and a else "UNKNOWN"
 
     tgt = {t["task_id"]: len(norm_tokens(t["targets"][0]["text"])) for t in d["tasks"] if t.get("targets")}
 
-    recs = []
+    recs: list[dict[str, Any]] = []
     for ev in d["evaluations"]:
         if str(names.get(ev["model_id"], ev["model_id"])).lower() == "target":
             continue
@@ -121,7 +123,7 @@ def main():
         print(f"  {'':22} bias-corrected ceiling: {obs-mean(nulls):+.4f}")
 
     # what the controlled ceiling is worth on the MTRAG-UN gpt-oss-120b row
-    def hm(v):
+    def hm(v: list[float]) -> float:
         return 0.0 if any(x <= 0 for x in v) else len(v) / sum(1 / x for x in v)
 
     base = [0.59, 0.65, 0.37]

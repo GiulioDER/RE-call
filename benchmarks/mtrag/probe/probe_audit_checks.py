@@ -14,21 +14,22 @@ benchmarks/PREREGISTRATION-mtrag-rbalg.md.
 import json
 import sys
 from collections import Counter
-from statistics import mean
+from typing import Any
 
 PATH = sys.argv[1]
 TRIPLE = ("rl_f", "rb_llm", "rb_agg")
 
 
-def hm(v):
+def hm(v: list[float]) -> float:
     return 0.0 if any(x is None or x <= 0 for x in v) else len(v) / sum(1 / x for x in v)
 
 
-def slot(ann, k, which="composite"):
+def slot(ann: dict[str, Any], k: str, which: str = "composite") -> float | None:
     n = ann.get(k)
     if not n or which not in n or n[which] is None:
         return None
-    return n[which].get("value")
+    value = n[which].get("value")
+    return None if value is None else float(value)
 
 
 d = json.load(open(PATH, encoding="utf-8"))
@@ -87,14 +88,14 @@ print(f"  -> P4 claim (all score exactly 1.0) holds on models only: "
 
 print("\n=== BUG-011: does hm(rouge,(brec+1)/2,(bkp+1)/2) reconstruct rb_agg? ===")
 ok = miss = 0
-errs = []
+errs: list[tuple[float, float]] = []
 for ev in d["evaluations"]:
     ann = ev.get("annotations") or {}
     rb = slot(ann, "rb_agg")
     r = slot(ann, "RougeL", "system")
     br = slot(ann, "Bert-Rec", "system")
     bk = slot(ann, "Bert-KPrec", "system")
-    if None in (rb, r, br, bk) or rb == 0:
+    if rb is None or r is None or br is None or bk is None or rb == 0:
         continue
     recon = hm([r, (br + 1) / 2, (bk + 1) / 2])
     if abs(recon - rb) < 1e-3:

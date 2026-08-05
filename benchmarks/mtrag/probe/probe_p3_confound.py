@@ -24,32 +24,38 @@ import string
 import sys
 from collections import Counter
 from statistics import mean
+from typing import Any
 
 PATH = sys.argv[1]
 
 
-def norm_tokens(s):
+def norm_tokens(s: str) -> list[str]:
     s = "".join(ch for ch in s.lower() if ch not in set(string.punctuation))
     return [x for x in re.sub(r"\b(a|an|the)\b", " ", s).split() if x]
 
 
-def slot(ann, key, which="composite"):
+def slot(ann: dict[str, Any], key: str, which: str = "composite") -> float | None:
     node = ann.get(key)
     if not node or which not in node or node[which] is None:
         return None
-    return node[which].get("value")
+    value = node[which].get("value")
+    return None if value is None else float(value)
 
 
-def bands(rows, key="rb"):
-    rows = sorted(rows, key=lambda r: r["ratio"])
+def bands(rows: list[dict[str, Any]], key: str = "rb") -> tuple[float, float, int]:
+    rows = sorted(rows, key=lambda r: float(r["ratio"]))
     n = len(rows)
     q = n // 4
     near = sorted(rows, key=lambda r: abs(r["ratio"] - 1.0))[:q]
     q4 = rows[3 * q :]
-    return mean(r[key] for r in near), mean(r[key] for r in q4), n
+    return (
+        float(mean(float(r[key]) for r in near)),
+        float(mean(float(r[key]) for r in q4)),
+        n,
+    )
 
 
-def main():
+def main() -> int:
     d = json.load(open(PATH, encoding="utf-8"))
     names = {}
     for m in d["models"]:
@@ -58,7 +64,7 @@ def main():
         )
     tasks = {t["task_id"]: t for t in d["tasks"]}
 
-    def cls(tid):
+    def cls(tid: str) -> str:
         a = tasks.get(tid, {}).get("Answerability") or []
         return a[0] if isinstance(a, list) and a else "UNKNOWN"
 
@@ -68,7 +74,7 @@ def main():
         if tg:
             tgt[t["task_id"]] = len(norm_tokens(tg[0]["text"]))
 
-    recs = []
+    recs: list[dict[str, Any]] = []
     for ev in d["evaluations"]:
         mid = names.get(ev["model_id"], ev["model_id"])
         if str(mid).lower() == "target":
