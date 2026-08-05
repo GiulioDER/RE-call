@@ -11,6 +11,393 @@ before that change can go green.
 
 ---
 
+## 2026-08-05, retrieval profiles: a budget that does something, bounded cost, a complete result surface
+
+### Session ledger
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | Profiles behave as specified, selection is process level, conflicts refuse **startup** | done; the conflict used to refuse the first *search*, not startup |
+| 2 | Decide and implement what `latency_budget_ms` means at request time | done, admission deadline + reported overrun; see below |
+| 3 | Resource bounds: one reranker per worker, thread limits, bounded queues, rejection **before** embedding, separate fast/quality concurrency | done; the rejection ordering was already right and is now proven, the rest was not |
+| 4 | Result surface: profile, generation, pool size, rerank flag, and all seven stage timings | done, `evidence_assembly` was the missing bracket |
+| 5 | Safety: dense cosine preserved, no query or corpus text in logs | done, with a positive control on the detector |
+| 6 | Prove every new test can fail | done, **54 of 54 mutations killed**, all as clean assertion failures |
+| 7 | CCA audit at DEEP, plus the anti-regression and architect gates | done; **the audit invalidated the first version of item 3**, and the two gates then found six more, one of them inside the audit fix. Reported first, below |
+
+This is backlog session 9 (items 25 to 28) plus the parts of areas 4, 5 and 6 the gap matrix marked
+untested. Backlog item 29 (the reranker's `local_files_only` / `artifact_sha256` offline path and
+the symlink-escape refusal) is **not** done: it needs the `rerank` extra installed to exercise, and
+this session added the pin rather than the loader test.
+
+**Correction, made on merge.** This entry was written saying "session 3, the outbox drain, is still
+first in the backlog and still untouched". That was true when the branch was cut from `98f2a85` and
+is not true now: a concurrent session landed it as #198 and #201 while this branch ran, and its
+entry sits directly below this one. An earlier draft of this paragraph also said `origin/master`
+did not move during the session; it moved **28 commits**, across two merges: 23 before the PR
+was opened and 5 more in the minutes after, which GitHub reported as CONFLICTING.
+
+The branch was **merged rather than rebased**, because four commits would each have had to resolve
+the same two shared-document conflicts. Both documents were resolved by **reconstruction with
+assertions**: upstream's copy is carried through byte for byte and this entry inserted before it,
+verified by length and by content rather than by reading the diff. Upstream's new
+`tests/test_env_example_parity.py` — which is, pleasingly, the gate this entry recommends below as
+future work — passes against this branch's `.env.example`.
+
+⚠️ One of those assertions was itself too wide, which is worth recording because it is the same
+shape as the defects this session spent its day on. The "no conflict markers survived" check was a
+plain substring test, and it fired on a **historical CHANGELOG entry that describes** a release
+which shipped raw markers. Anchoring the pattern to line starts, which is what git actually writes,
+is the difference between a guard and a text search.
+
+### The audit found the guard could not fire, and that is the headline
+
+The work above went through the tiered CCA pipeline at DEEP (forced: the diff trips the numeric
+path). Ten auditors, 46 raw findings. **The most important one invalidates the first version of
+this session's central claim**, so it is recorded before the claim rather than after it.
+
+**`queue_full` could never fire through the server, and the budget did not bound the client's
+wait.** Every MCP tool body runs inside `anyio.to_thread.run_sync`, so a request parked in
+`RetrievalAdmission` is holding a worker thread. anyio's default limiter is **40** tokens. Fast's
+`8 + 32` is also **40**. The 41st concurrent search therefore never reached `__enter__` at all: it
+waited in anyio's limiter, which has no timeout, no budget and no counter. A saturated process
+would have queued unboundedly while `recall_retrieval_rejected_total` read zero, which is exactly
+the scenario the budget was written to prevent.
+
+Three independent auditors found it and each measured `total_tokens == 40` rather than asserting
+it; I re-measured before acting. **A guard that reads as protection and cannot fire** is this
+project's standing lesson, and the first version of this session's work was an instance of it. The
+existing test proved the mechanism on a hand-built 1+1 profile and never through the server:
+**a positive control validates the MECHANISM, not the SCOPE.**
+
+Fixed by sizing the pool from the profile (`worker_thread_budget` = admission capacity plus eight
+reserved threads, raised at startup, never lowered), with the invariant asserted for every profile
+and the application of it tested separately, because asserting an invariant is not enforcing it.
+
+### What the rest of the audit changed
+
+| Finding | Verdict | Outcome |
+|---|---|---|
+| Admission capacity equals the anyio worker pool, so `queue_full` is unreachable | CONFIRMED, measured | fixed, above |
+| CHANGELOG mis-stated the one genuinely new startup refusal | CONFIRMED | fixed; see below |
+| `_validate_quality_reranker_config` compared a normalised digest and returned the raw one | CONFIRMED, measured | fixed, normalise once and return that |
+| Budget charged twice (admission timeout AND end-to-end deadline) | CONFIRMED | fixed, `budget_exceeded` now on served work; `admission_wait` is a stage |
+| `QUALITY_PROFILE != resolve_retrieval_profile("quality")`, so they minted two admission queues | CONFIRMED, measured | fixed both ways: constant matches its resolver, and the queue is keyed on `queue_identity` |
+| `_admission` still on `lru_cache`, the defect this diff fixed for the reranker | CONFIRMED | fixed, same lock |
+| A failed reranker construction was retried on every request, re-hashing the model tree | CONFIRMED | fixed, failures are cached |
+| `recall_retrieval_total_ms` was success-only | CONFIRMED | fixed, observed on every exit plus `recall_retrieval_failed_total` |
+| Legacy's 24-day sentinel shipped to clients as `latency_budget_ms` | CONFIRMED | fixed, `null` when no budget is enforced |
+| Running-slot leak in the window between acquire and its store | CONFIRMED | **NOT closed.** An ownership flag was added and the anti-regression gate then showed the branch cannot fire: CPython's exception table makes the acquire call the only interruptible point, where the flag is still false, and the real window is inside `Semaphore.acquire`. The guard is kept (correct, free) and the claim is withdrawn |
+| `RECALL_RERANK_THREADS` documented as general; only read on quality | CONFIRMED | doc fixed, behaviour unchanged |
+| Docs claimed model+revision are pinned; only the digest is enforced | CONFIRMED | doc fixed, and the tree-vs-model limit stated |
+| `.env.example` blank keys break a rollback to the previous parser | CONFIRMED | keys commented out; rollback note in the CHANGELOG |
+| Two `### Added` blocks in `[Unreleased]` | **FALSE POSITIVE** | `HEAD~1` already had six such groups; it is the file's per-session convention, not something this diff introduced |
+| Per-request metric overhead (~87 us, 0.035% of the fast budget) | CONFIRMED, measured | no change; the auditor's own verdict was "not material" |
+
+**The CHANGELOG correction is the one worth naming.** I had written that a contradictory pair, a
+missing reranker path, or a non-pinned digest "used to produce a server that came up clean and
+failed on its first client request". That is true of four of the five newly refusing
+configurations, and **false of the fifth**: before this change the operator's digest was passed
+straight to `verify_artifact`, so a quality deployment whose digest correctly described its *own*
+reranker tree started **and served every request**. It is now a breaking change for that
+deployment, and the CHANGELOG says so.
+
+### The two remaining gates then found six more, including one in the audit fix itself
+
+The anti-regression gate (`differential-review` over the fix diff) and the architect gate both
+returned **REVISE**. Running them mattered: three of their six findings are in code the audit
+itself never saw, which is this program's own lesson that **a fix can promote a dormant defect, so
+the audit goes after as well as before**.
+
+| Finding | Verdict | Outcome |
+|---|---|---|
+| **The `k` clamp had no test.** It is the entire mechanism behind "a client cannot request a more expensive profile", newly advertised in three documents, and deleting it left all 2345 tests green | CONFIRMED | fixed: a test with a legacy arm, so it discriminates the clamp rather than a small store |
+| **A shed request was counted as a failure and injected its budget-length wait into the served-latency histogram.** Measured by the reviewer, reproduced here | CONFIRMED | fixed: `RetrievalOverloaded` is matched before the general handler, so a shed appears only in `recall_retrieval_rejected_total`. It would otherwise have contaminated the p95 this program is blocked on, in exactly the overload regime that matters |
+| **Sizing the pool from the profile removed anyio's 40 as an accidental thread ceiling**, making `RECALL_SEARCH_QUEUE` an unvalidated thread-count knob (`=5000` would ask for 5008 threads) | CONFIRMED | fixed: `MAX_ADMISSION_CAPACITY = 256`, refused at resolution |
+| **Re-raising one cached exception instance grows its traceback per call**, and each retained frame pins its locals, which on this path include the query text | CONFIRMED, measured (4 → 7 → 10 → 13 → 16 frames) | fixed: cache `(type, args)` and raise a fresh instance. This was also a safety defect, not only a leak |
+| **`except BaseException` cached a `KeyboardInterrupt`**, turning a transient event into a process-lifetime outage | CONFIRMED | fixed: narrowed to `Exception` |
+| **`inference_threads` was plumbed but never shown to reach the reranker** | CONFIRMED | fixed: a recording stub asserts the kwarg, without needing the `rerank` extra |
+| `.env.example` rollback premise ("no version parses these keys strictly") | **REFUTED** | `git show 98f2a85:recall/profiles.py` parses them strictly, and the deployed VPS2 wheel is built from an ancestor. The fix stands; the CHANGELOG wording now says which builds are affected rather than implying released ones |
+
+**And one claim of mine was withdrawn rather than softened.** The ownership flag added for the
+running-permit leak **cannot fire**: CPython's exception table makes the acquire call the only
+interruptible point in that block, where the flag is still false, and the real window lives inside
+`Semaphore.acquire`. I had recorded that leak as fixed. It is not. The guard is kept because it is
+correct and free, and the claim is gone from the code comment, this document and the table above.
+
+### What the audit surfaced and this session did NOT fix
+
+Recorded rather than acted on, with the reason:
+
+1. **No tenant dimension in admission.** One tenant can fill the queue, and the new shedding turns
+   that from queueing into active rejection for every other tenant. The rate limiter bounds call
+   RATE, not concurrency. This is a design decision about fairness, beyond the scope given.
+2. **The reranker pin is a tree digest of one provisioned directory**, not a portable model
+   identity, and no shipped command reproduces that tree. Documented as a limit; deciding between
+   "pin the tree" and "pin a portable identity" is a decision, not a bug fix.
+3. **`total_ms` includes the queue wait, so it is a weak cross-tenant load signal.** Low severity
+   and the field is genuinely useful; noted.
+4. **`RetrievalOverloaded`'s message discloses the process's admission parameters** to a client.
+5. **`retry_after_seconds` is a backoff hint derived from the budget, not a computed time to
+   success** the way `RateLimited`'s is. Honest documentation was chosen over inventing a drain
+   estimate this program cannot measure.
+6. **The legacy `RECALL_RERANK` path is still not validated at startup.** The claim is now scoped
+   to the profile path rather than the claim being widened.
+7. **`_RERANKERS` is keyed on the profile name, not the full reranker identity.** Unreachable with
+   a static process environment, which is the documented deployment model.
+
+⚠️ **Two auditors died mid-run on API errors** (`code-auditor`, `env-validator`), so general code
+quality and the full `.env.example` round trip were **not** covered. A skipped gate and a passing
+gate must not read the same, so: those two dimensions are unaudited for this change.
+
+⚠️ **Deterministic coverage for this run was NONE.** `cca_checks` is not installed in this venv, so
+no static backend was available and every verdict above rests on LLM adjudication plus whatever I
+re-executed myself. Everything marked "measured" is a command I ran.
+
+### What `latency_budget_ms` means now
+
+It was declared on every profile, validated in `__post_init__`, and read by nothing:
+`git grep` returned three hits, all inside `recall/profiles.py`. The promotion gate's budget is a
+separate caller-supplied float. It now means exactly two things, both observable and both tested.
+
+**It bounds the admission wait.** `RetrievalAdmission.__enter__` takes the queue slot
+non-blocking, then the running slot with the budget as its timeout. A request that cannot start
+within the budget is shed with `RetrievalOverloaded(reason="budget_exhausted")` *before the query
+is embedded*. Previously the running-slot acquisition blocked with no timeout, so `queue_capacity`
+bounded how many threads could be parked and said nothing about how long any of them waited.
+
+**It labels an overrun.** A request that finishes over budget still returns its answer and reports
+`total_ms`, `latency_budget_ms` and `budget_exceeded`, plus
+`recall_retrieval_budget_exceeded_total{profile}` and a warning carrying numbers only.
+
+**The budget is charged once.** `budget_exceeded` is computed on the work the request did
+(`total_ms` minus the `admission_wait` stage), not on end-to-end latency. Since the budget is
+already spent as the admission timeout, charging it again would label a fast retrieval slow
+because another request was ahead of it, and would saturate the counter under any queueing.
+The legacy profile enforces no budget and reports `latency_budget_ms` as `null` rather than the
+24-day sentinel used internally.
+
+**A mid-flight abort was rejected, deliberately.** There is no cancellation point inside a blocking
+cross-encoder `predict`. Aborting would pay the whole cost and then discard the answer, which turns
+a latency regression into an availability incident. Shedding happens at the door, where it is free.
+
+⚠️ This makes the budget *enforced*. It does not make it *validated*: no measurement here says 250
+ms or 1500 ms is the right number, and none can be taken until the latency blocker below is
+resolved.
+
+### A latent bug the new timeout would have made live
+
+`RetrievalAdmission.__enter__` acquired the queue slot and then the running slot. `__exit__` does
+not run when `__enter__` raises, so any failure between the two lost that queue slot permanently.
+Once every one of the `max_concurrency + queue_capacity` permits has leaked the process refuses
+every request forever while reporting itself merely busy; partial leakage degrades proportionally.
+(An earlier draft of this entry said `queue_capacity` leaks were enough. The audit caught it: after
+32 leaks a fast process still serves 8 concurrent requests, with no queue depth left.) It was
+unreachable before (nothing could fail between the two acquisitions) and would have become
+reachable the moment the timeout was added. The release is now explicit on every failure path,
+including `BaseException`.
+
+⚠️ **The running-permit half of this is NOT fixed, and the anti-regression gate is what caught the
+overclaim.** An ownership flag was added so the handler could release the running permit too. The
+gate then showed the branch cannot fire: CPython's exception table makes the acquire call the only
+interruptible point in that block, where the flag is still false, and the actual window lives
+inside `Semaphore.acquire` between its counter decrement and its return, which is not reachable
+from calling code. The flag is kept because it is correct and free, but **a guard that reads as
+protection and cannot fire is exactly what this program refuses to count**, so the claim is
+withdrawn rather than softened. The queue-permit leak, which was the reachable one, is closed.
+
+The test that pins it discriminates on the *reason* of a second rejection, not on a count: a leaked
+slot makes the next attempt `queue_full` without waiting, and only a returned slot lets it reach the
+budget wait again.
+
+### What else landed
+
+**Separate concurrency budgets.** Both profiles inherited `max_concurrency=4` / `queue_capacity=16`;
+legacy still does. Fast is now 8 + 32 and quality 2 + 8. Quality's per-request budget is six times
+fast's, so an equal queue depth would make its clients wait roughly six times as long; the new
+values hold `queue_capacity x latency_budget_ms` within one order of magnitude (fast 8000
+slot-milliseconds, quality 12000). **Slot-milliseconds, not CPU-seconds:** an earlier draft of this
+entry called the quantity CPU-seconds, which is wrong by a factor of 1000 and names a factor
+(`max_concurrency`) the argument is not about. `latency_budget_ms` bounds a WAIT, not a service
+time, so nothing here is a claim about CPU consumed.
+
+**These are a policy choice and are labelled as one in the code, the doc and `.env.example`.** They
+are not tuned to measured throughput and cannot be until there is a reference host.
+
+**One reranker per worker, under a lock.** The shared instance was memoised with `lru_cache`, which
+is a cache lookup and not a construction lock: on a cold start under load, every concurrent first
+request missed and loaded its own copy of a cross-encoder. The test uses a factory that sleeps, so
+the race is deterministic rather than incidental; unlocked, eight threads build eight models.
+
+**Startup refuses a bad cost profile.** `startup_retrieval_profile` resolves the profile and
+validates the quality reranker configuration, and it is the first thing `_lifespan` does, ahead of
+any I/O. It imports no torch and loads no model: a configuration check that needed the extra
+installed would not be a startup check. The test asserts the refusal is the *profile* one, so the
+check cannot be silently moved below the store setup.
+
+**The quality reranker is pinned by digest.** `RECALL_RERANK_SHA256` used to be whatever the
+operator typed, which made the `local_files_only` verification self-referential: it proved the tree
+hashes to its own hash, which every tree does. `recall/rerank.py` now pins artifact `db6ad879…` and
+the environment must equal it.
+
+Two limits the audit made explicit, both now in the docs. The model name and revision recorded
+beside the digest are **provenance, not a runtime check** (nothing reads them; the quality profile
+loads locally, where the Hub revision is unused). And the digest hashes a whole provisioned
+**tree**, path names included, so it identifies one directory rather than the model in general;
+no shipped command reproduces that tree elsewhere.
+
+**`admission_wait` and `evidence_assembly` timings.** Five stages were timed; queueing and the
+assembly of the client-facing evidence were not. All eight are now on `stage_ms` and observed into
+`METRICS` as `recall_retrieval_stage_ms{profile,stage}` alongside `recall_retrieval_total_ms`
+(backlog item 28), the latter on **every** exit including failures. Every label is
+library-authored; no corpus-derived string can reach one.
+
+**`RetrievalOverloaded` is now a retryable refusal** carrying `reason` and `retry_after_seconds`,
+following `recall_mcp.limits.RateLimited` rather than inventing a second convention (backlog item
+25). The retry hint is capped at 5 s so the legacy profile's 24-day sentinel budget cannot be handed
+to a client.
+
+### What was measured
+
+**The reranker pin, on VPS2.** Root SSH, not qwen-mcp: this program lives in
+`/opt/recall-enterprise`, outside qwen-mcp's four file roots. `artifact_tree_sha256` was
+**reimplemented in a standalone script** and run over the provisioned trees, deliberately not
+importing the deployed wheel, so the result is an independent recomputation rather than the code
+checking itself.
+
+| Tree | Recomputed digest | Agrees with |
+|---|---|---|
+| `models/ms-marco-MiniLM-L-6-v2` | `db6ad87969c7…2ab2a` | `manifest.json`, recorded 2026-08-03 |
+| `models/bge-fastembed-cache` | `9a443d711e06…c919c` | `manifest.json`, and the 2026-08-05 embedding session's own run |
+
+The second row is the positive control: it reproduces a digest two independent tools already agree
+on, so a recomputation that matched the first row by accident would have had to match this one too.
+Nothing under `/opt/recall-enterprise` was modified; the script lives at
+`/var/tmp/recall-reranker-pin-check.py`.
+
+**The latency blocker, restated from observation rather than memory.** VPS2 reported a load average
+of 9.78 / 9.44 / 8.84 on 12 cores during this session, from unrelated live production. Unchanged and
+not worked around. **No timing in this session is cited for any promotion decision**; the only
+numbers taken from VPS2 here are checksums.
+
+### Gates run
+
+| Gate | Result |
+|---|---|
+| `ruff check .` | clean |
+| `mypy` | clean, 139 source files |
+| `pytest -q` | **2316 passed, 35 skipped, 0 failed** (7 m 48 s) on the branch; **2533 passed, 36 skipped, 0 failed** (10 m 04 s) after merging the 28 upstream commits. Throwaway pgvector container on port 5437 |
+| Mutation sweep | **54 of 54 killed** (two repairs along the way; see below) |
+| CCA audit | DEEP tier, 10 auditors, **2 died mid-run**; anti-regression and architect gates both REVISE, then satisfied |
+
+The suite ran against a container created for this session rather than the shared dev database on
+5432, following the previous entry's finding that a test database provisioned before #196 must be
+recreated. Two other containers were up on this machine and were left alone.
+
+### A hazard this session introduced, and caught
+
+Emptying `RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` in `.env.example` (so they default to
+the selected profile rather than to a shared `4` / `16`) would have made the shipped example refuse
+startup: a dotenv load puts an empty **string** in the environment rather than omitting the key, and
+`_positive` read that as a malformed integer. Empty now means unset, with a test asserting that the
+empty and absent resolutions are equal objects rather than merely both non-raising.
+
+Worth naming because the defect was created by a documentation edit and would have been found by an
+operator, not by the suite: nothing tests `.env.example` against the parser.
+
+### Proving the tests can fail
+
+54 mutations, one narrow change each, across `profiles.py`, `service.py`, `server.py`, `rerank.py`,
+`retriever.py` and one against the test file's own leak detector. The harness aborts the entire run
+if a search string is absent or occurs more than once, and it restores by **bytes** rather than
+`write_text`, which is what left ten files spuriously dirty last session. A final pass asserts every
+touched file is byte-identical to its starting content; it was.
+
+**The sweep found a test of mine that could not discriminate**, which is the reason to run it at
+all. `the budget is charged twice, wait included` survived: the fixture queued a request for 200 ms
+and then ran a microsecond search, so even with the wait charged the total stayed inside the 250 ms
+budget and a double-charging implementation passed. The fixture now queues ~150 ms **and** does
+~150 ms of work, so wait plus work crosses the budget while the work alone does not, and it asserts
+both halves of that so a future edit cannot quietly return it to the vacuous shape.
+
+**And one "kill" was not a kill.** `an interrupt during a cold build poisons the cache` reported
+red, but the run said `no tests ran`: the mutated code let a `KeyboardInterrupt` escape the test,
+which aborts the pytest session rather than failing an assertion. **A session that never finished
+is not evidence a test can fail** — the same class as a guard that is silent for an unrelated
+reason. The test now catches it explicitly and calls `pytest.fail`, so the mutation produces a red
+test. All 54 kills are clean assertion failures.
+
+Three others are worth naming because they separate a real guard from a description:
+
+* **"the query is embedded before admission is taken"** inserts one `timed.embed([query])` above the
+  admission block. The rejection still raises and the process still looks like it has working
+  overload control; only `embedder.calls == 0` fails. That assertion is the ordering requirement,
+  and nothing else in the test would have noticed.
+* **"hits carry the fused rank instead of the dense cosine"** replaces the dense score with the RRF
+  value in `recall/retriever.py`. The fixture uses two chunks at cosine 1.0 and 0.6, so a single
+  wrong-but-plausible score cannot satisfy both assertions.
+* **"the log-leak detector reads only the rendered message"** mutates the *test's* own helper. Two
+  of the three planted leaks ride the `extra=` channel and the exception text, which a detector
+  reading `getMessage()` alone would miss, so this proves the detector rather than the code.
+
+The one search-string mismatch this run produced (a wrong indentation) aborted before any test ran,
+which is the harness behaving as designed.
+
+### Decisions a reader should be able to reverse
+
+1. **The budget sheds at the door and never aborts in flight.** The alternative is a hard deadline
+   with a cancellable retrieval, which would need cancellation points the cross-encoder does not
+   offer. Revisit only with a real cancellation mechanism, not with a timer.
+2. **The concurrency numbers (8/32 and 2/8) are unmeasured policy.** They are the first thing to
+   re-derive once a reference host exists. Nothing depends on their exact values.
+3. **`RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` now default to the profile's value**
+   rather than a shared 4/16, and `.env.example` no longer ships those two numbers pre-filled. An
+   operator who had copied the example and relied on the literal `4` will now get the profile
+   default instead. That is the intended direction; it is a behaviour change on an opt-in path.
+4. **A reranker digest that is not the pin refuses.** Fail-closed, and consistent with how
+   `embedding_registry` treats artifacts, but it means an operator with a legitimately different
+   local copy must register an experiment rather than set a variable.
+5. **`RetrievalOverloaded` propagates as an exception with structured fields**, matching
+   `RateLimited`, rather than being mapped to a distinct MCP error type. If the MCP layer ever
+   grows a real status taxonomy, both should move together.
+6. **The stage-timing metric has no tenant dimension.** Profile and stage only. Adding a tenant
+   label would make the series cardinality tenant-controlled, and the gap matrix's note about
+   `MetricsRegistry` accepting unconstrained labels is still open.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** VPS2 showed load average 9.78 on 12 cores during this session. | External dependency. Do not work around it. | Latency is **PENDING**; promotion blocked on latency grounds. Quality and safety gates still run. | unchanged. The budget is now enforced but its VALUE is unvalidated |
+| **No production corpus.** | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
+| **No approved local generator confirmed.** | Open | The generator-neutral evidence path stays unexercised end to end. | unchanged |
+
+### What the next session should start with
+
+1. ~~Session 3 of the backlog, the migration outbox drain.~~ **Landed by a concurrent session while
+   this branch ran** (#198, #201); see the entry directly below. Read that one before planning,
+   because this list was written against a backlog that has since moved.
+2. Backlog item 29, deliberately left here: cover the reranker's offline loader path
+   (`local_files_only`, `artifact_sha256`, `inference_threads`) and the symlink-escape refusal.
+   This session pinned the digest but never loaded a model; the pin and the loader are two
+   different guards and only one of them has been shown to fire.
+3. Decide whether `MetricsRegistry.increment` / `observe` should take an allowlist of label values.
+   Every call site is library-authored today and one new careless call would end that, which is the
+   same shape as the `advice` injection this codebase already fixed once.
+4. Consider a test that parses `.env.example` through the resolvers that read those keys. This
+   session created a startup-refusing example with a one-line documentation edit and caught it by
+   reasoning, not by a gate.
+5. **Decide the tenant-fairness question in admission** (audit item 1 above). The shedding this
+   session added turns one tenant's saturation into every other tenant's rejection, and the rate
+   limiter bounds call rate rather than concurrency. This became a live question because of this
+   change, so it should not wait behind the whole backlog.
+6. **Re-run the two auditors that died**, `code-auditor` and `env-validator`. General code quality
+   and the `.env.example` round trip are unaudited for this change.
+
+---
+
+
+
 ## 2026-08-05, context modes: three modes given a rule each, and two rules that were not enforced
 
 Backlog session 9. Branch cut fresh from `origin/master` at `fa673e5`, in a separate worktree
