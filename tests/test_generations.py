@@ -17,11 +17,7 @@ from recall.generations import (
     NoActiveGeneration,
     UnsafePromotion,
 )
-from recall.generation_store import (
-    LIVE_MANIFEST_STATES,
-    GenerationStore,
-    ImmutableGenerationError,
-)
+from recall.generation_store import GenerationStore, ImmutableGenerationError
 from recall.cli import main as cli_main
 from recall.lineage import (
     ChunkerIdentity,
@@ -721,17 +717,47 @@ def test_every_live_state_is_erasable_and_only_failed_is_not(manager) -> None:
     request answered "check for typos" while the data stays on disk. Only `building` was
     pinned, so `retired` could be dropped with the suite green.
 
-    The expected states are written out LITERALLY and not imported. Iterating
-    `LIVE_MANIFEST_STATES` here would compare the constant with itself, and any edit to it
-    would edit its own test in the same stroke.
+    The iteration domain is EVERY state the schema allows, with the expectation written per
+    state, and it is deliberately not derived from `LIVE_MANIFEST_STATES` nor from any
+    literal that mirrors it. An earlier version looped over a copy of the live list, so
+    dropping `retired` from both the constant and the copy (the edit its own failure message
+    invited) removed that state's behavioural check in the same stroke and stayed green.
+    Here, dropping a state from the constant leaves its `True` entry standing and turns this
+    red; making it green again means writing `False` next to that state, which is an explicit,
+    reviewable claim that such a source is not erasable.
     """
-    expected_live = ("building", "validating", "ready", "active", "retired")
-    assert set(LIVE_MANIFEST_STATES) == set(expected_live), (
-        "the live-state list changed; decide which direction of harm that is, then update "
-        "this literal deliberately"
+    erasable_by_state = {
+        "building": True,
+        "validating": True,
+        "ready": True,
+        "active": True,
+        "retired": True,
+        # A failed build may name objects that never existed at the source, and a tombstone
+        # is permanent, so these must never resolve.
+        "failed": False,
+        # Migration 0008's adopted rows carry a `{"legacy_table": ...}` manifest with no
+        # objects; `sources_in_legacy_table()` is what finds them, not this query.
+        "legacy_unverified": False,
+    }
+    # A state added to the schema must force a decision here rather than fall outside the
+    # sweep unnoticed.
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        allowed = conn.execute(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'recall_generations'::regclass AND contype = 'c' "
+            "AND pg_get_constraintdef(oid) LIKE '%%state%%'"
+        ).fetchone()[0]
+    schema_states = {s for s in erasable_by_state if f"'{s}'::text" in allowed}
+    missing = {
+        s for s in re.findall(r"'([a-z_]+)'::text", allowed)
+    } - set(erasable_by_state)
+    assert not missing, (
+        f"the schema allows states this sweep never exercises: {sorted(missing)}; decide "
+        "whether each is erasable and add it above"
     )
+    assert schema_states == set(erasable_by_state)
 
-    for state in (*expected_live, "failed"):
+    for state, should_resolve in erasable_by_state.items():
         data = f"---\nstatus: current\n---\nnamed only by a {state} generation".encode()
         manifest = _manifest(manager.tenant_id, data, version="v1")
         uri = manifest.objects[0].uri
@@ -754,15 +780,15 @@ def test_every_live_state_is_erasable_and_only_failed_is_not(manager) -> None:
                 "DELETE FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
                 (manager.tenant_id, generation.generation_id),
             )
-        if state == "failed":
-            assert resolved == frozenset(), (
-                "a failed generation's manifest entry resolved, and resolving is what earns "
-                "a permanent tombstone"
-            )
-        else:
+        if should_resolve:
             assert resolved == frozenset({uri}), (
                 f"a source named only by a {state!r} generation did not resolve, so erasing "
                 "it would be refused as a typo while the data stays on disk"
+            )
+        else:
+            assert resolved == frozenset(), (
+                f"a {state!r} generation's manifest entry resolved, and resolving is what "
+                "earns a permanent tombstone"
             )
 
 
@@ -809,7 +835,36 @@ def test_a_non_string_manifest_uri_does_not_resolve(manager) -> None:
 
     with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
         assert store.manifest_uris_matching(["123"]) == frozenset()
-        assert store.sources_in_any_manifest() == frozenset()
+        assert store.sources_for_identifiers(["123"]) == {}
+
+
+@requires_db
+@pytest.mark.parametrize("objects", ["null", "5", '"a string"', "true"])
+def test_a_malformed_objects_value_does_not_abort_the_erasure(manager, objects) -> None:
+    """`jsonb_array_elements` RAISES on a scalar, and this query is now on the CLI path too.
+
+    The `jsonb_typeof(g.manifest->'objects') = 'array'` guard reads like the trap where a
+    WHERE clause cannot protect a FROM clause, and nothing could see it: deleting it left the
+    whole suite green. It is load-bearing. The manifest column is raw JSONB and nothing
+    revalidates its shape on read, so one row like this would turn a right-to-erasure request
+    into `InvalidParameterValue: cannot extract elements from a scalar`, aborting the request
+    rather than answering it. A MISSING `objects` key is already safe (SQL NULL, zero rows)
+    and is NOT what this guards.
+    """
+    data = b"---\nstatus: current\n---\nmalformed manifest"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    uri = manifest.objects[0].uri
+    generation = manager.create(manifest, _pipeline("model-a"))
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        conn.execute(
+            "UPDATE recall_generations SET manifest = %s::jsonb, state = 'ready' "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            (f'{{"objects": {objects}}}', manager.tenant_id, generation.generation_id),
+        )
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        assert store.manifest_uris_matching([uri]) == frozenset()
 
 
 @requires_db
