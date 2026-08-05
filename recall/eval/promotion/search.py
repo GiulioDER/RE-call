@@ -85,6 +85,10 @@ class StoreSearch:
     retrieval_profile: str
     #: A key of `LABEL_KEYS`. Required, with no default: see the module docstring.
     label_kind: str
+    #: Passed to `trusted_search` as `index_generation`, not merely recorded. An earlier version
+    #: stamped `ArmConfig.generation` onto every row while retrieval silently used the default
+    #: "legacy", so the evidence named a generation the search never used.
+    generation: str = "legacy"
     calibration: Calibration | None = None
     reranker: Reranker | None = None
     #: Left as `None` so `trusted_search` applies its own default, which is STRICT. A harness that
@@ -112,6 +116,7 @@ class StoreSearch:
             reranker=self.reranker,
             candidate_k=self.candidate_k,
             retrieval_profile=self.retrieval_profile,
+            index_generation=self.generation,
             policy=self.policy,
         )
         key = LABEL_KEYS[self.label_kind]
@@ -124,9 +129,13 @@ class StoreSearch:
         if self.reranker is None:
             reranking_status = "not_configured"
         else:
-            # `RetrievalDiagnostics.reranking_ran` is set by the retriever itself, so a reranker
-            # that was configured and did not run is visible here rather than being reported as
-            # "not configured" — the two are different systems and must not share a label.
+            # ⚠️ `"failed"` is currently UNREACHABLE from this call site, and saying so is the
+            # point. `HybridRetriever` sets `reranking_ran = self._reranker is not None` BEFORE it
+            # calls the reranker (`recall/retriever.py`), so a reranker that was configured and
+            # then threw is indistinguishable here from one that worked. The three-state field is
+            # kept because the distinction is real and the record schema should be able to carry
+            # it; making it observable needs a change in the retriever, which is outside this
+            # module. Until then this line reports what the diagnostics can actually tell it.
             reranking_status = "ran" if result.diagnostics.reranking_ran else "failed"
         return SearchOutcome(
             retrieved_chunk_ids=ids,

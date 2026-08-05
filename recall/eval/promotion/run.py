@@ -17,6 +17,7 @@ question id is unique within its corpus and not across them.
 """
 from __future__ import annotations
 
+import hashlib
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -50,15 +51,38 @@ class ArmConfig:
     generation: str
     candidate_pool: int
     #: `EmbeddingProfile.fingerprint()`. Not a record field — the record carries the profile ID,
-    #: which is what a human reads — but it keys the arm's artifacts on the COMPLETE immutable
-    #: identity, so two arms sharing a profile ID and differing in artifact digest cannot land in
-    #: the same ledger.
+    #: which is what a human reads — but it is part of what keys the arm's artifacts, so two arms
+    #: sharing a profile ID and differing in artifact digest cannot land in the same ledger.
     embedding_fingerprint: str = ""
 
+    def identity(self) -> tuple[str, str, str, int]:
+        """Everything except the label that decides what an arm's rows MEAN."""
+        return (
+            self.embedding_profile_id,
+            self.retrieval_profile,
+            self.generation,
+            self.candidate_pool,
+        )
+
     def artifact_stem(self) -> str:
-        """A filename stem carrying the arm's full identity, not just its label."""
+        """A filename stem carrying the arm's full identity, not just its label.
+
+        Every field of `identity()` is in here, plus the embedding fingerprint. An earlier version
+        carried only label, profile id and fingerprint, so two arms differing solely in
+        `--retrieval-profile` shared a ledger: the second resumed the first's rows, scored nothing,
+        and the gate compared a file with itself and reported a clean null difference. The
+        docstring at the time claimed the stem carried "the COMPLETE immutable identity", which is
+        why the claim is now spelled out field by field rather than asserted.
+
+        `identity()` is hashed rather than spelled out because a generation id can be long and a
+        filename cannot; `score_arm` checks the fields themselves, so the hash only has to make
+        two different configurations produce two different names.
+        """
         fingerprint = self.embedding_fingerprint[:16] or "nofingerprint"
-        return f"{self.label}.{self.embedding_profile_id}.{fingerprint}"
+        config = hashlib.sha256(
+            "\x00".join(str(part) for part in self.identity()).encode("utf-8")
+        ).hexdigest()[:12]
+        return f"{self.label}.{self.embedding_profile_id}.{fingerprint}.{config}"
 
 
 @dataclass(frozen=True)
@@ -114,8 +138,34 @@ def score_arm(
     by_identity: dict[tuple[str, str], QuestionRecord] = {}
     for row in existing.rows:
         record = record_from_dict(row)
+        # A resumed row must have been produced by THIS arm's configuration. The filename keys on
+        # it too, but a caller may pass `--out` explicitly, and "the file was named right" is a
+        # weaker claim than "the rows say what produced them". Without this, a re-run under a
+        # different retrieval profile reported `scored_now: 0, resumed: 25` and returned the old
+        # profile's rows under the new profile's label.
+        found = (
+            record.embedding_profile_id,
+            record.retrieval_profile,
+            record.generation,
+            record.candidate_pool,
+        )
+        if found != arm.identity():
+            raise ValueError(
+                f"{ledger_path}: {record.corpus}/{record.question_id} was scored under "
+                f"{found}, but this arm is {arm.identity()}. Resuming would publish another "
+                f"configuration's rows as this arm's evidence; score into a new ledger."
+            )
         by_identity[(record.corpus, record.question_id)] = record
     resumed = len(by_identity)
+    if not resume and ledger_path.exists() and ledger_path.stat().st_size:
+        # Reading nothing while still appending leaves two generations of rows in one file, and
+        # `read_ledger` keeps the FIRST occurrence of an id — so every later read of that ledger,
+        # including `decide`'s, would return the rows this run was told to discard.
+        raise FileExistsError(
+            f"{ledger_path} already holds rows and resume is off. Appending would leave two "
+            f"generations of the same questions in one ledger, and the discarded ones would win "
+            f"on every later read. Remove it, or score into a new ledger."
+        )
 
     scored_now = 0
     for question in sorted(frozen, key=lambda q: (q.corpus, q.question_id)):

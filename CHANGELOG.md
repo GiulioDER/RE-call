@@ -55,8 +55,15 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   the tenant list.
 
 ### Changed
+- **`SafetyMetrics.superseded_trust_rate` accepts `None`, meaning NOT MEASURED, and NOT MEASURED
+  is a FAILURE.** An arm scored under a degraded trust policy has every verdict overwritten with
+  `unverified` by `recall/trust.py`, *after* the trust layer computed the real one, so a superseded
+  hit and a clean one leave identical rows. Encoding that as `0.0` SATISFIED the gate's
+  zero-tolerance check by never having measured it. Same shape as PENDING latency, and it blocks
+  the same way.
 - **`RetrievalGateInput.latency_p95_ms` accepts `None`, meaning PENDING, and PENDING is a
-  FAILURE.** The program has no idle reference environment (VPS2 carries a permanent load average
+  FAILURE.** A non-finite or non-positive value is also a failure: `nan > budget` is False, so a
+  NaN would otherwise pass the budget check and be reported as MEASURED. The program has no idle reference environment (VPS2 carries a permanent load average
   near 8 from unrelated production), so every promotion decision it can produce today is PENDING on
   latency. The two alternative encodings were both worse: a default of `0.0` makes an unmeasured
   latency the fastest possible one, and omitting the check makes a missing measurement

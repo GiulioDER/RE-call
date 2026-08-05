@@ -378,15 +378,18 @@ def test_a_search_must_declare_which_id_space_its_labels_live_in() -> None:
 def test_the_decision_records_which_trust_verdicts_produced_it() -> None:
     """`false_confidence: 1.0` from a degraded run must not read as a property of the retriever."""
     frozen = _corpus("alpha")
+    # One real verdict, so the arm is not WHOLLY degraded — a wholly degraded arm reports its
+    # superseded rate as NOT MEASURED and is covered by its own test.
     arm = [
-        _record(question, hit=question.answerable, verdict="unverified") for question in frozen
-    ]
+        _record(question, hit=question.answerable, verdict="unverified")
+        for question in frozen[:-1]
+    ] + [_record(frozen[-1], hit=False, abstained=True)]
     _, document = decide(
         arm, list(arm), frozen,
         manifest_digest="d", baseline_label="b", candidate_label="c",
         security_green=True, latency_budget_ms=250.0, bootstrap_samples=200,
     )
-    assert document["trust_verdicts"]["baseline"] == {"unverified": 24}
+    assert document["trust_verdicts"]["baseline"] == {"abstained": 1, "unverified": 23}
 
 
 def test_the_original_regression_test_still_holds() -> None:

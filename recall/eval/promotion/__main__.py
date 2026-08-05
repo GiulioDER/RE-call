@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import sys
 import uuid
 from collections.abc import Iterator
@@ -116,7 +117,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     reason = adapter.unavailable_reason()
     if reason is not None:
         raise SystemExit(reason)
-    scoped = [question for question in frozen if question.corpus == adapter.name]
+    # `startswith` as well as equality: `MtragAdapter` stamps `mtrag:<domain>` as the corpus
+    # so the gate stratifies per domain, and an equality-only filter made `--corpus mtrag`
+    # match nothing at all — the corpus was wired and unrunnable.
+    prefix = f"{adapter.name}:"
+    scoped = [
+        question
+        for question in frozen
+        if question.corpus == adapter.name or question.corpus.startswith(prefix)
+    ]
     if not scoped:
         raise SystemExit(
             f"the manifest holds no question for corpus {adapter.name!r}; it covers "
@@ -152,6 +161,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             k=args.k,
             candidate_k=args.candidate_k,
             retrieval_profile=args.retrieval_profile,
+            generation=args.generation,
             label_kind=label_kind(adapter),
             policy=policy,
         )
@@ -184,15 +194,21 @@ def cmd_decide(args: argparse.Namespace) -> int:
     frozen, header = read_manifest(args.manifest)
     baseline = _load_records(args.baseline)
     candidate = _load_records(args.candidate)
-    scoped = [
-        question
-        for question in frozen
-        if question.corpus in {record.corpus for record in baseline}
-    ]
+    # The whole frozen manifest, never a subset derived from the evidence files. An earlier
+    # version narrowed `frozen` to the corpora present in the BASELINE ledger, which defeated the
+    # first refusal this harness declares: a corpus missing from both arms was silently dropped,
+    # `UnpairedArms` never saw it, and the decision was stamped with the FULL manifest digest —
+    # certifying a question set that was never gated. Measured on a two-corpus manifest: with both
+    # corpora present the gate returned `promoted=false` citing a regression on the second; with
+    # that corpus absent from both ledgers the same manifest returned `promoted=true`.
+    #
+    # Restricting a campaign to fewer corpora is a legitimate thing to want. It is done by
+    # freezing a manifest for those corpora, which produces its own digest, not by handing the
+    # gate a manifest whose questions were quietly discarded.
     decision, document = run_gate(
         baseline,
         candidate,
-        scoped or frozen,
+        frozen,
         manifest_digest=header["digest"],
         baseline_label=args.baseline_label,
         candidate_label=args.candidate_label,
@@ -225,7 +241,15 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--expected-digest", default=None)
     run.add_argument("--corpus", required=True, choices=sorted(ADAPTERS))
     run.add_argument("--arm", required=True, help="this arm's label, e.g. baseline or candidate")
-    run.add_argument("--dsn", required=True)
+    run.add_argument(
+        "--dsn",
+        default=os.environ.get("RECALL_SERVING_DSN") or os.environ.get("RECALL_DSN"),
+        help=(
+            "defaults to $RECALL_SERVING_DSN or $RECALL_DSN. Prefer the environment: a DSN on "
+            "the command line puts the database password into argv, where any local user can "
+            "read it for the whole run, and into shell history and CI logs."
+        ),
+    )
     run.add_argument("--corpus-dir", type=Path, default=None)
     run.add_argument(
         "--embedder",
