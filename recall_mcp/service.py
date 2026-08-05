@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from functools import lru_cache
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -22,14 +24,19 @@ from recall.context import context_policy_for_profile
 from recall.control_plane import ControlPlane
 from recall.index import Indexer, ShadowIndexTarget, candidate_files
 from recall.observability import METRICS, get_logger
-from recall.profiles import RetrievalAdmission, RetrievalProfile, resolve_retrieval_profile
-from recall.rerank import DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION, Reranker
+from recall.profiles import (
+    RetrievalAdmission,
+    RetrievalOverloaded,
+    RetrievalProfile,
+    resolve_retrieval_profile,
+)
 from recall.evidence import (
     EvidenceBundle,
     EvidencePolicy,
     build_evidence_bundle,
     render_evidence_prompt,
 )
+from recall.rerank import DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION, Reranker
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
 from recall.trust import trusted_search
@@ -242,7 +249,32 @@ class SearchResult(BaseModel):
     index_generation: str = "legacy"
     candidate_pool_size: int = 20
     reranking_ran: bool = False
-    stage_ms: dict[str, float] = Field(default_factory=dict)
+    stage_ms: dict[str, float] = Field(
+        default_factory=dict,
+        description="Per-stage wall time in milliseconds: admission_wait, query_embedding, "
+        "dense_retrieval, sparse_retrieval, fusion, reranking, trust_evaluation, "
+        "evidence_assembly. Stage names are library constants and carry no corpus-derived text.",
+    )
+    total_ms: float = Field(
+        default=0.0,
+        description="Wall time for the whole request, admission wait included. Larger than the "
+        "sum of the retrieval stages: the supersession fetch sits outside every bracket.",
+    )
+    latency_budget_ms: int | None = Field(
+        default=None,
+        description="The active profile's per-request budget, or null when no budget is "
+        "enforced (the legacy profile). A request that cannot START within it is shed before "
+        "embedding; one whose own work runs over it is reported below.",
+    )
+    budget_exceeded: bool = Field(
+        default=False,
+        description="True when this request's own work (total_ms minus admission_wait) exceeded "
+        "latency_budget_ms. Time spent queued is deliberately excluded: the budget is the "
+        "admission timeout, so charging it again end to end would spend the same allowance "
+        "twice and label a fast retrieval slow because another request was ahead of it. The "
+        "answer is still served — aborting mid-flight would pay the whole cost and return "
+        "nothing.",
+    )
     hits: list[SearchHit]
 
 
@@ -269,6 +301,10 @@ class EvidenceResult(BaseModel):
     content cannot close. A client is free to send these two messages to any generator it likes —
     that neutrality is the point — and to validate the returned envelope with
     `recall.validate_answer`.
+
+    The cost surface mirrors `SearchResult`'s, field for field. This tool does the same retrieval
+    work, so leaving it out would make a deployment whose clients prefer `recall_evidence` report
+    no retrieval latency at all — a hole in the population the p95 is computed over.
     """
 
     query: str
@@ -296,6 +332,10 @@ class EvidenceResult(BaseModel):
     user_message: str = Field(description="Delimited, JSON-escaped evidence payload.")
     items: list[EvidenceItemModel]
     advice: str = Field(description="What to do with this bundle. Library-authored throughout.")
+    stage_ms: dict[str, float] = Field(default_factory=dict)
+    total_ms: float = 0.0
+    latency_budget_ms: int | None = None
+    budget_exceeded: bool = False
 
 
 class IndexResult(BaseModel):
@@ -411,6 +451,36 @@ def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str] | Non
     return (model, revision)
 
 
+def _validate_quality_reranker_config(values: dict[str, str]) -> tuple[str, str]:
+    """`(model_path, digest)` for the quality profile, or raise. No model is loaded.
+
+    The digest must EQUAL the pin. Accepting whatever the operator typed would make the
+    `local_files_only` verification self-referential: it would prove the tree matches the hash of
+    itself, which every tree does. The check that means something compares it against a value
+    chosen elsewhere.
+    """
+    from recall.rerank import PINNED_RERANKER_SHA256
+
+    # Normalise ONCE, compare the normalised value, and return the normalised value. Validating
+    # one string and handing the loader a different one re-opens the hole this check closed:
+    # `verify_artifact` rejects on LENGTH before it lowercases, so a digest that is correct
+    # except for a trailing newline (what a dotenv literal block or a padded `.env` line
+    # produces) passed startup and then raised on the first search.
+    model_path = values.get("RECALL_RERANK_PATH", "").strip()
+    digest = values.get("RECALL_RERANK_SHA256", "").strip().lower()
+    if not model_path or not digest:
+        raise ValueError(
+            "quality profile requires RECALL_RERANK_PATH and RECALL_RERANK_SHA256"
+        )
+    if digest != PINNED_RERANKER_SHA256:
+        raise ValueError(
+            f"RECALL_RERANK_SHA256 does not match the reranker pinned to the quality profile "
+            f"(expected {PINNED_RERANKER_SHA256}). A different artifact tree is a different "
+            f"model and needs its own registered experiment, not a reused profile."
+        )
+    return model_path, digest
+
+
 def _new_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pragma: no cover
     """Instantiate the configured reranker, or None. Imports torch only when actually enabled."""
     values = dict(os.environ) if env is None else env
@@ -418,12 +488,7 @@ def _new_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pr
     if profile.name == "fast":
         return None
     if profile.name == "quality":
-        model_path = values.get("RECALL_RERANK_PATH", "")
-        digest = values.get("RECALL_RERANK_SHA256", "")
-        if not model_path or not digest:
-            raise ValueError(
-                "quality profile requires RECALL_RERANK_PATH and RECALL_RERANK_SHA256"
-            )
+        model_path, digest = _validate_quality_reranker_config(values)
         from recall.rerank import CrossEncoderReranker
 
         return CrossEncoderReranker(
@@ -442,18 +507,124 @@ def _new_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pr
     return CrossEncoderReranker(model=model, revision=revision)
 
 
-@lru_cache(maxsize=1)
-def _shared_reranker() -> "Reranker | None":  # pragma: no cover
-    return _new_reranker()
+#: ONE reranker per worker process, built once, keyed by the resolved profile.
+#:
+#: `lru_cache` was not enough and the difference is not academic. A cache lookup is not a
+#: construction lock: N threads arriving on a cold cache all miss, all call the factory, and all
+#: load their own copy of a cross-encoder. That is hundreds of megabytes per surplus copy, at the
+#: one moment the process is least able to afford it — a cold start under load. The lock makes
+#: "one per worker" a property of the code rather than of the arrival pattern.
+#:
+#: Keyed by profile rather than stored in a single slot so a process whose profile changes (only
+#: tests do this; production selects one profile per process) cannot be served a reranker built
+#: for the other one.
+_RERANKER_LOCK = threading.Lock()
+#: Maps profile name to the built reranker, or to a `(type, args)` description of the failure.
+#:
+#: FAILURES are cached too. Caching only successes meant a bad artifact re-ran the full
+#: tree-SHA256 over a several-hundred-megabyte model directory on EVERY client search, while
+#: holding both this lock and an admission running slot: a configuration error turned into a
+#: self-inflicted disk-and-CPU load that grew with traffic.
+#:
+#: A DESCRIPTION rather than the exception object, and this is not fastidiousness. Re-raising one
+#: instance appends the current frame to its `__traceback__` every time, and each retained frame
+#: pins its locals — which on this path include the caller's QUERY TEXT and the store. That would
+#: be an unbounded memory leak that also retains user text for the process lifetime, on the very
+#: path the caching was added to make cheap. Caching the instance and clearing its traceback at
+#: each raise would preserve more state, but two threads raising one shared object race on
+#: `__traceback__`; a fresh instance per raise cannot.
+#:
+#: ⚠️ Known fidelity limit: `(type, args)` does not round-trip the `OSError` family exactly. A bad
+#: `RECALL_RERANK_PATH` reports the offending path on the FIRST failure and drops it (along with
+#: `filename` / `winerror`) on cached repeats. The error class and the reason survive; the path
+#: does not. Accepted because the first occurrence is the diagnostic one and thread safety is not.
+_RERANKERS: dict[str, "Reranker | None | tuple[type[Exception], tuple[object, ...]]"] = {}
 
 
-def _build_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pragma: no cover
-    return _new_reranker(env) if env is not None else _shared_reranker()
+def _reset_reranker_cache() -> None:
+    """Drop the per-process reranker. For tests — a server should never need this."""
+    with _RERANKER_LOCK:
+        _RERANKERS.clear()
 
 
-@lru_cache(maxsize=8)
+def _build_reranker(
+    profile: RetrievalProfile | None = None, env: dict[str, str] | None = None
+) -> "Reranker | None":
+    if env is not None:  # explicit environment: an ad-hoc instance, never the shared one
+        return _new_reranker(env)
+    name = (profile or resolve_retrieval_profile()).name
+    with _RERANKER_LOCK:
+        if name not in _RERANKERS:
+            # `Exception`, deliberately not `BaseException`. A configuration error is
+            # deterministic and caching its verdict is right; a `KeyboardInterrupt` or a
+            # `SystemExit` arriving during a cold build says nothing about the artifact, and
+            # caching it would turn a transient event into a process-lifetime outage.
+            try:
+                _RERANKERS[name] = _new_reranker()
+            except Exception as exc:
+                _RERANKERS[name] = (type(exc), exc.args)
+                raise
+        cached = _RERANKERS[name]
+    if isinstance(cached, tuple):
+        failure_type, failure_args = cached
+        raise failure_type(*failure_args)
+    return cached
+
+
+_ADMISSION_LOCK = threading.Lock()
+_ADMISSIONS: dict[tuple[str, int, int, int], RetrievalAdmission] = {}
+
+
 def _admission(profile: RetrievalProfile) -> RetrievalAdmission:
-    return RetrievalAdmission(profile)
+    """The admission queue for one profile.
+
+    Keyed on `queue_identity` rather than on the whole profile, and built under a lock rather
+    than memoised with `lru_cache`, for the two reasons this module already argues for the
+    reranker. A cache lookup is not a construction lock, so concurrent cold-start callers could
+    each receive their own full-capacity queue; and an `lru_cache` keyed on the whole profile
+    made `inference_threads` part of a queue's identity, so two profiles that mean the same queue
+    got two of them. Both defects raise the enforced concurrency bound silently, which is the one
+    direction a bound must never move on its own.
+
+    Fast and quality still hold SEPARATE budgets: saturating one cannot shed requests on the
+    other. In production only one profile is resolved, so this is one queue.
+    """
+    key = profile.queue_identity
+    with _ADMISSION_LOCK:
+        existing = _ADMISSIONS.get(key)
+        if existing is None:
+            existing = _ADMISSIONS[key] = RetrievalAdmission(profile)
+        return existing
+
+
+def startup_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalProfile:
+    """Resolve and fully validate the process profile. Called once, at server startup.
+
+    Resolution alone used to happen on the first search, which meant a contradictory
+    `RECALL_RETRIEVAL_PROFILE` / `RECALL_RERANK` pair, or a quality profile with no pinned
+    reranker artifact, produced a server that started clean and failed on its first client
+    request. "Refuses startup" has to mean startup.
+
+    Deliberately does NOT import torch or load the model: this runs before the store is opened,
+    and a config error should be reported in milliseconds. Everything checked here is the part a
+    misconfiguration gets wrong; the artifact itself is verified when the reranker is built.
+    """
+    values = dict(os.environ) if env is None else env
+    profile = resolve_retrieval_profile(values)
+    if profile.reranker:
+        _validate_quality_reranker_config(values)
+    return profile
+
+
+@dataclass(frozen=True)
+class _Retrieval:
+    """One executed retrieval, with everything the two cost surfaces are computed from."""
+
+    result: TrustedResult
+    timed: TimedEmbedder
+    profile: RetrievalProfile
+    request_started: float
+    admission_wait_ms: float
 
 
 def _retrieve_trusted(
@@ -464,14 +635,15 @@ def _retrieve_trusted(
     k: int,
     calibration: Calibration | None,
     policy: TrustPolicy | None,
-) -> tuple[TrustedResult, TimedEmbedder]:
-    """The retrieval half shared by `search_memory` and `evidence_memory`.
+) -> _Retrieval:
+    """The guarded, instrumented retrieval shared by `search_memory` and `evidence_memory`.
 
-    Extracted rather than duplicated because everything in it is a GUARD — the query-length
-    refusal, the `k` clamp that stops a client asking for a more expensive profile, and the
-    admission block that must be entered BEFORE the query is embedded. A second entry point with
-    its own copy of these would be a second place for one of them to go missing, and the one that
-    went missing would be invisible: the tool would still return answers.
+    Extracted rather than copied because every line of it is a GUARD or an observation: the
+    query-length refusal, the `k` clamp that stops a client buying a more expensive profile, the
+    admission block that must be entered BEFORE the query is embedded, the shed-versus-failure
+    ordering, and the two counters that keep those apart. A second entry point with its own copy
+    would be a second place for one of them to go missing — and the one that went missing would be
+    invisible, because the tool would still return answers.
     """
     if len(query) > MAX_QUERY_CHARS:
         # Refused, not truncated. Searching a prefix answers a question the caller did not ask
@@ -486,17 +658,102 @@ def _retrieve_trusted(
     profile = resolve_retrieval_profile()
     k = max(1, min(k, MAX_SEARCH_K))
     if profile.name != "legacy":
+        # A client cannot buy its way onto a bigger result set than the process profile allows.
+        # Selection is process level by design: `k` is clamped, never escalated.
         k = min(k, profile.returned_k)
     timed = TimedEmbedder(embedder)  # measure embedding latency without altering trusted_search
     generation = str(getattr(store, "generation_id", "legacy"))
-    with _admission(profile):
-        result = trusted_search(
-            store, timed, query, k=k, source=source, calibration=calibration,
-            reranker=_build_reranker(), candidate_k=profile.candidate_k,
-            retrieval_profile=profile.name, index_generation=generation,
-            policy=policy,
+    request_started = time.perf_counter()
+    admission_wait_ms = 0.0
+    try:
+        with _admission(profile):
+            # The wait ends here, so this is where it is measured. It becomes a stage of its own
+            # rather than an unattributed part of the total: a request that was slow because it
+            # queued and one that was slow because it retrieved are different operational
+            # problems, and a single number cannot tell them apart.
+            admission_wait_ms = (time.perf_counter() - request_started) * 1000.0
+            result = trusted_search(
+                store, timed, query, k=k, source=source, calibration=calibration,
+                reranker=_build_reranker(profile), candidate_k=profile.candidate_k,
+                retrieval_profile=profile.name, index_generation=generation,
+                policy=policy,
+            )
+    # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
+    # counted as a rejection and NOTHING else. Shedding is the design working: the request did no
+    # work by construction, so booking it as a failure would make healthy load shedding
+    # indistinguishable from an outage, and feeding its budget-length wait into the served-latency
+    # histogram would contaminate that population with rejections in exactly the overload regime
+    # where the p95 matters most.
+    except RetrievalOverloaded as exc:
+        # Library-authored labels only. The request cost nothing: admission is taken BEFORE the
+        # embedder, which is the entire reason the gate is there and not one layer down.
+        METRICS.increment(
+            "recall_retrieval_rejected_total", profile=profile.name, reason=exc.reason
         )
-    return result, timed
+        raise
+    except BaseException:
+        # A request that DID work and then failed is observed, unlike one that was shed.
+        # `recall.observability` states the rule for `METRICS.timer` in as many words: a timer
+        # that only records on success hides exactly the slow path worth finding. A store stall
+        # ending in DEPENDENCY_UNAVAILABLE after thirty seconds is the request an operator most
+        # needs in the population, and it was contributing nothing.
+        METRICS.observe(
+            "recall_retrieval_total_ms",
+            round((time.perf_counter() - request_started) * 1000.0, 3),
+            profile=profile.name,
+        )
+        METRICS.increment("recall_retrieval_failed_total", profile=profile.name)
+        raise
+    return _Retrieval(result, timed, profile, request_started, admission_wait_ms)
+
+
+def _cost_surface(
+    retrieval: _Retrieval, assembly_started: float
+) -> tuple[dict[str, float], float, bool]:
+    """Stage timings, total, and the budget verdict — the surface both tools report.
+
+    Shared for the same reason `_retrieve_trusted` is: the budget rule below is subtle enough that
+    two copies would eventually disagree, and the copy that drifted would be the one nobody was
+    reading.
+    """
+    profile = retrieval.profile
+    stage_ms = dict(retrieval.result.diagnostics.stage_ms)
+    stage_ms["admission_wait"] = round(retrieval.admission_wait_ms, 3)
+    stage_ms["evidence_assembly"] = round(
+        (time.perf_counter() - assembly_started) * 1000.0, 3
+    )
+    elapsed_ms = (time.perf_counter() - retrieval.request_started) * 1000.0
+    total_ms = round(elapsed_ms, 3)
+    # The budget is charged ONCE. It is the admission timeout, so a request may legitimately wait
+    # almost the whole budget before it starts; comparing the budget against a total that
+    # includes that wait spends the same allowance twice, and a request whose own retrieval was
+    # fast gets labelled slow because someone else was ahead of it. The verdict is therefore
+    # computed on the work this request actually did. `total_ms` still reports client-visible
+    # latency, which is a different and also necessary number.
+    #
+    # Compared UNROUNDED: rounding to three decimals first would put a measurement of 250.0004 ms
+    # on the safe side of a 250 ms threshold. The magnitude is half a microsecond here; the habit
+    # is what matters, since the same pattern at a coarser rounding is silent.
+    served_ms = elapsed_ms - retrieval.admission_wait_ms
+    budget = profile.enforced_budget_ms
+    budget_exceeded = budget is not None and served_ms > budget
+    for stage, value in stage_ms.items():
+        # Labels are library constants (`profile.name` is a Literal, stage names are ours). No
+        # corpus-derived string can reach a metric label through here.
+        METRICS.observe(
+            "recall_retrieval_stage_ms", value, profile=profile.name, stage=stage
+        )
+    METRICS.observe("recall_retrieval_total_ms", total_ms, profile=profile.name)
+    if budget_exceeded:
+        METRICS.increment("recall_retrieval_budget_exceeded_total", profile=profile.name)
+        # Numbers and the profile name only. An over-budget request is exactly the one an
+        # operator wants to grep for, so it is also exactly the wrong place to put the query.
+        _log.warning(
+            "retrieval served in %.1f ms against the %d ms budget of profile %r "
+            "(%.1f ms queued, %.1f ms total)",
+            served_ms, budget, profile.name, retrieval.admission_wait_ms, total_ms,
+        )
+    return stage_ms, total_ms, budget_exceeded
 
 
 def search_memory(
@@ -520,7 +777,13 @@ def search_memory(
     are demoted below valid ones, and when no valid hit remains the result abstains.
     `k` is clamped to [1, MAX_SEARCH_K] so an untrusted client cannot request an unbounded result set.
     """
-    result, timed = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
+    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
+    result, timed = retrieval.result, retrieval.timed
+    # `evidence_assembly` is the last stage and the one the surface did not carry. It brackets
+    # turning trusted hits into the client-facing evidence: provenance, validity, verdicts and
+    # the library-authored advice. It is small, and that is the point — a stage nobody measures
+    # is a stage nobody can rule out when a p95 moves.
+    assembly_started = time.perf_counter()
     hits = [
         SearchHit(
             chunk_id=h.chunk.id,
@@ -593,6 +856,8 @@ def search_memory(
         )
     if result.staleness.stale:
         advice += " NOTE: the memory index is stale — consider re-indexing."
+
+    stage_ms, total_ms, budget_exceeded = _cost_surface(retrieval, assembly_started)
     return SearchResult(
         query=query,
         abstained=result.abstained,
@@ -617,7 +882,10 @@ def search_memory(
         index_generation=result.diagnostics.index_generation,
         candidate_pool_size=result.diagnostics.candidate_pool_size,
         reranking_ran=result.diagnostics.reranking_ran,
-        stage_ms=result.diagnostics.stage_ms,
+        stage_ms=stage_ms,
+        total_ms=total_ms,
+        latency_budget_ms=retrieval.profile.enforced_budget_ms,
+        budget_exceeded=budget_exceeded,
         hits=hits,
     )
 
@@ -674,15 +942,35 @@ def evidence_memory(
     "generator neutral" means here. So the tool stops one step short: it returns the bundle and
     the two rendered messages, and the client runs its own model against them.
 
-    Additive to `search_memory`, which is unchanged. Both go through `_retrieve_trusted`, so this
-    path cannot skip the query-length refusal, the `k` clamp or the admission block.
+    Additive to `search_memory`, which is unchanged. Both go through `_retrieve_trusted` and
+    `_cost_surface`, so this path cannot skip the query-length refusal, the `k` clamp, the
+    admission block, the shed-versus-failure accounting or the budget verdict.
     """
-    result, _timed = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
+    retrieval = _retrieve_trusted(store, embedder, query, source, k, calibration, policy)
+    result = retrieval.result
+    assembly_started = time.perf_counter()
     # `max_items` bounds what a client may be handed; `k` already bounds what was retrieved. The
     # clamp is `min`, so a client asking for more items than hits cannot widen the bundle.
     limit = max(1, min(max_items if max_items is not None else k, MAX_SEARCH_K))
     bundle = build_evidence_bundle(result, EvidencePolicy(max_items=limit))
     system, user = render_evidence_prompt(bundle)
+    items = [
+        EvidenceItemModel(
+            chunk_id=item.chunk_id,
+            text=item.text,
+            source=item.source,
+            ordinal=item.ordinal,
+            indexed_at=item.indexed_at.isoformat() if item.indexed_at else None,
+            valid_from=item.valid_from.isoformat() if item.valid_from else None,
+            valid_until=item.valid_until.isoformat() if item.valid_until else None,
+            cosine=round(item.cosine, 4),
+            confidence=round(item.confidence, 4),
+            verdict=item.verdict,
+        )
+        for item in bundle.items
+    ]
+    advice = _evidence_advice(bundle, result)
+    stage_ms, total_ms, budget_exceeded = _cost_surface(retrieval, assembly_started)
     return EvidenceResult(
         query=query,
         decision=bundle.decision,
@@ -696,22 +984,12 @@ def evidence_memory(
         index_generation=bundle.index_generation,
         system_prompt=system,
         user_message=user,
-        items=[
-            EvidenceItemModel(
-                chunk_id=item.chunk_id,
-                text=item.text,
-                source=item.source,
-                ordinal=item.ordinal,
-                indexed_at=item.indexed_at.isoformat() if item.indexed_at else None,
-                valid_from=item.valid_from.isoformat() if item.valid_from else None,
-                valid_until=item.valid_until.isoformat() if item.valid_until else None,
-                cosine=round(item.cosine, 4),
-                confidence=round(item.confidence, 4),
-                verdict=item.verdict,
-            )
-            for item in bundle.items
-        ],
-        advice=_evidence_advice(bundle, result),
+        items=items,
+        advice=advice,
+        stage_ms=stage_ms,
+        total_ms=total_ms,
+        latency_budget_ms=retrieval.profile.enforced_budget_ms,
+        budget_exceeded=budget_exceeded,
     )
 
 

@@ -244,7 +244,8 @@ def test_the_mcp_search_result_keeps_every_field_it_already_carried(patched_sear
         "trust_state", "failure_code", "tenant_id", "generation_id", "pipeline_fingerprint",
         "corpus_fingerprint", "query_set_digest", "gap_warning", "stale", "advice", "embed_ms",
         "rerank_ms", "embedding_profile", "retrieval_profile", "index_generation",
-        "candidate_pool_size", "reranking_ran", "stage_ms", "hits",
+        "candidate_pool_size", "reranking_ran", "stage_ms", "total_ms", "latency_budget_ms",
+        "budget_exceeded", "hits",
     }
     frozen_hit_fields = {
         "chunk_id", "source", "score", "confidence", "verdict", "superseded_by", "valid_until",
@@ -285,6 +286,27 @@ def test_the_mcp_evidence_tool_returns_the_bundle_and_the_prompt(patched_search)
     assert result.system_prompt == SYSTEM_PROMPT
     assert result.user_message.startswith(EVIDENCE_OPEN)
     assert result.user_message.endswith(EVIDENCE_CLOSE)
+
+
+def test_the_evidence_tool_reports_the_same_cost_surface_as_search(patched_search) -> None:
+    """A second retrieval path that reported no latency would be a hole in the p95's population.
+
+    Both tools do the same retrieval work, so both go through `_cost_surface`. Asserted on the
+    stage NAMES rather than on the numbers: the timings are real wall clock and would make this a
+    flaky test, while a missing bracket is exactly the defect worth catching.
+    """
+    from recall_mcp.service import evidence_memory, search_memory
+
+    patched_search["result"] = _result([_hit()])
+
+    searched = search_memory(_Store(), _Embedder(), "q")
+    evidence = evidence_memory(_Store(), _Embedder(), "q")
+
+    assert set(evidence.stage_ms) == set(searched.stage_ms)
+    assert {"admission_wait", "evidence_assembly"} <= set(evidence.stage_ms)
+    assert evidence.total_ms > 0.0
+    assert evidence.latency_budget_ms == searched.latency_budget_ms
+    assert evidence.budget_exceeded is searched.budget_exceeded
 
 
 def test_the_mcp_evidence_advice_is_library_authored_end_to_end(patched_search) -> None:
