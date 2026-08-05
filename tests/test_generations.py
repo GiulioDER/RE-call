@@ -709,6 +709,178 @@ def test_forget_refuses_a_url_only_a_failed_generation_names(manager, monkeypatc
 
 
 @requires_db
+def test_every_live_state_is_erasable_and_only_failed_is_not(manager) -> None:
+    """Both directions of the state list, pinned per state.
+
+    Admitting a state too many is a permanent tombstone on a URI that was never in the
+    corpus. Dropping one is the mirror harm and the quieter one: a genuine right-to-erasure
+    request answered "check for typos" while the data stays on disk. Only `building` was
+    pinned, so `retired` could be dropped with the suite green.
+
+    The iteration domain is EVERY state the schema allows, with the expectation written per
+    state, and it is deliberately not derived from `LIVE_MANIFEST_STATES` nor from any
+    literal that mirrors it. An earlier version looped over a copy of the live list, so
+    dropping `retired` from both the constant and the copy (the edit its own failure message
+    invited) removed that state's behavioural check in the same stroke and stayed green.
+    Here, dropping a state from the constant leaves its `True` entry standing and turns this
+    red; making it green again means writing `False` next to that state, which is an explicit,
+    reviewable claim that such a source is not erasable.
+    """
+    erasable_by_state = {
+        "building": True,
+        "validating": True,
+        "ready": True,
+        "active": True,
+        "retired": True,
+        # A failed build may name objects that never existed at the source, and a tombstone
+        # is permanent, so these must never resolve.
+        "failed": False,
+        # Migration 0008's adopted rows carry a `{"legacy_table": ...}` manifest with no
+        # objects; `sources_in_legacy_table()` is what finds them, not this query.
+        "legacy_unverified": False,
+    }
+    # A state added to EITHER domain must force a decision here rather than fall outside the
+    # sweep unnoticed. Both are checked because they fail differently: the enum is what the
+    # code can produce, the CHECK constraint is what the database will accept, and a state
+    # can be added to one without the other.
+    assert {s.value for s in GenerationState} == set(erasable_by_state), (
+        "GenerationState and this sweep disagree; decide whether the new state is erasable "
+        "and add it above"
+    )
+    # Selected BY NAME. Filtering on `LIKE '%state%'` matched any other check constraint whose
+    # text merely mentions the column, and `fetchone()` has no ORDER BY, so an unrelated
+    # constraint could become the one parsed.
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        rows = conn.execute(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'recall_generations'::regclass "
+            "AND conname = 'recall_generations_state_check'"
+        ).fetchall()
+    assert len(rows) == 1, f"expected exactly one state CHECK constraint, found {len(rows)}"
+    # `[^']+`, not `[a-z_]+`: a name carrying a digit or a capital (`archived_v2`) did not
+    # match, so `schema_states` came back short, the difference was empty, and the assertion
+    # passed while exercising nothing. The positive control (an all-lowercase name) fired
+    # correctly throughout, which is precisely why the gap survived: it validated the
+    # mechanism and said nothing about its scope.
+    schema_states = set(re.findall(r"'([^']+)'::text", rows[0][0]))
+    assert schema_states == set(erasable_by_state), (
+        "the schema's state domain and this sweep disagree "
+        f"(only in schema: {sorted(schema_states - set(erasable_by_state))}; "
+        f"only in sweep: {sorted(set(erasable_by_state) - schema_states)}); decide whether "
+        "each is erasable and update the map above"
+    )
+
+    for state, should_resolve in erasable_by_state.items():
+        data = f"---\nstatus: current\n---\nnamed only by a {state} generation".encode()
+        manifest = _manifest(manager.tenant_id, data, version="v1")
+        uri = manifest.objects[0].uri
+        generation = manager.create(manifest, _pipeline("model-a"))
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+            conn.execute(
+                "UPDATE recall_generations SET state = %s "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (state, manager.tenant_id, generation.generation_id),
+            )
+        with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+            resolved = store.manifest_uris_matching([uri])
+        # `_manifest` derives the URI from the TENANT, so every iteration names the same
+        # source. Left in place, the live generations from earlier iterations would keep it
+        # resolving and the `failed` case would pass for the wrong reason.
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+            conn.execute(
+                "DELETE FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
+                (manager.tenant_id, generation.generation_id),
+            )
+        if should_resolve:
+            assert resolved == frozenset({uri}), (
+                f"a source named only by a {state!r} generation did not resolve, so erasing "
+                "it would be refused as a typo while the data stays on disk"
+            )
+        else:
+            assert resolved == frozenset(), (
+                f"a {state!r} generation's manifest entry resolved, and resolving is what "
+                "earns a permanent tombstone"
+            )
+
+
+@requires_db
+def test_the_store_itself_refuses_a_url_only_a_failed_generation_names(manager) -> None:
+    """The same exclusion, asserted on the surface MCP erasures actually resolve through.
+
+    The test above drives the CLI. When the resolver moved to its own SQL query with its own
+    copy of the live-state list, adding `failed` to that copy left the whole forget suite
+    green, because nothing drove `sources_for_identifiers` through a failed generation. A
+    resolved identifier is exactly what `forget()` converts into a permanent tombstone, so
+    the gap was one mutation away from barring a URI that was never in the corpus.
+    """
+    data = b"---\nstatus: current\n---\nnever built"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    uri = manifest.objects[0].uri
+    generation = manager.create(manifest, _pipeline("model-a"))
+    manager.fail(generation.generation_id, "the source object could not be fetched")
+    assert manager.get(generation.generation_id).state == "failed"
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        assert store.manifest_uris_matching([uri]) == frozenset()
+        assert store.sources_for_identifiers([uri]) == {}
+
+
+@requires_db
+def test_a_non_string_manifest_uri_does_not_resolve(manager) -> None:
+    """`->>` casts a JSON number to text; `isinstance(uri, str)` does not.
+
+    The manifest column is raw JSONB and nothing revalidates its shape on read, so a
+    manifest carrying `{"uri": 123}` made the identifier `123` resolve through SQL while the
+    Python path rejected it. Resolving is what earns a permanent tombstone.
+    """
+    data = b"---\nstatus: current\n---\nshape check"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    generation = manager.create(manifest, _pipeline("model-a"))
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        conn.execute(
+            "UPDATE recall_generations SET manifest = %s::jsonb, state = 'ready' "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            ('{"objects": [{"uri": 123}]}', manager.tenant_id, generation.generation_id),
+        )
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        assert store.manifest_uris_matching(["123"]) == frozenset()
+        assert store.sources_for_identifiers(["123"]) == {}
+
+
+@requires_db
+@pytest.mark.parametrize("objects", ["null", "5", '"a string"', "true"])
+def test_a_malformed_objects_value_does_not_abort_the_erasure(manager, objects) -> None:
+    """`jsonb_array_elements` RAISES on a scalar, and this query is now on the CLI path too.
+
+    The `jsonb_typeof(g.manifest->'objects') = 'array'` guard reads like the trap where a
+    WHERE clause cannot protect a FROM clause, and nothing could see it: deleting it left the
+    whole suite green. It is load-bearing. The manifest column is raw JSONB and nothing
+    revalidates its shape on read, so one row like this would turn a right-to-erasure request
+    into `InvalidParameterValue: cannot extract elements from a scalar`, aborting the request
+    rather than answering it. A MISSING `objects` key is already safe (SQL NULL, zero rows)
+    and is NOT what this guards.
+    """
+    data = b"---\nstatus: current\n---\nmalformed manifest"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    uri = manifest.objects[0].uri
+    generation = manager.create(manifest, _pipeline("model-a"))
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        conn.execute(
+            "UPDATE recall_generations SET manifest = %s::jsonb, state = 'ready' "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            (f'{{"objects": {objects}}}', manager.tenant_id, generation.generation_id),
+        )
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        assert store.manifest_uris_matching([uri]) == frozenset()
+
+
+@requires_db
 def test_forget_during_a_build_is_honoured_by_that_build(manager, monkeypatch, capsys) -> None:
     """An erasure issued while a generation is BUILDING must land in that build.
 
@@ -888,6 +1060,52 @@ def test_mcp_forget_during_a_build_is_honoured_by_that_build(manager) -> None:
     assert tombstoned == 1, "the MCP erasure wrote no tombstone, so the build had nothing to honour"
     assert stats.tombstoned_objects == 1
     assert surviving == 0, "the build indexed content the user had asked to erase via MCP"
+
+
+@requires_db
+def test_repeating_an_erasure_does_not_move_when_it_happened(manager) -> None:
+    """`erased_at` records WHEN an irreversible action occurred; a repeat must not move it.
+
+    The tombstone was written `ON CONFLICT DO UPDATE SET erased_at = EXCLUDED.erased_at`, so
+    re-issuing a forget rewrote the timestamp and the event id. Once the manifest fallback
+    made an already-erased source resolve again, any repeat silently drifted the recorded
+    moment of a right-to-erasure action forward. The repeat is still recorded, as its own
+    audit event.
+    """
+    embedder = _Embedder(1)
+    data = b"---\nstatus: current\n---\nerase me"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    uri = manifest.objects[0].uri
+    generation = _ready(manager, manifest, _pipeline("model-a"), _reader(manifest, data), embedder)
+    manager.promote(generation, unsafe_development=True)
+
+    first = manager.forget(uri)
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        original = conn.execute(
+            "SELECT erased_at, event_id FROM recall_source_tombstones "
+            "WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, uri),
+        ).fetchone()
+    assert first.chunks_removed > 0
+
+    second = manager.forget(uri)
+    assert second.chunks_removed == 0
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        after = conn.execute(
+            "SELECT erased_at, event_id FROM recall_source_tombstones "
+            "WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, uri),
+        ).fetchone()
+        events = conn.execute(
+            "SELECT count(*) FROM recall_audit_events "
+            "WHERE tenant_id = %s AND event_type = 'source_forgotten'",
+            (manager.tenant_id,),
+        ).fetchone()[0]
+    assert after == original, "repeating the erasure moved when it was recorded as happening"
+    assert events == 2, "the repeat should still be audited, just not restamp the tombstone"
+
 
 class _AsymmetricEmbedder(_Embedder):
     """Records which encoder the generation builder reached for.
