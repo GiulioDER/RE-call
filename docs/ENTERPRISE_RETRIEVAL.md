@@ -90,11 +90,35 @@ Set `RECALL_ENTERPRISE_CONTROL_PLANE=1` only on authenticated HTTP deployments. 
 
 Choose one service cost profile per process:
 
-* `RECALL_RETRIEVAL_PROFILE=fast` uses twenty candidates per retrieval leg and no reranker.
+* `RECALL_RETRIEVAL_PROFILE=fast` uses twenty candidates per retrieval leg and no reranker. It returns five hits and budgets 250 ms.
 
-* `RECALL_RETRIEVAL_PROFILE=quality` uses the same candidate pool and the local pinned reranker.
+* `RECALL_RETRIEVAL_PROFILE=quality` uses the same candidate pool and the local pinned reranker. It returns five hits and budgets 1500 ms. The reranker scores the COMPLETE fused candidate pool before truncation, so a relevant passage sitting just below the fused cutoff can still be rescued, which is the only reason the stage exists.
 
-Run separate deployments when both profiles are required. Clients cannot select the expensive path per request. `RECALL_SEARCH_CONCURRENCY` and `RECALL_SEARCH_QUEUE` bound CPU admission before query embedding begins.
+Run separate deployments when both profiles are required. Clients cannot select the expensive path per request: the profile is read from the process environment and a request's `k` is clamped down to the profile's returned count, never raised. Leaving `RECALL_RETRIEVAL_PROFILE` unset preserves the legacy `RECALL_RERANK` switch exactly; setting the two to values that contradict each other refuses **startup**, not the first search.
+
+### The latency budget at request time
+
+`latency_budget_ms` means two enforced, observable things.
+
+It **bounds the admission wait**. A request that cannot acquire a running slot within the budget is shed with `RetrievalOverloaded` before the query is embedded. That ordering is the point: admission is taken ahead of the embedder, so a refused request costs nothing. Without the bound, `queue_capacity` caps how many threads may be parked and says nothing about how long any of them waits, and a process can hold a client for minutes behind a slow reranked query while every counter reads healthy. `RetrievalOverloaded` carries a `reason` (`queue_full` or `budget_exhausted`) and a `retry_after_seconds`, matching how `RateLimited` reports a retryable refusal.
+
+It **labels an overrun**. A request that completes over budget still returns its answer, and reports `total_ms`, `latency_budget_ms` and `budget_exceeded` on the response. Aborting in flight was rejected: there is no cancellation point inside a blocking cross-encoder `predict`, so the process would pay the whole cost and then discard the answer, converting a latency regression into an availability incident.
+
+Each profile carries its **own** concurrency budget rather than one shared default: fast admits 8 concurrent with 32 queued, quality 2 with 8. Quality's per-request budget is six times fast's, so an equal concurrency budget would let it park roughly six times the CPU-seconds behind the same queue depth. These values are a policy choice, not a measurement, and the latency blocker in `ENTERPRISE_PROGRAM_STATUS.md` is why. `RECALL_SEARCH_CONCURRENCY` and `RECALL_SEARCH_QUEUE` override them for the selected profile.
+
+`RECALL_RERANK_THREADS` bounds inference threads. One reranker is built per worker process, under a construction lock: a cache lookup is not a lock, and a cold start under load would otherwise have every concurrent first request load its own copy of the model.
+
+### The quality profile's reranker is pinned by digest
+
+`RECALL_RERANK_PATH` is deployment specific. The artifact digest is not: `recall/rerank.py` pins `cross-encoder/ms-marco-MiniLM-L-6-v2` at revision `c5ee24cb16019beea0893ab7796b1df96625c6b8` with artifact SHA256 `db6ad87969c7dc78320152e68a16118aeb4b2a6f7d8cc979c57f61ddb5e2ab2a`, and `RECALL_RERANK_SHA256` must agree with it. Verifying the tree against a digest the operator supplied would prove only that the tree hashes to its own hash; the pin is the value chosen elsewhere that makes the comparison mean something. A different artifact tree is a different model and needs its own registered experiment.
+
+### What every result reports
+
+Every search response carries, additively: the embedding profile identity, the retrieval profile, the index generation, the candidate pool size, whether reranking ran, `total_ms`, `latency_budget_ms`, `budget_exceeded`, and per-stage wall time for `query_embedding`, `dense_retrieval`, `sparse_retrieval`, `fusion`, `reranking`, `trust_evaluation` and `evidence_assembly`. The same stage timings are observed into `METRICS` under `recall_retrieval_stage_ms`, labelled by profile and stage, so per-stage percentiles exist across a population of queries rather than only per response.
+
+Every hit's `score` is its dense cosine, including hits that arrived through the sparse leg and hits the reranker moved. Reranking reorders and never rewrites the score, because calibration thresholds are stated in cosine units and a cross-encoder logit is not one.
+
+Metric labels and log records are library-authored throughout. No query text and no corpus text reaches a log record, a metric label or an exception message; a test drives a distinctive sentinel through the search path and asserts its absence from every captured record, with a positive control proving the detector can fire.
 
 ## Evidence integration
 

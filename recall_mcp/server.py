@@ -46,6 +46,7 @@ from recall_mcp.service import (
     make_profile_embedder,
     memory_stats,
     search_memory,
+    startup_retrieval_profile,
 )
 from recall_mcp.stores import StoreRegistry
 
@@ -421,10 +422,28 @@ def _make_lifespan(
     async def _lifespan(_server: FastMCP) -> AsyncIterator[dict]:
         from recall.store import require_secure_dsn
 
+        # FIRST, before any I/O. Resolving the cost profile is pure environment parsing, so a
+        # contradictory RECALL_RETRIEVAL_PROFILE / RECALL_RERANK pair, or a quality profile whose
+        # reranker artifact is not the pinned one, costs nothing to detect and must not be
+        # discovered on the first client request. A server that starts clean and then refuses
+        # every search is a server whose configuration error reads as an outage.
+        retrieval_profile = startup_retrieval_profile()
+
         # FAIL CLOSED, unlike the CLI's warning: a server is unattended, so a stderr note about
         # published default credentials pointed at a remote database lands in a journal nobody
         # reads while the process comes up looking healthy. RECALL_ALLOW_INSECURE_DSN=1 opts out.
         require_secure_dsn(DEFAULT_DSN)
+        _log.info(
+            "retrieval profile %s (candidates %d/leg, returns %d, reranker %s, budget %d ms, "
+            "%d concurrent + %d queued)",
+            retrieval_profile.name,
+            retrieval_profile.candidate_k,
+            retrieval_profile.returned_k,
+            retrieval_profile.reranker,
+            retrieval_profile.latency_budget_ms,
+            retrieval_profile.max_concurrency,
+            retrieval_profile.queue_capacity,
+        )
         store: PgVectorStore | None = None
         registry: StoreRegistry | None = None
         try:
