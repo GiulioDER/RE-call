@@ -610,36 +610,52 @@ def test_a_failing_close_cannot_fail_the_run_under_warnings_as_errors(
 
 
 def test_main_does_not_require_the_system_to_be_closable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The close is duck-typed, so an arm without one must still run.
+    """The close is duck-typed, so an arm without one must still run, and run SILENTLY.
 
     `MemorySystem` is deliberately a three-member protocol and `RecallSystem` has nothing to
     release — it holds a DSN string, not a connection. A `main` that assumed `close()` existed
-    would break every such arm, so the absence of the attribute is the case worth pinning.
+    would break every such arm.
+
+    `_recall_stub_build` pins the embedder to `hashing`, and that is load-bearing rather than
+    copied habit: the real `_build_system` defaults to `fastembed`, an OPTIONAL extra, so letting
+    it run makes this pass wherever that extra happens to be installed and fail in the `floor` CI
+    job, which installs the declared minimums without extras. That is exactly how it did fail.
+    Nothing here is about embedders.
     """
-    from benchmarks.systems import RecallSystem
-
-    def _no_op_preflight(
-        self: RecallSystem, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
-    ) -> list[dict[str, Any]]:
-        return []
-
+    _patch_recall_stub(monkeypatch)
     monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
-    monkeypatch.setattr(RecallSystem, "ingest", lambda self, conversation: None)
-    monkeypatch.setattr(RecallSystem, "retrieve", lambda self, question: "ctx")
-    monkeypatch.setattr(RecallSystem, "ablation_preflight", _no_op_preflight)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
     monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
 
-    assert not hasattr(RecallSystem, "close")  # the precondition this test exists for
+    # On the INSTANCE, which is what `main` probes. A class-level assert alone would still hold if
+    # `__init__` ever bound a `self.close`, and the test would stop covering the closeless path
+    # without ever going red.
+    assert not hasattr(_recall_stub_build("recall", "m", _FAKE_KEY, 5, "stamp"), "close")
 
     data = _write_fixture(tmp_path)
-    code = main(
-        ["--arm", "recall", "--data", str(data), "--conversations", "2",
-         "--out", str(tmp_path / "results")],
-        now=_NOW,
-    )
+    # Not merely "does not crash". Dropping the `getattr` guard while KEEPING the surrounding
+    # try/except still returns 0, and every closeless arm would then report a teardown failure on
+    # every successful run. So assert the breadcrumb is ABSENT, on both channels it can use.
+    #
+    # Note what does NOT work here: promoting that warning with `filterwarnings("error", ...)`.
+    # `_warn_teardown_failed` catches `BaseException` around its own `warnings.warn` precisely so
+    # that `-W error` cannot turn a diagnostic into a failed run, so an error-promoted warning is
+    # swallowed there and falls through to stderr. Verified by mutation: both close-guard mutants
+    # survive the promotion approach and are caught by this one.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        code = main(
+            ["--arm", "recall", "--data", str(data), "--conversations", "2",
+             "--out", str(tmp_path / "results")],
+            now=_NOW,
+        )
+
     assert code == 0
+    complaints = [w for w in caught if "benchmarks.run: closing" in str(w.message)]
+    assert not complaints, f"a closeless arm reported a teardown failure: {complaints}"
+    assert "benchmarks.run: closing" not in capsys.readouterr().err
 
 
 def test_main_runs_the_ablation_preflight_once_before_the_first_retrieve_and_stamps_it(
