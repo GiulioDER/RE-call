@@ -444,12 +444,19 @@ def _new_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # pr
 #: tests do this; production selects one profile per process) cannot be served a reranker built
 #: for the other one.
 _RERANKER_LOCK = threading.Lock()
-#: Maps profile name to the built reranker, or to the exception that construction raised.
+#: Maps profile name to the built reranker, or to a `(type, args)` description of the failure.
+#:
 #: FAILURES are cached too. Caching only successes meant a bad artifact re-ran the full
 #: tree-SHA256 over a several-hundred-megabyte model directory on EVERY client search, while
 #: holding both this lock and an admission running slot: a configuration error turned into a
 #: self-inflicted disk-and-CPU load that grew with traffic.
-_RERANKERS: dict[str, "Reranker | None | BaseException"] = {}
+#:
+#: A DESCRIPTION rather than the exception object, and this is not fastidiousness. Re-raising one
+#: instance appends the current frame to its `__traceback__` every time, and each retained frame
+#: pins its locals — which on this path include the caller's QUERY TEXT and the store. That would
+#: be an unbounded memory leak that also retains user text for the process lifetime, on the very
+#: path the caching was added to make cheap.
+_RERANKERS: dict[str, "Reranker | None | tuple[type[Exception], tuple[object, ...]]"] = {}
 
 
 def _reset_reranker_cache() -> None:
@@ -466,13 +473,19 @@ def _build_reranker(
     name = (profile or resolve_retrieval_profile()).name
     with _RERANKER_LOCK:
         if name not in _RERANKERS:
+            # `Exception`, deliberately not `BaseException`. A configuration error is
+            # deterministic and caching its verdict is right; a `KeyboardInterrupt` or a
+            # `SystemExit` arriving during a cold build says nothing about the artifact, and
+            # caching it would turn a transient event into a process-lifetime outage.
             try:
                 _RERANKERS[name] = _new_reranker()
-            except BaseException as exc:  # noqa: BLE001 - re-raised immediately below
-                _RERANKERS[name] = exc
+            except Exception as exc:
+                _RERANKERS[name] = (type(exc), exc.args)
+                raise
         cached = _RERANKERS[name]
-    if isinstance(cached, BaseException):
-        raise cached
+    if isinstance(cached, tuple):
+        failure_type, failure_args = cached
+        raise failure_type(*failure_args)
     return cached
 
 
@@ -563,33 +576,37 @@ def search_memory(
     request_started = time.perf_counter()
     admission_wait_ms = 0.0
     try:
-        try:
-            with _admission(profile):
-                # The wait ends here, so this is where it is measured. It becomes a stage of its
-                # own rather than an unattributed part of the total: a request that was slow
-                # because it queued and one that was slow because it retrieved are different
-                # operational problems, and a single number cannot tell them apart.
-                admission_wait_ms = (time.perf_counter() - request_started) * 1000.0
-                result = trusted_search(
-                    store, timed, query, k=k, source=source, calibration=calibration,
-                    reranker=_build_reranker(profile), candidate_k=profile.candidate_k,
-                    retrieval_profile=profile.name, index_generation=generation,
-                    policy=policy,
-                )
-        except RetrievalOverloaded as exc:
-            # Counted where it happens, with library-authored labels only. The request cost
-            # nothing: admission is taken BEFORE the embedder, which is the entire reason the
-            # gate is there and not one layer down.
-            METRICS.increment(
-                "recall_retrieval_rejected_total", profile=profile.name, reason=exc.reason
+        with _admission(profile):
+            # The wait ends here, so this is where it is measured. It becomes a stage of its own
+            # rather than an unattributed part of the total: a request that was slow because it
+            # queued and one that was slow because it retrieved are different operational
+            # problems, and a single number cannot tell them apart.
+            admission_wait_ms = (time.perf_counter() - request_started) * 1000.0
+            result = trusted_search(
+                store, timed, query, k=k, source=source, calibration=calibration,
+                reranker=_build_reranker(profile), candidate_k=profile.candidate_k,
+                retrieval_profile=profile.name, index_generation=generation,
+                policy=policy,
             )
-            raise
+    # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
+    # counted as a rejection and NOTHING else. Shedding is the design working: the request did no
+    # work by construction, so booking it as a failure would make healthy load shedding
+    # indistinguishable from an outage, and feeding its budget-length wait into the served-latency
+    # histogram would contaminate that population with rejections in exactly the overload regime
+    # where the p95 matters most.
+    except RetrievalOverloaded as exc:
+        # Library-authored labels only. The request cost nothing: admission is taken BEFORE the
+        # embedder, which is the entire reason the gate is there and not one layer down.
+        METRICS.increment(
+            "recall_retrieval_rejected_total", profile=profile.name, reason=exc.reason
+        )
+        raise
     except BaseException:
-        # The total is observed on EVERY exit, not only the successful one. `recall.observability`
-        # states the rule for `METRICS.timer` in as many words: a timer that only records on
-        # success hides exactly the slow path worth finding. A store stall that ends in
-        # DEPENDENCY_UNAVAILABLE after thirty seconds is the request an operator most needs in
-        # the population, and it was contributing nothing.
+        # A request that DID work and then failed is observed, unlike one that was shed.
+        # `recall.observability` states the rule for `METRICS.timer` in as many words: a timer
+        # that only records on success hides exactly the slow path worth finding. A store stall
+        # ending in DEPENDENCY_UNAVAILABLE after thirty seconds is the request an operator most
+        # needs in the population, and it was contributing nothing.
         METRICS.observe(
             "recall_retrieval_total_ms",
             round((time.perf_counter() - request_started) * 1000.0, 3),

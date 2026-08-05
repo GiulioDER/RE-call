@@ -17,6 +17,7 @@ import pytest
 from recall.profiles import (
     FAST_PROFILE,
     LEGACY_PROFILE,
+    MAX_ADMISSION_CAPACITY,
     QUALITY_PROFILE,
     RetrievalAdmission,
     RetrievalOverloaded,
@@ -117,10 +118,12 @@ def test_resolution_carries_each_profiles_own_budget_not_one_shared_default() ->
 
 
 def test_an_empty_override_means_unset_not_invalid() -> None:
-    """`.env.example` ships these keys empty, and a dotenv load puts an empty STRING in the env.
+    """A blank assignment puts an empty STRING in the environment, not nothing.
 
-    Reading that as a malformed integer would make the shipped example refuse startup, which is
-    the failure mode a configuration example exists to prevent. Empty and absent must agree.
+    `KEY=` in a systemd `EnvironmentFile`, a Kubernetes ConfigMap or a dotenv file all produce an
+    empty value rather than omitting the key, so reading it as a malformed integer turns the
+    ordinary way of writing "I am not setting this" into a startup refusal. Empty and absent
+    must agree.
     """
     empty = resolve_retrieval_profile(
         {
@@ -478,6 +481,105 @@ def test_a_queue_is_identified_by_what_defines_a_queue() -> None:
     assert service._admission(one) is not service._admission(
         replace(QUALITY_PROFILE, max_concurrency=3)
     )
+
+
+def test_an_admission_capacity_that_would_spawn_a_thread_army_is_refused() -> None:
+    """The pool is now sized FROM the profile, so the profile must not be unbounded.
+
+    Before the pool was sized from the profile, anyio's 40-token default was an accidental but
+    real ceiling on how many OS threads a search path could occupy. Sizing the pool from the
+    profile removes that ceiling, which turns an unvalidated operator variable into a
+    thread-count knob: `RECALL_SEARCH_QUEUE=5000` would have asked for 5008 threads.
+    """
+    with pytest.raises(ValueError, match="admission capacity"):
+        resolve_retrieval_profile(
+            {"RECALL_RETRIEVAL_PROFILE": "fast", "RECALL_SEARCH_QUEUE": "5000"}
+        )
+    at_the_cap = resolve_retrieval_profile(
+        {
+            "RECALL_RETRIEVAL_PROFILE": "fast",
+            "RECALL_SEARCH_CONCURRENCY": "8",
+            "RECALL_SEARCH_QUEUE": str(MAX_ADMISSION_CAPACITY - 8),
+        }
+    )
+    assert at_the_cap.max_concurrency + at_the_cap.queue_capacity == MAX_ADMISSION_CAPACITY
+
+
+def test_a_cached_reranker_failure_does_not_grow_a_traceback_per_request() -> None:
+    """Re-raising ONE exception instance accumulates frames, and those frames pin the query.
+
+    Every re-raise appends the current frame to the same `__traceback__`. The retained frames
+    hold their locals, which on this path include the caller's query text and the store, so a
+    misconfigured quality server would grow memory per request AND retain user text for the
+    process lifetime. The point of caching the failure was to stop doing work, not to start
+    accumulating it.
+    """
+    import recall_mcp.service as service
+
+    def failing_factory(env=None):
+        raise RuntimeError("model artifact checksum mismatch")
+
+    service._reset_reranker_cache()
+    original = service._new_reranker
+    service._new_reranker = failing_factory
+    depths = []
+    try:
+        for _ in range(5):
+            try:
+                service._build_reranker()
+            except RuntimeError as exc:
+                depth = 0
+                tb = exc.__traceback__
+                while tb is not None:
+                    depth += 1
+                    tb = tb.tb_next
+                depths.append(depth)
+    finally:
+        service._new_reranker = original
+        service._reset_reranker_cache()
+    # The first call raises through the factory and is one frame deeper; every call after it is
+    # served from the cache and must be identical to the one before. Growth is the defect: the
+    # unfixed code produced 3, 4, 5, 6, 7.
+    assert len(set(depths[1:])) == 1, f"traceback grew across re-raises: {depths}"
+    assert max(depths) <= depths[0], f"a cached re-raise deepened the traceback: {depths}"
+
+
+def test_an_interrupt_during_a_cold_build_does_not_poison_the_reranker_forever() -> None:
+    """`KeyboardInterrupt` is not a bad artifact. Caching it would make it permanent.
+
+    Caching the failure is right for a configuration error, which is deterministic. A
+    `BaseException` that arrives asynchronously says nothing about the artifact, and turning it
+    into a permanent verdict would take a transient event and make it a process-lifetime outage.
+    """
+    import recall_mcp.service as service
+
+    attempts = []
+
+    def interrupted_then_fine(env=None):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise KeyboardInterrupt
+        return None
+
+    service._reset_reranker_cache()
+    original = service._new_reranker
+    service._new_reranker = interrupted_then_fine
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            service._build_reranker()
+        # Caught explicitly rather than allowed to propagate: a `KeyboardInterrupt` escaping a
+        # test aborts the whole pytest session, and an aborted session is not a failed
+        # assertion. The mutation that proves this test can fail has to produce a red test, not
+        # a run that never finished.
+        try:
+            rebuilt = service._build_reranker()
+        except BaseException as exc:  # noqa: BLE001 - the assertion IS that nothing is raised
+            pytest.fail(f"a transient interrupt poisoned the cache: {exc!r}")
+        assert rebuilt is None  # retried, not poisoned
+    finally:
+        service._new_reranker = original
+        service._reset_reranker_cache()
+    assert len(attempts) == 2
 
 
 def test_a_failed_reranker_construction_is_not_retried_on_every_request() -> None:

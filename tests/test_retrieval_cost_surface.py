@@ -107,6 +107,106 @@ def test_an_overloaded_process_refuses_before_it_embeds(make_store, bounded_fast
 
 
 @requires_db
+def test_a_client_cannot_ask_for_more_hits_than_the_profile_returns(make_store, monkeypatch):
+    """`k` is clamped DOWN and never raised. This is the whole of "selection is process level".
+
+    Newly advertised in three places (the service comment, `docs/ENTERPRISE_RETRIEVAL.md`, the
+    `recall_search` tool docstring) and, until this test, guarded by nothing: deleting the clamp
+    left the suite green. The legacy arm is what makes it discriminating — without it, a store
+    that simply held five chunks would satisfy the fast assertion for the wrong reason.
+    """
+    monkeypatch.delenv("RECALL_RERANK", raising=False)
+    store = make_store(3)
+    store.upsert(
+        [Chunk(f"c{i}", f"n{i}.md", "cats") for i in range(8)],
+        [[1.0, 0.0, 0.0]] * 8,
+    )
+    embedder = CountingEmbedder({"cats": [1.0, 0.0, 0.0]}, default=[0.0, 0.0, 1.0])
+
+    monkeypatch.setenv("RECALL_RETRIEVAL_PROFILE", "fast")
+    assert len(dev_search_memory(store, embedder, "cats", k=10).hits) == 5
+
+    monkeypatch.delenv("RECALL_RETRIEVAL_PROFILE")
+    assert len(dev_search_memory(store, embedder, "cats", k=10).hits) > 5
+
+
+def test_the_thread_limit_reaches_the_reranker_not_just_the_profile(monkeypatch):
+    """Resolving `inference_threads` is not the same as handing it to the model.
+
+    The line that carries it into `CrossEncoderReranker` sits in a branch marked
+    `# pragma: no cover`. `torch.set_num_threads` itself needs the `rerank` extra and stays
+    deferred, but the plumbing does not, and an unbounded reranker is exactly the resource bound
+    this profile exists to impose.
+    """
+    import recall.rerank as rerank_module
+    import recall_mcp.service as service
+    from recall.rerank import PINNED_RERANKER_SHA256
+
+    seen = {}
+
+    class RecordingReranker:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    monkeypatch.setattr(rerank_module, "CrossEncoderReranker", RecordingReranker)
+    service._new_reranker(
+        {
+            "RECALL_RETRIEVAL_PROFILE": "quality",
+            "RECALL_RERANK_PATH": "/opt/recall-enterprise/models/ms-marco-MiniLM-L-6-v2",
+            "RECALL_RERANK_SHA256": PINNED_RERANKER_SHA256,
+            "RECALL_RERANK_THREADS": "3",
+        }
+    )
+    assert seen["inference_threads"] == 3
+    assert seen["local_files_only"] is True
+    assert seen["artifact_sha256"] == PINNED_RERANKER_SHA256
+
+
+@requires_db
+def test_a_shed_request_is_not_recorded_as_a_failed_one(make_store, bounded_fast_profile):
+    """Shedding is the design working. It must not page as an error, or poison the latency.
+
+    A shed request did no work by construction, so counting it in
+    `recall_retrieval_failed_total` makes healthy load shedding indistinguishable from an
+    outage, and injecting its budget-length wait into `recall_retrieval_total_ms` contaminates
+    the served-latency population with rejections — in exactly the overload regime where the p95
+    this program is blocked on would matter most.
+    """
+    from recall_mcp.service import _admission
+
+    METRICS.reset()
+    store = make_store(3)
+    store.upsert([Chunk("a", "notes.md", "cats")], [[1.0, 0.0, 0.0]])
+    embedder = CountingEmbedder({"cats": [1.0, 0.0, 0.0]}, default=[0.0, 0.0, 1.0])
+
+    admission = _admission(bounded_fast_profile)
+    held = threading.Event()
+    release = threading.Event()
+
+    def occupy() -> None:
+        with admission:
+            held.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=occupy, daemon=True)
+    holder.start()
+    assert held.wait(5)
+    try:
+        with pytest.raises(RetrievalOverloaded):
+            dev_search_memory(store, embedder, "cats")
+    finally:
+        release.set()
+        holder.join(10)
+
+    snapshot = METRICS.snapshot()
+    assert snapshot["counters"].get(
+        "recall_retrieval_rejected_total{profile=fast,reason=budget_exhausted}"
+    ) == 1
+    assert "recall_retrieval_failed_total{profile=fast}" not in snapshot["counters"]
+    assert "recall_retrieval_total_ms{profile=fast}" not in snapshot["histograms"]
+
+
+@requires_db
 def test_a_rejection_is_counted_and_carries_a_retry_hint(make_store, bounded_fast_profile):
     from recall_mcp.service import _admission
 
