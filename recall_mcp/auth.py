@@ -79,6 +79,9 @@ ALL_SCOPES = (SCOPE_READ, SCOPE_WRITE, SCOPE_FORGET, SCOPE_ADMIN)
 MIN_TOKEN_LENGTH = 32
 
 _ENV_TOKENS_FILE = "RECALL_AUTH_TOKENS_FILE"
+#: Public alias. `build_auth` tests this key's presence to select a mechanism, and repeating the
+#: literal there is how the two drift apart.
+ENV_TOKENS_FILE = _ENV_TOKENS_FILE
 
 
 class AuthConfigError(RuntimeError):
@@ -392,7 +395,12 @@ def token_registry_from_env(env: dict[str, str] | None = None) -> TokenRegistry 
     permits it for stdio.
     """
     source = env if env is not None else dict(os.environ)
-    src = source.get(_ENV_TOKENS_FILE)
+    # Stripped, so this agrees with `build_auth`'s presence test. Disagreeing meant a
+    # whitespace-only value read as "not set" for the selector and "set" here, producing two
+    # contradictory errors depending on RECALL_AUTH_MODE.
+    # `str(...)` before `.strip()`: the signature accepts `str | os.PathLike[str]`, so an injected
+    # env dict carrying a Path would have raised AttributeError on a value that used to work.
+    src = str(source.get(_ENV_TOKENS_FILE) or "").strip()
     if not src:
         return None
     # The SAME env decides both the token file and whether static tokens are allowed at all.
