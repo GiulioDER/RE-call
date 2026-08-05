@@ -47,9 +47,10 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   (`TITLE_MAX_CHARS` 256, `SOURCE_MAX_CHARS` 256, `SECTION_MAX_CHARS` 512, `NEIGHBOR_MAX_CHARS`
   200) and a labelled degradation ladder (`DEGRADATION_ORDER`: neighbour context dropped first,
   section detail shortened then dropped, title detail last, the complete chunk always preserved)
-  replace the literals and the anonymous candidate list. 60 tests, one per rule, plus a
-  property-style test that raw chunk text and content hashes are byte-identical to the symmetric
-  baseline across five corpus shapes and, against real stored rows, across generations. See
+  replace the literals and the anonymous candidate list. 69 tests across two files, one per rule,
+  including a property-style test that raw chunk text and content hashes are byte-identical to the
+  symmetric baseline over five corpus shapes, and nine asserted against real stored rows across two
+  generations dual-written under different modes. See
   [docs/ENTERPRISE_RETRIEVAL.md](docs/ENTERPRISE_RETRIEVAL.md).
 
   No mode is recommended over another, and nothing here measures retrieval quality.
@@ -253,6 +254,28 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   vectors and making the embedding text for one corpus differ between two machines.
   `root_relative_source` now refuses them, in every mode including `none` — the mode is chosen by
   the profile, so a guard reachable only on the contextual path is one the cheapest caller skips.
+- **The path guard did not hold on its own return value.** It validated the normalised path and
+  then returned `normalised[:256]`, so truncation ran after the checks and could manufacture what
+  they had just refused: `"a" * 253 + "/..x"` passed the traversal check and came back as a
+  256-character path whose last segment is `..`. It now validates and does not truncate; the cap
+  belongs to the rendered field and is applied there.
+- **A path longer than 256 characters silently lost its title.** The basename fallback split the
+  guard's already-truncated return value, so at 264 characters the cut landed on a `/`, the
+  basename was empty and the `title:` field disappeared from the passage; at 261 the title was
+  the fragment `not`, and two files in one deep directory got byte-identical titles.
+- **`^[A-Za-z]:` refused `a:b/notes.md`**, a legal relative path on Linux and macOS that
+  `relative_to(root).as_posix()` produces, and the refusal aborted the whole indexing run after
+  earlier batches had already been committed. The drive test now requires a separator or end of
+  string after the colon.
+- **A neighbour excerpt could forge a structural field.** The 200-character neighbour budget was
+  the only cap counted on un-normalised text, so newlines were spent against it and an adjacent
+  chunk containing `\nsource: /etc/shadow` put a second `source:` line into this chunk's passage.
+  Neighbour excerpts are now folded to one line before the 200 is counted. The chunk itself is
+  still interpolated verbatim — rule 5 requires it — so the rendered form remains text to embed
+  and never text to parse.
+- The refusal messages no longer interpolate the offending path. The case they fire on is a
+  caller that lost its root, so the value is an absolute host path and echoing it into the logs is
+  the disclosure the guard exists to prevent.
 
 
 ## [0.8.0] — 2026-08-02
