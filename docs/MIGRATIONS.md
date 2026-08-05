@@ -100,6 +100,19 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
 -- These tables use application-generated text IDs and no sequence.
 ```
 
+An enterprise deployment (`RECALL_ENTERPRISE_CONTROL_PLANE=1`) needs four more, and this is a
+**required upgrade step**, not a nicety: enterprise readiness verifies BOTH ledgers, so the serving
+role now reads `recall_schema_versions` at startup and a role provisioned to the block above will
+refuse to boot with `control plane ledger query failed: InsufficientPrivilege`. Grant them before
+rolling the new image.
+
+```sql
+GRANT SELECT ON recall_schema_versions, recall_index_generations TO recall_server;
+GRANT SELECT, INSERT, UPDATE, DELETE ON recall_tenant_routes, recall_migration_events
+  TO recall_server;
+GRANT USAGE, SELECT ON SEQUENCE recall_migration_events_sequence_id_seq TO recall_server;
+```
+
 The migration role must own the managed objects (or be a member of their owner role) and have
 `CREATE` on the target schema. The serving role must not own the table, be a superuser, carry
 `BYPASSRLS`, or receive schema `CREATE`.

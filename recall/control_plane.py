@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Callable
@@ -25,11 +26,27 @@ EventKind = Literal["index", "forget"]
 #: retired table, and a `failed` generation is one whose DDL did not finish.
 SERVABLE_STATES: frozenset[str] = frozenset({"building", "ready", "active"})
 
+#: The ACTIVE slot is narrower, and it is derived from `set_route`'s own gate rather than
+#: restated: a route may only be pointed at a `ready` or `active` generation, so serving one
+#: that is still `building` would be wider than the write path that created the route.
+#: `building` remains servable for the SHADOW slot, where a dual write opens a generation that
+#: is by definition still being built.
+SERVABLE_ACTIVE_STATES: frozenset[str] = frozenset({"ready", "active"})
+
 #: Advisory lock name for the control-plane ledger. Deliberately NOT `recall/schema.py`'s
 #: `MIGRATION_LOCK_NAME`: the two ledgers are separate on purpose (see `docs/MIGRATIONS.md`), and
 #: sharing one lock would make a chunk-table migration and a control-plane bootstrap block each
 #: other for no reason. Separate ledger, separate lock, both locked.
 CONTROL_PLANE_LOCK_NAME = "recall-control-plane-migrations-v1"
+
+#: Advisory lock guarding one tenant's outbox. Both the replay drain and the erasure scrub take
+#: it, because they are the two writers of `recall_migration_events.payload` and the ONLY thing
+#: that can order them is a lock they share. `SELECT ... FOR UPDATE` cannot: `pending_events` is a
+#: plain non-locking read, and under READ COMMITTED a plain SELECT is never blocked by a row lock,
+#: so the drain would read the pre-scrub snapshot and replay erased text back into both
+#: generations. A comment claiming FOR UPDATE prevented that was wrong, which is the failure mode
+#: this project keeps hitting: a guard that reads as protection and cannot fire.
+OUTBOX_LOCK_PREFIX = "recall-outbox-v1"
 
 #: Physical table identifiers are interpolated into SQL, so this is an allowlist, not a filter.
 #:
@@ -39,21 +56,35 @@ CONTROL_PLANE_LOCK_NAME = "recall-control-plane-migrations-v1"
 #: so the registry row and the physical table silently disagree. It accepts any length, and
 #: PostgreSQL truncates identifiers at NAMEDATALEN-1 = 63 bytes, so two registry rows differing
 #: only after byte 63 map to ONE table. The allowlist below refuses all three.
-_TABLE_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+#:
+#: The bound is 46, not 63, because nothing is named by the table name alone. Every derived
+#: object suffixes it, and the longest suffix shipped is `_tenant_isolation` at 17 bytes
+#: (`recall/migrations/sql/0001_v08_baseline.sql`). A 63-byte table therefore yields an 80-byte
+#: policy or index name that PostgreSQL silently truncates, and `readiness_facts` compares index
+#: names by EXACT string, so readiness would report a missing index for one that exists and is
+#: valid. A bound is named by what it bounds: this one bounds the derived identifier.
+_TABLE_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,45}$")
 
 
 def validate_table_name(table: str) -> str:
     """Return `table` if it matches the physical-identifier allowlist, else raise.
 
-    This is the single chokepoint through which a physical table name reaches an f-string. It runs
-    on the way IN (`register_generation`) and again on the way OUT (`_generation`), so a row
-    written by another client, or by a direct `INSERT`, still cannot smuggle an identifier into a
-    query at read time.
+    This is the chokepoint for every table name that reaches an f-string THROUGH THE CONTROL
+    PLANE: it runs on the way IN (`register_generation`) and again on the way OUT (`_generation`),
+    so a row written by another client, or by a direct `INSERT`, cannot smuggle an identifier into
+    a query at read time.
+
+    It is not yet the only gate in the codebase. `PgVectorStore.__init__` and
+    `recall.schema._validate_target` still use `str.isidentifier()`, so a store constructed
+    directly, or `recall schema apply --table`, can still carry a name this allowlist would
+    refuse. Those two are a deliberate follow-up rather than an oversight: tightening them changes
+    behaviour for tables that already exist, which needs a compatibility decision this change does
+    not make. Do not describe this function as the single chokepoint until they are converted.
     """
     if not isinstance(table, str) or not _TABLE_NAME.fullmatch(table):
         raise ValueError(
-            "physical table must match ^[a-z_][a-z0-9_]{0,62}$ (lowercase ASCII, at most 63 "
-            f"bytes, no quoting required); got {table!r}"
+            "physical table must match ^[a-z_][a-z0-9_]{0,45}$ (lowercase ASCII, at most 46 "
+            f"bytes, leaving room for the 17-byte `_tenant_isolation` suffix); got {table!r}"
         )
     return table
 
@@ -95,6 +126,10 @@ class ConcurrentControlPlaneMigrator(RuntimeError):
     """Another process holds the control-plane migration advisory lock."""
 
 
+class ConcurrentOutboxDrain(RuntimeError):
+    """Another process is replaying or scrubbing this tenant's migration outbox."""
+
+
 @dataclass(frozen=True)
 class ControlPlaneLedgerState:
     """What `recall_schema_versions` says, against what this package ships."""
@@ -106,12 +141,22 @@ class ControlPlaneLedgerState:
 
     @property
     def current(self) -> bool:
-        return (
-            self.ledger_present
-            and not self.missing
-            and not self.unknown
-            and not self.checksum_mismatches
-        )
+        """Whether this database's control plane is safe to serve against.
+
+        `unknown` is deliberately NOT a failure. A database carrying migrations this package does
+        not ship means the DATABASE IS AHEAD, which is the normal and intended state during a
+        staged rollout and after an application rollback: migrate first, then roll the code.
+        Treating it as fatal would mean a forward migration bricks every replica still running the
+        previous release, turning a routine rollback into an outage. `missing` and
+        `checksum_mismatches` stay fatal, because those mean the code expects schema the database
+        does not have, or that committed bytes changed under it.
+        """
+        return self.ledger_present and not self.missing and not self.checksum_mismatches
+
+    @property
+    def ahead(self) -> bool:
+        """The database has migrations this package does not ship. Degraded, not fatal."""
+        return bool(self.unknown)
 
     def describe(self) -> str:
         if not self.ledger_present:
@@ -159,6 +204,11 @@ class ControlPlane:
         conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
 
     @staticmethod
+    def _outbox_lock_key(tenant: str) -> str:
+        return f"{OUTBOX_LOCK_PREFIX}:{tenant}"
+
+    @staticmethod
+    @lru_cache(maxsize=1)
     def bundled_migrations() -> list[tuple[int, str, str]]:
         """`(version, sql, sha256)` for every control-plane migration shipped in this package."""
         directory = Path(__file__).with_name("sql")
@@ -342,7 +392,15 @@ class ControlPlane:
                 "WHERE tenant_id = %s FOR UPDATE",
                 (tenant,),
             ).fetchone()
-            if row is not None and generation_id in {row[0], row[1]}:
+            if row is None:
+                # The refusal is the whole point of naming a tenant, so an absent route must not
+                # be the quiet path through it. A mistyped `--tenant` otherwise retired the
+                # generation unconditionally and still printed success.
+                raise KeyError(
+                    f"tenant {tenant!r} has no route in this control plane; refusing to confirm "
+                    f"retirement of {generation_id!r} against a tenant it cannot check"
+                )
+            if generation_id in {row[0], row[1]}:
                 role = "active" if generation_id == row[0] else "shadow"
                 raise RuntimeError(
                     f"refusing to retire {generation_id!r}: it is tenant {tenant!r}'s {role} "
@@ -355,6 +413,10 @@ class ControlPlane:
             ).fetchone()
             if updated is None:
                 raise KeyError(f"unknown generation: {generation_id}")
+            # Every other route-affecting write notifies. Without this the serving refusal does
+            # not bind until each process's route cache expires, so a retired generation keeps
+            # answering requests for up to `route_poll_seconds`.
+            conn.execute("SELECT pg_notify('recall_route_changed', %s)", (tenant,))
 
     def erase_sources_from_pending(self, tenant: str, sources: list[str]) -> int:
         """Scrub erased sources out of pending outbox payloads. Returns events changed.
@@ -375,28 +437,80 @@ class ControlPlane:
             return 0
         erased = set(sources)
         changed = 0
-        # One transaction, because `_connect` is autocommit and a `FOR UPDATE` outside a
-        # transaction releases its locks the instant the SELECT returns. Without this, a
-        # concurrent `replay_pending` could read a payload between this scrub's SELECT and its
-        # UPDATE and write the erased text back into both generations, which is precisely the
-        # outcome this method exists to prevent.
-        with self._connect() as conn, conn.transaction():
+        # The lock, not `FOR UPDATE`, is what excludes a concurrent drain. `pending_events` is a
+        # plain non-locking read, and under READ COMMITTED a plain SELECT is never blocked by a
+        # row lock, so a replay would happily read the pre-scrub payload and write the erased text
+        # back into both generations. `replay_pending` takes this same lock; `FOR UPDATE` below
+        # only orders this scrub against another scrub.
+        #
+        # BLOCKING here, unlike the drain's try-lock: erasure is irreversible and legally loaded,
+        # so waiting for a drain to finish is right and skipping the scrub is not. `lock_timeout`
+        # bounds the wait so a stuck drain surfaces as an error rather than a hang.
+        with self._connect() as conn:
+            conn.execute("SET lock_timeout = '30s'")
+            conn.execute(
+                "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
+                (self._outbox_lock_key(tenant),),
+            )
+            try:
+                changed = self._scrub_locked(conn, tenant, erased)
+            finally:
+                conn.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+                    (self._outbox_lock_key(tenant),),
+                )
+        return changed
+
+    def _scrub_locked(
+        self, conn: "psycopg.Connection", tenant: str, erased: set[str]
+    ) -> int:
+        changed = 0
+        with conn.transaction():
             self._set_tenant(conn, tenant)
+            # Filtered SERVER SIDE. The payload of one event carries every chunk's text AND its
+            # embedding for a batch of up to DEFAULT_BATCH_CHUNKS, which is megabytes; pulling
+            # every pending payload back to filter in Python put that on the forget request path
+            # even when nothing matched. `jsonb_exists_any` is the function spelling of `?|`,
+            # used to keep the `?` out of a psycopg query string.
             rows = conn.execute(
                 "SELECT operation_id, payload FROM recall_migration_events "
-                "WHERE tenant_id = %s AND status = 'pending' ORDER BY sequence_id FOR UPDATE",
-                (tenant,),
+                "WHERE tenant_id = %s AND status = 'pending' "
+                "AND (jsonb_exists_any(payload -> 'sources', %s) "
+                "     OR payload -> 'sources' IS NULL) "
+                "ORDER BY sequence_id FOR UPDATE",
+                (tenant, list(erased)),
             ).fetchall()
             for operation_id, payload in rows:
                 if not isinstance(payload, dict):
                     continue
-                remaining = [s for s in payload.get("sources", []) if s not in erased]
-                if len(remaining) == len(payload.get("sources", [])):
+                # Derived, not declared. A payload whose `sources` is absent or JSON null still
+                # carries the text in its chunk records, and trusting the declared list meant a
+                # malformed event kept the erased text (or raised TypeError mid-scrub, after the
+                # irreversible chunk deletes had already committed).
+                declared = payload.get("sources")
+                declared_list = [str(s) for s in declared] if isinstance(declared, list) else []
+                present = set(declared_list)
+                for key in ("active_chunks", "chunks"):
+                    records = payload.get(key)
+                    if isinstance(records, list):
+                        present |= {
+                            str(r["source"]) for r in records
+                            if isinstance(r, dict) and "source" in r
+                        }
+                if not present & erased:
                     continue
+                remaining = [s for s in declared_list if s not in erased]
+                if declared_list and not remaining:
+                    remaining = []
+                elif not declared_list:
+                    remaining = sorted(present - erased)
                 if not remaining:
+                    # active_count goes to 0 with the payload. Leaving it at N would make a
+                    # voided event byte-identical, in the retained audit record, to a shadow
+                    # write that lost all N chunks.
                     conn.execute(
                         "UPDATE recall_migration_events SET status = 'complete', payload = NULL, "
-                        "shadow_count = 0, completed_at = now() "
+                        "active_count = 0, shadow_count = 0, completed_at = now() "
                         "WHERE tenant_id = %s AND operation_id = %s",
                         (tenant, operation_id),
                     )
@@ -411,10 +525,17 @@ class ControlPlane:
                             r for r in records
                             if not (isinstance(r, dict) and r.get("source") in erased)
                         ]
+                surviving = scrubbed.get("active_chunks")
                 conn.execute(
-                    "UPDATE recall_migration_events SET payload = %s::jsonb "
+                    "UPDATE recall_migration_events SET payload = %s::jsonb, "
+                    "active_count = %s "
                     "WHERE tenant_id = %s AND operation_id = %s",
-                    (json.dumps(scrubbed), tenant, operation_id),
+                    (
+                        json.dumps(scrubbed),
+                        len(surviving) if isinstance(surviving, list) else 0,
+                        tenant,
+                        operation_id,
+                    ),
                 )
                 changed += 1
         return changed
@@ -502,6 +623,41 @@ class ControlPlane:
             ).fetchall()
         return [MigrationEvent(*row) for row in rows]
 
+    def pending_event_summaries(self, tenant: str) -> list[dict[str, object]]:
+        """Pending events WITHOUT their payloads, for operator surfaces and for counting.
+
+        `pending_events` selects `payload`, which carries every chunk's text and embedding for a
+        batch. An operator status command that only prints ids and counts must not move that over
+        the wire, and it must not be a retrieval path by accident.
+        """
+        with self._connect() as conn:
+            self._set_tenant(conn, tenant)
+            rows = conn.execute(
+                "SELECT sequence_id, operation_id, operation_kind, active_count, shadow_count, "
+                "payload ->> 'active_generation', payload ->> 'shadow_generation' "
+                "FROM recall_migration_events "
+                "WHERE tenant_id = %s AND status = 'pending' ORDER BY sequence_id",
+                (tenant,),
+            ).fetchall()
+        return [
+            {
+                "sequence_id": row[0], "operation_id": row[1], "operation_kind": row[2],
+                "active_count": row[3], "shadow_count": row[4],
+                "active_generation": row[5], "shadow_generation": row[6],
+            }
+            for row in rows
+        ]
+
+    def pending_count(self, tenant: str) -> int:
+        with self._connect() as conn:
+            self._set_tenant(conn, tenant)
+            row = conn.execute(
+                "SELECT count(*) FROM recall_migration_events "
+                "WHERE tenant_id = %s AND status = 'pending'",
+                (tenant,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     def complete_event(self, tenant: str, operation_id: str, shadow_count: int) -> None:
         """Mark replay complete and erase the potentially sensitive replay payload."""
         with self._connect() as conn:
@@ -547,7 +703,37 @@ class ControlPlane:
     def replay_pending(
         self, tenant: str, stores: dict[str, "PgVectorStore"]
     ) -> int:
-        """Replay ordered, idempotent shadow writes and clear completed payloads."""
+        """Replay ordered, idempotent shadow writes and clear completed payloads.
+
+        Serialised against the erasure scrub AND against a second drain by a per-tenant advisory
+        lock. Both are needed. Two concurrent drains both perform every write and the loser then
+        raises `KeyError` from `complete_event`, and without the lock a drain reads the pre-scrub
+        payload and writes erased text back into both generations, which is the exact outcome
+        `erase_sources_from_pending` exists to prevent. `FOR UPDATE` cannot supply that ordering:
+        this read is a plain SELECT, and under READ COMMITTED a plain SELECT is never blocked by
+        a row lock.
+
+        Try-lock rather than blocking, unlike the scrub: an operator can re-run a drain, and
+        waiting behind an erasure that is itself waiting is worse than being told to retry.
+        """
+        with self._connect() as lock_conn:
+            got = lock_conn.execute(
+                "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))",
+                (self._outbox_lock_key(tenant),),
+            ).fetchone()
+            if not got or not got[0]:
+                raise ConcurrentOutboxDrain(
+                    f"another replay or erasure is working tenant {tenant!r}'s outbox"
+                )
+            try:
+                return self._replay_locked(tenant, stores)
+            finally:
+                lock_conn.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+                    (self._outbox_lock_key(tenant),),
+                )
+
+    def _replay_locked(self, tenant: str, stores: dict[str, "PgVectorStore"]) -> int:
         from recall.types import Chunk
 
         completed = 0

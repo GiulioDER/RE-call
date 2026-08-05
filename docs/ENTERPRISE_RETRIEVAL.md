@@ -38,7 +38,7 @@ recall-enterprise mark-ready g2026_08 --chunks 1000000 --sources 120000
 recall-enterprise set-route acme g2026_07 --shadow-generation g2026_08
 ```
 
-While a shadow route exists, indexing prepares both vector sets before either generation changes. It records a durable ordered event, applies the active and shadow writes, then clears the event payload on completion. A crash leaves an idempotent replay record. Forget operations delete from both generation tables in one database transaction, and also scrub the erased sources out of any pending replay record, so erasure cannot be undone by a later replay.
+While a shadow route exists, indexing prepares both vector sets before either generation changes. It records a durable ordered event, applies the active and shadow writes, then clears the event payload on completion. A crash leaves an idempotent replay record. The `recall_forget` MCP tool deletes from both generation tables in one database transaction, then scrubs the erased sources out of any pending replay record, so a later replay cannot restore them. The scrub is keyed on the sources the caller named, not on what still had rows, because the case that most needs it is the one where a crash left the text in the outbox and nowhere else. One window remains and is reported rather than hidden: the deletes commit before the scrub, so a crash between them leaves the outbox entry, and the result carries `outbox_events_scrubbed = -1` when the scrub failed after the deletion succeeded. ⚠️ The `recall forget` CLI is single-generation and does NOT scrub the outbox; on an enterprise deployment use the MCP tool.
 
 Cutover refuses to proceed while any migration event is pending or while the shadow is not ready:
 
@@ -54,7 +54,7 @@ recall-enterprise replay acme
 recall-enterprise parity acme
 ```
 
-`replay` opens only the generations the pending events name, resolving each physical table from `recall_index_generations`, and exits non-zero if anything is still pending afterwards. `parity` exits non-zero when the generations disagree on sources, raw content hashes or chunk counts. `status` reports generations, the tenant's route and the outbox depth; it never prints a pending event's payload, which holds corpus text and vectors.
+`replay` opens only the generations the pending events name, resolving each physical table from `recall_index_generations`, and exits non-zero if anything is still pending afterwards. `parity` exits non-zero when the generations disagree on sources, raw content hashes or chunk counts, and also when either generation has an invalid required index or does not have row level security forced. `status` reports generations, the tenant's route and the outbox depth; it never prints a pending event's payload, which holds corpus text and vectors.
 
 `readiness` runs the startup checks for one tenant without starting a server, and exits non-zero when any of them fails:
 
@@ -66,7 +66,7 @@ The route update is transactional and sends a content free PostgreSQL notificati
 
 ## Runtime configuration
 
-Set `RECALL_ENTERPRISE_CONTROL_PLANE=1` only on authenticated HTTP deployments. Enterprise readiness then fails startup when a route is missing, the profile or dimension differs, required indexes are invalid, row level security is ineffective, model identity is unverified, or stored rows lack profile metadata.
+Set `RECALL_ENTERPRISE_CONTROL_PLANE=1` only on authenticated HTTP deployments. Enterprise readiness then fails startup when a route is missing, the control plane is unreachable, the profile or dimension differs, the active generation is not `ready` or `active`, either schema ledger is not current, required indexes are invalid, row level security is ineffective, model identity is unverified, a loaded calibration names a different embedding profile, or stored rows lack profile metadata. A database carrying migrations this package does not ship is reported as degraded rather than fatal, so migrating forward and then rolling the application back does not refuse to boot.
 
 Choose one service cost profile per process:
 

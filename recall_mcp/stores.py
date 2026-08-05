@@ -33,7 +33,12 @@ from __future__ import annotations
 import threading
 import time
 
-from recall.control_plane import SERVABLE_STATES, ControlPlane, TenantRoute
+from recall.control_plane import (
+    SERVABLE_ACTIVE_STATES,
+    SERVABLE_STATES,
+    ControlPlane,
+    TenantRoute,
+)
 from recall.pool import DEFAULT_MIN_POOL_SIZE, SharedPool
 from recall.observability import get_logger
 from recall.store import DEFAULT_TABLE, PgVectorStore
@@ -168,7 +173,8 @@ class StoreRegistry:
                     raise
                 self._stores[key] = store
             return store
-        if generation is not None and generation.state not in SERVABLE_STATES:
+        servable = SERVABLE_STATES if shadow else SERVABLE_ACTIVE_STATES
+        if generation is not None and generation.state not in servable:
             # `docs/ENTERPRISE_RETRIEVAL.md`: "Never allow a request field to name a retired
             # table." A request cannot name one directly, because the table comes from the
             # registry. But a route left pointing at a generation that was retired afterwards
