@@ -16,6 +16,14 @@ retriever under test is unmodified; only the candidate set changes.
 The master table is built by indexing the converted corpus into a named table — `Indexer` skips
 by content hash, so re-running it over an existing index is a no-op rather than a re-embed.
 
+**Which questions the retrieval metrics count.** `--score-retrieval-on held|all`, defaulting to
+`held` — the same flag, default and meaning as `recall.eval.labelled`, defined once in
+`recall.eval._scoring`. Every LongMemEval figure this repo publishes was computed under `held`.
+`all` scores the fit half's answerable questions too, doubling the retrieval sample at the cost
+of one extra haystack populate per fit answerable question; abstention stays on the held half in
+both modes, because its threshold is fitted on the other one. `haystack_chunks` follows the
+retrieval population, so it is not comparable across modes — it publishes its own `n`.
+
 **What this arm still does not fix.** Temporal-reasoning remains unscoreable: a session reused
 across haystacks is stamped with a different date each time and the corpus holds one copy of it
 (see `longmemeval.py`). Per-question scoring narrows the candidate set; it does not restore the
@@ -37,7 +45,13 @@ import psycopg
 
 from recall.calibration import from_samples
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
-from recall.eval.metrics import wilson_ci
+from recall.eval._scoring import (
+    DEFAULT_SCORE_RETRIEVAL_ON,
+    SCORE_RETRIEVAL_ON,
+    check_score_retrieval_on,
+    scores_retrieval,
+)
+from recall.eval.metrics import latency_report, wilson_ci
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
 from recall.trust import evaluate as trust_evaluate
@@ -149,7 +163,26 @@ def _assert_master_covers(store: PgVectorStore, master: str, questions: list[dic
 
 
 def evaluate(dsn: str, master: str, questions: list[dict], embedder: Embedder,
-             k: int = 5) -> dict:
+             k: int = 5, score_retrieval_on: str = DEFAULT_SCORE_RETRIEVAL_ON) -> dict:
+    """Score LongMemEval per haystack. `score_retrieval_on` means what it means in `labelled`.
+
+    The flag is threaded through rather than left out. Both harnesses report a key called
+    `hit_at_k`, and once one of them could be widened to every answerable question while the
+    other could not, the same key named two different populations depending on which module
+    produced the JSON — with nothing in either artifact saying which. The default is `"held"`
+    here for the same reason it is there: it is what every already-published RATE was computed
+    under, and a default is what decides what a published number MEANS.
+
+    Abstention is unaffected, in both modes and in both harnesses: `false_abstain` and
+    `abstention_accuracy` stay on the held half, because the threshold is fitted on the other one.
+
+    Cost of `"all"`: one extra haystack populate (a TRUNCATE plus an indexed INSERT ... SELECT
+    against the master) and one extra retrieval per fit ANSWERABLE question. On LongMemEval-S
+    that is roughly +40% of the run's populates rather than a doubling, because the calibration
+    pass already populates every fit haystack — and it re-populates them, which is redundant work
+    this implementation does not yet avoid.
+    """
+    check_score_retrieval_on(score_retrieval_on)
     scratch = "pq_" + uuid.uuid4().hex[:8]
     fit, held = questions[::2], questions[1::2]
 
@@ -179,10 +212,32 @@ def evaluate(dsn: str, master: str, questions: list[dict], embedder: Embedder,
         by_type: dict[str, list[bool]] = collections.defaultdict(list)
         abstained, false_abstain, haystack_sizes = [], [], []
 
-        for q in held:
+        # Index parity IS the fit/held boundary here, read straight off `enumerate`, and widening
+        # the retrieval sample must not change that: selecting the held subset back out BY ID is
+        # what lets a duplicate id in `labelled` score abstention on a fitted question (see
+        # `labelled.check_question_ids`). Note the narrower claim than "ids are unused in this
+        # arm" — `q["id"]` is still read for the miss report below and in `main()`, so a question
+        # set with a missing id fails there, late, rather than at entry.
+        #
+        # Under the `"held"` default the loop visits exactly `questions[1::2]`, in order, doing
+        # exactly what the single `for q in held` pass did — same questions, same order, scored
+        # identically — and `"all"` is the only thing that adds work.
+        for pos, q in enumerate(questions):
+            is_held = pos % 2 == 1
+            answerable = bool(q.get("answerable"))
+            # Stated positively, and through the rule `labelled` uses: an answerable question is
+            # retrieved when the shared predicate says so, an unanswerable one only on the held
+            # half (it feeds `abstention_accuracy`, which never widens).
+            retrieved = scores_retrieval(is_held=is_held, mode=score_retrieval_on)
+            if not (retrieved if answerable else is_held):
+                continue
             populate_haystack(dsn, embedder.dim, master, scratch, q["haystack_files"], store=store)
+            # Descriptive, and therefore reported over whatever was actually scored: under
+            # `"all"` that includes the fit half's haystacks. It publishes its own `n` below,
+            # because that makes it the fourth population in this report, not the fourth
+            # unnamed denominator.
             haystack_sizes.append(store.count())
-            if q.get("answerable"):
+            if answerable:
                 t = time.perf_counter()
                 res = HybridRetriever(store, embedder).search(q["query"], k=k)
                 latency.append((time.perf_counter() - t) * 1000)
@@ -202,16 +257,20 @@ def evaluate(dsn: str, master: str, questions: list[dict], embedder: Embedder,
                 # Reuse the hybrid `res` already retrieved above for the abstain decision instead
                 # of a second full retrieval (PERF-003): abstained depends only on the hits +
                 # supersession + threshold, so this equals research_search at the same pool.
-                sup, unres = store.supersession() if res.hits else ({}, frozenset())
-                false_abstain.append(
-                    trust_evaluate(res, sup, cal, datetime.now(timezone.utc), unres).abstained
-                )
+                #
+                # HELD ONLY, in both modes. Widening retrieval must never widen this: the
+                # threshold was fitted on the fit half, so scoring `false_abstain` over a fit
+                # question is fitting and scoring on the same data.
+                if is_held:
+                    sup, unres = store.supersession() if res.hits else ({}, frozenset())
+                    false_abstain.append(
+                        trust_evaluate(res, sup, cal, datetime.now(timezone.utc), unres).abstained
+                    )
             else:
                 abstained.append(
                     research_search(store, embedder, q["query"], k=k, calibration=cal).abstained
                 )
 
-        lat = sorted(latency)
         return {
             "protocol": "per-question haystack",
             "master_table": master,
@@ -219,16 +278,27 @@ def evaluate(dsn: str, master: str, questions: list[dict], embedder: Embedder,
             # verified complete rather than assumed to be.
             "master_coverage": coverage,
             "haystack_chunks": {
+                # `n` because this population MOVES with `score_retrieval_on` (it is the
+                # retrieval-scored questions plus the held unanswerable ones), and an aggregate
+                # whose population moves while its key does not is two numbers wearing one name.
+                "n": len(haystack_sizes),
                 "mean": round(statistics.mean(haystack_sizes), 1) if haystack_sizes else 0,
                 "min": min(haystack_sizes, default=0), "max": max(haystack_sizes, default=0),
             },
-            "questions": {"total": len(questions), "held_out": len(held)},
+            # FOUR metric families, FOUR denominators, each read off the list that was actually
+            # scored rather than recomputed from a definition — the same contract `labelled`
+            # publishes, so a reader can compare the two artifacts without guessing. The fourth
+            # is `haystack_chunks.n` above, kept beside its aggregate.
+            "questions": {"total": len(questions), "held_out": len(held),
+                          "score_retrieval_on": score_retrieval_on,
+                          "retrieval_scored_on": len(hits),
+                          "false_abstain_scored_on": len(false_abstain),
+                          "abstention_accuracy_scored_on": len(abstained)},
             "threshold": cal.threshold,
             f"hit_at_{k}": _rate(hits),
             "mrr": round(statistics.mean(reciprocal), 4) if reciprocal else float("nan"),
             "by_type": {t: _rate(v) for t, v in sorted(by_type.items())},
-            "latency_ms": {"p50": round(lat[len(lat) // 2], 1),
-                           "p95": round(lat[int(0.95 * len(lat))], 1)} if lat else {},
+            "latency_ms": latency_report(latency),
             "abstention_accuracy": _rate(abstained),
             "false_abstain": _rate(false_abstain),
             "misses": misses,
@@ -244,12 +314,25 @@ def main() -> None:
     ap.add_argument("--master", required=True, help="table holding the fully indexed corpus")
     ap.add_argument("--embedder", default="fastembed")
     ap.add_argument("-k", type=int, default=5)
+    ap.add_argument("--score-retrieval-on", default=DEFAULT_SCORE_RETRIEVAL_ON,
+                    choices=list(SCORE_RETRIEVAL_ON),
+                    help="which questions the RETRIEVAL metrics are scored on — the same flag, "
+                         "the same default and the same meaning as recall.eval.labelled. 'held' "
+                         "(default) reproduces every published RATE; 'all' scores every "
+                         "answerable question, doubling the retrieval sample at the cost of one "
+                         "extra haystack populate and one extra retrieval per fit ANSWERABLE "
+                         "question (unanswerable fit questions are skipped in both modes). "
+                         "Abstention always uses the held half.")
     ap.add_argument("--dsn", default=DEFAULT_DSN)
     args = ap.parse_args()
 
-    from recall.eval.labelled import _make_embedder
+    from recall.eval.labelled import _make_embedder, check_question_ids
 
     questions = json.loads(Path(args.questions).read_text(encoding="utf-8"))
+    # Before the comprehension below dereferences `q["id"]` itself. `evaluate` does not call this
+    # (index parity, not ids, carries the split in this arm), but the CLI reads ids in two places
+    # and a bare `KeyError` from a comprehension is not a report.
+    check_question_ids(questions)
     missing = [q["id"] for q in questions if not q.get("haystack_files")]
     if missing:
         raise SystemExit(
@@ -257,7 +340,8 @@ def main() -> None:
             "Re-run the converter — this arm cannot be scored without them."
         )
     print(json.dumps(evaluate(args.dsn, args.master, questions,
-                              _make_embedder(args.embedder), k=args.k), indent=2))
+                              _make_embedder(args.embedder), k=args.k,
+                              score_retrieval_on=args.score_retrieval_on), indent=2))
 
 
 if __name__ == "__main__":

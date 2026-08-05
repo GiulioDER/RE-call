@@ -10,11 +10,20 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ### Added
 
-- `recall.eval.labelled`: `score_retrieval_on` (`"held"` default, `"all"` opt-in) selects the
-  question population the RETRIEVAL metrics (`hit_at_k`, `mrr`, `latency_ms`) are scored on, plus
-  a `--score-retrieval-on` CLI flag. `"all"` doubles the sample and is methodologically free —
-  those metrics never read the calibration, so the fit/held split halves them for nothing — but
-  it is NOT the default, because the default decides what every already-published figure means.
+- `score_retrieval_on` (`"held"` default, `"all"` opt-in) selects the question population the
+  RETRIEVAL metrics (`hit_at_k`, `mrr`, `latency_ms`, `misses`) are scored on, in BOTH
+  `recall.eval.labelled` and `recall.eval.longmemeval_perq`, each with a `--score-retrieval-on`
+  CLI flag. `"all"` doubles the sample and is methodologically free — those metrics never read
+  the calibration, so the fit/held split halves them for nothing — but it is NOT the default,
+  because the default decides what every already-published figure means. The flag, its default
+  and the membership rule live once in `recall.eval._scoring`: two harnesses publishing a key
+  called `hit_at_k` must not be able to disagree about which questions it counts. In
+  `longmemeval_perq` the widened mode also widens `by_type` and `haystack_chunks` (which now
+  publishes its own `n`), and costs one extra haystack populate and one extra retrieval per fit
+  ANSWERABLE question.
+- `recall.eval.metrics.latency_report`, the one p50/p95 both harnesses now publish through.
+- `recall.observability.percentile` takes `ndigits` (default 3, unchanged); `ndigits=None`
+  returns the raw sample, so a caller that rounds for publication rounds exactly once.
 - The report's `questions` block now names one denominator per metric family, each read off the
   list actually scored: `retrieval_scored_on`, `false_abstain_scored_on`,
   `abstention_accuracy_scored_on`, and the `score_retrieval_on` mode that produced them.
@@ -25,10 +34,50 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 - `abstention_scored_on` (added and removed within this unreleased window) named the abstention
   family but reported `false_abstain`'s denominator, while `abstention_accuracy` is scored on the
   held UNANSWERABLE questions — a third, unnamed denominator. Split into two correctly-named keys.
+- **`latency_ms` was reported one rank too high in both eval harnesses, and published p50 figures
+  move.** `recall.eval.labelled` and `recall.eval.longmemeval_perq` each computed
+  `{"p50": lat[len(lat) // 2], "p95": lat[int(0.95 * len(lat))]}` — the same
+  1-based-rank-used-as-a-0-based-index defect that `[0.5.1]` fixed in `recall/observability.py`
+  and `recall/eval/scale.py`. That entry said two copies of the formula existed; there were four,
+  and the harnesses went on publishing the old number, which is exactly the failure mode it
+  warned about. All four now go through `recall.observability.percentile` — the two eval
+  harnesses via the new `recall.eval.metrics.latency_report`, `recall.eval.scale` directly (it
+  publishes p99 as well, so it cannot share the two-quantile helper). A fifth implementation
+  survives in `benchmarks/latency.py` on a deliberately different, interpolating convention that
+  also backs that module's bootstrap CI quantiles; it is named in `latency_report`'s docstring
+  and left alone rather than swept in under cover of an off-by-one fix.
+  Measured scope: **p50 moves down one rank for every even n, p95 only when n is a multiple of
+  20**, and the old value was always the higher of the two. **Any `p50` these two harnesses
+  published is pre-fix** — that is the rule, and it is stated as a rule because an enumeration of
+  affected cells is the kind of claim that is wrong the moment a figure is quoted somewhere new.
+  The primary tables carry the annotation in place, so they cannot disagree with the reproduce
+  command beside them: `README.md`'s PEPs arms table (n=44 — p50 moves, p95 does not) and its
+  real-corpus row, and the `search p50` rows in `results/RESULTS.md`. Figures DERIVED from those
+  runs are not individually annotated: the rerank-cost and embedder-cost latencies in
+  `results/FINDINGS.md` and the `search p50` in `docs/CASE_STUDY.md` come from the same code path
+  and are pre-fix under the same rule.
+- `recall.eval.labelled.check_question_ids` refuses a question set whose ids cannot carry the
+  fit/held boundary, at entry, before any connection is opened — and it is called from the CLI
+  path too, which previously dereferenced `q["id"]` first and died with a bare `KeyError`.
+
+### Changed (input contract)
+
+- **`recall.eval.labelled` now requires every question to carry a unique, non-empty string `id`**,
+  and `recall.eval.longmemeval_perq`'s CLI applies the same check at entry (its `evaluate` still
+  splits on index parity and reads ids only for the miss report, so the requirement there is a
+  fail-early one, not a correctness one).
+  A question file with a duplicate id used to score rather than fail, and under
+  `score_retrieval_on="all"` a duplicate straddling the fit/held boundary silently pulled a FIT
+  question into the abstention sample — fit-and-score-on-the-same-data, with the n unchanged and
+  only the rate made optimistic. The check is deliberately wider than that defect (unanswerable
+  questions need an id too, though `evaluate` never reads theirs) because one rule for the file
+  is easier to produce and to verify than one rule per class. Every question set this repo ships
+  or generates already complies; a hand-written labelled file may need ids added.
 
 **Abstention behaviour is unchanged in both modes**: `false_abstain` is always scored on the held
-answerable half, because its threshold is fitted on the other one. Published numbers are unaffected
-by this release: the default reproduces them exactly.
+answerable half, because its threshold is fitted on the other one. Published RATES are unaffected
+by the `score_retrieval_on` work: the default reproduces them exactly. Published `latency_ms` is
+NOT — see the percentile fix above, which is a separate defect and does move numbers.
 
 ### Changed
 - **BREAKING: retrieval fails closed when it cannot certify an answer.** `trusted_search` used to

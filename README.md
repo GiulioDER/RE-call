@@ -196,7 +196,7 @@ on a laptop.
 | **Observability** | ✅ `logging` (text/JSON), counters and latency percentiles for abstention, verdicts, reconnects; surfaced through the MCP `recall_stats` tool | The library never attaches handlers — that is the host's job |
 | **Incremental indexing** | ✅ content-hash skip, bounded-memory batched writes, prunes files deleted from disk | 5,100 chunks / 1,120 files: full **7.4 s**, unchanged re-index **0.22 s** |
 | **Scale characteristics** | ✅ measured at **50,600 chunks**: recall@5 1.00 filtered and unfiltered, search p50/p95/p99 | Templated text; absolute retrieval quality is optimistic |
-| **Real-corpus operation** | ✅ 794 hand-written memos → 6,491 chunks, p50 **78 ms** | Works at this size; see the retrieval row for how well |
+| **Real-corpus operation** | ✅ 794 hand-written memos → 6,491 chunks, p50 **78 ms** (pre-fix, see `CHANGELOG.md` `latency_ms`) | Works at this size; see the retrieval row for how well |
 | **Retrieval quality, real questions** | ✅ **hit@5 0.705** [0.56, 0.82] on a public 746-doc corpus with the free local embedder · ⚠️ **0.348** on an idiosyncratic private one — see [the tables below](#retrieval-quality-it-depends-on-your-corpus-and-here-is-the-rule) | Measured on 110 hand-labelled questions per corpus, not on headings. Corpus vocabulary dominates: a cloud embedder is worth +0.28 on the hard corpus and +0.02 on the ordinary one |
 | **Data erasure** | ✅ `recall forget` / `recall_forget` permanently delete a source's chunks; previews by default, `--yes` to act | The right-to-erasure path — irreversible, so it refuses to act unattended without the flag |
 | **Abuse bounds** | ✅ `recall_index` refuses before embedding anything if a request exceeds `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` | A client-callable indexer with no cap is an unbounded spend on a cloud embedder |
@@ -321,6 +321,11 @@ questions. On the PEPs, bge-small, 44 held-out answerable questions:
 | sparse only (Postgres FTS) | 0.023 [0.00, 0.12] | 0.023 | 24 ms | near-useless alone on this corpus |
 | dense only (pgvector) | 0.682 [0.53, 0.80] | 0.483 | 31 ms | carries almost all of the result |
 | **hybrid** (dense + sparse + RRF) | **0.705** [0.56, 0.82] | 0.494 | 26 ms | the published number |
+
+<sub>The `p50` column is pre-fix: measured with a percentile index one rank too high (see the
+`latency_ms` entry under Fixed in `CHANGELOG.md`). A re-run returns the next sample down whenever
+the scored sample size is even, which it is here. The hit@5, interval and MRR columns are
+unaffected — the fix is to the latency percentile alone.</sub>
 
 **The pipeline beats BM25 by +0.25**, so the embedding stack earns its keep — and **dense is doing
 the work**: hybrid's +0.023 over dense-alone is inside the interval. On ordinary prose the fusion

@@ -10,8 +10,10 @@ explain variance beyond the local score?** That is a partial correlation, and wi
 ~20 corpora it needs a permutation test rather than a parametric p-value, and Holm correction
 because there is more than one candidate.
 
-Dependency-free by design (stdlib only), matching `recall.eval.metrics`, so the analysis runs in
-the offline test suite and its arithmetic can be read without trusting a library.
+Dependency-free by design (stdlib only), so the analysis runs in the offline test suite and its
+arithmetic can be read without trusting a library. `recall.eval.metrics` holds to the same rule
+with one first-party exception: it imports `recall.observability.percentile`, so the nearest-rank
+formula has one implementation rather than a copy per publisher.
 """
 from __future__ import annotations
 
