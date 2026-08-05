@@ -9,6 +9,40 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
+- **A producer for the retrieval promotion gate** (`recall/eval/promotion/`, run as
+  `python -m recall.eval.promotion freeze|run|decide`). `recall/promotion.py` implemented
+  `evaluate_retrieval_promotion` completely and nothing built a `RetrievalGateInput` outside its
+  own test, so no promotion decision could exist. It now can.
+
+  Frozen input manifests fix question ids and input hashes **before** any candidate result exists,
+  using the ladder manifest pattern: sorted canonical rendering, a digest over body and provenance,
+  the digest excluded from what it covers, and a reader that refuses a mismatch rather than
+  repairing it. A closed sixteen-field per-question record schema is shared by every corpus
+  adapter — LOCOMO, PEPs (`recall/eval/peps_questions.json`, in the tree since it was written and
+  referenced by no code until now), the Answerability Ladder, LongMemEval and MT-RAG. The
+  aggregator emits `QuestionOutcome`, `SafetyMetrics` and `RetrievalGateInput`, and writes a
+  machine-readable `PromotionDecision` JSON.
+
+  It mostly refuses, and each refusal is a way the gate could otherwise pass without being asked.
+  Arms that do not cover the frozen manifest exactly, or whose rows were scored against a different
+  input hash, are not paired. Safety metrics that are NaN because their class is empty are refused
+  rather than compared, since `nan - nan > 0.02` is False and an empty check reads exactly like a
+  passed one. An arm that retrieves no labelled document for any question is refused as a
+  label-space mismatch, because two such arms differ by exactly zero and produce a clean-looking
+  refusal.
+- **`recall.calibration.load_for_profile` and `save_for_profile`.** `load_for` filters on the
+  profile ID, the coarsest part of an embedding's identity: two runs can share
+  `bge-small-symmetric-v1` and differ in artifact digest, dimension, encoder modes, normalization,
+  instruction version, chunker version or inference-library version, each of which moves the cosine
+  regime a threshold was fitted in. `load_for_profile` additionally requires
+  `EmbeddingProfile.fingerprint()` to match, and **fails closed** on a file that records no
+  fingerprint at all. `load_for` is unchanged, so no existing caller changes behaviour.
+- **`recall.eval.resume`**, one resume mechanism for incremental evaluation runs. Three
+  incompatible ones existed; `benchmarks/ladder/run.py` and `benchmarks/beam/run.py` now delegate
+  to this, which is the ladder's own: append-only JSONL, resume by id, a truncated trailing line
+  tolerated as "not yet recorded", mid-file corruption loud. `recall/eval/gap_run.py` is
+  deliberately not migrated — its unit of resume is a corpus result *file* carrying a `status`
+  marker, and unifying it would rewrite a published artifact format for no resume benefit.
 - **External OIDC identity for the MCP server's HTTP transports.** `RECALL_OIDC_ISSUER`,
   `RECALL_OIDC_AUDIENCE` and `RECALL_OIDC_TENANTS` (required together), plus optional
   `RECALL_OIDC_ALGORITHMS`. Revocation, rotation and expiry move to the IdP. See
@@ -21,6 +55,13 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   the tenant list.
 
 ### Changed
+- **`RetrievalGateInput.latency_p95_ms` accepts `None`, meaning PENDING, and PENDING is a
+  FAILURE.** The program has no idle reference environment (VPS2 carries a permanent load average
+  near 8 from unrelated production), so every promotion decision it can produce today is PENDING on
+  latency. The two alternative encodings were both worse: a default of `0.0` makes an unmeasured
+  latency the fastest possible one, and omitting the check makes a missing measurement
+  indistinguishable from a passing one. A float still behaves exactly as before, budget check
+  included.
 - **New startup refusals on the MCP HTTP transports.** The server now refuses to boot when: no
   mechanism is configured at all; `RECALL_OIDC_ISSUER` is set without `RECALL_OIDC_AUDIENCE` or
   `RECALL_OIDC_TENANTS`; any other `RECALL_OIDC_*` key is set *without* `RECALL_OIDC_ISSUER`

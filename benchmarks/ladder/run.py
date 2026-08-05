@@ -27,6 +27,7 @@ from benchmarks.ladder.invariants import (
     assert_survivors_present,
 )
 from benchmarks.ladder.manifest import RING_ORIGINAL, Instance, read_manifest
+from recall.eval.resume import read_ledger
 
 
 class AdapterSmokeCheckFailed(RuntimeError):
@@ -114,47 +115,19 @@ def _assert_adapter_signatures(system: MemorySystem) -> None:
 def _recorded(out_path: Path) -> dict[str, bool]:
     """instance_id -> abstained, for every row already written.
 
+    Delegates to `recall.eval.resume`, which is this function's own mechanism factored out so that
+    the three incompatible resume implementations in this repository could stop being three. The
+    behaviour is unchanged: a truncated trailing line (the realistic way an overnight run dies) is
+    treated as "not yet recorded" and the file is repaired so the next append is not glued onto a
+    partial line, while a malformed line that is NOT last stays loud.
+
     Returns the flags, not just the ids, because invariant 3 must still fire on a RESUMED run. A
     resume where every answerable original was already scored would otherwise leave
     `answered_originals` empty and skip the check silently — the failure shape where grepping for
     success turns a failure into no output at all.
-
-    A process killed mid-write (SIGKILL, OOM, power loss — the realistic ways an overnight run
-    dies) leaves a truncated final line. That must be treated as "not yet recorded", not fatal —
-    the whole point of `--resume` is surviving exactly this. A malformed line that is NOT last is
-    a different signal (corruption somewhere in the middle of an otherwise-flushed file, not a
-    write interrupted at the tail) and must still be loud rather than silently dropped.
-
-    When the tail is discarded as truncated, the file is rewritten with only the valid lines. The
-    caller reopens `out_path` in append ("a") mode afterwards; without this rewrite, a partial
-    line with no trailing newline would have the next row glued onto its end, corrupting the
-    JSONL format for every future read of a file that was otherwise fine.
     """
-    if not out_path.exists():
-        return {}
-    lines = [line for line in out_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    recorded: dict[str, bool] = {}
-    valid_lines: list[str] = []
-    truncated = False
-    for i, line in enumerate(lines):
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            if i != len(lines) - 1:
-                raise ValueError(
-                    f"{out_path}: line {i + 1} of {len(lines)} is not valid JSON and is NOT the "
-                    f"last line — this is corruption in the middle of the file, not a truncated "
-                    f"trailing write, and must not be silently treated as 'not yet recorded'."
-                ) from None
-            truncated = True
-            break
-        recorded[row["instance_id"]] = bool(row["abstained"])
-        valid_lines.append(line)
-    if truncated:
-        out_path.write_text(
-            "".join(f"{ln}\n" for ln in valid_lines), encoding="utf-8"
-        )
-    return recorded
+    read = read_ledger(out_path, id_field="instance_id", repair_truncated_tail=True)
+    return {row["instance_id"]: bool(row["abstained"]) for row in read.rows}
 
 
 def _cluster_id_of(instance: Instance) -> str:

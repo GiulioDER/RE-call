@@ -1,0 +1,102 @@
+{
+  "_provenance": {
+    "generated_at": "2026-08-05T13:28:50+00:00",
+    "stack": {
+      "fastembed": "0.8.0",
+      "onnxruntime": "1.27.0",
+      "sentence-transformers": "5.6.1",
+      "torch": "2.13.0",
+      "transformers": "5.14.1"
+    },
+    "status": "current"
+  },
+  "arms": {
+    "baseline": "bge-small-symmetric-v1, legacy retrieval profile (baseline)",
+    "candidate": "bge-small-symmetric-v1, legacy retrieval profile (candidate, byte-identical configuration)"
+  },
+  "corpora": [
+    "labelled"
+  ],
+  "failures": [
+    "macro paired hit@5 bootstrap interval does not clear zero",
+    "no improving corpus has Holm corrected paired significance below 0.05",
+    "security verification is not green",
+    "retrieval p95 latency is PENDING — no measurement from a reference host, so the latency budget could not be evaluated"
+  ],
+  "frozen_manifest_digest": "cad3281c79d88de83cdb96a396843e0271d13d3141a6826555f0da536afabaa0",
+  "latency": {
+    "budget_ms": 250.0,
+    "gate_input_p95_ms": null,
+    "observed_diagnostic_only": {
+      "baseline_p95_ms": 71.81449999916367,
+      "candidate_p95_ms": 81.065900001704
+    }
+  },
+  "latency_status": "PENDING",
+  "n_paired_questions": 14,
+  "primary": {
+    "bootstrap_interval": [
+      0.0,
+      0.0
+    ],
+    "corpus_hit5_delta": {
+      "labelled": 0.0
+    },
+    "holm_p_values": {
+      "labelled": 1.0
+    },
+    "macro_hit5_delta": 0.0,
+    "metric": "hit@5"
+  },
+  "promoted": false,
+  "safety": {
+    "baseline": {
+      "false_abstention": 0.0,
+      "false_confidence": 1.0,
+      "superseded_trust_rate": 0.0
+    },
+    "candidate": {
+      "false_abstention": 0.0,
+      "false_confidence": 1.0,
+      "superseded_trust_rate": 0.0
+    }
+  },
+  "schema": "recall-promotion-decision-v1",
+  "secondary_diagnostic_only": {
+    "baseline": {
+      "false_abstention": 0.0,
+      "false_confidence": 1.0,
+      "hit_at_1": 1.0,
+      "hit_at_20": 1.0,
+      "hit_at_5": 1.0,
+      "latency_p50_ms": 50.56779999722494,
+      "latency_p95_ms": 71.81449999916367,
+      "mrr": 1.0,
+      "n_answerable": 14,
+      "n_unanswerable": 11,
+      "ndcg_at_5": 1.0
+    },
+    "candidate": {
+      "false_abstention": 0.0,
+      "false_confidence": 1.0,
+      "hit_at_1": 1.0,
+      "hit_at_20": 1.0,
+      "hit_at_5": 1.0,
+      "latency_p50_ms": 49.44949999844539,
+      "latency_p95_ms": 81.065900001704,
+      "mrr": 1.0,
+      "n_answerable": 14,
+      "n_unanswerable": 11,
+      "ndcg_at_5": 1.0
+    }
+  },
+  "security_green": false,
+  "trust_verdicts": {
+    "baseline": {
+      "unverified": 25
+    },
+    "candidate": {
+      "unverified": 25
+    }
+  }
+}
