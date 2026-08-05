@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import psycopg
+
 from recall.calibration import Calibration
 from recall.control_plane import SERVABLE_ACTIVE_STATES, ControlPlane
 from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
@@ -216,15 +218,28 @@ def check_enterprise_readiness(
         try:
             ledger = control_plane.ledger_state()
         except Exception as exc:
-            # `str(exc)` included: these are catalog/permission errors naming a TABLE, not a
-            # DSN, and "InsufficientPrivilege" alone does not tell an operator which GRANT
-            # is missing. `redacted_dsn` guards the connection-string case elsewhere.
-            failures.append(
-                f"control plane ledger query failed: {type(exc).__name__}: {exc}"
-            )
+            # `str(exc)` for catalog and permission errors, which name a TABLE and are the
+            # ones an operator can act on ("InsufficientPrivilege" alone does not say which
+            # GRANT is missing). NOT for a connection failure: psycopg puts the host, port and
+            # role into that message, and this string is joined into a startup RuntimeError.
+            # The earlier version of this comment claimed the whole class was DSN-free, which
+            # is false, and it was written in the same commit that corrected three other
+            # comments for overclaiming.
+            detail = "" if isinstance(exc, psycopg.OperationalError) else f": {exc}"
+            failures.append(f"control plane ledger query failed: {type(exc).__name__}{detail}")
         else:
             if not ledger.current:
                 failures.append(f"control plane schema is not current: {ledger.describe()}")
+            elif ledger.ahead:
+                # Reported through the EXISTING degraded channel, which `recall_mcp/server.py`
+                # already logs. Making `unknown` non-fatal without wiring this left a database
+                # ahead of its package booting in total silence, which is worse than the fatal
+                # behaviour it replaced: the operator loses the one signal that a rollback is in
+                # progress.
+                warnings.append(
+                    f"control plane schema is AHEAD of this package: {ledger.describe()}. "
+                    f"Serving continues; upgrade the package rather than rolling the schema back."
+                )
     try:
         facts = store.readiness_facts()
     except Exception as exc:

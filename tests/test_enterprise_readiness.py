@@ -316,6 +316,44 @@ def test_a_control_plane_ledger_with_a_changed_checksum_fails() -> None:
     _fails_with(result, "checksum mismatch")
 
 
+def test_a_ledger_ahead_of_the_package_is_degraded_and_says_so() -> None:
+    """`ahead` must reach the operator, not just exist as a property.
+
+    `unknown` was made non-fatal so a forward migration followed by an application rollback does
+    not refuse every older replica. Doing only that left the condition reported NOWHERE: readiness
+    returned ready and not degraded, and the doc claimed it was "reported as degraded". A property
+    with no caller is the guard-that-cannot-fire shape this session kept finding, so this test
+    exists to keep the wiring, not the property.
+    """
+    ledger = ControlPlaneLedgerState(
+        ledger_present=True, missing=(), unknown=(99,), checksum_mismatches=()
+    )
+    result = _check(control=_ControlPlane(ledger=ledger))
+    assert result.ready, "a database ahead of the package must still serve"
+    assert result.degraded, "and the operator must be told it is ahead"
+    assert any("AHEAD" in w for w in result.warnings), result.warnings
+
+
+def test_a_connection_failure_does_not_leak_the_host_or_role() -> None:
+    """psycopg puts host, port and role into an OperationalError, and this string reaches a
+    startup RuntimeError. Catalog and permission errors keep their detail; connection ones do not.
+    """
+    import psycopg
+
+    leaky = psycopg.OperationalError(
+        'connection to server at "10.0.0.7", port 5432 failed: '
+        'FATAL: password authentication failed for user "recall_server"'
+    )
+    result = _check(control=_ControlPlane(ledger_error=leaky))
+    joined = "".join(result.failures)
+    assert "control plane ledger query failed: OperationalError" in joined
+    assert "10.0.0.7" not in joined and "recall_server" not in joined, joined
+
+    # The other direction, so this is not satisfied by dropping every detail.
+    detailed = _check(control=_ControlPlane(ledger_error=RuntimeError("relation X does not exist")))
+    assert "relation X does not exist" in "".join(detailed.failures)
+
+
 def test_an_absent_control_plane_ledger_fails() -> None:
     ledger = ControlPlaneLedgerState(
         ledger_present=False, missing=(1,), unknown=(), checksum_mismatches=()
