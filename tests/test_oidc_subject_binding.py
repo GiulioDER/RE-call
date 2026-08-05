@@ -245,12 +245,67 @@ def test_setting_both_the_map_and_the_trust_flag_refuses():
         )
 
 
-@pytest.mark.parametrize("malformed", ["alice@corp", "alice@corp:", ":acme", "alice:acme:extra"])
+@pytest.mark.parametrize("malformed", ["alice@corp", "alice@corp:", ":acme", ":"])
 def test_a_malformed_subject_map_entry_refuses_to_start(malformed):
     from recall_mcp.server import build_auth
 
     with pytest.raises(AuthConfigError, match="RECALL_OIDC_SUBJECT_TENANTS"):
         build_auth("streamable-http", env=oidc_env(RECALL_OIDC_SUBJECT_TENANTS=malformed))
+
+
+def test_a_subject_containing_colons_is_bindable():
+    """The tenant is everything after the LAST colon, so the subject may contain them.
+
+    Kubernetes mints `system:serviceaccount:ns:sa`, and URN- and URL-shaped subjects are ordinary.
+    Splitting on the FIRST colon made every such deployment unable to use the binding at all,
+    which pushed exactly those operators onto the trust flag: the unsafe path this feature exists
+    to replace. It also mis-parsed silently, reading `urn:acme` as subject `urn`.
+    """
+    from recall_mcp.server import build_auth
+
+    verifier, _s, _p = build_auth(
+        "streamable-http",
+        env=oidc_env(
+            RECALL_OIDC_SUBJECT_TENANTS="system:serviceaccount:recall:etl:acme",
+            RECALL_OIDC_TENANTS="acme,globex",
+        ),
+    )
+    assert verifier._validator.config.subject_tenants == {
+        "system:serviceaccount:recall:etl": frozenset({"acme"})
+    }
+
+
+def test_the_subject_binding_cannot_be_widened_at_runtime():
+    """`allowed_tenants` beside it is a frozenset and cannot be. This is the same boundary.
+
+    A plain dict on a frozen dataclass let `config.subject_tenants[x] = ...` add an unvalidated
+    binding to a live validator, turning `subject_not_bound` into an accepted cross-tenant
+    principal without passing a single check.
+    """
+    config = OidcConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        allowed_tenants=frozenset({"acme", "globex"}),
+        subject_tenants={"alice@corp": frozenset({"acme"})},
+    )
+    with pytest.raises(TypeError):
+        config.subject_tenants["mallory"] = frozenset({"globex"})
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"alice@corp": "acme"},  # a bare string explodes into {'a','c','e','m'}
+        {" alice@corp ": frozenset({"acme"})},  # padded key never matches a `sub`
+        {"": frozenset({"acme"})},
+        {"alice@corp": frozenset({" acme "})},  # padded tenant never matches a claim
+        "not-a-mapping",
+    ],
+)
+def test_an_unmatchable_or_mistyped_binding_is_refused_at_construction(bad):
+    """The same guards `allowed_tenants` carries. The comment claimed parity before the code had it."""
+    with pytest.raises(ValueError):
+        OidcConfig(issuer=ISSUER, audience=AUDIENCE, subject_tenants=bad)
 
 
 # ------------------------------------------------------------------ the cutover selector

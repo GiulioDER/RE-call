@@ -19,7 +19,7 @@ There are two ways to configure it, and exactly one may be active:
 | Mechanism | Set | Use |
 |---|---|---|
 | **Static token file** | `RECALL_AUTH_TOKENS_FILE` | Development. Refused when `RECALL_ENV=production`. |
-| **OIDC provider** | `RECALL_OIDC_ISSUER` + `RECALL_OIDC_AUDIENCE` + `RECALL_OIDC_TENANTS` | Production. See [below](#taking-identity-from-an-oidc-provider). |
+| **OIDC provider** | `RECALL_OIDC_ISSUER` + `RECALL_OIDC_AUDIENCE` + `RECALL_OIDC_TENANTS`, **and** one of `RECALL_OIDC_SUBJECT_TENANTS` / `RECALL_OIDC_TRUST_TENANT_CLAIM` | Production. See [below](#taking-identity-from-an-oidc-provider). |
 
 ## Provisioning tokens
 
@@ -136,6 +136,8 @@ export RECALL_TRANSPORT=streamable-http
 export RECALL_OIDC_ISSUER=https://idp.example.com
 export RECALL_OIDC_AUDIENCE=recall-prod       # the audience this server accepts
 export RECALL_OIDC_TENANTS=acme,globex        # the tenants this deployment serves
+export RECALL_OIDC_SUBJECT_TENANTS=alice@corp:acme,svc-etl:globex   # who may name which tenant
+                                              # (or RECALL_OIDC_TRUST_TENANT_CLAIM=1; see below)
 export RECALL_AUTH_RESOURCE_URL=https://recall.example.com
 python -m recall_mcp.server
 ```
@@ -157,7 +159,7 @@ boot cleanly and then reject every token.
 | `tenant` | yes | **The isolation boundary.** Must be in `RECALL_OIDC_TENANTS`. Leading or trailing whitespace is refused, not trimmed. |
 | `scope` | no | Space-delimited string or JSON list. Unrecognised scopes are **dropped**, not refused, so a token with none gets a principal that can do nothing. |
 | `azp` | conditional | Required to name us when `aud` carries several audiences (OIDC Core 3.1.3.7). |
-| `sub` | no | Becomes the principal name in logs; falls back to the tenant. |
+| `sub` | conditional | **Required whenever `RECALL_OIDC_SUBJECT_TENANTS` is set** — it is the binding's lookup key, and its absence is refused with `missing_subject`. Under `RECALL_OIDC_TRUST_TENANT_CLAIM` it is optional and only names the principal in logs, falling back to the tenant. |
 
 `RECALL_AUTH_ISSUER_URL` is **not** required here: it defaults to `RECALL_OIDC_ISSUER`, because
 with a provider there is exactly one right answer and restating it is a chance to state it
@@ -177,10 +179,22 @@ RECALL_AUTH_MODE=oidc     # step 2: flip one variable. Rollback is flipping it b
                           # step 3: remove RECALL_AUTH_TOKENS_FILE at leisure, then the mode.
 ```
 
-Only the selected mechanism is built, which matters in production: `RECALL_ENV=production` refuses
-the static token file outright, so a server that loaded it before consulting the selector could not
-complete step 2 at all. The inactive mechanism is logged as inactive on every boot, since the
-refusal that used to carry that warning is gone.
+The OIDC block is **validated** whenever it is present, even under `mode=static`, so step 1 is a
+real rehearsal: a malformed subject binding, an unserviceable algorithm or a missing decision fails
+there rather than at the flip. Only the *token file* is conditionally loaded, because loading it has
+a side effect that must not happen while it is standing down (see production, below).
+
+Two limits, stated because discovering them mid-cutover is the expensive way:
+
+- **`RECALL_ENV=production` cannot run step 1.** Production refuses the static token file outright,
+  and under `mode=static` that file is the active mechanism, so the rehearsal step is refused on
+  every transport including stdio. A production host still swaps in one revision; stage the cutover
+  somewhere the token file is allowed, and treat production as the flip alone.
+- **Rollback needs two things kept.** Flipping `mode` back to `static` is a rollback only while the
+  token file still exists, so do not remove it until you have renounced rollback. Set
+  `RECALL_AUTH_ISSUER_URL` explicitly for the duration too, rather than leaning on the OIDC default;
+  it is defaulted from the OIDC block whenever one is present, but an explicit value is one less
+  thing that changes meaning when the mode does.
 
 Without `RECALL_AUTH_MODE`, both-set still refuses. The guard was never wrong, only too broad.
 
@@ -231,10 +245,10 @@ The binding is checked **after** signature verification, for the same reason the
 is: ahead of it, a forged token would answer "is this a known subject here?" for a caller holding
 no credential.
 
-That check runs **after** signature verification, deliberately. Ahead of it, the reply would
-differ between a forged token naming a real tenant (`bad_signature`) and one naming an unknown
-tenant (`tenant_not_allowed`), which enumerates your tenant list to a caller holding no credential
-at all.
+The **allowlist** check runs after signature verification for the same reason. Ahead of it, the
+reply would differ between a forged token naming a real tenant (`bad_signature`) and one naming an
+unknown tenant (`tenant_not_allowed`), which enumerates your tenant list to a caller holding no
+credential at all.
 
 ### Rejection reasons
 

@@ -16,11 +16,14 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   `subject_not_bound`, and a token carrying no `sub` with `missing_subject`. Checked after
   signature verification, so it cannot be used to enumerate subjects.
 
-  ⚠️ **A deployment must now answer this question to boot.** Either set
+  ⚠️ **BREAKING: an existing OIDC deployment will not boot until it answers this.** Either set
   `RECALL_OIDC_SUBJECT_TENANTS`, or set `RECALL_OIDC_TRUST_TENANT_CLAIM=1` to declare that your IdP
   mints `tenant` from an authoritative subject-to-organisation mapping and never from a
   user-editable attribute. Setting both refuses. There is deliberately no default, because a
   warning about this would land in a startup journal nobody reads.
+
+  The tenant is everything after the **last** colon of each pair, so a subject may itself contain
+  them (`system:serviceaccount:ns:sa:my-tenant`).
 
 - **`RECALL_AUTH_MODE=oidc|static`, which makes the static-to-OIDC cutover staged.** Both
   mechanisms configured at once previously refused to boot. That was right when nobody had chosen,
@@ -28,10 +31,16 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   rollout would not start, and because the conflict is checked before the transport branch it took
   stdio processes with it. Precedence can now be *declared*; undeclared ambiguity still refuses.
 
-  Only the selected mechanism is built, not merely preferred. That matters in production, where
+  Only the selected mechanism is built, not merely preferred. That matters because
   `RECALL_ENV=production` refuses the static token file outright: a server that loaded it before
-  consulting the selector could never complete the cutover. The inactive mechanism is logged as
-  inactive on every boot, because the refusal that used to carry that warning is gone.
+  consulting the selector could never complete the flip. The OIDC block is still *validated*
+  whenever present, so step 1 rehearses it rather than deferring every OIDC error to the flip. The
+  inactive mechanism is logged as inactive on every boot, because the refusal that used to carry
+  that warning is gone.
+
+  ⚠️ Two limits, in `docs/AUTH.md`: step 1 cannot run under `RECALL_ENV=production` (the token
+  file is the active mechanism there and production refuses it), and rollback is a mode flip only
+  while the token file still exists.
 
 - **External OIDC identity for the MCP server's HTTP transports.** `RECALL_OIDC_ISSUER`,
   `RECALL_OIDC_AUDIENCE` and `RECALL_OIDC_TENANTS` (required together), plus optional
