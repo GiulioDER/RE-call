@@ -54,6 +54,21 @@ class EvidenceBundle:
     retrieval_profile: str
     index_generation: str
     items: tuple[EvidenceItem, ...]
+    #: `trusted` | `degraded`, carried IN BAND for the same reason the framework adapters carry it
+    #: on every document: a bundle is handed to a generator on its own, and a caller reconstructing
+    #: it from parts would otherwise lose the one fact that decides whether to rely on the answer.
+    #:
+    #: A degraded bundle CAN be non-empty, and that is the correction this field exists to make
+    #: representable. `recall.trust` degrades in two shapes and only one of them blanks the
+    #: verdicts: with no calibration at all every verdict becomes `unverified`, so nothing is
+    #: citable and the bundle comes back empty. But when the CALLER supplied an explicit
+    #: uncertified `Calibration` under a development policy, the verdicts `evaluate` computed are
+    #: deliberately left alone — `ok` survives, the hits are citable, and `trust_state` is the only
+    #: thing that still says the gate could not certify them. Strict mode, the production default,
+    #: refuses that case before it reaches here.
+    trust_state: str = "trusted"
+    #: The stable `TrustFailureCode` value when degraded, else None. See `recall.trust_policy`.
+    failure_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -152,8 +167,16 @@ def build_evidence_bundle(
 
     * **Only ``ok`` hits enter.** ``TrustedResult.hits`` is ``ok`` first and then everything the
       trust layer demoted, so taking the list wholesale would hand a generator the superseded
-      memory this library exists to withhold. A degraded result (every verdict ``unverified``,
-      ``abstained`` forced False) therefore yields an EMPTY bundle, not an unjudged one.
+      memory this library exists to withhold.
+
+      ⚠️ That is NOT the same as "a degraded result yields an empty bundle", which is what an
+      earlier version of this docstring claimed. `recall.trust` degrades in two shapes. With no
+      calibration at all every verdict is overwritten with ``unverified``, so the filter empties
+      the bundle. But when the CALLER supplied an explicit uncertified ``Calibration`` under a
+      development policy, the verdicts are deliberately left alone — ``ok`` survives and the
+      bundle is populated and citable. The bundle carries ``trust_state`` in band precisely
+      because the emptiness cannot be relied on to signal it. Strict mode, the production
+      default, refuses that shape before it reaches here.
     * **Retrieval order is preserved.** No newest-wins re-ranking by ``indexed_at``, no re-sorting
       by cosine. The trust layer already ordered these hits and this is not a second ranker.
     * **No semantic deduplication.** Two hits with identical text are two items. Collapsing them
@@ -173,6 +196,8 @@ def build_evidence_bundle(
             retrieval_profile=diagnostics.retrieval_profile,
             index_generation=diagnostics.index_generation,
             items=(),
+            trust_state=result.trust_state,
+            failure_code=result.failure_code,
         )
     trusted = [hit for hit in result.hits if hit.verdict == "ok"]
     selected: list[EvidenceItem] = []
@@ -190,10 +215,20 @@ def build_evidence_bundle(
             cosine=hit.cosine,
             confidence=hit.confidence,
         )
-        candidate = tuple([*selected, item])
         if policy.max_tokens is not None:
+            # Allocated INSIDE the branch that reads it. Both shipped callers leave `max_tokens`
+            # unset, so building this tuple unconditionally was an O(n^2) sequence of allocations
+            # doing no work on the only paths that run in production.
+            candidate = tuple([*selected, item])
             assert policy.tokenizer is not None
             if policy.tokenizer.count_tokens(_user_message(result.query, candidate)) > policy.max_tokens:
+                # A `break`, not a `continue`: the bundle is a PREFIX of retrieval order, so one
+                # oversized passage at rank 1 ends the selection rather than being skipped over
+                # in favour of smaller ones behind it. First-fit would reorder by size, which is
+                # the ranking this function exists not to do — but it does mean
+                # `evidence_budget_exhausted` can be returned while smaller trusted passages
+                # existed. Reachable only through a library caller: neither the MCP service nor
+                # the CLI sets a token budget.
                 break
         selected.append(item)
     decision: Literal["answer", "abstain"] = "answer" if selected else "abstain"
@@ -218,6 +253,8 @@ def build_evidence_bundle(
         retrieval_profile=diagnostics.retrieval_profile,
         index_generation=diagnostics.index_generation,
         items=tuple(selected),
+        trust_state=result.trust_state,
+        failure_code=result.failure_code,
     )
 
 
@@ -358,4 +395,11 @@ def generate_from_evidence(
     validation = validate_answer(envelope, bundle)
     if not validation.valid:
         raise EvidenceValidationError("; ".join(validation.errors))
-    return GenerationResult(bundle, envelope, validation, True, envelope is not raw)
+    # Compared by VALUE. `envelope is not raw` was correct only because `normalize_citations`
+    # returns its input object when nothing changed — an invariant its docstring never promised,
+    # so a refactor to an unconditional `replace(...)` would have flipped this flag to True on
+    # every answer with no test failing.
+    return GenerationResult(
+        bundle, envelope, validation, True,
+        citations_normalized=envelope.citations != raw.citations,
+    )

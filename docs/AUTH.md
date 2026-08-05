@@ -93,7 +93,7 @@ Scopes mirror the risk each tool actually carries, rather than collapsing into r
 
 | Scope | Tools | Why separate |
 |---|---|---|
-| `recall:read` | `recall_search`, `recall_stats` | |
+| `recall:read` | `recall_search`, `recall_evidence`, `recall_stats` | |
 | `recall:write` | `recall_index` | Indexing burns embedding spend — with a paid embedder that is real money. |
 | `recall:forget` | `recall_forget` | Deletion is irreversible. |
 

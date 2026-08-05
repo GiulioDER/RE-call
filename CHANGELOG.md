@@ -9,6 +9,30 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
+- **The evidence boundary is reachable.** `recall/evidence.py` was complete and correct and
+  imported by nothing but its own test: absent from `recall/__init__.py`, wired into no surface.
+  `EvidenceItem`, `EvidenceBundle`, `AnswerEnvelope`, `EvidencePolicy`, `build_evidence_bundle`,
+  `render_evidence_prompt` and `validate_answer` are now exported from the package root, and the
+  boundary is reachable from all four integrations:
+
+  - `recall search --evidence` prints the bundle and the exact prompt it renders to, as JSON;
+  - a new read-only MCP tool, `recall_evidence`, returns the bundle plus the rendered system and
+    user messages and runs no generator — the client is the generator;
+  - `RecallRetriever.evidence()` / `.evidence_prompt()` on both the LangChain and the LlamaIndex
+    adapters, over the same injectable `search_fn`.
+
+  All four are additive: existing fields, metadata keys and tools are unchanged, and each of the
+  four carries a test asserting a frozen list of its pre-existing keys. The CLI listing also gains
+  the chunk id, the ordinal, `valid_from` and the embedding/retrieval/generation identity — the
+  three other surfaces already carried all five.
+
+- **`normalize_citations`, and `GenerationResult.citations_normalized`.** A generator that cites
+  the same chunk twice is redundant, not unsound, so `generate_from_evidence` now collapses
+  duplicates deterministically instead of discarding the answer. Normalisation is
+  first-occurrence ordered, idempotent and only ever subtractive, so it cannot mint an identifier
+  that then satisfies the citation check it feeds. `validate_answer` on its own is unchanged and
+  still reports a duplicate as an error.
+
 - **`latency_budget_ms` now means something at request time.** It was declared on every retrieval
   profile, validated, and read by nothing. It now does two enforced things. It **bounds the
   admission wait**: a request that cannot acquire a running slot within the budget is shed with
@@ -119,6 +143,32 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   The documentation now says so. Behaviour is unchanged.
 
 ### Fixed
+- **Corpus text could close the evidence delimiter, and reach the model outside the data region.**
+  `render_evidence_prompt` wrapped a `json.dumps` payload in `<evidence_data>...</evidence_data>`.
+  `json.dumps` escapes quotes, backslashes and control characters; it does not escape `<` or `>`,
+  which is what the delimiter is built from. A memory whose text, file name or chunk id contained
+  `</evidence_data>` ended the region early, and everything after it arrived as free prose in the
+  model's own instruction channel. Delimiting without escaping the delimiter is not delimiting.
+
+  Both angle brackets now escape to their `\uXXXX` form, which is still valid JSON and parses back
+  to the identical string, so evidence is unchanged for a consumer that parses it and inert for one
+  that scans for the closing tag. A frozen adversarial suite (`benchmarks/evidence_injection.py`,
+  baseline in `results/evidence_injection_baseline.json`) records 0 escapes over 52 trials, against
+  12 for the previous renderer.
+
+- **An empty evidence bundle blamed the token budget for everything.** `build_evidence_bundle`
+  returned `reason_code="evidence_budget_exhausted"` whenever the selection came out empty,
+  including when there had been no trusted candidate at all. It now reports `no_trusted_evidence`
+  in that case.
+
+- **A degraded retrieval could produce a populated evidence bundle while the surface said it could
+  not.** `EvidenceResult.trust_state` was documented as "a degraded result yields an EMPTY bundle".
+  That holds only when there is no calibration at all, where every verdict becomes `unverified`;
+  with a caller-supplied uncertified calibration the verdicts stand and the bundle is citable, which
+  is the shape `recall search` reaches by default in development mode. `EvidenceBundle` now carries
+  `trust_state` and `failure_code` in band, the advice names the degradation explicitly, and the CLI
+  prints a `DEGRADED` flag.
+
 - **`RetrievalAdmission` leaked a queue slot on any failure after the slot was taken.** `__exit__`
   does not run when `__enter__` raises, so a slot lost this way was lost permanently; after
   `queue_capacity` of them the process refuses every request forever while reporting itself busy.
@@ -128,30 +178,6 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   read as unset rather than as a malformed integer.** A dotenv load puts an empty *string* in the
   environment rather than omitting the key, so a copied `.env` with these left blank refused
   startup.
-
-- **The evidence boundary is reachable.** `recall/evidence.py` was complete and correct and
-  imported by nothing but its own test: absent from `recall/__init__.py`, wired into no surface.
-  `EvidenceItem`, `EvidenceBundle`, `AnswerEnvelope`, `EvidencePolicy`, `build_evidence_bundle`,
-  `render_evidence_prompt` and `validate_answer` are now exported from the package root, and the
-  boundary is reachable from all four integrations:
-
-  - `recall search --evidence` prints the bundle and the exact prompt it renders to, as JSON;
-  - a new read-only MCP tool, `recall_evidence`, returns the bundle plus the rendered system and
-    user messages and runs no generator — the client is the generator;
-  - `RecallRetriever.evidence()` / `.evidence_prompt()` on both the LangChain and the LlamaIndex
-    adapters, over the same injectable `search_fn`.
-
-  All four are additive: existing fields, metadata keys and tools are unchanged, and each of the
-  four carries a test asserting a frozen list of its pre-existing keys. The CLI listing also gains
-  the chunk id, the ordinal, `valid_from` and the embedding/retrieval/generation identity — the
-  three other surfaces already carried all five.
-
-- **`normalize_citations`, and `GenerationResult.citations_normalized`.** A generator that cites
-  the same chunk twice is redundant, not unsound, so `generate_from_evidence` now collapses
-  duplicates deterministically instead of discarding the answer. Normalisation is
-  first-occurrence ordered, idempotent and only ever subtractive, so it cannot mint an identifier
-  that then satisfies the citation check it feeds. `validate_answer` on its own is unchanged and
-  still reports a duplicate as an error.
 
 - **Subject-to-tenant binding for OIDC (`RECALL_OIDC_SUBJECT_TENANTS`).** The tenant allowlist
   bounds *which* tenants exist; it never bound *who* may name one, so any subject able to obtain a

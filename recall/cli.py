@@ -43,6 +43,12 @@ def _print_result(result: TrustedResult) -> None:
         flags.append("GAP")
     if result.staleness.stale:
         flags.append("STALE")
+    if result.trust_state != "trusted":
+        # The CLI reaches this BY DEFAULT in development mode: `_cli_trust` synthesises an
+        # uncertified threshold, which is exactly the degraded shape that leaves verdicts `ok`.
+        # Without this flag a degraded run and a trusted one differed by one boolean buried in
+        # the evidence JSON, and the human-readable listing did not differ at all.
+        flags.append(f"DEGRADED:{result.failure_code or 'unknown'}")
     print(f"[{' '.join(flags) if flags else 'ok'}] query={result.query!r}")
     # Additive identity line. The same three fields the MCP result and both framework adapters
     # already carry; the CLI was the one surface where an operator could not tell WHICH embedding
@@ -72,11 +78,23 @@ def _print_result(result: TrustedResult) -> None:
             f"{name}{redirect}  {preview!r}"
         )
         # `chunk_id` is the identifier a citation resolves to, so an operator debugging an
-        # evidence bundle needs it here. It is DERIVED FROM THE FILE NAME (`<file>#<ord>`), which
-        # makes it as corpus-controlled as `name` above and it goes through the same filter.
+        # evidence bundle needs it here.
+        #
+        # It is filtered and QUOTED, and neither is because the id is known to carry corpus bytes:
+        # both minting sites hash `<path>:<ordinal>` into a digest (`recall/index.py`,
+        # `recall/generations.py`), and a digest of a hostile name is inert. An earlier version of
+        # this comment asserted the opposite — that the id is literally `<file>#<ord>` and so "as
+        # corpus-controlled as `name`" — which is false twice over.
+        #
+        # The treatment stays anyway, for the reason that survives being wrong about the format:
+        # `Chunk.id` is whatever the caller constructed, this module does not own the minting
+        # scheme, and it cannot assert a property of one it does not own. The `!r` matters
+        # independently of ANSI — `terminal_safe` deliberately adds no quotes, so an unquoted
+        # value sitting ahead of two library-authored `key=value` fields can forge them, and an
+        # id reading `x ordinal=0 valid_from=2099-01-01` would render its own ordinal first.
         valid_from = h.validity.valid_from.isoformat() if h.validity.valid_from else "-"
         print(
-            f"                 chunk_id={terminal_safe(h.chunk.id)} "
+            f"                 chunk_id={terminal_safe(h.chunk.id)!r} "
             f"ordinal={h.provenance.ord} valid_from={valid_from}"
         )
 
@@ -96,7 +114,10 @@ def _print_evidence(result: TrustedResult, max_items: int) -> None:
     """
     from recall.evidence import EvidencePolicy, build_evidence_bundle, render_evidence_prompt
 
-    bundle = build_evidence_bundle(result, EvidencePolicy(max_items=max_items))
+    # `max(1, ...)`: `-k` has no lower bound, and `EvidencePolicy` refuses `max_items < 1`, so
+    # `recall search q -k 0 --evidence` raised an uncaught ValueError out of a dataclass
+    # constructor. A CLI flag combination must not produce a traceback.
+    bundle = build_evidence_bundle(result, EvidencePolicy(max_items=max(1, max_items)))
     system, user = render_evidence_prompt(bundle)
     payload = {
         "bundle": asdict(bundle),

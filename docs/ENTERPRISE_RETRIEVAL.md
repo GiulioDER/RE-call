@@ -194,7 +194,7 @@ An abstained retrieval produces an empty bundle and bypasses the generator entir
 
 ### The prompt boundary
 
-`render_evidence_prompt` returns the module constant `SYSTEM_PROMPT` itself. There is no format string and no argument on that path, so there is no site at which a corpus controlled value could be interpolated. Every corpus byte lives inside `<evidence_data>…</evidence_data>` in the second message, JSON escaped — including both angle brackets, which `json.dumps` does not escape and which the delimiter is made of. A frozen adversarial suite (`benchmarks/evidence_injection.py`) runs thirteen payloads through three carriers (file name, chunk metadata, memory text) and records the escape rate in `results/evidence_injection_baseline.json`, with a positive control against the previous renderer so that a zero cannot be produced by an inert detector.
+`render_evidence_prompt` returns the module constant `SYSTEM_PROMPT` itself. There is no format string and no argument on that path, so there is no site at which a corpus controlled value could be interpolated. Every corpus byte lives inside `<evidence_data>…</evidence_data>` in the second message, JSON escaped — including both angle brackets, which `json.dumps` does not escape and which the delimiter is made of. A frozen adversarial suite (`benchmarks/evidence_injection.py`) runs thirteen payloads through four carriers (file name, chunk metadata, memory text, chunk id) and records the escape rate in `results/evidence_injection_baseline.json`, with a positive control against the previous renderer so that a zero cannot be produced by an inert detector, and a negative control against a renderer that ships no evidence at all so that a perfect score cannot be bought by deleting the corpus text. The chunk-metadata arm carries no payload into the prompt at all — an evidence item has no corpus metadata dict — so its zero is structural rather than earned, and it is excluded from the rate's denominator. The suite and its baseline ship in the source distribution and the repository, not in the wheel.
 
 ### Citations
 
@@ -202,7 +202,7 @@ At least one per answer, and every one must resolve to a chunk ID in the bundle.
 
 A token budget requires an injected tokenizer: `EvidencePolicy(max_tokens=…)` with no `tokenizer` raises rather than estimating.
 
-### Reaching it from the four integrations
+### Reaching it from the library and the four integrations
 
 | Surface | Entry point |
 |---|---|
@@ -212,7 +212,7 @@ A token budget requires an injected tokenizer: `EvidencePolicy(max_tokens=…)` 
 | LangChain | `RecallRetriever.evidence(query)` / `.evidence_prompt(query)` |
 | LlamaIndex | `RecallRetriever.evidence(query)` / `.evidence_prompt(query)` |
 
-All five are additive; every pre-existing field, metadata key and tool is unchanged.
+All five surfaces are additive: every pre-existing field, metadata key and tool is unchanged, and each of the four integrations carries a test asserting a frozen list of its pre-existing keys. (Four integrations plus the library import itself, which is why the table has five rows.)
 
 `recall_evidence` runs no generator. This deployment chooses none and ships none, so the tool stops one step short and hands back the two messages for the client to run its own model against. That is what generator neutrality means here, and it is also why the end-to-end path with a real generator remains unexercised: no approved local generator has been confirmed for this program. The neutral flow is tested against a stub.
 

@@ -701,7 +701,7 @@ def _make_lifespan(
 
 
 def build_server() -> FastMCP:
-    """Construct the recall_mcp FastMCP server with its four tools registered."""
+    """Construct the recall_mcp FastMCP server with its five tools registered."""
     verifier, auth_settings, token_registry = build_auth()
     mcp = FastMCP(
         "recall_mcp",
@@ -853,13 +853,23 @@ def build_server() -> FastMCP:
         Args:
             query: what to recall (natural language).
             source: optional source filter (only search one file/source).
-            k: max hits to retrieve (default 5).
-            max_items: max passages admitted to the bundle (defaults to k, never exceeds it).
+            k: max hits to retrieve (default 5). Under a fast or quality process profile this
+                is clamped DOWN to the profile's returned count and is never raised: the cost
+                profile is chosen per process, not per request.
+            max_items: max passages admitted to the bundle. Defaults to the effective k and is
+                clamped to it, so it can only ever narrow the bundle.
 
         Returns:
             JSON with the decision, the reason code when empty, trust and calibration state, the
             lineage identity (embedding profile, retrieval profile, index generation), the
-            rendered system and user messages, and the citable items.
+            rendered system and user messages, the citable items, and the same cost surface
+            `recall_search` reports.
+
+        Raises:
+            RetrievalOverloaded: the process is at its concurrency limit, or could not start this
+                request inside the profile's latency budget. Retryable and free — nothing was
+                embedded and nothing was read. Carries `reason` (`queue_full` | `budget_exhausted`)
+                and `retry_after_seconds`.
         """
         state = _state()
         store = _require(SCOPE_READ)
