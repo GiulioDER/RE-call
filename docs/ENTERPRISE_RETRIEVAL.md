@@ -10,11 +10,27 @@ Tenant routes never accept a physical table from a client. The runtime resolves 
 
 ## Operator sequence
 
-Set `RECALL_MIGRATION_DSN` to the migration role connection, then apply the immutable migrations. (`RECALL_DSN` still works as a fallback for both credentials; see [MIGRATIONS.md](MIGRATIONS.md). Do not point it at the migration role on a serving host, because the MCP server falls back to it too.)
+`recall-enterprise` picks its credential by subcommand, so the operator no longer has to.
+`migrate` and `create-generation` perform DDL and read `RECALL_MIGRATION_DSN`; `readiness`,
+`status`, `parity` and `replay` only read and take `RECALL_SERVING_DSN`; `mark-ready`, `set-route`,
+`cutover` and `retire` are DML against the control-plane tables and take the migration credential.
+All of them fall back to `RECALL_DSN`, so a single-variable deployment keeps working.
+
+The split matters most for `readiness`, which reports whether row level security constrains "the
+runtime database role". That check reads `current_user` of the connection it was handed, so on the
+migration role a green verdict would certify a credential that never serves a request. The command
+prints the role it evaluated, so the verdict names its own subject.
 
 ```console
-recall-enterprise migrate
+RECALL_MIGRATION_DSN="$RECALL_MIGRATION_DSN" recall-enterprise migrate
 ```
+
+> ⚠️ `RECALL_DSN` is also the deprecated fallback the serving process and the MCP server
+> read when `RECALL_SERVING_DSN` is unset (see [MIGRATIONS.md](MIGRATIONS.md#configuration)).
+> Exporting it globally as the migration role therefore hands a schema-owner credential to
+> every serving process, which is exactly what the role split in
+> [SECURITY.md](../SECURITY.md) forbids. Set it per command, never in the serving
+> environment.
 
 The database operator must install pgvector once in a new database before the restricted
 migration role creates a generation:

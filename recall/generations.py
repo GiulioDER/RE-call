@@ -776,7 +776,13 @@ class GenerationManager:
             raise NoActiveGeneration(f"tenant {self.tenant_id!r} has no active generation")
         return str(row[0])
 
-    def forget(self, source_uri: str) -> ErasureResult:
+    def forget(self, source_uri: str, *, legacy_table: str | None = None) -> ErasureResult:
+        """Erase a source from every generation, and tombstone it against future builds.
+
+        `legacy_table` additionally erases the adopted v0.8 rows, which migration 0008 leaves
+        in place and which remain readable through the legacy API. Pass it whenever the caller
+        knows the migration target, or the erasure is only partial.
+        """
         if not source_uri:
             raise ValueError("source_uri must be non-empty")
         event_id = _new_id("evt")
@@ -840,6 +846,23 @@ class GenerationManager:
                     (self.tenant_id, list(selected), source_uri),
                 )
                 removed = result.rowcount
+            if legacy_table is not None:
+                # Migration 0008 adopts a v0.8 install's rows in place: they stay in the legacy
+                # table and remain readable through the legacy API. Erasing only
+                # recall_chunks_v1 would write the tombstone and leave the actual data on disk,
+                # which on a right-to-erasure path is worse than refusing outright. Same
+                # transaction, so the tombstone and the deletion cannot diverge.
+                if not legacy_table.isidentifier():
+                    raise ValueError("legacy_table must be a valid SQL identifier")
+                exists = conn.execute(
+                    "SELECT to_regclass(%s) IS NOT NULL", (legacy_table,)
+                ).fetchone()
+                if exists and exists[0]:
+                    legacy = conn.execute(
+                        f"DELETE FROM {legacy_table} WHERE tenant_id = %s AND source = %s",
+                        (self.tenant_id, source_uri),
+                    )
+                    removed += legacy.rowcount
             return ErasureResult(source_uri, tuple(sorted(selected)), removed, event_id)
 
     def gc(

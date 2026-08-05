@@ -17,8 +17,11 @@ Two exception types, on purpose. `TokenRejected` states a fact about the TOKEN a
 answering 401 for a server-side outage, which tells every client to re-authenticate against the
 provider that is already down.
 
-The four rejections that carry the most weight
+The rejections that carry the most weight
 -----------------------------------------------
+(Unnumbered on purpose: a hand-maintained count is a thing that goes stale the first time a reason
+is added, and one was.)
+
 - **`algorithm_not_allowed`** is checked before any key lookup, and the pinned algorithm — not the
   whole allowlist — is what reaches `jwt.decode`. Membership in the allowlist is not agreement
   with the selected key's family: with a mixed RSA/EC allowlist, `alg: ES256` against an RSA `kid`
@@ -28,6 +31,11 @@ The four rejections that carry the most weight
 - **`missing_expiry`** because a token with no `exp` never stops being valid.
 - **`missing_tenant`** because tenant identity is the isolation boundary, and an empty tenant is
   not "all tenants" — it must never reach the store, where an empty GUC reads as "match nothing".
+- **`tenant_not_allowed`** for a genuine token naming a tenant this deployment never provisioned.
+  Checked AFTER signature verification: ahead of it, the difference between that and
+  `bad_signature` would enumerate the tenant list to a caller holding no credential.
+- **`malformed_expiry`** because PyJWT's expiry check passes any far-future value, so an `exp` in
+  milliseconds is a valid signature over an unrepresentable instant.
 
 The JWKS cache
 --------------
@@ -51,6 +59,7 @@ request in the process behind one HTTP call.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -64,7 +73,7 @@ import jwt
 from jwt.algorithms import RSAAlgorithm
 
 from recall.observability import get_logger
-from recall_mcp.auth import ALL_SCOPES, Principal
+from recall_mcp.auth import ALL_SCOPES, AuthConfigError, Principal
 
 _log = get_logger("mcp.oidc")
 
@@ -114,10 +123,39 @@ class OidcConfig:
     scope_claim: str = "scope"
     #: Require `azp` to name us when a token carries several audiences (OIDC Core 3.1.3.7).
     require_azp_for_multi_audience: bool = True
+    #: Tenants this deployment provisioned, or None to accept whatever the IdP asserts.
+    #:
+    #: The IdP vouches for identity; it knows nothing about our topology. A token reading
+    #: `tenant: initech` is not forged merely because we never provisioned initech — but admitting
+    #: it would open a store for a namespace no operator configured, and `StoreRegistry` is built
+    #: on the property that its tenant set comes from configuration and never from traffic.
+    #:
+    #: None is permissive so the validator remains usable on its own terms; `build_auth` is what
+    #: refuses to DEPLOY without one, which is where the decision belongs.
+    allowed_tenants: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
         if not self.issuer.strip() or not self.audience.strip():
             raise ValueError("issuer and audience are required")
+        # Normalised ONCE, here, so discovery and `jwt.decode` cannot disagree about what the
+        # issuer is (BUG-003). `discover_jwks_uri` rstrips both sides and therefore tolerates a
+        # trailing slash, while `jwt.decode(issuer=...)` is an exact string compare against `iss`
+        # and does not — so `https://idp.example.com/` used to boot, discover its JWKS
+        # successfully, and then refuse every genuine token as `bad_issuer`: a total outage from
+        # one trailing character, reported as though the IdP were signing the wrong tokens.
+        object.__setattr__(self, "issuer", self.issuer.strip().rstrip("/"))
+        if not self.issuer.startswith("https://"):
+            # Checked HERE, not only where it is fetched (STAKES-003). `_http_get` already refuses
+            # a non-https identity endpoint, but that refusal arrives on the FIRST REQUEST and is
+            # reported as `jwks_unavailable` — "the provider is unreachable" — which sends an
+            # operator hunting a network fault for a value that could never have worked. This is
+            # the same reasoning that refuses an un-matchable tenant entry one field below:
+            # configuration that cannot succeed should fail at construction, not per request.
+            raise ValueError(
+                f"issuer must be an https:// URL, got {self.issuer[:64]!r}. Identity endpoints "
+                "are fetched over https only, so any other scheme refuses every token at request "
+                "time while the server boots looking healthy."
+            )
         object.__setattr__(self, "algorithms", tuple(self.algorithms))
         if not self.algorithms:
             raise ValueError("algorithms must not be empty: an allowlist that permits nothing "
@@ -129,6 +167,18 @@ class OidcConfig:
                 "With a published verification key an HMAC algorithm IS the algorithm-confusion "
                 "attack, because the key an attacker needs to forge with is public."
             )
+        # AFTER the weak check, so HS256 keeps its specific diagnosis rather than being reported
+        # as merely unrecognised. Checked in the CONFIG and not only in the env factory (BUG-004),
+        # so direct construction gets the same treatment: an unrecognised name — a typo, a
+        # lower-cased `rs256` compared case-sensitively against the header, or an `EdDSA` for
+        # which `_usable_keys` loads no key — otherwise builds a validator that boots healthy and
+        # refuses every token as a generic `invalid`, naming nothing an operator can act on.
+        unknown = sorted(set(self.algorithms) - set(DEFAULT_ALGORITHMS))
+        if unknown:
+            raise ValueError(
+                f"algorithms names {unknown}, which this server cannot verify: its JWKS loader "
+                f"serves RSA and EC keys only. Accepted: {', '.join(DEFAULT_ALGORITHMS)}."
+            )
         if self.jwks_refresh_s <= 0:
             raise ValueError("jwks_refresh_s must be positive; 0 refetches on every request")
         if self.clock_skew_s < 0:
@@ -137,6 +187,32 @@ class OidcConfig:
             raise ValueError("max_stale_key_s must be >= jwks_refresh_s")
         if not self.tenant_claim.strip() or not self.scope_claim.strip():
             raise ValueError("tenant_claim and scope_claim must be non-empty")
+        if self.allowed_tenants is not None:
+            if isinstance(self.allowed_tenants, (str, bytes)):
+                # `frozenset("acme")` is {"a","c","e","m"} (BUG-002): the allowlist would refuse
+                # the tenant the operator named and admit four one-letter tenants nobody
+                # provisioned, passing both checks below because single characters are neither
+                # empty nor padded. A string is the single likeliest wrong type here.
+                raise ValueError(
+                    "allowed_tenants must be a collection of tenant ids, not a single string "
+                    "(a string would be split into its characters)"
+                )
+            object.__setattr__(self, "allowed_tenants", frozenset(self.allowed_tenants))
+            if not self.allowed_tenants:
+                raise ValueError(
+                    "allowed_tenants must not be empty: an allowlist that permits no tenant "
+                    "rejects every token, which is an outage rather than a policy. Leave it None "
+                    "to accept any tenant the IdP asserts."
+                )
+            # `validate` REFUSES a padded tenant claim rather than trimming it, so a padded entry
+            # here could never match any token. That tenant would read as provisioned in the
+            # configuration and be refused at every single request.
+            unmatchable = sorted(t for t in self.allowed_tenants if not t or t != t.strip())
+            if unmatchable:
+                raise ValueError(
+                    f"allowed_tenants entries are empty or padded and could never match a "
+                    f"tenant claim: {unmatchable}"
+                )
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -343,8 +419,25 @@ class OidcValidator:
         now = self._clock()
         age = now - cached.fetched_at
         if not self._fetch_lock.acquire(blocking=False):
-            # Another thread is already fetching. Serve what we have rather than queue behind it.
-            return cached.keys
+            if cached.ever_fetched:
+                # Warm: serve what we have rather than queue behind the in-flight fetch. This is
+                # the case the non-blocking acquire was written for.
+                return cached.keys
+            # COLD (BUG-001). `cached.keys` is {} — that is not "what we have", it is nothing, and
+            # returning it makes `_keys_for` report `unknown_kid` for a GENUINE token. Every
+            # concurrent caller during the first fetch after a restart or a rollout gets a 401
+            # that reads as a forgery while the IdP is merely slow. So wait for the fetch that is
+            # already in flight. Latent until the verifier moved off the event loop (PERF-001):
+            # serialised coroutines never raced, real threads do.
+            self._fetch_lock.acquire()
+            cached = self._snapshot()
+            if cached.ever_fetched:
+                self._fetch_lock.release()
+                return cached.keys
+            # The thread we waited for failed. We hold the lock now, so try ourselves rather than
+            # inherit its failure — and `age` must be recomputed against the cache we just read.
+            now = self._clock()
+            age = now - cached.fetched_at
         try:
             try:
                 keys = _usable_keys(self._fetch_jwks())
@@ -481,6 +574,29 @@ class OidcValidator:
             raise TokenRejected(
                 "malformed_tenant", "tenant claim has leading or trailing whitespace"
             )
+        # AFTER the signature, deliberately. Reached before `jwt.decode`, this check would answer
+        # "does tenant X exist here?" for a caller holding no credential at all: a forgery naming
+        # a provisioned tenant would come back `bad_signature` while one naming an unprovisioned
+        # tenant came back `tenant_not_allowed`, and the difference enumerates the deployment.
+        if cfg.allowed_tenants is not None and raw_tenant not in cfg.allowed_tenants:
+            raise TokenRejected(
+                "tenant_not_allowed",
+                "the token is genuine, but names a tenant this deployment did not provision",
+            )
+
+        try:
+            expires_at = datetime.fromtimestamp(int(claims["exp"]), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError) as exc:
+            # PyJWT's own expiry check is `exp <= now - leeway`, which any far-future value sails
+            # through. So an IdP emitting `exp` in MILLISECONDS yields a correctly signed token
+            # whose expiry is ~1.8e12 and not representable as a datetime. OSError and
+            # OverflowError are not InvalidTokenError, so this escaped every handler above and
+            # falsified the contract stated at the top of this module: EVERY ambiguity resolves
+            # to a TokenRejected. It reached the caller as a 500 on a genuine token.
+            raise TokenRejected(
+                "malformed_expiry",
+                "exp is not a representable epoch-second value (milliseconds, perhaps?)",
+            ) from exc
 
         return Principal(
             name=str(claims.get("sub") or raw_tenant),
@@ -489,7 +605,7 @@ class OidcValidator:
             # Carried onto the Principal, not merely checked here. The Principal is the object
             # that travels; without this a five-minute JWT becomes a credential downstream code
             # believes never expires.
-            expires_at=datetime.fromtimestamp(int(claims["exp"]), tz=timezone.utc),
+            expires_at=expires_at,
         )
 
     def _check_authorized_party(self, claims: dict) -> None:
@@ -526,14 +642,122 @@ def _parse_scope_claim(raw: object) -> frozenset[str]:
     return frozenset(scope for scope in candidates if scope in ALL_SCOPES)
 
 
+#: Env keys. Named here so `build_auth` and the error messages cannot drift apart.
+ENV_ISSUER = "RECALL_OIDC_ISSUER"
+ENV_AUDIENCE = "RECALL_OIDC_AUDIENCE"
+ENV_TENANTS = "RECALL_OIDC_TENANTS"
+ENV_ALGORITHMS = "RECALL_OIDC_ALGORITHMS"
+
+
+def _csv(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator | None:
+    """Build a validator from `RECALL_OIDC_*`, or None when the issuer is unset.
+
+    None means "OIDC not configured", exactly as `token_registry_from_env` returns None for "no
+    static tokens". Deciding whether that is acceptable belongs to the caller, which knows the
+    transport.
+
+    Constructing a validator performs NO network IO. Discovery and the first JWKS fetch happen on
+    the first token, so an IdP that is briefly unreachable delays a request rather than preventing
+    the server from booting — the same reasoning as the stale-key window, applied to startup.
+    """
+    source = dict(os.environ) if env is None else env
+    issuer = source.get(ENV_ISSUER, "").strip()
+    if not issuer:
+        # A partially-configured block is refused rather than ignored (DEPLOY-001). The issuer is
+        # the only key that switches OIDC on, so misspelling THAT one while the others are correct
+        # used to return None: the server booted on static tokens with a complete-looking OIDC
+        # block in its environment, doing nothing. The misspelling is actively invited by the
+        # neighbouring RECALL_AUTH_ISSUER_URL. That is the same hazard as the both-set conflict
+        # below — configuration that reads as effective and is not — so it fails the same way.
+        stray = sorted(k for k in (ENV_AUDIENCE, ENV_TENANTS, ENV_ALGORITHMS) if source.get(k, "").strip())
+        if stray:
+            raise AuthConfigError(
+                f"{', '.join(stray)} set without {ENV_ISSUER}. OIDC is switched on by "
+                f"{ENV_ISSUER} alone, so this configuration authenticates nobody through the "
+                f"provider while appearing to. Set {ENV_ISSUER} (check the spelling: it is not "
+                f"RECALL_AUTH_ISSUER_URL, which is the metadata issuer), or unset the rest."
+            )
+        return None
+
+    audience = source.get(ENV_AUDIENCE, "").strip()
+    if not audience:
+        raise AuthConfigError(
+            f"{ENV_ISSUER} is set, so {ENV_AUDIENCE} is required. It is the audience this server "
+            f"accepts; without it any token the IdP issued for any of its clients would verify "
+            f"here, and that token's tenant claim would become this server's isolation boundary."
+        )
+
+    raw_tenants = source.get(ENV_TENANTS, "").strip()
+    if not raw_tenants:
+        raise AuthConfigError(
+            f"{ENV_TENANTS} is required with {ENV_ISSUER}: a comma-separated list of the tenants "
+            f"this deployment serves. Absent is not 'every tenant' — the IdP vouches for identity "
+            f"and knows nothing about this deployment's topology, so without the list any tenant "
+            f"claim it signs would open a store no operator provisioned."
+        )
+    tenants = frozenset(_csv(raw_tenants))
+
+    raw_algorithms = source.get(ENV_ALGORITHMS, "").strip()
+    if raw_algorithms:
+        # Present-but-unparseable is refused rather than falling back (SEC-006, ENV-003). A bare
+        # `or DEFAULT_ALGORITHMS` cannot tell "unset" from "set to something meaningless", so an
+        # operator NARROWING the allowlist and mistyping it silently got the WIDEST one. And an
+        # entry outside the serviceable set boots healthy and then rejects every token: `rs256`
+        # never matches a header compared case-sensitively, and `EdDSA` passes the weak-algorithm
+        # filter while `_usable_keys` loads no OKP key for it to match.
+        algorithms = tuple(a.upper() for a in _csv(raw_algorithms))
+        if not algorithms:
+            raise AuthConfigError(
+                f"{ENV_ALGORITHMS} is set but names no algorithm. Unset it to accept the "
+                f"defaults ({', '.join(DEFAULT_ALGORITHMS)}); an empty list rejects every token."
+            )
+        unknown = sorted(set(algorithms) - set(DEFAULT_ALGORITHMS))
+        if unknown:
+            raise AuthConfigError(
+                f"{ENV_ALGORITHMS} names {unknown}, which this server cannot verify: its JWKS "
+                f"loader serves RSA and EC keys only. Accepted: {', '.join(DEFAULT_ALGORITHMS)}. "
+                f"Left in place these boot cleanly and then refuse every token."
+            )
+    else:
+        algorithms = DEFAULT_ALGORITHMS
+    try:
+        config = OidcConfig(
+            issuer=issuer,
+            audience=audience,
+            algorithms=algorithms,
+            allowed_tenants=tenants,
+        )
+    except ValueError as exc:
+        # A ValueError out of a config constructor reads as a bug at the call site. Restated as
+        # AuthConfigError it joins the class this server already refuses to boot on.
+        raise AuthConfigError(f"invalid RECALL_OIDC_* configuration: {exc}") from exc
+
+    _log.info(
+        "OIDC identity configured: issuer=%s audience=%s, %d provisioned tenant(s)",
+        issuer,
+        audience,
+        len(tenants),
+    )
+    return OidcValidator(config)
+
+
 __all__ = [
     "DEFAULT_ALGORITHMS",
     "DEFAULT_CLOCK_SKEW_S",
     "DEFAULT_JWKS_REFRESH_S",
     "DEFAULT_MAX_STALE_KEY_S",
+    "ENV_ALGORITHMS",
+    "ENV_AUDIENCE",
+    "ENV_ISSUER",
+    "ENV_TENANTS",
     "IdentityProviderUnavailable",
     "OidcConfig",
     "OidcValidator",
     "TokenRejected",
     "discover_jwks_uri",
+    "oidc_validator_from_env",
 ]

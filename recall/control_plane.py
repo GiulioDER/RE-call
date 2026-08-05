@@ -708,27 +708,159 @@ class ControlPlane:
             if row is None:
                 raise KeyError(f"pending migration event not found: {operation_id}")
 
-    def cutover(self, tenant: str) -> None:
-        """Promote the ready shadow only when its ordered outbox has no lag."""
-        with self._connect() as conn, conn.transaction():
+    def _require_parity(
+        self, conn: psycopg.Connection, tenant: str, active: str, shadow: str
+    ) -> None:
+        """Refuse a cutover whose shadow does not match the generation it replaces.
+
+        `recall/migration.py` has carried `validate_generation_parity` since the enterprise
+        program landed, with a docstring saying it runs "before an enterprise cutover", and no
+        caller anywhere in the package. This is that caller.
+        """
+        from recall.migration import validate_generation_parity
+        from recall.store import PgVectorStore
+
+        rows = {
+            str(r[0]): (str(r[1]), int(r[2]), str(r[3]), int(r[4]))
+            for r in conn.execute(
+                "SELECT generation_id, physical_table, dimension, embedding_profile, "
+                "chunk_count FROM recall_index_generations WHERE generation_id = ANY(%s)",
+                ([active, shadow],),
+            ).fetchall()
+        }
+        if active not in rows or shadow not in rows:
+            raise RuntimeError("cutover requires both generations to be registered")
+        active_table, active_dim, _active_profile, _active_chunks = rows[active]
+        shadow_table, shadow_dim, _shadow_profile, _declared = rows[shadow]
+        # Deliberately NOT comparing embedding_profile or dimension. Re-indexing onto a new
+        # embedder is the main reason to build a shadow generation at all, and
+        # `validate_generation_parity` is built for exactly that: it compares source sets and
+        # raw content hashes "while allowing embeddings and metadata to differ". Requiring
+        # equality here would refuse the workflow this machinery exists to serve.
+        validate_table_name(active_table)
+        validate_table_name(shadow_table)
+        with (
+            PgVectorStore(self._dsn, dim=active_dim, table=active_table, tenant=tenant) as before,
+            PgVectorStore(self._dsn, dim=shadow_dim, table=shadow_table, tenant=tenant) as after,
+        ):
+            parity = validate_generation_parity(before, after)
+        if not parity.valid:
+            raise RuntimeError(
+                "cutover refused: " + "; ".join(parity.failures)
+                + " (re-run with --allow-divergent-corpus only if the corpus change is"
+                " intended)"
+            )
+
+    @staticmethod
+    def _require_no_pending_events(conn: psycopg.Connection, tenant: str) -> None:
+        pending = conn.execute(
+            "SELECT count(*) FROM recall_migration_events "
+            "WHERE tenant_id = %s AND status = 'pending'",
+            (tenant,),
+        ).fetchone()
+        if pending and pending[0]:
+            raise RuntimeError("cutover refused while migration events remain pending")
+
+    @staticmethod
+    def _require_ready_shadow(conn: psycopg.Connection, shadow: str) -> None:
+        state = conn.execute(
+            "SELECT state FROM recall_index_generations WHERE generation_id = %s", (shadow,)
+        ).fetchone()
+        if state is None or state[0] != "ready":
+            raise RuntimeError("cutover requires a ready shadow generation")
+
+    def _require_non_empty_shadow(
+        self, conn: psycopg.Connection, tenant: str, shadow: str
+    ) -> None:
+        """Refuse to promote a generation that holds nothing, whatever the active holds.
+
+        This deliberately sits OUTSIDE `_require_parity`. Emptiness is not a divergence
+        question, and `allow_divergent_corpus` is documented as an escape hatch for a corpus
+        that legitimately CHANGED, not for one that is absent. Leaving the check inside parity
+        meant the flag skipped it and promoted an empty shadow with a fabricated
+        `mark-ready` count straight from the command line.
+        """
+        from recall.store import PgVectorStore
+
+        row = conn.execute(
+            "SELECT physical_table, dimension, chunk_count FROM recall_index_generations "
+            "WHERE generation_id = %s",
+            (shadow,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("cutover requires the shadow generation to be registered")
+        table, dim, declared = validate_table_name(str(row[0])), int(row[1]), int(row[2])
+        with PgVectorStore(self._dsn, dim=dim, table=table, tenant=tenant) as store:
+            held = store.count()
+        if held == 0:
+            raise RuntimeError(
+                "cutover refused: the shadow generation holds no rows for this tenant "
+                f"(recall_index_generations declares chunk_count={declared}). "
+                "--allow-divergent-corpus does not override this."
+            )
+
+    def cutover(self, tenant: str, *, allow_divergent_corpus: bool = False) -> None:
+        """Promote the ready shadow only when its ordered outbox has no lag.
+
+        `state = 'ready'` is an operator ASSERTION, not a measurement: `mark-ready` stores its
+        `--chunks`/`--sources` argparse ints verbatim and compares them to nothing. On its own
+        it says nothing about what the shadow table holds, so an empty generation could be
+        marked ready and cut over, sending every read for the tenant to an empty index. This
+        therefore compares the two generations before swapping.
+
+        The comparison runs BEFORE the route transaction opens, and the swap then re-reads the
+        route under `FOR UPDATE` and refuses if it moved (compare-and-swap). Running parity
+        inside the locked region instead held the tenant's route row across two unbounded
+        full-table reads with no `lock_timeout`, so anything holding ACCESS EXCLUSIVE on either
+        physical table pinned the row for as long as it liked. The locked region is back to
+        indexed statements only.
+
+        What this guarantees is ROUTE IDENTITY, not generation CONTENT. The shadow's rows are
+        counted on a different connection in the pre-phase and are not re-counted at swap time,
+        so a generation emptied in that window is still promoted. Closing that would mean
+        putting a full-table aggregate back under the route lock, which is the problem this
+        shape exists to avoid, so the window is accepted and the refusal message says only what
+        is actually checked.
+        """
+        with self._connect() as conn:
             self._set_tenant(conn, tenant)
-            pending = conn.execute(
-                "SELECT count(*) FROM recall_migration_events "
-                "WHERE tenant_id = %s AND status = 'pending'", (tenant,)
-            ).fetchone()
-            if pending and pending[0]:
-                raise RuntimeError("cutover refused while migration events remain pending")
             row = conn.execute(
-                "SELECT shadow_generation FROM recall_tenant_routes WHERE tenant_id = %s FOR UPDATE",
+                "SELECT active_generation, shadow_generation FROM recall_tenant_routes "
+                "WHERE tenant_id = %s",
                 (tenant,),
             ).fetchone()
-            if row is None or row[0] is None:
+            if row is None or row[1] is None:
                 raise RuntimeError("cutover requires a configured shadow generation")
-            state = conn.execute(
-                "SELECT state FROM recall_index_generations WHERE generation_id = %s", (row[0],)
+            expected = (str(row[0]), str(row[1]))
+            # Cheap, authoritative disqualifiers FIRST. They are re-checked inside the
+            # transaction below, which remains the authoritative copy; this is a fast-fail so
+            # that a shadow which is merely still building, or a tenant with outbox lag, is not
+            # made to pay two full-table scans and then told the wrong cause.
+            self._require_no_pending_events(conn, tenant)
+            self._require_ready_shadow(conn, expected[1])
+            self._require_non_empty_shadow(conn, tenant, expected[1])
+            if not allow_divergent_corpus:
+                self._require_parity(conn, tenant, expected[0], expected[1])
+        with self._connect() as conn, conn.transaction():
+            self._set_tenant(conn, tenant)
+            self._require_no_pending_events(conn, tenant)
+            row = conn.execute(
+                "SELECT active_generation, shadow_generation FROM recall_tenant_routes "
+                "WHERE tenant_id = %s FOR UPDATE",
+                (tenant,),
             ).fetchone()
-            if state is None or state[0] != "ready":
-                raise RuntimeError("cutover requires a ready shadow generation")
+            if row is None or row[1] is None:
+                raise RuntimeError("cutover requires a configured shadow generation")
+            self._require_ready_shadow(conn, str(row[1]))
+            if (str(row[0]), str(row[1])) != expected:
+                # Someone re-routed this tenant while parity was running, so what was verified
+                # is not what would be swapped. Refuse rather than promote against a stale
+                # comparison; the operator re-runs and the parity check runs against the route
+                # as it now stands.
+                raise RuntimeError(
+                    "cutover refused: the tenant route changed between verification and the "
+                    f"swap (was {expected}, now {(str(row[0]), str(row[1]))}); re-run"
+                )
             conn.execute(
                 "UPDATE recall_tenant_routes SET active_generation = shadow_generation, "
                 "shadow_generation = active_generation, updated_at = now() WHERE tenant_id = %s",
