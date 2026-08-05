@@ -38,7 +38,7 @@ recall-enterprise mark-ready g2026_08 --chunks 1000000 --sources 120000
 recall-enterprise set-route acme g2026_07 --shadow-generation g2026_08
 ```
 
-While a shadow route exists, indexing prepares both vector sets before either generation changes. It records a durable ordered event, applies the active and shadow writes, then clears the event payload on completion. A crash leaves an idempotent replay record. Forget operations delete from both generation tables in one database transaction.
+While a shadow route exists, indexing prepares both vector sets before either generation changes. It records a durable ordered event, applies the active and shadow writes, then clears the event payload on completion. A crash leaves an idempotent replay record. Forget operations delete from both generation tables in one database transaction, and also scrub the erased sources out of any pending replay record, so erasure cannot be undone by a later replay.
 
 Cutover refuses to proceed while any migration event is pending or while the shadow is not ready:
 
@@ -46,7 +46,23 @@ Cutover refuses to proceed while any migration event is pending or while the sha
 recall-enterprise cutover acme
 ```
 
-The route update is transactional and sends a content free PostgreSQL notification. Service processes invalidate their cached route immediately, with a five second polling fallback. Existing requests keep their acquired store object. New requests use the new generation.
+A crash that left an event pending blocks cutover until the outbox is drained. Drain it, then compare the two generations before promoting:
+
+```console
+recall-enterprise status --tenant acme
+recall-enterprise replay acme
+recall-enterprise parity acme
+```
+
+`replay` opens only the generations the pending events name, resolving each physical table from `recall_index_generations`, and exits non-zero if anything is still pending afterwards. `parity` exits non-zero when the generations disagree on sources, raw content hashes or chunk counts. `status` reports generations, the tenant's route and the outbox depth; it never prints a pending event's payload, which holds corpus text and vectors.
+
+`readiness` runs the startup checks for one tenant without starting a server, and exits non-zero when any of them fails:
+
+```console
+recall-enterprise readiness acme
+```
+
+The route update is transactional and sends a content free PostgreSQL notification. Service processes invalidate their cached route immediately. The fallback is a five second cache TTL on the route, not a poll: a process whose notification never arrives picks the new route up within that window on its next request. Existing requests keep their acquired store object. New requests use the new generation.
 
 ## Runtime configuration
 
@@ -73,3 +89,11 @@ Validation is structural. It does not claim that a cited passage entails an answ
 ## Rollback and retirement
 
 Cutover swaps the previous active generation into the shadow route. Restore it with `set-route` if rollback is required. Keep the old table for seven days and two successful backup cycles. Removal is an explicit operator migration after the rollback period. Never allow a request field to name a retired table.
+
+After the rollback window, retire the old generation:
+
+```console
+recall-enterprise retire g2026_07 --tenant acme
+```
+
+Retirement is confirmed one tenant at a time, and the reason is the isolation model rather than convenience: `recall_tenant_routes` carries forced row level security keyed on the tenant, and neither the migration role nor the runtime role may enumerate every tenant's routes to prove a generation is globally unrouted. The command therefore refuses while the named tenant's route references the generation, and the serving path refuses a retired or failed generation independently, per request. That second refusal is the one that protects a request; weakening the isolation model to make a single global check possible would have cost more than it bought.

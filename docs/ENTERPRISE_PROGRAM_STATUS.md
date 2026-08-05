@@ -11,6 +11,180 @@ before that change can go green.
 
 ---
 
+## 2026-08-05, control plane: the untested and unreachable surfaces closed
+
+Backlog session 3, plus the parts of sessions 6, 7 and 11 that could not be separated from it.
+Branch cut fresh from `origin/master` at `061c810`.
+
+### Session ledger
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | Five missing operator subcommands: `replay`, `parity`, `readiness`, `status`, `retire` | done, all five driven through `main()` in tests |
+| 2 | The eleven behaviours in the brief, enforced and tested | done, see the table below |
+| 3 | Readiness fails for every declared condition; uncertified calibration reports degraded abstention | done, 31 collected tests over branches that had **zero** |
+| 4 | Two-ledger question resolved per session 2's decision | done, all three follow-ups executed |
+| 5 | Integration suite against real PostgreSQL as a non-superuser | done, 36 tests |
+| 6 | Prove the RLS tests can fail | done, and it caught a defect in one of my own tests |
+
+81 new tests across three files: 36 integration, 31 readiness, 14 CLI. `ruff check .` clean on
+the CI-pinned ruff (`>=0.5,<0.16`), `mypy` clean across 138 source files.
+
+### The working tree was not mine, and that changed where the work happened
+
+`C:/…/eva/work/RE-call` held **another session's live uncommitted work**: `recall/cache.py`,
+`recall/context.py` and `recall/embeddings.py` modified, plus untracked
+`recall/embedding_registry.py`, `tests/test_embedding_cache_identity.py` and
+`tests/test_embedding_profile_registry.py`, all timestamped minutes before this session started.
+That is backlog session 8 (profile registries, `cache_key` fields) in progress.
+
+Branching in that clone moved their uncommitted changes onto my branch. It was reverted
+immediately: the clone is back on `codex/embedding-profile-registry` with all six files exactly as
+they were, and this session ran in a separate `git worktree`
+(`…/RE-call-enterprise-cp`). Nothing of theirs was committed, stashed or deleted. The next session
+should check `git worktree list` and `git status` in the primary clone before branching there.
+
+### What landed
+
+| Area | Change |
+|---|---|
+| Operator CLI | `replay`, `parity`, `readiness`, `status`, `retire`. `replay` opens only the generations the pending events name; `status` prints operation ids and counts and never a payload |
+| Identifier allowlist | `validate_table_name` was `str.isidentifier()`; now `^[a-z_][a-z0-9_]{0,62}$`. `delete_sources_across` had a **second, weaker** copy of the check and now calls the same one |
+| Retired generations | `StoreRegistry` refuses to open a generation outside `SERVABLE_STATES`, per request |
+| Erasure | `forget_memory` scrubs erased sources out of pending outbox payloads. An event left with no sources is completed rather than left to block `cutover` |
+| Readiness | Verifies **both** ledgers; an unreachable control plane is a failure rather than a traceback; a retired active generation fails; the `calibration` argument is passed again from `recall_mcp/server.py` |
+| Control-plane migrator | Advisory lock `recall-control-plane-migrations-v1`, refusing rather than waiting |
+| Docs | `docs/MIGRATIONS.md` documents the second ledger; `docs/ENTERPRISE_RETRIEVAL.md` documents the new commands, the retirement rule, and corrects "polling fallback" to what it is, a cache TTL |
+
+### The behaviours from the brief, and where each is enforced
+
+| Behaviour | Test |
+|---|---|
+| Physical tables come only from validated registry rows, matching the allowlist | `test_the_physical_table_allowlist_refuses_what_isidentifier_allowed`, `test_delete_sources_across_uses_the_same_allowlist` |
+| No client parameter can select a generation or table | `test_no_client_parameter_can_name_a_generation_or_a_table`, `test_no_subcommand_accepts_a_physical_table_except_create_generation` |
+| Completed event payloads are cleared | `test_replay_converges_both_generations_after_a_crash` |
+| Audit records keep id, timestamp, status, counts, never corpus text or source paths | `test_the_retained_audit_record_holds_counts_and_no_corpus`, asserted column by column from `information_schema` |
+| Both embeddings prepared before either generation is written | `test_dual_write_reaches_both_generations_and_leaves_no_pending_event` |
+| Forget deletes from active and shadow in ONE transaction | `test_erasure_across_generations_is_atomic_when_the_second_table_fails` |
+| A failed shadow write allows the active write only with a durable pending event | `test_a_failed_shadow_write_leaves_a_durable_pending_event` |
+| Cutover refused while any event is pending | `test_cutover_is_refused_while_an_event_is_pending` |
+| Route cache keyed on tenant and generation | `test_the_route_cache_is_keyed_on_tenant_and_generation` |
+| LISTEN, with a 5 s fallback | `test_listen_delivers_a_route_change_and_the_ttl_bounds_a_missed_one` |
+| In-flight searches finish on their generation, new ones use the new route | `test_a_route_change_during_a_search_leaves_the_acquired_store_alone` |
+
+### What was measured
+
+**The suite had been asserting tenant isolation as a superuser, and five tests depended on it.**
+`docker-compose.yml` ships `POSTGRES_USER=recall`, which is the cluster superuser, and row level
+security is inert for one. Pointed at an unprivileged role for the first time, the suite went from
+0 to 7 failures, and the same defect class accounted for four of them: **a verification read
+issued without the `recall.tenant_id` GUC, which under FORCE RLS returns nothing and is then
+interpreted as a fact about the data.**
+
+| Test | What the missing GUC did | Fix |
+|---|---|---|
+| `test_enterprise_control_plane` teardown | deleted 0 routes, reported success, then failed the generation delete on a foreign key | set the GUC |
+| `test_enterprise_control_plane` body | `SELECT payload …` returned NO ROW, and `payload is None` was read as "the payload was cleared" | set the GUC, and assert the row is visible before asserting its contents |
+| `test_v08_table_is_adopted_without_rewriting_existing_data` | `fetchone()` returned None; the assertion failed with a `TypeError` that says nothing about tenancy | set the GUC |
+| `test_temporal_adapter_puts_the_intervals_where_recall_reads_them` | read 0 rows and reported "the adapter wrote nothing" when the adapter wrote fine | set the GUC, to tenant `temporal` rather than `default` |
+
+The second row is the one to remember: the assertion passed **for the wrong reason** on a
+superuser, because "the payload was cleared" and "the policy hid the record" are the same
+observation when you only look for `None`.
+
+The fifth, `test_serving_role_has_dml_but_cannot_run_ddl`, genuinely needs `CREATEROLE`, since its
+subject is a boundary between two roles. It now skips when the configured role cannot provision
+one, and is unchanged on any DSN that can.
+
+`tests/conftest.py` grew an `unprivileged_dsn` fixture that either uses an already-unprivileged
+`RECALL_TEST_DSN` or provisions `recall_rls_probe` (`NOSUPERUSER NOBYPASSRLS`) from a privileged
+one, and **skips** rather than falling back if it can do neither. Both branches were executed.
+
+**The RLS mutation proof, and what it caught.** `ALTER TABLE … NO FORCE ROW LEVEL SECURITY` on the
+control-plane tables, then on the per-test chunk tables through a pytest plugin that fails the run
+if the mutation does not apply.
+
+| Arm | Before | Mutated | Restored |
+|---|---|---|---|
+| Control plane (`recall_tenant_routes`, `recall_migration_events`) | pass | **fail** | pass |
+| Chunk tables (`c_active_*`, `c_shadow_*`) | pass | **fail** | pass |
+
+The chunk-table arm is the one worth recording, because the first version of that test **passed
+under the mutation**. `PgVectorStore.count()` carries `WHERE tenant_id = %s`
+(`recall/store.py:1776`), so asserting through the store measured the query PREDICATE while
+claiming to measure the POLICY. The test now issues an unpredicated `SELECT count(*)` under
+another tenant's GUC, which only the policy can answer, and it also asserts the same connection
+DOES see the rows once it names the owning tenant, so "returned zero" cannot be explained by an
+empty table. Under the mutation it now fails on exactly that assertion.
+
+**Symlink confinement was verified on Linux, because the assertion skips on Windows.** A skipped
+test is not coverage, so this branch's `recall/index.py` (sha256 `60653f85586f…2909`) was run on
+VPS2 under Python 3.12: the unconfined glob reached one path resolving outside the root
+(`corpus/direct.md` to `/tmp/…/outside/secret.md`) and `candidate_files` dropped it. Root SSH was
+used rather than qwen-mcp, whose file roots do not cover this program. The first attempt at the
+negative control asserted the wrong thing (it looked for the TARGET's name, while the escape
+appears under the LINK's name) and failed loudly, which is why the control is now in the test
+itself: without it, an implementation with no confinement at all would produce the same answer on
+a platform whose glob never reaches the escape. Note for the next reader: on Python 3.12.3
+`Path.glob("**/*.md")` did **not** recurse into the directory symlink, contradicting the version
+range in `_confined_to`'s docstring. The file-symlink escape is what reproduces.
+
+### Corrections to the inherited snapshot
+
+- **`check_enterprise_readiness`'s calibration branch is now reachable, not deleted.** The gap
+  matrix left this as a decision. The argument is supplied again from `recall_mcp/server.py:336`;
+  `load_for` returns None for a calibration belonging to another embedder, so the warning now
+  means "there is none", which is actionable, rather than "this call site does not pass one",
+  which was not. The identity-mismatch failure is exercised by
+  `test_a_calibration_for_a_different_embedder_is_a_failure_not_a_warning`.
+- **Erasure reaching the outbox was implemented, not only decided.** The gap matrix framed it as a
+  policy question. The policy chosen is scrub, not discard: one event covers a batch of sources
+  and only some are erased, so the erased records are removed from the payload and an event left
+  with nothing to do is completed. Discarding the whole event would have lost the surviving
+  sources' shadow writes; leaving it pending would have deadlocked `cutover` on an operation that
+  must never be replayed.
+- **`docs/ENTERPRISE_RETRIEVAL.md:49` said "five second polling fallback".** It is a route cache
+  TTL, not a poll. Corrected here rather than deferred to session 7, because the new
+  `test_listen_delivers_a_route_change_and_the_ttl_bounds_a_missed_one` would otherwise have been
+  documented as testing something that does not exist.
+
+### Three pre-existing failures left alone, and why
+
+`tests/test_bench_systems.py`'s three DSN-gated tests fail with `TrustRefusal: INDEX_NOT_READY`.
+They fail identically on `origin/master` at `061c810` with no changes applied, under **both** an
+unprivileged and a superuser DSN, so this is not a privilege effect and not a regression from this
+work. The trigger appears to be `fastembed` being installed locally, which CI's `test` job
+deliberately does not install, so the tests take a different embedder path than CI exercises.
+Diagnosing that is its own change, and it is outside this session's scope.
+
+Full-suite baseline, both runs on the same unprivileged DSN: `origin/master` at `061c810` failed
+exactly the same 7 tests this branch initially failed. Four of the seven are fixed here, one now
+skips with a stated reason, and three are the `test_bench_systems` cases above.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** VPS2 has 12 cores under a permanent load average near 8 from unrelated live production. | External dependency. Do not work around it. | Latency is **PENDING**; promotion blocked on latency grounds. Quality and safety gates still run. | unchanged; this session measured nothing on VPS2 |
+| **No production corpus.** | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
+| **No approved local generator confirmed.** | Open | The generator-neutral evidence path stays unexercised end to end. | unchanged |
+
+### What the next session should start with
+
+Backlog session 4, making the documentation true, is now the cheapest remaining item and two of
+its five entries were done here (the second ledger, and the `ENTERPRISE_RETRIEVAL` route-fallback
+wording). What is left of it: the `RECALL_DSN` contradiction between
+`docs/ENTERPRISE_RETRIEVAL.md:13` and `docs/MIGRATIONS.md:12` (this session did **not** touch it,
+and `recall/enterprise_cli.py:29` still reads `RECALL_DSN`), `README.md:628-632` contradicting
+`README.md:205`, the `CHANGELOG.md` entry, and the Qwen3 record.
+
+After that, backlog session 10: the promotion gate has still only ever been observed to fail.
+
+Two items carried forward and still open: the MT-RAG baseline has no `results/ARTIFACTS.md` row
+(deliberately), and `bench/mtrag-symmetric-baseline` is still local and unpushed.
+
+---
+
 ## 2026-08-05, gap matrix: 21 requirement areas audited against master
 
 ### Session ledger

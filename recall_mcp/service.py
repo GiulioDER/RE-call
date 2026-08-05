@@ -669,6 +669,7 @@ def forget_memory(
     store: PgVectorStore,
     sources: list[str],
     shadow_store: PgVectorStore | None = None,
+    control_plane: ControlPlane | None = None,
 ) -> ForgetResult:
     """Permanently delete every indexed chunk for the given sources; return what actually went away.
 
@@ -677,6 +678,16 @@ def forget_memory(
     exist for this tenant is reported in `sources_not_found`, never silently folded into a "0
     removed, success" result — a typo'd source name must be visibly distinguishable from one
     that was actually forgotten.
+
+    **Erasure reaches the migration outbox too, when a control plane is supplied.** It did not,
+    and that was a hole in "permanently delete" rather than a missing nicety: while a shadow
+    migration is in flight, `recall_migration_events.payload` holds the full text and vectors of
+    every chunk in the batch. Deleting from both chunk tables and stopping there left the erased
+    text sitting in the outbox, and a later `replay` would have written it back into both
+    generations. The scrub runs AFTER the deletes, so a crash between them leaves the outbox
+    entry, which replay converges and the next erasure removes; the reverse order could scrub the
+    replay record and then fail to delete, which loses the shadow write with nothing left to
+    replay it from.
     """
     if not sources:
         raise ValueError("sources must be a non-empty list")
@@ -708,6 +719,8 @@ def forget_memory(
         )
     else:
         chunks_removed = store.delete_sources(to_delete) if to_delete else 0
+    if to_delete and control_plane is not None:
+        control_plane.erase_sources_from_pending(store.tenant, to_delete)
     if found and not_found:
         message = (
             f"Forgot {chunks_removed} chunk(s) from {len(found)} source(s); "

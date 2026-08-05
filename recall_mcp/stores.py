@@ -33,7 +33,7 @@ from __future__ import annotations
 import threading
 import time
 
-from recall.control_plane import ControlPlane, TenantRoute
+from recall.control_plane import SERVABLE_STATES, ControlPlane, TenantRoute
 from recall.pool import DEFAULT_MIN_POOL_SIZE, SharedPool
 from recall.observability import get_logger
 from recall.store import DEFAULT_TABLE, PgVectorStore
@@ -168,6 +168,18 @@ class StoreRegistry:
                     raise
                 self._stores[key] = store
             return store
+        if generation is not None and generation.state not in SERVABLE_STATES:
+            # `docs/ENTERPRISE_RETRIEVAL.md`: "Never allow a request field to name a retired
+            # table." A request cannot name one directly, because the table comes from the
+            # registry. But a route left pointing at a generation that was retired afterwards
+            # reaches the same place by a different road, and `retire_generation` cannot see
+            # every tenant's route to stop it (routes carry FORCE row level security, per
+            # tenant). So the refusal lives here, where the state is read anyway, and binds per
+            # request rather than per operator action.
+            raise RuntimeError(
+                f"generation {generation.generation_id!r} is {generation.state!r} and cannot "
+                f"serve tenant {tenant!r}"
+            )
         table = generation.physical_table if generation is not None else self._table or DEFAULT_TABLE
         generation_id = generation.generation_id if generation is not None else "legacy"
         dimension = generation.dimension if generation is not None else self._dim

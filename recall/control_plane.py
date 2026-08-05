@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,10 +20,41 @@ if TYPE_CHECKING:
 GenerationState = Literal["building", "ready", "active", "retired", "failed"]
 EventKind = Literal["index", "forget"]
 
+#: States a generation may be in and still back a served request. `retired` and `failed` are
+#: excluded deliberately: `docs/ENTERPRISE_RETRIEVAL.md` requires that no request ever name a
+#: retired table, and a `failed` generation is one whose DDL did not finish.
+SERVABLE_STATES: frozenset[str] = frozenset({"building", "ready", "active"})
+
+#: Advisory lock name for the control-plane ledger. Deliberately NOT `recall/schema.py`'s
+#: `MIGRATION_LOCK_NAME`: the two ledgers are separate on purpose (see `docs/MIGRATIONS.md`), and
+#: sharing one lock would make a chunk-table migration and a control-plane bootstrap block each
+#: other for no reason. Separate ledger, separate lock, both locked.
+CONTROL_PLANE_LOCK_NAME = "recall-control-plane-migrations-v1"
+
+#: Physical table identifiers are interpolated into SQL, so this is an allowlist, not a filter.
+#:
+#: `str.isidentifier()` was the previous gate and is too weak in three separate ways, each a live
+#: defect rather than a hypothetical. It accepts non-ASCII, because `café` is a valid Python
+#: identifier. It accepts uppercase, and PostgreSQL folds an unquoted `Chunks_G1` to `chunks_g1`,
+#: so the registry row and the physical table silently disagree. It accepts any length, and
+#: PostgreSQL truncates identifiers at NAMEDATALEN-1 = 63 bytes, so two registry rows differing
+#: only after byte 63 map to ONE table. The allowlist below refuses all three.
+_TABLE_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+
 
 def validate_table_name(table: str) -> str:
-    if not table.isidentifier():
-        raise ValueError("physical table must be a valid SQL identifier")
+    """Return `table` if it matches the physical-identifier allowlist, else raise.
+
+    This is the single chokepoint through which a physical table name reaches an f-string. It runs
+    on the way IN (`register_generation`) and again on the way OUT (`_generation`), so a row
+    written by another client, or by a direct `INSERT`, still cannot smuggle an identifier into a
+    query at read time.
+    """
+    if not isinstance(table, str) or not _TABLE_NAME.fullmatch(table):
+        raise ValueError(
+            "physical table must match ^[a-z_][a-z0-9_]{0,62}$ (lowercase ASCII, at most 63 "
+            f"bytes, no quoting required); got {table!r}"
+        )
     return table
 
 
@@ -59,6 +91,41 @@ class MigrationEvent:
     shadow_count: int
 
 
+class ConcurrentControlPlaneMigrator(RuntimeError):
+    """Another process holds the control-plane migration advisory lock."""
+
+
+@dataclass(frozen=True)
+class ControlPlaneLedgerState:
+    """What `recall_schema_versions` says, against what this package ships."""
+
+    ledger_present: bool
+    missing: tuple[int, ...]
+    unknown: tuple[int, ...]
+    checksum_mismatches: tuple[int, ...]
+
+    @property
+    def current(self) -> bool:
+        return (
+            self.ledger_present
+            and not self.missing
+            and not self.unknown
+            and not self.checksum_mismatches
+        )
+
+    def describe(self) -> str:
+        if not self.ledger_present:
+            return "control plane ledger recall_schema_versions is absent"
+        parts = []
+        if self.missing:
+            parts.append(f"missing migrations {list(self.missing)}")
+        if self.unknown:
+            parts.append(f"unknown migrations {list(self.unknown)}")
+        if self.checksum_mismatches:
+            parts.append(f"checksum mismatch on {list(self.checksum_mismatches)}")
+        return "control plane ledger is current" if not parts else "; ".join(parts)
+
+
 class ControlPlane:
     """Small PostgreSQL control plane. Runtime calls are always tenant scoped."""
 
@@ -91,34 +158,97 @@ class ControlPlane:
             raise ValueError("tenant must be non-empty")
         conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
 
-    def apply_migrations(self) -> None:
-        """Apply checked, immutable SQL migrations using the caller's migration role."""
+    @staticmethod
+    def bundled_migrations() -> list[tuple[int, str, str]]:
+        """`(version, sql, sha256)` for every control-plane migration shipped in this package."""
         directory = Path(__file__).with_name("sql")
-        migrations = sorted(directory.glob("[0-9][0-9][0-9]_*.sql"))
-        with self._connect() as conn:
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS recall_schema_versions ("
-                "version integer PRIMARY KEY, checksum text NOT NULL, "
-                "applied_at timestamptz NOT NULL DEFAULT now())"
+        bundled: list[tuple[int, str, str]] = []
+        for path in sorted(directory.glob("[0-9][0-9][0-9]_*.sql")):
+            sql = path.read_text(encoding="utf-8")
+            bundled.append(
+                (int(path.name.split("_", 1)[0]), sql, hashlib.sha256(sql.encode("utf-8")).hexdigest())
             )
-            for path in migrations:
-                version = int(path.name.split("_", 1)[0])
-                sql = path.read_text(encoding="utf-8")
-                checksum = hashlib.sha256(sql.encode("utf-8")).hexdigest()
-                row = conn.execute(
-                    "SELECT checksum FROM recall_schema_versions WHERE version = %s",
-                    (version,),
-                ).fetchone()
-                if row is not None:
-                    if row[0] != checksum:
-                        raise RuntimeError(f"migration {version} checksum does not match")
-                    continue
-                with conn.transaction():
-                    conn.execute(sql)
-                    conn.execute(
-                        "INSERT INTO recall_schema_versions(version, checksum) VALUES (%s, %s)",
-                        (version, checksum),
-                    )
+        return bundled
+
+    def apply_migrations(self) -> None:
+        """Apply checked, immutable SQL migrations using the caller's migration role.
+
+        Serialised by a PostgreSQL advisory lock, for the same reason `recall schema apply` takes
+        one: two `recall-enterprise migrate` jobs against one database otherwise interleave, and
+        `CREATE TABLE IF NOT EXISTS` plus a ledger `INSERT` is not atomic across sessions. The
+        loser raises rather than waiting, because the winner is doing the identical work and the
+        caller wants to know a second migrator existed.
+        """
+        with self._connect() as conn:
+            lock = conn.execute(
+                "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (CONTROL_PLANE_LOCK_NAME,)
+            ).fetchone()
+            if not lock or not lock[0]:
+                raise ConcurrentControlPlaneMigrator(
+                    "another recall-enterprise migrate is already running against this database"
+                )
+            try:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS recall_schema_versions ("
+                    "version integer PRIMARY KEY, checksum text NOT NULL, "
+                    "applied_at timestamptz NOT NULL DEFAULT now())"
+                )
+                for version, sql, checksum in self.bundled_migrations():
+                    row = conn.execute(
+                        "SELECT checksum FROM recall_schema_versions WHERE version = %s",
+                        (version,),
+                    ).fetchone()
+                    if row is not None:
+                        if row[0] != checksum:
+                            raise RuntimeError(f"migration {version} checksum does not match")
+                        continue
+                    with conn.transaction():
+                        conn.execute(sql)
+                        conn.execute(
+                            "INSERT INTO recall_schema_versions(version, checksum) "
+                            "VALUES (%s, %s)",
+                            (version, checksum),
+                        )
+            finally:
+                conn.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+                    (CONTROL_PLANE_LOCK_NAME,),
+                )
+
+    def ledger_state(self) -> "ControlPlaneLedgerState":
+        """Compare the shipped control-plane migrations against what this database recorded.
+
+        Read-only, and deliberately separate from `recall.schema.check_schema`: that one covers
+        `recall_schema_migrations` (per chunk table), this one covers `recall_schema_versions`
+        (database-global). Enterprise readiness checks BOTH, because a process whose control plane
+        is behind routes requests using a schema it has not verified.
+        """
+        bundled = {version: checksum for version, _sql, checksum in self.bundled_migrations()}
+        with self._connect() as conn:
+            present = conn.execute(
+                "SELECT to_regclass('recall_schema_versions')"
+            ).fetchone()
+            if not present or present[0] is None:
+                return ControlPlaneLedgerState(
+                    ledger_present=False,
+                    missing=tuple(sorted(bundled)),
+                    unknown=(),
+                    checksum_mismatches=(),
+                )
+            recorded = {
+                int(version): str(checksum)
+                for version, checksum in conn.execute(
+                    "SELECT version, checksum FROM recall_schema_versions"
+                ).fetchall()
+            }
+        return ControlPlaneLedgerState(
+            ledger_present=True,
+            missing=tuple(sorted(set(bundled) - set(recorded))),
+            unknown=tuple(sorted(set(recorded) - set(bundled))),
+            checksum_mismatches=tuple(
+                sorted(v for v in set(bundled) & set(recorded) if bundled[v] != recorded[v])
+            ),
+        )
 
     def register_generation(
         self,
@@ -169,6 +299,125 @@ class ControlPlane:
             embedding_profile=row[2], dimension=row[3], state=row[4],
             chunk_count=row[5], source_count=row[6], created_at=row[7], ready_at=row[8],
         )
+
+    _GENERATION_COLUMNS = (
+        "generation_id, physical_table, embedding_profile, dimension, state, "
+        "chunk_count, source_count, created_at, ready_at"
+    )
+
+    def generation(self, generation_id: str) -> IndexGeneration | None:
+        """One validated registry row, or None. The ONLY sanctioned source of a physical table."""
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._GENERATION_COLUMNS} FROM recall_index_generations "
+                "WHERE generation_id = %s",
+                (generation_id,),
+            ).fetchone()
+        return None if row is None else self._generation(tuple(row))
+
+    def generations(self) -> list[IndexGeneration]:
+        """Every registry row, oldest first. `recall_index_generations` is not tenant scoped."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._GENERATION_COLUMNS} FROM recall_index_generations "
+                "ORDER BY created_at, generation_id"
+            ).fetchall()
+        return [self._generation(tuple(row)) for row in rows]
+
+    def retire_generation(self, generation_id: str, tenant: str) -> None:
+        """Retire a generation, refusing while `tenant`'s route still points at it.
+
+        Scoped to ONE tenant on purpose. `recall_tenant_routes` carries FORCE row level security
+        and the migration role is neither superuser nor `BYPASSRLS`, so no caller can enumerate
+        every tenant's routes to prove a generation is globally unrouted. Rather than weaken the
+        isolation model to make a convenient check possible, the operator names the tenant they
+        are retiring for, and the *serving* path refuses a retired generation independently
+        (`SERVABLE_STATES`, enforced in `recall_mcp.stores.StoreRegistry`). That second guard is
+        the one that actually protects a request; this one is here to stop the obvious mistake.
+        """
+        with self._connect() as conn, conn.transaction():
+            self._set_tenant(conn, tenant)
+            row = conn.execute(
+                "SELECT active_generation, shadow_generation FROM recall_tenant_routes "
+                "WHERE tenant_id = %s FOR UPDATE",
+                (tenant,),
+            ).fetchone()
+            if row is not None and generation_id in {row[0], row[1]}:
+                role = "active" if generation_id == row[0] else "shadow"
+                raise RuntimeError(
+                    f"refusing to retire {generation_id!r}: it is tenant {tenant!r}'s {role} "
+                    f"generation. Route the tenant elsewhere first."
+                )
+            updated = conn.execute(
+                "UPDATE recall_index_generations SET state = 'retired', retired_at = now() "
+                "WHERE generation_id = %s RETURNING generation_id",
+                (generation_id,),
+            ).fetchone()
+            if updated is None:
+                raise KeyError(f"unknown generation: {generation_id}")
+
+    def erase_sources_from_pending(self, tenant: str, sources: list[str]) -> int:
+        """Scrub erased sources out of pending outbox payloads. Returns events changed.
+
+        Erasure previously stopped at the chunk tables, and a pending migration event's payload
+        holds the full text and the vectors of every chunk in the batch
+        (`recall/index.py::Indexer._flush`). A tenant who invoked their right to erasure while an
+        index event was pending kept their text in `recall_migration_events.payload` until an
+        unrelated replay happened to complete it, and a replay that DID run would have written the
+        erased text back into both generations.
+
+        Scrubbing rather than discarding, because one event covers a batch of sources and only
+        some of them are being erased. When nothing is left to replay the event is completed with
+        a zero shadow count: its work is genuinely void, and leaving it pending would block
+        `cutover` forever for an operation that must never be replayed.
+        """
+        if not sources:
+            return 0
+        erased = set(sources)
+        changed = 0
+        # One transaction, because `_connect` is autocommit and a `FOR UPDATE` outside a
+        # transaction releases its locks the instant the SELECT returns. Without this, a
+        # concurrent `replay_pending` could read a payload between this scrub's SELECT and its
+        # UPDATE and write the erased text back into both generations, which is precisely the
+        # outcome this method exists to prevent.
+        with self._connect() as conn, conn.transaction():
+            self._set_tenant(conn, tenant)
+            rows = conn.execute(
+                "SELECT operation_id, payload FROM recall_migration_events "
+                "WHERE tenant_id = %s AND status = 'pending' ORDER BY sequence_id FOR UPDATE",
+                (tenant,),
+            ).fetchall()
+            for operation_id, payload in rows:
+                if not isinstance(payload, dict):
+                    continue
+                remaining = [s for s in payload.get("sources", []) if s not in erased]
+                if len(remaining) == len(payload.get("sources", [])):
+                    continue
+                if not remaining:
+                    conn.execute(
+                        "UPDATE recall_migration_events SET status = 'complete', payload = NULL, "
+                        "shadow_count = 0, completed_at = now() "
+                        "WHERE tenant_id = %s AND operation_id = %s",
+                        (tenant, operation_id),
+                    )
+                    changed += 1
+                    continue
+                scrubbed = dict(payload)
+                scrubbed["sources"] = remaining
+                for key in ("active_chunks", "chunks"):
+                    records = scrubbed.get(key)
+                    if isinstance(records, list):
+                        scrubbed[key] = [
+                            r for r in records
+                            if not (isinstance(r, dict) and r.get("source") in erased)
+                        ]
+                conn.execute(
+                    "UPDATE recall_migration_events SET payload = %s::jsonb "
+                    "WHERE tenant_id = %s AND operation_id = %s",
+                    (json.dumps(scrubbed), tenant, operation_id),
+                )
+                changed += 1
+        return changed
 
     def route(self, tenant: str) -> TenantRoute | None:
         with self._connect() as conn:
