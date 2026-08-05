@@ -294,20 +294,50 @@ def build_auth(
     sit in the configuration looking effective.
     """
     e = env if env is not None else dict(os.environ)
-    # Both are read BEFORE any transport branch, so a conflicting pair is refused on stdio too.
-    # Deferring the conflict to whenever someone first starts an HTTP listener would let a
-    # misconfiguration sit in a chart looking fine until the day it decides which trust model
-    # applies.
-    validator = oidc_validator_from_env(e)
-    registry = token_registry_from_env(e)
+    # Presence is decided from the ENV KEYS, before either mechanism is built, because building
+    # one can raise for its own reasons: `load_token_registry` refuses under RECALL_ENV=production,
+    # and that fired before the selector could say "we are not using the token file", which is
+    # exactly the state a production cutover passes through.
+    has_oidc = bool(e.get(ENV_ISSUER, "").strip())
+    has_static = bool(e.get("RECALL_AUTH_TOKENS_FILE", "").strip())
 
-    if validator is not None and registry is not None:
+    mode = e.get("RECALL_AUTH_MODE", "").strip().lower()
+    if mode and mode not in {"oidc", "static"}:
+        raise AuthConfigError(
+            f"RECALL_AUTH_MODE={mode!r} is not a valid mode; expected one of oidc, static"
+        )
+    if mode == "oidc" and not has_oidc:
+        raise AuthConfigError(f"RECALL_AUTH_MODE=oidc but {ENV_ISSUER} is not set")
+    if mode == "static" and not has_static:
+        raise AuthConfigError("RECALL_AUTH_MODE=static but RECALL_AUTH_TOKENS_FILE is not set")
+
+    if has_oidc and has_static and not mode:
+        # The ambiguity guard, narrowed rather than removed. Refusing was right when nobody chose;
+        # it also made the cutover atomic, because the intermediate state of a staged rollout is
+        # precisely "both configured". Declaring precedence is a choice, so it is allowed; leaving
+        # it undeclared still is not.
         raise AuthConfigError(
             f"{ENV_ISSUER} and RECALL_AUTH_TOKENS_FILE are both set, and this server will not "
-            f"choose between them. They are two trust models: one where the IdP owns revocation, "
+            f"guess between them. They are two trust models: one where the IdP owns revocation, "
             f"expiry and rotation, and one where a static shared secret is valid until somebody "
-            f"edits a file. Whichever won silently, the other would sit in the configuration "
-            f"looking effective. Unset one."
+            f"edits a file. Set RECALL_AUTH_MODE=oidc or =static to declare which is active "
+            f"(that is the supported way to stage a cutover), or unset one of them."
+        )
+
+    # Build ONLY the selected mechanism. Preferring one after building both would reintroduce the
+    # production failure above, and would read a token file the operator has already stood down.
+    use_oidc = has_oidc and mode != "static"
+    validator = oidc_validator_from_env(e) if use_oidc else None
+    registry = token_registry_from_env(e) if not use_oidc else None
+
+    if has_oidc and has_static:
+        # Precedence was declared, so the refusal no longer carries the warning. The log has to.
+        inactive = "RECALL_AUTH_TOKENS_FILE" if use_oidc else ENV_ISSUER
+        _log.warning(
+            "both authentication mechanisms are configured; RECALL_AUTH_MODE=%s is active, so "
+            "%s is set but NOT enforcing anything. Remove it once the cutover has settled.",
+            "oidc" if use_oidc else "static",
+            inactive,
         )
 
     configured = validator is not None or registry is not None

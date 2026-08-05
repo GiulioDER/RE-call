@@ -133,6 +133,15 @@ class OidcConfig:
     #: None is permissive so the validator remains usable on its own terms; `build_auth` is what
     #: refuses to DEPLOY without one, which is where the decision belongs.
     allowed_tenants: frozenset[str] | None = None
+    #: `sub` -> the tenants that subject may name, or None to trust the tenant claim outright.
+    #:
+    #: The allowlist above bounds WHICH tenants exist. It does not bind WHO may name one, and
+    #: those are different questions: with an allowlist alone, any subject able to obtain a token
+    #: from the issuer with our audience reaches whichever provisioned tenant its claim names.
+    #: Nothing here can verify that an IdP derived that claim from an authoritative mapping rather
+    #: than from a user-editable profile attribute, so a deployment that cannot make that promise
+    #: pins the mapping here instead.
+    subject_tenants: dict[str, frozenset[str]] | None = None
 
     def __post_init__(self) -> None:
         if not self.issuer.strip() or not self.audience.strip():
@@ -213,6 +222,31 @@ class OidcConfig:
                     f"allowed_tenants entries are empty or padded and could never match a "
                     f"tenant claim: {unmatchable}"
                 )
+
+        if self.subject_tenants is not None:
+            if not self.subject_tenants:
+                raise ValueError(
+                    "subject_tenants must not be empty: a binding that names no subject refuses "
+                    "every token. Leave it None to trust the tenant claim instead."
+                )
+            object.__setattr__(
+                self,
+                "subject_tenants",
+                {s: frozenset(t) for s, t in self.subject_tenants.items()},
+            )
+            for subject, tenants in self.subject_tenants.items():
+                if not tenants:
+                    raise ValueError(f"subject_tenants[{subject!r}] names no tenant")
+                if self.allowed_tenants is not None:
+                    # Un-matchable configuration, same treatment as a padded allowlist entry: the
+                    # allowlist would refuse that tenant anyway, so a binding pointing at it reads
+                    # as provisioning while refusing at every request.
+                    outside = sorted(tenants - self.allowed_tenants)
+                    if outside:
+                        raise ValueError(
+                            f"subject_tenants[{subject!r}] names {outside}, which is not in "
+                            f"allowed_tenants; that subject could never reach it"
+                        )
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -584,6 +618,32 @@ class OidcValidator:
                 "the token is genuine, but names a tenant this deployment did not provision",
             )
 
+        subject = claims.get("sub")
+        if cfg.subject_tenants is not None:
+            # AFTER the signature, for the reason the tenant allowlist is: ahead of it, a forged
+            # token would answer "is this a known subject here?" for a caller holding nothing.
+            if not isinstance(subject, str) or not subject.strip():
+                # `sub` is optional to this validator in general (the principal name falls back to
+                # the tenant), but with a binding it is the LOOKUP KEY, and a fallback to the
+                # tenant would check the tenant against itself.
+                raise TokenRejected(
+                    "missing_subject",
+                    "a subject-to-tenant binding is configured, so `sub` is required",
+                )
+            bound = cfg.subject_tenants.get(subject)
+            if bound is None:
+                raise TokenRejected(
+                    "subject_not_bound",
+                    "this subject is not bound to any tenant in this deployment",
+                )
+            if raw_tenant not in bound:
+                # The cross-tenant read the allowlist cannot prevent: the tenant IS provisioned
+                # and the token IS genuine; it is simply not this subject's tenant.
+                raise TokenRejected(
+                    "subject_tenant_mismatch",
+                    "this subject is not bound to the tenant its token names",
+                )
+
         try:
             expires_at = datetime.fromtimestamp(int(claims["exp"]), tz=timezone.utc)
         except (OverflowError, OSError, ValueError) as exc:
@@ -599,7 +659,7 @@ class OidcValidator:
             ) from exc
 
         return Principal(
-            name=str(claims.get("sub") or raw_tenant),
+            name=str(subject or raw_tenant),
             tenant=raw_tenant,
             scopes=_parse_scope_claim(claims.get(cfg.scope_claim)),
             # Carried onto the Principal, not merely checked here. The Principal is the object
@@ -647,10 +707,36 @@ ENV_ISSUER = "RECALL_OIDC_ISSUER"
 ENV_AUDIENCE = "RECALL_OIDC_AUDIENCE"
 ENV_TENANTS = "RECALL_OIDC_TENANTS"
 ENV_ALGORITHMS = "RECALL_OIDC_ALGORITHMS"
+ENV_SUBJECT_TENANTS = "RECALL_OIDC_SUBJECT_TENANTS"
+ENV_TRUST_TENANT_CLAIM = "RECALL_OIDC_TRUST_TENANT_CLAIM"
 
 
 def _csv(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _parse_subject_tenants(raw: str) -> dict[str, frozenset[str]] | None:
+    """`sub:tenant,sub:tenant,...` into a mapping, or None when unset.
+
+    A subject may appear more than once; the tenants accumulate, because one service account
+    legitimately serves several tenants. A malformed entry REFUSES rather than being skipped: a
+    skipped pair is a subject that silently cannot authenticate, or worse, one whose absence from
+    the map is read as "not bound" and refuses at request time for a reason naming nothing.
+    """
+    if not raw:
+        return None
+    mapping: dict[str, set[str]] = {}
+    for entry in _csv(raw):
+        subject, separator, tenant = entry.partition(":")
+        if not separator or not subject.strip() or not tenant.strip() or ":" in tenant:
+            raise AuthConfigError(
+                f"{ENV_SUBJECT_TENANTS} entry {entry!r} is malformed; expected `sub:tenant` "
+                f"pairs separated by commas, e.g. alice@corp:acme,svc-etl:globex"
+            )
+        mapping.setdefault(subject.strip(), set()).add(tenant.strip())
+    if not mapping:
+        raise AuthConfigError(f"{ENV_SUBJECT_TENANTS} is set but names no subject")
+    return {s: frozenset(t) for s, t in mapping.items()}
 
 
 def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator | None:
@@ -724,12 +810,39 @@ def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator 
             )
     else:
         algorithms = DEFAULT_ALGORITHMS
+
+    subject_tenants = _parse_subject_tenants(source.get(ENV_SUBJECT_TENANTS, "").strip())
+    trusts_claim = source.get(ENV_TRUST_TENANT_CLAIM, "").strip().lower() in {"1", "true", "yes", "on"}
+    if subject_tenants is not None and trusts_claim:
+        raise AuthConfigError(
+            f"{ENV_SUBJECT_TENANTS} and {ENV_TRUST_TENANT_CLAIM} are both set, and they answer "
+            f"the same question differently: one pins which tenants a subject may name, the other "
+            f"declares the IdP authoritative for that. Whichever won, the other would sit in the "
+            f"configuration looking effective. Unset one."
+        )
+    if subject_tenants is None and not trusts_claim:
+        # The unsafe path is opt-IN and loud (SEC-004). A tenant allowlist bounds WHICH tenants
+        # exist, not WHO may name one, so without a binding any subject holding a token from this
+        # issuer reaches any provisioned tenant. That is a legitimate deployment when the IdP
+        # derives the claim from an authoritative mapping — but it is a decision, and a warning
+        # about it lands in a startup journal nobody reads.
+        raise AuthConfigError(
+            f"neither {ENV_SUBJECT_TENANTS} nor {ENV_TRUST_TENANT_CLAIM} is set. The tenant "
+            f"allowlist bounds WHICH tenants exist, not WHO may name one: without one of these, "
+            f"any subject that can obtain a token from {issuer} for audience {audience!r} reaches "
+            f"every tenant in {ENV_TENANTS}. Either pin the mapping "
+            f"({ENV_SUBJECT_TENANTS}=sub:tenant,...), or set {ENV_TRUST_TENANT_CLAIM}=1 to "
+            f"declare that your IdP mints `tenant` from an authoritative subject-to-organisation "
+            f"mapping and never from a user-editable attribute."
+        )
+
     try:
         config = OidcConfig(
             issuer=issuer,
             audience=audience,
             algorithms=algorithms,
             allowed_tenants=tenants,
+            subject_tenants=subject_tenants,
         )
     except ValueError as exc:
         # A ValueError out of a config constructor reads as a bug at the call site. Restated as

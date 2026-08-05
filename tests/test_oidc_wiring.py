@@ -238,10 +238,15 @@ def test_an_allowlist_entry_that_could_never_match_is_refused(bad):
 
 
 def oidc_env(**extra) -> dict:
+    # RECALL_OIDC_TRUST_TENANT_CLAIM is required as of the subject-binding change (SEC-004): a
+    # deployment must now say whether the IdP is authoritative for the `tenant` claim, or pin the
+    # mapping itself. These tests are about the WIRING, so they take the trust stance explicitly.
+    # The refusal when neither is set has its own test in test_oidc_subject_binding.py.
     env = {
         "RECALL_OIDC_ISSUER": ISSUER,
         "RECALL_OIDC_AUDIENCE": AUDIENCE,
         "RECALL_OIDC_TENANTS": "acme,globex",
+        "RECALL_OIDC_TRUST_TENANT_CLAIM": "1",
         "RECALL_AUTH_RESOURCE_URL": RESOURCE,
     }
     env.update(extra)

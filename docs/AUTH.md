@@ -164,9 +164,25 @@ with a provider there is exactly one right answer and restating it is a chance t
 differently, at which point clients are sent to a provider that did not sign the tokens this
 server accepts.
 
-Setting `RECALL_OIDC_ISSUER` and `RECALL_AUTH_TOKENS_FILE` together **refuses to boot**. They are
-two trust models, and whichever won silently, the other would sit in the configuration looking
-effective.
+### Migrating from the static token file
+
+Setting `RECALL_OIDC_ISSUER` and `RECALL_AUTH_TOKENS_FILE` together refuses to boot **unless you
+declare which is active**, because two trust models with no stated precedence means one of them is
+sitting in the configuration looking effective. Declaring it is what makes a staged cutover
+possible:
+
+```bash
+RECALL_AUTH_MODE=static   # step 1: add every OIDC variable, change nothing. Verify.
+RECALL_AUTH_MODE=oidc     # step 2: flip one variable. Rollback is flipping it back.
+                          # step 3: remove RECALL_AUTH_TOKENS_FILE at leisure, then the mode.
+```
+
+Only the selected mechanism is built, which matters in production: `RECALL_ENV=production` refuses
+the static token file outright, so a server that loaded it before consulting the selector could not
+complete step 2 at all. The inactive mechanism is logged as inactive on every boot, since the
+refusal that used to carry that warning is gone.
+
+Without `RECALL_AUTH_MODE`, both-set still refuses. The guard was never wrong, only too broad.
 
 ### Why the tenant list is mandatory
 
@@ -176,18 +192,44 @@ is not forged merely because initech was never provisioned here — but admittin
 store for a namespace no operator configured, which is RE-call creating tenants on the say-so of a
 third party. A token naming an unlisted tenant is refused with reason `tenant_not_allowed`.
 
-### What the allowlist does not do
+### Who may name a tenant: one of these two is required
 
-It bounds **which** tenants exist. It does not bind **who** may name one. Any subject that can
-obtain a token from your issuer carrying `aud = RECALL_OIDC_AUDIENCE` reaches whichever provisioned
-tenant its `tenant` claim names, because nothing here correlates `sub` with `tenant`.
+The allowlist bounds **which** tenants exist. It does not bind **who** may name one: nothing
+correlates `sub` with `tenant`, so on its own, any subject that can obtain a token from your issuer
+with `aud = RECALL_OIDC_AUDIENCE` reaches whichever provisioned tenant its claim names.
 
-So the security of the whole scheme rests on a property of your IdP, and it is worth stating
-plainly: **the `tenant` claim must be minted by the IdP from an authoritative subject-to-organisation
-mapping.** If it can be set from a user-editable profile attribute, a client-requested claim, or a
-self-service app registration, then it is caller-controlled, and a caller-controlled claim selecting
-the RLS namespace is a cross-tenant read. The `azp` check covers only the multi-audience case; a
-same-audience token from another subject of the same IdP is indistinguishable from a legitimate one.
+The server therefore **refuses to boot** unless you answer the question one way or the other.
+
+**Either pin the mapping here.** A subject reaching a tenant it is not bound to is refused with
+`subject_tenant_mismatch`, even though the tenant is provisioned and the token is genuine:
+
+```bash
+RECALL_OIDC_SUBJECT_TENANTS=alice@corp:acme,svc-etl:globex
+```
+
+Repeat a subject to give it several tenants (`svc-etl:acme,svc-etl:globex`). A subject absent from
+the map is refused with `subject_not_bound`, and with a binding configured a token carrying no
+`sub` is refused outright, because `sub` is the lookup key.
+
+**Or declare that your IdP is authoritative for the claim:**
+
+```bash
+RECALL_OIDC_TRUST_TENANT_CLAIM=1
+```
+
+This is a legitimate and common deployment, and it means exactly one thing: **the `tenant` claim is
+minted by the IdP from an authoritative subject-to-organisation mapping.** If it can be set from a
+user-editable profile attribute, a client-requested claim, or a self-service app registration, then
+it is caller-controlled, and a caller-controlled claim selecting the RLS namespace is a cross-tenant
+read. The `azp` check covers only the multi-audience case; a same-audience token from another
+subject of the same IdP is indistinguishable from a legitimate one.
+
+Setting both refuses to boot: they answer the same question differently, and whichever won, the
+other would sit in the configuration looking effective.
+
+The binding is checked **after** signature verification, for the same reason the tenant allowlist
+is: ahead of it, a forged token would answer "is this a known subject here?" for a caller holding
+no credential.
 
 That check runs **after** signature verification, deliberately. Ahead of it, the reply would
 differ between a forged token naming a real tenant (`bad_signature`) and one naming an unknown
