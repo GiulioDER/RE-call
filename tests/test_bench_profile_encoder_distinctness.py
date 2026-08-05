@@ -363,3 +363,110 @@ def test_the_context_mode_profiles_do_differ_in_what_they_embed():
         candidate = registered_profile(profile_id)
         assert candidate.context_mode != symmetric.context_mode
         assert candidate.context_version != symmetric.context_version
+
+
+# ------------------------------------------------- the delegation leg, which had no test at all
+
+
+class Delegating:
+    """A backend whose asymmetric encoders genuinely defer to the base one, in source."""
+
+    def embed(self, texts):
+        return [_by_text(text) for text in texts]
+
+    def query_embed(self, texts):
+        yield from self.embed(texts)
+
+    def passage_embed(self, texts):
+        yield from self.embed(texts)
+
+
+class MentionsButDoesNotCall:
+    """Three distinct encoders that AGREE, whose text merely mentions the base encoder.
+
+    This is the shape the anti-regression gate used to break the substring version: a docstring
+    that NEGATES the delegation and a comment that describes a delegation since removed. A scrape
+    reads both as confirmation.
+    """
+
+    def embed(self, texts):
+        return [_by_text(text) for text in texts]
+
+    def query_embed(self, texts):
+        """This deliberately does NOT call self.embed(text); it computes its own."""
+        return [_by_text(text) for text in texts]
+
+    def passage_embed(self, texts):
+        # used to be `yield from self.embed(texts)` before the rewrite
+        return [_by_text(text) for text in texts]
+
+
+def test_a_backend_that_really_delegates_is_reported_as_explained(tree):
+    result = _measure(tree, Delegating())
+    resolved = result["resolved_encoders"]
+    assert resolved["asymmetric_encoders_delegate_to_base"] is True
+    assert resolved["identity_is_explained"] is True
+    assert "DELEGATE" in result["verdict"]
+
+
+def test_a_docstring_or_comment_mentioning_the_base_encoder_is_not_delegation(tree):
+    """The defect the anti-regression gate reproduced against the substring version.
+
+    All three encoders agree byte for byte and are three distinct functions, so the honest verdict
+    is that WHY they agree is unsettled. A scrape said "cannot produce different vectors".
+    """
+    result = _measure(tree, MentionsButDoesNotCall())
+    resolved = result["resolved_encoders"]
+
+    assert result["all_probes_identical"] is True, "the premise: they do agree"
+    assert resolved["distinct_function_count"] == 3
+    assert resolved["asymmetric_encoders_delegate_to_base"] is False
+    assert resolved["identity_is_explained"] is False
+    assert "not settled by this measurement" in result["verdict"]
+    assert "cannot produce different vectors" not in result["verdict"]
+
+
+def test_calls_base_encoder_ignores_comments_docstrings_and_lookalike_names():
+    from benchmarks.check_profile_encoder_distinctness import calls_base_encoder
+
+    assert calls_base_encoder("def f(self):\n    yield from self.embed(x)\n") is True
+    assert calls_base_encoder("def f(self):\n    return self.embed([q])\n") is True
+    assert calls_base_encoder('def f(self):\n    """calls self.embed(x)"""\n    return 1\n') is False
+    assert calls_base_encoder("def f(self):\n    # self.embed(x)\n    return 1\n") is False
+    assert calls_base_encoder("def f(self):\n    return self._embed(x)\n") is False
+    assert calls_base_encoder("def f(self):\n    return other.embed(x)\n") is False
+    assert calls_base_encoder("def f(self):\n    return self.embed\n") is False, "reference, not a call"
+
+
+def test_help_still_exits_zero_and_the_docstring_is_ascii():
+    """The exit-split fix caught argparse's SUCCESS path too, so `--help` started reporting a
+    usage error. And `__doc__` is argparse's description, so a non-ASCII character in it crashes
+    `--help` on a cp1252 console."""
+    from benchmarks import check_profile_encoder_distinctness as module
+
+    assert all(ord(c) < 128 for c in module.__doc__ or ""), "non-ASCII in argparse description"
+    completed = subprocess.run(
+        [sys.executable, "-m", "benchmarks.check_profile_encoder_distinctness", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == EXIT_VERDICT
+    assert completed.stdout.strip()
+
+
+def test_the_committed_artifact_declares_its_schema_and_is_not_a_promotion_decision():
+    """It lives in results/promotion/ beside decisions and must not be mistaken for one."""
+    import pathlib
+
+    payload = json.loads(
+        pathlib.Path("results/promotion/encoder-distinctness.bge-small.json").read_text("utf-8")
+    )
+    assert payload["schema"] == "recall-encoder-distinctness-v1"
+    assert "promoted" not in payload and "bootstrap_interval" not in payload
+
+
+def test_measure_stamps_the_schema_on_its_own_output(tree):
+    """The artifact test above reads a committed FILE, so it cannot see the emitter losing the
+    key. A mutation sweep caught exactly that: deleting the schema line left every test green."""
+    result = _measure(tree, Backend(_by_text))
+    assert result["schema"] == "recall-encoder-distinctness-v1"
