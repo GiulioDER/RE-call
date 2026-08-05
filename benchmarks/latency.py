@@ -29,6 +29,7 @@ Run from the repo root, on an idle machine:
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import random
@@ -111,8 +112,35 @@ def _run_arm(
         # `MemorySystem` is deliberately three members, and `RecallSystem` has nothing to release
         # — it holds a DSN string, not a connection.
         close = getattr(system, "close", None)
-        if callable(close):
-            close()
+        try:
+            if callable(close):
+                close()
+        finally:
+            # Releasing handles is not reclaiming memory, and this module is the one place that
+            # difference is measurable. Both arms hold an embedder inside a REFERENCE CYCLE, so
+            # dropping the last reference frees the wrapper and leaves the weights: measured
+            # against the real class, dropping mem0's `HuggingFaceEmbedding` keeps its
+            # `SentenceTransformer` (~133MB) alive until a collection runs, and
+            # `RecallSystem._embedder` is abandoned the same way. `main` times the arms
+            # sequentially in one process, so without this arm 2 is measured on a machine still
+            # holding arm 1's model, and the comparison this module exists to produce is between
+            # an arm that ran clean and one that did not.
+            #
+            # `del` BOTH names first, and that is the whole trick rather than a tidy-up. While
+            # this frame is alive, `system` and the bound method in `close` are each a strong
+            # reference, so the arm is still REACHABLE and a collection here frees nothing.
+            # Measured: with both bound, `gc.collect()` returns 0 and the arm stays alive; with
+            # only `system` deleted it still returns without freeing the arm, because the bound
+            # method pins it independently; with both deleted the cycle goes.
+            #
+            # HERE and not in `Mem0System.close`: a library teardown should not run a full
+            # collection to flatter a benchmark, and `RecallSystem` has no `close` at all yet
+            # holds an embedder just the same. Bare `gc.collect()` is a full collection; a
+            # generational one would skip a model already promoted out of the young generations.
+            # The cost is single-digit milliseconds, once per arm, outside every measured region:
+            # `ingest_secs` and `retrieve_ms` are both complete before `finally` runs.
+            del close, system
+            gc.collect()
 
 
 def main(argv: list[str] | None = None) -> int:
