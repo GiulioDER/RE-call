@@ -179,7 +179,7 @@ def record_from_dict(payload: Mapping[str, Any]) -> QuestionRecord:
             f"closed — an adapter that needs a new field must add it to RECORD_FIELDS, where "
             f"every other adapter and the aggregator can see it."
         )
-    return QuestionRecord(
+    record = QuestionRecord(
         question_id=payload["question_id"],
         corpus=payload["corpus"],
         expected_relevance_labels=tuple(payload["expected_relevance_labels"]),
@@ -197,6 +197,19 @@ def record_from_dict(payload: Mapping[str, Any]) -> QuestionRecord:
         input_hash=payload["input_hash"],
         output_hash=payload["output_hash"],
     )
+    # RECOMPUTED, not trusted. `build_record`'s docstring says a self-reported digest that nobody
+    # recomputes is decoration, and until this check existed that is exactly what `output_hash`
+    # was on the read path: the manifest was tamper-evident and the EVIDENCE was not. Measured on
+    # this code: editing `retrieved_chunk_ids` in ten baseline rows, leaving their `output_hash`
+    # untouched, turned the same inputs from `promoted=false` into `promoted=true`.
+    actual = output_digest(**{field: getattr(record, field) for field in _HASHED_FIELDS})
+    if actual != record.output_hash:
+        raise ValueError(
+            f"{record.corpus}/{record.question_id}: recomputed output hash {actual} does not "
+            f"match the recorded {record.output_hash}. This row has been edited since it was "
+            f"scored; re-run the arm rather than gating on it."
+        )
+    return record
 
 
 def output_digest(

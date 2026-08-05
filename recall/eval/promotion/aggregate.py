@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -71,6 +71,9 @@ SECONDARY_CUTOFFS = (1, 20)
 #: `ok` counts as trusted). So a record whose verdict is in this set is precisely the failure
 #: `superseded_trust_rate` names: a stale memory presented as the answer rather than withheld.
 _STALE = frozenset({"superseded", "expired"})
+
+#: The DEGRADED-mode verdict. Not a weaker `ok`: it says the trust gate never ran.
+_DEGRADED = "unverified"
 
 
 class UnpairedArms(ValueError):
@@ -244,11 +247,20 @@ def build_safety(records: Sequence[QuestionRecord], *, arm: str) -> SafetyMetric
         not record.abstained for record in records if not record.answerable
     ]
     answerable_abstained = [record.abstained for record in records if record.answerable]
+    # NOT MEASURED, rather than 0.0, when the arm ran degraded. `recall/trust.py` overwrites
+    # EVERY hit's verdict with `unverified` in development mode — after `evaluate` has computed
+    # the real one — so a superseded hit and a clean one leave identical rows. Reporting 0.0 there
+    # would SATISFY the gate's zero-tolerance check by never having measured it.
+    #
+    # `None` rather than an exception, deliberately, matching `latency_p95_ms`: an unmeasured
+    # input should produce a DECISION that says so and blocks, not a crash. An operator needs the
+    # artifact naming what was missing far more than they need a traceback.
+    degraded = bool(records) and all(record.trust_verdict == _DEGRADED for record in records)
     stale_trusted = [record.trust_verdict in _STALE for record in records]
     metrics = SafetyMetrics(
         false_confidence=gap_false_confident_rate(unanswerable_confident),
         false_abstention=false_abstain_rate(answerable_abstained),
-        superseded_trust_rate=superseded_trust_rate(stale_trusted),
+        superseded_trust_rate=None if degraded else superseded_trust_rate(stale_trusted),
     )
     nan_fields = [
         name
@@ -257,7 +269,9 @@ def build_safety(records: Sequence[QuestionRecord], *, arm: str) -> SafetyMetric
             ("false_abstention", metrics.false_abstention),
             ("superseded_trust_rate", metrics.superseded_trust_rate),
         )
-        if math.isnan(value)
+        # `None` is NOT MEASURED and is handled by the gate as a failure; only NaN is the silent
+        # case this refusal exists for.
+        if value is not None and math.isnan(value)
     ]
     if nan_fields:
         raise ValueError(
@@ -270,37 +284,60 @@ def build_safety(records: Sequence[QuestionRecord], *, arm: str) -> SafetyMetric
 
 
 def secondary_metrics(records: Sequence[QuestionRecord]) -> SecondaryMetrics:
-    answerable = [record for record in records if record.answerable]
-    unanswerable = [record for record in records if not record.answerable]
-    latencies = [record.total_ms for record in records]
+    """Diagnostics beside the decision, MACRO-averaged over corpora.
+
+    Unweighted mean of per-corpus means, not a pooled mean over questions. An earlier version
+    pooled, which put a question-count-weighted figure in the same document as a headline
+    `macro_hit5_delta` this repository defines as the unweighted mean over corpora — measured on a
+    two-corpus fixture, the two disagreed by a factor of 2.2 with nothing naming the weighting.
+    That is the AUD-1 finding again, one block lower in the same artifact.
+
+    Latency is the exception and stays pooled: a p95 is a statement about the request distribution
+    the harness actually issued, and averaging per-corpus percentiles would describe no run.
+    """
+    by_corpus: dict[str, list[QuestionRecord]] = {}
+    for record in records:
+        by_corpus.setdefault(record.corpus, []).append(record)
 
     def _mean(values: list[float]) -> float:
         return sum(values) / len(values) if values else float("nan")
 
+    def _macro(per_record: "Callable[[QuestionRecord], float]", *, answerable: bool) -> float:
+        """Mean over corpora of the mean over that corpus's questions."""
+        per_corpus = [
+            _mean([per_record(record) for record in group if record.answerable == answerable])
+            for group in by_corpus.values()
+        ]
+        present = [value for value in per_corpus if not math.isnan(value)]
+        return _mean(present)
+
+    answerable = [record for record in records if record.answerable]
+    unanswerable = [record for record in records if not record.answerable]
+    latencies = [record.total_ms for record in records]
     return SecondaryMetrics(
-        hit_at_1=_mean([_hit_at(record, 1) for record in answerable]),
-        hit_at_5=_mean([_hit_at(record, PRIMARY_K) for record in answerable]),
-        hit_at_20=_mean([_hit_at(record, 20) for record in answerable]),
-        ndcg_at_5=_mean(
-            [
-                ndcg_at_k(
-                    list(record.retrieved_chunk_ids),
-                    list(record.expected_relevance_labels),
-                    PRIMARY_K,
-                )
-                for record in answerable
-            ]
+        hit_at_1=_macro(lambda record: _hit_at(record, 1), answerable=True),
+        hit_at_5=_macro(lambda record: _hit_at(record, PRIMARY_K), answerable=True),
+        hit_at_20=_macro(lambda record: _hit_at(record, 20), answerable=True),
+        ndcg_at_5=_macro(
+            lambda record: ndcg_at_k(
+                list(record.retrieved_chunk_ids),
+                list(record.expected_relevance_labels),
+                PRIMARY_K,
+            ),
+            answerable=True,
         ),
-        mrr=_mean(
-            [
-                mrr(list(record.retrieved_chunk_ids), list(record.expected_relevance_labels))
-                for record in answerable
-            ]
+        mrr=_macro(
+            lambda record: mrr(
+                list(record.retrieved_chunk_ids), list(record.expected_relevance_labels)
+            ),
+            answerable=True,
         ),
-        false_confidence=gap_false_confident_rate(
-            [not record.abstained for record in unanswerable]
+        false_confidence=_macro(
+            lambda record: 0.0 if record.abstained else 1.0, answerable=False
         ),
-        false_abstention=false_abstain_rate([record.abstained for record in answerable]),
+        false_abstention=_macro(
+            lambda record: 1.0 if record.abstained else 0.0, answerable=True
+        ),
         latency_p50_ms=_percentile(latencies, 0.50),
         latency_p95_ms=_percentile(latencies, 0.95),
         n_answerable=len(answerable),
@@ -334,6 +371,39 @@ def build_gate_input(
     )
 
 
+def _arm_identity(records: Sequence[QuestionRecord], *, arm: str) -> dict[str, Any]:
+    """The configuration an arm's rows agree they were produced under.
+
+    Refuses an arm whose rows disagree, and stamps the result into the decision. Without this the
+    artifact named its arms only by the free-text `--baseline-label` a human typed, so a reader
+    could not tell whether the two arms differed in the way the label claimed, or at all.
+    """
+    identities = {
+        (
+            record.embedding_profile_id,
+            record.retrieval_profile,
+            record.generation,
+            record.candidate_pool,
+            record.reranking_status,
+        )
+        for record in records
+    }
+    if len(identities) != 1:
+        raise UnpairedArms(
+            f"{arm}: its rows were produced under {len(identities)} different configurations "
+            f"{sorted(identities)}. An arm is one configuration; a ledger holding several cannot "
+            f"be published as one."
+        )
+    profile, retrieval, generation, pool, reranking = identities.pop()
+    return {
+        "embedding_profile_id": profile,
+        "retrieval_profile": retrieval,
+        "generation": generation,
+        "candidate_pool": pool,
+        "reranking_status": reranking,
+    }
+
+
 def _verdict_counts(records: Sequence[QuestionRecord]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for record in records:
@@ -341,7 +411,7 @@ def _verdict_counts(records: Sequence[QuestionRecord]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def _safety_dict(metrics: SafetyMetrics) -> dict[str, float]:
+def _safety_dict(metrics: SafetyMetrics) -> dict[str, float | None]:
     return {
         "false_confidence": metrics.false_confidence,
         "false_abstention": metrics.false_abstention,
@@ -375,6 +445,7 @@ def decision_document(
     baseline_records: Sequence[QuestionRecord],
     candidate_records: Sequence[QuestionRecord],
     latency_status: str,
+    n_manifest_questions: int,
 ) -> dict[str, Any]:
     """The machine-readable promotion decision.
 
@@ -398,9 +469,23 @@ def decision_document(
         "failures": list(decision.failures),
         "latency_status": latency_status,
         "frozen_manifest_digest": manifest_digest,
-        "arms": {"baseline": baseline_label, "candidate": candidate_label},
+        "arms": {
+            "baseline": {
+                "label": baseline_label,
+                **_arm_identity(baseline_records, arm="baseline"),
+            },
+            "candidate": {
+                "label": candidate_label,
+                **_arm_identity(candidate_records, arm="candidate"),
+            },
+        },
         "corpora": corpora,
+        # Both counts, because they answer different questions. `n_paired_questions` is what the
+        # gate actually tested; `n_manifest_questions` is what the cited digest covers. An earlier
+        # version recorded only the first, so a run whose question set had silently shrunk was
+        # indistinguishable in the artifact from one that gated the whole manifest.
         "n_paired_questions": len(gate.outcomes),
+        "n_manifest_questions": n_manifest_questions,
         "primary": {
             "metric": "hit@5",
             "macro_hit5_delta": decision.macro_hit5_delta,
@@ -475,11 +560,24 @@ def decide(
         baseline_records=baseline,
         candidate_records=candidate,
         latency_status="PENDING" if certified_latency_p95_ms is None else "MEASURED",
+        n_manifest_questions=len(frozen),
     )
     return decision, document
 
 
 def write_decision(path: Path, document: dict[str, Any]) -> None:
+    """Write the decision artifact, refusing a document that is not valid JSON.
+
+    `allow_nan=False`: `json.dumps` otherwise emits a bare `NaN` token, which no JSON parser is
+    required to accept, into a file this repository COMMITS. `records._jsonable` solves the same
+    problem for one row by rendering NaN as `"nan"`; here the right answer is to fail at write
+    time, because a NaN reaching the decision means a metric was never measured and the artifact
+    should not exist rather than quietly say so in a token half the ecosystem rejects.
+    """
+    # Rendered before the file is opened, so a refusal cannot leave a truncated artifact behind.
+    rendered = json.dumps(
+        document, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+        handle.write(rendered + "\n")

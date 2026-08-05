@@ -1,6 +1,6 @@
 {
   "_provenance": {
-    "generated_at": "2026-08-05T13:28:50+00:00",
+    "generated_at": "2026-08-05T13:54:36+00:00",
     "stack": {
       "fastembed": "0.8.0",
       "onnxruntime": "1.27.0",
@@ -11,8 +11,22 @@
     "status": "current"
   },
   "arms": {
-    "baseline": "bge-small-symmetric-v1, legacy retrieval profile (baseline)",
-    "candidate": "bge-small-symmetric-v1, legacy retrieval profile (candidate, byte-identical configuration)"
+    "baseline": {
+      "candidate_pool": 20,
+      "embedding_profile_id": "bge-small-symmetric-v1",
+      "generation": "legacy",
+      "label": "bge-small-symmetric-v1, legacy retrieval profile (baseline)",
+      "reranking_status": "not_configured",
+      "retrieval_profile": "legacy"
+    },
+    "candidate": {
+      "candidate_pool": 20,
+      "embedding_profile_id": "bge-small-symmetric-v1",
+      "generation": "legacy",
+      "label": "bge-small-symmetric-v1, legacy retrieval profile (candidate, byte-identical configuration)",
+      "reranking_status": "not_configured",
+      "retrieval_profile": "legacy"
+    }
   },
   "corpora": [
     "labelled"
@@ -20,6 +34,7 @@
   "failures": [
     "macro paired hit@5 bootstrap interval does not clear zero",
     "no improving corpus has Holm corrected paired significance below 0.05",
+    "superseded trust rate was NOT MEASURED — the candidate arm ran under a degraded trust policy, so every verdict is 'unverified' and a stale hit is indistinguishable from a clean one",
     "security verification is not green",
     "retrieval p95 latency is PENDING — no measurement from a reference host, so the latency budget could not be evaluated"
   ],
@@ -28,11 +43,12 @@
     "budget_ms": 250.0,
     "gate_input_p95_ms": null,
     "observed_diagnostic_only": {
-      "baseline_p95_ms": 71.81449999916367,
-      "candidate_p95_ms": 81.065900001704
+      "baseline_p95_ms": 54.33830000038142,
+      "candidate_p95_ms": 84.14350000020931
     }
   },
   "latency_status": "PENDING",
+  "n_manifest_questions": 25,
   "n_paired_questions": 14,
   "primary": {
     "bootstrap_interval": [
@@ -53,12 +69,12 @@
     "baseline": {
       "false_abstention": 0.0,
       "false_confidence": 1.0,
-      "superseded_trust_rate": 0.0
+      "superseded_trust_rate": null
     },
     "candidate": {
       "false_abstention": 0.0,
       "false_confidence": 1.0,
-      "superseded_trust_rate": 0.0
+      "superseded_trust_rate": null
     }
   },
   "schema": "recall-promotion-decision-v1",
@@ -69,8 +85,8 @@
       "hit_at_1": 1.0,
       "hit_at_20": 1.0,
       "hit_at_5": 1.0,
-      "latency_p50_ms": 50.56779999722494,
-      "latency_p95_ms": 71.81449999916367,
+      "latency_p50_ms": 34.440199997334275,
+      "latency_p95_ms": 54.33830000038142,
       "mrr": 1.0,
       "n_answerable": 14,
       "n_unanswerable": 11,
@@ -82,8 +98,8 @@
       "hit_at_1": 1.0,
       "hit_at_20": 1.0,
       "hit_at_5": 1.0,
-      "latency_p50_ms": 49.44949999844539,
-      "latency_p95_ms": 81.065900001704,
+      "latency_p50_ms": 47.61030000008759,
+      "latency_p95_ms": 84.14350000020931,
       "mrr": 1.0,
       "n_answerable": 14,
       "n_unanswerable": 11,

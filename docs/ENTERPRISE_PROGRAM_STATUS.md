@@ -30,8 +30,9 @@ this ran and the branch was merged onto it before the PR.
 | 7 | Latency PENDING must block promotion rather than pass silently | done, `latency_p95_ms: float \| None`; PENDING is a failure |
 | 8 | Prove it end to end on a small corpus with baseline == candidate | done, `results/promotion/decision.null-difference.json` |
 | 9 | Prove every new test can fail | done, 29 of 29 mutations turned their named test red |
+| 10 | Audit this session's own work | done, DEEP tier, 13 fixes, 10 of 10 red→green proofs verified |
 
-74 new tests across five files. `ruff check .` clean on the CI-pinned ruff (local 0.16 reports 420
+97 new tests across six files. `ruff check .` clean on the CI-pinned ruff (local 0.16 reports 420
 errors on untouched code; the pin is `>=0.5,<0.16`, and 0.15.22 is clean). `mypy` clean on the new
 modules.
 
@@ -72,17 +73,27 @@ branch firing rather than sharing a fixture that would have failed anyway.
 **End to end on the labelled corpus, baseline == candidate.** 25 questions (14 answerable, 11
 unanswerable), 22 documents, `bge-small-symmetric-v1`, both arms the same configuration. All 25 rows
 share an `output_hash` across the two arms, so the difference is null by construction rather than by
-measurement. The gate refused on four counts:
+measurement. The gate refused on five counts:
 
 | Failure | |
 |---|---|
 | macro paired hit@5 bootstrap interval does not clear zero | delta exactly 0.0, interval [0.0, 0.0] |
 | no improving corpus has Holm corrected paired significance below 0.05 | Holm p = 1.0 |
+| **superseded trust rate was NOT MEASURED** | both arms degraded; `superseded_trust_rate: null` |
 | security verification is not green | `--security-green` defaults to False; unverified is not green |
 | **retrieval p95 latency is PENDING** | `gate_input_p95_ms: null` |
 
 Removing only the PENDING condition from an otherwise-promotable fixture leaves exactly one failure,
 which is how the test shows that PENDING is what fired and not something else about the fixture.
+
+The third row is the one this session's audit added, and it is the more consequential of the two
+"not measured" failures. `recall/trust.py` overwrites **every** verdict with `unverified` in
+degraded mode, *after* `evaluate` has computed the real one, so a superseded hit and a clean one
+leave identical rows. The first version of this harness therefore computed
+`superseded_trust_rate = 0.0` for a degraded arm and **satisfied** the gate's zero-tolerance check
+by never having measured it. It is now `None`, which blocks, on the same pattern as a PENDING
+latency: an unmeasured input produces a decision that names what was missing rather than a
+traceback or a pass.
 
 **Two defects that only a real run could surface.** The harness was written, unit-tested green, and
 then run for the first time against a live store:
@@ -98,6 +109,45 @@ then run for the first time against a live store:
    with **no inherited default**, since a default is how a new adapter inherits a comparison that is
    silently wrong for its corpus. The detector is `aggregate.VacuousArm`, because a fix with no
    detector only covers the mistake that was already made. Both are mutation-proven.
+
+### The audit of this session's own work, and what it found
+
+The commit went through the tiered CCA pipeline at DEEP (forced: `RUN_NUM` and `RUN_STAKES` both
+fire on a diff full of rates and thresholds). Four auditors, 36 raw findings, 13 fixed. Every
+deterministic backend was available for Python (`definedness`, `nullability`, `taint`, `type`,
+`clock_leak`).
+
+**Six of the findings are the same failure class this harness was built to refuse, found in the
+harness.** Each was proven by executing the shipped code, not by reading it:
+
+| Finding | The gate could... |
+|---|---|
+| `cmd_decide` narrowed the frozen manifest to the corpora present in the BASELINE ledger | ...return `promoted=true` on a question set that shrank after the freeze, stamped with the full manifest's digest. Measured: the same two-corpus manifest returned `promoted=false` citing a regression on the second corpus, and `promoted=true` with that corpus absent from both ledgers |
+| `latency_p95_ms` was checked only against `None` | ...pass the budget on a NaN, because `nan > budget` is False, and report `latency_status: MEASURED`. NaN is reachable from this package's own `_percentile` over an empty sample |
+| `record_from_dict` copied `output_hash` instead of recomputing it | ...be flipped by editing ten rows of a ledger. The manifest was tamper-evident; the EVIDENCE was not. Measured: `promoted=false` → `promoted=true` |
+| a wholly degraded arm computed `superseded_trust_rate = 0.0` | ...satisfy a zero-tolerance safety check by never having measured it |
+| `artifact_stem` omitted `retrieval_profile`, `generation`, `candidate_pool` | ...compare a ledger with itself: two arms differing only in `--retrieval-profile` produced the identical filename, the second resumed the first's rows and scored nothing |
+| `--no-resume` read nothing but still appended | ...gate on the rows the run was told to discard, since `read_ledger` keeps the FIRST occurrence of an id |
+
+Two of those sat directly under docstrings claiming the opposite. `artifact_stem` said it carried
+"the COMPLETE immutable identity" while carrying three of six fields, and the `reranking_status`
+comment said a configured-but-failed reranker "is visible here" when `HybridRetriever` sets
+`reranking_ran` *before* calling the reranker, making `"failed"` unreachable. The first is fixed;
+the second is a comment correction, because making it observable needs a change in the retriever
+and that is a different diff. **A comment that claims more than the code is the same defect as a
+guard that cannot fire, and this session produced both while writing about both.**
+
+Also fixed: `--corpus mtrag` matched nothing (the adapter stamps `mtrag:<domain>`, the CLI filtered
+on equality, so a wired corpus was unrunnable); `ArmConfig.generation` was recorded on every row
+and never passed to `trusted_search`, so the evidence named a generation the search never used;
+`secondary_metrics` pooled across corpora while the headline is macro (a factor-2.2 disagreement
+inside one document, the AUD-1 finding again); `write_decision` allowed a bare `NaN` token into a
+committed artifact; the decision named its arms only by the free-text label a human typed; and
+`--dsn` was required, putting the database password into argv.
+
+Ten red→green proofs, each verified against the pre-fix code by
+`cca_tautology_check verify`: **10 of 10 RED**. Each carries a control test asserting the
+behaviour that did NOT change, because a refusal that swallows the passing case is not a fix.
 
 **Mutation sweep: 29 of 29.** Each new guard was disabled in the source and its named test asserted
 to go red. One survived the first pass, and it is the instructive one: deleting the
@@ -147,7 +197,7 @@ unifying it would rewrite a published artifact format for no resume benefit.
 | **No latency reference host.** VPS2 has 12 cores under a permanent load average near 8 from unrelated live production. | External dependency. Do not work around it. | Latency is **PENDING**; promotion blocked on latency grounds. Quality and safety gates still run. | **now enforced in code**: `latency_p95_ms=None` is a gate FAILURE, and the harness will not supply a number without `--certified-latency-p95-ms`. Nothing was measured on VPS2 this session |
 | **No production corpus.** | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
 | **No approved local generator confirmed.** | Open | The generator-neutral evidence path stays unexercised end to end. | unchanged |
-| **No generation-bound certified calibration has ever been produced end to end.** | Open, NEW | Every gate run is degraded (`unverified` verdicts), so no gate run measures the trust layer. | newly identified this session |
+| **No generation-bound certified calibration has ever been produced end to end.** | Open, NEW | Every gate run is degraded, so `superseded_trust_rate` is **NOT MEASURED** and blocks promotion on its own. | newly identified this session, and **enforced in code** after the audit: a degraded arm reports `None`, not `0.0` |
 
 ### What the next session should start with
 
@@ -159,9 +209,13 @@ doc tells the operator to make the MIGRATION role.
 
 Then, in the promotion lane specifically, and in this order:
 
-1. **A generation-bound certified calibration, end to end.** Until that exists, every decision this
-   harness can produce is degraded, and the safety half of the gate measures nothing. This is the
-   single largest gap the session opened.
+1. **A generation-bound certified calibration, end to end.** This is now a hard blocker, not a
+   quality concern: `superseded_trust_rate` comes back NOT MEASURED for a degraded arm and fails
+   the gate by itself, so **no promotion decision can be green until a trusted run is possible**.
+   `recall/trust.py` overwrites every verdict with `unverified` in degraded mode, so the
+   information is destroyed at the source and no amount of care in the harness recovers it. The
+   path is `CalibrationRepository.calibrate` → `publish` against a built generation; nothing wires
+   it end to end today.
 2. **Confirm one external corpus's `label_kind` against a live index** — `locomo` is the cheapest,
    since `recall/eval/locomo.py` already writes the documents. One confirmed mapping turns four
    derived-by-reading claims into three.

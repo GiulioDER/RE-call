@@ -59,15 +59,22 @@ them is an artifact in this file's sense:
 
 | artifact | backs |
 |---|---|
-| `promotion/decision.null-difference.json` | the end-to-end proof that the producer works and that the gate refuses a null difference. Baseline and candidate are the SAME configuration; all 25 rows share an `output_hash` across the two arms, so the delta is zero by construction rather than by measurement. `promoted: false` on four counts: the bootstrap interval does not clear zero, no corpus reaches Holm-corrected significance, security is not green (unverified is not green), and **latency is PENDING** |
+| `promotion/decision.null-difference.json` | the end-to-end proof that the producer works and that the gate refuses a null difference. Baseline and candidate are the SAME configuration; all 25 rows share an `output_hash` across the two arms, so the delta is zero by construction rather than by measurement. `promoted: false` on **five** counts: the bootstrap interval does not clear zero, no corpus reaches Holm-corrected significance, the superseded trust rate was NOT MEASURED, security is not green (unverified is not green), and **latency is PENDING** |
 
-⚠️ **This run is DEGRADED, and the artifact says so.** `trust_verdicts` reads `{"unverified": 25}`
-for both arms: a plain store has no generation-bound certified calibration, so it ran under
-`--trust-policy development` and the trust gate never ran. `unverified` carries no trust claim at
-all (`recall/types.py`), which is why the artifact's `false_confidence: 1.00` is a fact about a
-degraded system and **not** a measurement of this library's abstention. The two arms stay
-comparable to each other; neither is comparable to a trusted run. A strict-mode run needs a
-generation-bound certified calibration, which no session has wired end to end yet.
+⚠️ **This run is DEGRADED, and the artifact says so twice.** `trust_verdicts` reads
+`{"unverified": 25}` for both arms: a plain store has no generation-bound certified calibration,
+so it ran under `--trust-policy development`. `recall/trust.py` overwrites **every** verdict with
+`unverified` in that mode, *after* the trust layer has computed the real one, so a superseded hit
+and a clean one leave identical rows. That is why `superseded_trust_rate` is `null` rather than
+`0.0`: a rate of zero would have satisfied the gate's zero-tolerance check by never having
+measured it. The same reason makes `false_confidence: 1.00` a fact about a degraded system and
+**not** a measurement of this library's abstention. The two arms stay comparable to each other;
+neither is comparable to a trusted run. A strict-mode run needs a generation-bound certified
+calibration, which no session has wired end to end yet.
+
+`n_manifest_questions: 25` beside `n_paired_questions: 14` is the other thing to read: the gate
+tested the 14 answerable questions and the digest covers all 25, and both numbers are recorded so
+a reader never has to assume they are the same.
 
 ⚠️ **`latency` is PENDING, not measured.** `gate_input_p95_ms` is `null`, and that BLOCKS
 promotion. The figures under `observed_diagnostic_only` come from a developer laptop and describe
