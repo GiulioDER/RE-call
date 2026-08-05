@@ -129,6 +129,58 @@ a platform whose glob never reaches the escape. Note for the next reader: on Pyt
 `Path.glob("**/*.md")` did **not** recurse into the directory symlink, contradicting the version
 range in `_confined_to`'s docstring. The file-symlink escape is what reproduces.
 
+### The audit of this session's own work, and what it found
+
+The commit went through the tiered CCA pipeline at DEEP (forced: the diff touches erasure, tenant
+isolation and migration). Ten auditors, 89 raw findings, 14 fixed in `bb24ab8`, the rest reported.
+`cca_checks` IS installed in this checkout, so `python`'s deterministic backend was available
+(definedness, nullability, taint, type, clock_leak) and one finding carries a `hypothesis`
+artifact rather than an LLM verdict.
+
+**Four auditors independently found the same Critical, in code written and reviewed earlier the
+same session.** `forget_memory` gated the outbox scrub on `to_delete`, which resolves from the
+CHUNK TABLES, so the scrub could not fire in the one state it was written for: a crash between
+`append_event` and the two writes leaves the payload as the only copy with both tables empty.
+Erasure answered "no matching source(s) found" and the next replay wrote the text back into both
+generations.
+
+The mutation proof is the part to carry forward:
+
+| | the new test | the pre-existing erasure test |
+|---|---|---|
+| pre-fix gate restored | **FAILS** | **passes** |
+| fixed | passes | passes |
+
+The old test seeded both chunk tables before creating the crash-shaped event, so `to_delete` was
+never empty and it passed with or without the gate. It is the balanced fixture that cannot
+discriminate, which is why the defect survived review, and it is the third instance of that class
+recorded in this repository.
+
+**The second Critical was a comment.** `erase_sources_from_pending` claimed its `FOR UPDATE`
+excluded a concurrent `replay_pending`. It cannot: `pending_events` is a plain SELECT, and under
+READ COMMITTED a plain SELECT is never blocked by a row lock. A guard that read as protection and
+could not fire, written the same day as the entry above warning about exactly that. Both paths now
+take a shared per-tenant advisory lock.
+
+Also fixed: `retire_generation` skipped its only check when the tenant had no route row (a typo'd
+`--tenant` retired unconditionally and printed success); `enterprise_cli._open` had no state check,
+so `replay` would WRITE into a retired generation, which is precisely what `retire_generation`
+delegated its safety to; the identifier bound was 63 when derived names add up to 17 bytes, so a
+legal table produced a truncated index and readiness then reported a missing index for one that
+exists (confirmed by a falsifying example at n=47); a control plane ahead of the package was fatal,
+which would refuse every older replica after a forward migration; and readiness reads
+`recall_schema_versions` with the serving credential while no GRANT for it shipped anywhere, so a
+least-privilege install would not have booted.
+
+**Three comments in the first commit claimed more than the code did, and were corrected rather
+than kept.** The calibration identity branch is still unreachable from the server, because
+`load_for` filters on the embedder and stamps its argument onto what it returns;
+`validate_table_name` is not yet the single chokepoint, since `PgVectorStore.__init__` and
+`recall.schema._validate_target` still use `str.isidentifier()`; and the allowlist does not refuse
+unquoted SQL keywords. Tightening the two remaining gates is deliberately deferred: it changes
+behaviour for tables that already exist and needs a compatibility decision this change does not
+make.
+
 ### Corrections to the inherited snapshot
 
 - **`check_enterprise_readiness`'s calibration branch is now reachable, not deleted.** The gap
@@ -171,12 +223,31 @@ skips with a stated reason, and three are the `test_bench_systems` cases above.
 
 ### What the next session should start with
 
-Backlog session 4, making the documentation true, is now the cheapest remaining item and two of
-its five entries were done here (the second ledger, and the `ENTERPRISE_RETRIEVAL` route-fallback
-wording). What is left of it: the `RECALL_DSN` contradiction between
-`docs/ENTERPRISE_RETRIEVAL.md:13` and `docs/MIGRATIONS.md:12` (this session did **not** touch it,
-and `recall/enterprise_cli.py:29` still reads `RECALL_DSN`), `README.md:628-632` contradicting
-`README.md:205`, the `CHANGELOG.md` entry, and the Qwen3 record.
+Backlog session 4, making the documentation true, and it is now **more** urgent than it was, not
+less. Two of its five entries were done here (the second ledger, and the `ENTERPRISE_RETRIEVAL`
+route-fallback wording), but the audit showed this session **widened** the `RECALL_DSN`
+contradiction rather than leaving it alone: `docs/MIGRATIONS.md:46` now documents `RECALL_DSN` as
+the credential that applies control-plane migrations, 34 lines below line 12 calling it the
+deprecated fallback for the SERVING DSN, so the contradiction moved inside one file. Five new
+subcommands hang off `enterprise_cli._dsn()`, which reads only `RECALL_DSN`, and four of them
+(`readiness`, `status`, `parity`, `replay`) are serving-side reads that need no DDL privilege.
+
+The sharpest consequence, worth fixing first: `recall-enterprise readiness <tenant>` reports "row
+level security is ineffective for the runtime database role" based on the role the CLI connected
+as, which the enterprise doc tells the operator to make the MIGRATION role. A green readiness run
+currently certifies a credential that may never serve a request.
+
+Then the rest of session 4: `README.md:628-632` contradicting `README.md:205`, the `CHANGELOG.md`
+entry (every comparable feature commit added one; this one did not), and the Qwen3 record.
+
+Carried forward from the audit, unfixed and recorded rather than lost: the two remaining weak
+identifier gates (`PgVectorStore.__init__`, `recall.schema._validate_target`); no scan or preflight
+for registry rows that the tightened allowlist would now reject at read time, which would fail a
+boot and also crash the `status` command meant to diagnose it; `erase_sources_from_pending` does
+not branch on `operation_kind`, so a `forget`-kind event would be voided without executing its
+delete (latent, no producer exists); the test probe role is left behind on the target cluster with
+no teardown; and CI runs the new enterprise tests on PostgreSQL 16 only, while the matrix job that
+covers 17 has a fixed file list that was not extended.
 
 After that, backlog session 10: the promotion gate has still only ever been observed to fail.
 
