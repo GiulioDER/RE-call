@@ -9,6 +9,7 @@ restating whatever the shipped dataset happens to contain.
 from __future__ import annotations
 
 import json
+import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -533,6 +534,79 @@ def test_a_failing_close_cannot_turn_a_finished_run_into_a_failure(
     assert code == 0                       # the run succeeded, and says so
     assert any(out.glob("*.json"))         # with its artifact intact
     assert any(out.glob("*.partial.jsonl"))
+
+
+def test_a_failing_close_cannot_fail_the_run_under_warnings_as_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same guarantee, under `-W error`, where the report itself becomes a raise.
+
+    This needs its own test because `pytest.warns` installs `catch_warnings` plus
+    `simplefilter("always")`, so it NEUTRALISES warnings-as-errors inside its block. The test
+    above therefore cannot see this failure mode however it is run, including under `-W error`:
+    the one filter it is closest to is the one it suppresses.
+    """
+    from benchmarks.systems import RecallSystem
+
+    out = tmp_path / "results"
+
+    class _Unprintable(RuntimeError):
+        def __repr__(self) -> str:
+            raise ValueError("repr exploded")
+
+        def __str__(self) -> str:
+            raise ValueError("str exploded")
+
+    class _UnclosableSystem(RecallSystem):
+        name = "recall"
+
+        def ingest(self, conversation: dict[str, Any]) -> None:
+            return None
+
+        def retrieve(self, question: str) -> str:
+            return "ctx"
+
+        def ablation_preflight(
+            self, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+        ) -> list[dict[str, Any]]:
+            return []
+
+        def close(self) -> None:
+            # Both escape routes at once: the handler warns (which raises under `-W error`) and
+            # interpolates the exception (whose `__repr__` raises).
+            raise _Unprintable()
+
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str,
+        embedder: str = "fastembed", **_extra: object,
+    ) -> MemorySystem:
+        return _UnclosableSystem("postgresql://x/y", embedder_name="hashing", k=k)
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    data = _write_fixture(tmp_path)
+    with warnings.catch_warnings():
+        # Narrow, not `simplefilter("error")`: turning EVERY warning into an error would fail this
+        # test on any unrelated dependency DeprecationWarning raised anywhere in the run, and that
+        # failure would read as a regression of the teardown guard. Only the report itself is
+        # promoted, which is the property under test.
+        warnings.simplefilter("ignore")
+        warnings.filterwarnings("error", message="benchmarks.run: closing", category=UserWarning)
+        code = main(
+            ["--arm", "recall", "--data", str(data), "--conversations", "2", "--out", str(out)],
+            now=_NOW,
+        )
+
+    assert code == 0
+    assert any(out.glob("*.json"))
+    # The run surviving is half the contract; the breadcrumb surviving is the other half. Without
+    # this, replacing the stderr fallback with a bare `pass` — the thing the helper's docstring
+    # calls unacceptable — leaves the whole suite green.
+    err = capsys.readouterr().err
+    assert "closing _UnclosableSystem failed" in err
+    assert "<unprintable _Unprintable>" in err  # and the repr fallback produced the detail
 
 
 def test_main_does_not_require_the_system_to_be_closable(

@@ -820,7 +820,7 @@ def test_the_attribute_path_close_walks_still_exists_in_mem0() -> None:
     assert re.search(r"self\.client\s*=", qdrant), "mem0's Qdrant store no longer exposes `client`"
 
 
-@pytest.mark.filterwarnings("ignore::ResourceWarning")
+@pytest.mark.filterwarnings(r"ignore:unclosed file.*\.lock:ResourceWarning")
 def test_close_releases_the_real_qdrant_storage_lock(tmp_path: Path) -> None:
     """The end-to-end proof, against the real lock rather than a mock of it.
 
@@ -832,11 +832,13 @@ def test_close_releases_the_real_qdrant_storage_lock(tmp_path: Path) -> None:
     Uses a real `QdrantClient` but NOT a real `mem0.Memory`, deliberately: building one loads the
     HuggingFace embedder (~56s here). The lock is the thing under test, and it is real.
 
-    The `ResourceWarning` filter is for an UPSTREAM leak, not ours, and is scoped to this one test
-    rather than the module so it cannot hide anything else. qdrant-client opens the `.lock` file
-    and only then attempts to lock it, so the constructor that loses the race raises without
-    closing its own handle. Verified in isolation: a plain open/close cycle is clean under
-    `-W error`, and the warning appears exactly at the contention assertion below.
+    The `ResourceWarning` filter is for an UPSTREAM leak, not ours. It is matched on the `.lock`
+    message rather than on the category, and scoped to this one test rather than the module, so a
+    leak of any OTHER handle here still fails a `-W error` run: a blanket `ignore::ResourceWarning`
+    would have made this test the one place a real leak could hide. qdrant-client opens the `.lock`
+    file and only then attempts to lock it, so the constructor that loses the race below raises
+    without closing its own handle. Verified in isolation: a plain open/close cycle is clean under
+    `-W error`, and the warning appears exactly at the contention assertion.
     """
     qdrant_client = pytest.importorskip("qdrant_client")
     from benchmarks.systems import Mem0System
