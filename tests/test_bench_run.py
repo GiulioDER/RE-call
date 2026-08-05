@@ -637,15 +637,41 @@ def test_main_does_not_require_the_system_to_be_closable(
     data = _write_fixture(tmp_path)
     # Not merely "does not crash". Dropping the `getattr` guard while KEEPING the surrounding
     # try/except still returns 0, and every closeless arm would then report a teardown failure on
-    # every successful run. So assert the breadcrumb is ABSENT, on both channels it can use.
+    # every successful run. So assert the breadcrumb is ABSENT.
     #
-    # Note what does NOT work here: promoting that warning with `filterwarnings("error", ...)`.
-    # `_warn_teardown_failed` catches `BaseException` around its own `warnings.warn` precisely so
-    # that `-W error` cannot turn a diagnostic into a failed run, so an error-promoted warning is
-    # swallowed there and falls through to stderr. Verified by mutation: both close-guard mutants
-    # survive the promotion approach and are caught by this one.
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
+    # It is asserted on STDERR, and the promotion below is what puts it there. `_warn_teardown_failed`
+    # catches `BaseException` around its own `warnings.warn` — deliberately, so `-W error` cannot
+    # turn a diagnostic into a failed run — so promoting the warning does not raise out of `main`;
+    # it diverts the message to the helper's stderr fallback. Promotion and stderr are therefore
+    # one mechanism, not two, and checking either alone is checking half of it:
+    #
+    #   - promotion + `assert code == 0` alone: the mutant that keeps the try/except and drops
+    #     only the `getattr` guard SURVIVES, because the promoted warning is swallowed and nothing
+    #     observes it. (The cruder mutant, a bare `system.close()` with no try/except at all, is
+    #     caught either way: its AttributeError propagates straight out of `main`.)
+    #   - `record=True` + a recorded-warnings assert: works, but then the stderr channel is
+    #     unreachable by construction, so a companion stderr assert is inert and kills no mutant.
+    #
+    # This form has one live assertion that covers both a warn-based reporter (via the fallback)
+    # and any future one that writes stderr directly. Everything else stays ignored, so an
+    # unrelated warning cannot fail this test.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        warnings.filterwarnings("error", message="benchmarks.run: closing", category=UserWarning)
+
+        # POSITIVE CONTROL, before relying on the breadcrumb's absence. The arming above depends
+        # on two production details this test duplicates: the message prefix and the warning
+        # category. If either drifts, the promotion stops matching, the fallback is never reached,
+        # and the negative assert below passes VACUOUSLY — the test goes inert without going red,
+        # which is exactly the failure it was rewritten to escape. So prove the mechanism fires
+        # here, in this test, rather than trusting a neighbour to notice.
+        run_module._warn_teardown_failed(object(), RuntimeError("probe"))
+        armed = capsys.readouterr().err  # also drains, so the assert below sees only `main`
+        assert "benchmarks.run: closing" in armed, (
+            "the promotion is not armed: the message prefix or warning category has drifted, and "
+            "the absence assertion below would prove nothing"
+        )
+
         code = main(
             ["--arm", "recall", "--data", str(data), "--conversations", "2",
              "--out", str(tmp_path / "results")],
@@ -653,8 +679,6 @@ def test_main_does_not_require_the_system_to_be_closable(
         )
 
     assert code == 0
-    complaints = [w for w in caught if "benchmarks.run: closing" in str(w.message)]
-    assert not complaints, f"a closeless arm reported a teardown failure: {complaints}"
     assert "benchmarks.run: closing" not in capsys.readouterr().err
 
 
