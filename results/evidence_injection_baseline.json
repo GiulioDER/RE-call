@@ -1,0 +1,37 @@
+{
+  "_note": "Frozen adversarial baseline for the evidence prompt boundary. `escapes` may only SHRINK; `positive_control_escapes` may only GROW. `suite_digest` pins the payload, carrier and detector lists, so this file cannot be reconciled with an edited suite by accident. Regenerate with scripts/generate_evidence_injection_baseline.py.",
+  "_measures": "Whether corpus-controlled bytes can leave the delimited data region and reach the model's instruction channel. NOT whether a model is persuaded \u2014 that needs a generator, and none is approved for this program.",
+  "suite_digest": "6dc73a55263909ce2a40def8ad491d87e5521e9fe1b98ba0c9631770293e00bf",
+  "trials": 39,
+  "escapes": 0,
+  "injection_success_rate": 0.0,
+  "by_carrier": {
+    "filename": {
+      "trials": 13,
+      "escapes": 0,
+      "payload_verbatim": 2,
+      "payload_preserved": 13
+    },
+    "metadata": {
+      "trials": 13,
+      "escapes": 0,
+      "payload_verbatim": 0,
+      "payload_preserved": 0
+    },
+    "text": {
+      "trials": 13,
+      "escapes": 0,
+      "payload_verbatim": 2,
+      "payload_preserved": 13
+    }
+  },
+  "positive_control_escapes": 8,
+  "detectors": [
+    "in_system_prompt",
+    "delimiter_not_intact",
+    "bytes_outside_the_region",
+    "region_is_not_json",
+    "raw_control_byte",
+    "angle_bracket_inside_region"
+  ]
+}

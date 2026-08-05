@@ -9,6 +9,30 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
+- **The evidence boundary is reachable.** `recall/evidence.py` was complete and correct and
+  imported by nothing but its own test: absent from `recall/__init__.py`, wired into no surface.
+  `EvidenceItem`, `EvidenceBundle`, `AnswerEnvelope`, `EvidencePolicy`, `build_evidence_bundle`,
+  `render_evidence_prompt` and `validate_answer` are now exported from the package root, and the
+  boundary is reachable from all four integrations:
+
+  - `recall search --evidence` prints the bundle and the exact prompt it renders to, as JSON;
+  - a new read-only MCP tool, `recall_evidence`, returns the bundle plus the rendered system and
+    user messages and runs no generator — the client is the generator;
+  - `RecallRetriever.evidence()` / `.evidence_prompt()` on both the LangChain and the LlamaIndex
+    adapters, over the same injectable `search_fn`.
+
+  All four are additive: existing fields, metadata keys and tools are unchanged, and each of the
+  four carries a test asserting a frozen list of its pre-existing keys. The CLI listing also gains
+  the chunk id, the ordinal, `valid_from` and the embedding/retrieval/generation identity — the
+  three other surfaces already carried all five.
+
+- **`normalize_citations`, and `GenerationResult.citations_normalized`.** A generator that cites
+  the same chunk twice is redundant, not unsound, so `generate_from_evidence` now collapses
+  duplicates deterministically instead of discarding the answer. Normalisation is
+  first-occurrence ordered, idempotent and only ever subtractive, so it cannot mint an identifier
+  that then satisfies the citation check it feeds. `validate_answer` on its own is unchanged and
+  still reports a duplicate as an error.
+
 - **Subject-to-tenant binding for OIDC (`RECALL_OIDC_SUBJECT_TENANTS`).** The tenant allowlist
   bounds *which* tenants exist; it never bound *who* may name one, so any subject able to obtain a
   token from the issuer with the right audience reached every provisioned tenant. A bound subject

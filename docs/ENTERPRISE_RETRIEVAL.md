@@ -146,9 +146,41 @@ Run separate deployments when both profiles are required. Clients cannot select 
 
 ## Evidence integration
 
-Use `build_evidence_bundle`, `render_evidence_prompt`, and `validate_answer` from `recall.evidence`. `generate_from_evidence` is the optional orchestration helper. It never invokes its generator when retrieval abstains. The fixed system prompt contains no corpus controlled value. Evidence is JSON escaped inside the user data message, and successful answers require unique citations that resolve to supplied chunk IDs.
+Use `build_evidence_bundle`, `render_evidence_prompt`, and `validate_answer`. They are exported from the package root (`from recall import build_evidence_bundle`) as well as from `recall.evidence`. `generate_from_evidence` is the optional orchestration helper. It never invokes its generator when retrieval abstains. The fixed system prompt contains no corpus controlled value. Evidence is JSON escaped inside the user data message, and successful answers require citations that resolve to supplied chunk IDs.
 
 Validation is structural. It does not claim that a cited passage entails an answer.
+
+### What enters a bundle, and what never does
+
+Only `ok` verdicts. A DEGRADED result — the trust gate could not run, every verdict is `unverified`, and `abstained` is forced False — produces an EMPTY bundle with `reason_code="no_trusted_evidence"`, not an unjudged one. Retrieval order is preserved: no newest wins, no re-sort by score. There is no semantic deduplication, so two chunks with identical text remain two citable identifiers. There is no neighbour retrieval: the module holds no store and `build_evidence_bundle` takes no argument through which one could be supplied, so a passage that was not retrieved cannot appear.
+
+An abstained retrieval produces an empty bundle and bypasses the generator entirely — `generate_from_evidence` returns `insufficient_evidence=true` with `generator_invoked=False` without constructing or calling anything.
+
+### The prompt boundary
+
+`render_evidence_prompt` returns the module constant `SYSTEM_PROMPT` itself. There is no format string and no argument on that path, so there is no site at which a corpus controlled value could be interpolated. Every corpus byte lives inside `<evidence_data>…</evidence_data>` in the second message, JSON escaped — including both angle brackets, which `json.dumps` does not escape and which the delimiter is made of. A frozen adversarial suite (`benchmarks/evidence_injection.py`) runs thirteen payloads through three carriers (file name, chunk metadata, memory text) and records the escape rate in `results/evidence_injection_baseline.json`, with a positive control against the previous renderer so that a zero cannot be produced by an inert detector.
+
+### Citations
+
+At least one per answer, and every one must resolve to a chunk ID in the bundle. Duplicates are collapsed deterministically by `normalize_citations` — first occurrence order, idempotent, and only ever subtractive, so normalisation cannot mint an identifier that would then satisfy the resolution check. `GenerationResult.citations_normalized` reports whether that edit happened. `validate_answer` on its own remains strict and reports a duplicate as an error.
+
+A token budget requires an injected tokenizer: `EvidencePolicy(max_tokens=…)` with no `tokenizer` raises rather than estimating.
+
+### Reaching it from the four integrations
+
+| Surface | Entry point |
+|---|---|
+| Library | `from recall import build_evidence_bundle, render_evidence_prompt, validate_answer` |
+| CLI | `recall search "<query>" --evidence` prints the bundle and the rendered prompt as JSON |
+| MCP | the `recall_evidence` tool returns the bundle plus `system_prompt` and `user_message` |
+| LangChain | `RecallRetriever.evidence(query)` / `.evidence_prompt(query)` |
+| LlamaIndex | `RecallRetriever.evidence(query)` / `.evidence_prompt(query)` |
+
+All five are additive; every pre-existing field, metadata key and tool is unchanged.
+
+`recall_evidence` runs no generator. This deployment chooses none and ships none, so the tool stops one step short and hands back the two messages for the client to run its own model against. That is what generator neutrality means here, and it is also why the end-to-end path with a real generator remains unexercised: no approved local generator has been confirmed for this program. The neutral flow is tested against a stub.
+
+The retriever adapters deliberately do NOT honour their `include_untrusted` escape hatch in `evidence()`. That flag exists so a caller can inspect what the trust layer refused; what a generator may cite is a rule, not a constructor setting.
 
 ## Promotion
 
