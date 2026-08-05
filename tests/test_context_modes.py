@@ -14,12 +14,15 @@ import pytest
 
 from recall.context import (
     DEGRADATION_ORDER,
+    DOCUMENT_DEGRADATION_ORDER,
     NEIGHBOR_MAX_CHARS,
+    SECTION_DEGRADED_MAX_CHARS,
     SECTION_MAX_CHARS,
     SOURCE_MAX_CHARS,
     TITLE_MAX_CHARS,
     ContextPolicy,
     contextual_passages,
+    _degradation_ladder,
     document_title,
     root_relative_source,
 )
@@ -66,6 +69,26 @@ def test_title_precedence_is_frontmatter_then_first_h1_then_basename() -> None:
 
     plain = "body text with no heading and no frontmatter.\n"
     assert document_title(plain, plain, "team/deep/notes.md") == "notes.md"
+
+
+def test_the_basename_fallback_survives_a_path_longer_than_the_source_cap() -> None:
+    """The basename comes from the WHOLE path, not from the path after the source cap.
+
+    `root_relative_source` used to truncate to 256 characters, and this fallback split that
+    truncated string. At 264 characters the cut landed on a `/`, the basename was empty and the
+    `title:` field disappeared from the passage; at 261 the title was the fragment `not`. The
+    document is unchanged and legal in both cases, so nothing announced the loss.
+    """
+    plain = "body text with no heading and no frontmatter.\n"
+    for source in ("dir/" * 64 + "notes.md", "d" * 252 + "/notes.md", "x/" * 400 + "notes.md"):
+        assert len(source) > 256
+        assert document_title(plain, plain, source) == "notes.md", source
+
+    # And the field really is rendered, rather than silently omitted.
+    _, passages = contextual_passages(
+        plain, plain, [plain.strip()], "dir/" * 64 + "notes.md", ContextPolicy(mode="document")
+    )
+    assert field(passages[0], "title") == "notes.md"
 
 
 def test_an_indented_frontmatter_title_does_not_outrank_the_documents_own() -> None:
@@ -152,7 +175,6 @@ def test_title_source_and_section_are_capped_at_256_256_and_512() -> None:
     assert len(field(passages[0], "title") or "") == 256
     assert len(field(passages[0], "source") or "") == 256
     assert len(field(passages[0], "section") or "") == 512
-    assert len(root_relative_source(source)) == 256
     # The uncapped inputs really were longer, so a cap is what produced those lengths rather than
     # the input happening to fit.
     assert len(title) > 256 and len(source) > 256
@@ -160,6 +182,59 @@ def test_title_source_and_section_are_capped_at_256_256_and_512() -> None:
     # The named constants must BE those numbers, so a reader who reaches for them is not reading
     # a different rule from the one enforced above.
     assert (TITLE_MAX_CHARS, SOURCE_MAX_CHARS, SECTION_MAX_CHARS) == (256, 256, 512)
+    assert SECTION_DEGRADED_MAX_CHARS == 256
+
+
+def test_the_path_guard_holds_on_its_own_return_value() -> None:
+    """`root_relative_source` validates and does NOT truncate, so its postcondition survives.
+
+    It used to return `normalised[:256]`, applied after the checks, which could MANUFACTURE the
+    traversal it had just refused: `"a" * 253 + "/..x"` passed the check and came back as a
+    256-character path whose final segment is `..`. The cap now belongs to the rendered field.
+    """
+    for prefix in range(250, 260):
+        source = "a" * prefix + "/..x/leaf.md"
+        result = root_relative_source(source)
+        assert ".." not in result.split("/"), f"guard returned a traversal at prefix {prefix}"
+        assert not result.startswith("/")
+        assert result == source, "the guard normalises, it does not shorten"
+
+    # A real traversal is still refused, so the postcondition above is not held vacuously by a
+    # guard that stopped checking.
+    with pytest.raises(ValueError, match="traversal"):
+        root_relative_source("a" * 253 + "/../leaf.md")
+
+    # The rendered field is where the 256 applies.
+    body = "para one.\n\npara two."
+    _, passages = contextual_passages(
+        body, body, ["para one.", "para two."], "d/" * 300 + "n.md",
+        ContextPolicy(mode="document"),
+    )
+    assert len(field(passages[0], "source") or "") == 256
+
+
+def test_a_single_letter_first_segment_is_not_mistaken_for_a_drive() -> None:
+    """`^[A-Za-z]:` also refuses `a:b/notes.md`, a legal relative path on Linux and macOS.
+
+    `Indexer` builds its source from `relative_to(root).as_posix()`, so that shape reaches this
+    guard, and the refusal is raised inside the per-file loop after earlier batches have already
+    been committed.
+    """
+    assert root_relative_source("a:b/notes.md") == "a:b/notes.md"
+    assert root_relative_source("ab:c/notes.md") == "ab:c/notes.md"
+    for drive in ("C:/x", "C:\\x", "c:/Users/x", "C:", "Z:"):
+        with pytest.raises(ValueError, match="absolute"):
+            root_relative_source(drive)
+
+
+def test_the_refusal_message_does_not_echo_the_host_path() -> None:
+    """The value this fires on IS an absolute host path, so echoing it is the disclosure."""
+    for hostile in ("/home/someone/secret.md", "C:\\Users\\someone\\secret.md"):
+        with pytest.raises(ValueError) as caught:
+            root_relative_source(hostile)
+        message = str(caught.value)
+        assert "root-relative" in message
+        assert "someone" not in message and "secret" not in message, message
 
 
 # ---------------------------------------------------------------------------------------------
@@ -194,6 +269,61 @@ def test_neighbor_mode_takes_at_most_200_characters_from_each_side() -> None:
     # At the boundaries there is no neighbour to add, and none is invented.
     assert field(passages[0], "previous") is None
     assert field(passages[2], "following") is None
+
+
+def test_a_neighbour_excerpt_is_folded_to_one_line_before_the_200_is_counted() -> None:
+    """The neighbour budget must count the same kind of character as every other cap.
+
+    Two consequences, and the second is why it matters. A newline in an adjacent chunk used to be
+    spent against the 200 while the other caps measure post-normalisation length; and because the
+    rendered form is one `field: value` per line, an adjacent chunk containing `\\nsource: /etc/x`
+    put a SECOND `source:` line into this chunk's passage.
+
+    The chunk's own text is NOT folded: rule 5 preserves it exactly, so the rendered format
+    remains something to embed and never something to parse.
+    """
+    # ⚠️ The forged line must land INSIDE the 200-character window, or the assertion below cannot
+    # discriminate. A first version of this test used `"...\nsource: /etc/shadow\n" + "z" * 400`,
+    # whose tail-200 is all `z`: the forgery never reached the field and the injection assertions
+    # passed against the unfixed code. The hostile chunk is therefore SHORT.
+    hostile = "lead in\nsource: /etc/shadow\ntitle: Trusted"
+    chunks = [hostile, "the middle chunk.", "tail\n\nchunk\ttext"]
+    body = "\n\n".join(chunks)
+    _, passages = contextual_passages(
+        body, body, chunks, "docs/notes.md", ContextPolicy(mode="neighbor")
+    )
+
+    # Exactly one of each structural field, whatever the neighbours contain.
+    assert [ln for ln in passages[1].splitlines() if ln.startswith("source: ")] == [
+        "source: docs/notes.md"
+    ]
+    assert len([ln for ln in passages[1].splitlines() if ln.startswith("title: ")]) == 1
+    assert field(passages[1], "previous") == "lead in source: /etc/shadow title: Trusted"
+
+    # The length half of the rule needs a neighbour longer than the cap, so it gets its own.
+    long_chunks = ["HEAD" + "z" * 400, "the middle chunk.", "tail\n\nchunk\ttext"]
+    long_body = "\n\n".join(long_chunks)
+    _, passages = contextual_passages(
+        long_body, long_body, long_chunks, "docs/notes.md", ContextPolicy(mode="neighbor")
+    )
+    previous, following = field(passages[1], "previous"), field(passages[1], "following")
+    assert previous is not None and following is not None
+    # Counted on the PASSAGE, not on `field()`'s return: `field` reads the first line of a value,
+    # so `"\n" not in previous` could never have failed. Five fields, five lines: title, source,
+    # previous, content, following (no headings in this corpus, so no section).
+    assert len(passages[1].splitlines()) == 5, passages[1]
+    assert len(previous) == 200 and len(following) <= 200
+    # The 200 is now 200 NORMALISED characters, so a chunk of newlines does not spend the budget
+    # on characters the other caps would never have counted.
+    assert previous == "z" * 200
+    assert following == "tail chunk text"
+
+    # The current chunk is still preserved byte for byte, newlines and all.
+    assert chunks[1] in passages[1]
+    _, hostile_passages = contextual_passages(
+        body, body, chunks, "docs/notes.md", ContextPolicy(mode="section")
+    )
+    assert chunks[0] in hostile_passages[0]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -266,6 +396,43 @@ def test_degradation_drops_neighbor_first_section_second_and_title_last() -> Non
     assert DEGRADATION_ORDER[-1] == "chunk-only"
 
 
+#: Written out, not derived. The ladder now BUILDS itself from `DEGRADATION_ORDER`, so comparing
+#: what it emits against that constant compares the code with itself: a mutation sweep reordered
+#: the constant and the assertion followed it, green. The literal is the independent claim.
+EXPECTED_RUNGS: dict[str, tuple[str, ...]] = {
+    "section": ("full", "drop-neighbor", "shorten-section", "drop-section", "drop-title",
+                "chunk-only"),
+    "neighbor": ("full", "drop-neighbor", "shorten-section", "drop-section", "drop-title",
+                 "chunk-only"),
+    "document": ("drop-section", "drop-title", "chunk-only"),
+}
+
+
+@pytest.mark.parametrize("mode", CONTEXT_MODES)
+def test_the_ladder_emits_exactly_the_declared_order(mode: str) -> None:
+    """`DEGRADATION_ORDER` is the ladder's order, not a second copy of it.
+
+    It used to be an independent literal that merely agreed with the rungs the implementation
+    built: renaming the implementation's labels left every test green, so the constant was
+    decorative and the claim that a test could assert it was false. The ladder is now emitted
+    FROM the constant, which is what makes the two impossible to disagree — and is also why the
+    expected order below is spelled out rather than read back from it.
+    """
+    rungs = [
+        rung
+        for rung, _ in _degradation_ladder(
+            "CHUNK", mode=mode, title="T", section="S",  # type: ignore[arg-type]
+            source="s.md", previous="p", following="f",
+        )
+    ]
+    assert tuple(rungs) == EXPECTED_RUNGS[mode]
+    assert rungs, "the ladder must never be empty; the last rung is the fallback"
+    assert DEGRADATION_ORDER == EXPECTED_RUNGS["neighbor"]
+    assert DOCUMENT_DEGRADATION_ORDER == EXPECTED_RUNGS["document"]
+    # Document mode is a SUFFIX of the one order, never an order of its own.
+    assert DOCUMENT_DEGRADATION_ORDER == DEGRADATION_ORDER[-len(DOCUMENT_DEGRADATION_ORDER):]
+
+
 def test_section_detail_is_shortened_before_it_is_dropped() -> None:
     """The rung between "full section" and "no section" — otherwise "detail" means "presence"."""
     headings = "".join(f"{'#' * level} {'H' * 200}\n\n" for level in range(1, 7))
@@ -282,7 +449,7 @@ def test_section_detail_is_shortened_before_it_is_dropped() -> None:
         section = field(passages[0], "section")
         if section is not None:
             lengths.add(len(section))
-    assert lengths == {SECTION_MAX_CHARS, 256}, (
+    assert lengths == {512, 256}, (
         "a shortened section rung must exist between the full one and dropping it"
     )
 
