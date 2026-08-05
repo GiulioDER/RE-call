@@ -68,6 +68,7 @@ from benchmarks.usage import reset as reset_usage
 from benchmarks.usage import snapshot as usage_snapshot
 from recall.eval.arm_check import DEFAULT_SAMPLE
 from recall.eval.locomo import DEFAULT_DSN
+from recall.eval.resume import read_ledger
 
 #: The exact string the vendored answerer prompt instructs the model to emit when the retrieved
 #: memories do not support an answer (rule 4). Detecting it is how an abstention is counted; it is
@@ -277,22 +278,17 @@ def _already_done(paths: list[Path] | None) -> tuple[list[dict[str, Any]], set[s
 
     Resume is by question id rather than by position: the pool finishes out of order, so a
     positional resume would skip questions that were never scored and re-pay for ones that were.
+
+    Delegates to `recall.eval.resume`, the one factored-out mechanism. That changes one behaviour
+    deliberately: a truncated FINAL line used to raise `JSONDecodeError` here and now counts as
+    "not yet scored". An interrupted run is exactly the state these sidecars are read in, so a
+    torn tail was the one malformed line this function was guaranteed to meet, and refusing to
+    resume from it meant re-paying for every question in the file. Corruption in the MIDDLE of a
+    sidecar is still loud. The sidecars are NOT repaired in place: this function reads other
+    attempts' files, and a reader must not rewrite them.
     """
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for path in paths or []:
-        if not path.exists():
-            continue
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line:
-                continue
-            row = json.loads(line)
-            qid = str(row["question_id"])
-            if qid in seen:
-                continue
-            seen.add(qid)
-            rows.append(row)
-    return rows, seen
+    read = read_ledger(paths, id_field="question_id", repair_truncated_tail=False)
+    return list(read.rows), set(read.ids)
 
 
 class RunAborted(RuntimeError):

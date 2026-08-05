@@ -813,6 +813,245 @@ about the cause.
 
 ---
 
+## 2026-08-05, the missing link: the promotion gate has a producer, and it refuses
+
+Backlog session 10, taken ahead of session 4. Branch cut fresh from `origin/master` at `fa673e5`
+into a separate worktree; `origin/master` moved to `c02645b` (PR #202, OIDC subject binding) while
+this ran and the branch was merged onto it before the PR.
+
+### Session ledger
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | Frozen input manifests, on the ladder digest pattern | done, `recall/eval/promotion/manifest.py` |
+| 2 | The per-question record schema, exactly the sixteen named fields | done and CLOSED — an extra field is refused, not ignored |
+| 3 | Corpus adapters for all five named corpora, plus the in-repo labelled set | done; only `labelled` could be EXECUTED here, see below |
+| 4 | Aggregator emitting the gate input and a machine-readable decision | done, `recall/eval/promotion/aggregate.py` |
+| 5 | Profile-scoped calibration, failing closed on cross-profile reuse | done, `load_for_profile` extends `load_for` and does not weaken it |
+| 6 | Pick ONE resume mechanism, factor it out, use it | done, 3 → 2; the third is deliberately left, with the reason recorded |
+| 7 | Latency PENDING must block promotion rather than pass silently | done, `latency_p95_ms: float \| None`; PENDING is a failure |
+| 8 | Prove it end to end on a small corpus with baseline == candidate | done, `results/promotion/decision.null-difference.json` |
+| 9 | Prove every new test can fail | done, 29 of 29 mutations turned their named test red |
+| 10 | Audit this session's own work | done, DEEP tier, 13 fixes, 10 of 10 red→green proofs verified |
+
+97 new tests across six files. `ruff check .` clean on the CI-pinned ruff (local 0.16 reports 420
+errors on untouched code; the pin is `>=0.5,<0.16`, and 0.15.22 is clean). `mypy` clean on the new
+modules.
+
+### What landed
+
+| Area | Change |
+|---|---|
+| Frozen manifests | `manifest.py`, the same shape as `benchmarks/ladder/manifest.py` rather than a second one: sorted canonical rendering, digest over body AND provenance, digest excluded from what it covers, reader refuses a mismatch. `freeze` refuses to overwrite an existing manifest |
+| Record schema | `records.py`, sixteen fields, closed. `output_hash` covers the retrieval output and the configuration identity but **deliberately not `stage_timings`** — timings are not reproducible, so a hash that moved with the clock could not answer "did these two arms return the same thing?", which is the question the null-difference proof needs |
+| Adapters | `labelled`, `peps`, `locomo`, `ladder`, `longmemeval`, `mtrag`. `recall/eval/peps_questions.json` was in the tree and referenced by no code; it is wired now. MT-RAG becomes one corpus per domain, because this repo's macro average is the UNWEIGHTED mean over corpora and its domains differ in judged-query count by nearly a factor of two (the AUD-1 finding) |
+| Aggregator | `QuestionOutcome`/`SafetyMetrics`/`RetrievalGateInput`, `PromotionDecision` JSON. Primary hit@5 and MRR; hit@1, hit@20, nDCG@5, false confidence, false abstention and latency recorded beside the decision and labelled `secondary_diagnostic_only` |
+| Calibration | `save_for_profile`/`load_for_profile` in `recall/calibration.py`, keyed on `EmbeddingProfile.fingerprint()`. `ArmConfig.artifact_stem` puts the fingerprint in every ledger filename |
+| Resume | `recall/eval/resume.py`; `benchmarks/ladder/run.py` and `benchmarks/beam/run.py` both delegate to it |
+| Latency | `RetrievalGateInput.latency_p95_ms` accepts `None` = PENDING, and PENDING FAILS |
+
+### The four refusals, and why each one exists
+
+The aggregator mostly refuses to build a gate input. Each refusal closes a way the gate could pass
+without having been asked anything.
+
+| Refusal | What it prevents |
+|---|---|
+| Arms that do not cover the frozen manifest exactly, or whose rows carry a different `input_hash` | A paired test over a set that quietly shrank between the arms is not the test that was declared |
+| Safety metrics that are NaN because their class is empty | `recall/eval/metrics.py` returns NaN on an empty class, which is right for publishing and wrong for a gate: the gate compares with `>`, every comparison against NaN is False, so an empty safety check reads EXACTLY like a passed one |
+| Unanswerable questions in the paired quality set | hit@5 on a question with no relevant document is 0.0 for every system that has ever existed, so including them dilutes the delta toward zero by an amount that depends only on how many were included. They score on the safety axis, which is the axis they were written for |
+| An arm that retrieves no labelled document for ANY question | See below. This one was written because it happened |
+
+### What was measured
+
+**The gate's `promoted=True` branch executed for the first time.** The gap matrix recorded that
+`tests/test_promotion.py` held one test asserting `not decision.promoted`, and that "a gate that has
+only ever been shown to fail is not evidence that it can pass; it is compatible with a gate that
+refuses everything." It is not: a fixture improving 4/20 to 18/20 on two corpora, with green
+security and a measured p95 under budget, returns `promoted=True` with no failures. Every refusal
+below is then flipped off THAT configuration, one condition at a time, so each test shows its own
+branch firing rather than sharing a fixture that would have failed anyway.
+
+**End to end on the labelled corpus, baseline == candidate.** 25 questions (14 answerable, 11
+unanswerable), 22 documents, `bge-small-symmetric-v1`, both arms the same configuration. All 25 rows
+share an `output_hash` across the two arms, so the difference is null by construction rather than by
+measurement. The gate refused on five counts:
+
+| Failure | |
+|---|---|
+| macro paired hit@5 bootstrap interval does not clear zero | delta exactly 0.0, interval [0.0, 0.0] |
+| no improving corpus has Holm corrected paired significance below 0.05 | Holm p = 1.0 |
+| **superseded trust rate was NOT MEASURED** | both arms degraded; `superseded_trust_rate: null` |
+| security verification is not green | `--security-green` defaults to False; unverified is not green |
+| **retrieval p95 latency is PENDING** | `gate_input_p95_ms: null` |
+
+Removing only the PENDING condition from an otherwise-promotable fixture leaves exactly one failure,
+which is how the test shows that PENDING is what fired and not something else about the fixture.
+
+The third row is the one this session's audit added, and it is the more consequential of the two
+"not measured" failures. `recall/trust.py` overwrites **every** verdict with `unverified` in
+degraded mode, *after* `evaluate` has computed the real one, so a superseded hit and a clean one
+leave identical rows. The first version of this harness therefore computed
+`superseded_trust_rate = 0.0` for a degraded arm and **satisfied** the gate's zero-tolerance check
+by never having measured it. It is now `None`, which blocks, on the same pattern as a PENDING
+latency: an unmeasured input produces a decision that names what was missing rather than a
+traceback or a pass.
+
+**Two defects that only a real run could surface.** The harness was written, unit-tested green, and
+then run for the first time against a live store:
+
+1. `score_arm` never passed `input_hash` into `build_record`. Caught by the adapter tests, before
+   the live run.
+2. **The labelled corpus scored 0 of 14, and nothing raised.** Its labels are `cache_decision.md:0`;
+   `PgVectorStore` chunk ids are content hashes. Every comparison was a miss, both arms were equally
+   wrong, and the gate computed a delta of exactly zero and produced a clean-looking refusal. The
+   numbers were meaningless and the artifact would not have said so.
+
+   The fix is `search.LABEL_KEYS`: five declared id spaces, `label_kind` required on every adapter
+   with **no inherited default**, since a default is how a new adapter inherits a comparison that is
+   silently wrong for its corpus. The detector is `aggregate.VacuousArm`, because a fix with no
+   detector only covers the mistake that was already made. Both are mutation-proven.
+
+### The audit of this session's own work, and what it found
+
+The commit went through the tiered CCA pipeline at DEEP (forced: `RUN_NUM` and `RUN_STAKES` both
+fire on a diff full of rates and thresholds). Four auditors, 36 raw findings, 13 fixed. Every
+deterministic backend was available for Python (`definedness`, `nullability`, `taint`, `type`,
+`clock_leak`).
+
+**Six of the findings are the same failure class this harness was built to refuse, found in the
+harness.** Each was proven by executing the shipped code, not by reading it:
+
+| Finding | The gate could... |
+|---|---|
+| `cmd_decide` narrowed the frozen manifest to the corpora present in the BASELINE ledger | ...return `promoted=true` on a question set that shrank after the freeze, stamped with the full manifest's digest. Measured: the same two-corpus manifest returned `promoted=false` citing a regression on the second corpus, and `promoted=true` with that corpus absent from both ledgers |
+| `latency_p95_ms` was checked only against `None` | ...pass the budget on a NaN, because `nan > budget` is False, and report `latency_status: MEASURED`. NaN is reachable from this package's own `_percentile` over an empty sample |
+| `record_from_dict` copied `output_hash` instead of recomputing it | ...be flipped by editing ten rows of a ledger. The manifest was tamper-evident; the EVIDENCE was not. Measured: `promoted=false` → `promoted=true` |
+| a wholly degraded arm computed `superseded_trust_rate = 0.0` | ...satisfy a zero-tolerance safety check by never having measured it |
+| `artifact_stem` omitted `retrieval_profile`, `generation`, `candidate_pool` | ...compare a ledger with itself: two arms differing only in `--retrieval-profile` produced the identical filename, the second resumed the first's rows and scored nothing |
+| `--no-resume` read nothing but still appended | ...gate on the rows the run was told to discard, since `read_ledger` keeps the FIRST occurrence of an id |
+
+Two of those sat directly under docstrings claiming the opposite. `artifact_stem` said it carried
+"the COMPLETE immutable identity" while carrying three of six fields, and the `reranking_status`
+comment said a configured-but-failed reranker "is visible here" when `HybridRetriever` sets
+`reranking_ran` *before* calling the reranker, making `"failed"` unreachable. The first is fixed;
+the second is a comment correction, because making it observable needs a change in the retriever
+and that is a different diff. **A comment that claims more than the code is the same defect as a
+guard that cannot fire, and this session produced both while writing about both.**
+
+Also fixed: `--corpus mtrag` matched nothing (the adapter stamps `mtrag:<domain>`, the CLI filtered
+on equality, so a wired corpus was unrunnable); `ArmConfig.generation` was recorded on every row
+and never passed to `trusted_search`, so the evidence named a generation the search never used;
+`secondary_metrics` pooled across corpora while the headline is macro (a factor-2.2 disagreement
+inside one document, the AUD-1 finding again); `write_decision` allowed a bare `NaN` token into a
+committed artifact; the decision named its arms only by the free-text label a human typed; and
+`--dsn` was required, putting the database password into argv.
+
+Ten red→green proofs, each verified against the pre-fix code by
+`cca_tautology_check verify`: **10 of 10 RED**. Each carries a control test asserting the
+behaviour that did NOT change, because a refusal that swallows the passing case is not a fix.
+
+**The anti-regression pass then found two more, in the fixes themselves, and both are the same
+lesson twice.**
+
+The `--dsn` fix moved the credential out of argv and deleted `required=True` without replacing the
+guarantee it carried. `PgVectorStore` does not validate a DSN, so `None` reached psycopg as an
+`AttributeError` *after* a model load, and an EMPTY string — the ordinary shape of an unset systemd
+or CI variable — is a valid libpq conninfo meaning "use the local defaults". On a peer-auth host
+that connects to the operator's own database, where the command then creates, indexes and drops a
+table. **Removing a check because its side effect was undesirable removed the check.**
+
+The MT-RAG fix shipped with a test that could not fail. It re-implemented the `startswith`
+expression inline against the adapter instead of calling the CLI's filter, so it passed with the
+fix reverted — a guard that cannot fire, inside the fix for a filter that matched nothing. The
+comprehension is now the named `scope_questions`, the test calls it, and a mutation reverting the
+filter turns it red. It is the fifth instance of a non-discriminating assertion recorded here, and
+the first one this program caught in its own audit fixes rather than in the code under audit.
+
+⚠️ **The harness that first checked those three mutations reported two of them RED when the tests
+did not exist at all** — the edit that was supposed to add them had silently not applied, and a
+non-zero pytest exit for "no tests ran" is indistinguishable from one for "the test failed" if you
+only read the exit code. That is the repository's own standing rule about reading an exit code
+through a pipe, in a new costume. The re-check parses `N failed` out of pytest's summary and
+reports `INCONCLUSIVE` otherwise; all three are RED under it.
+
+**Mutation sweep: 29 of 29.** Each new guard was disabled in the source and its named test asserted
+to go red. One survived the first pass, and it is the instructive one: deleting the
+absent-fingerprint branch in `load_for_profile` left the identity-equality check below it, which
+also returns None, so a test asserting only `is None` passed with the branch removed. The branch's
+real contribution is the DIAGNOSIS — "this file records no `profile_fingerprint`" is an actionable
+instruction, while "it was fitted under identity None" describes nothing that exists — so the test
+now asserts the warning. That is the fourth instance of a non-discriminating assertion recorded in
+this repository.
+
+**Resume: three mechanisms became two, not four.** `benchmarks/ladder/run.py::_recorded` and
+`benchmarks/beam/run.py::_already_done` now both delegate to `recall/eval/resume.py`. The ladder's
+behaviour is unchanged. Beam gains one behaviour deliberately: a truncated final line used to raise
+`JSONDecodeError` there and now counts as "not yet scored". These sidecars are read after an
+interruption, so a torn tail was the one malformed line that function was guaranteed to meet, and
+refusing to resume from it meant re-paying for every question in the file. `recall/eval/gap_run.py`
+is **not** migrated, and the reason is recorded in `resume.py`'s own docstring rather than left to
+be rediscovered as "a fourth mechanism appeared": its unit of resume is a whole corpus result FILE
+carrying a `status` marker, its artifacts under `results/gap/` are committed in that shape, and
+unifying it would rewrite a published artifact format for no resume benefit.
+
+### What is NOT proven, stated rather than implied
+
+- **Only `labelled` was executed.** It is the one corpus whose documents ship in the repository.
+  `peps`, `locomo`, `longmemeval` and `mtrag` are wired and unit-tested against synthetic fixtures
+  in their own formats, but their `label_kind` mappings have **not** been confirmed against a real
+  index. `ladder`'s reader is exercised against a manifest written by the ladder's own writer,
+  including the digest refusal, but not against a live retrieval. Each mapping was derived by
+  reading the code that writes those ids, and each is named in `search.py`'s table with the function
+  it mirrors. The vacuity refusal is what turns a wrong one into a loud failure instead of a zero.
+- **The proof run is DEGRADED.** A plain store has no generation-bound certified calibration, so
+  strict trust mode refuses it — correctly. The run used `--trust-policy development`, every verdict
+  is `unverified`, and the artifact records `trust_verdicts: {"unverified": 25}` for both arms so
+  that its `false_confidence: 1.00` cannot be read as a property of this library's abstention. The
+  two arms stay comparable to each other; neither is comparable to a trusted run. **Wiring a
+  strict-mode gate run needs a generation-bound certified calibration end to end, and no session has
+  done that.**
+- **`--trust-policy` defaults to strict** rather than to the mode that would have made this session's
+  run easier. A harness defaulting to development mode would silently score a degraded system and
+  publish the numbers as if the trust gate had run.
+- **No campaign verdict was produced, and none was attempted.** This session built the producer.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** VPS2 has 12 cores under a permanent load average near 8 from unrelated live production. | External dependency. Do not work around it. | Latency is **PENDING**; promotion blocked on latency grounds. Quality and safety gates still run. | **now enforced in code**: `latency_p95_ms=None` is a gate FAILURE, and the harness will not supply a number without `--certified-latency-p95-ms`. Nothing was measured on VPS2 this session |
+| **No production corpus.** | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
+| **No approved local generator confirmed.** | Open | The generator-neutral evidence path stays unexercised end to end. | unchanged |
+| **No generation-bound certified calibration has ever been produced end to end.** | Open, NEW | Every gate run is degraded, so `superseded_trust_rate` is **NOT MEASURED** and blocks promotion on its own. | newly identified this session, and **enforced in code** after the audit: a degraded arm reports `None`, not `0.0` |
+
+### What the next session should start with
+
+Backlog session 4, making the documentation true, which the previous entry named and which is still
+first. It was not taken here because the goal was the producer; nothing in this session touched the
+`RECALL_DSN` contradiction, and the sharpest consequence recorded there still stands: a green
+`recall-enterprise readiness` run certifies the credential the CLI connected as, which the enterprise
+doc tells the operator to make the MIGRATION role.
+
+Then, in the promotion lane specifically, and in this order:
+
+1. **A generation-bound certified calibration, end to end.** This is now a hard blocker, not a
+   quality concern: `superseded_trust_rate` comes back NOT MEASURED for a degraded arm and fails
+   the gate by itself, so **no promotion decision can be green until a trusted run is possible**.
+   `recall/trust.py` overwrites every verdict with `unverified` in degraded mode, so the
+   information is destroyed at the source and no amount of care in the harness recovers it. The
+   path is `CalibrationRepository.calibrate` → `publish` against a built generation; nothing wires
+   it end to end today.
+2. **Confirm one external corpus's `label_kind` against a live index** — `locomo` is the cheapest,
+   since `recall/eval/locomo.py` already writes the documents. One confirmed mapping turns four
+   derived-by-reading claims into three.
+3. Only then a campaign with a real candidate arm.
+
+Carried forward unchanged: the MT-RAG baseline still has no `results/ARTIFACTS.md` row
+(deliberately), and `bench/mtrag-symmetric-baseline` is still local and unpushed.
+
+---
+
 ## 2026-08-05, control plane: the untested and unreachable surfaces closed
 
 Backlog session 3, plus the parts of sessions 6, 7 and 11 that could not be separated from it.
