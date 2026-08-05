@@ -764,9 +764,10 @@ def test_every_live_state_is_erasable_and_only_failed_is_not(manager) -> None:
         "expected exactly one CHECK constraint covering recall_generations.state, found "
         f"{len(rows)}: {sorted(name for name, _ in rows)}"
     )
-    # The WHOLE definition is pinned, rather than a sub-expression scraped out of it. Three
-    # separate defects came from reading a fragment and treating it as the domain, and each
-    # failed OPEN, which is the direction that leaves a live state's erasability undecided:
+    # The definition's SHAPE is matched whole and its members compared as a set, rather than a
+    # sub-expression being scraped out of it. Three separate defects came from reading a
+    # fragment and treating it as the domain, and each failed OPEN, which is the direction that
+    # leaves a live state's erasability undecided:
     #   * `state = ANY (ARRAY[` has no left boundary, so it also matched inside
     #     `prev_state = ANY (ARRAY[`, and `re.search` takes the FIRST hit. The same constraint
     #     with the same widened domain passed or failed on the order of its conjuncts alone.
