@@ -17,7 +17,11 @@ from recall.generations import (
     NoActiveGeneration,
     UnsafePromotion,
 )
-from recall.generation_store import GenerationStore, ImmutableGenerationError
+from recall.generation_store import (
+    LIVE_MANIFEST_STATES,
+    GenerationStore,
+    ImmutableGenerationError,
+)
 from recall.cli import main as cli_main
 from recall.lineage import (
     ChunkerIdentity,
@@ -706,6 +710,106 @@ def test_forget_refuses_a_url_only_a_failed_generation_names(manager, monkeypatc
         ).fetchone()[0]
     assert tombstoned == 0, "a failed generation's manifest entry got a permanent tombstone"
     assert "NOT tombstoned" in out
+
+
+@requires_db
+def test_every_live_state_is_erasable_and_only_failed_is_not(manager) -> None:
+    """Both directions of the state list, pinned per state.
+
+    Admitting a state too many is a permanent tombstone on a URI that was never in the
+    corpus. Dropping one is the mirror harm and the quieter one: a genuine right-to-erasure
+    request answered "check for typos" while the data stays on disk. Only `building` was
+    pinned, so `retired` could be dropped with the suite green.
+
+    The expected states are written out LITERALLY and not imported. Iterating
+    `LIVE_MANIFEST_STATES` here would compare the constant with itself, and any edit to it
+    would edit its own test in the same stroke.
+    """
+    expected_live = ("building", "validating", "ready", "active", "retired")
+    assert set(LIVE_MANIFEST_STATES) == set(expected_live), (
+        "the live-state list changed; decide which direction of harm that is, then update "
+        "this literal deliberately"
+    )
+
+    for state in (*expected_live, "failed"):
+        data = f"---\nstatus: current\n---\nnamed only by a {state} generation".encode()
+        manifest = _manifest(manager.tenant_id, data, version="v1")
+        uri = manifest.objects[0].uri
+        generation = manager.create(manifest, _pipeline("model-a"))
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+            conn.execute(
+                "UPDATE recall_generations SET state = %s "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (state, manager.tenant_id, generation.generation_id),
+            )
+        with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+            resolved = store.manifest_uris_matching([uri])
+        # `_manifest` derives the URI from the TENANT, so every iteration names the same
+        # source. Left in place, the live generations from earlier iterations would keep it
+        # resolving and the `failed` case would pass for the wrong reason.
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+            conn.execute(
+                "DELETE FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
+                (manager.tenant_id, generation.generation_id),
+            )
+        if state == "failed":
+            assert resolved == frozenset(), (
+                "a failed generation's manifest entry resolved, and resolving is what earns "
+                "a permanent tombstone"
+            )
+        else:
+            assert resolved == frozenset({uri}), (
+                f"a source named only by a {state!r} generation did not resolve, so erasing "
+                "it would be refused as a typo while the data stays on disk"
+            )
+
+
+@requires_db
+def test_the_store_itself_refuses_a_url_only_a_failed_generation_names(manager) -> None:
+    """The same exclusion, asserted on the surface MCP erasures actually resolve through.
+
+    The test above drives the CLI. When the resolver moved to its own SQL query with its own
+    copy of the live-state list, adding `failed` to that copy left the whole forget suite
+    green, because nothing drove `sources_for_identifiers` through a failed generation. A
+    resolved identifier is exactly what `forget()` converts into a permanent tombstone, so
+    the gap was one mutation away from barring a URI that was never in the corpus.
+    """
+    data = b"---\nstatus: current\n---\nnever built"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    uri = manifest.objects[0].uri
+    generation = manager.create(manifest, _pipeline("model-a"))
+    manager.fail(generation.generation_id, "the source object could not be fetched")
+    assert manager.get(generation.generation_id).state == "failed"
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        assert store.manifest_uris_matching([uri]) == frozenset()
+        assert store.sources_for_identifiers([uri]) == {}
+
+
+@requires_db
+def test_a_non_string_manifest_uri_does_not_resolve(manager) -> None:
+    """`->>` casts a JSON number to text; `isinstance(uri, str)` does not.
+
+    The manifest column is raw JSONB and nothing revalidates its shape on read, so a
+    manifest carrying `{"uri": 123}` made the identifier `123` resolve through SQL while the
+    Python path rejected it. Resolving is what earns a permanent tombstone.
+    """
+    data = b"---\nstatus: current\n---\nshape check"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    generation = manager.create(manifest, _pipeline("model-a"))
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        conn.execute(
+            "UPDATE recall_generations SET manifest = %s::jsonb, state = 'ready' "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            ('{"objects": [{"uri": 123}]}', manager.tenant_id, generation.generation_id),
+        )
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        assert store.manifest_uris_matching(["123"]) == frozenset()
+        assert store.sources_in_any_manifest() == frozenset()
 
 
 @requires_db
