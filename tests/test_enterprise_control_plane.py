@@ -205,7 +205,15 @@ def test_cutover_refuses_a_shadow_that_does_not_match_the_active_generation() ->
         route = control.route(tenant)
         assert route is not None and route.active.generation_id == active
 
-        # The escape hatch exists, but it has to be asked for.
+        # The escape hatch covers a corpus that legitimately CHANGED, not one that is
+        # ABSENT: give the shadow a divergent row, then it promotes. An empty shadow stays
+        # refused even under the flag (see the assertion below).
+        with PgVectorStore(TEST_DSN, dim=8, table=shadow_table, tenant=tenant) as store:
+            store.upsert(
+                [Chunk(id="c2", source="s3://x/two.md", text="different",
+                       metadata={"content_hash": "h2"})],
+                [[0, 1.0, 0, 0, 0, 0, 0, 0]],
+            )
         control.cutover(tenant, allow_divergent_corpus=True)
         promoted = control.route(tenant)
         assert promoted is not None and promoted.active.generation_id == shadow
@@ -251,6 +259,12 @@ def test_cutover_refuses_an_empty_shadow_even_when_the_active_is_also_empty() ->
             control.cutover(tenant)
         route = control.route(tenant)
         assert route is not None and route.active.generation_id == active
+        # The divergence escape hatch must NOT override emptiness: it is documented for a
+        # corpus that changed, and an empty index is never a corpus worth serving.
+        with pytest.raises(RuntimeError, match="holds no rows"):
+            control.cutover(tenant, allow_divergent_corpus=True)
+        still = control.route(tenant)
+        assert still is not None and still.active.generation_id == active
     finally:
         with psycopg.connect(TEST_DSN, autocommit=True) as conn:
             conn.execute("DELETE FROM recall_tenant_routes WHERE tenant_id = %s", (tenant,))
@@ -259,6 +273,64 @@ def test_cutover_refuses_an_empty_shadow_even_when_the_active_is_also_empty() ->
                 ([active, shadow],),
             )
             for table in (active_table, shadow_table):
+                conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+                conn.execute(
+                    "DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,)
+                )
+
+
+@requires_db
+def test_cutover_refuses_when_the_route_moved_while_parity_was_running(monkeypatch) -> None:
+    """Parity now runs OUTSIDE the route transaction, so the swap must re-check the route.
+
+    Moving the comparison out of the locked region is what stops the tenant's route row being
+    pinned across two unbounded full-table reads. The cost is that what parity verified may no
+    longer be what gets swapped, so the swap re-reads under FOR UPDATE and refuses on a
+    mismatch. This drives that branch by re-routing the tenant from inside the parity call.
+    """
+    suffix = uuid.uuid4().hex[:12]
+    first, second, third = (f"g_{n}_{suffix}" for n in ("one", "two", "three"))
+    tables = {name: f"chunks_{name}" for name in (first, second, third)}
+    tenant = f"tenant-{suffix}"
+    control = ControlPlane(TEST_DSN)
+    control.apply_migrations()
+    try:
+        for generation, table in tables.items():
+            apply_migrations(TEST_DSN, table=table, dim=8)
+            with PgVectorStore(TEST_DSN, dim=8, table=table, tenant=tenant) as store:
+                store.upsert(
+                    [Chunk(id="c1", source="s3://x/one.md", text="body",
+                           metadata={"content_hash": "h1"})],
+                    [[1.0, 0, 0, 0, 0, 0, 0, 0]],
+                )
+            control.register_generation(generation, table, "profile-a", 8)
+            control.set_generation_state(generation, "ready", chunk_count=1, source_count=1)
+        control.set_route(tenant, first, second)
+
+        original = ControlPlane._require_parity
+
+        def racing(self, conn, tenant_id, active, shadow):
+            original(self, conn, tenant_id, active, shadow)
+            # A concurrent operator re-points the tenant after parity passed.
+            self.set_route(tenant_id, first, third)
+
+        monkeypatch.setattr(ControlPlane, "_require_parity", racing)
+        with pytest.raises(RuntimeError, match="route changed while parity"):
+            control.cutover(tenant)
+
+        # The swap did not happen: the route is exactly what the racer left it as.
+        route = control.route(tenant)
+        assert route is not None
+        assert route.active.generation_id == first
+        assert route.shadow is not None and route.shadow.generation_id == third
+    finally:
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("DELETE FROM recall_tenant_routes WHERE tenant_id = %s", (tenant,))
+            conn.execute(
+                "DELETE FROM recall_index_generations WHERE generation_id = ANY(%s)",
+                (list(tables),),
+            )
+            for table in tables.values():
                 conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
                 conn.execute(
                     "DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,)

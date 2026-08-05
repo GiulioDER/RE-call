@@ -290,7 +290,7 @@ class ControlPlane:
         if active not in rows or shadow not in rows:
             raise RuntimeError("cutover requires both generations to be registered")
         active_table, active_dim, _active_profile, _active_chunks = rows[active]
-        shadow_table, shadow_dim, _shadow_profile, declared_chunks = rows[shadow]
+        shadow_table, shadow_dim, _shadow_profile, _declared = rows[shadow]
         # Deliberately NOT comparing embedding_profile or dimension. Re-indexing onto a new
         # embedder is the main reason to build a shadow generation at all, and
         # `validate_generation_parity` is built for exactly that: it compares source sets and
@@ -303,20 +303,41 @@ class ControlPlane:
             PgVectorStore(self._dsn, dim=shadow_dim, table=shadow_table, tenant=tenant) as after,
         ):
             parity = validate_generation_parity(before, after)
-        if parity.shadow_chunks == 0:
-            # Parity alone passes vacuously here: an empty shadow over an empty active is
-            # 0 == 0, so the gate would report "verified" having verified nothing, and promote
-            # a generation whose `mark-ready` counts were pure assertion. An empty shadow is
-            # never a corpus worth serving, whatever the active holds.
-            raise RuntimeError(
-                "cutover refused: the shadow generation holds no rows "
-                f"(recall_index_generations declares chunk_count={declared_chunks})"
-            )
         if not parity.valid:
             raise RuntimeError(
                 "cutover refused: " + "; ".join(parity.failures)
                 + " (re-run with --allow-divergent-corpus only if the corpus change is"
                 " intended)"
+            )
+
+    def _require_non_empty_shadow(
+        self, conn: psycopg.Connection, tenant: str, shadow: str
+    ) -> None:
+        """Refuse to promote a generation that holds nothing, whatever the active holds.
+
+        This deliberately sits OUTSIDE `_require_parity`. Emptiness is not a divergence
+        question, and `allow_divergent_corpus` is documented as an escape hatch for a corpus
+        that legitimately CHANGED, not for one that is absent. Leaving the check inside parity
+        meant the flag skipped it and promoted an empty shadow with a fabricated
+        `mark-ready` count straight from the command line.
+        """
+        from recall.store import PgVectorStore
+
+        row = conn.execute(
+            "SELECT physical_table, dimension, chunk_count FROM recall_index_generations "
+            "WHERE generation_id = %s",
+            (shadow,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("cutover requires the shadow generation to be registered")
+        table, dim, declared = validate_table_name(str(row[0])), int(row[1]), int(row[2])
+        with PgVectorStore(self._dsn, dim=dim, table=table, tenant=tenant) as store:
+            held = store.count()
+        if held == 0:
+            raise RuntimeError(
+                "cutover refused: the shadow generation holds no rows for this tenant "
+                f"(recall_index_generations declares chunk_count={declared}). "
+                "--allow-divergent-corpus does not override this."
             )
 
     def cutover(self, tenant: str, *, allow_divergent_corpus: bool = False) -> None:
@@ -327,7 +348,27 @@ class ControlPlane:
         it says nothing about what the shadow table holds, so an empty generation could be
         marked ready and cut over, sending every read for the tenant to an empty index. This
         therefore compares the two generations before swapping.
+
+        The comparison runs BEFORE the route transaction opens, and the swap then re-reads the
+        route under `FOR UPDATE` and refuses if it moved (compare-and-swap). Running parity
+        inside the locked region instead held the tenant's route row across two unbounded
+        full-table reads with no `lock_timeout`, so anything holding ACCESS EXCLUSIVE on either
+        physical table pinned the row for as long as it liked. The locked region is back to
+        four indexed statements.
         """
+        with self._connect() as conn:
+            self._set_tenant(conn, tenant)
+            row = conn.execute(
+                "SELECT active_generation, shadow_generation FROM recall_tenant_routes "
+                "WHERE tenant_id = %s",
+                (tenant,),
+            ).fetchone()
+            if row is None or row[1] is None:
+                raise RuntimeError("cutover requires a configured shadow generation")
+            expected = (str(row[0]), str(row[1]))
+            self._require_non_empty_shadow(conn, tenant, expected[1])
+            if not allow_divergent_corpus:
+                self._require_parity(conn, tenant, expected[0], expected[1])
         with self._connect() as conn, conn.transaction():
             self._set_tenant(conn, tenant)
             pending = conn.execute(
@@ -348,8 +389,15 @@ class ControlPlane:
             ).fetchone()
             if state is None or state[0] != "ready":
                 raise RuntimeError("cutover requires a ready shadow generation")
-            if not allow_divergent_corpus:
-                self._require_parity(conn, tenant, str(row[0]), str(row[1]))
+            if (str(row[0]), str(row[1])) != expected:
+                # Someone re-routed this tenant while parity was running, so what was verified
+                # is not what would be swapped. Refuse rather than promote against a stale
+                # comparison; the operator re-runs and the parity check runs against the route
+                # as it now stands.
+                raise RuntimeError(
+                    "cutover refused: the tenant route changed while parity was being "
+                    f"verified (was {expected}, now {(str(row[0]), str(row[1]))}); re-run"
+                )
             conn.execute(
                 "UPDATE recall_tenant_routes SET active_generation = shadow_generation, "
                 "shadow_generation = active_generation, updated_at = now() WHERE tenant_id = %s",
