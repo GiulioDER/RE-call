@@ -684,7 +684,6 @@ def test_forget_refuses_a_url_only_a_failed_generation_names(manager, monkeypatc
     permanent, so admitting them would let a URI that was never in the corpus be barred from
     every future build. `building` is deliberately NOT excluded: see the test below.
     """
-    embedder = _Embedder(1)
     data = b"---\nstatus: current\n---\nnever built"
     manifest = _manifest(manager.tenant_id, data, version="v1")
     uri = manifest.objects[0].uri
@@ -843,3 +842,49 @@ def test_mcp_and_cli_erasure_agree_on_an_adopted_v08_tenant(manager) -> None:
     assert tombstoned == 1
     assert result.chunks_removed == 2
     assert uri in result.sources_removed
+
+
+@requires_db
+def test_mcp_forget_during_a_build_is_honoured_by_that_build(manager) -> None:
+    """The MCP erasure surface must honour a mid-build erasure, as the CLI does.
+
+    `build()` opens a transaction per manifest entry, so mid-build NOTHING has rows yet for an
+    object it has not reached. Resolving erasure identifiers on chunk rows alone therefore
+    answered "not found", wrote no tombstone, and let the build index the very content the user
+    asked to erase -- while `recall forget`, which consults the manifest, erased it. Two
+    erasure surfaces disagreeing on the same request.
+    """
+    from recall_mcp.service import forget_memory
+
+    embedder = _Embedder(1)
+    data = b"---\nstatus: current\n---\nthe user asked for this to be erased"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    uri = manifest.objects[0].uri
+    generation = manager.create(manifest, _pipeline("model-a"))
+    assert manager.get(generation.generation_id).state == "building"
+
+    store = GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id)
+    try:
+        # No chunk rows exist yet, so this only resolves via the manifest.
+        assert store.sources_for_identifiers([uri]) == {uri: [uri]}
+        result = forget_memory(store, [uri])
+    finally:
+        store.close()
+    assert result.sources_removed == [uri]
+
+    stats = manager.build(
+        generation.generation_id, _reader(manifest, data), embedder, lambda text: [text]
+    )
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        surviving = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, uri),
+        ).fetchone()[0]
+        tombstoned = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones WHERE tenant_id = %s",
+            (manager.tenant_id,),
+        ).fetchone()[0]
+    assert tombstoned == 1, "the MCP erasure wrote no tombstone, so the build had nothing to honour"
+    assert stats.tombstoned_objects == 1
+    assert surviving == 0, "the build indexed content the user had asked to erase via MCP"

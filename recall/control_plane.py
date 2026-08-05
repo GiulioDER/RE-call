@@ -310,6 +310,24 @@ class ControlPlane:
                 " intended)"
             )
 
+    @staticmethod
+    def _require_no_pending_events(conn: psycopg.Connection, tenant: str) -> None:
+        pending = conn.execute(
+            "SELECT count(*) FROM recall_migration_events "
+            "WHERE tenant_id = %s AND status = 'pending'",
+            (tenant,),
+        ).fetchone()
+        if pending and pending[0]:
+            raise RuntimeError("cutover refused while migration events remain pending")
+
+    @staticmethod
+    def _require_ready_shadow(conn: psycopg.Connection, shadow: str) -> None:
+        state = conn.execute(
+            "SELECT state FROM recall_index_generations WHERE generation_id = %s", (shadow,)
+        ).fetchone()
+        if state is None or state[0] != "ready":
+            raise RuntimeError("cutover requires a ready shadow generation")
+
     def _require_non_empty_shadow(
         self, conn: psycopg.Connection, tenant: str, shadow: str
     ) -> None:
@@ -354,7 +372,14 @@ class ControlPlane:
         inside the locked region instead held the tenant's route row across two unbounded
         full-table reads with no `lock_timeout`, so anything holding ACCESS EXCLUSIVE on either
         physical table pinned the row for as long as it liked. The locked region is back to
-        four indexed statements.
+        indexed statements only.
+
+        What this guarantees is ROUTE IDENTITY, not generation CONTENT. The shadow's rows are
+        counted on a different connection in the pre-phase and are not re-counted at swap time,
+        so a generation emptied in that window is still promoted. Closing that would mean
+        putting a full-table aggregate back under the route lock, which is the problem this
+        shape exists to avoid, so the window is accepted and the refusal message says only what
+        is actually checked.
         """
         with self._connect() as conn:
             self._set_tenant(conn, tenant)
@@ -366,17 +391,18 @@ class ControlPlane:
             if row is None or row[1] is None:
                 raise RuntimeError("cutover requires a configured shadow generation")
             expected = (str(row[0]), str(row[1]))
+            # Cheap, authoritative disqualifiers FIRST. They are re-checked inside the
+            # transaction below, which remains the authoritative copy; this is a fast-fail so
+            # that a shadow which is merely still building, or a tenant with outbox lag, is not
+            # made to pay two full-table scans and then told the wrong cause.
+            self._require_no_pending_events(conn, tenant)
+            self._require_ready_shadow(conn, expected[1])
             self._require_non_empty_shadow(conn, tenant, expected[1])
             if not allow_divergent_corpus:
                 self._require_parity(conn, tenant, expected[0], expected[1])
         with self._connect() as conn, conn.transaction():
             self._set_tenant(conn, tenant)
-            pending = conn.execute(
-                "SELECT count(*) FROM recall_migration_events "
-                "WHERE tenant_id = %s AND status = 'pending'", (tenant,)
-            ).fetchone()
-            if pending and pending[0]:
-                raise RuntimeError("cutover refused while migration events remain pending")
+            self._require_no_pending_events(conn, tenant)
             row = conn.execute(
                 "SELECT active_generation, shadow_generation FROM recall_tenant_routes "
                 "WHERE tenant_id = %s FOR UPDATE",
@@ -384,19 +410,15 @@ class ControlPlane:
             ).fetchone()
             if row is None or row[1] is None:
                 raise RuntimeError("cutover requires a configured shadow generation")
-            state = conn.execute(
-                "SELECT state FROM recall_index_generations WHERE generation_id = %s", (row[1],)
-            ).fetchone()
-            if state is None or state[0] != "ready":
-                raise RuntimeError("cutover requires a ready shadow generation")
+            self._require_ready_shadow(conn, str(row[1]))
             if (str(row[0]), str(row[1])) != expected:
                 # Someone re-routed this tenant while parity was running, so what was verified
                 # is not what would be swapped. Refuse rather than promote against a stale
                 # comparison; the operator re-runs and the parity check runs against the route
                 # as it now stands.
                 raise RuntimeError(
-                    "cutover refused: the tenant route changed while parity was being "
-                    f"verified (was {expected}, now {(str(row[0]), str(row[1]))}); re-run"
+                    "cutover refused: the tenant route changed between verification and the "
+                    f"swap (was {expected}, now {(str(row[0]), str(row[1]))}); re-run"
                 )
             conn.execute(
                 "UPDATE recall_tenant_routes SET active_generation = shadow_generation, "

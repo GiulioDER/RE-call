@@ -199,21 +199,24 @@ def test_cutover_refuses_a_shadow_that_does_not_match_the_active_generation() ->
         control.set_generation_state(shadow, "ready", chunk_count=1_000_000, source_count=120_000)
         control.set_route(tenant, active, shadow)
 
-        with pytest.raises(RuntimeError, match="cutover refused"):
-            control.cutover(tenant)
-        # The route is untouched: the tenant still serves the generation that has the data.
-        route = control.route(tenant)
-        assert route is not None and route.active.generation_id == active
-
-        # The escape hatch covers a corpus that legitimately CHANGED, not one that is
-        # ABSENT: give the shadow a divergent row, then it promotes. An empty shadow stays
-        # refused even under the flag (see the assertion below).
+        # Give the shadow a DIVERGENT row before the first attempt. Without it the shadow is
+        # empty, `_require_non_empty_shadow` raises first, and a bare match="cutover refused"
+        # is satisfied by the emptiness message while the parity gate goes untested — proven
+        # by mutation: `_require_parity` could be reduced to `return` with the suite green.
         with PgVectorStore(TEST_DSN, dim=8, table=shadow_table, tenant=tenant) as store:
             store.upsert(
                 [Chunk(id="c2", source="s3://x/two.md", text="different",
                        metadata={"content_hash": "h2"})],
                 [[0, 1.0, 0, 0, 0, 0, 0, 0]],
             )
+        # Matched on the PARITY wording specifically, not the generic prefix.
+        with pytest.raises(RuntimeError, match="shadow generation contains extra sources"):
+            control.cutover(tenant)
+        # The route is untouched: the tenant still serves the generation that has the data.
+        route = control.route(tenant)
+        assert route is not None and route.active.generation_id == active
+
+        # The escape hatch covers a corpus that legitimately CHANGED, and this one has.
         control.cutover(tenant, allow_divergent_corpus=True)
         promoted = control.route(tenant)
         assert promoted is not None and promoted.active.generation_id == shadow
@@ -315,7 +318,7 @@ def test_cutover_refuses_when_the_route_moved_while_parity_was_running(monkeypat
             self.set_route(tenant_id, first, third)
 
         monkeypatch.setattr(ControlPlane, "_require_parity", racing)
-        with pytest.raises(RuntimeError, match="route changed while parity"):
+        with pytest.raises(RuntimeError, match="route changed between verification and the swap"):
             control.cutover(tenant)
 
         # The swap did not happen: the route is exactly what the racer left it as.
