@@ -138,11 +138,47 @@ Set `RECALL_ENTERPRISE_CONTROL_PLANE=1` only on authenticated HTTP deployments. 
 
 Choose one service cost profile per process:
 
-* `RECALL_RETRIEVAL_PROFILE=fast` uses twenty candidates per retrieval leg and no reranker.
+* `RECALL_RETRIEVAL_PROFILE=fast` uses twenty candidates per retrieval leg and no reranker. It returns five hits and budgets 250 ms.
 
-* `RECALL_RETRIEVAL_PROFILE=quality` uses the same candidate pool and the local pinned reranker.
+* `RECALL_RETRIEVAL_PROFILE=quality` uses the same candidate pool and the local pinned reranker. It returns five hits and budgets 1500 ms. The reranker scores the COMPLETE fused candidate pool before truncation, so a relevant passage sitting just below the fused cutoff can still be rescued, which is the only reason the stage exists.
 
-Run separate deployments when both profiles are required. Clients cannot select the expensive path per request. `RECALL_SEARCH_CONCURRENCY` and `RECALL_SEARCH_QUEUE` bound CPU admission before query embedding begins.
+Run separate deployments when both profiles are required. Clients cannot select the expensive path per request: the profile is read from the process environment and a request's `k` is clamped down to the profile's returned count, never raised. Leaving `RECALL_RETRIEVAL_PROFILE` unset preserves the legacy `RECALL_RERANK` switch exactly; setting the two to values that contradict each other refuses **startup**, not the first search.
+
+### The latency budget at request time
+
+`latency_budget_ms` means two enforced, observable things.
+
+It **bounds the admission wait**. A request that cannot acquire a running slot within the budget is shed with `RetrievalOverloaded` before the query is embedded. That ordering is the point: admission is taken ahead of the embedder, so a refused request costs nothing. Without the bound, `queue_capacity` caps how many threads may be parked and says nothing about how long any of them waits, and a process can hold a client for minutes behind a slow reranked query while every counter reads healthy. `RetrievalOverloaded` carries a `reason` (`queue_full` or `budget_exhausted`) and a `retry_after_seconds`, matching how `RateLimited` reports a retryable refusal.
+
+It **labels an overrun**. A request that completes over budget still returns its answer, and reports `total_ms`, `latency_budget_ms` and `budget_exceeded` on the response. Aborting in flight was rejected: there is no cancellation point inside a blocking cross-encoder `predict`, so the process would pay the whole cost and then discard the answer, converting a latency regression into an availability incident.
+
+The budget is charged **once**. `budget_exceeded` is computed on the work a request actually did (`total_ms` minus `admission_wait`), not on its end-to-end latency. Since the budget is already spent as the admission timeout, a request may legitimately wait almost all of it before starting; comparing the same allowance against the total as well would label a fast retrieval slow because another request was ahead of it, and would saturate the counter under any queueing. `total_ms` still reports client-visible latency, which is a different and also necessary number.
+
+The **legacy profile enforces no budget**, and reports `latency_budget_ms` as `null` rather than as the 24-day sentinel the code uses internally. `budget_exceeded` is then always false.
+
+Each profile carries its **own** concurrency budget rather than one shared default: fast admits 8 concurrent with 32 queued, quality 2 with 8, legacy 4 with 16. Quality's per-request budget is six times fast's, so an equal queue depth would make its clients wait roughly six times as long; the numbers hold `queue_capacity * latency_budget_ms` within one order of magnitude (fast 8000 slot-ms, quality 12000). These values are a policy choice, not a measurement, and the latency blocker in `ENTERPRISE_PROGRAM_STATUS.md` is why. `RECALL_SEARCH_CONCURRENCY` and `RECALL_SEARCH_QUEUE` override them for the selected profile.
+
+The admission gate is entered inside a worker thread, so its capacity is denominated in threads whether or not it says so. The server therefore **sizes the worker pool from the profile** at startup (`worker_thread_budget`: admission capacity plus eight reserved threads), and only ever raises it. Without that, fast's 8 + 32 would exactly equal anyio's 40-token default: the request that should be shed would never reach the gate at all, it would wait in anyio's limiter, which has no timeout and no counter, and `recall_retrieval_rejected_total` would read zero while clients waited unboundedly. The reserved headroom keeps queued searches from starving `recall_index`, `recall_forget`, `recall_stats` and token validation.
+
+`RECALL_RERANK_THREADS` bounds inference threads **on the quality profile only**; it is not read on the legacy `RECALL_RERANK` path. One reranker is built per worker process, under a construction lock: a cache lookup is not a lock, and a cold start under load would otherwise have every concurrent first request load its own copy of the model. A construction that fails is cached too, so a broken artifact fails immediately instead of re-hashing the model tree on every request.
+
+### The quality profile's reranker is pinned by digest
+
+`RECALL_RERANK_PATH` is deployment specific. The artifact digest is not: `recall/rerank.py` pins artifact SHA256 `db6ad87969c7dc78320152e68a16118aeb4b2a6f7d8cc979c57f61ddb5e2ab2a`, and `RECALL_RERANK_SHA256` must equal it. Verifying the tree against a digest the operator supplied would prove only that the tree hashes to its own hash; the pin is the value chosen elsewhere that makes the comparison mean something.
+
+Two limits on what that pin says, both deliberate.
+
+The model name `cross-encoder/ms-marco-MiniLM-L-6-v2` and revision `c5ee24cb16019beea0893ab7796b1df96625c6b8` are recorded beside it as **provenance, not as a runtime check**. Nothing reads them at load time: the quality profile loads from a local tree with `local_files_only`, where the Hub revision is unused.
+
+And the digest is a hash of a whole provisioned **tree**, path names included, so it identifies one provisioned directory rather than the model in general. A differently laid out copy of the same weights (a Hugging Face `blobs`/`snapshots` cache, a `snapshot_download` that left a lock file behind) hashes differently and is refused. This deployment's tree is the one recorded in `/opt/recall-enterprise/manifest.json`. There is no shipped command that reproduces it elsewhere, which is a real gap for any operator outside that host and is recorded as such in `ENTERPRISE_PROGRAM_STATUS.md`.
+
+### What every result reports
+
+Every search response carries, additively: the embedding profile identity, the retrieval profile, the index generation, the candidate pool size, whether reranking ran, `total_ms`, `latency_budget_ms`, `budget_exceeded`, and per-stage wall time for `admission_wait`, `query_embedding`, `dense_retrieval`, `sparse_retrieval`, `fusion`, `reranking`, `trust_evaluation` and `evidence_assembly`. The same stage timings are observed into `METRICS` under `recall_retrieval_stage_ms`, labelled by profile and stage, so per-stage percentiles exist across a population of queries rather than only per response. `recall_retrieval_total_ms` is observed on failures as well as successes, because a timer that only records on success hides the slow path worth finding. It deliberately excludes requests that were **shed**: those did no work by construction, so booking them would make healthy load shedding indistinguishable from an outage and would contaminate the served-latency population with rejections in exactly the overload regime where a p95 matters most. A shed request appears in `recall_retrieval_rejected_total{profile,reason}` and nowhere else.
+
+Every hit's `score` is its dense cosine, including hits that arrived through the sparse leg and hits the reranker moved. Reranking reorders and never rewrites the score, because calibration thresholds are stated in cosine units and a cross-encoder logit is not one.
+
+Metric labels and log records are library-authored throughout. No query text and no corpus text reaches a log record, a metric label or an exception message; a test drives a distinctive sentinel through the search path and asserts its absence from every captured record, with a positive control proving the detector can fire.
 
 ## Evidence integration
 
