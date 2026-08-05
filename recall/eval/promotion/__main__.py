@@ -32,6 +32,7 @@ from recall.eval.promotion.manifest import FrozenQuestion, read_manifest, write_
 from recall.eval.promotion.records import record_from_dict
 from recall.eval.promotion.run import LEDGER_ID_FIELDS, ArmConfig, score_arm
 from recall.eval.resume import read_ledger
+from recall.lint import DEFAULT_GLOB
 
 
 def _adapters(names: list[str]) -> list[CorpusAdapter]:
@@ -97,6 +98,8 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
     Setup runs INSIDE the guard, matching `recall/eval/harness.py::_throwaway_store`: a failure
     while creating the schema or indexing must still drop the table and close the connection.
     """
+    from recall.context import context_policy_for_profile
+    from recall.embeddings import embedding_profile_id
     from recall.index import Indexer
     from recall.store import PgVectorStore
     from recall_mcp.service import make_embedder
@@ -105,6 +108,14 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
     # resolves an embedder through `recall.embedding_registry`, so an arm's profile identity comes
     # from the registry instead of from a second vocabulary maintained here.
     embedder = make_embedder(args.embedder)
+    # The context policy has to come from the arm's own profile. `Indexer` defaults to
+    # `ContextPolicy()`, which is mode "none" / `raw-v1`, and it REFUSES an embedder whose profile
+    # declares anything else. So without this every context profile was unindexable through this
+    # harness: measured, all three failed with "embedding profile context 'context-document-v1'
+    # does not match index context 'raw-v1'" before a single question was scored. A campaign
+    # comparing context modes could not run at all, and the failure was at index time rather than
+    # in the numbers, which is the only reason it was not a silent wrong result.
+    context_policy = context_policy_for_profile(embedding_profile_id(embedder))
     store = PgVectorStore(args.dsn, dim=embedder.dim, table=f"promo_{uuid.uuid4().hex[:8]}")
     try:
         store.ensure_schema()
@@ -114,7 +125,22 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
                 f"{adapter.name}: no corpus directory to index. Pass --corpus-dir pointing at the "
                 f"documents this corpus's labels refer to."
             )
-        Indexer(store, embedder).index_path(Path(corpus_dir))
+        # `index_path` defaults to `**/*.md`. The PEPs corpus is `.rst`, so the default indexed
+        # ZERO files and every one of 110 questions came back abstained with an empty pool. The
+        # gate's `VacuousArm` guard did catch it, but only after four arms had each paid for a
+        # full embedding pass, and its message blames the label space, which was not the fault.
+        stats = Indexer(store, embedder, context_policy=context_policy).index_path(
+            Path(corpus_dir), args.glob
+        )
+        # An empty index cannot produce a measurement, and 110 abstentions is not a result. Refuse
+        # where the cause is still legible rather than three steps downstream.
+        if not stats.chunks:
+            raise SystemExit(
+                f"{adapter.name}: indexing {corpus_dir} with glob {args.glob!r} produced no "
+                f"chunks. Every question would abstain against an empty index and the gate would "
+                f"refuse the arm as vacuous, blaming the label space. Check --glob against the "
+                f"corpus file extension."
+            )
         yield store, embedder
     finally:
         try:
@@ -277,6 +303,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument("--corpus-dir", type=Path, default=None)
+    run.add_argument(
+        "--glob",
+        default=DEFAULT_GLOB,
+        help=(
+            "file pattern to index, passed to Indexer.index_path. Defaults to markdown; "
+            "a corpus of another extension (the PEPs are .rst) indexes ZERO files under "
+            "the default and every question then abstains against an empty index."
+        ),
+    )
     run.add_argument(
         "--embedder",
         default="fastembed",
