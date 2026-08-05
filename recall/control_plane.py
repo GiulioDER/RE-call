@@ -280,17 +280,17 @@ class ControlPlane:
         from recall.store import PgVectorStore
 
         rows = {
-            str(r[0]): (str(r[1]), int(r[2]), str(r[3]))
+            str(r[0]): (str(r[1]), int(r[2]), str(r[3]), int(r[4]))
             for r in conn.execute(
-                "SELECT generation_id, physical_table, dimension, embedding_profile "
-                "FROM recall_index_generations WHERE generation_id = ANY(%s)",
+                "SELECT generation_id, physical_table, dimension, embedding_profile, "
+                "chunk_count FROM recall_index_generations WHERE generation_id = ANY(%s)",
                 ([active, shadow],),
             ).fetchall()
         }
         if active not in rows or shadow not in rows:
             raise RuntimeError("cutover requires both generations to be registered")
-        active_table, active_dim, _active_profile = rows[active]
-        shadow_table, shadow_dim, _shadow_profile = rows[shadow]
+        active_table, active_dim, _active_profile, _active_chunks = rows[active]
+        shadow_table, shadow_dim, _shadow_profile, declared_chunks = rows[shadow]
         # Deliberately NOT comparing embedding_profile or dimension. Re-indexing onto a new
         # embedder is the main reason to build a shadow generation at all, and
         # `validate_generation_parity` is built for exactly that: it compares source sets and
@@ -303,10 +303,20 @@ class ControlPlane:
             PgVectorStore(self._dsn, dim=shadow_dim, table=shadow_table, tenant=tenant) as after,
         ):
             parity = validate_generation_parity(before, after)
+        if parity.shadow_chunks == 0:
+            # Parity alone passes vacuously here: an empty shadow over an empty active is
+            # 0 == 0, so the gate would report "verified" having verified nothing, and promote
+            # a generation whose `mark-ready` counts were pure assertion. An empty shadow is
+            # never a corpus worth serving, whatever the active holds.
+            raise RuntimeError(
+                "cutover refused: the shadow generation holds no rows "
+                f"(recall_index_generations declares chunk_count={declared_chunks})"
+            )
         if not parity.valid:
             raise RuntimeError(
                 "cutover refused: " + "; ".join(parity.failures)
-                + " (pass allow_divergent_corpus=True only if the corpus change is intended)"
+                + " (re-run with --allow-divergent-corpus only if the corpus change is"
+                " intended)"
             )
 
     def cutover(self, tenant: str, *, allow_divergent_corpus: bool = False) -> None:

@@ -51,6 +51,8 @@ class GenerationStore(PgVectorStore):
             pool_size=pool_size,
             statement_timeout_ms=statement_timeout_ms,
         )
+        if not migration_target.isidentifier():
+            raise ValueError("migration_target must be a valid SQL identifier")
         self._migration_target = migration_target
         self._pinned_generation: ContextVar[str | None] = ContextVar(
             f"recall_generation_{uuid.uuid4().hex}", default=None
@@ -310,17 +312,23 @@ class GenerationStore(PgVectorStore):
         tombstone and letting the next build re-ingest it the moment its content changes.
         The manifest is the record of what the corpus contains.
 
-        Restricted to states that represent a corpus the tenant actually holds. A
-        `building` or `failed` generation names objects that were never successfully
-        ingested (and, when failed, may not exist at the source at all), and erasure
-        writes a PERMANENT tombstone, so including them would let a never-built URI be
-        barred from every future build.
+        Only `failed` is excluded. A failed generation may name objects that never
+        existed at the source, and a tombstone is permanent, so admitting them would
+        let a URI that was never in the corpus be barred from every future build.
+
+        `building` MUST be included: it is the state a generation occupies for the
+        whole of its ingest, and `build()` re-checks `_is_tombstoned` per object
+        exactly so an erasure issued mid-build lands. Excluding it meant a
+        right-to-erasure request during a build was answered "check for typos" and
+        the build then indexed the very content the user asked to erase. A URI in a
+        building manifest is not a typo: the operator put it there. The typo guard is
+        the union failing to match at all, not this state list.
         """
         rows = self._with_retry(
             lambda conn: conn.execute(
                 "SELECT manifest FROM recall_generations "
                 "WHERE tenant_id = %s "
-                "AND state IN ('validating', 'ready', 'active', 'retired')",
+                "AND state IN ('building', 'validating', 'ready', 'active', 'retired')",
                 (self._tenant,),
             ).fetchall()
         )
@@ -358,6 +366,26 @@ class GenerationStore(PgVectorStore):
         )
         return frozenset(str(row[0]) for row in found)
 
+    def _legacy_rows_for_identifiers(self, identifiers: list[str]) -> list[tuple[Any, ...]]:
+        """(source, file) pairs for the adopted v0.8 rows matching any requested identifier."""
+        exists = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT to_regclass(%s) IS NOT NULL", (self._migration_target,)
+            ).fetchone()
+        )
+        if not exists or not exists[0]:
+            return []
+        return list(
+            self._with_retry(
+                lambda conn: conn.execute(
+                    f"SELECT DISTINCT source, metadata->>'file' FROM {self._migration_target} "
+                    "WHERE tenant_id = %s "
+                    "AND (metadata->>'file' = ANY(%s) OR source = ANY(%s))",
+                    (self._tenant, identifiers, identifiers),
+                ).fetchall()
+            )
+        )
+
     def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
         edges, unresolved, _candidates = self.supersession_all()
         return edges, unresolved
@@ -382,17 +410,28 @@ class GenerationStore(PgVectorStore):
         )
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+        """Resolve erasure identifiers to source URIs, across everything the tenant holds.
+
+        Scoped to the ACTIVE generation this used to disagree with the CLI about what could be
+        erased, and to raise `NoActiveGeneration` on a tenant whose rows were adopted in place
+        by migration 0008 and never entered `recall_chunks_v1` — so the MCP `recall_forget`
+        left that data on disk while `recall forget` erased it. Its one consumer,
+        `forget_memory`, deletes through `GenerationManager.forget`, which sweeps every
+        generation anyway, so resolving narrower than that only ever lost erasures.
+        """
         if not identifiers:
             return {}
-        generation_id = self._generation_id()
-        rows = self._with_retry(
-            lambda conn: conn.execute(
-                "SELECT DISTINCT source_uri, metadata->>'file' FROM recall_chunks_v1 "
-                "WHERE tenant_id = %s AND generation_id = %s "
-                "AND (metadata->>'file' = ANY(%s) OR source_uri = ANY(%s))",
-                (self._tenant, generation_id, identifiers, identifiers),
-            ).fetchall()
+        rows = list(
+            self._with_retry(
+                lambda conn: conn.execute(
+                    "SELECT DISTINCT source_uri, metadata->>'file' FROM recall_chunks_v1 "
+                    "WHERE tenant_id = %s "
+                    "AND (metadata->>'file' = ANY(%s) OR source_uri = ANY(%s))",
+                    (self._tenant, identifiers, identifiers),
+                ).fetchall()
+            )
         )
+        rows += self._legacy_rows_for_identifiers(identifiers)
         requested = set(identifiers)
         resolved: dict[str, list[str]] = {}
         for source, file in rows:

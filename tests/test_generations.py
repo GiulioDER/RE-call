@@ -677,23 +677,20 @@ def test_forget_erases_a_source_that_chunked_to_nothing(manager, monkeypatch, ca
 
 
 @requires_db
-def test_forget_refuses_a_url_only_a_never_built_generation_names(
-    manager, monkeypatch, capsys
-) -> None:
-    """A manifest entry that was never ingested must not be tombstonable.
+def test_forget_refuses_a_url_only_a_failed_generation_names(manager, monkeypatch, capsys) -> None:
+    """A FAILED generation's manifest entries must not be tombstonable.
 
-    Widening the existence check to manifests fixed the zero-chunk case, but a `building` or
-    `failed` generation names objects that were never successfully ingested, and erasure
-    writes a PERMANENT tombstone. Including those states would let a URI that has never been
-    in the corpus be barred from every future build, with no way back.
+    A failed build may name objects that never existed at the source, and a tombstone is
+    permanent, so admitting them would let a URI that was never in the corpus be barred from
+    every future build. `building` is deliberately NOT excluded: see the test below.
     """
     embedder = _Embedder(1)
     data = b"---\nstatus: current\n---\nnever built"
     manifest = _manifest(manager.tenant_id, data, version="v1")
     uri = manifest.objects[0].uri
-    # create() only: the generation stays in `building` and no chunk row is ever written.
     generation = manager.create(manifest, _pipeline("model-a"))
-    assert manager.get(generation.generation_id).state == "building"
+    manager.fail(generation.generation_id, "the source object could not be fetched")
+    assert manager.get(generation.generation_id).state == "failed"
 
     monkeypatch.setenv("RECALL_ENV", "production")
     cli_main(
@@ -708,8 +705,49 @@ def test_forget_refuses_a_url_only_a_never_built_generation_names(
             "SELECT count(*) FROM recall_source_tombstones WHERE tenant_id = %s",
             (manager.tenant_id,),
         ).fetchone()[0]
-    assert tombstoned == 0, "an unbuilt generation's manifest entry got a permanent tombstone"
+    assert tombstoned == 0, "a failed generation's manifest entry got a permanent tombstone"
     assert "NOT tombstoned" in out
+
+
+@requires_db
+def test_forget_during_a_build_is_honoured_by_that_build(manager, monkeypatch, capsys) -> None:
+    """An erasure issued while a generation is BUILDING must land in that build.
+
+    `building` is the state a generation occupies for the whole of its ingest, and build()
+    re-checks `_is_tombstoned` per object exactly so a concurrent erasure takes effect.
+    Excluding `building` from the existence check made the request answer "check for typos",
+    write no tombstone, and let the build index the content the user asked to erase.
+    """
+    embedder = _Embedder(1)
+    data = b"---\nstatus: current\n---\nthe user asked for this to be erased"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    uri = manifest.objects[0].uri
+    generation = manager.create(manifest, _pipeline("model-a"))
+    assert manager.get(generation.generation_id).state == "building"
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    cli_main(
+        ["--serving-dsn", TEST_DSN, "--tenant", manager.tenant_id, "--embedder", "hashing",
+         "forget", uri, "--yes"]
+    )
+    capsys.readouterr()
+
+    stats = manager.build(
+        generation.generation_id, _reader(manifest, data), embedder, lambda text: [text]
+    )
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        surviving = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, uri),
+        ).fetchone()[0]
+        tombstoned = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones WHERE tenant_id = %s",
+            (manager.tenant_id,),
+        ).fetchone()[0]
+    assert tombstoned == 1, "the erasure was refused, so the build had nothing to honour"
+    assert stats.tombstoned_objects == 1
+    assert surviving == 0, "the build indexed content the user had asked to erase"
 
 
 @requires_db
@@ -758,3 +796,50 @@ def test_forget_erases_rows_adopted_from_the_v08_table(manager, monkeypatch, cap
     assert surviving == 0, "the adopted v0.8 rows survived an erasure that reported success"
     assert tombstoned == 1, "no tombstone, so a later build could reintroduce the source"
     assert "NOT erased" not in out
+
+
+@requires_db
+def test_mcp_and_cli_erasure_agree_on_an_adopted_v08_tenant(manager) -> None:
+    """The two erasure surfaces must not disagree about the same tenant's data.
+
+    Migration 0008 adopts a v0.8 install's rows IN PLACE, so a tenant can hold data with no
+    active generation at all. `sources_for_identifiers` was scoped to the ACTIVE generation of
+    recall_chunks_v1, so the MCP `recall_forget` raised NoActiveGeneration and left the rows on
+    disk, while `recall forget` erased them. A hosted deployment exposes the MCP surface.
+    """
+    from recall_mcp.service import forget_memory
+
+    tenant = manager.tenant_id
+    uri = "/legacy/mcp-adopted.md"
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        for suffix in ("a", "b"):
+            conn.execute(
+                "INSERT INTO chunks (tenant_id, id, source, text, embedding) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (tenant, f"legacy-{suffix}-{uuid.uuid4().hex[:8]}", uri, "adopted body",
+                 "[" + ",".join(["0.0"] * 63) + ",1.0]"),
+            )
+
+    store = GenerationStore(TEST_DSN, 64, tenant=tenant)
+    try:
+        # The tenant genuinely has no active generation; this must resolve, not raise.
+        assert store.sources_for_identifiers([uri]) == {uri: [uri]}
+        result = forget_memory(store, [uri])
+    finally:
+        store.close()
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        surviving = conn.execute(
+            "SELECT count(*) FROM chunks WHERE tenant_id = %s AND source = %s", (tenant, uri)
+        ).fetchone()[0]
+        tombstoned = conn.execute(
+            "SELECT count(*) FROM recall_source_tombstones "
+            "WHERE tenant_id = %s AND source_uri = %s",
+            (tenant, uri),
+        ).fetchone()[0]
+    assert surviving == 0, "the MCP erasure surface left adopted v0.8 rows on disk"
+    assert tombstoned == 1
+    assert result.chunks_removed == 2
+    assert uri in result.sources_removed
