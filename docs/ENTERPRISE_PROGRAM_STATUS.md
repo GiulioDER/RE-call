@@ -34,7 +34,8 @@ this session added the pin rather than the loader test.
 first in the backlog and still untouched". That was true when the branch was cut from `98f2a85` and
 is not true now: a concurrent session landed it as #198 and #201 while this branch ran, and its
 entry sits directly below this one. An earlier draft of this paragraph also said `origin/master`
-did not move during the session; it moved **23 commits**.
+did not move during the session; it moved **28 commits**, across two merges: 23 before the PR
+was opened and 5 more in the minutes after, which GitHub reported as CONFLICTING.
 
 The branch was **merged rather than rebased**, because four commits would each have had to resolve
 the same two shared-document conflicts. Both documents were resolved by **reconstruction with
@@ -285,7 +286,7 @@ numbers taken from VPS2 here are checksums.
 |---|---|
 | `ruff check .` | clean |
 | `mypy` | clean, 139 source files |
-| `pytest -q` | **2316 passed, 35 skipped, 0 failed** (7 m 48 s) on the branch; **2464 passed, 36 skipped, 0 failed** (10 m 14 s) after merging `origin/master`. Throwaway pgvector container on port 5437 |
+| `pytest -q` | **2316 passed, 35 skipped, 0 failed** (7 m 48 s) on the branch; **2533 passed, 36 skipped, 0 failed** (10 m 04 s) after merging the 28 upstream commits. Throwaway pgvector container on port 5437 |
 | Mutation sweep | **54 of 54 killed** (two repairs along the way; see below) |
 | CCA audit | DEEP tier, 10 auditors, **2 died mid-run**; anti-regression and architect gates both REVISE, then satisfied |
 
