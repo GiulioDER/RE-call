@@ -5,7 +5,7 @@ import math
 import os
 import random
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -176,6 +176,48 @@ class EmbeddingProfile:
         if self.dimension < 1:
             raise ValueError("embedding profile dimension must be positive")
 
+    def fingerprint(self) -> str:
+        """SHA256 over the COMPLETE identity, as durable cache and provenance key material.
+
+        The encoding, which the pinned test transcribes independently rather than reading back
+        off this method: a domain tag, then every field in declaration order, then each
+        dependency as name followed by version, each item UTF-8 encoded and terminated by a NUL.
+        The terminators are what make the concatenation unambiguous; without them
+        ``("ab", "c")`` and ``("a", "bc")`` hash alike.
+
+        Every field is included, including the four that nothing else reads
+        (``normalization``, ``instruction_version``, ``chunker_version``, ``dependencies``).
+        That is the answer to what those fields are for: they are not documentation, they are
+        key material, and a change in any of them re-partitions the cache rather than silently
+        serving vectors produced under the old value. ``dependencies`` carries the inference
+        library version, so a fastembed upgrade costs a re-embed, deliberately, because ONNX
+        runtime changes are free to move the last bits of a vector and a cache cannot tell.
+
+        Stability is the contract. Cached vectors outlive the process that wrote them, so
+        changing this encoding invalidates every cache in existence at once; if that is ever
+        wanted, bump the domain tag so the change is legible instead of mysterious.
+        """
+        digest = hashlib.sha256()
+        parts = [
+            "embedding-profile-fingerprint-v1",
+            self.profile_id,
+            self.model_name,
+            self.artifact_digest,
+            str(self.dimension),
+            self.query_mode,
+            self.passage_mode,
+            self.normalization,
+            self.instruction_version,
+            self.chunker_version,
+            self.context_version,
+        ]
+        for name, pinned_version in self.dependencies:
+            parts.extend((name, pinned_version))
+        for part in parts:
+            digest.update(part.encode("utf-8"))
+            digest.update(b"\x00")
+        return digest.hexdigest()
+
 
 def _package_version(package: str) -> str:
     try:
@@ -337,13 +379,19 @@ class FastEmbedEmbedder:
         artifact_sha256: str | None = None,
         require_local: bool = False,
         context_version: str = "raw-v1",
+        identity: EmbeddingProfile | None = None,
     ) -> None:
-        try:
-            from fastembed import TextEmbedding
-        except ImportError as exc:  # pragma: no cover - exercised only without the extra
-            raise ImportError(
-                "FastEmbedEmbedder requires the fastembed extra: pip install recall[fastembed]"
-            ) from exc
+        """Load a local fastembed model, optionally under a supplied immutable identity.
+
+        ``identity`` is how a registered profile is built: `RegisteredProfile.build` passes the
+        one `EmbeddingProfile` the registry constructed, and the encoder methods named in it
+        (``query_mode`` / ``passage_mode``) are the ones actually called. Without it the class
+        keeps its previous behaviour and derives a profile from ``asymmetric``, the legacy
+        default path, where no artifact is pinned and nothing enterprise depends on the result.
+        """
+        # Artifact first, backend second. A deployment whose weights are missing or tampered
+        # with gets that error whether or not the optional extra happens to be installed, and
+        # nothing loads before the tree has been checksummed.
         if require_local and cache_dir is None:
             raise ValueError("offline embedding profiles require a provisioned cache_dir")
         if require_local and artifact_sha256 is None:
@@ -355,8 +403,14 @@ class FastEmbedEmbedder:
                 if artifact_sha256 is not None
                 else Path(cache_dir).resolve(strict=True)
             )
+        try:
+            from fastembed import TextEmbedding
+        except ImportError as exc:  # pragma: no cover - exercised only without the extra
+            raise ImportError(
+                "FastEmbedEmbedder requires the fastembed extra: pip install recall[fastembed]"
+            ) from exc
         threads = resolve_thread_budget()
-        kwargs: dict[str, object] = {"model_name": model_name}
+        kwargs: dict[str, object] = {"model_name": identity.model_name if identity else model_name}
         if threads is not None:
             kwargs["threads"] = threads
         if local_cache is not None:
@@ -366,23 +420,51 @@ class FastEmbedEmbedder:
         self._model = (
             TextEmbedding(**kwargs)
         )
-        self._name = model_name
-        self._asymmetric = asymmetric
-        passage_method = self._model.passage_embed if asymmetric else self._model.embed
-        self._dim = len(next(iter(passage_method(["probe"]))))
-        digest = artifact_sha256 or "legacy-unverified"
-        self._profile = EmbeddingProfile(
+        self._name = identity.model_name if identity else model_name
+        self._query_mode = identity.query_mode if identity else (
+            "query_embed" if asymmetric else "embed"
+        )
+        self._passage_mode = identity.passage_mode if identity else (
+            "passage_embed" if asymmetric else "embed"
+        )
+        # Both encoders are resolved HERE, at construction. Resolving the query encoder lazily
+        # would let a deployment index an entire corpus and only discover a missing encoder on
+        # its first query, which is the worst possible moment to find out.
+        self._encoder(self._query_mode)
+        # Dimension discovery goes through the PASSAGE encoder: the stored vectors are passages,
+        # so the width the store is built at must be the width the passage encoder produces.
+        probe = next(iter(self._encoder(self._passage_mode)(["probe"])))
+        self._dim = len(list(probe))
+        if identity is not None and self._dim != identity.dimension:
+            raise ValueError(
+                f"profile {identity.profile_id!r} declares dimension {identity.dimension} but "
+                f"the provisioned artifact embeds at {self._dim}; this artifact is not that "
+                f"profile"
+            )
+        self._profile = identity or EmbeddingProfile(
             profile_id=profile_id or (
                 "bge-small-asymmetric-v1" if asymmetric else "bge-small-symmetric-v1"
             ),
             model_name=model_name,
-            artifact_digest=digest,
+            artifact_digest=artifact_sha256 or "legacy-unverified",
             dimension=self._dim,
-            query_mode="query_embed" if asymmetric else "embed",
-            passage_mode="passage_embed" if asymmetric else "embed",
+            query_mode=self._query_mode,
+            passage_mode=self._passage_mode,
             context_version=context_version,
             dependencies=(("fastembed", _package_version("fastembed")),),
         )
+
+    def _encoder(self, mode: str) -> Callable[[list[str]], Iterable[Iterable[float]]]:
+        """Resolve the encoder a profile NAMES, refusing a mode this backend does not have.
+
+        Refusing matters: a missing `query_embed` that silently fell back to `embed` would give
+        an asymmetric profile passage vectors for its queries, which is invisible downstream.
+        """
+        method = getattr(self._model, mode, None)
+        if not callable(method):
+            raise ValueError(f"fastembed model has no encoder named {mode!r}")
+        encoder: Callable[[list[str]], Iterable[Iterable[float]]] = method
+        return encoder
 
     @property
     def dim(self) -> int:
@@ -400,12 +482,10 @@ class FastEmbedEmbedder:
         return [[float(x) for x in vec] for vec in self._model.embed(texts)]
 
     def embed_query(self, text: str) -> list[float]:
-        method = self._model.query_embed if self._asymmetric else self._model.embed
-        return [float(x) for x in next(iter(method([text])))]
+        return [float(x) for x in next(iter(self._encoder(self._query_mode)([text])))]
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]:
-        method = self._model.passage_embed if self._asymmetric else self._model.embed
-        return [[float(x) for x in vec] for vec in method(texts)]
+        return [[float(x) for x in vec] for vec in self._encoder(self._passage_mode)(texts)]
 
 
 class SentenceTransformerEmbedder:
@@ -467,7 +547,16 @@ class Qwen3EmbeddingEmbedder:
         dimension: int = 384,
         context_version: str = "raw-v1",
         batch_size: int = 32,
+        identity: EmbeddingProfile | None = None,
     ) -> None:
+        """Load the offline Qwen3 artifact under the identity the registry built for it.
+
+        See `recall.embedding_registry` for the recorded rejection: this profile was measured on
+        CPU and refused on latency. The class is retained so the negative result stays
+        reproducible, not because the profile is a candidate.
+        """
+        if identity is not None:
+            dimension = identity.dimension
         if dimension != 384:
             raise ValueError("the registered Qwen3 experiment is fixed at 384 dimensions")
         local = verify_artifact(model_path, artifact_sha256)
@@ -487,7 +576,7 @@ class Qwen3EmbeddingEmbedder:
         )
         self._dim = dimension
         self._batch_size = batch_size
-        self._profile = EmbeddingProfile(
+        self._profile = identity or EmbeddingProfile(
             profile_id="qwen3-embedding-0.6b-384-v1",
             model_name="Qwen/Qwen3-Embedding-0.6B",
             artifact_digest=artifact_sha256,
