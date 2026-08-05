@@ -455,7 +455,14 @@ _RERANKER_LOCK = threading.Lock()
 #: instance appends the current frame to its `__traceback__` every time, and each retained frame
 #: pins its locals — which on this path include the caller's QUERY TEXT and the store. That would
 #: be an unbounded memory leak that also retains user text for the process lifetime, on the very
-#: path the caching was added to make cheap.
+#: path the caching was added to make cheap. Caching the instance and clearing its traceback at
+#: each raise would preserve more state, but two threads raising one shared object race on
+#: `__traceback__`; a fresh instance per raise cannot.
+#:
+#: ⚠️ Known fidelity limit: `(type, args)` does not round-trip the `OSError` family exactly. A bad
+#: `RECALL_RERANK_PATH` reports the offending path on the FIRST failure and drops it (along with
+#: `filename` / `winerror`) on cached repeats. The error class and the reason survive; the path
+#: does not. Accepted because the first occurrence is the diagnostic one and thread safety is not.
 _RERANKERS: dict[str, "Reranker | None | tuple[type[Exception], tuple[object, ...]]"] = {}
 
 
