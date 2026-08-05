@@ -33,6 +33,12 @@ from typing import Any
 
 from recall.calibration import Calibration
 from recall.embeddings import Embedder
+from recall.evidence import (
+    EvidenceBundle,
+    EvidencePolicy,
+    build_evidence_bundle,
+    render_evidence_prompt,
+)
 from recall.integrations import result_trust_metadata, trust_metadata
 from recall.rerank import Reranker
 from recall.store import PgVectorStore
@@ -136,6 +142,27 @@ class RecallRetriever(BaseRetriever):
             return_abstention_reason=return_abstention_reason,
             include_untrusted=include_untrusted,
         )
+
+    def evidence(self, query: str, *, policy: EvidencePolicy | None = None) -> EvidenceBundle:
+        """The generator-neutral evidence bundle for ``query``, over the same ``search_fn``.
+
+        Additive: ``invoke`` / ``_get_relevant_documents`` are untouched and a caller that never
+        asks for evidence sees no change. This exists because a chain that stuffs ``Document``
+        objects into a prompt has already lost the boundary — the trust verdict rides in
+        ``metadata`` and the stock ``stuff_documents_chain`` renders ``page_content`` alone.
+
+        ``include_untrusted`` is deliberately NOT honoured here. It is an escape hatch for a
+        caller who wants to see what the trust layer refused; the evidence bundle is the input to
+        a generator, and letting a constructor flag widen it would make "what may be cited" a
+        setting rather than a rule.
+        """
+        return build_evidence_bundle(self.search_fn(query), policy or EvidencePolicy())
+
+    def evidence_prompt(
+        self, query: str, *, policy: EvidencePolicy | None = None
+    ) -> tuple[str, str]:
+        """The fixed system instruction and the delimited user data message for ``query``."""
+        return render_evidence_prompt(self.evidence(query, policy=policy))
 
     def _get_relevant_documents(
         self, query: str, *, run_manager: CallbackManagerForRetrieverRun

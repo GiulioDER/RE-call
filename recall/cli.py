@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import functools
+import json
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from recall.calibration import Calibration
@@ -42,6 +44,17 @@ def _print_result(result: TrustedResult) -> None:
     if result.staleness.stale:
         flags.append("STALE")
     print(f"[{' '.join(flags) if flags else 'ok'}] query={result.query!r}")
+    # Additive identity line. The same three fields the MCP result and both framework adapters
+    # already carry; the CLI was the one surface where an operator could not tell WHICH embedding
+    # profile, retrieval profile and index generation produced what they are reading. All three
+    # are library- or operator-chosen rather than corpus-chosen, and all three are filtered
+    # anyway: a value that reaches a terminal is filtered on the way out, not on the way in.
+    d = result.diagnostics
+    print(
+        f"  index: embedding={terminal_safe(d.embedding_profile)} "
+        f"retrieval={terminal_safe(d.retrieval_profile)} "
+        f"generation={terminal_safe(d.index_generation)}"
+    )
     if result.reason:
         print(f"  reason: {result.reason}")
     for h in result.hits:
@@ -58,6 +71,38 @@ def _print_result(result: TrustedResult) -> None:
             f"  {h.verdict:<14} conf={h.confidence:.2f} cos={h.cosine:.3f}  "
             f"{name}{redirect}  {preview!r}"
         )
+        # `chunk_id` is the identifier a citation resolves to, so an operator debugging an
+        # evidence bundle needs it here. It is DERIVED FROM THE FILE NAME (`<file>#<ord>`), which
+        # makes it as corpus-controlled as `name` above and it goes through the same filter.
+        valid_from = h.validity.valid_from.isoformat() if h.validity.valid_from else "-"
+        print(
+            f"                 chunk_id={terminal_safe(h.chunk.id)} "
+            f"ordinal={h.provenance.ord} valid_from={valid_from}"
+        )
+
+
+def _print_evidence(result: TrustedResult, max_items: int) -> None:
+    """Print the generator-neutral evidence bundle and the exact prompt it renders to.
+
+    JSON, not prose, and that is a safety property rather than a formatting preference. Every
+    string here is corpus-controlled, and `json.dumps` escapes control characters — so the ANSI
+    payload `terminal_safe` strips from the human-readable listing above arrives as a literal
+    `\\u001b` here instead of driving the terminal. The operator sees the byte that is actually in
+    their corpus, which is what a debugging surface owes them.
+
+    This is the CLI's whole exposure of `recall.evidence`: the bundle a generator would be given,
+    plus `system` and `user` exactly as `render_evidence_prompt` produces them, so an operator can
+    inspect the boundary without writing a program against the library.
+    """
+    from recall.evidence import EvidencePolicy, build_evidence_bundle, render_evidence_prompt
+
+    bundle = build_evidence_bundle(result, EvidencePolicy(max_items=max_items))
+    system, user = render_evidence_prompt(bundle)
+    payload = {
+        "bundle": asdict(bundle),
+        "prompt": {"system": system, "user": user},
+    }
+    print(json.dumps(payload, indent=2, default=str))
 
 
 def _cli_policy() -> "TrustPolicy":
@@ -252,6 +297,13 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="opt-in entailment stage: demote hits that don't answer the query "
         "(requires recall[entail]; downloads the QNLI judge on first use)",
+    )
+    p_search.add_argument(
+        "--evidence",
+        action="store_true",
+        help="also print the generator-neutral evidence bundle and the exact prompt it renders "
+        "to, as JSON. Only verdict-ok hits enter the bundle, in retrieval order; an abstention "
+        "produces an empty bundle. Additive: the normal listing is printed either way.",
     )
 
     sub.add_parser("demo", help="index corpus/ and run sample memory queries")
@@ -611,8 +663,6 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.cmd == "calibration":
-        import json
-
         from recall.calibration_v2 import CalibrationError, CalibrationRepository
 
         repository = CalibrationRepository(args.dsn, args.tenant)
@@ -794,17 +844,18 @@ def main(argv: list[str] | None = None) -> None:
         with store_context as store:
             store.check_schema()
             _search_policy, _search_calibration = _cli_trust(embedder, calibration)
-            _print_result(
-                trusted_search(
-                    store,
-                    embedder,
-                    args.query,
-                    k=args.k,
-                    calibration=_search_calibration,
-                    entailment=entail_judge,
-                    policy=_search_policy,
-                )
+            _search_result = trusted_search(
+                store,
+                embedder,
+                args.query,
+                k=args.k,
+                calibration=_search_calibration,
+                entailment=entail_judge,
+                policy=_search_policy,
             )
+            _print_result(_search_result)
+            if args.evidence:
+                _print_evidence(_search_result, max_items=args.k)
     elif args.cmd == "demo":
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
             raise SystemExit("the filesystem demo is unavailable in production")

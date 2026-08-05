@@ -75,6 +75,10 @@ class GenerationResult:
     envelope: AnswerEnvelope
     validation: ValidationResult
     generator_invoked: bool
+    #: True when `envelope.citations` differs from what the generator emitted because duplicates
+    #: were collapsed. Reported rather than silent: `envelope` is the record of what the answer
+    #: cited, and a caller auditing it is entitled to know the library edited it.
+    citations_normalized: bool = False
 
 
 class EvidenceValidationError(ValueError):
@@ -103,8 +107,31 @@ def _item_payload(item: EvidenceItem) -> dict[str, object]:
     return payload
 
 
+#: The delimiter bracketing the evidence payload inside the user data message. Library-authored
+#: and fixed; no corpus-controlled value reaches either half.
+EVIDENCE_OPEN = "<evidence_data>"
+EVIDENCE_CLOSE = "</evidence_data>"
+
+
+def _encode(data: dict[str, object]) -> str:
+    """JSON-encode ``data`` so that no corpus byte can close the evidence delimiter.
+
+    ``json.dumps`` escapes quotes, backslashes and control characters. It does **not** escape
+    ``<`` or ``>``, and the delimiter around this payload is built from exactly those two
+    characters — so a memory whose text contained ``</evidence_data>`` ended the region early and
+    everything after it arrived as free prose in the model's own channel. Delimiting without
+    escaping the delimiter is not delimiting.
+
+    Escaping both angle brackets to their ``\\uXXXX`` form is still valid JSON and parses back to
+    the identical string, so the evidence is unchanged for a consumer that parses the payload and
+    inert for one that scans it for the closing tag.
+    """
+    encoded = json.dumps(data, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return encoded.replace("<", "\\u003c").replace(">", "\\u003e")
+
+
 def _user_message(query: str, items: tuple[EvidenceItem, ...]) -> str:
-    data = {
+    data: dict[str, object] = {
         "query": query,
         "evidence": [_item_payload(item) for item in items],
         "answer_schema": {
@@ -113,14 +140,27 @@ def _user_message(query: str, items: tuple[EvidenceItem, ...]) -> str:
             "insufficient_evidence": "boolean",
         },
     }
-    encoded = json.dumps(data, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
-    return f"<evidence_data>{encoded}</evidence_data>"
+    return f"{EVIDENCE_OPEN}{_encode(data)}{EVIDENCE_CLOSE}"
 
 
 def build_evidence_bundle(
     result: TrustedResult, policy: EvidencePolicy = EvidencePolicy()
 ) -> EvidenceBundle:
-    """Build an ordered, trusted evidence set with exact optional token budgeting."""
+    """Build an ordered, trusted evidence set with exact optional token budgeting.
+
+    Four properties are load-bearing, and each is a thing this function deliberately does NOT do:
+
+    * **Only ``ok`` hits enter.** ``TrustedResult.hits`` is ``ok`` first and then everything the
+      trust layer demoted, so taking the list wholesale would hand a generator the superseded
+      memory this library exists to withhold. A degraded result (every verdict ``unverified``,
+      ``abstained`` forced False) therefore yields an EMPTY bundle, not an unjudged one.
+    * **Retrieval order is preserved.** No newest-wins re-ranking by ``indexed_at``, no re-sorting
+      by cosine. The trust layer already ordered these hits and this is not a second ranker.
+    * **No semantic deduplication.** Two hits with identical text are two items. Collapsing them
+      would drop a distinct chunk id that a citation may resolve to.
+    * **No neighbour retrieval.** The bundle is a projection of the hits it was given; this module
+      holds no store and issues no query, so an item that was not retrieved cannot appear.
+    """
     diagnostics = result.diagnostics
     if result.abstained:
         return EvidenceBundle(
@@ -134,10 +174,11 @@ def build_evidence_bundle(
             index_generation=diagnostics.index_generation,
             items=(),
         )
+    trusted = [hit for hit in result.hits if hit.verdict == "ok"]
     selected: list[EvidenceItem] = []
-    for hit in result.hits:
-        if hit.verdict != "ok" or len(selected) >= policy.max_items:
-            continue
+    for hit in trusted:
+        if len(selected) >= policy.max_items:
+            break
         item = EvidenceItem(
             chunk_id=hit.chunk.id,
             text=hit.chunk.text,
@@ -156,10 +197,21 @@ def build_evidence_bundle(
                 break
         selected.append(item)
     decision: Literal["answer", "abstain"] = "answer" if selected else "abstain"
+    if selected:
+        empty_reason = None
+    elif trusted:
+        # There WERE trusted candidates and the budget took all of them.
+        empty_reason = "evidence_budget_exhausted"
+    else:
+        # There were none. `abstained` is False here on exactly one path: a DEGRADED result, where
+        # the trust gate never ran, every verdict is `unverified` and `abstained` was forced False
+        # because abstaining is itself a judgement nobody licensed. Reporting that as a budget
+        # problem would name the wrong cause for the one case where the cause matters most.
+        empty_reason = "no_trusted_evidence"
     return EvidenceBundle(
         query=result.query,
         decision=decision,
-        reason_code=None if selected else "evidence_budget_exhausted",
+        reason_code=empty_reason,
         calibrated=result.calibrated,
         stale=result.staleness.stale,
         embedding_profile=diagnostics.embedding_profile,
@@ -170,12 +222,51 @@ def build_evidence_bundle(
 
 
 def render_evidence_prompt(bundle: EvidenceBundle) -> tuple[str, str]:
-    """Return a fixed system instruction and a JSON escaped user data message."""
+    """Return a fixed system instruction and a JSON escaped user data message.
+
+    The system message is the module constant :data:`SYSTEM_PROMPT` returned unchanged. It takes
+    no argument and performs no interpolation, so no corpus-controlled value can reach the
+    instruction channel — the boundary is the return statement, not a sanitiser. Every
+    corpus-controlled byte lives inside the delimited JSON payload of the second message.
+    """
     return SYSTEM_PROMPT, _user_message(bundle.query, bundle.items)
 
 
+def normalize_citations(envelope: AnswerEnvelope) -> AnswerEnvelope:
+    """Collapse repeated citations, deterministically, without minting an identifier.
+
+    A generator that cites the same chunk twice has produced a redundant answer, not an unsound
+    one, and refusing it would discard a correct answer over formatting. Normalisation is
+    first-occurrence order preserving and idempotent, and the result's citation set is a SUBSET of
+    the input's: this function can only ever remove, so no identifier it returns is one the
+    generator did not emit. That is the property that matters — a normaliser allowed to invent an
+    id could satisfy `validate_answer` by fabricating the very thing being checked.
+    """
+    seen: set[str] = set()
+    unique: list[str] = []
+    for citation in envelope.citations:
+        if citation not in seen:
+            seen.add(citation)
+            unique.append(citation)
+    if len(unique) == len(envelope.citations):
+        return envelope
+    return AnswerEnvelope(envelope.answer, tuple(unique), envelope.insufficient_evidence)
+
+
 def validate_answer(envelope: AnswerEnvelope, bundle: EvidenceBundle) -> ValidationResult:
-    """Validate shape and citation identity without claiming factual entailment."""
+    """Validate shape and citation identity. STRUCTURAL ONLY.
+
+    What this checks: the envelope's shape, that an answer carries at least one citation, that
+    every citation resolves to a chunk id in ``bundle``, and that the insufficient-evidence claim
+    is consistent with the bundle it answers.
+
+    What this does **not** check, and must never be read as checking: whether a cited passage
+    entails, supports, or is even topically related to the answer text. A valid result means the
+    answer is well-formed and every identifier in it exists — nothing about whether the answer is
+    true. Entailment is a separate, opt-in stage (:mod:`recall.entailment`) applied to retrieval,
+    and a structural pass that implied it would be the most expensive kind of wrong answer this
+    library can produce.
+    """
     errors: list[str] = []
     if bundle.decision == "abstain" and not envelope.insufficient_evidence:
         errors.append("an abstained evidence bundle requires insufficient_evidence=true")
@@ -234,14 +325,37 @@ def generate_from_evidence(
     generator: Callable[[str, str], str | dict[str, object] | AnswerEnvelope],
     policy: EvidencePolicy = EvidencePolicy(),
 ) -> GenerationResult:
-    """Run the evidence boundary, bypassing generation on every retrieval abstention."""
+    """Run the evidence boundary end to end, in the one order that is safe.
+
+    Retrieval and trust evaluation happen first, in the caller: this function receives their
+    ``TrustedResult`` and never issues a query of its own. It then
+
+    1. assembles the bundle within the exact tokenizer budget (``policy``),
+    2. **short-circuits on abstention** — an abstained or empty bundle returns
+       ``insufficient_evidence=true`` with ``generator_invoked=False``, and the generator is not
+       called, not constructed and not paid for,
+    3. otherwise renders the fixed system prompt plus the delimited user data message, invokes the
+       configured generator, and parses its output strictly,
+    4. collapses duplicate citations deterministically (:func:`normalize_citations`; recorded on
+       the result), then validates,
+    5. raises :class:`EvidenceValidationError` on malformed output, a missing citation, an unknown
+       citation, or an insufficient-evidence claim inconsistent with the bundle,
+    6. returns the validated answer together with the bundle it was answered from.
+
+    A generator that declares ``insufficient_evidence=true`` against a populated bundle is
+    ACCEPTED, and that is deliberate: the bundle says evidence was retrieved, not that it answers
+    the question, and turning an honest abstention into an error would push a generator toward
+    answering anyway. The inconsistency this rejects is the other direction — claiming sufficiency
+    over a bundle that has nothing in it.
+    """
     bundle = build_evidence_bundle(result, policy)
     if bundle.decision == "abstain":
         envelope = AnswerEnvelope(None, (), True)
         return GenerationResult(bundle, envelope, validate_answer(envelope, bundle), False)
     system, user = render_evidence_prompt(bundle)
-    envelope = parse_answer_envelope(generator(system, user))
+    raw = parse_answer_envelope(generator(system, user))
+    envelope = normalize_citations(raw)
     validation = validate_answer(envelope, bundle)
     if not validation.valid:
         raise EvidenceValidationError("; ".join(validation.errors))
-    return GenerationResult(bundle, envelope, validation, True)
+    return GenerationResult(bundle, envelope, validation, True, envelope is not raw)
