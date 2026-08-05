@@ -162,16 +162,31 @@ digests, byte comparisons and cosines.
 ### Archived
 
 `/var/lib/recall-benchmarks/2026-08-05-embedding-profile-distinctness/`, with `MANIFEST.sha256`
-covering every file and `sha256sum -c` passing. The archived script and test file are byte-identical
-to the committed ones, `868bf676ca78…780fc` and `829b09d81c17…a5da1`, **read back from the archive
-after the last edit rather than recorded when it was first written.**
+covering every file and `sha256sum -c` passing. The archive is populated from `git show HEAD:<path>`, so it
+holds exactly the bytes git stores, and the three digests below were read back from the archive
+afterwards rather than recorded when the files were written:
 
-⚠️ That distinction is the point, because the first version of this paragraph got it wrong: it
-carried `2b04d6af93e2…12cf0`, which is the digest of the script **before** the audit rewrote 694
-lines of it. So the paragraph asserting an integrity check was itself stale, in a document arguing
-that undemonstrated claims are the failure mode. The architect gate caught it by hashing both
-revisions. A digest quoted from memory is not an integrity check; one read back from the artifact
-is.
+| Archived file | SHA256 |
+|---|---|
+| `check_profile_encoder_distinctness.py` | `9749d2ee112a…57005f` |
+| `test_bench_profile_encoder_distinctness.py` | `829b09d81c17…a5da1` |
+| `result.json` | `33eda24cf611…fa869c` |
+
+⚠️ **This one sentence was wrong three times, in three different ways, and that is the finding.**
+First it quoted `2b04d6af93e2…`, the digest of the script *before* the audit rewrote 694 lines of
+it, so a paragraph asserting an integrity check was itself stale. Then it quoted a test-file digest
+that moved when one test was appended. Then, corrected twice, it was still false: the working copy
+on Windows holds CRLF and git normalises the blob to LF, so the file I had archived and the file
+git had committed genuinely differed, and `sha256sum` on the working copy could never have detected
+it.
+
+Patching the value a fourth time was available and would have been the wrong move. **Three rounds
+on the same claim means the mechanism is wrong, not the number.** Copying a working-copy file into
+an archive and then asserting it equals a git blob is a comparison across a boundary that rewrites
+bytes; no amount of care with the digest fixes it. Archiving `git show` output makes the claim true
+by construction instead of by vigilance. The previous session recorded the same class from the
+other side, a mutation harness whose `write_text` restore rewrote LF as CRLF and left ten files
+dirty.
 
 Two machine-readable artifacts, and neither is a `PromotionDecision`. No arm was scored, so
 emitting that schema would have described a gate evaluation that never happened, and a refusal to
