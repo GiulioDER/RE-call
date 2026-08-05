@@ -2,7 +2,21 @@
 
 Raw reports behind the **2026-08-05** finding that the rerank/pool-width **interaction is negative**:
 widening the candidate pool makes the local `ms-marco-MiniLM-L-6-v2` cross-encoder *worse*, not
-better. Preregistered 2026-08-04 before any arm ran.
+better.
+
+| | |
+|---|---|
+| preregistration (written 2026-08-04, before any arm ran) | [`benchmarks/PREREGISTRATION-peps-rerank-pool.md`](../../benchmarks/PREREGISTRATION-peps-rerank-pool.md) |
+| scorer (re-derives every figure below) | [`benchmarks/score_peps_rerank_pool.py`](../../benchmarks/score_peps_rerank_pool.py) |
+| verdict memo | `closed-hypothesis-recall-rerank-pool-interaction-2026-08-05` |
+
+```
+python -m benchmarks.score_peps_rerank_pool     # exit 0 iff every published figure reproduces
+```
+
+The scorer asserts the invariants, the arm rates, the deltas and the McNemar counts, so it is a
+regression guard on these numbers rather than a report. Its guards were mutation-tested: corrupting
+a published rate or a McNemar count makes it exit 1.
 
 **Prior work searched** (`docs_search(source_type='memory')`, plus the closed-hypotheses index):
 the 2026-07-22 `RE-call retrieval levers` closure (rerank +0.043 within noise, pool 20 to 100
