@@ -31,6 +31,12 @@ from typing import Any
 
 from recall.calibration import Calibration
 from recall.embeddings import Embedder
+from recall.evidence import (
+    EvidenceBundle,
+    EvidencePolicy,
+    build_evidence_bundle,
+    render_evidence_prompt,
+)
 from recall.integrations import result_trust_metadata, trust_metadata
 from recall.rerank import Reranker
 from recall.store import PgVectorStore
@@ -141,6 +147,25 @@ class RecallRetriever(BaseRetriever):
             include_untrusted=include_untrusted,
             callback_manager=callback_manager,
         )
+
+    def evidence(self, query: str, *, policy: EvidencePolicy | None = None) -> EvidenceBundle:
+        """The generator-neutral evidence bundle for ``query``, over the same ``search_fn``.
+
+        Additive: ``retrieve`` / ``_retrieve`` are untouched and a caller that never asks for
+        evidence sees no change. It exists because a query engine synthesises from node ``text``
+        and drops the ``metadata`` the trust verdict rides in, so the boundary has to be
+        reachable without going through nodes at all.
+
+        ``include_untrusted`` is deliberately NOT honoured here — see the LangChain adapter's
+        note. What may be cited is a rule, not a constructor setting.
+        """
+        return build_evidence_bundle(self._search_fn(query), policy or EvidencePolicy())
+
+    def evidence_prompt(
+        self, query: str, *, policy: EvidencePolicy | None = None
+    ) -> tuple[str, str]:
+        """The fixed system instruction and the delimited user data message for ``query``."""
+        return render_evidence_prompt(self.evidence(query, policy=policy))
 
     def _retrieve(self, query_bundle: QueryBundle) -> list[NodeWithScore]:
         result = self._search_fn(query_bundle.query_str)
