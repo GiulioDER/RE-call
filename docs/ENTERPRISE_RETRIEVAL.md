@@ -190,6 +190,33 @@ Validation is structural. It does not claim that a cited passage entails an answ
 
 `recall.promotion.evaluate_retrieval_promotion` implements the paired macro bootstrap interval, per corpus regression limit, paired sign tests with Holm correction, safety parity checks, security gate, and latency budget. Experiments remain opt in until the decision reports `promoted=true`. Negative artifacts should be retained with fixed question identifiers and model digests.
 
+### Producing a decision
+
+`recall/eval/promotion/` builds the gate's input. Run it in three steps, in this order:
+
+```bash
+python -m recall.eval.promotion freeze --corpus labelled \
+    --out results/promotion/labelled.manifest.jsonl
+
+python -m recall.eval.promotion run --manifest results/promotion/labelled.manifest.jsonl \
+    --expected-digest <the digest freeze printed> --corpus labelled --arm baseline \
+    --dsn "$RECALL_DSN"
+
+python -m recall.eval.promotion decide --manifest results/promotion/labelled.manifest.jsonl \
+    --baseline <baseline ledger> --candidate <candidate ledger> \
+    --out results/promotion/decision.json
+```
+
+`freeze` must run **before** either arm. It fixes question ids and input hashes while no candidate result exists, which is what makes "the same questions" checkable rather than assumed. It refuses to overwrite an existing manifest, and the reader refuses a body that no longer matches its digest. Each arm's rows carry the frozen `input_hash`, and `decide` refuses a pair of arms that do not cover the manifest exactly.
+
+Supported corpora: `labelled` (in-repo), `peps`, `locomo`, `ladder`, `longmemeval`, `mtrag`. Every adapter declares which id space its labels live in, with no default, because a wrong one scores an entire corpus as a total miss and reports a successful run.
+
+**Latency is PENDING by default, and PENDING blocks promotion.** `decide` emits `latency_p95_ms=None` unless `--certified-latency-p95-ms` is passed, and that flag is for a number measured on an idle reference host. This program has no such host, so every decision it can produce today is blocked on latency; the observed p95 is recorded in the artifact under `observed_diagnostic_only` and is not a gate input.
+
+**Calibration is scoped to the complete embedding identity.** Use `recall.calibration.save_for_profile` and `load_for_profile`, not `save` and `load_for`, for anything a gate reads. The latter pair keys on the profile ID alone, and two runs sharing a profile ID can differ in artifact digest, dimension, encoder modes or chunker version, each of which moves the cosine regime a threshold was fitted in. `load_for_profile` fails closed on a calibration that cannot show which identity it belongs to.
+
+**A run against a plain store is DEGRADED.** Strict trust mode refuses a store with no generation-bound certified calibration, which is correct. `--trust-policy development` runs anyway and records every hit's verdict as `unverified`, which carries no trust claim at all: the safety metrics of such a run describe a degraded system and are not a measurement of the trust layer. The decision artifact records the verdict distribution so a reader cannot mistake one for the other.
+
 ## Rejected profile: Qwen3-Embedding-0.6B truncated to 384 dimensions
 
 `qwen3-embedding-0.6b-384-v1` is registered and **rejected**. It is kept, with its measurement, so that the decision is reproducible and so that no later session re-measures it by accident. It is not a candidate and it is not gated on anything that could still open.
