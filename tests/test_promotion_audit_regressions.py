@@ -111,15 +111,13 @@ def test_a_certified_latency_that_is_not_a_positive_finite_number_blocks(value) 
     NaN is reachable without malice: this package's own `_percentile` returns NaN on an empty
     sample.
     """
-    safe = SafetyMetrics(0.1, 0.1, 0.0)
     frozen = _corpus("alpha") + _corpus("beta")
-    decision, document = decide(
+    decision, _ = decide(
         _arm(frozen, hits=4), _arm(frozen, hits=18), frozen,
         certified_latency_p95_ms=value, **COMMON,
     )
     assert not decision.promoted
     assert any("not a positive finite measurement" in f for f in decision.failures)
-    del document, safe
 
 
 def test_a_finite_positive_latency_under_budget_still_promotes() -> None:
@@ -166,7 +164,7 @@ def test_an_edited_ledger_row_is_refused_rather_than_gated_on() -> None:
         record_from_dict(payload)
 
 
-def test_an_unedited_row_round_trips(tmp_path) -> None:
+def test_an_unedited_row_round_trips() -> None:
     """The control: recomputation must accept every honestly-written row."""
     question = _frozen("q1", "alpha")
     record = _record(question, hit=True)
@@ -390,11 +388,48 @@ def test_an_arm_whose_rows_disagree_about_their_configuration_is_refused() -> No
 
 
 def test_an_mtrag_manifest_is_reachable_from_the_mtrag_corpus_flag() -> None:
-    """`MtragAdapter` stamps `mtrag:<domain>`; an equality-only filter matched nothing."""
-    from recall.eval.promotion.adapters import MtragAdapter
+    """`MtragAdapter` stamps `mtrag:<domain>`; an equality-only filter matched nothing, so a
+    wired corpus was unrunnable.
 
-    adapter = MtragAdapter()
-    stamped = adapter.corpus_of.__func__(adapter, type("Q", (), {"question_id": "clapnq/t1"})())
-    prefix = f"{adapter.name}:"
-    assert stamped != adapter.name
-    assert stamped == adapter.name or stamped.startswith(prefix)
+    Calls `scope_questions`, which is the code the CLI actually runs. The first version of this
+    test re-implemented the `startswith` expression inline against the adapter and therefore
+    passed with the fix reverted: a guard that could not fire, inside the fix for a filter that
+    matched nothing. Caught by the anti-regression review, and it is why the CLI's comprehension
+    became a named function.
+    """
+    from recall.eval.promotion.__main__ import scope_questions
+
+    frozen = [
+        _frozen("clapnq/t1", "mtrag:clapnq"),
+        _frozen("govt/t9", "mtrag:govt"),
+        _frozen("q1", "labelled"),
+    ]
+    scoped = scope_questions(frozen, "mtrag")
+    assert {question.corpus for question in scoped} == {"mtrag:clapnq", "mtrag:govt"}
+
+
+def test_scoping_a_corpus_does_not_sweep_in_one_that_merely_shares_a_prefix() -> None:
+    """The colon is load-bearing: `labelled_v2` is a different corpus, not a `labelled` domain."""
+    from recall.eval.promotion.__main__ import scope_questions
+
+    frozen = [_frozen("q1", "labelled"), _frozen("q2", "labelled_v2")]
+    assert [question.corpus for question in scope_questions(frozen, "labelled")] == ["labelled"]
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_run_refuses_an_absent_or_empty_dsn_before_it_builds_anything(value) -> None:
+    """Moving the DSN out of argv removed the only thing that asserted one exists.
+
+    `PgVectorStore` does not validate a DSN. `None` reaches psycopg as an `AttributeError` after a
+    model has already been loaded, and an EMPTY string — the ordinary shape of an unset systemd or
+    CI variable — is a valid libpq conninfo meaning "use the local defaults", which on a
+    peer-auth host connects to the operator's own database and creates a table in it.
+    """
+    from recall.eval.promotion.__main__ import build_parser, cmd_run
+
+    args = build_parser().parse_args(
+        ["run", "--manifest", "m.jsonl", "--corpus", "labelled", "--arm", "baseline"]
+    )
+    args.dsn = value
+    with pytest.raises(SystemExit, match="no DSN"):
+        cmd_run(args)

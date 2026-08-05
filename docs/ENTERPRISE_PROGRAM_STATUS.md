@@ -149,6 +149,30 @@ Ten red→green proofs, each verified against the pre-fix code by
 `cca_tautology_check verify`: **10 of 10 RED**. Each carries a control test asserting the
 behaviour that did NOT change, because a refusal that swallows the passing case is not a fix.
 
+**The anti-regression pass then found two more, in the fixes themselves, and both are the same
+lesson twice.**
+
+The `--dsn` fix moved the credential out of argv and deleted `required=True` without replacing the
+guarantee it carried. `PgVectorStore` does not validate a DSN, so `None` reached psycopg as an
+`AttributeError` *after* a model load, and an EMPTY string — the ordinary shape of an unset systemd
+or CI variable — is a valid libpq conninfo meaning "use the local defaults". On a peer-auth host
+that connects to the operator's own database, where the command then creates, indexes and drops a
+table. **Removing a check because its side effect was undesirable removed the check.**
+
+The MT-RAG fix shipped with a test that could not fail. It re-implemented the `startswith`
+expression inline against the adapter instead of calling the CLI's filter, so it passed with the
+fix reverted — a guard that cannot fire, inside the fix for a filter that matched nothing. The
+comprehension is now the named `scope_questions`, the test calls it, and a mutation reverting the
+filter turns it red. It is the fifth instance of a non-discriminating assertion recorded here, and
+the first one this program caught in its own audit fixes rather than in the code under audit.
+
+⚠️ **The harness that first checked those three mutations reported two of them RED when the tests
+did not exist at all** — the edit that was supposed to add them had silently not applied, and a
+non-zero pytest exit for "no tests ran" is indistinguishable from one for "the test failed" if you
+only read the exit code. That is the repository's own standing rule about reading an exit code
+through a pipe, in a new costume. The re-check parses `N failed` out of pytest's summary and
+reports `INCONCLUSIVE` otherwise; all three are RED under it.
+
 **Mutation sweep: 29 of 29.** Each new guard was disabled in the source and its named test asserted
 to go red. One survived the first pass, and it is the instructive one: deleting the
 absent-fingerprint branch in `load_for_profile` left the identity-equality check below it, which
