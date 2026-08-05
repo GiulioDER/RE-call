@@ -26,12 +26,48 @@ from recall.migration import validate_generation_parity
 from recall.store import PgVectorStore, require_secure_dsn
 
 
-def _dsn() -> str:
-    dsn = os.environ.get("RECALL_DSN")
+#: Subcommands that only READ. These take the serving credential, because what they report is
+#: only true of the role that will actually serve.
+_SERVING_COMMANDS = frozenset({"readiness", "status", "parity", "replay"})
+
+
+def _dsn(command: str) -> str:
+    """The right credential for this subcommand, following `recall/cli.py`'s convention.
+
+    Every subcommand used to read `RECALL_DSN`, and that single variable is defined two ways in
+    this repository: `docs/ENTERPRISE_RETRIEVAL.md` tells the operator to set it to the MIGRATION
+    role, and `docs/MIGRATIONS.md` calls it the deprecated fallback for the SERVING DSN. Hanging
+    ten subcommands off it made the contradiction load-bearing rather than merely documented.
+
+    The split matters most for `readiness`. It reports "row level security is ineffective for the
+    runtime database role", but `check_rls_effective` reads `rolsuper OR rolbypassrls` for
+    `current_user` OF THE CONNECTION IT WAS GIVEN. Run on the migration role, a green verdict
+    certifies a credential that may never serve a request, which is the worst kind of passing
+    check: one whose subject is not what its message names.
+
+    Resolution order mirrors `recall/cli.py`: serving reads prefer `RECALL_SERVING_DSN`, DDL
+    prefers `RECALL_MIGRATION_DSN`, and both fall back to `RECALL_DSN` so existing
+    single-variable deployments keep working.
+    """
+    if command in _SERVING_COMMANDS:
+        preferred, name = os.environ.get("RECALL_SERVING_DSN"), "RECALL_SERVING_DSN"
+    else:
+        preferred, name = os.environ.get("RECALL_MIGRATION_DSN"), "RECALL_MIGRATION_DSN"
+    dsn = preferred or os.environ.get("RECALL_DSN")
     if not dsn:
-        raise SystemExit("RECALL_DSN is required")
+        raise SystemExit(f"{name} or RECALL_DSN is required for `{command}`")
     require_secure_dsn(dsn)
     return dsn
+
+
+def _connected_role(dsn: str) -> str:
+    """`current_user` for this DSN, so a verdict can name the role it was reached for."""
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            row = conn.execute("SELECT current_user").fetchone()
+        return str(row[0]) if row else "unknown"
+    except Exception:  # pragma: no cover - reported, never fatal
+        return "unknown"
 
 
 def _require_generation(control: ControlPlane, generation_id: str) -> IndexGeneration:
@@ -213,14 +249,27 @@ def _cmd_readiness(
         print(f"degraded: {warning}")
     for failure in result.failures:
         print(f"failed: {failure}", file=sys.stderr)
-    print(f"ready: {result.ready}\ndegraded: {result.degraded}")
+    # The role is part of the verdict, not decoration. "row level security is ineffective for the
+    # runtime database role" is a statement about whichever role THIS command connected as, and an
+    # operator reading a green result needs to know whether that is the role that will serve.
+    print(
+        f"ready: {result.ready}\ndegraded: {result.degraded}\n"
+        f"evaluated as role: {_connected_role(dsn)}"
+    )
     return 0 if result.ready else 1
 
 
 def _cmd_status(control: ControlPlane, tenant: str | None, as_json: bool) -> int:
     generations = control.generations()
+    invalid = control.invalid_generations()
     report: dict[str, object] = {
         "control_plane_ledger": control.ledger_state().describe(),
+        # Named, not raised. These rows predate the identifier allowlist and will refuse to serve;
+        # an operator has to be able to list them without the listing command dying on them.
+        "invalid_generations": [
+            {"generation_id": gid, "physical_table": table, "reason": reason}
+            for gid, table, reason in invalid
+        ],
         "generations": [
             {
                 "generation_id": g.generation_id,
@@ -256,6 +305,8 @@ def _cmd_status(control: ControlPlane, tenant: str | None, as_json: bool) -> int
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
     print(f"control plane ledger: {report['control_plane_ledger']}")
+    for gid, table, reason in invalid:
+        print(f"  !! {gid}  UNUSABLE physical_table {table!r}: {reason}", file=sys.stderr)
     for g in generations:
         print(
             f"  {g.generation_id}  {g.state:<9} {g.physical_table}  "
@@ -274,7 +325,7 @@ def _cmd_status(control: ControlPlane, tenant: str | None, as_json: bool) -> int
 
 def main() -> None:
     args = _parser().parse_args()
-    dsn = _dsn()
+    dsn = _dsn(args.command)
     control = ControlPlane(dsn)
     if args.command == "migrate":
         control.apply_migrations()

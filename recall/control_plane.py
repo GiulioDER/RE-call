@@ -366,13 +366,41 @@ class ControlPlane:
         return None if row is None else self._generation(tuple(row))
 
     def generations(self) -> list[IndexGeneration]:
-        """Every registry row, oldest first. `recall_index_generations` is not tenant scoped."""
+        """Every VALID registry row, oldest first. `recall_index_generations` is not tenant scoped.
+
+        Invalid rows are skipped here and reported by `invalid_generations`, deliberately. The
+        identifier allowlist validates on the way OUT, so a row written under the older, weaker
+        `str.isidentifier()` rule raises when it is read. Letting that escape from here made the
+        one command an operator would reach for to FIND the bad row (`recall-enterprise status`)
+        the command that crashes on it. A diagnostic that dies on the thing it diagnoses is not a
+        diagnostic. Serving still refuses: `route()` validates the routed rows and is unchanged.
+        """
+        valid, _invalid = self._read_generations()
+        return valid
+
+    def invalid_generations(self) -> list[tuple[str, str, str]]:
+        """`(generation_id, physical_table, reason)` for rows the allowlist would reject.
+
+        The upgrade preflight. A deployment carrying such a row will fail to serve that tenant
+        after this change, and the operator needs to see WHICH row before that happens.
+        """
+        _valid, invalid = self._read_generations()
+        return invalid
+
+    def _read_generations(self) -> tuple[list[IndexGeneration], list[tuple[str, str, str]]]:
         with self._connect() as conn:
             rows = conn.execute(
                 f"SELECT {self._GENERATION_COLUMNS} FROM recall_index_generations "
                 "ORDER BY created_at, generation_id"
             ).fetchall()
-        return [self._generation(tuple(row)) for row in rows]
+        valid: list[IndexGeneration] = []
+        invalid: list[tuple[str, str, str]] = []
+        for row in rows:
+            try:
+                valid.append(self._generation(tuple(row)))
+            except ValueError as exc:
+                invalid.append((str(row[0]), str(row[1]), str(exc)))
+        return valid, invalid
 
     def retire_generation(self, generation_id: str, tenant: str) -> None:
         """Retire a generation, refusing while `tenant`'s route still points at it.
