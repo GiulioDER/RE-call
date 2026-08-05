@@ -814,11 +814,15 @@ class GenerationManager:
                 event_id=event_id,
             )
             conn.execute(
+                # DO NOTHING, not DO UPDATE: `erased_at` records WHEN an irreversible erasure
+                # happened, and re-issuing the request does not move that moment. Updating it
+                # let the recorded time of a right-to-erasure action drift forward every time
+                # anyone repeated the call. The repeat is still recorded, as its own
+                # `source_forgotten` audit event above, so nothing is lost by keeping the first.
                 "INSERT INTO recall_source_tombstones "
                 "(tenant_id, source_uri, event_id, erased_at) "
                 "VALUES (%s, %s, %s, clock_timestamp()) "
-                "ON CONFLICT (tenant_id, source_uri) DO UPDATE SET "
-                "event_id = EXCLUDED.event_id, erased_at = EXCLUDED.erased_at",
+                "ON CONFLICT (tenant_id, source_uri) DO NOTHING",
                 (self.tenant_id, source_uri, event_id),
             )
             tombstones = {

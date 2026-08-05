@@ -185,7 +185,9 @@ def test_cutover_refuses_a_shadow_that_does_not_match_the_active_generation() ->
     try:
         for table in (active_table, shadow_table):
             apply_migrations(TEST_DSN, table=table, dim=8)
-        # The active generation holds a corpus; the shadow is EMPTY but claims otherwise.
+        # Active and shadow each hold ONE DIFFERENT source, so parity is the first gate
+        # that can fire. (Emptiness has its own test; were the shadow empty here,
+        # _require_non_empty_shadow would raise first and this test would prove nothing.)
         with PgVectorStore(TEST_DSN, dim=8, table=active_table, tenant=tenant) as store:
             store.upsert(
                 [Chunk(id="c1", source="s3://x/one.md", text="body",
@@ -334,6 +336,126 @@ def test_cutover_refuses_when_the_route_moved_while_parity_was_running(monkeypat
                 (list(tables),),
             )
             for table in tables.values():
+                conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+                conn.execute(
+                    "DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,)
+                )
+
+
+@requires_db
+def test_the_in_transaction_guards_still_refuse_when_the_pre_phase_cannot_see_it(
+    monkeypatch,
+) -> None:
+    """The in-transaction copies must be killable, not merely present.
+
+    `cutover` checks pending events and shadow readiness twice: a fast-fail in the pre-phase,
+    and again inside the route transaction, which is the copy that actually closes the window
+    between the pre-phase read and the swap. Single-threaded, the pre-phase always fires first
+    and hides the second, so BOTH in-transaction guards could be deleted with the whole suite
+    green. This opens the window deliberately, mutating state from inside the parity call after
+    the pre-phase has already passed.
+    """
+    for breaker, expected in (
+        ("pending", "migration events remain pending"),
+        ("unready", "requires a ready shadow generation"),
+    ):
+        suffix = uuid.uuid4().hex[:12]
+        active, shadow = f"g_a_{suffix}", f"g_s_{suffix}"
+        active_table, shadow_table = f"chunks_ta_{suffix}", f"chunks_ts_{suffix}"
+        tenant = f"tenant-{suffix}"
+        control = ControlPlane(TEST_DSN)
+        control.apply_migrations()
+        try:
+            for table in (active_table, shadow_table):
+                apply_migrations(TEST_DSN, table=table, dim=8)
+                with PgVectorStore(TEST_DSN, dim=8, table=table, tenant=tenant) as store:
+                    store.upsert(
+                        [Chunk(id="c1", source="s3://x/one.md", text="body",
+                               metadata={"content_hash": "h1"})],
+                        [[1.0, 0, 0, 0, 0, 0, 0, 0]],
+                    )
+            control.register_generation(active, active_table, "profile-a", 8)
+            control.register_generation(shadow, shadow_table, "profile-a", 8)
+            control.set_generation_state(active, "ready", chunk_count=1, source_count=1)
+            control.set_generation_state(shadow, "ready", chunk_count=1, source_count=1)
+            control.set_route(tenant, active, shadow)
+
+            original = ControlPlane._require_parity
+
+            def breaking(self, conn, tenant_id, a, sh, _b=breaker, _s=shadow):
+                original(self, conn, tenant_id, a, sh)
+                # After the pre-phase has passed, make the condition true.
+                if _b == "pending":
+                    self.append_event(tenant_id, f"op-{uuid.uuid4().hex[:8]}", "index", {})
+                else:
+                    self.set_generation_state(_s, "building")
+
+            monkeypatch.setattr(ControlPlane, "_require_parity", breaking)
+            with pytest.raises(RuntimeError, match=expected):
+                control.cutover(tenant)
+            route = control.route(tenant)
+            assert route is not None and route.active.generation_id == active
+        finally:
+            monkeypatch.undo()
+            with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+                conn.execute("DELETE FROM recall_migration_events WHERE tenant_id = %s", (tenant,))
+                conn.execute("DELETE FROM recall_tenant_routes WHERE tenant_id = %s", (tenant,))
+                conn.execute(
+                    "DELETE FROM recall_index_generations WHERE generation_id = ANY(%s)",
+                    ([active, shadow],),
+                )
+                for table in (active_table, shadow_table):
+                    conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+                    conn.execute(
+                        "DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,)
+                    )
+
+
+@requires_db
+def test_a_still_building_shadow_is_refused_for_the_right_reason() -> None:
+    """The pre-phase fast-fail is the BUG-R001 fix, and nothing pinned it.
+
+    With the expensive checks first, a shadow that was merely still building paid two
+    full-table scans and was then told "holds no rows ... --allow-divergent-corpus does not
+    override this", when the real answer was that indexing had not finished. Deleting the
+    fast-fail restored that, and no test noticed.
+    """
+    suffix = uuid.uuid4().hex[:12]
+    active, shadow = f"g_a_{suffix}", f"g_s_{suffix}"
+    active_table, shadow_table = f"chunks_ba_{suffix}", f"chunks_bs_{suffix}"
+    tenant = f"tenant-{suffix}"
+    control = ControlPlane(TEST_DSN)
+    control.apply_migrations()
+    try:
+        for table in (active_table, shadow_table):
+            apply_migrations(TEST_DSN, table=table, dim=8)
+        with PgVectorStore(TEST_DSN, dim=8, table=active_table, tenant=tenant) as store:
+            store.upsert(
+                [Chunk(id="c1", source="s3://x/one.md", text="body",
+                       metadata={"content_hash": "h1"})],
+                [[1.0, 0, 0, 0, 0, 0, 0, 0]],
+            )
+        control.register_generation(active, active_table, "profile-a", 8)
+        # Shadow is still BUILDING and, as during any real build, still empty.
+        control.register_generation(shadow, shadow_table, "profile-a", 8, state="building")
+        control.set_generation_state(active, "ready", chunk_count=1, source_count=1)
+        control.set_route(tenant, active, shadow)
+
+        # The cause must be "not ready yet", not "holds no rows": both are true, and only one
+        # tells the operator what to do about it.
+        with pytest.raises(RuntimeError, match="requires a ready shadow generation"):
+            control.cutover(tenant)
+        # The flag skips parity only; it must not turn this into a different refusal either.
+        with pytest.raises(RuntimeError, match="requires a ready shadow generation"):
+            control.cutover(tenant, allow_divergent_corpus=True)
+    finally:
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("DELETE FROM recall_tenant_routes WHERE tenant_id = %s", (tenant,))
+            conn.execute(
+                "DELETE FROM recall_index_generations WHERE generation_id = ANY(%s)",
+                ([active, shadow],),
+            )
+            for table in (active_table, shadow_table):
                 conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
                 conn.execute(
                     "DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,)

@@ -888,3 +888,48 @@ def test_mcp_forget_during_a_build_is_honoured_by_that_build(manager) -> None:
     assert tombstoned == 1, "the MCP erasure wrote no tombstone, so the build had nothing to honour"
     assert stats.tombstoned_objects == 1
     assert surviving == 0, "the build indexed content the user had asked to erase via MCP"
+
+
+@requires_db
+def test_repeating_an_erasure_does_not_move_when_it_happened(manager) -> None:
+    """`erased_at` records WHEN an irreversible action occurred; a repeat must not move it.
+
+    The tombstone was written `ON CONFLICT DO UPDATE SET erased_at = EXCLUDED.erased_at`, so
+    re-issuing a forget rewrote the timestamp and the event id. Once the manifest fallback
+    made an already-erased source resolve again, any repeat silently drifted the recorded
+    moment of a right-to-erasure action forward. The repeat is still recorded, as its own
+    audit event.
+    """
+    embedder = _Embedder(1)
+    data = b"---\nstatus: current\n---\nerase me"
+    manifest = _manifest(manager.tenant_id, data, version="v1")
+    uri = manifest.objects[0].uri
+    generation = _ready(manager, manifest, _pipeline("model-a"), _reader(manifest, data), embedder)
+    manager.promote(generation, unsafe_development=True)
+
+    first = manager.forget(uri)
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        original = conn.execute(
+            "SELECT erased_at, event_id FROM recall_source_tombstones "
+            "WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, uri),
+        ).fetchone()
+    assert first.chunks_removed > 0
+
+    second = manager.forget(uri)
+    assert second.chunks_removed == 0
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        after = conn.execute(
+            "SELECT erased_at, event_id FROM recall_source_tombstones "
+            "WHERE tenant_id = %s AND source_uri = %s",
+            (manager.tenant_id, uri),
+        ).fetchone()
+        events = conn.execute(
+            "SELECT count(*) FROM recall_audit_events "
+            "WHERE tenant_id = %s AND event_type = 'source_forgotten'",
+            (manager.tenant_id,),
+        ).fetchone()[0]
+    assert after == original, "repeating the erasure moved when it was recorded as happening"
+    assert events == 2, "the repeat should still be audited, just not restamp the tombstone"

@@ -410,6 +410,29 @@ class GenerationStore(PgVectorStore):
             )
         )
 
+    def _manifest_uris_matching(self, identifiers: list[str]) -> frozenset[str]:
+        """Which of `identifiers` any live generation's manifest names.
+
+        The membership test runs in SQL rather than materialising every manifest: pulling the
+        tenant's whole manifest set into Python to answer "is this one URI in it" costs
+        seconds on a tenant with many generations, and is paid by any erasure request
+        containing a single unresolved identifier, a typo included.
+        """
+        if not identifiers:
+            return frozenset()
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT DISTINCT entry->>'uri' FROM recall_generations g, "
+                "jsonb_array_elements(g.manifest->'objects') entry "
+                "WHERE g.tenant_id = %s "
+                "AND g.state IN ('building', 'validating', 'ready', 'active', 'retired') "
+                "AND jsonb_typeof(g.manifest->'objects') = 'array' "
+                "AND entry->>'uri' = ANY(%s)",
+                (self._tenant, identifiers),
+            ).fetchall()
+        )
+        return frozenset(str(row[0]) for row in rows)
+
     def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
         edges, unresolved, _candidates = self.supersession_all()
         return edges, unresolved
@@ -475,8 +498,7 @@ class GenerationStore(PgVectorStore):
             # an erasure issued through MCP mid-build was answered "not found", wrote no
             # tombstone, and the build then indexed the content the user asked to erase, while
             # the CLI (which consults the manifest) erased it. The two surfaces must agree.
-            in_manifest = self.sources_in_any_manifest()
-            for identifier in unresolved & in_manifest:
+            for identifier in self._manifest_uris_matching(sorted(unresolved)):
                 resolved[identifier] = [identifier]
         return resolved
 
