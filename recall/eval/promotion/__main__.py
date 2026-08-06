@@ -91,6 +91,34 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     return 0
 
 
+#: Globs with no extension in their final component. `candidate_files`' own docstring says the
+#: glob IS the boundary that keeps `.env` and `tokens.json` out of an index, and `--glob` promoted
+#: that boundary to an operator-supplied string. Measured by the CCA bug auditor on a seeded tree:
+#: `**/*`, `*` and `**` all returned `.env`, `tokens.json` and `id_rsa`.
+_OVERBROAD_GLOBS = frozenset({"*", "**", "**/*", "**/*.*", "*.*"})
+
+
+def _refuse_overbroad_glob(glob: str) -> None:
+    """Refuse a pattern that would index whatever happens to be in the directory.
+
+    The empty-index refusal below is ONE-SIDED: it fires when the glob is too NARROW (zero chunks)
+    and cannot fire when it is too BROAD, because that yields chunks > 0. A corpus directory that
+    also holds a `.env` would then be embedded into the index and returned verbatim by search, and
+    written into the evidence artifact. So the broad side is refused here, by name.
+
+    A final component containing a literal extension is required. This is deliberately a small
+    allowlist-by-shape rather than a scan of what the walk returned: the check should not depend on
+    what happens to be on disk at the time.
+    """
+    final = glob.rsplit("/", 1)[-1]
+    if glob in _OVERBROAD_GLOBS or "." not in final or final.endswith(".*"):
+        raise SystemExit(
+            f"--glob {glob!r} has no literal file extension, so it would index whatever the "
+            f"directory happens to contain, including files like .env or tokens.json. The glob is "
+            f"the boundary that keeps those out of an index. Name an extension, e.g. '**/*.rst'."
+        )
+
+
 @contextlib.contextmanager
 def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator[tuple]:
     """A throwaway uuid-named store holding the corpus, dropped on the way out.
@@ -129,6 +157,7 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
         # ZERO files and every one of 110 questions came back abstained with an empty pool. The
         # gate's `VacuousArm` guard did catch it, but only after four arms had each paid for a
         # full embedding pass, and its message blames the label space, which was not the fault.
+        _refuse_overbroad_glob(args.glob)
         stats = Indexer(store, embedder, context_policy=context_policy).index_path(
             Path(corpus_dir), args.glob
         )
