@@ -298,6 +298,40 @@ def candidate_files(path: str | Path, glob: str = DEFAULT_GLOB) -> list[Path]:
     return [root]
 
 
+def _index_fingerprint(
+    content_hash: str, embedder: Embedder, context_policy: ContextPolicy
+) -> str:
+    """What "this file is already indexed under this configuration" means, in one place.
+
+    It covers the file's bytes plus the embedding profile that produced the vector and the
+    context mode and version that built its passage. A fingerprint omitting any of those
+    would let a profile switch look like a no-op.
+
+    ⚠️ It does NOT cover `ContextPolicy.max_tokens`, which also changes the embedded passage:
+    `contextual_passages` selects a different rung of its degradation ladder when it is set.
+    Two policies differing only in `max_tokens` therefore hash equal and the second is
+    skipped. No shipped path reaches this — `context_policy_for_profile` leaves `max_tokens`
+    unset — so it bites a library caller constructing a policy by hand. Recorded rather than
+    fixed because widening the tuple re-fingerprints every indexed corpus, which is a
+    migration, not a comment change.
+
+    One derivation because it is consumed twice and the two consumers are 60 lines apart: the skip
+    guard reads it to decide whether to do the work, and the write path stores it so the NEXT run's
+    skip guard can. When the shadow's copy of this was inline in the write path only, the skip
+    guard had no shadow term at all and an attached shadow was never filled.
+    """
+    return hashlib.sha256(
+        "\x00".join(
+            (
+                content_hash,
+                embedding_profile_id(embedder),
+                context_policy.mode,
+                context_policy.version,
+            )
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 @dataclass(frozen=True)
 class IndexStats:
     files: int    # files actually (re)indexed
@@ -424,6 +458,25 @@ class Indexer:
         rel = {f: (f.relative_to(root).as_posix() if root.is_dir() else f.name) for f in files}
 
         known = self._store.source_content_hashes()
+        # The shadow's own record of what it holds. Read once per run, like the active one: it
+        # decides whether a file can be skipped, and a file the ACTIVE generation already has is
+        # not necessarily a file the shadow has.
+        known_shadow = (
+            {} if self._shadow is None else self._shadow.store.source_content_hashes()
+        )
+        # Pruning stays keyed on the ACTIVE generation, deliberately and incompletely.
+        #
+        # `_prune_vanished` asks which sources have left the DISK, which is a property of the
+        # corpus rather than of a generation, and its delete does reach both tables. But its
+        # CANDIDATE set is `known`, so a source the shadow holds and the active does not is
+        # never considered at all: it survives the prune and rides the cutover into the
+        # promoted generation. That is reachable (index with a shadow, then run once WITHOUT
+        # one while the file is deleted) and it predates this change.
+        #
+        # Not widened here. Passing the union would also change `indexed_here`, which is the
+        # denominator of the prune-fraction guard, so it moves the meaning of a safety limit
+        # on a delete path — that belongs in its own change with its own test, not as a
+        # side effect of fixing the skip predicate.
         deleted = self._prune_vanished(root, files, known) if root.is_dir() else 0
 
         pending_sources: list[str] = []
@@ -451,12 +504,40 @@ class Indexer:
                 continue
             raw = _strip_nul(raw, f)
             content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-            fingerprint_input = "\x00".join(
-                (content_hash, embedding_profile_id(self._embedder), self._context_policy.mode,
-                 self._context_policy.version)
+            index_fingerprint = _index_fingerprint(
+                content_hash, self._embedder, self._context_policy
             )
-            index_fingerprint = hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()
-            if known.get(str(f)) == index_fingerprint:
+            shadow_fingerprint = (
+                None if self._shadow is None
+                else _index_fingerprint(
+                    content_hash, self._shadow.embedder, self._shadow.context_policy
+                )
+            )
+            # Up to date in EVERY generation being written, not just the active one.
+            #
+            # Keyed on the active fingerprint alone, this short-circuited the one sequence an
+            # operator actually performs: index the corpus, register a candidate profile, attach
+            # it as a shadow, re-index. The corpus has not changed, so every active fingerprint
+            # matches, so every file is skipped — and the shadow write lives further down this
+            # loop body, past the `continue`. The shadow stayed empty and the run reported
+            # success with a skipped count. Cutover then refused the empty shadow, which is the
+            # only reason this was survivable: the guard downstream held while the feature
+            # underneath it did nothing.
+            #
+            # Cost of the repair, stated honestly: when only the shadow is stale, the active
+            # generation's rows are rewritten identically alongside it, because `_flush`
+            # replaces sources in both stores together. That is wasted work, not wrong work,
+            # but it is NOT free — `recall_mcp/service.py` builds the shadow Indexer without a
+            # cache, and `embed_with_cache` with `cache=None` is a plain `embedder.embed`. So
+            # on the one production path that attaches a shadow, this re-embeds the whole
+            # corpus through the active embedder as well as the shadow one. Local embedders
+            # make that cheap; a metered one does not. Splitting the flush per generation
+            # would buy it back and is a much larger change to a path that writes two tables
+            # in one transaction.
+            if known.get(str(f)) == index_fingerprint and (
+                shadow_fingerprint is None
+                or known_shadow.get(str(f)) == shadow_fingerprint
+            ):
                 skipped += 1
                 continue
             meta, body = parse_frontmatter(raw)
@@ -508,12 +589,9 @@ class Indexer:
                             text=ct,
                             metadata={
                                 "file": rel[f], "ord": i, "content_hash": content_hash,
-                                "index_fingerprint": hashlib.sha256(
-                                    "\x00".join((content_hash,
-                                        embedding_profile_id(self._shadow.embedder),
-                                        self._shadow.context_policy.mode,
-                                        self._shadow.context_policy.version)).encode("utf-8")
-                                ).hexdigest(),
+                                # Same derivation the skip guard used above, so the value stored
+                                # here is the value the next run compares against.
+                                "index_fingerprint": shadow_fingerprint,
                                 "embedding_profile": embedding_profile_id(self._shadow.embedder),
                                 "context_mode": self._shadow.context_policy.mode,
                                 "context_version": self._shadow.context_policy.version,
