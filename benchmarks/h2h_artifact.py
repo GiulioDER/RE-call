@@ -298,6 +298,9 @@ def build(runs: Path) -> tuple[dict[str, Any], dict[str, list[str]]]:
         "margin_max": max(r["recall"]["accuracy"] - r["mem0"]["accuracy"] for r in rows_out),
         "as_shipped_embedder": _as_shipped(runs, vectors),
     }
+    # Declared last: `_as_shipped` adds the replicate vectors, so anything written
+    # earlier would list only the table rows.
+    artifact["outcome_vectors"] = sorted(vectors)
     return artifact, vectors
 
 
@@ -310,10 +313,19 @@ def write_artifact(out: Path, artifact: Mapping[str, Any], vectors: Mapping[str,
     artifact, because a working copy that does not match its own git blob byte for byte
     breaks every sha256 taken over it.
     """
-    (out / "outcomes").mkdir(parents=True, exist_ok=True)
+    outcomes = out / "outcomes"
+    outcomes.mkdir(parents=True, exist_ok=True)
     for key, lines in vectors.items():
-        with (out / "outcomes" / f"{key}.jsonl").open("w", encoding="utf-8", newline="\n") as fh:
+        with (outcomes / f"{key}.jsonl").open("w", encoding="utf-8", newline="\n") as fh:
             fh.write("".join(line + "\n" for line in lines))
+    # The directory is a FUNCTION of the build, not an accumulation of every build that ever
+    # ran. Renaming a key used to leave its predecessor behind, backing nothing: the first
+    # commit of this artifact shipped nine vectors for seven declared rows, because an
+    # earlier key derivation had produced two of them under different names. A stale vector
+    # is worse than a missing one -- it reads as evidence, and nothing distinguishes it from
+    # the live file beside it.
+    for stale in sorted(set(outcomes.glob("*.jsonl")) - {outcomes / f"{k}.jsonl" for k in vectors}):
+        stale.unlink()
     with (out / "paired_accuracy.json").open("w", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps(artifact, indent=2) + "\n")
 

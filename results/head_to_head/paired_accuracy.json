@@ -437,5 +437,14 @@
     "replicate_spread": 0.010389610389610338,
     "replicate_spread_points": 1.0389610389610338,
     "caveat": "Temperature 0 does not make this deterministic: generator and judge run through a hosted API. These two replicates share a byte-identical config, ran 25 seconds apart, and differ by 1.04 accuracy points -- about a quarter of the reported margin. Every single-run figure in this artifact carries at least that much run-to-run noise, and none of the five table rows was replicated at all."
-  }
+  },
+  "outcome_vectors": [
+    "as_shipped__recall_openai-gpt-4o-mini_10conv_20260725T214534Z",
+    "as_shipped__recall_openai-gpt-4o-mini_10conv_20260725T214559Z",
+    "gpt4o-mini_item_judge-4o",
+    "gpt4o-mini_item_judge-mini",
+    "gpt4o-mini_token_judge-4o",
+    "gpt4o-mini_token_judge-mini",
+    "gpt4o_token_judge-4o"
+  ]
 }
