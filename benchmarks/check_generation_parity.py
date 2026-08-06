@@ -74,6 +74,8 @@ import sys
 import time
 from pathlib import Path
 
+import psycopg
+
 from recall.context import context_policy_for_profile
 from recall.embeddings import embedding_profile_id
 from recall.index import Indexer
@@ -104,6 +106,19 @@ def _table_for(prefix: str, profile: str) -> str:
     return f"{prefix}_{profile.replace('-', '_')}"
 
 
+def _table_exists(dsn: str, table: str) -> bool:
+    """Whether `table` is in the catalog, asked BEFORE any migration runs.
+
+    This is what makes `owned` mean "THIS PROCESS CREATED IT". Deriving ownership from the fact
+    that `ensure_schema()` returned would be wrong: it silently ADOPTS a pre-existing table,
+    because every migration reads as already applied and it returns without creating anything. A
+    re-run over tables another process built would then mark them owned and drop them.
+    """
+    with psycopg.connect(dsn) as conn:
+        row = conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()
+    return bool(row and row[0] is not None)
+
+
 def _open(dsn: str, profile: str, table: str) -> tuple:
     """Resolve the profile, its context policy and its store, WITHOUT indexing.
 
@@ -122,7 +137,9 @@ def _open(dsn: str, profile: str, table: str) -> tuple:
     return PgVectorStore(dsn, dim=embedder.dim, table=table), embedder, policy, resolved
 
 
-def _index(dsn: str, table: str, profile: str, corpus: Path, glob: str) -> dict:
+def _index(
+    dsn: str, table: str, profile: str, corpus: Path, glob: str, *, scratch: bool = False
+) -> dict:
     """Build one generation and return its facts. The context policy comes from the PROFILE.
 
     `Indexer` defaults to `ContextPolicy()`, mode "none", and REFUSES an embedder whose registered
@@ -131,6 +148,9 @@ def _index(dsn: str, table: str, profile: str, corpus: Path, glob: str) -> dict:
     at index time.
     """
     store, embedder, policy, resolved = _open(dsn, profile, table)
+    # Asked BEFORE `ensure_schema`, which would otherwise adopt an existing table. See
+    # `_table_exists`: this is the difference between "we made it" and "we migrated it".
+    pre_existing = _table_exists(dsn, table)
     store.ensure_schema()
     started = time.monotonic()
     stats = Indexer(store, embedder, context_policy=policy).index_path(corpus, glob)
@@ -148,8 +168,13 @@ def _index(dsn: str, table: str, profile: str, corpus: Path, glob: str) -> dict:
         "chunks": stats.chunks,
         "index_seconds": round(elapsed, 1),
         "store": store,
-        # THIS process created this table, so THIS process may drop it. See the cleanup block.
-        "owned": True,
+        # THIS process created this table, so THIS process may drop it. False when the table was
+        # already in the catalog, which `ensure_schema` alone could not have told us.
+        "owned": not pre_existing,
+        # A control table is disposable by design; a generation cost about an hour of embedding.
+        # The cleanup treats the two differently, so the distinction is recorded rather than
+        # inferred from the name.
+        "scratch": scratch,
     }
 
 
@@ -216,7 +241,9 @@ def main() -> int:
         "--control-corpus",
         type=Path,
         help="Directory for the positive control's perturbed copy. A SUBSET is fine and is the "
-        "point: the control has to show the validator can fire, not re-measure the corpus.",
+        "point: the control has to show the validator can fire, not re-measure the corpus. It is "
+        "REQUIRED for --stage all/compare, because a run that never demonstrated a mismatch is "
+        "detectable would rest its verdict on an absence.",
     )
     parser.add_argument("--control-files", type=int, default=24)
     parser.add_argument("--keep-tables", action="store_true")
@@ -322,6 +349,7 @@ def main() -> int:
                         # failed report write, so one dead arm destroyed the three that succeeded
                         # and the compare stage could never be re-run.
                         "owned": False,
+                        "scratch": False,
                     }
                 )
 
@@ -341,8 +369,10 @@ def main() -> int:
                 base["store"], gen["store"], len(on_disk)
             )
 
-        # Control 3, on a SUBSET. The control's job is to show a mismatch is detectable, which one
-        # changed byte establishes as well as 732 files would, at a fraction of the embedding cost.
+        # Control 3, on a SUBSET. The control's job is to show a mismatch is detectable, which ONE
+        # CHANGED FILE establishes as well as the whole corpus would, at a fraction of the
+        # embedding cost. (An earlier version of this comment said "one changed byte" while the
+        # code appends a 27-byte line, and cited "732 files" for a corpus the run measures at 746.)
         if args.control_corpus:
             # ⚠️ `rmtree` on an argv path, on a host that also carries unrelated live production.
             # An earlier version deleted whatever `--control-corpus` named, with `resolve()`
@@ -395,15 +425,26 @@ def main() -> int:
                 shutil.copy2(src, ctl / src.name)
             clean_tbl = f"{args.table_prefix}_ctl_clean"
             dirty_tbl = f"{args.table_prefix}_ctl_dirty"
-            clean = _index(args.dsn, clean_tbl, BASELINE, ctl, "*.rst")
+            # DERIVED from `--glob`, not the literal "*.rst" this used to hardcode. The control
+            # corpus is a FLAT copy, so only the last path component applies, which is the same
+            # rule `recall.index` matches on. With the literal, any non-.rst corpus made the
+            # positive control impossible, and it failed only after every comparison had been paid
+            # for, blaming the control corpus rather than the disagreement with --glob.
+            control_glob = args.glob.rsplit("/", 1)[-1]
+            clean = _index(args.dsn, clean_tbl, BASELINE, ctl, control_glob, scratch=True)
+            # Registered IMMEDIATELY, not after the block succeeds. `_index` creates the table
+            # before it indexes, so anything that raised between here and a later registration
+            # leaked a table the cleanup block claims to drop.
+            built.append(clean)
             # One file, one appended line. The raw content hash is sha256 over the whole file, so
             # this must move exactly one source's hash and nothing else.
-            victim = sorted(ctl.glob("*.rst"))[0]
+            victim = sorted(ctl.glob(control_glob))[0]
             before = hashlib.sha256(victim.read_bytes()).hexdigest()
             with victim.open("a", encoding="utf-8") as handle:
                 handle.write("\n.. parity positive control\n")
             after = hashlib.sha256(victim.read_bytes()).hexdigest()
-            dirty = _index(args.dsn, dirty_tbl, BASELINE, ctl, "*.rst")
+            dirty = _index(args.dsn, dirty_tbl, BASELINE, ctl, control_glob, scratch=True)
+            built.append(dirty)
             control = _parity(clean["store"], dirty["store"], len(subset))
             report["controls"]["positive_control"] = {
                 "victim": victim.name,
@@ -418,7 +459,6 @@ def main() -> int:
                 # made this read False while the validator had in fact isolated exactly one file.
                 "detected_exactly_one_source": control["hash_mismatches"] == [str(victim)],
             }
-            built.extend([clean, dirty])
 
         args.out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
         print(f"wrote {args.out}", flush=True)
@@ -461,26 +501,24 @@ def main() -> int:
         )
         return 0 if (content_ok and cov_ok and hash_ok and self_ok and ctl_ok) else 1
     finally:
-        # Drop ONLY what this process created. The generation tables cost about an hour of
-        # embedding each and are the expensive artifact; they are removed only when explicitly
-        # asked for, never as a side effect of an error path.
+        # Three rules, in this order, and the order is the point:
+        #   1. `--keep-tables` drops nothing at all.
+        #   2. NEVER drop a table this process did not create. A compare stage is HANDED four
+        #      generations another process built, at about an hour of embedding each.
+        #   3. A SCRATCH (control) table is disposable and always goes. A GENERATION goes only when
+        #      explicitly asked for, because keeping it is what makes a compare re-run free.
+        # An earlier version had two loops and got rule 3 backwards on the success path of
+        # `--stage all`: every arm there is created by this process, so all four were dropped on a
+        # clean run, which contradicted the rationale `--drop-generations` states for its default.
         for gen in built:
-            if not gen.get("owned") or args.keep_tables:
+            if args.keep_tables or not gen.get("owned"):
+                continue
+            if not gen.get("scratch") and not args.drop_generations:
                 continue
             try:
                 gen["store"].drop_table()
             except Exception as exc:  # pragma: no cover - cleanup diagnostics only
                 print(f"WARN could not drop {gen['table']}: {exc}", file=sys.stderr)
-        # `--keep-tables` wins over `--drop-generations`: an operator who asked to keep tables must
-        # not have them dropped by a second flag that reads as narrower.
-        if args.drop_generations and not args.keep_tables:
-            for gen in built:
-                if gen.get("owned"):
-                    continue
-                try:
-                    gen["store"].drop_table()
-                except Exception as exc:  # pragma: no cover - cleanup diagnostics only
-                    print(f"WARN could not drop {gen['table']}: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":
