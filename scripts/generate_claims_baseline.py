@@ -10,12 +10,60 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from pathlib import Path
 from typing import Any
 
 from benchmarks.claim_gate import RESULTS_ROOT, build_baseline
 
 
+def _refuse_a_foreign_checkout() -> None:
+    """Refuse to re-freeze a checkout other than the one the caller is standing in.
+
+    This script is run as a FILE, so `sys.path[0]` is `scripts/`, not the repository root.
+    `benchmarks` therefore resolves through the environment -- and with RE-call pip-installed
+    in editable mode, that is whichever checkout the editable install points at, which is
+    usually not this one. `RESULTS_ROOT` is derived from the imported module's `__file__`, so
+    the ratchet gets rewritten in the OTHER worktree while the diff you are about to review is
+    in this one.
+
+    It is a quiet failure in the worst place: the ratchet is the mechanism that stops unbacked
+    numbers, both checkouts end up with a baseline nobody inspected, and the run prints
+    success. Observed on 2026-08-06, which is why this exists.
+
+    The checkout to compare against is THIS FILE's own, which needs no subprocess and
+    cannot fail open. A first version shelled out to `git rev-parse --show-toplevel` and had
+    two holes, both of which make a guard pass rather than fire:
+
+    * `git` printing an empty toplevel (bare repo, or run from inside `.git`) left
+      `Path("").resolve()`, which is the CWD -- so the guard silently degraded into
+      comparing the target against the current directory, something it had never verified
+      was a repository at all.
+    * `is_relative_to` only asks for containment, so a checkout NESTED under the current one
+      passed. That is a normal layout here: this project keeps its worktrees under the
+      parent checkout.
+
+    Requiring the two repository roots to be EQUAL closes both, and dropping the subprocess
+    removes the swallowed `OSError` that disabled the guard entirely on a box with no `git`
+    on PATH -- which is exactly where an editable install is most likely to be the only
+    thing resolving `benchmarks`. The check does not involve the CWD, so running from a
+    subdirectory still works.
+    """
+    here = Path(__file__).resolve().parents[1]
+    target_root = RESULTS_ROOT.resolve().parent
+    if target_root != here:
+        raise SystemExit(
+            f"refusing to write outside this checkout.\n"
+            f"  this script  : {here}\n"
+            f"  would write  : {RESULTS_ROOT.resolve() / 'CLAIMS_BASELINE.json'}\n"
+            f"  `benchmarks` resolved to: {target_root}\n"
+            f"This usually means an editable install points `benchmarks` at another worktree.\n"
+            f"Re-run from the repository root with this checkout first on the path:\n"
+            f"    PYTHONPATH=. python scripts/generate_claims_baseline.py"
+        )
+
+
 def main() -> int:
+    _refuse_a_foreign_checkout()
     baseline = build_baseline()
     total = sum(sum(counts.values()) for counts in baseline.values())
     payload: dict[str, Any] = {
