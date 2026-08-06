@@ -143,6 +143,18 @@ The gate also confirmed the ownership fix does not over-drop or leak: the two co
 owned and still dropped, `--stage index` still keeps its table, and the four generation tables
 survive. It found one pre-existing leak it was careful to label as not introduced here.
 
+**Round 3 converged**, which is this pipeline's stopping rule and matches what this project has
+recorded before: rounds found 109, 5 and **0 new defect classes**. Round 3's two findings were both
+Low/P3 and diagnostics-only, and both were cases where a repair of mine did not do what its own
+comment said. The first is worth carrying: my `nproc` fix was committed under a comment claiming it
+produced "a variable that is always an integer", and it did not, because `nproc` exiting 0 with
+EMPTY output leaves the variable empty and the `integer expected` shape survived untouched. *The
+repair of a false claim acquired a false claim of its own.* Executed across four cases before and
+after. The second: `any(ctl.iterdir())` propagates an `OSError` that the `is_file()` it sat beside
+swallows, so an unlistable directory aborted with a bare traceback instead of the refusal; failure
+to list now reads as NOT EMPTY, because the one thing that must never follow from an unknown
+directory is a recursive delete.
+
 ### Carried forward, unfixed
 
 1. **`--table-prefix` reaches a table name through `isidentifier()`, not `validate_table_name()`.**
