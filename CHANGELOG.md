@@ -167,6 +167,32 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   The documentation now says so. Behaviour is unchanged.
 
 ### Fixed
+- **The `typecheck` CI job was red on `master`, behind a job that was CANCELLED rather than run.**
+  `recall/sparse.py` imports `transformers` inside its loader, the same lazy guard every optional
+  extra in this repository uses, but `transformers.*` was never added to the mypy override list, so
+  `mypy` failed with `Cannot find implementation or library stub for module named "transformers"` in
+  any environment without the `sparse` extra. That is exactly CI's `typecheck` job, which installs
+  `.[dev]` only. Two things kept it invisible: on the SPLADE merge (`d12ebf0`) the job was cancelled,
+  so it produced no verdict at all, and the follow-up that fixed the other three breakages recorded
+  "mypy clean" truthfully, from a venv where the extra happened to be installed. The override block's
+  own comment already explains why that is not enough: `follow_imports = skip` is chosen over plain
+  `ignore_missing_imports` precisely so the result does not depend on whether the extra is present,
+  "or the gate is advisory". Verified red before and clean after (166 source files) in a
+  `.[dev]`-only environment. No source or behaviour change; the gate now reports what it always
+  should have.
+- **`CVE-2026-71554` in `h2` 4.4.0, which made the `audit` CI job red.** `h2` arrives transitively
+  through httpx's `http2` extra and is unconstrained by `pyproject.toml`, so the fix is a lockfile
+  movement to 4.4.1 with no declared-dependency change. `pip-audit` reports no known
+  vulnerabilities afterwards. **The red gate was real and the exposure was not**: the full chain is
+  `bench` extra → `mem0ai` → `qdrant-client` → `httpx[http2]` → `h2`, and `pyproject.toml` documents
+  the `bench` extra as never added to `dev` and never installed in CI, so no shipped wheel, no CI job
+  and no deployment ever contained the vulnerable version. The constraint also lives only in
+  `uv.lock`: anyone installing `recall-rag[bench]` from PyPI resolves `h2` independently.
+  `requirements.lock.txt`, which the `audit` job generates and which `CONTRIBUTING.md` now documents
+  as a local reproduction of that job, is gitignored: an untracked generated copy of the resolved
+  dependency set beside `uv.lock` is a second source of truth that can drift silently and be swept
+  into a later commit.
+
 - **Corpus text could close the evidence delimiter, and reach the model outside the data region.**
   `render_evidence_prompt` wrapped a `json.dumps` payload in `<evidence_data>...</evidence_data>`.
   `json.dumps` escapes quotes, backslashes and control characters; it does not escape `<` or `>`,
@@ -294,6 +320,28 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   tolerated as "not yet recorded", mid-file corruption loud. `recall/eval/gap_run.py` is
   deliberately not migrated — its unit of resume is a corpus result *file* carrying a `status`
   marker, and unifying it would rewrite a published artifact format for no resume benefit.
+### Documentation
+- **`docs/ENTERPRISE_RETRIEVAL.md` is now an operator runbook** rather than a sequence sketch. It
+  opens with preconditions (unprivileged roles, the grants each command actually needs, pgvector and
+  `sparsevec` availability, independently recomputed artifact digests, recorded licences, a blocked
+  egress boundary, and a disk-headroom rule of thumb), then gives the ordered eleven-step sequence
+  (plus preconditions and rollback) as a table naming the credential and the non-zero exit condition
+  for every step, then grouped sections with what to verify afterwards. Hazards are written in at the
+  step where an operator meets them, including several the runbook's first draft got wrong and an
+  audit corrected: `mark-ready` records its `--chunks`/`--sources` and **never checks them**;
+  `replay` takes the serving credential but is a **write path**; `readiness` names its own role
+  subject but not its own generation subject, so run before cutover it certifies the OUTGOING
+  generation; `retire` cannot follow `cutover` directly because cutover swaps the slots, and
+  retirement is database-global with no un-retire command; `parity` succeeding on two empty
+  generations is a vacuous pass that must be treated as a hard stop; and a migration whose bytes
+  changed after it was applied is a hard stop with no override flag, whose remedy names the ledger
+  table, both key columns, the `__global__` scope, a backup precondition, and the fact that
+  restoring the deleted row does not undo the DDL the re-apply performs.
+- **`README.md`'s production-posture table gains four rows**: index generations and cutover,
+  retrieval cost profiles, the generator-neutral evidence boundary, and serving latency marked
+  **PENDING**. The parity row warns that a comparison of two empty generations succeeds and prints
+  `OK` without having compared anything.
+
 ### Changed
 - **New startup refusals on the MCP HTTP transports.** The server now refuses to boot when: no
   mechanism is configured at all; `RECALL_OIDC_ISSUER` is set without `RECALL_OIDC_AUDIENCE` or
