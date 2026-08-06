@@ -186,3 +186,148 @@ def test_the_glob_reaches_the_indexer_and_an_empty_index_is_refused(monkeypatch,
     message = str(exit_signal.value)
     assert "produced no chunks" in message
     assert "--glob" in message, "the refusal must name the knob that fixes it"
+
+
+# ------------------------------------------------- the contract, exercised rather than restated
+
+
+@pytest.mark.parametrize(
+    "profile_id",
+    [
+        "bge-small-symmetric-v1",
+        "bge-small-asymmetric-v1",
+        "bge-small-context-document-v1",
+        "bge-small-context-section-v1",
+        "bge-small-context-neighbor-v1",
+    ],
+)
+def test_a_real_indexer_accepts_every_registered_profile_with_its_derived_policy(profile_id):
+    """Constructs the REAL `Indexer`, which the tests above only described.
+
+    The CCA bug auditor showed the gap: mutating `Indexer.__init__` back to
+    `expected_context = "raw-v1"` — literally the defect this file exists about — left all eight
+    tests green, because they re-implemented the comparison instead of making it. `Indexer.__init__`
+    touches only `store` and `embedder`, so a stub store is enough and no database is needed.
+    """
+    from recall.embeddings import EmbeddingProfile
+    from recall.index import Indexer
+
+    registered = registered_profile(profile_id)
+    profile: EmbeddingProfile = registered.identity(artifact_digest="b" * 64)
+
+    class StubStore:
+        def source_content_hashes(self):
+            return {}
+
+    class StubEmbedder:
+        dim = registered.dimension
+        name = registered.model_name
+
+        def __init__(self):
+            self.profile = profile
+
+        def embed(self, texts):
+            return [[0.0] * self.dim for _ in texts]
+
+    # No pytest.raises: the point is that this does NOT raise. Under the mutation it does.
+    Indexer(
+        StubStore(),
+        StubEmbedder(),
+        context_policy=context_policy_for_profile(profile_id),
+    )
+
+
+def test_a_real_indexer_refuses_a_profile_whose_policy_does_not_match():
+    """The other half. Without this, the test above passes against an Indexer that checks nothing."""
+    from recall.index import Indexer
+
+    profile = registered_profile("bge-small-context-section-v1").identity(artifact_digest="b" * 64)
+
+    class StubStore:
+        def source_content_hashes(self):
+            return {}
+
+    class StubEmbedder:
+        dim = 384
+        name = "stub"
+
+        def __init__(self):
+            self.profile = profile
+
+    with pytest.raises(ValueError, match="does not match index context"):
+        Indexer(StubStore(), StubEmbedder(), context_policy=ContextPolicy())
+
+
+# ------------------------------------------------------------------- the over-broad glob refusal
+
+
+@pytest.mark.parametrize("glob", ["*", "**", "**/*", "**/*.*", "*.*", "docs/*"])
+def test_an_overbroad_glob_is_refused_by_name(glob):
+    """The empty-index refusal is one-sided: it cannot fire when the glob is too BROAD, because
+    that yields chunks > 0. `**/*` was measured pulling `.env`, `tokens.json` and `id_rsa` into the
+    candidate set."""
+    from recall.eval.promotion.__main__ import _refuse_overbroad_glob
+
+    with pytest.raises(SystemExit) as exit_signal:
+        _refuse_overbroad_glob(glob)
+    assert "--glob" in str(exit_signal.value)
+    assert "extension" in str(exit_signal.value)
+
+
+@pytest.mark.parametrize("glob", ["**/*.rst", "**/*.md", "*.txt", "corpus/**/*.rst"])
+def test_a_glob_naming_an_extension_is_accepted(glob):
+    """It must not refuse the patterns the harness actually uses, or it is just noise."""
+    from recall.eval.promotion.__main__ import _refuse_overbroad_glob
+
+    _refuse_overbroad_glob(glob)
+
+
+def test_indexed_store_actually_calls_the_overbroad_refusal(monkeypatch, tmp_path):
+    """The wiring, not the predicate.
+
+    A mutation sweep caught this gap: deleting the `_refuse_overbroad_glob(args.glob)` CALL from
+    `_indexed_store` left all 24 tests green, because every other test invokes the predicate
+    directly. A test that pins a function does not pin its caller — the same shape as an artifact
+    test that cannot see its emitter losing a field.
+    """
+    import argparse
+
+    import recall.eval.promotion.__main__ as cli
+    import recall.index
+    import recall.store
+    import recall_mcp.service
+
+    opened = {"n": 0}
+
+    class StubEmbedder:
+        dim = 3
+        name = "stub"
+        profile = registered_profile("bge-small-symmetric-v1").identity(artifact_digest="a" * 64)
+
+    class StubStore:
+        def __init__(self, *a, **kw):
+            opened["n"] += 1
+
+        def ensure_schema(self): pass
+        def drop_table(self): pass
+        def close(self): pass
+
+    class StubIndexer:
+        def __init__(self, store, embedder, **kw): pass
+        def index_path(self, path, glob=None):
+            raise AssertionError("indexing must not be reached with an over-broad glob")
+
+    monkeypatch.setattr(recall.index, "Indexer", StubIndexer)
+    monkeypatch.setattr(recall.store, "PgVectorStore", StubStore)
+    monkeypatch.setattr(recall_mcp.service, "make_embedder", lambda _n: StubEmbedder())
+
+    class Adapter:
+        name = "peps"
+
+    args = argparse.Namespace(
+        dsn="postgresql:///unused", embedder="fastembed", corpus_dir=str(tmp_path), glob="**/*",
+    )
+    with pytest.raises(SystemExit) as exit_signal:
+        with cli._indexed_store(args, Adapter()):
+            pass
+    assert "extension" in str(exit_signal.value)
