@@ -390,18 +390,81 @@ def entry(prefix: str) -> dict[str, object]:
             "embedder": "e", "leg_depth": 100}
 
 
+def leg_file(tmp_path, *variants: str) -> None:
+    """Create empty leg files, so "unrecorded" is distinguishable from "never dumped"."""
+    (tmp_path / "legs").mkdir(exist_ok=True)
+    for variant in variants:
+        (tmp_path / "legs" / f"{variant}.jsonl").write_text("", encoding="utf-8")
+
+
 def test_an_unrecorded_variant_is_refused_rather_than_skipped(tmp_path) -> None:
     """The state the FIRST version of this guard silently accepted.
 
-    A partial re-dump against a legacy directory left only the re-dumped variant recorded. The
-    old check built its comparison set from recorded variants only, so it held one element and
-    could never disagree: the guard read as verification while verifying nothing. An unrecorded
-    leg file has unknown provenance and must be refused.
+    A partial re-dump left only the re-dumped variant recorded. The old check built its
+    comparison set from recorded variants only, so it held one element and could never disagree:
+    the guard read as verification while verifying nothing. A leg file present with no provenance
+    could have come from any index, so it is now a refusal.
     """
     write_manifest_file(tmp_path, {"variants": {"rewrite": entry("B")}})
+    leg_file(tmp_path, "last", "full", "rewrite")
 
     with pytest.raises(RuntimeError, match="not for"):
         check_provenance(tmp_path, ["last", "full", "rewrite"])
+
+
+def test_an_emptied_manifest_is_a_refusal_not_a_silent_pass(tmp_path) -> None:
+    """A parsed manifest that vouches for nothing must not read as "no manifest".
+
+    This is the hole the previous rewrite left, and it was on the DEFAULT path: a full `dump`
+    marks every variant before touching a leg file, so the map is legitimately empty of valid
+    entries at that moment. Collapsing that onto "absent" meant a run killed during its first
+    variant left a half-and-half directory that fused silently.
+    """
+    write_manifest_file(tmp_path, {"variants": {}})
+    leg_file(tmp_path, "last", "full")
+
+    with pytest.raises(RuntimeError, match="not for"):
+        check_provenance(tmp_path, ["last", "full"])
+
+
+def test_a_variant_interrupted_mid_dump_is_refused_by_its_own_marker(tmp_path) -> None:
+    """Marked invalid rather than deleted, so the refusal survives and the old data does not die.
+
+    Deleting the entry lost the shortfall counts of leg files the run might never reach, leaving
+    a previously-good directory worse than before.
+    """
+    write_manifest_file(tmp_path, {"variants": {
+        "last": entry("A"),
+        "full": {**entry("A"), "provenance_invalid": True, "superseded_at": "now"},
+    }})
+    leg_file(tmp_path, "last", "full")
+
+    with pytest.raises(RuntimeError, match="being re-dumped"):
+        check_provenance(tmp_path, ["last", "full"])
+
+
+def test_a_variant_that_was_never_dumped_says_so(tmp_path) -> None:
+    """Not a provenance problem, and saying so saves the reader chasing the wrong thing."""
+    write_manifest_file(tmp_path, {"variants": {"last": entry("A")}})
+    leg_file(tmp_path, "last")
+
+    with pytest.raises(RuntimeError, match="never dumped"):
+        check_provenance(tmp_path, ["last", "rewrite"])
+
+
+def test_unhashable_provenance_values_do_not_crash_the_check(tmp_path) -> None:
+    """A list at a provenance key used to raise TypeError out of `set()`.
+
+    That killed a fusion whose leg files were intact, which is the failure the damaged-manifest
+    handling exists to avoid.
+    """
+    write_manifest_file(tmp_path, {"variants": {
+        "last": {**entry("A"), "table_prefix": ["A"]},
+        "full": {**entry("A"), "table_prefix": ["A"]},
+    }})
+    leg_file(tmp_path, "last", "full")
+
+    check_provenance(tmp_path, ["last", "full"])  # equal, so it passes rather than raising
 
 
 def test_variants_from_different_indexes_are_refused(tmp_path) -> None:
@@ -444,13 +507,33 @@ def test_a_damaged_manifest_reports_unverified_instead_of_killing_the_fusion(tmp
     """An unreadable manifest is a missing record, not evidence of a mixed dump.
 
     Raising here would destroy a perfectly good fusion over a damaged side file, which is a worse
-    failure than the one being guarded against. It must say the provenance is unverified.
+    failure than the one being guarded against. Note the asymmetry with the test above: a
+    manifest that does not PARSE verifies nothing and passes; one that parses and vouches for
+    nothing refuses.
     """
+    leg_file(tmp_path, "last")
+
     (tmp_path / "dump_manifest.json").write_text("", encoding="utf-8")
     check_provenance(tmp_path, ["last"])  # does not raise
 
     write_manifest_file(tmp_path, ["not", "a", "dict"])
     check_provenance(tmp_path, ["last"])  # does not raise
 
-    write_manifest_file(tmp_path, {"variants": {"last": "not a dict"}})
-    check_provenance(tmp_path, ["last"])  # entry dropped, so nothing is verified, and no crash
+    (tmp_path / "dump_manifest.json").write_text('{"variants": {"last": ', encoding="utf-8")
+    check_provenance(tmp_path, ["last"])  # truncated write, does not raise
+
+
+def test_a_legacy_manifest_recording_no_provenance_is_refused_not_verified(tmp_path) -> None:
+    """The migration must not manufacture agreement out of absence.
+
+    Building the migrated entry with `raw.get(key)` injected all five provenance keys as None, so
+    `usable()` was trivially satisfied on the legacy branch and two content-free entries compared
+    equal and passed as verified. The dict branch refused the same shape correctly; only the
+    migration was blind to it.
+    """
+    write_manifest_file(tmp_path, {"variants": ["last", "full"]})
+    leg_file(tmp_path, "last", "full")
+
+    assert read_manifest(tmp_path) == {}
+    with pytest.raises(RuntimeError, match="not for"):
+        check_provenance(tmp_path, ["last", "full"])

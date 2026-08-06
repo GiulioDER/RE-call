@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 import time
@@ -317,38 +318,54 @@ def manifest_path(out: Path) -> Path:
     return out / "dump_manifest.json"
 
 
-def read_manifest(out: Path) -> dict[str, dict[str, Any]]:
-    """Per-variant provenance from a dump manifest, `{}` when there is nothing trustworthy.
+def read_manifest(out: Path) -> dict[str, dict[str, Any]] | None:
+    """Per-variant provenance, or None when there is no readable manifest at all.
 
-    Migrates the LEGACY shape, in which `variants` was a flat list of names and the provenance
-    and shortfall maps sat at the top level. Migrating rather than discarding matters: every dump
-    directory created before per-variant provenance existed is in that shape, including the one
-    behind the published numbers, and dropping it would destroy exactly the shortfall counts this
-    manifest exists to preserve.
+    🔑 None and `{}` are DIFFERENT and the distinction is load bearing. None means "this dump
+    kept no record, so nothing can be verified". `{}` means "the record parsed and vouches for
+    nothing", which is what an interrupted dump leaves behind and which must be a refusal. An
+    earlier version collapsed the two, so the default `dump` invocation, whose pre-loop write
+    legitimately empties the map, reopened the hole the guard exists to close.
 
-    Never raises on a damaged manifest. An unreadable manifest means provenance cannot be
-    verified, which the caller reports; it does not mean the leg files are unusable, and killing
-    a fusion over it would be a worse failure than the one being guarded against.
+    Migrates the LEGACY shape, in which `variants` was a flat list of names and provenance sat at
+    the top level. Migrating rather than discarding matters: every dump directory created before
+    per-variant provenance existed is in that shape, including the one behind the published
+    numbers, and dropping it would destroy the shortfall counts this manifest exists to preserve.
+
+    Never raises on a damaged manifest. An unreadable manifest is a missing record, not evidence
+    of a mixed dump, and killing a fusion whose leg files are intact would be the worse failure.
     """
+    def usable(entry: Any) -> bool:
+        # An entry vouching for nothing would compare equal to every other such entry and pass as
+        # "verified" while verifying nothing. Dropping it makes it a `missing` refusal instead.
+        return isinstance(entry, dict) and (
+            bool(entry.get("provenance_invalid"))
+            or any(key in entry for key in PROVENANCE_KEYS)
+        )
+
     path = manifest_path(out)
     if not path.exists():
-        return {}
+        return None
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
+        return None
     if not isinstance(raw, dict):
-        return {}
+        return None
     variants = raw.get("variants")
     if isinstance(variants, dict):
-        return {k: v for k, v in variants.items() if isinstance(v, dict)}
+        return {k: v for k, v in variants.items() if usable(v)}
     if isinstance(variants, list):
-        base = {key: raw.get(key) for key in
+        # Only keys actually PRESENT. Injecting them as None would make `usable` trivially true
+        # on the legacy branch, so a legacy manifest that lists variants but records no
+        # provenance would migrate into entries that vouch for nothing, compare equal to each
+        # other, and pass as verified: exactly what `usable` exists to refuse.
+        base = {key: raw[key] for key in
                 ("leg_depth", "legs", "embedder", "sparse_model", "sparse_profile",
-                 "table_prefix", "split")}
+                 "table_prefix", "split") if key in raw}
         short = raw.get("legs_short_of_depth") or {}
         empty = raw.get("empty_sparse_encodings") or {}
-        return {
+        migrated = {
             name: {
                 **base,
                 "legs_short_of_depth": short.get(name) if isinstance(short, dict) else None,
@@ -357,13 +374,34 @@ def read_manifest(out: Path) -> dict[str, dict[str, Any]]:
             }
             for name in variants if isinstance(name, str)
         }
-    return {}
+        return {k: v for k, v in migrated.items() if usable(v)}
+    return None
 
 
 def write_manifest(out: Path, entries: dict[str, dict[str, Any]]) -> None:
-    manifest_path(out).write_text(
-        json.dumps({"variants": entries}, indent=2), encoding="utf-8"
-    )
+    """Replace the manifest atomically.
+
+    It is rewritten once per variant now rather than once per run, and it is the only provenance
+    record there is. A truncated body reads back as "no manifest", which is a silent pass, so an
+    in-place truncating write turns every interruption into a lost guard.
+
+    Covers process death. NOT full power-loss safety: the containing directory is not fsynced
+    (and cannot be portably on Windows), so a kernel-level crash can still lose the rename.
+    """
+    path = manifest_path(out)
+    # PID-suffixed: two dumps sharing an --output-dir would otherwise truncate each other's tmp
+    # file and could promote a partial body, which reads back as "no manifest" and is the silent
+    # pass. Concurrent dumps into one directory are operator error, but this project ran two
+    # sessions against this box on the day it was written, so it is not hypothetical.
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump({"variants": entries}, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def cmd_dump(args: argparse.Namespace) -> int:
@@ -390,12 +428,24 @@ def cmd_dump(args: argparse.Namespace) -> int:
     variants = args.variants or list(VARIANT_FILES)
     shortfalls: dict[str, dict[str, int]] = {}
     empty_sparse: dict[str, int] = {}
-    # Drop the entries for the variants about to be re-dumped, and persist that BEFORE writing a
-    # single leg file. Leg files are overwritten inside the loop, so a manifest written only at
-    # the end would describe freshly overwritten legs with the PREVIOUS run's provenance if the
-    # run died partway, and the consistency check would then certify a dump that is half one
-    # index and half another. Absent beats stale: a missing entry is a refusal downstream.
-    entries = {k: v for k, v in read_manifest(out).items() if k not in set(variants)}
+    # Mark the variants about to be re-dumped INVALID, and persist that BEFORE writing a single
+    # leg file. Leg files are overwritten inside the loop, so a manifest written only at the end
+    # would describe freshly overwritten legs with the PREVIOUS run's provenance if the run died
+    # partway, and the check would then certify a dump that is half one index and half another.
+    #
+    # 🔑 Marked, not deleted, for two reasons the first version got wrong. Deleting the entries of
+    # a FULL dump leaves `{"variants": {}}`, and an empty map used to be indistinguishable from
+    # "no manifest", which is a silent pass: the default invocation reopened the hole. And
+    # deleting throws away the shortfall counts of leg files the run may never reach, leaving a
+    # previously-good directory strictly worse than before. An explicit invalid flag refuses
+    # downstream while keeping the data.
+    superseded = utc_now()
+    entries = dict(read_manifest(out) or {})
+    for variant in variants:
+        entries[variant] = {
+            **entries.get(variant, {}),
+            "provenance_invalid": True, "superseded_at": superseded,
+        }
     write_manifest(out, entries)
     provenance = {
         "leg_depth": LEG_DEPTH, "legs": list(LEGS), "embedder": EMBEDDER_MODEL,
@@ -456,13 +506,17 @@ def cmd_dump(args: argparse.Namespace) -> int:
             with path.open("w", encoding="utf-8") as handle:
                 for row in rows:
                     handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                # Flushed before this variant's manifest entry replaces its invalid marker,
+                # so the ordering the marking scheme relies on is enforced, not assumed.
+                handle.flush()
+                os.fsync(handle.fileno())
             shortfalls[variant] = short
             empty_sparse[variant] = empty
             # Written now, with the leg file already on disk, so the two cannot disagree.
             entries[variant] = {
                 **provenance, "legs_short_of_depth": short,
                 "empty_sparse_encodings": empty, "at": utc_now(),
-            }
+            }  # replaces the invalid marker only once the leg file is on disk
             write_manifest(out, entries)
             print(json.dumps({
                 "event": "variant_done", "variant": variant, "queries": len(rows),
@@ -497,20 +551,41 @@ def check_provenance(out: Path, variants: Sequence[str]) -> None:
     that state is a missing record, not evidence of a mixed dump.
     """
     recorded = read_manifest(out)
-    if not recorded:
+    if recorded is None:
         print(json.dumps({
             "event": "provenance", "verified": False,
-            "why": "no readable per-variant manifest; the dump's provenance is NOT verified",
+            "why": "no readable manifest; the dump's provenance is NOT verified",
         }), flush=True)
         return
-    missing = [v for v in variants if v not in recorded]
-    if missing:
+
+    absent, unrecorded, in_flight = [], [], []
+    for variant in variants:
+        entry = recorded.get(variant)
+        if entry is None:
+            (absent if not (out / "legs" / f"{variant}.jsonl").exists()
+             else unrecorded).append(variant)
+        elif entry.get("provenance_invalid"):
+            in_flight.append(variant)
+    if absent:
+        raise RuntimeError(f"these variants were never dumped into {out}: {absent}")
+    if in_flight:
         raise RuntimeError(
-            f"the dump records provenance for {sorted(recorded)} but not for {missing}, whose leg "
-            f"files are present. An unrecorded leg file could have come from any index or "
-            f"encoder. Re-dump {missing}, or point at a clean --output-dir."
+            f"{in_flight} were being re-dumped when that run stopped, so their leg files may be "
+            f"a mixture of two runs. Re-dump them, or point at a clean --output-dir."
         )
-    seen = {v: tuple(recorded[v].get(k) for k in PROVENANCE_KEYS) for v in variants}
+    if unrecorded:
+        raise RuntimeError(
+            f"the dump records provenance for {sorted(recorded)} but not for {unrecorded}, whose "
+            f"leg files ARE present. An unrecorded leg file could have come from any index or "
+            f"encoder. Re-dump {unrecorded}, or point at a clean --output-dir."
+        )
+    # json.dumps, not the raw value: a provenance key holding a list or dict is unhashable and
+    # would raise TypeError out of `set()`, killing a fusion whose leg files are intact.
+    seen = {
+        v: tuple(json.dumps(recorded[v].get(k), sort_keys=True, default=str)
+                 for k in PROVENANCE_KEYS)
+        for v in variants
+    }
     if len(set(seen.values())) > 1:
         raise RuntimeError(
             f"the dump's variants disagree on how they were retrieved: {seen}. Fusing them would "
