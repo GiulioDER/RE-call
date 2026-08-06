@@ -318,6 +318,24 @@ def load_dev_tasks(root: Path, query_mode: str) -> list[dict[str, Any]]:
     return tasks
 
 
+def strip_speaker(text: str) -> str:
+    """Remove the '|user|: ' turn prefix MTRAG-human ships on every line.
+
+    Byte-identical to `benchmarks/mtrag/probe/fix_retrieval_2x2.py` on `bench/mtrag-arm-r`, on
+    purpose: the established dev baseline (nDCG@5 0.2849 / R@100 0.6865) was measured with THAT
+    normalisation, and a merely similar one makes this run incomparable with it while looking
+    fine.
+
+    The prefix is not part of the question. Left in, the literal token reaches the embedder and
+    the sparse encoder on every dev query and depresses the entire run, with nothing failing.
+    Only a leading speaker tag is removed; a colon inside the question is content and survives.
+    """
+    return "\n".join(
+        ln.split(":", 1)[1].strip() if ln.startswith("|") and ":" in ln else ln
+        for ln in text.splitlines()
+    ).strip()
+
+
 def task_domain(task: dict[str, Any]) -> str:
     if "_domain" in task:
         return str(task["_domain"])
@@ -326,8 +344,9 @@ def task_domain(task: dict[str, Any]) -> str:
 
 def query_text(task: dict[str, Any], mode: str) -> str:
     if "_text" in task:
-        # dev: the mode already chose the file, so the text is the query verbatim.
-        return task["_text"]
+        # dev: the mode already chose the FILE, so the only work left is dropping the speaker
+        # tag the release prefixes to every turn.
+        return strip_speaker(task["_text"])
     turns = task["input"]
     user_turns = [str(turn["text"]).strip() for turn in turns if turn["speaker"] == "user"]
     if not user_turns:
