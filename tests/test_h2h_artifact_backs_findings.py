@@ -5,7 +5,7 @@ only published table in this repository with no committed artifact: `results/ART
 had no entry for it, and no path under `results/` named the comparison. Nothing could have
 checked it, so nothing did, and row 4's `paired p` sat at `0.00018` for two weeks when the
 value is `0.00017` — row 2's p, copied down a row. It was found by the first run of
-`benchmarks/h2h_artifact.py --verify`, i.e. the first moment a check became possible.
+`benchmarks/h2h_artifact.py`, i.e. the first moment a check became possible.
 
 Rebuilding the artifact needs the ~123 MB of raw runs, which are deliberately not in the
 repository, so this cannot re-derive anything. What it *can* do, entirely from committed
@@ -75,7 +75,7 @@ def artifact() -> dict:
     assert _ARTIFACT.exists(), (
         f"{_ARTIFACT.relative_to(_ROOT)} is missing. §9d publishes a five-row table; without "
         "this artifact nothing in the repository can check it, which is how the row-4 p-value "
-        "error survived. Rebuild with benchmarks/h2h_artifact.py --runs <raw> --verify."
+        "error survived. Rebuild with benchmarks/h2h_artifact.py --runs <raw>."
     )
     return json.loads(_ARTIFACT.read_text(encoding="utf-8"))
 
@@ -159,3 +159,29 @@ def test_the_as_shipped_replicates_are_both_recorded(artifact: dict) -> None:
         f"FINDINGS §9d publishes the as-shipped margin as +0.046 to +0.056; the artifact's "
         f"replicates give {margins[0]:.4f} to {margins[1]:.4f}"
     )
+
+
+def test_the_outcomes_directory_holds_exactly_the_declared_vectors(artifact: dict) -> None:
+    """No orphans, no gaps: the directory must equal what the artifact declares.
+
+    The first commit of this artifact shipped NINE vector files for seven declared rows. An
+    earlier key derivation had written two of the as-shipped replicates under different
+    names, and renaming the key left the originals behind. They were byte-valid, sat beside
+    the live files, and backed nothing.
+
+    That is the quieter half of the same defect the collision guard covers: a stale vector
+    does not overwrite anything, it accumulates, and a reader has no way to tell which of
+    two plausible files is the evidence. `write_artifact` now prunes; this asserts it.
+    """
+    declared = set(artifact["outcome_vectors"])
+    on_disk = {p.stem for p in _VECTORS.glob("*.jsonl")}
+    assert declared, "the artifact must declare its vectors, or this test is vacuous"
+    assert on_disk == declared, (
+        f"outcomes/ and the artifact disagree.\n"
+        f"  orphaned (on disk, not declared): {sorted(on_disk - declared)}\n"
+        f"  missing  (declared, not on disk): {sorted(declared - on_disk)}"
+    )
+    # And the declared set really is the rows plus both replicates, not some subset that
+    # happens to match a truncated directory.
+    assert declared >= set(artifact["rows"]), "every table row needs its vector"
+    assert sum(1 for k in declared if k.startswith("as_shipped__")) == 2
