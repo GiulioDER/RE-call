@@ -60,12 +60,19 @@ stylistic note: my own first VPS2 probe script piped a CLI through `head` and pr
 five commands that had all failed with exit 2, which is the same defect the brief warns about and I
 reproduced it before catching it.
 
+⚠️ **These are LOCAL REPRODUCTIONS of the CI job configurations, not CI runs**, and the deltas
+matter: the `test` job ran against PostgreSQL 16 as CI does, but `floor` ran against PostgreSQL
+**17** where CI pins pg16, and every run was on Windows rather than `ubuntu-latest`. Timings,
+collection counts and host readings below are single observations from this session's transcript and
+are **not reproducible from the repository**; the file counts, the migration numbers and the
+headroom ratio are.
+
 | Gate | Before | After |
 |---|---|---|
 | `ruff check .` | clean | clean |
 | `ruff format --check .` | **330 files would be reformatted** | unchanged, and deliberately so; see below |
 | `mypy` | **RED, 1 error** | clean, 166 source files |
-| CI `test`: `pytest --cov-fail-under=70` | (not reached) | **2993 passed, 44 skipped, 0 failed**, coverage **83.28%**, 1075.86 s |
+| CI `test`: `pytest --cov-fail-under=70` | (not reached) | **2993 passed, 44 skipped, 0 failed**, 1075.86 s, PostgreSQL 16. Coverage **83.28% of the shipped packages** (`recall`, `recall_mcp`; tests excluded), floor 70, against the ~75% `ci.yml` records as the reference for that floor |
 | CI `schema-migrations` on PostgreSQL 16 | (not reached) | 60 passed, 47.02 s |
 | CI `schema-migrations` on PostgreSQL 17 | (not reached) | 60 passed, 41.38 s |
 | CI `typecheck` | **RED** (same error as `mypy`) | clean |
@@ -132,11 +139,11 @@ precondition and aborts rather than proceeding if it fails, recorded the ledger 
 |---|---|
 | Preconditions: rows across chunk, generation and tenant_state tables | 0, asserted before acting |
 | Preconditions: pending outbox events | 0 |
-| Preconditions: disk headroom vs the active index | 578,933,866,496 bytes free against a 131,072-byte active index, **4,416,914.9x**, requirement 2.2x |
-| Global migrations applied as `recall_migrator` | 0008 (re-applied), **0011, 0012, 0013** |
+| Preconditions: disk headroom vs the active index | 578,933,866,496 bytes free against a 131,072-byte active index, **4,416,914.9x**, requirement 2.2x. ⚠️ **PASSED VACUOUSLY.** 131,072 bytes is sixteen empty 8 KiB pages, the floor for an index over ZERO rows, so the ratio bounds nothing about a real build. The same vacuity warning this entry gives `parity` applies here and I did not give it. The 2.2x factor is also unsourced: nothing in the repository derives it, and it is applied to `pg_indexes_size`, which excludes the heap that a second generation actually needs |
+| Global migrations applied as `recall_migrator` | 0008 (re-applied), **0011, 0012, 0013**. 0009 and 0010 are also global and were already applied on 2026-08-03; they were untouched |
 | Per-table migrations applied as `recall_migrator` | 0001 to 0007 for **both** generation tables |
 | Schema state after | `current=0013 required=0013 compatible=True` on every target |
-| Indexes after | all 14 still `indisvalid`, plus 3 valid on the new `recall_sparse_v1` including the concurrent HNSW `sparsevec` index |
+| Indexes after | all 14 across the two generation chunk tables (7 each: primary key plus 0002 to 0007) still `indisvalid`, plus 3 valid on the new `recall_sparse_v1` including the concurrent HNSW `sparsevec` index |
 | RLS after | forced on `recall_calibrations`, `recall_calibration_query_sets`, `recall_sparse_v1` |
 | Row counts after | still 0 on both generations: nothing here wrote data |
 
@@ -144,11 +151,18 @@ precondition and aborts rather than proceeding if it fails, recorded the ledger 
 resolved, `readiness` stopped reporting a mismatch and started reporting
 `SchemaTooOld: table 'recall_chunks_g20260803_sym' needs schema migration(s) ['0001' … '0007']`. The
 two generation tables had **no rows at all** in the per-table migration ledger, while having every
-index present and valid and RLS forced. `GenerationStore.ensure_schema()` raises by design
-(`GenerationStore never migrates; run "recall schema apply" with the migration role`), so this is a
-provisioning step that the 2026-08-03 deployment skipped, and the drift guard had been hiding it
-ever since. This is the program's own recorded pattern: a fix promotes a dormant defect, so the
-check runs again after.
+index present and valid and RLS forced. The drift guard had been hiding it ever since. This is the
+program's own recorded pattern: a fix promotes a dormant defect, so the check runs again after.
+
+⚠️ **My first explanation of the cause was wrong, and the audit caught it.** I wrote that
+`create-generation` does not write those ledger rows and cited `GenerationStore.ensure_schema()`
+raising by design. Neither supports the claim: `create-generation` builds a **`PgVectorStore`** and
+calls its `ensure_schema()`, which is `apply_migrations(table=…)` and does write exactly those
+0001 to 0007 rows, and `GenerationStore` is the v1 store bound to `recall_chunks_v1`, not on that
+path at all. What is verified is the STATE (two tables, no ledger rows, `SchemaTooOld`); the ROUTE
+that produced it is unknown, and the deployed build is an older one. Generalising one observation
+into a property of a command that does do the work is precisely the defect class this document
+keeps recording, and I committed it in the entry describing the audit that would have caught it.
 
 ### What readiness says now, and why it is still `False`
 
@@ -202,14 +216,19 @@ digest says which bytes are installed; it says nothing about whether they may be
 reranker and the BGE cache are both unrecorded.
 
 **The latency blocker, restated from observation rather than memory.** VPS2 **rebooted during this
-session** and reported load averages of 20.85 and then 35.24 on 12 cores, from unrelated live
-production. That is worse than the 9.78 the previous entry recorded. No timing taken here is cited
-for anything; the only numbers taken off that host are checksums, counts and exit codes.
+session** and reported one-minute load averages of 20.85 and then 35.24 on 12 cores, from unrelated
+live production. That is worse than the **12.55** the previous entry recorded (9.78 is two entries
+back; an earlier draft of this paragraph attributed it wrongly). ⚠️ Both readings are one-minute
+figures taken **after a reboot**, so they are still converging and are not like-for-like with the
+steady-state 1/5/15 triples earlier entries published. Normalised per core they are 1.74 and 2.94
+against 1.05, so the direction holds even though the units do not. No timing taken here is cited for
+anything; the only numbers taken off that host are checksums, counts and exit codes.
 
 ### Part 3: the documentation, and the gate that caught me
 
 `docs/ENTERPRISE_RETRIEVAL.md` now opens with a real operator runbook: a preconditions section, the
-ordered ten-step sequence as a table naming the credential and the non-zero exit condition for each
+ordered eleven-step sequence (plus preconditions and rollback) as a table naming the credential and
+the non-zero exit condition for each
 step, then a section per step with what to verify afterwards, and rollback. The two hazards this
 session hit are written into it at the step where an operator would hit them: the per-table
 migration step that provisioning skips, and the checksum-drift stop with the conditions under which
@@ -227,6 +246,52 @@ taking it would have been gaming the guard rather than satisfying it. The number
 table instead and the row points at `recall/profiles.py` and the runbook, which is where a tuning
 value belongs. Gate clean afterwards, 137 provenance tests passing.
 
+### The audit found more than the session did, and the runbook was the target
+
+The diff went through the tiered CCA pipeline at DEEP (`RUN_STAKES` and `RUN_NUM` both fire: the
+runbook instructs irreversible database operations and the entry publishes figures). Six auditors,
+41 raw findings. ⚠️ **Deterministic coverage was NONE**: `cca_checks` is not installed in this
+environment, so every verdict rests on LLM adjudication plus what I re-executed myself. I verified
+each item below by running it or by reading the named source, not by reading the report.
+
+**The documentation was the dangerous artifact, not the code.** The code change this session made is
+one mypy override entry and a lockfile bump. The runbook is what tells a human to run irreversible
+operations on a production database, and its first draft stated three guards that do not exist:
+
+| Finding | Verdict | Outcome |
+|---|---|---|
+| **`mark-ready` documented as exiting non-zero when the counts do not match.** No such check exists | CONFIRMED, from the code's own docstring: "stores its `--chunks`/`--sources` argparse ints verbatim and compares them to nothing" | fixed; also records that it has no state guard and will move a `failed` generation to `ready` |
+| **`replay` grouped with the commands that "only read".** It is a write path into both generations | CONFIRMED, stated in `enterprise_cli.py`'s own comment | fixed, in the table and in the credentials prose |
+| **`retire` documented as following `cutover`.** `cutover` SWAPS the slots, so the old generation becomes the shadow and `retire` refuses it in either slot: step 11 could never succeed as written | CONFIRMED by reading `control_plane.py:865` | fixed; also records that retirement is database-GLOBAL with no un-retire command, so it is the point of no return that ends rollback |
+| **The rollback command was the only step with no command line**, and its literal short form NULLs the shadow route | CONFIRMED | fixed, with the `--shadow-generation` flag and a verify line |
+| **The grants precondition named one object of six, hand-written**, which is the exact anti-pattern `MIGRATIONS.md` warns about after an operator following a hand-written list got `permission denied` at startup | CONFIRMED by two auditors independently | fixed: point at the shipped generator instead |
+| **And the generator command I then wrote does not parse.** `--table` is a top-level argument; after the subcommand it exits 2, and the obvious repair silently grants the DEFAULT table | CONFIRMED **by execution**: exit 2 as written, exit 0 and six statements in the corrected order | fixed |
+| **Step 2 had no command, and the obvious invocation fetches a model** because `--dim` defaults to an embedder-inferred value, failing on a network fetch under the egress boundary the same page requires | CONFIRMED | fixed, with an explicit `--dim` and the flag ordering stated |
+| **The ledger remedy was generalised and its safeguards were weaker than the guard it defeats** | CONFIRMED by two auditors | fixed: names the table, both key columns, the `__global__` scope, the backup precondition, the ACCESS EXCLUSIVE and `statement_timeout = 0` cost, that restoring the row does not undo the DDL, and that the default remedy is a new migration version |
+| **`--allow-divergent-corpus` was undocumented** while the parity refusal advertises it at the worst possible moment | CONFIRMED | documented with a hard rule |
+| **The vacuous-parity warning was too weak** to beat the runbook's own "proceed on green" framing | CONFIRMED | fixed: an explicit STOP with a threshold |
+| **The disk-headroom precondition passed VACUOUSLY** and I published `4,416,914.9x` without saying so | CONFIRMED: 131,072 bytes is the empty-index floor, and the same entry warns about exactly this for `parity` | fixed; the 2.2x factor is also marked as an unsourced rule of thumb applied to a base that excludes the heap |
+| Load average attributed to the wrong prior entry (12.55, not 9.78), published as bare scalars across a reboot | CONFIRMED | fixed |
+| The gate table captioned as CI jobs when these are local reproductions, and `floor` ran on PostgreSQL 17 where CI pins 16 | CONFIRMED | fixed, with the deltas named |
+| `### Documentation` inserted mid-list, orphaning a pre-existing **security** fix under it | CONFIRMED | fixed, heading moved below the last `Fixed` bullet |
+| h2 CVE reachability stops one hop short: the chain is bench-extra only, so no wheel, CI job or deployment contained it | CONFIRMED | CHANGELOG now says the gate was real and the exposure was not |
+
+**Two claims of mine were withdrawn rather than softened, and both are the same defect class.**
+
+1. **I described a hazard that had been fixed the day before.** Both the README row and the runbook
+   said a dual-write re-index reads its skip set from the active store, so a shadow attached midway
+   is silently short. Commit `b0e74e5` replaced that predicate on 2026-08-06: `index.py` reads the
+   shadow's own `source_content_hashes()` and skips only when a file is current in **both**
+   generations, with three tests shown to fail against the old code. I copied the claim forward from
+   an older entry of this document without checking it against the code. The residual gap that does
+   survive is on the delete path instead, and that is what both documents now say.
+
+2. **I misattributed the ledger-row finding to `create-generation`.** See the correction above. The
+   state was verified; the cause was invented.
+
+Both are instances of the standard this repository already carries: **verify a memory fact before
+acting on it.** A prior session's entry is a memory, and this document is where they are stored.
+
 ### Standing blockers
 
 | Blocker | Kind | Effect | Change |
@@ -242,10 +307,20 @@ value belongs. Gate clean afterwards, 137 provenance tests passing.
 
 1. **The three new provisioning gaps above**, in that order: the grant is one idempotent statement,
    the licences are a manifest edit, the egress policy is a decision about a shared host.
-2. **Decide whether `create-generation` should apply the per-table migrations itself**, or whether
-   `readiness` should say "run `recall schema apply` on this table" instead of `SchemaTooOld`. The
-   current split is defensible but it produced a generation that looked healthy in every visible
-   way and was not.
+2. **Find out how the two generation tables came to have no per-table ledger rows.** `readiness` also
+   only ever evaluates the ACTIVE generation, so a shadow in that state is invisible until it is
+   promoted. Worth deciding whether `readiness` should check both slots, and whether `SchemaTooOld`
+   should name the remedy (`recall --table X schema --dim N apply`) rather than the condition.
+
+2b. **Make `_cmd_parity` exit non-zero when both generations are empty.** The runbook now carries
+   that guard in prose, and a guard in prose is the weakest place to keep one: the same document
+   teaches "do not proceed past a red one", and this failure mode is a green. The code is where it
+   belongs.
+
+2c. **A third audit round has NOT been run.** This project's own recorded pattern is that auditing a
+   fix batch finds defects in the batch, converging at round three. Round one found 41; the fixes
+   above are round one's output and have not themselves been audited. Do that before trusting the
+   runbook operationally.
 3. **A CI job that runs `ruff format --check`, or a decision that formatting is unenforced.** Right
    now the answer is neither: the tool is installed, it fails, and nothing asks it.
 4. The four performance items from the 2026-08-05 evidence-boundary entry, still untouched.

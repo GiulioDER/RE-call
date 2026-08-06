@@ -183,28 +183,15 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 - **`CVE-2026-71554` in `h2` 4.4.0, which made the `audit` CI job red.** `h2` arrives transitively
   through httpx's `http2` extra and is unconstrained by `pyproject.toml`, so the fix is a lockfile
   movement to 4.4.1 with no declared-dependency change. `pip-audit` reports no known
-  vulnerabilities afterwards. `requirements.lock.txt`, which the `audit` job generates and which the
+  vulnerabilities afterwards. **The red gate was real and the exposure was not**: the full chain is
+  `bench` extra → `mem0ai` → `qdrant-client` → `httpx[http2]` → `h2`, and `pyproject.toml` documents
+  the `bench` extra as never added to `dev` and never installed in CI, so no shipped wheel, no CI job
+  and no deployment ever contained the vulnerable version. The constraint also lives only in
+  `uv.lock`: anyone installing `recall-rag[bench]` from PyPI resolves `h2` independently.
+  `requirements.lock.txt`, which the `audit` job generates and which the
   new operator runbook now tells a human to generate locally, is gitignored: an untracked generated
   copy of the resolved dependency set beside `uv.lock` is a second source of truth that can drift
   silently and be swept into a later commit.
-
-### Documentation
-- **`docs/ENTERPRISE_RETRIEVAL.md` is now an operator runbook** rather than a sequence sketch. It
-  opens with preconditions (unprivileged roles, the grants each command actually needs, pgvector and
-  `sparsevec` availability, independently recomputed artifact digests, recorded licences, a blocked
-  egress boundary, and disk headroom of at least 2.2x the active index), then gives the ordered ten
-  step sequence as a table naming the credential and the non-zero exit condition for every step,
-  then a section per step with what to verify afterwards, and rollback. Two hazards are written in
-  at the step where an operator meets them: `create-generation` does not necessarily write a
-  generation table's per-table migration ledger rows and `GenerationStore` refuses to migrate by
-  design, so a generation can look completely healthy (table present, every index valid, RLS forced)
-  while `readiness` reports `SchemaTooOld`; and a migration whose bytes changed after it was applied
-  is a hard stop with no override flag, whose only defensible remedy is clearing that ledger row
-  after showing the two versions are equivalent on that specific database.
-- **`README.md`'s production-posture table gains four rows**: index generations and cutover,
-  retrieval cost profiles, the generator-neutral evidence boundary, and serving latency marked
-  **PENDING**. The parity row warns that a comparison of two empty generations succeeds and prints
-  `OK` without having compared anything.
 
 - **Corpus text could close the evidence delimiter, and reach the model outside the data region.**
   `render_evidence_prompt` wrapped a `json.dumps` payload in `<evidence_data>...</evidence_data>`.
@@ -333,6 +320,28 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   tolerated as "not yet recorded", mid-file corruption loud. `recall/eval/gap_run.py` is
   deliberately not migrated — its unit of resume is a corpus result *file* carrying a `status`
   marker, and unifying it would rewrite a published artifact format for no resume benefit.
+### Documentation
+- **`docs/ENTERPRISE_RETRIEVAL.md` is now an operator runbook** rather than a sequence sketch. It
+  opens with preconditions (unprivileged roles, the grants each command actually needs, pgvector and
+  `sparsevec` availability, independently recomputed artifact digests, recorded licences, a blocked
+  egress boundary, and a disk-headroom rule of thumb), then gives the ordered eleven-step sequence
+  (plus preconditions and rollback) as a table naming the credential and the non-zero exit condition
+  for every step, then grouped sections with what to verify afterwards. Hazards are written in at the
+  step where an operator meets them, including several the runbook's first draft got wrong and an
+  audit corrected: `mark-ready` records its `--chunks`/`--sources` and **never checks them**;
+  `replay` takes the serving credential but is a **write path**; `readiness` names its own role
+  subject but not its own generation subject, so run before cutover it certifies the OUTGOING
+  generation; `retire` cannot follow `cutover` directly because cutover swaps the slots, and
+  retirement is database-global with no un-retire command; `parity` succeeding on two empty
+  generations is a vacuous pass that must be treated as a hard stop; and a migration whose bytes
+  changed after it was applied is a hard stop with no override flag, whose remedy names the ledger
+  table, both key columns, the `__global__` scope, a backup precondition, and the fact that
+  restoring the deleted row does not undo the DDL the re-apply performs.
+- **`README.md`'s production-posture table gains four rows**: index generations and cutover,
+  retrieval cost profiles, the generator-neutral evidence boundary, and serving latency marked
+  **PENDING**. The parity row warns that a comparison of two empty generations succeeds and prints
+  `OK` without having compared anything.
+
 ### Changed
 - **New startup refusals on the MCP HTTP transports.** The server now refuses to boot when: no
   mechanism is configured at all; `RECALL_OIDC_ISSUER` is set without `RECALL_OIDC_AUDIENCE` or
