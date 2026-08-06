@@ -73,6 +73,28 @@ from benchmarks.mtrag.run import (
 #: Metric cutoff. Reranking reorders the pool; the reported metrics still cut at this depth.
 EVAL_K = 100
 
+#: Depth at which the offloaded ordering must match the in-process reranker EXACTLY.
+#:
+#: Every reported metric cuts at 1, 3, 5 or 10, so this is where order decides a number. Deeper
+#: than this, order only affects nDCG@100 and by a vanishing amount.
+ORDER_EXACT_K = 10
+
+#: How far a GPU score may differ from the CPU score for the same pair before it stops being
+#: arithmetic and starts being a different computation.
+#:
+#: 🔑 The first version of this gate demanded EXACT ordering equality over the whole 100-candidate
+#: pool. That gate could never pass: CUDA and CPU do not produce bit-identical floats, so two
+#: candidates tied to six decimals swap for reasons that have nothing to do with correctness. It
+#: failed on rank 87 of one query out of twenty, where the two documents differed by 9.5e-07 and
+#: the measured max score delta across the sample was 1.0e-05.
+#:
+#: A gate that cannot pass is exactly as useless as one that cannot fail, and it had the worse
+#: failure mode of the two here: it would have been tempting to wave through. So the gate now
+#: states what it actually guarantees -- scores agree as arithmetic, order is exact where metrics
+#: are cut, and the top-100 SET is exact so Recall@100 is unaffected -- and reports deeper
+#: tie-swaps as information rather than failure.
+SCORE_TOLERANCE = 1e-3
+
 
 def rerank_order(candidates: list[str], scores: dict[str, float]) -> list[str]:
     """Reorder `candidates` by `scores`, identically to `CrossEncoderReranker.rerank`.
@@ -197,9 +219,18 @@ def _load_scores(path: Path) -> dict[str, dict[str, float]]:
 
 
 def cmd_apply(args: argparse.Namespace) -> int:
+    """Score each arm's pools, reranked if `--scores` is given and RETRIEVAL-ONLY if it is not.
+
+    The retrieval-only path is not a convenience: coverage is the measured MT-RAG bottleneck
+    (R@100 0.687 against a ~0.95 saturation threshold), and reranking cannot put a document into
+    a pool that retrieval never found. So the question this work exists to answer is answerable
+    without the cross-encoder, and answering it separately keeps the two effects from being
+    confounded in one number.
+    """
     root = args.mtrag_root.resolve()
     out = args.output_dir.resolve()
-    scores = _load_scores(args.scores)
+    scores = _load_scores(args.scores) if args.scores else {}
+    reranked = bool(args.scores)
     qrels = load_qrels(root, args.split)
 
     summaries = []
@@ -212,17 +243,23 @@ def cmd_apply(args: argparse.Namespace) -> int:
                 if not line.strip():
                     continue
                 row = json.loads(line)
-                ordered = rerank_order(row["candidates"], scores.get(row["task_id"], {}))
+                ordered = (
+                    rerank_order(row["candidates"], scores.get(row["task_id"], {}))
+                    if reranked
+                    else row["candidates"]  # fused RRF order, untouched
+                )
                 predictions.append({
                     "task_id": row["task_id"],
                     "contexts": [{"document_id": d} for d in ordered[:EVAL_K]],
                 })
         metrics = score_predictions(predictions, qrels, arm.pool_bound() if arm else None)
-        summaries.append({"arm": arm_name, "reranked": True, "metrics": metrics["overall"],
+        summaries.append({"arm": arm_name, "reranked": reranked, "metrics": metrics["overall"],
                           "domains": metrics["domains"]})
-        print(json.dumps({"event": "scored", "arm": arm_name, **metrics["overall"]}), flush=True)
+        print(json.dumps({"event": "scored", "arm": arm_name, "reranked": reranked,
+                          **metrics["overall"]}), flush=True)
 
-    (out / "reranked_summary.json").write_text(
+    name = "reranked_summary.json" if reranked else "retrieval_only_summary.json"
+    (out / name).write_text(
         json.dumps(summaries, indent=2), encoding="utf-8"
     )
     return 0
@@ -255,25 +292,52 @@ def cmd_validate(args: argparse.Namespace) -> int:
     sample = rows[: args.sample]
 
     reranker = CrossEncoderReranker()
-    mismatches = []
+    failures: list[dict] = []
+    ties: list[dict] = []
+    worst_delta = 0.0
     for row in sample:
         candidates = row["candidates"]
         hits = [
             ScoredChunk(chunk=Chunk(id=c, source="s", text=docs[c], metadata={}), score=0.0)
             for c in candidates
         ]
-        local = [h.chunk.id for h in reranker.rerank(row["query"], hits)]
-        offloaded = rerank_order(candidates, scores.get(row["task_id"], {}))
-        if local != offloaded:
-            first = next(i for i, (a, b) in enumerate(zip(local, offloaded, strict=True)) if a != b)
-            mismatches.append({"task_id": row["task_id"], "first_divergence_rank": first})
+        offloaded_scores = scores.get(row["task_id"], {})
+        local_scores = reranker._model.predict([(row["query"], h.chunk.text) for h in hits])
+        local_by_id = {c: float(v) for c, v in zip(candidates, local_scores, strict=True)}
+        worst_delta = max(
+            worst_delta, max(abs(offloaded_scores[c] - local_by_id[c]) for c in candidates)
+        )
 
-    verdict = "MATCH" if not mismatches else "MISMATCH"
+        local = [h.chunk.id for h in reranker.rerank(row["query"], hits)]
+        offloaded = rerank_order(candidates, offloaded_scores)
+
+        # (a) top-of-ranking ORDER, where every reported metric is cut.
+        if local[:ORDER_EXACT_K] != offloaded[:ORDER_EXACT_K]:
+            failures.append({"task_id": row["task_id"], "why": f"top-{ORDER_EXACT_K} order differs"})
+        # (b) top-100 SET, which is what Recall@100 counts (order within it does not matter).
+        elif set(local[:EVAL_K]) != set(offloaded[:EVAL_K]):
+            failures.append({"task_id": row["task_id"], "why": f"top-{EVAL_K} set differs"})
+        elif local != offloaded:
+            rank = next(i for i, (a, b) in enumerate(zip(local, offloaded, strict=True)) if a != b)
+            gap = abs(local_by_id[local[rank]] - local_by_id[offloaded[rank]])
+            ties.append({"task_id": row["task_id"], "rank": rank, "score_gap": gap})
+
+    verdict = "MATCH" if not failures else "MISMATCH"
     print(json.dumps({
         "event": "validate", "arm": pool_path.stem, "sampled": len(sample),
-        "mismatches": len(mismatches), "detail": mismatches[:5], "verdict": verdict,
+        "max_score_delta": worst_delta,
+        "score_tolerance": SCORE_TOLERANCE,
+        "scores_within_tolerance": worst_delta < SCORE_TOLERANCE,
+        "failures": failures[:5],
+        "deep_ties": ties[:5],
+        "deep_tie_count": len(ties),
+        "verdict": verdict,
     }, indent=2), flush=True)
-    return 0 if not mismatches else 1
+    if worst_delta >= SCORE_TOLERANCE:
+        print(json.dumps({"event": "validate", "verdict": "MISMATCH",
+                          "why": "scores diverge beyond tolerance"}), flush=True)
+        return 1
+    return 0 if not failures else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -291,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--sparse-model", default=None)
             p.add_argument("--arms", nargs="*")
         else:
-            p.add_argument("--scores", type=Path, required=True)
+            p.add_argument("--scores", type=Path, required=(name == "validate"))
         if name == "validate":
             p.add_argument("--sample", type=int, default=20)
     args = parser.parse_args(argv)
