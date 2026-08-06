@@ -283,6 +283,37 @@ the artifact will say so. A rerank run follows separately if the box stays quiet
   cheap by construction, exactly as the existing module docstring warns, and commit `9a5165b`
   remains the number that frames any result from this file.
 
+## Addendum, 2026-08-07: local GPU selection
+
+Added after the design above was approved, at the user's request: an option to use a local GPU
+when there is one good enough. Implemented as Task 8b of the plan.
+
+**Measured, not assumed.** The local box has an **NVIDIA GeForce GTX 1070 Ti, 8192 MiB**, driver
+582.66. `Splade_PP_en_v1` is BERT-base, so fp32 inference at batch 32 needs well under 2 GB and
+VRAM is not the constraint. The installed torch is **`2.12.1+cpu`** with `torch.version.cuda`
+reporting `None`, so CUDA is unreachable because of the wheel rather than the hardware. The card is
+Pascal, compute capability **6.1**, and recent PyTorch CUDA wheels have been dropping older
+architectures; whether the current one still ships `sm_61` is **read at runtime from
+`torch.cuda.get_arch_list()`** and is asserted nowhere.
+
+**`SpladeEncoder.from_pretrained` already takes `device` and already defaults to CUDA when
+available.** What was missing is a way to ask for it and a way to be told no.
+
+`--sparse-device {auto,cpu,cuda}`. `auto` keeps today's behaviour and additionally prints the
+device it chose. `cuda` **refuses** rather than falling back, naming which of four checks failed:
+a CPU-only wheel, no visible device, an architecture absent from the wheel's arch list, or
+insufficient free VRAM. That choice follows the note already in `recall/sparse.py` about the
+rented-GPU case, where a silent fallback yields correct vectors roughly a hundred times more
+slowly and "the only symptom is the bill". Locally there is not even a bill.
+
+The refusal logic is a pure function over those four facts, so every branch is shown firing on a
+box with no CUDA build. The resolved device is stamped into `_provenance`, because
+`learned_sparse_encode_ms_mean` is a transformer forward pass and its CPU and GPU values measure
+different things.
+
+VPS2 has no GPU, so Task 9 is unaffected, and it passes `--sparse-device cpu` explicitly so the
+artifact records a chosen device rather than an incidental one.
+
 ## Open risks
 
 | Risk | Handling |
