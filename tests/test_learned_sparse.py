@@ -171,3 +171,36 @@ def test_the_default_model_is_the_permissively_licensed_one() -> None:
     from recall.sparse import DEFAULT_MODEL, KNOWN_MODELS
 
     assert KNOWN_MODELS[DEFAULT_MODEL] == "apache-2.0"
+
+
+def test_encoder_sends_inputs_to_the_models_device(tiny_splade) -> None:
+    """Inputs must follow the MODEL's device, never a hardcoded one.
+
+    Without this, `from_pretrained` loads to CPU, `encode` feeds CPU tensors, and a rented GPU
+    sits idle while the whole corpus runs on the instance's CPU. Nothing errors: you get correct
+    vectors, slowly, and a bill. That is the failure this pins.
+
+    No GPU is available in CI, and the first version of this test asserted
+    `encoder.device == torch.device("cpu")` on a CPU-only box. Mutating the property to a
+    hardcoded `cpu` left it GREEN, so it pinned nothing: the two sides of the assertion agreed
+    for a reason unrelated to the code being right.
+
+    Moving the model to torch's `meta` device fixes that. `meta` is not `cpu`, so a hardcoded
+    device now disagrees with the model and the test fails. No forward pass is needed, which is
+    the point: this is about where inputs are ROUTED, not about computing anything.
+    """
+    torch = pytest.importorskip("torch")
+    tokenizer, model, vocab_size = tiny_splade
+    encoder = SpladeEncoder(
+        tokenizer=tokenizer, model=model,
+        profile=SparseProfile(
+            profile_id="tiny", model_name="tiny", artifact_digest="sha256:test",
+            dimension=vocab_size, top_k=5,
+        ),
+    )
+    assert encoder.device == torch.device("cpu")
+
+    model.to("meta")
+
+    assert encoder.device == next(model.parameters()).device
+    assert encoder.device.type == "meta"
