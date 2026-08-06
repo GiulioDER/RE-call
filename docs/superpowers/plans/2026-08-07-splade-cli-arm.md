@@ -1504,6 +1504,462 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
+### Task 8b: `--sparse-device`, and a GPU asked for but unusable must say so
+
+**Files:**
+- Modify: `recall/sparse.py`
+- Modify: `benchmarks/store_latency_share.py` (the argparse block and encoder construction from Task 7)
+- Test: `tests/test_sparse_device.py` (create)
+
+**Interfaces:**
+- Consumes: `SpladeEncoder.from_pretrained(..., device=...)`, which already exists and already defaults to `"cuda" if torch.cuda.is_available() else "cpu"`.
+- Produces: `SPARSE_DEVICES`, `DeviceReport`, `SparseDeviceError`, `device_refusal(...)`, `inspect_sparse_device(requested, required_vram_mb=...)`, `resolve_sparse_device(requested, required_vram_mb=...)`.
+
+**Measured facts this task exists to handle, established 2026-08-07 on the local box.** The GPU is an **NVIDIA GeForce GTX 1070 Ti, 8192 MiB**, driver 582.66. `Splade_PP_en_v1` is BERT-base, roughly 110M parameters, so fp32 inference at batch 32 needs well under 2 GB: VRAM is not the constraint. The installed torch is **`2.12.1+cpu`**, with `torch.version.cuda` reporting `None` and `device_count` 0, so CUDA is unreachable because of the wheel and not the hardware. The card is Pascal, **compute capability 6.1**, and recent PyTorch CUDA wheels have been dropping older architectures. Whether the current wheel still ships `sm_61` is **not asserted anywhere in this task**: it is read off `torch.cuda.get_arch_list()` at runtime, which is the only honest way to answer it.
+
+**Why refusal and not fallback.** `recall/sparse.py` already documents this silence for rented hardware: `from_pretrained` loads to CPU, so a rented GPU "would sit idle while the corpus encoded on the instance's CPU. Nothing would error. The vectors would be correct, the run would be ~100x slower, and the only symptom is the bill." Locally it is worse, because there is no bill to notice. An explicit `--sparse-device cuda` is a statement about the run, and a silent fallback makes it a false one.
+
+**Why the device reaches provenance.** `learned_sparse_encode_ms_mean` is a transformer forward pass. Its value on CPU and on GPU are measurements of different things, so an artifact that does not record which one it was cannot be compared against another.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `tests/test_sparse_device.py`:
+
+```python
+"""Asking for a GPU and silently getting a CPU is the failure this file exists to exclude.
+
+`device_refusal` is a PURE function over the facts, so every branch below is shown firing on a
+box with no CUDA build and no GPU. The thin collector that reads those facts off torch is the
+only part not covered here, and it is the part with no logic in it.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from recall.sparse import DeviceReport, SparseDeviceError, device_refusal, resolve_sparse_device
+
+#: A GTX 1070 Ti as measured on this box: Pascal, compute capability 6.1, 8 GB.
+PASCAL = (6, 1)
+PASCAL_ARCHES = ("sm_61", "sm_70", "sm_75", "sm_80", "sm_86", "sm_90")
+NO_PASCAL_ARCHES = ("sm_70", "sm_75", "sm_80", "sm_86", "sm_90", "sm_100")
+
+
+def test_a_cpu_only_wheel_is_refused_by_name() -> None:
+    """The exact local condition: torch 2.12.1+cpu, hardware present and unreachable.
+
+    Reported as a WHEEL problem, not as "no GPU". Those need different fixes, and telling someone
+    with a working card that they have no GPU sends them to the wrong one.
+    """
+    refusal = device_refusal(
+        cuda_build=None, device_count=0, capability=None,
+        arch_list=(), free_vram_mb=None, required_vram_mb=2048,
+    )
+
+    assert refusal is not None
+    assert "CPU-only" in refusal
+
+
+def test_a_cuda_wheel_with_no_visible_device_is_refused() -> None:
+    refusal = device_refusal(
+        cuda_build="12.8", device_count=0, capability=None,
+        arch_list=("sm_80",), free_vram_mb=None, required_vram_mb=2048,
+    )
+
+    assert refusal is not None
+    assert "no CUDA device" in refusal
+
+
+def test_a_card_whose_architecture_the_wheel_dropped_is_refused() -> None:
+    """The Pascal trap, and the reason this reads the arch list rather than assuming it.
+
+    A wheel built without sm_61 does not politely decline. Naming the architecture and listing
+    what the wheel does carry is what turns that into an actionable message.
+    """
+    refusal = device_refusal(
+        cuda_build="12.8", device_count=1, capability=PASCAL,
+        arch_list=NO_PASCAL_ARCHES, free_vram_mb=8192, required_vram_mb=2048,
+    )
+
+    assert refusal is not None
+    assert "sm_61" in refusal
+    assert "sm_80" in refusal
+
+
+def test_insufficient_free_vram_is_refused_with_both_numbers() -> None:
+    refusal = device_refusal(
+        cuda_build="12.8", device_count=1, capability=PASCAL,
+        arch_list=PASCAL_ARCHES, free_vram_mb=512, required_vram_mb=2048,
+    )
+
+    assert refusal is not None
+    assert "512" in refusal and "2048" in refusal
+
+
+def test_a_usable_card_produces_no_refusal() -> None:
+    """The positive control. Without it every assertion above passes on a function that always
+    refuses, which would read as a working guard while blocking every GPU run."""
+    assert device_refusal(
+        cuda_build="12.8", device_count=1, capability=PASCAL,
+        arch_list=PASCAL_ARCHES, free_vram_mb=8192, required_vram_mb=2048,
+    ) is None
+
+
+def test_requesting_cuda_explicitly_raises_rather_than_falling_back(monkeypatch) -> None:
+    import recall.sparse as sparse
+
+    monkeypatch.setattr(
+        sparse, "inspect_sparse_device",
+        lambda requested, required_vram_mb=2048: DeviceReport(
+            requested=requested, resolved="cpu", torch_cuda_build=None, device_name=None,
+            capability=None, supported_architectures=(), free_vram_mb=None,
+            refusal="torch is a CPU-only build",
+        ),
+    )
+
+    with pytest.raises(SparseDeviceError, match="CPU-only"):
+        resolve_sparse_device("cuda")
+
+
+def test_auto_falls_back_without_raising(monkeypatch) -> None:
+    """`auto` means "use it if it is there", so a refusal is information, not an error."""
+    import recall.sparse as sparse
+
+    monkeypatch.setattr(
+        sparse, "inspect_sparse_device",
+        lambda requested, required_vram_mb=2048: DeviceReport(
+            requested=requested, resolved="cpu", torch_cuda_build=None, device_name=None,
+            capability=None, supported_architectures=(), free_vram_mb=None,
+            refusal="torch is a CPU-only build",
+        ),
+    )
+
+    assert resolve_sparse_device("auto") == "cpu"
+
+
+def test_requesting_cpu_never_consults_cuda() -> None:
+    """Asking for CPU on a box with no torch at all must still work.
+
+    Routed through the collector, this would import torch in order to decide it did not need
+    torch.
+    """
+    assert resolve_sparse_device("cpu") == "cpu"
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+```bash
+cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_sparse_device.py -v
+```
+
+Expected: collection error, `ImportError: cannot import name 'DeviceReport' from 'recall.sparse'`.
+
+- [ ] **Step 3: Write the minimal implementation**
+
+Append to `recall/sparse.py`:
+
+```python
+#: What BERT-base fp32 inference needs with headroom for activations at batch 32. Stated as a
+#: number rather than computed, and exposed as a parameter, because a caller running a larger
+#: checkpoint or a bigger batch has a different answer and should not have to edit this file.
+DEFAULT_REQUIRED_VRAM_MB = 2048
+
+SPARSE_DEVICES = ("auto", "cpu", "cuda")
+
+
+class SparseDeviceError(RuntimeError):
+    """A device was asked for by name and cannot be used."""
+
+
+@dataclass(frozen=True)
+class DeviceReport:
+    """Everything the device decision was made from, kept so it can be printed and stamped.
+
+    `learned_sparse_encode_ms_mean` is a transformer forward pass, so its value on CPU and on GPU
+    are measurements of different things. An artifact that does not record which one it was cannot
+    be compared against another, which is why this whole object reaches provenance rather than
+    only the resolved string.
+    """
+
+    requested: str
+    resolved: str
+    torch_cuda_build: str | None
+    device_name: str | None
+    capability: tuple[int, int] | None
+    supported_architectures: tuple[str, ...]
+    free_vram_mb: int | None
+    refusal: str | None
+
+
+def device_refusal(
+    *,
+    cuda_build: str | None,
+    device_count: int,
+    capability: tuple[int, int] | None,
+    arch_list: tuple[str, ...],
+    free_vram_mb: int | None,
+    required_vram_mb: int = DEFAULT_REQUIRED_VRAM_MB,
+) -> str | None:
+    """Why CUDA cannot be used, or `None` when it can.
+
+    A PURE function over the facts, deliberately. Every branch is then reachable from a test on a
+    box with no GPU and no CUDA build, which is the only way this guard gets shown FIRING rather
+    than shown running. The collector that gathers these facts has no logic in it.
+
+    The checks are ordered so each names its own fix. A CPU-only wheel and an absent card need
+    different actions, and telling someone with a working card that they have no GPU sends them
+    to the wrong one.
+    """
+    if cuda_build is None:
+        return (
+            "torch is a CPU-only build (torch.version.cuda is None), so no GPU is reachable "
+            "regardless of what hardware is present. Install a CUDA build of torch."
+        )
+    if device_count < 1:
+        return (
+            f"torch is built against CUDA {cuda_build} but reports no CUDA device. The driver, "
+            f"the container's device mapping or CUDA_VISIBLE_DEVICES is where to look."
+        )
+    if capability is not None:
+        arch = f"sm_{capability[0]}{capability[1]}"
+        if arch_list and arch not in arch_list:
+            return (
+                f"this card is compute capability {capability[0]}.{capability[1]} ({arch}) and "
+                f"the installed torch was not built for it. It carries {', '.join(arch_list)}. "
+                f"A wheel without the architecture does not decline politely, so this refuses "
+                f"here instead. Install a torch build listing {arch}, or pass --sparse-device cpu."
+            )
+    if free_vram_mb is not None and free_vram_mb < required_vram_mb:
+        return (
+            f"only {free_vram_mb} MiB of VRAM is free and this needs about {required_vram_mb} "
+            f"MiB. Encoding would fail partway through a corpus rather than here."
+        )
+    return None
+
+
+def inspect_sparse_device(
+    requested: str = "auto", required_vram_mb: int = DEFAULT_REQUIRED_VRAM_MB
+) -> DeviceReport:
+    """Read the device facts off torch and apply `device_refusal` to them.
+
+    `requested="cpu"` short-circuits before importing torch. Otherwise asking for CPU on a box
+    with no torch would import torch in order to decide it did not need torch.
+    """
+    if requested == "cpu":
+        return DeviceReport(
+            requested=requested, resolved="cpu", torch_cuda_build=None, device_name=None,
+            capability=None, supported_architectures=(), free_vram_mb=None, refusal=None,
+        )
+
+    try:
+        import torch
+    except ImportError:
+        return DeviceReport(
+            requested=requested, resolved="cpu", torch_cuda_build=None, device_name=None,
+            capability=None, supported_architectures=(), free_vram_mb=None,
+            refusal="torch is not installed; the learned sparse path needs the `sparse` extra",
+        )
+
+    cuda_build = torch.version.cuda
+    device_count = torch.cuda.device_count() if cuda_build else 0
+    name = None
+    capability = None
+    free_vram_mb = None
+    arch_list: tuple[str, ...] = ()
+    if device_count:
+        name = torch.cuda.get_device_name(0)
+        capability = torch.cuda.get_device_capability(0)
+        arch_list = tuple(torch.cuda.get_arch_list())
+        # `mem_get_info` returns (free, total) in bytes. FREE rather than total: another process
+        # holding the card is the common case on a shared box, and total would say yes to a card
+        # with nothing left to give.
+        free_bytes, _total = torch.cuda.mem_get_info(0)
+        free_vram_mb = int(free_bytes // (1024 * 1024))
+
+    refusal = device_refusal(
+        cuda_build=cuda_build, device_count=device_count, capability=capability,
+        arch_list=arch_list, free_vram_mb=free_vram_mb, required_vram_mb=required_vram_mb,
+    )
+    return DeviceReport(
+        requested=requested, resolved="cpu" if refusal else "cuda",
+        torch_cuda_build=cuda_build, device_name=name, capability=capability,
+        supported_architectures=arch_list, free_vram_mb=free_vram_mb, refusal=refusal,
+    )
+
+
+def resolve_sparse_device(
+    requested: str = "auto", required_vram_mb: int = DEFAULT_REQUIRED_VRAM_MB
+) -> str:
+    """The device string for `SpladeEncoder.from_pretrained`, refusing a named GPU it cannot use.
+
+    `auto` means "use it if it is there", so a refusal is information and the answer is `cpu`.
+    `cuda` is a STATEMENT about the run, and answering `cpu` to it would make that statement false
+    while producing correct vectors roughly a hundred times more slowly, with nothing to show for
+    it. See the note on `SpladeEncoder.device`.
+    """
+    if requested not in SPARSE_DEVICES:
+        raise ValueError(f"device must be one of {SPARSE_DEVICES}, got {requested!r}")
+    report = inspect_sparse_device(requested, required_vram_mb=required_vram_mb)
+    if requested == "cuda" and report.refusal:
+        raise SparseDeviceError(f"--sparse-device cuda was requested but {report.refusal}")
+    return report.resolved
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+```bash
+cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_sparse_device.py -v
+```
+
+Expected: 8 passed.
+
+- [ ] **Step 5: Confirm the real collector agrees with the measured facts of this box**
+
+Not an assertion in the suite: that would encode one machine into the test file. Run it once and read it.
+
+```bash
+cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -c "
+from recall.sparse import inspect_sparse_device
+print(inspect_sparse_device('auto'))
+"
+```
+
+Expected on this box, given `torch 2.12.1+cpu`: `resolved='cpu'` with a refusal naming the CPU-only build. Anything else means the collector disagrees with `torch.version.cuda is None`, and that must be understood before going further.
+
+- [ ] **Step 6: Wire the flag into the benchmark**
+
+Add to the module-scope imports in `benchmarks/store_latency_share.py`. `SPARSE_DEVICES` is needed at argparse time, before the lazy block, and it is a plain tuple of strings that pulls in no torch:
+
+```python
+from recall.sparse import SPARSE_DEVICES
+```
+
+Add the flag beside the other sparse flags from Task 7:
+
+```python
+    ap.add_argument(
+        "--sparse-device", choices=list(SPARSE_DEVICES), default="auto",
+        help="`cuda` REFUSES if the GPU is unusable rather than falling back; `auto` falls back "
+             "to CPU and prints what it chose",
+    )
+```
+
+Replace the encoder construction added in Task 7 Step 7 with:
+
+```python
+    sparse_encoder = None
+    sparse_device_report = None
+    if wants_learned:
+        # Imported HERE, not at module scope: torch and transformers are the `sparse` extra, and
+        # a lexical-only run must not require them to be installed at all.
+        from recall.sparse import (
+            DEFAULT_MODEL, HNSW_MAX_NONZERO, SpladeEncoder,
+            inspect_sparse_device, resolve_sparse_device,
+        )
+
+        sparse_device_report = inspect_sparse_device(args.sparse_device)
+        device = resolve_sparse_device(args.sparse_device)
+        print(f"learned sparse device: {device} (requested {args.sparse_device})")
+        if sparse_device_report.refusal:
+            print(f"  GPU not used: {sparse_device_report.refusal}")
+        sparse_encoder = SpladeEncoder.from_pretrained(
+            args.sparse_model or DEFAULT_MODEL,
+            top_k=args.sparse_top_k or HNSW_MAX_NONZERO,
+            revision=args.sparse_revision,
+            accept_noncommercial_license=args.accept_noncommercial_license,
+            device=device,
+        )
+        print(f"learned sparse encoder: {sparse_encoder.profile.fingerprint()}")
+```
+
+In the artifact body, beside `"sparse_profile"`, add:
+
+```python
+                "sparse_device": (
+                    None if sparse_device_report is None
+                    else {
+                        "requested": sparse_device_report.requested,
+                        "resolved": sparse_device_report.resolved,
+                        "device_name": sparse_device_report.device_name,
+                        "torch_cuda_build": sparse_device_report.torch_cuda_build,
+                        "capability": (
+                            None if sparse_device_report.capability is None
+                            else list(sparse_device_report.capability)
+                        ),
+                        "free_vram_mb": sparse_device_report.free_vram_mb,
+                        "refusal": sparse_device_report.refusal,
+                    }
+                ),
+```
+
+- [ ] **Step 7: Verify the refusal fires through the real entry point**
+
+`torch` here is a CPU-only build, so this must refuse. This is the guard shown firing through the CLI, not through a monkeypatch.
+
+```bash
+cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe benchmarks/store_latency_share.py --embedder hashing --queries 3 --repeats 1 --candidate-k 10 --sparse-backend splade --sparse-device cuda --allow-busy-host --out /c/Users/gde00/AppData/Local/Temp/claude/splade_device_probe; echo "exit=$?"
+```
+
+Expected: a non-zero exit with `SparseDeviceError: --sparse-device cuda was requested but torch is a CPU-only build ...`, raised **before** the corpus is generated. If it generates a corpus first, the resolve call is in the wrong place: move it above the corpus build.
+
+- [ ] **Step 8: Verify `auto` still runs, on CPU, and says so**
+
+```bash
+cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe benchmarks/store_latency_share.py --embedder hashing --queries 3 --repeats 1 --candidate-k 10 --sparse-backend splade --sparse-device auto --allow-busy-host --out /c/Users/gde00/AppData/Local/Temp/claude/splade_device_auto
+```
+
+Expected: `learned sparse device: cpu (requested auto)` followed by the refusal line, then a normal run. Confirm `splits.json` carries `sparse_device.resolved == "cpu"` and a non-null `refusal`.
+
+- [ ] **Step 9: Add the device refusal to the ablation sweep**
+
+Append to `ABLATIONS` in `scripts/ablate_store_latency_guards.py`, alongside the entries from Task 8:
+
+```python
+    (
+        "an explicitly requested cuda device is refused when unusable",
+        SPARSE,
+        "    if requested == \"cuda\" and report.refusal:",
+        "    if False and report.refusal:",
+        "test_requesting_cuda_explicitly_raises_rather_than_falling_back",
+    ),
+```
+
+Run the sweep and confirm no entry prints SKIP:
+
+```bash
+cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe scripts/ablate_store_latency_guards.py 2>&1 | tail -30
+```
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add recall/sparse.py benchmarks/store_latency_share.py scripts/ablate_store_latency_guards.py tests/test_sparse_device.py
+git commit -m "feat(sparse): --sparse-device, and a named GPU that cannot be used refuses
+
+from_pretrained already preferred CUDA when available. What was missing
+was a way to ASK for it and a way to be told no.
+
+sparse.py already records what the silent version costs on rented
+hardware: correct vectors, ~100x slower, and the only symptom is the
+bill. Locally there is not even a bill, so an explicit --sparse-device
+cuda refuses and names which check failed: CPU-only wheel, no visible
+device, an architecture the wheel was not built for, or insufficient
+free VRAM. 'auto' still falls back, and now prints what it chose.
+
+device_refusal is pure over the facts, so all four branches are shown
+firing on a box with no CUDA build. The local card is a GTX 1070 Ti
+(Pascal, sm_61) behind a torch 2.12.1+cpu wheel, which is exactly the
+first refusal.
+
+The resolved device reaches provenance: learned_sparse_encode_ms_mean is
+a transformer forward pass, so CPU and GPU runs are not comparable and an
+artifact that does not say which it was cannot be read beside another.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 9: run both arms on VPS2
 
 **Files:**
@@ -1581,8 +2037,10 @@ ssh -i ~/.ssh/contabo_sentiment root@100.91.148.25 'cat /proc/loadavg'
 When it is under 3.6, launch:
 
 ```bash
-ssh -i ~/.ssh/contabo_sentiment root@100.91.148.25 'cd /opt/recall-splade-cli && nohup .venv/bin/python benchmarks/store_latency_share.py --dsn "$RECALL_STORELAT_DSN" --embedder fastembed --filler 20000 --queries 100 --repeats 3 --candidate-k 20 --candidate-k 250 --sparse-backend lexical --sparse-backend splade --sparse-revision "<resolved in Step 4>" --out /var/tmp/storelat_run > /var/tmp/storelat_run.log 2>&1 &' && echo launched
+ssh -i ~/.ssh/contabo_sentiment root@100.91.148.25 'cd /opt/recall-splade-cli && nohup .venv/bin/python benchmarks/store_latency_share.py --dsn "$RECALL_STORELAT_DSN" --embedder fastembed --filler 20000 --queries 100 --repeats 3 --candidate-k 20 --candidate-k 250 --sparse-backend lexical --sparse-backend splade --sparse-device cpu --sparse-revision "<resolved in Step 4>" --out /var/tmp/storelat_run > /var/tmp/storelat_run.log 2>&1 &' && echo launched
 ```
+
+`--sparse-device cpu` is passed **explicitly** even though VPS2 has no GPU and `auto` would resolve the same way. The artifact then records a device the operator chose rather than one the box happened to have, and a future run of the same command on a GPU box produces a comparable number instead of a silently faster one.
 
 **No `--rerank`.** On a CPU box the cross-encoder dominates the wall-clock, and its absence inflates the store's share, which biases toward "porting the store is worth it". Step 9 records that.
 
@@ -1618,7 +2076,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ## Self-Review
 
-**Spec coverage.** Library primitive → Task 1. Empty-vector split → Tasks 1 and 2. Coverage guard → Task 2. Backfill and its idempotence note → Task 3. `Indexer` hook in `_flush`, tested on row counts and on the re-index skip path → Task 4. `drop_table` sidecar leak → Task 5. Quiescence guard, both samples, per-core ceiling, Windows `null` → Tasks 6 and 7. Flags, one-invocation sweep, `LegSplit.sparse_backend`, `measure()` wiring, docstring rewrite, provenance fields → Task 7. Ablation registry → Task 8. VPS2 isolation, pgvector 0.8.2 probe, `_commit_hash` probe, dedicated database, `nohup`, no `--rerank` → Task 9.
+**Spec coverage.** Library primitive → Task 1. Empty-vector split → Tasks 1 and 2. Coverage guard → Task 2. Backfill and its idempotence note → Task 3. `Indexer` hook in `_flush`, tested on row counts and on the re-index skip path → Task 4. `drop_table` sidecar leak → Task 5. Quiescence guard, both samples, per-core ceiling, Windows `null` → Tasks 6 and 7. Flags, one-invocation sweep, `LegSplit.sparse_backend`, `measure()` wiring, docstring rewrite, provenance fields → Task 7. Ablation registry → Task 8. Device selection, GPU capability refusal, device in provenance → Task 8b (added 2026-08-07 after the spec was approved; the spec has a matching addendum). VPS2 isolation, pgvector 0.8.2 probe, `_commit_hash` probe, dedicated database, `nohup`, no `--rerank` → Task 9.
 
 **Known gaps, stated rather than hidden.** Task 7 Step 5 and Task 8 Step 2 describe an edit against text the implementer must read from the file first, because the exact current bytes of that f-string and of the `ABLATIONS` invocation are what the edit must match, and transcribing them here would create a second copy free to drift. Both steps say so and say where to look. Task 9 Step 3 describes a probe rather than giving its SQL inline, because the scratch table name depends on the database created in Step 5.
 
