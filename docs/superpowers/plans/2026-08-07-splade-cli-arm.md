@@ -1571,7 +1571,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: `SpladeEncoder.from_pretrained(..., device=...)`, which already exists and already defaults to `"cuda" if torch.cuda.is_available() else "cpu"`.
 - Produces: `SPARSE_DEVICES`, `DeviceReport`, `SparseDeviceError`, `device_refusal(...)`, `inspect_sparse_device(requested, required_vram_mb=...)`, `resolve_sparse_device(requested, required_vram_mb=...)`.
 
-**Measured facts this task exists to handle, established 2026-08-07 on the local box.** The GPU is an **NVIDIA GeForce GTX 1070 Ti, 8192 MiB**, driver 582.66. `Splade_PP_en_v1` is BERT-base, roughly 110M parameters, so fp32 inference at batch 32 needs well under 2 GB: VRAM is not the constraint. The installed torch is **`2.12.1+cpu`**, with `torch.version.cuda` reporting `None` and `device_count` 0, so CUDA is unreachable because of the wheel and not the hardware. The card is Pascal, **compute capability 6.1**, and recent PyTorch CUDA wheels have been dropping older architectures. Whether the current wheel still ships `sm_61` is **not asserted anywhere in this task**: it is read off `torch.cuda.get_arch_list()` at runtime, which is the only honest way to answer it.
+**Measured facts this task exists to handle, established 2026-08-07 on the local box.** The GPU is an **NVIDIA GeForce GTX 1070 Ti, 8192 MiB**, driver 582.66. `Splade_PP_en_v1` is BERT-base, roughly 110M parameters, so fp32 inference at batch 32 needs well under 2 GB: VRAM is not the constraint. The installed torch is **`2.13.0+cpu`**, with `torch.version.cuda` reporting `None` and `device_count` 0, so CUDA is unreachable because of the wheel and not the hardware. The card is Pascal, **compute capability 6.1**, and recent PyTorch CUDA wheels have been dropping older architectures. Whether the current wheel still ships `sm_61` is **not asserted anywhere in this task**: it is read off `torch.cuda.get_arch_list()` at runtime, which is the only honest way to answer it.
 
 **Why refusal and not fallback.** `recall/sparse.py` already documents this silence for rented hardware: `from_pretrained` loads to CPU, so a rented GPU "would sit idle while the corpus encoded on the instance's CPU. Nothing would error. The vectors would be correct, the run would be ~100x slower, and the only symptom is the bill." Locally it is worse, because there is no bill to notice. An explicit `--sparse-device cuda` is a statement about the run, and a silent fallback makes it a false one.
 
@@ -1602,7 +1602,7 @@ NO_PASCAL_ARCHES = ("sm_70", "sm_75", "sm_80", "sm_86", "sm_90", "sm_100")
 
 
 def test_a_cpu_only_wheel_is_refused_by_name() -> None:
-    """The exact local condition: torch 2.12.1+cpu, hardware present and unreachable.
+    """The exact local condition: torch 2.13.0+cpu, hardware present and unreachable.
 
     Reported as a WHEEL problem, not as "no GPU". Those need different fixes, and telling someone
     with a working card that they have no GPU sends them to the wrong one.
@@ -1880,7 +1880,7 @@ print(inspect_sparse_device('auto'))
 "
 ```
 
-Expected on this box, given `torch 2.12.1+cpu`: `resolved='cpu'` with a refusal naming the CPU-only build. Anything else means the collector disagrees with `torch.version.cuda is None`, and that must be understood before going further.
+Expected on this box, given `torch 2.13.0+cpu`: `resolved='cpu'` with a refusal naming the CPU-only build. Anything else means the collector disagrees with `torch.version.cuda is None`, and that must be understood before going further.
 
 - [ ] **Step 6: Wire the flag into the benchmark**
 
@@ -2004,7 +2004,7 @@ free VRAM. 'auto' still falls back, and now prints what it chose.
 
 device_refusal is pure over the facts, so all four branches are shown
 firing on a box with no CUDA build. The local card is a GTX 1070 Ti
-(Pascal, sm_61) behind a torch 2.12.1+cpu wheel, which is exactly the
+(Pascal, sm_61) behind a torch 2.13.0+cpu wheel, which is exactly the
 first refusal.
 
 The resolved device reaches provenance: learned_sparse_encode_ms_mean is
@@ -2063,6 +2063,8 @@ print(\"fingerprint:\", e.profile.fingerprint())
 ```
 
 If the digest prints `unpinned`, transformers 5 no longer exposes `model.config._commit_hash`, and the run in Step 7 **must** pass `--sparse-revision`. Resolve the revision from the HuggingFace model page and record it in the artifact either way.
+
+**Answer this locally first.** The worktree venv from Task 0 has `transformers 5.14.1`, the same version VPS2 carries, so the snippet above gives the same answer here for the price of a one-off checkpoint download, rather than being discovered on VPS2 after the checkout and venv are already built. Run it during Task 8b and treat the VPS2 run as confirmation rather than discovery.
 
 - [ ] **Step 5: Create a dedicated database**
 

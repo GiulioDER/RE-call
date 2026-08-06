@@ -290,7 +290,8 @@ when there is one good enough. Implemented as Task 8b of the plan.
 
 **Measured, not assumed.** The local box has an **NVIDIA GeForce GTX 1070 Ti, 8192 MiB**, driver
 582.66. `Splade_PP_en_v1` is BERT-base, so fp32 inference at batch 32 needs well under 2 GB and
-VRAM is not the constraint. The installed torch is **`2.12.1+cpu`** with `torch.version.cuda`
+VRAM is not the constraint. The installed torch is a CPU build (`2.12.1+cpu` in the shared venv
+first probed, `2.13.0+cpu` in the worktree venv created for this work) with `torch.version.cuda`
 reporting `None`, so CUDA is unreachable because of the wheel rather than the hardware. The card is
 Pascal, compute capability **6.1**, and recent PyTorch CUDA wheels have been dropping older
 architectures; whether the current one still ships `sm_61` is **read at runtime from
