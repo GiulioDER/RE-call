@@ -34,10 +34,12 @@ different statistics.
 **The learned sparse arm.** `measure(sparse_backend=...)` accepts `splade` / `both`. Each guard
 here has a learned-leg counterpart: the per-query denominator, the nesting cross-check, the fire
 rate floor, and the attribution itself. The CLI below cannot yet select the arm, because `splade`
-needs a `sparse_encoder` and this file has no flag to build one, so every committed artifact under
-`results/store_latency/` is a `lexical` run in which the learned leg is asserted to record
-nothing. Note that `splade` REPLACES the ts_rank leg rather than adding to it, so under it the
-LEXICAL leg is the one asserted idle, and its fire rate reads `n/a` rather than 0%.
+needs a `sparse_encoder` and this file has no flag to build one. The one committed artifact under
+`results/store_latency/` PREDATES the learned arm and carries none of its fields, so nothing was
+asserted about the learned leg when it was produced; a `lexical` run under current code publishes
+those fields with the leg asserted idle and its fire rate `null`. Note that `splade` REPLACES the
+ts_rank leg rather than adding to it, so under it the LEXICAL leg is the one asserted idle, and
+its fire rate reads `n/a` rather than 0%.
 
 **Measurement hygiene.** Every configuration gets a discarded warm-up pass through the FULL
 pipeline, so no leg is measured warm against another measured cold, and each configuration is
@@ -97,8 +99,11 @@ from recall.store import (
 #: The pressure arm: an order of magnitude above the shipped default, and the pool size the
 #: project's best measured configuration uses.
 WIDE_CANDIDATE_K = 250
-#: Slack for float accumulation across the summed stages. Below this a negative residual is
-#: arithmetic noise; at or beyond it, some interval is being counted twice.
+#: Slack for float accumulation when one timed quantity is subtracted from another. Two callers,
+#: both refusing on the same shape of fault: a negative residual (some interval counted twice) and
+#: an inner store timer exceeding the stage bracket that encloses it (the two instruments are not
+#: timing what their names say). Below this the difference is arithmetic noise; at or beyond it,
+#: it is a fault. Deliberately far above the ~1e-13 ms that `mean()` accumulation actually costs.
 _RESIDUAL_TOLERANCE_MS = 0.01
 #: Below this sparse fire rate the "hybrid" label is not earned (issue #81 was 0/150).
 _MIN_SPARSE_FIRE_RATE = 0.05
@@ -109,7 +114,9 @@ class LegSplit:
     """One configuration's latency attribution.
 
     Only the `*_ms` fields are milliseconds per query. `candidate_k`, `n_queries`, `n_chunks` and
-    `repeats` are counts; `store_share`, `sparse_fire_rate` are fractions in [0, 1].
+    `repeats` are counts; `store_share` is a fraction in [0, 1]. The two fire rates are fractions
+    in [0, 1] OR `null`, which serialises into `splits.json` as JSON null and means that leg was
+    not in the pipeline. `null` must NOT be read as 0: zero is the issue #81 alarm value.
     """
 
     candidate_k: int
@@ -126,22 +133,41 @@ class LegSplit:
     embed_ms_mean: float
     dense_ms_mean: float
     sparse_ms_mean: float
-    #: The LEARNED sparse (SPLADE) leg. Zero unless `sparse_backend` selected it, and recorded
-    #: separately from `sparse_ms_mean` because `splade` REPLACES the ts_rank leg rather than
-    #: adding to it — summing them would book a swap as a sum.
+    #: The LEARNED sparse (SPLADE) stage bracket, whole. Recorded separately from
+    #: `sparse_ms_mean` because `splade` REPLACES the ts_rank leg rather than adding to it —
+    #: summing them would book a swap as a sum. For an UNSELECTED leg this is not zero but the
+    #: branch-test interval, sub-microsecond, which rounds to 0.0 at 3 dp.
+    #:
+    #: ⚠️ Unlike `dense_ms_mean` and `sparse_ms_mean`, this bracket is not store-only: it
+    #: encloses the SPLADE query encode as well. `learned_sparse_encode_ms_mean` splits that out,
+    #: and only the remainder is counted in `store_ms_mean`.
     learned_sparse_ms_mean: float
+    #: This leg's share of `learned_sparse_ms_mean` that is NOT a store round trip, measured as
+    #: the stage bracket minus the store's own inner timer. Dominated by the SPLADE query encode,
+    #: but strictly it is the encode PLUS the per-call overhead that the dense and ts_rank legs
+    #: book into `store_ms`; microseconds against a forward pass. `max_nesting_violation_ms`
+    #: does not bound that overhead — it measures the OPPOSITE sign, inner minus bracket, and
+    #: must stay 0 — it only certifies the nesting the overhead follows from. The dense leg's
+    #: counterpart is the separate `query_embedding` stage, which `store_ms` likewise excludes.
+    learned_sparse_encode_ms_mean: float
     fusion_ms_mean: float
     rerank_ms_mean: float
     #: `newest_indexed_at()`, the store round trip outside every `stage_ms` bracket.
     meta_ms_mean: float
     residual_ms_mean: float
 
-    #: dense + sparse + learned sparse + meta. What a store swap could address.
+    #: dense + meta + whichever sparse legs the backend SELECTED, with the learned leg counted
+    #: by its store round trip only (its encode is not store cost). What a store swap could
+    #: address.
     #:
-    #: NOTE the two are measured from different instruments: the mean sums the retriever's
-    #: OUTER stage brackets for the selected retrieval legs (plus the inner timer for meta),
-    #: while the p50 is the inner store timer for those same legs. The gap is per-call Python
-    #: overhead, which is what `max_nesting_violation_ms` bounds; do not read them as the mean
+    #: NOTE the two are measured from different instruments. The mean sums the retriever's OUTER
+    #: stage brackets for the dense and ts_rank legs, and the INNER store timer for meta and for
+    #: the learned leg (whose bracket is not store-only); the p50 is the inner timer throughout.
+    #: So on dense and ts_rank the mean/p50 gap includes per-call Python overhead, whose sign
+    #: `max_nesting_violation_ms` certifies (it measures inner minus bracket, and must stay 0,
+    #: so it bounds the gap away from zero rather than capping it), while on meta and the
+    #: learned leg both come from one
+    #: instrument and differ only as a mean differs from a median. Do not read them as the mean
     #: and median of one series. Both cover the SAME legs, which is why a leg that is switched
     #: off contributes to neither, despite still having a stage bracket.
     store_ms_mean: float
@@ -194,7 +220,11 @@ def _sparse_fire_rate(
 
 
 def _learned_fire_rate(
-    store: PgVectorStore, encoder: object, queries: list[dict], candidate_k: int
+    store: PgVectorStore,
+    embedder: Embedder,
+    encoder: object,
+    queries: list[dict],
+    candidate_k: int,
 ) -> float:
     """Fraction of queries whose LEARNED sparse leg returns at least one row.
 
@@ -218,10 +248,16 @@ def _learned_fire_rate(
                 "store call for it, so the learned leg would record one sample fewer than there "
                 "are queries and no per-query split could be quoted. Drop it from the query set."
             )
+        # `vec` for the same reason `_sparse_fire_rate` passes it: `_query_learned_sparse`
+        # branches its SELECT list on it, scoring by dense cosine when given one and by the
+        # sparse dot product otherwise. The row set is the same either way, so the fraction
+        # would be right regardless, but the probe would certify a statement the run never
+        # executes and would warm a cheaper one that never touches the embedding column.
         if store.query_learned_sparse(
             weights,
             k=candidate_k,
             profile_id=encoder.profile.profile_id,  # type: ignore[attr-defined]
+            vec=embed_query(embedder, q["query"]),
         ):
             fired += 1
     _clear_legs()
@@ -243,6 +279,12 @@ def measure(
 ) -> LegSplit:
     if not queries:
         raise ValueError("no queries to time")
+    # Up front, like the other refusals: with `repeats=0` the timing loop never runs, every
+    # per-query count check passes vacuously against n=0, and the first symptom is an opaque
+    # StatisticsError from `mean(totals)` — after the operator has already paid for the corpus
+    # build and the index.
+    if repeats < 1:
+        raise ValueError(f"repeats must be >= 1, got {repeats}; nothing would be measured")
     # Which sparse legs actually run decides which legs MUST record one sample per query below.
     # Deriving that from "did this leg record anything" instead would be circular: recording
     # nothing is exactly the failure the per-query denominator check exists to catch, so a leg
@@ -273,7 +315,9 @@ def measure(
         )
 
     learned_fire_rate = (
-        _learned_fire_rate(store, sparse_encoder, queries, candidate_k) if wants_learned else None
+        _learned_fire_rate(store, embedder, sparse_encoder, queries, candidate_k)
+        if wants_learned
+        else None
     )
     if learned_fire_rate is not None and learned_fire_rate < _MIN_SPARSE_FIRE_RATE:
         raise AssertionError(
@@ -282,9 +326,9 @@ def measure(
             "the pipeline is dense-only wearing a hybrid label. No split may be quoted from it."
         )
 
-    # Discarded warm-up through the FULL pipeline: warms both legs, the plan cache and the pool
-    # symmetrically. Warming only one leg biases the dense/sparse split, which is the quantity
-    # being published.
+    # Discarded warm-up through the FULL pipeline: warms every selected leg, the plan cache and
+    # the pool symmetrically. Warming only one leg biases the split, which is the quantity being
+    # published.
     for q in queries:
         retr.search(q["query"], k=k)
     _clear_legs()
@@ -368,21 +412,60 @@ def measure(
     if total_ms <= 0:
         raise AssertionError("measured total is zero; the run did not time anything")
 
-    # `learned_ms` belongs in BOTH sums or neither. Omitting it from `store_ms` understates the
-    # store's share, and omitting it from the residual hides that understatement inside
-    # "unattributed" — where the guard below cannot see it, because that guard fires only on a
-    # NEGATIVE residual (parts exceeding the whole). A leg missing from the split makes the
-    # residual too LARGE, which is the silent direction, and it is the direction that flatters
-    # the "the store is cheap" hypothesis this file exists to test.
-    # The two sums deliberately differ. `store_ms` counts only the legs that RAN, because it is
-    # what a store swap could address and a switched-off leg offers nothing to remove. The
-    # residual subtracts EVERY bracket the pipeline recorded, including the sub-microsecond one
-    # around a skipped leg, because that interval really did elapse inside the measured total.
+    # The learned leg belongs in BOTH sums, but at different GRANULARITY: its whole bracket in
+    # the residual, its store round trip only in `store_ms`. Dropping it from either is the
+    # failure this replaced. Omitting it from `store_ms` understates the store's share, and
+    # omitting it from the residual hides that understatement inside "unattributed" — where the
+    # guard below cannot see it, because that guard fires only on a NEGATIVE residual (parts
+    # exceeding the whole). A leg missing from the split makes the residual too LARGE, which is
+    # the silent direction, and it is the direction that flatters the "the store is cheap"
+    # hypothesis this file exists to test. What must NOT reach `store_ms` is the encode, below.
+    # ⛔ The learned bracket is NOT a store-only bracket, and this is the one asymmetry in the
+    # file that would quietly corrupt the headline number. `retriever.py` opens it, runs
+    # `encoder.encode(query)` — a tokenisation plus a transformer forward pass — and only THEN
+    # calls the store. The dense leg's equivalent cost is a separate `query_embedding` stage that
+    # `store_ms` deliberately excludes, so counting the learned bracket whole would book model
+    # inference as store latency, overstating what a store swap could buy: the exact decision
+    # this benchmark prices. So the store term comes from the INNER store timer (as `meta_ms`
+    # already does), and the encode is published under its own name rather than hidden in either
+    # the store's share or the residual.
+    learned_store_ms = mean(learned_metric) if wants_learned and learned_metric else 0.0
+    learned_encode_ms = 0.0
+    # `not truncated` for the same reason the nesting cross-check above carries it: on eviction
+    # `learned_ms` is a mean over ALL n brackets while `learned_store_ms` is a mean over the ring's
+    # retained SUFFIX, so the two are windows on different populations and their difference is not
+    # an encode. Without this gate a truncated run can raise "the instruments disagree" when its
+    # actual fault is truncation, which the refusal below diagnoses correctly.
+    if wants_learned and not truncated:
+        # The store timer opens strictly INSIDE the retriever's bracket, so the bracket cannot be
+        # the smaller of the two. If it is, the two instruments are not timing what their names
+        # say and the encode figure derived from their difference is meaningless: refuse, on the
+        # same standard as the residual guard below, which raises on the structurally identical
+        # parts-exceed-the-whole fault.
+        #
+        # A gap at or just above zero is NOT refused, even though a real SPLADE forward pass is
+        # never 0.0 at 3 dp. `measure()` cannot know what encoder it was handed — a stub that
+        # returns fixed weights encodes in microseconds and is a legitimate way to exercise the
+        # arm — so a zero encode is a fact about the caller's encoder, not proof of a broken
+        # instrument. It is reported rather than judged.
+        gap = learned_ms - learned_store_ms
+        if gap < -_RESIDUAL_TOLERANCE_MS:
+            raise AssertionError(
+                f"the learned leg's store timer ({learned_store_ms:.3f} ms) exceeds its stage "
+                f"bracket ({learned_ms:.3f} ms) by {-gap:.3f} ms, but it opens inside that "
+                "bracket. The instruments disagree; no encode split may be derived from them."
+            )
+        learned_encode_ms = max(0.0, gap)  # the real inversion raised above; this is float noise
+
+    # `store_ms` counts only the legs that RAN, because it is what a store swap could address and
+    # a switched-off leg offers nothing to remove. The residual subtracts EVERY bracket the
+    # pipeline recorded, including the sub-microsecond one around a skipped leg and the SPLADE
+    # encode, because those intervals really did elapse inside the measured total.
     store_ms = (
         dense_ms
         + meta_ms
         + (sparse_ms if wants_lexical else 0.0)
-        + (learned_ms if wants_learned else 0.0)
+        + learned_store_ms
     )
     residual = total_ms - (
         embed_ms + dense_ms + sparse_ms + learned_ms + fusion_ms + rerank_ms + meta_ms
@@ -433,6 +516,7 @@ def measure(
         dense_ms_mean=round(dense_ms, 3),
         sparse_ms_mean=round(sparse_ms, 3),
         learned_sparse_ms_mean=round(learned_ms, 3),
+        learned_sparse_encode_ms_mean=round(learned_encode_ms, 3),
         fusion_ms_mean=round(fusion_ms, 3),
         rerank_ms_mean=round(rerank_ms, 3),
         meta_ms_mean=round(meta_ms, 3),
@@ -458,16 +542,18 @@ def to_markdown(splits: list[LegSplit], ctx: str) -> str:
         return "n/a" if value is None else f"{value:.0%}"
 
     rows = [
-        "| chunks | cand_k | rerank | total | embed | dense | sparse | learned | meta | fusion | "
-        "rerank | **store** | resid | **store share** | sparse fire | learned fire |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| chunks | cand_k | rerank | total | embed | dense | sparse | learned | splade enc | "
+        "meta | fusion | rerank | **store** | resid | **store share** | sparse fire | "
+        "learned fire |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for s in splits:
         share = "truncated" if s.truncated else f"{s.store_share:.1%}"
         rows.append(
             f"| {s.n_chunks} | {s.candidate_k} | {'yes' if s.reranked else 'no'} | "
             f"{s.total_ms_mean:.1f} | {s.embed_ms_mean:.1f} | {s.dense_ms_mean:.1f} | "
-            f"{s.sparse_ms_mean:.1f} | {s.learned_sparse_ms_mean:.1f} | {s.meta_ms_mean:.1f} | "
+            f"{s.sparse_ms_mean:.1f} | {s.learned_sparse_ms_mean:.1f} | "
+            f"{s.learned_sparse_encode_ms_mean:.1f} | {s.meta_ms_mean:.1f} | "
             f"{s.fusion_ms_mean:.1f} | "
             f"{s.rerank_ms_mean:.1f} | **{s.store_ms_mean:.1f}** | {s.residual_ms_mean:.1f} | "
             f"**{share}** | {pct(s.sparse_fire_rate)} | {pct(s.learned_sparse_fire_rate)} |"
@@ -481,8 +567,16 @@ def to_markdown(splits: list[LegSplit], ctx: str) -> str:
         "`newest_indexed_at()`, the per-search round trip that sits outside every `stage_ms` "
         "bracket. A leg that did not run still shows a sub-microsecond bracket in its own column "
         "(the timing is taken outside the backend test) but contributes nothing to `store`; its "
-        "fire column reads `n/a`. `store share` is the ceiling on any store swap: a replacement "
-        "that cost nothing would remove exactly this fraction."
+        "fire column reads `n/a`, NOT 0%, which is the dead-leg alarm value. `learned` is the "
+        "only leg column that is not store-only: it encloses the SPLADE query encode, shown "
+        "beside it as `splade enc` and EXCLUDED from `store`, because model inference is not "
+        "something a store swap could remove. ⚠️ `splade enc` is a SUBSET of `learned`, not an "
+        "additional interval: the row reconciles as embed + dense + sparse + learned + meta + "
+        "fusion + rerank + resid = total, with `splade enc` ignored. The `learned` remainder "
+        "also carries one `sparse_row_count` "
+        "round trip per query that the ts_rank leg does not pay, so the two sparse columns are "
+        "not exactly like-for-like. `store share` is the ceiling on any store swap: a "
+        "replacement that cost nothing would remove exactly this fraction."
     )
     rows.append("")
     # The caveats travel WITH the numbers. A reader opens this file, not the module docstring or
@@ -520,6 +614,11 @@ def main() -> int:
     candidate_ks = args.candidate_ks or [DEFAULT_CANDIDATE_K, WIDE_CANDIDATE_K]
     # Refuse up front rather than warn after indexing: past the ring the leg means become means
     # over a suffix, and the operator would learn it only after paying for the corpus build.
+    if args.queries < 1 or args.repeats < 1:
+        ap.error(
+            f"--queries ({args.queries}) and --repeats ({args.repeats}) must both be >= 1; "
+            "below that the timing loop never runs and every per-query guard passes vacuously"
+        )
     if args.queries * args.repeats > HISTOGRAM_CAPACITY:
         ap.error(
             f"--queries x --repeats = {args.queries * args.repeats} exceeds the metric ring "
