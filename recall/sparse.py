@@ -171,6 +171,7 @@ class SpladeEncoder:
         revision: str | None = None,
         accept_noncommercial_license: bool = False,
         max_length: int = 512,
+        device: str | None = None,
     ) -> "SpladeEncoder":
         """Load a published SPLADE checkpoint.
 
@@ -201,6 +202,15 @@ class SpladeEncoder:
         loader_args = {"revision": revision, "trust_remote_code": False}
         tokenizer = AutoTokenizer.from_pretrained(model_name, **loader_args)
         model = AutoModelForMaskedLM.from_pretrained(model_name, **loader_args).eval()
+
+        # `from_pretrained` loads to CPU. Default to CUDA when it is there, because the ONLY
+        # reason to run this on rented hardware is the GPU, and silently leaving the model on
+        # CPU turns an expensive box into a slow one with no error to show for it.
+        if device is None:
+            import torch
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = model.to(device)
         # `revision` first: it is what the CALLER pinned, and a resolved commit hash that
         # disagrees with it would mean the pin did not take. "unpinned" is a real value, not a
         # placeholder — it records that this encoder's weights are NOT reproducible, which is a
@@ -220,6 +230,18 @@ class SpladeEncoder:
     def profile(self) -> SparseProfile:
         return self._profile
 
+    @property
+    def device(self) -> "torch.device":
+        """The device the MODEL is on, which is where inputs have to go.
+
+        Read off the model rather than stored, so it stays correct if a caller moves the model
+        after construction. Hardcoding CPU here is the expensive mistake: `from_pretrained`
+        loads to CPU, so a rented GPU would sit idle while the corpus encoded on the instance's
+        CPU. Nothing would error. The vectors would be correct, the run would be ~100x slower,
+        and the only symptom is the bill.
+        """
+        return next(self._model.parameters()).device
+
     def encode(self, texts: list[str]) -> list[dict[int, float]]:
         """One pruned ``{term_id: weight}`` mapping per input, in input order."""
         import torch
@@ -230,6 +252,8 @@ class SpladeEncoder:
             texts, padding=True, truncation=True,
             max_length=self._max_length, return_tensors="pt",
         )
+        device = self.device
+        encoded = {key: value.to(device) for key, value in encoded.items()}
         with torch.no_grad():
             logits = self._model(**encoded).logits
         weights = splade_weights(logits, encoded["attention_mask"])
