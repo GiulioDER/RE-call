@@ -9,13 +9,24 @@ because they would be describing different corpora.
 `recall.migration.validate_generation_parity` is the shipped check for exactly this, so it is what
 runs here rather than a second implementation of the same comparison written for the occasion.
 
-Prior work: NONE FOUND. Searched `docs_search(source_type="memory")` for "generation parity raw
-content hash identical across context modes RE-call" on 2026-08-06; `gap_warning` was TRUE (top-3
-cosine 0.485 / 0.480 / 0.479, all below the 0.50 floor), so the hits are noise and no memo records
-a parity measurement. The adjacent memos that ARE real
-([[project-recall-paired-comparison-null-by-construction-2026-08-05]],
-[[project-recall-embedding-profile-registry-2026-08-05]]) establish the profiles and the campaign,
-not this invariant.
+⚠️ PRIOR WORK EXISTS, and an earlier version of this docstring said it did not.
+`tests/test_context_modes_index.py::test_raw_text_and_content_hashes_are_identical_across_generations_and_modes`
+already asserts this invariant over four independently indexed generations against real PostgreSQL
+rows, and it is STRICTER than this script on what it compares: stored text, `content_hash`,
+`text_start`/`text_end` and `heading_hierarchy`, where this script compares source sets, raw
+hashes and chunk counts. `docs/ENTERPRISE_PROGRAM_STATUS.md` records that invariant as "held".
+
+The claim "Prior work: NONE FOUND" was written from `docs_search(source_type="memory")` for
+"generation parity raw content hash identical across context modes RE-call" on 2026-08-06, which
+returned `gap_warning` TRUE (top-3 cosine 0.485 / 0.480 / 0.479, all under the 0.50 floor). That
+search was scoped to the MEMORY corpus, which cannot see repository tests. "No memo records this"
+was true; "no prior work exists" did not follow from it, and the two were not the same question.
+
+What this script adds over that test, which is the honest scope of its contribution: the test runs
+one small in-memory corpus through a stub embedder inside pytest, and this runs the CAMPAIGN's
+corpus through the real fastembed profiles at the pinned artifact tree, comparing promotion-shaped
+generations with the shipped validator rather than with hand-written assertions. It is a
+scale-and-realism check on an invariant already covered at unit scale, NOT a first look at it.
 
 ⚠️ THIS CANNOT BE RUN RETROACTIVELY AGAINST THE 2026-08-06 CAMPAIGN'S OWN GENERATIONS.
 `recall/eval/promotion/__main__.py::_indexed_store` indexes into a `promo_<uuid8>` table and drops
@@ -37,12 +48,20 @@ absence is the easiest thing in the world to produce by accident:
 3. POSITIVE CONTROL. A generation built from a corpus with one file's bytes changed MUST come back
    with a non-empty `hash_mismatches` and `valid=False`. Without it, "no mismatches" is not
    evidence that a mismatch could have been detected.
-4. SELF-COMPARISON. The baseline against itself must be valid. This separates "the validator is
-   working" from "the validator returns valid for everything".
+4. SELF-COMPARISON. The baseline against itself must come back parity-holding. ⚠️ This does NOT
+   distinguish "the validator works" from "the validator returns valid for everything": a
+   validator hardcoded to `valid=True` passes it identically. Only control 3, which demands a
+   NEGATIVE verdict, discriminates those two. Control 4's actual job is the opposite direction, a
+   validator or a host that fails EVERYTHING: with `active is shadow` the three content sets are
+   empty by construction, so anything it does report is a host fact (`rls_enabled`,
+   `indexes_valid`) rather than a content difference.
 
 `GenerationParity.valid` also folds in `rls_enabled` and `indexes_valid`, which are facts about the
-HOST rather than about content. They are reported as their own fields so a deployment-shaped
-failure can never be read as a content-parity failure, or the reverse.
+HOST rather than about content. `_parity` therefore reports `content_parity_holds` separately AND
+emits the two host facts as their own fields, read from `readiness_facts()`, so a deployment-shaped
+failure can never be read as a content-parity failure or the reverse. Chunk count is deliberately
+on the CONTENT side of that split: `contextual_passages` returns one chunk per input chunk in every
+mode, so a count difference is a content divergence, not a host fact.
 """
 from __future__ import annotations
 
@@ -75,7 +94,9 @@ _HEX = set("0123456789abcdef")
 
 
 def _is_sha256_hex(value: str) -> bool:
-    return len(value) == 64 and set(value) <= _HEX
+    # Case-insensitive: a valid digest is valid in either case, and rejecting an uppercase one
+    # would fail the run for a defect that is not there.
+    return len(value) == 64 and set(value.lower()) <= _HEX
 
 
 def _table_for(prefix: str, profile: str) -> str:
@@ -127,12 +148,20 @@ def _index(dsn: str, table: str, profile: str, corpus: Path, glob: str) -> dict:
         "chunks": stats.chunks,
         "index_seconds": round(elapsed, 1),
         "store": store,
+        # THIS process created this table, so THIS process may drop it. See the cleanup block.
+        "owned": True,
     }
 
 
 def _parity(active: PgVectorStore, shadow: PgVectorStore, expected_sources: int) -> dict:
     """Run the shipped validator, then apply controls 1 and 2 to its inputs."""
     result = validate_generation_parity(active, shadow)
+    active_facts = active.readiness_facts()
+    shadow_facts = shadow.readiness_facts()
+    # ⚠️ A SECOND read. `validate_generation_parity` does not return the hash maps it compared, so
+    # the controls below attest to a later read of the same tables rather than to the validator's
+    # own inputs. Sound here only because nothing writes between the two reads: the compare stage
+    # is read-only and the index stages have exited.
     active_hashes = active.source_raw_hashes()
     shadow_hashes = shadow.source_raw_hashes()
     compared = sorted(set(active_hashes) & set(shadow_hashes))
@@ -150,9 +179,19 @@ def _parity(active: PgVectorStore, shadow: PgVectorStore, expected_sources: int)
         "extra_sources": list(result.extra_sources),
         "hash_mismatches": list(result.hash_mismatches),
         "failures": list(result.failures),
-        # Reported apart from `valid` on purpose: these two are host facts, not content facts.
+        # `rls_enabled` and `indexes_valid` are the two HOST facts `valid` folds in. They are
+        # emitted separately so a deployment-shaped failure is never read as a content failure.
+        "rls_enabled": bool(active_facts["rls_enabled"] and shadow_facts["rls_enabled"]),
+        "indexes_valid": bool(active_facts["indexes_valid"] and shadow_facts["indexes_valid"]),
+        # ⚠️ CHUNK COUNT IS A CONTENT FACT and belongs here. An earlier version omitted it, so a
+        # pair the shipped validator failed on `chunk counts differ between generations` was
+        # written to the artifact with `valid: false` and a populated `failures` list, and the
+        # process still exited 0. The verdict dropped a term the validator had already computed.
         "content_parity_holds": (
-            not result.missing_sources and not result.extra_sources and not result.hash_mismatches
+            not result.missing_sources
+            and not result.extra_sources
+            and not result.hash_mismatches
+            and result.active_chunks == result.shadow_chunks
         ),
         "controls": {
             "sources_compared": len(compared),
@@ -190,11 +229,28 @@ def main() -> int:
         "`compare` then reads those tables. `all` does both in one process.",
     )
     parser.add_argument("--profile", help="the single profile to build when --stage index")
+    parser.add_argument(
+        "--drop-generations",
+        action="store_true",
+        help="Also drop the four generation tables this process did NOT create. Off by default: "
+        "they cost about an hour of embedding each and are what makes a re-run of the compare "
+        "stage free.",
+    )
     args = parser.parse_args()
     if args.stage == "index" and not args.profile:
         parser.error("--stage index requires --profile")
     if args.stage == "index" and args.profile not in (BASELINE, *CANDIDATES):
         parser.error(f"--profile must be one of {(BASELINE, *CANDIDATES)}")
+    if args.control_files < 1:
+        # A negative bound inverts the slice: `on_disk[:-1]` is EVERY FILE BUT THE LAST, so the
+        # "control" would silently index the whole corpus.
+        parser.error("--control-files must be >= 1")
+    if args.stage in ("all", "compare") and not args.control_corpus:
+        parser.error(
+            "--stage all/compare requires --control-corpus: without the positive control nothing "
+            "in the run demonstrates that a mismatch is detectable, and the verdict would rest on "
+            "an absence."
+        )
 
     corpus = args.corpus_dir.resolve()
     on_disk = sorted(corpus.glob(args.glob))
@@ -260,6 +316,12 @@ def main() -> int:
                         "chunks": rows,
                         "index_seconds": None,
                         "store": store,
+                        # ⚠️ NOT owned. A concurrent index stage built this table, at roughly an
+                        # hour of embedding each. An earlier version dropped these in the cleanup
+                        # `finally`, on every exit path including the deliberate refusals and a
+                        # failed report write, so one dead arm destroyed the three that succeeded
+                        # and the compare stage could never be re-run.
+                        "owned": False,
                     }
                 )
 
@@ -282,10 +344,33 @@ def main() -> int:
         # Control 3, on a SUBSET. The control's job is to show a mismatch is detectable, which one
         # changed byte establishes as well as 732 files would, at a fraction of the embedding cost.
         if args.control_corpus:
+            # ⚠️ `rmtree` on an argv path, on a host that also carries unrelated live production.
+            # An earlier version deleted whatever `--control-corpus` named, with `resolve()`
+            # following a symlink first. `--control-corpus /var/tmp` would have taken out the
+            # venv, the checkout and the output directory this very script runs from.
+            if args.control_corpus.is_symlink():
+                raise SystemExit(
+                    f"--control-corpus {args.control_corpus} is a symlink; refusing to resolve "
+                    f"and delete its target."
+                )
             ctl = args.control_corpus.resolve()
+            if ctl == corpus or corpus in ctl.parents or ctl in corpus.parents:
+                raise SystemExit(
+                    f"--control-corpus {ctl} overlaps --corpus-dir {corpus}. Deleting it would "
+                    f"destroy the corpus under measurement, or leave mutated copies inside it."
+                )
+            marker = ctl / ".parity-scratch"
             if ctl.exists():
+                # Only a directory this script previously created may be recursively deleted.
+                if not ctl.is_dir() or not marker.is_file():
+                    raise SystemExit(
+                        f"--control-corpus {ctl} exists and carries no {marker.name} marker, so "
+                        f"it was not created by this harness. Refusing to delete it. Point the "
+                        f"flag at a fresh path."
+                    )
                 shutil.rmtree(ctl)
             ctl.mkdir(parents=True)
+            marker.write_text("written by check_generation_parity.py\n", encoding="utf-8")
             subset = on_disk[: args.control_files]
             for src in subset:
                 shutil.copy2(src, ctl / src.name)
@@ -319,20 +404,58 @@ def main() -> int:
         args.out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
         print(f"wrote {args.out}", flush=True)
 
-        content_ok = all(c["content_parity_holds"] for c in report["comparisons"].values())
-        cov_ok = all(c["controls"]["coverage_ok"] for c in report["comparisons"].values())
-        hash_ok = all(c["controls"]["hashes_all_sha256"] for c in report["comparisons"].values())
-        ctl = report["controls"].get("positive_control")
-        ctl_ok = ctl is None or ctl["fired"]
+        comparisons = report["comparisons"]
+        # `all([])` is True, so every aggregate below is vacuously satisfied over an empty set. A
+        # run that compared NOTHING must not report success.
+        complete = len(comparisons) == len(CANDIDATES)
+        content_ok = complete and all(c["content_parity_holds"] for c in comparisons.values())
+        cov_ok = complete and all(c["controls"]["coverage_ok"] for c in comparisons.values())
+        hash_ok = complete and all(
+            c["controls"]["hashes_all_sha256"] for c in comparisons.values()
+        )
+        # Control 4 is declared blocking in the docstring, so it has to appear in the verdict.
+        # An earlier version computed it, wrote it to the artifact, and never read it.
+        self_c = report["controls"]["self_comparison"]
+        self_ok = bool(
+            self_c["content_parity_holds"]
+            and self_c["controls"]["coverage_ok"]
+            and self_c["controls"]["hashes_all_sha256"]
+        )
+        # Named apart from the `ctl` Path above: rebinding one name to two unrelated types in one
+        # scope is unchecked, because `args` is an untyped Namespace.
+        control_report = report["controls"].get("positive_control")
+        # ⚠️ NOT `ctl is None or ...`. An absent positive control means the run never demonstrated
+        # a mismatch is detectable at all, which is precisely what control 3 exists to establish;
+        # scoring that as a pass is the vacuous-true shape this whole script is written against.
+        # `detected_exactly_one_source` is part of the gate too: exactly one file's bytes were
+        # changed, so any other cardinality means the control fired for the wrong reason.
+        ctl_ok = (
+            control_report is not None
+            and control_report["fired"]
+            and control_report["detected_exactly_one_source"]
+        )
         print(
-            f"content_parity={content_ok} coverage={cov_ok} hashes_sha256={hash_ok} "
+            f"comparisons={len(comparisons)}/{len(CANDIDATES)} content_parity={content_ok} "
+            f"coverage={cov_ok} hashes_sha256={hash_ok} self_comparison={self_ok} "
             f"positive_control_fired={ctl_ok}",
             flush=True,
         )
-        return 0 if (content_ok and cov_ok and hash_ok and ctl_ok) else 1
+        return 0 if (content_ok and cov_ok and hash_ok and self_ok and ctl_ok) else 1
     finally:
-        if not args.keep_tables:
+        # Drop ONLY what this process created. The generation tables cost about an hour of
+        # embedding each and are the expensive artifact; they are removed only when explicitly
+        # asked for, never as a side effect of an error path.
+        for gen in built:
+            if not gen.get("owned") or args.keep_tables:
+                continue
+            try:
+                gen["store"].drop_table()
+            except Exception as exc:  # pragma: no cover - cleanup diagnostics only
+                print(f"WARN could not drop {gen['table']}: {exc}", file=sys.stderr)
+        if args.drop_generations:
             for gen in built:
+                if gen.get("owned"):
+                    continue
                 try:
                     gen["store"].drop_table()
                 except Exception as exc:  # pragma: no cover - cleanup diagnostics only
