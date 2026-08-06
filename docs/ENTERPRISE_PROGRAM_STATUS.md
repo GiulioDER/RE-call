@@ -17,8 +17,13 @@ before that change can go green.
 Briefed to run the three-context-mode promotion campaign and, additionally, to verify the parity
 invariant this family of profiles rests on. **The campaign had already been run and merged before
 this session started.** The parity verification had not, and it is the only part of the brief still
-open. It is **not finished either**: the run was stopped at roughly half the corpus. What landed is
-the harness, a DEEP audit of it, and two corrections to claims of mine.
+open. It is **not finished either**: the first run was stopped at 11% to 26% of each arm. What landed is
+the harness, a DEEP audit of it, and several corrections to claims of mine.
+
+⚠️ **Evidence in this entry is of two kinds and they are labelled.** Rows marked HOST are measured
+on VPS2 against `recall_campaign` and the archive under `/var/lib/recall-benchmarks/`, and **cannot
+be reproduced from this repository**; rows marked REPO can. An earlier draft put both in one table
+with nothing distinguishing them, which is the same shape as the defects below.
 
 ### The campaign was already on master, and the brief's baseline question has an answer
 
@@ -66,20 +71,32 @@ assertions. A scale-and-realism check on covered ground, not a first look.
 
 ### What was measured, and what was not
 
-| Gate | Result |
-|---|---|
-| Campaign archive integrity | **16 of 16 files pass `sha256sum -c`** |
-| Campaign generations still exist? | **No.** Confirmed absent; only `chunks` and the schema tables remain |
-| 12-file smoke, pre-audit harness | **passed**, four controls including a positive control that FIRED and isolated exactly one source |
-| New refusal guards, post-audit | **all three fire**: compare without a positive control, `--control-files 0`, `--control-files -1` |
-| `ruff check` | clean on 0.15.22, inside CI's `>=0.5,<0.16` pin |
-| Full 746-file parity run | ⛔ **NOT COMPLETED.** Stopped deliberately by the operator at roughly half the corpus |
-| `mypy`, `pytest` | ⛔ **NOT RUN.** See below |
+| Gate | Kind | Result |
+|---|---|---|
+| Campaign archive integrity | HOST | **16 of 16 files pass `sha256sum -c`** under `/var/lib/recall-benchmarks/2026-08-06-context-mode-campaign/`. Not reproducible from this repo |
+| Campaign generations still exist? | HOST | **No.** Confirmed absent in `recall_campaign`; only `chunks` and the schema tables remain |
+| 12-file smoke | HOST | **passed on the PRE-AUDIT harness (`4021381`) only.** See the warning below: this row does NOT cover the current code |
+| New refusal guards, post-audit | HOST | **all three fire**: compare without a positive control, `--control-files 0`, `--control-files -1` |
+| `taskset` mask probe | HOST | all five real masks pass; `taskset -c 50,51 true` refuses, so the guard can fire |
+| `ruff check` | REPO | clean on 0.15.22, inside CI's `>=0.5,<0.16` pin |
+| shell syntax, `bash -n` | REPO | clean |
+| Full 746-file parity run | HOST | ⛔ **NOT COMPLETED** on the first attempt. Relaunched; see round 4 |
+| `mypy`, `pytest` | — | ⛔ **NOT RUN.** See below |
 
-**The full run is the deliverable and it does not exist.** Four arms were indexing concurrently at
-two pinned cores each and were terminated (`rc=143`) at 13:14 UTC, with the tables holding between
-1626 and 3728 chunks of roughly 14,200 each. The operator stopped the host deliberately. This is a
-recorded stop, **not** an unexplained death, and it is not attributed to any mechanism in this code.
+⚠️ **The current harness's SUCCESS PATH has never been smoked.** The only end-to-end pass in this
+table belongs to `4021381`, and this entry's own audit section shows that version's verdict was not
+gating: its `content_parity_holds` omitted the chunk-count term and its `ctl_ok` was
+`ctl is None or ...`, so a control could pass vacuously. The code has been rewritten four times
+since. Everything executed against the post-audit harness exercises a REFUSAL or a cleanup, never a
+successful comparison. So "the harness is committed and audited" must not be read as "the harness
+has been shown to work"; the relaunched run is the first execution of its happy path.
+
+**The full run is the deliverable and it did not exist at the time of the first write-up.** Four
+arms were indexing concurrently at two pinned cores each and were terminated (`rc=143`) at 13:14
+UTC, with the tables holding between 1626 and 3728 chunks of roughly 14,200 each, i.e. **11% to 26%
+of each arm**. An earlier draft of this entry called that "roughly half the corpus", which its own
+figures contradict. The operator stopped the host deliberately. This is a recorded stop, **not** an
+unexplained death, and it is not attributed to any mechanism in this code.
 
 ⚠️ **`mypy` and the test suite were not run.** The only local virtualenv is an editable install
 pinned to the primary clone, which is 44 commits behind `origin/master`, so importing through it
@@ -143,8 +160,12 @@ The gate also confirmed the ownership fix does not over-drop or leak: the two co
 owned and still dropped, `--stage index` still keeps its table, and the four generation tables
 survive. It found one pre-existing leak it was careful to label as not introduced here.
 
-**Round 3 converged**, which is this pipeline's stopping rule and matches what this project has
-recorded before: rounds found 109, 5 and **0 new defect classes**. Round 3's two findings were both
+**Round 3 converged on NEW DEFECT CLASSES**, which is this pipeline's stopping rule. ⚠️ The three
+counts are NOT one measurement and must not be read as a descending series: round 1 found **109 raw
+findings**, round 2 found **5 anti-regression findings over 22 hunks**, and round 3 found **2
+findings but 0 new classes**. And the sequence did not end there: round 4 was the run itself, and it
+found a defect that refused the run outright (below). *A convergence claim is only as good as the
+denominator each number counts.* Round 3's two findings were both
 Low/P3 and diagnostics-only, and both were cases where a repair of mine did not do what its own
 comment said. The first is worth carrying: my `nproc` fix was committed under a comment claiming it
 produced "a variable that is always an integer", and it did not, because `nproc` exiting 0 with
@@ -183,14 +204,28 @@ not run. Only a mask with NO valid CPU is refused, measured: `taskset -c 50-99 t
 ### Carried forward, unfixed
 
 1. **`--table-prefix` reaches a table name through `isidentifier()`, not `validate_table_name()`.**
-   Measured by an auditor: a 44-character prefix truncates all three context arms onto ONE 63-byte
-   table, and the harness would then compare that table with itself and report perfect parity.
-   `recall/control_plane.py` already ships the stricter validator and documents `PgVectorStore` as
-   not yet converted. This is the carried item that can produce a FALSE PASS, so it outranks the rest.
+   The three context profiles share the first 18 characters `bge_small_context_`, so at a
+   44-character prefix `44 + 1 + 18 = 63 = NAMEDATALEN - 1` and **all three candidate tables
+   collapse into one**. The baseline does NOT collide (`bge_small_symmetric_v1` truncates
+   differently), so the harness runs three comparisons that are the same comparison and reports
+   parity three times over a single arm. (An earlier draft said it would "compare that table with
+   itself", which is wrong about the mechanism; the FALSE PASS conclusion is unchanged.)
+   `recall/control_plane.py` already ships the stricter validator and its docstring records
+   `PgVectorStore` as not yet converted. This is the carried item that can produce a false pass, so
+   it outranks the rest.
 2. **The driver runs code from a `/var/tmp` checkout rather than the checkout it ships in**, so a
-   stale copy can run silently. Both sibling drivers anchor to `$(dirname "$0")/..`.
-3. **Nothing in the driver is overridable** (`${VAR:-default}`), against the convention both sibling
-   drivers state in prose, and it commits a host path with no prior art in this public repository.
+   stale copy can run silently. Of the three sibling drivers, `scripts/run_locomo_arms.sh` anchors
+   to `$(dirname "$0")/..`, `run_lme_s.sh` to `$(dirname "$0")`, and `scripts/run_gap_parallel.sh`
+   hard-codes `cd /root/recall`. (An earlier draft said "both sibling drivers anchor", which
+   miscounted them and ignored that one commits the same anti-pattern.)
+3. **Nothing in the driver is overridable** (`${VAR:-default}`). All three sibling drivers do use
+   that form, but by PRACTICE rather than by a stated convention: a grep for prose stating it
+   returns nothing beyond one comment in `run_gap_parallel.sh` about honouring an operator DSN. And
+   committed host paths **do** have prior art here (`scripts/run_gap_parallel.sh` commits
+   `/root/recall` and `/root/.voyage_env`; `benchmarks/check_profile_encoder_distinctness.py`
+   commits an `/opt/recall-enterprise/...` cache path), so the earlier draft's "no prior art in this
+   public repository" was false. The hard-coded paths remain worth fixing; the justification was
+   overstated.
 4. **The coverage denominator is a second filesystem walk** (`corpus.glob`) rather than the
    indexer's own `candidate_files`, which additionally drops non-files and symlink escapes. It fails
    closed, so it cannot manufacture a pass.
@@ -204,6 +239,50 @@ not run. Only a mask with NO valid CPU is refused, measured: `taskset -c 50-99 t
    `recall_schema_migrations` rows in the same transaction, and a bare `DROP TABLE` leaves them,
    after which the next run skips creation and fails validation on a table that no longer exists. I
    hit that trap for real this session.
+8. **Five refusals in the control block are argv-checkable but fire after the expensive work.** The
+   symlink check, the corpus-overlap check and the exists / is-dir / listable / marker checks all
+   read only argv and filesystem state available at parse time, yet they sit after four index runs
+   and every comparison, and before the artifact write, so tripping one discards a completed
+   measurement. Round 2 fixed exactly ONE member of this class (the empty-directory case) and left
+   the rest. `args.out`'s parent is likewise never validated until the write.
+9. **The control corpus is flattened to basenames**, so under the recursive default glob two corpus
+   files sharing a name silently overwrite, the control holds fewer files than `--control-files`,
+   and `sources_expected` overstates what was compared. Not caught, because `ctl_ok` reads only
+   `fired` and `detected_exactly_one_source`, never the control's own `coverage_ok`.
+10. **A window inside `_index` still leaks.** Registration now happens immediately after `_index`
+    RETURNS, but `_index` calls `ensure_schema()` before it indexes, so a failure inside it (the
+    zero-chunk refusal, a psycopg error, an interrupt) still leaves a created table unregistered.
+    Closing it fully means registering from inside `_index`, which is a signature change.
+
+### A fifth review round, run while the relaunched job was indexing
+
+Two read-only reviews with lenses the first four did not use: a WHOLE-FILE audit (because round 4's
+defect lived in the relationship between two hunks, which four diff-scoped reviews could not see)
+and a claim-check of this entry against the repository.
+
+The whole-file audit found six, of which four are fixed here and two are items 8 and 9 above. The
+one worth naming: **`owned` did not mean what its own comment said.** It recorded that
+`ensure_schema()` had run, and that call silently ADOPTS a pre-existing table, so a re-run over
+tables another process built would have marked them owned and dropped them. Ownership is now asked
+of the catalog with `to_regclass` BEFORE migrating. Also fixed: the cleanup dropped its own
+generations on the success path of `--stage all`, contradicting the rationale `--drop-generations`
+states for its own default (a `scratch` flag now separates disposable control tables from expensive
+generations); the control corpus was indexed with a hardcoded `*.rst` while the main corpus used
+`--glob`; and the control tables were registered for cleanup only after the whole block succeeded.
+
+The claim-check confirmed the measurements and found the prose wrong in four places, all corrected
+above: "roughly half the corpus" contradicted this entry's own chunk counts (**11% to 26%**); the
+corpus size was given as 746 here and 732 in the harness; two carried-forward items cited sibling
+drivers that do not say what I claimed, and asserted "no prior art" for committed host paths when
+`scripts/run_gap_parallel.sh` and `benchmarks/check_profile_encoder_distinctness.py` both contain
+some; and the 44-character truncation collapses the three CANDIDATES into one table while the
+baseline truncates differently, so the failure is three identical comparisons rather than a table
+compared with itself.
+
+🔑 **The sharpest of the eight was not a wrong number.** The only end-to-end "passed" row in the
+table above belongs to `4021381`, a version this same entry demonstrates was not gating. Everything
+executed against the post-audit harness exercises a refusal or a cleanup. **"Audited" had been
+standing in for "shown to work", and they are not the same claim.** The table now says so.
 
 ### Standing blockers
 
