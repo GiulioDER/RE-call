@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import is_dataclass, replace
 from datetime import datetime, timedelta, timezone
+import os
 import time
 
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
@@ -35,6 +36,15 @@ def _rescored(hit: ScoredChunk, score: float) -> ScoredChunk:
 #: chunks before truncation to k, so hit@k stops rising once k reaches the pool. A curve run past it
 #: measures the pool, not the depth, so the eval must use exactly this default.
 DEFAULT_CANDIDATE_K = 20
+
+#: Which retriever fills the sparse leg.
+#:
+#: `lexical` is Postgres full-text (`ts_rank`) and remains the DEFAULT, so nothing about existing
+#: behaviour changes by adding this. `splade` REPLACES it with learned sparse — the clean A/B, and
+#: the shape MTRAGEval's rank-2 system used (one learned sparse retriever, not an ensemble).
+#: `both` fuses three legs; it is declared here rather than discovered later so that running it is
+#: a pre-registered arm and not a post-hoc rescue after seeing the scores.
+SPARSE_BACKENDS = frozenset({"lexical", "splade", "both"})
 
 
 def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
@@ -87,11 +97,34 @@ class HybridRetriever:
         candidate_k: int = DEFAULT_CANDIDATE_K,
         use_sparse: bool = True,
         use_dense: bool = True,
+        sparse_backend: str = "lexical",
+        sparse_encoder: object | None = None,
         retrieval_profile: str = "legacy",
         index_generation: str = "legacy",
     ) -> None:
         if not (use_dense or use_sparse):
             raise ValueError("at least one of use_dense / use_sparse must be True")
+        if sparse_backend not in SPARSE_BACKENDS:
+            raise ValueError(
+                f"sparse_backend must be one of {sorted(SPARSE_BACKENDS)}, got {sparse_backend!r}"
+            )
+        wants_learned = sparse_backend in ("splade", "both")
+        if wants_learned and sparse_encoder is None:
+            raise ValueError(
+                f"sparse_backend={sparse_backend!r} needs a sparse_encoder to encode queries. "
+                f"Falling back to lexical would hand an operator who asked for learned sparse a "
+                f"keyword search, and a set of numbers that look like a SPLADE result."
+            )
+        if wants_learned and os.environ.get("RECALL_ENV") == "production":
+            raise RuntimeError(
+                "the learned sparse leg is not available under RECALL_ENV=production: its "
+                "sidecar (recall_sparse_v1) has no foreign key to the chunk table and the "
+                "erasure paths (generations.forget, control_plane.erase_sources_from_pending) "
+                "predate it, so a forgotten chunk would leave its SPLADE weights behind. Those "
+                "weights are term weights over the vocabulary, i.e. partially reconstructable "
+                "content. Wiring erasure is the precondition for lifting this refusal. "
+                "See docs/superpowers/specs/2026-08-06-learned-sparse-splade-design.md."
+            )
         self._store = store
         self._embedder = embedder
         self._reranker = reranker
@@ -100,6 +133,8 @@ class HybridRetriever:
         self._candidate_k = candidate_k
         self._use_sparse = use_sparse
         self._use_dense = use_dense
+        self._sparse_backend = sparse_backend
+        self._sparse_encoder = sparse_encoder
         self._retrieval_profile = retrieval_profile
         self._index_generation = index_generation
 
@@ -127,18 +162,50 @@ class HybridRetriever:
         )
         timings["dense_retrieval"] = (time.perf_counter() - started) * 1000.0
         started = time.perf_counter()
+        # `lexical` and `both` include the ts_rank leg; `splade` REPLACES it. That replacement is
+        # the point of the arm — MTRAGEval's rank 1 reports that adding retrievers HURT once the
+        # strong one worked, because unique documents from the weak leg land at ranks 37-54 and
+        # inject fusion noise. So this is a swap by default, not an addition.
+        wants_lexical = self._use_sparse and self._sparse_backend in ("lexical", "both")
         sparse = (
             self._store.query_sparse(query, k=self._candidate_k, source=source, vec=qvec)
-            if self._use_sparse
+            if wants_lexical
             else []
         )
         timings["sparse_retrieval"] = (time.perf_counter() - started) * 1000.0
 
         started = time.perf_counter()
-        fused = _rrf([[h.chunk.id for h in dense], [h.chunk.id for h in sparse]])
+        learned: list = []
+        if self._use_sparse and self._sparse_backend in ("splade", "both"):
+            encoder = self._sparse_encoder
+            assert encoder is not None  # guaranteed by __init__; re-stated for the type checker
+            weights = encoder.encode([query])[0]  # type: ignore[attr-defined]
+            if weights:
+                learned = self._store.query_learned_sparse(
+                    weights,
+                    k=self._candidate_k,
+                    profile_id=encoder.profile.profile_id,  # type: ignore[attr-defined]
+                    source=source,
+                    vec=qvec,
+                )
+            # An empty query encoding is NOT an error here, unlike in the store: a query of pure
+            # stopwords legitimately produces no terms. The leg contributes nothing and says so
+            # by way of `learned_sparse_terms` below, rather than by raising on a valid question.
+        timings["learned_sparse_retrieval"] = (time.perf_counter() - started) * 1000.0
+
+        started = time.perf_counter()
+        fused = _rrf(
+            [
+                [h.chunk.id for h in dense],
+                [h.chunk.id for h in sparse],
+                [h.chunk.id for h in learned],
+            ]
+        )
         by_id = {h.chunk.id: h for h in dense}
         for h in sparse:
             by_id.setdefault(h.chunk.id, h)  # sparse hits carry their true cosine (vec=qvec)
+        for h in learned:
+            by_id.setdefault(h.chunk.id, h)
         dense_score = {h.chunk.id: h.score for h in dense}
 
         # Rerank the WHOLE fused candidate pool, then truncate to k — slicing to k first would
