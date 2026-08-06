@@ -31,6 +31,31 @@ import time
 from pathlib import Path
 
 
+def passage_id(item: dict) -> str:
+    """The chunk id, using the SAME precedence the indexer uses.
+
+    `benchmarks/mtrag/run.py` keys chunks on `str(item.get("_id") or item.get("id"))`. In the
+    MTRAG corpora those two fields are equal, so picking the other one works by luck. If a corpus
+    ever disagreed, the sparse rows would key on one id and the chunk rows on the other, the JOIN
+    would match nothing, and the leg would return an empty result indistinguishable from a query
+    that genuinely had no match.
+    """
+    value = str(item.get("_id") or item.get("id") or "")
+    if not value:
+        raise ValueError(f"passage has neither _id nor id: {sorted(item)}")
+    return value
+
+
+def passage_text(item: dict) -> str:
+    """The passage text, normalised the way the indexer normalises it.
+
+    The dense indexer strips NUL bytes before storing. Encoding the unstripped string would mean
+    the two legs describe different text, which is a difference no test of either leg alone can
+    see.
+    """
+    return str(item.get("text") or "").replace("\x00", "")
+
+
 def read_passages(path: Path, limit: int | None) -> list[dict]:
     rows = []
     with path.open(encoding="utf-8") as handle:
@@ -95,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
 
     passages = read_passages(args.input, args.limit)
     done = already_done(args.output) if args.resume else set()
-    pending = [p for p in passages if str(p["id"]) not in done]
+    pending = [p for p in passages if passage_id(p) not in done]
     print(
         json.dumps({
             "event": "start", "passages": len(passages), "skipped": len(passages) - len(pending),
@@ -123,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
             }) + "\n")
         for start in range(0, len(pending), args.batch_size):
             batch = pending[start : start + args.batch_size]
-            vectors = encoder.encode([str(p["text"]) for p in batch])
+            vectors = encoder.encode([passage_text(p) for p in batch])
             for passage, weights in zip(batch, vectors, strict=True):
                 if not weights:
                     # Recorded, not silently dropped: an all-empty run means a broken encoder, and
@@ -131,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
                     empty += 1
                     continue
                 out.write(json.dumps({
-                    "id": str(passage["id"]),
+                    "id": passage_id(passage),
                     "weights": {str(term): round(float(w), 5) for term, w in weights.items()},
                     "nnz": len(weights),
                 }) + "\n")
