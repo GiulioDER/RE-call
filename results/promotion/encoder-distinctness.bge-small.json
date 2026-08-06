@@ -1,0 +1,171 @@
+{
+  "schema": "recall-encoder-distinctness-v1",
+  "script_sha256": "883ea471d35932aec56501bd88c9852961848a391de2d32f389119f9d4dc767e",
+  "environment": {
+    "python": "3.12.3",
+    "platform": "Linux-6.8.0-136-generic-x86_64-with-glibc2.39",
+    "fastembed": "0.8.0",
+    "onnxruntime": "1.27.0",
+    "numpy": "2.5.1",
+    "cache_dir": "/var/tmp/recall-encoder-distinctness/tree",
+    "artifact_tree_sha256": "9a443d711e063427f62cf559a38863122ee5ed107fdd7920de882fd66dbc919c",
+    "artifact_tree_sha256_expected": "9a443d711e063427f62cf559a38863122ee5ed107fdd7920de882fd66dbc919c",
+    "model_name": "BAAI/bge-small-en-v1.5",
+    "symmetric_profile": "bge-small-symmetric-v1",
+    "asymmetric_profile": "bge-small-asymmetric-v1",
+    "hf_hub_offline": "1",
+    "transformers_offline": "1",
+    "provisioning": {
+      "cache_dir": "/var/tmp/recall-encoder-distinctness/tree",
+      "snapshot_dirs": [
+        "models--qdrant--bge-small-en-v1.5-onnx-q"
+      ],
+      "onnx_graphs": [
+        "models--qdrant--bge-small-en-v1.5-onnx-q/snapshots/52398278842ec682c6f32300af41344b1c0b0bb2/model_optimized.onnx"
+      ]
+    },
+    "local_files_only_consumed": true
+  },
+  "resolved_encoders": {
+    "embed": {
+      "callable": true,
+      "qualname": "TextEmbedding.embed",
+      "module": "fastembed.text.text_embedding",
+      "function_group": "f0",
+      "source_delegates_to_base": false,
+      "source_available": true,
+      "delegation_chain": [
+        "TextEmbedding.embed",
+        "OnnxTextEmbedding.embed"
+      ]
+    },
+    "query_embed": {
+      "callable": true,
+      "qualname": "TextEmbedding.query_embed",
+      "module": "fastembed.text.text_embedding",
+      "function_group": "f1",
+      "source_delegates_to_base": true,
+      "source_available": true,
+      "delegation_chain": [
+        "TextEmbedding.query_embed",
+        "TextEmbeddingBase.query_embed"
+      ]
+    },
+    "passage_embed": {
+      "callable": true,
+      "qualname": "TextEmbedding.passage_embed",
+      "module": "fastembed.text.text_embedding",
+      "function_group": "f2",
+      "source_delegates_to_base": true,
+      "source_available": true,
+      "delegation_chain": [
+        "TextEmbedding.passage_embed",
+        "TextEmbeddingBase.passage_embed"
+      ]
+    },
+    "distinct_function_count": 3,
+    "all_three_are_one_function": false,
+    "asymmetric_encoders_delegate_to_base": true,
+    "identity_is_explained": true
+  },
+  "coverage_control": {
+    "probe_count": 6,
+    "expected": 6,
+    "kinds": [
+      "passage",
+      "query"
+    ]
+  },
+  "probes": [
+    {
+      "probe_kind": "query",
+      "text_prefix": "what did we decide about the cache?",
+      "dimension": 384,
+      "sha256_embed": "56be25ea967e516e",
+      "sha256_query_embed": "56be25ea967e516e",
+      "bytes_embed_eq_query_embed": true,
+      "cosine_embed_query_embed": 1.0,
+      "sha256_passage_embed": "56be25ea967e516e",
+      "bytes_embed_eq_passage_embed": true,
+      "cosine_embed_passage_embed": 1.0
+    },
+    {
+      "probe_kind": "query",
+      "text_prefix": "who approved the retry policy change",
+      "dimension": 384,
+      "sha256_embed": "33b2557126dd4184",
+      "sha256_query_embed": "33b2557126dd4184",
+      "bytes_embed_eq_query_embed": true,
+      "cosine_embed_query_embed": 1.0,
+      "sha256_passage_embed": "33b2557126dd4184",
+      "bytes_embed_eq_passage_embed": true,
+      "cosine_embed_passage_embed": 1.0
+    },
+    {
+      "probe_kind": "query",
+      "text_prefix": "why was postgres chosen over the alternative",
+      "dimension": 384,
+      "sha256_embed": "1a3fb25b7c14eae9",
+      "sha256_query_embed": "1a3fb25b7c14eae9",
+      "bytes_embed_eq_query_embed": true,
+      "cosine_embed_query_embed": 1.0,
+      "sha256_passage_embed": "1a3fb25b7c14eae9",
+      "bytes_embed_eq_passage_embed": true,
+      "cosine_embed_passage_embed": 1.0
+    },
+    {
+      "probe_kind": "passage",
+      "text_prefix": "The cache decision was recorded after a two ",
+      "dimension": 384,
+      "sha256_embed": "9f0008f4ccfa7cca",
+      "sha256_query_embed": "9f0008f4ccfa7cca",
+      "bytes_embed_eq_query_embed": true,
+      "cosine_embed_query_embed": 1.0,
+      "sha256_passage_embed": "9f0008f4ccfa7cca",
+      "bytes_embed_eq_passage_embed": true,
+      "cosine_embed_passage_embed": 1.0
+    },
+    {
+      "probe_kind": "passage",
+      "text_prefix": "Retry policy: exponential backoff capped at ",
+      "dimension": 384,
+      "sha256_embed": "5274c76aef055728",
+      "sha256_query_embed": "5274c76aef055728",
+      "bytes_embed_eq_query_embed": true,
+      "cosine_embed_query_embed": 1.0,
+      "sha256_passage_embed": "5274c76aef055728",
+      "bytes_embed_eq_passage_embed": true,
+      "cosine_embed_passage_embed": 1.0
+    },
+    {
+      "probe_kind": "passage",
+      "text_prefix": "We chose PostgreSQL with pgvector because th",
+      "dimension": 384,
+      "sha256_embed": "767aeafb5cb440c9",
+      "sha256_query_embed": "767aeafb5cb440c9",
+      "bytes_embed_eq_query_embed": true,
+      "cosine_embed_query_embed": 1.0,
+      "sha256_passage_embed": "767aeafb5cb440c9",
+      "bytes_embed_eq_passage_embed": true,
+      "cosine_embed_passage_embed": 1.0
+    }
+  ],
+  "positive_control_two_different_texts": {
+    "bytes_equal": false,
+    "cosine": 0.65494816858,
+    "sha256_left": "56be25ea967e516e",
+    "sha256_right": "9f0008f4ccfa7cca"
+  },
+  "determinism_control": {
+    "embed_twice_byte_identical": true
+  },
+  "sensitivity_control_small_rotation": {
+    "bytes_equal": false,
+    "cosine": 0.999999995,
+    "sha256_left": "56be25ea967e516e",
+    "sha256_right": "7b7f20bbe1244aa3",
+    "angle_rad": 0.0001
+  },
+  "all_probes_identical": true,
+  "verdict": "query_embed, passage_embed are BYTE-IDENTICAL to embed on every probe, and both asymmetric encoders DELEGATE to embed in source: bge-small-asymmetric-v1 and bge-small-symmetric-v1 cannot produce different vectors on this backend, so a paired comparison of the two is a null by construction"
+}

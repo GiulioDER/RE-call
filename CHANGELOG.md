@@ -9,6 +9,30 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
+- **`benchmarks/check_profile_encoder_distinctness.py`, and the finding it exists to record.**
+  `bge-small-symmetric-v1` and `bge-small-asymmetric-v1` differ in two registry fields
+  (`query_mode`, `passage_mode`) and share every other identity field and one provisioned artifact
+  tree. Measured against that tree on the deployment host, offline: `embed`, `query_embed` and
+  `passage_embed` return **byte-identical** vectors for `BAAI/bge-small-en-v1.5` under fastembed
+  0.8.0, on all six probes. The reason is a property of the library rather than of one deployment:
+  that model resolves to `OnnxTextEmbedding`, which does not override either method, so both come
+  from `TextEmbeddingBase` and `yield from self.embed(...)` with no instruction. The two profiles
+  therefore cannot produce different vectors, and **a paired promotion comparison of the two is a
+  null by construction** rather than an experiment. It would be the same KIND of null the harness
+  already published as its own control (`results/promotion/decision.null-difference.json`) but
+  **not the same artifact**: that control's two arms share one fingerprint, so its deltas are exact
+  zeros, while these two profiles have different fingerprints and land in different physical
+  tables, making their deltas tie-break noise around zero, which is worse rather than equivalent.
+  No behaviour changes; `docs/ENTERPRISE_RETRIEVAL.md` now says so where a reader designing an
+  experiment will meet it, because "names a distinct encoder" and "gets distinct vectors" had been
+  the same sentence. Five controls, all blocking (positive, determinism, coverage, identity binding, and a
+  sensitivity control that requires a deliberate 1e-4 rad rotation to be reported as different),
+  each proven able to refuse by mutation rather than merely to run (10 of 10 guards killed), and covered by
+  `tests/test_bench_profile_encoder_distinctness.py` against a stub backend so CI exercises them
+  without the `fastembed` extra. Run output committed at `results/promotion/encoder-distinctness.bge-small.json`
+  (schema `recall-encoder-distinctness-v1`, not a `PromotionDecision`) and archived under
+  `/var/lib/recall-benchmarks/`.
+
 - **The evidence boundary is reachable.** `recall/evidence.py` was complete and correct and
   imported by nothing but its own test: absent from `recall/__init__.py`, wired into no surface.
   `EvidenceItem`, `EvidenceBundle`, `AnswerEnvelope`, `EvidencePolicy`, `build_evidence_bundle`,
