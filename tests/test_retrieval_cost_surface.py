@@ -298,6 +298,11 @@ EXPECTED_STAGES = {
     "query_embedding",
     "dense_retrieval",
     "sparse_retrieval",
+    # Added with the learned sparse leg. It is recorded on EVERY retrieval, including the
+    # lexical-backend default where the leg does not run and the timing is ~0 -- a stage
+    # that vanishes when idle would make "no learned sparse leg" and "the timer is broken"
+    # look identical in the cost surface.
+    "learned_sparse_retrieval",
     "fusion",
     "reranking",
     "trust_evaluation",
