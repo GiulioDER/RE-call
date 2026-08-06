@@ -126,7 +126,6 @@ def _refuse_overbroad_glob(glob: str) -> None:
     extension-named glob still admits a file WITH that extension. `**/*.json` matches
     `tokens.json`. This bounds the pattern's SHAPE; it is not a secrets filter.
     """
-    final = glob.rsplit("/", 1)[-1]
     # A dotfile basename is NOT an extension. `.env` is literally `\.` + `env` at end of string,
     # so the anchor alone ACCEPTS `**/.env`, `**/.npmrc` and `**/.git-credentials` and the walk
     # returns them. Measured by the CCA bug auditor against the real `candidate_files`, and it is

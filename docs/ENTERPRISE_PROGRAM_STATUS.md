@@ -142,6 +142,43 @@ the previous corpus's results. Demonstrated by the CCA bug auditor. **Unfixed at
 writing.** These ledgers are correct because the directory was cleaned before the run, not because
 the harness would have prevented it.
 
+
+### What the next session should start with
+
+1. **`recall index` has NO over-broad glob guard, and it is the path that matters.**
+   `recall/cli.py:739` passes `--glob` from argv straight to `index_path`, writing into the
+   operator's PERSISTENT `--table`. The guard added this session sits only on the eval harness,
+   whose store is `promo_<uuid8>` and is dropped in a `finally`. Measured: `candidate_files(root,
+   '**/*')` returns `.env`, `id_rsa`, `tokens.json`. **The guard went on the safe path and the
+   dangerous one was left open.** Its right home is `recall.index.candidate_files`, the one place
+   every caller passes through, which also covers `recall_index` MCP, `recall lint` and
+   `recall fix`.
+
+2. **`--glob` is the wrong mechanism, and the evidence is not that it took three corrections.**
+   The adapters already know the extension, and for three of them it is INSIDE the label strings
+   the scorer compares against: `PepsAdapter` labels are `pep-0690.rst`, `LongMemEvalAdapter`
+   emits `f"{sid}.md"`, `LocomoAdapter` resolves to `.md`. The glob is a SCORING input, not a
+   confinement setting, and neither guard can see it go wrong: `_indexed_store` refuses only
+   `chunks == 0`, and `VacuousArm` returns as soon as ONE answerable question hits at 20, so a
+   partial label-space mismatch scores a depressed-but-plausible number and publishes it.
+   Recommendation: declare `glob: tuple[str, ...]` on the adapter with a `corpus_glob()` accessor
+   built like `label_kind()`, which already refuses an adapter that declared none; keep
+   `--corpus-dir`; delete `--glob` from `run`. `LEDGER_ID_FIELDS` already contains `corpus`, so
+   deriving the glob from the adapter closes half of item 3 for free. It also restores a
+   capability the predicate makes impossible: a multi-extension corpus is inexpressible, since
+   pathlib rejects `**/*.{md,rst}` and the only working spelling, `**/*.[mr]*`, is refused as the
+   round-1 bypass shape.
+
+3. **The arm-identity defect**, above: `--glob` and `--corpus-dir` are absent from
+   `ArmConfig.identity()`, `artifact_stem()` and the resume comparison.
+
+4. **The local dev database on 5432 carries migrations `0012` and `0013` that exist on NO
+   committed branch.** Someone has uncommitted schema work applied there; it makes every
+   DB-backed test in a fresh worktree fail with `SchemaTooNew`.
+
+5. If the context-mode question is worth answering, it needs a corpus that can express an answer.
+   88 paired questions cannot resolve anything under about 7 pp.
+
 ---
 
 ## 2026-08-05, the evidence boundary: reachable, and the delimiter it could not defend
