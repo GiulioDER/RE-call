@@ -225,6 +225,7 @@ class BeamRecallSystem:
         table: str = BEAM_TABLE,
         candidate_k: int | None = None,
         entailment_top_n: int = 0,
+        calibration: Any | None = None,
     ) -> None:
         from benchmarks.systems import resolve_embedder, resolve_reranker
 
@@ -253,6 +254,18 @@ class BeamRecallSystem:
             from recall.entailment import QnliEntailmentJudge
 
             self._entailment = TopNEntailment(QnliEntailmentJudge(), entailment_top_n)
+        # The abstention threshold, or None to accept the library's UNTUNED 0.50 default.
+        #
+        # It has to be passed in explicitly on this arm. `trusted_search` resolves a calibration
+        # from the store via `resolve_calibration`, but that method lives on the generation store,
+        # not on the `PgVectorStore` this system hands it — so the lookup silently misses, the
+        # status falls to "missing", and every query runs on the 0.50 constant. That constant is
+        # not comparable across embedders: measured on voyage-4-large it starves 14 of 60 questions
+        # (23.3%) to empty retrieval against 7% on text-embedding-3-small and 0% on bge-small, and
+        # an empty context makes the vendored prompt emit its refusal string. Left unset on this
+        # embedder, roughly a quarter of the run would score as false abstentions produced by the
+        # harness rather than by the retriever.
+        self._calibration = calibration
         self._tenant: str | None = None
         #: filename -> turn date, so a retrieved chunk can be handed back with its date.
         self._dates: dict[str, str] = {}
@@ -263,6 +276,19 @@ class BeamRecallSystem:
             "system": self.name,
             "k": self._k,
             "candidate_k": self._candidate_k,
+            # WHICH abstention gate produced these numbers. Recorded because the alternative is an
+            # artifact whose false-abstention rate cannot be interpreted: the same retriever scores
+            # very differently under a starving threshold and a fitted one, and "uncalibrated" is a
+            # fact about the run, not a footnote about the library.
+            "calibration": (
+                {
+                    "source": "explicit",
+                    "threshold": getattr(self._calibration, "threshold", None),
+                    "certified": getattr(self._calibration, "certified", None),
+                }
+                if self._calibration is not None
+                else {"source": "none", "threshold": "library default 0.50", "certified": False}
+            ),
             "embedder": {
                 "name": self._embedder_name,
                 "model": embedding_profile_id(self._embedder),
@@ -372,6 +398,7 @@ class BeamRecallSystem:
                 reranker=self._reranker,
                 candidate_k=self._candidate_k,
                 entailment=self._entailment,
+                calibration=self._calibration,
             )
             if result.abstained:
                 return []
