@@ -112,3 +112,43 @@ def test_the_sparse_arms_vary_only_the_sparse_backend() -> None:
     }
 
     assert differing == {"sparse_backend"}
+
+
+def test_speaker_prefix_is_stripped_from_dev_queries() -> None:
+    """MTRAG-human ships every turn prefixed with '|user|: '. It is not part of the question.
+
+    Leaving it in feeds the literal token into both the embedder and the sparse encoder on EVERY
+    dev query, which depresses the whole run and makes the numbers incomparable with the
+    established baseline. Nothing errors; the scores are just quietly worse.
+
+    Implementation matches benchmarks/mtrag/probe/fix_retrieval_2x2.py on bench/mtrag-arm-r, so
+    normalisation is IDENTICAL to the measured baseline rather than merely similar.
+    """
+    assert run.strip_speaker("|user|: Do the Arizona Cardinals play outside the US?") == (
+        "Do the Arizona Cardinals play outside the US?"
+    )
+
+
+def test_speaker_stripping_keeps_colons_inside_the_question() -> None:
+    """Only the leading speaker tag goes. A colon in the question body is content."""
+    assert run.strip_speaker("|user|: What is X: a thing?") == "What is X: a thing?"
+
+
+def test_speaker_stripping_handles_the_multi_turn_concatenation() -> None:
+    """The `_questions` file concatenates turns, one per line, each with its own prefix."""
+    raw = "|user|: where do the arizona cardinals play\n|user|: Do they play outside the US?"
+
+    assert run.strip_speaker(raw) == (
+        "where do the arizona cardinals play\nDo they play outside the US?"
+    )
+
+
+def test_dev_queries_reach_the_retriever_without_their_speaker_prefix() -> None:
+    """The end the bug actually lives at: what `query_text` hands the retriever.
+
+    Testing `strip_speaker` alone would pass while the loader never called it, which is exactly
+    the shape of the original defect.
+    """
+    task = {"task_id": "q1", "_domain": "clapnq", "_text": "|user|: How many teams are in the NFL?"}
+
+    assert run.query_text(task, "last") == "How many teams are in the NFL?"
