@@ -135,8 +135,12 @@ nothing in this repository derives it.
   done.
 
   Run it **once per chunk table, including every generation table you create at step 3**, and apply
-  the output as the object owner. It emits six statements, covering the chunk table, four
-  control-plane tables and the outbox sequence. A `permission denied` at step 8 or 9 means the generated set was
+  the output **verbatim** as the object owner. It emits six statements covering fourteen objects
+  plus one sequence. ⚠️ **Do not check your work against a summary, including this one** (that is
+  the failure this bullet exists to prevent): diff what you applied against what the command
+  printed. For orientation only, the six statements are the migration ledger, the chunk table, the
+  eight generation and calibration tables, three read-only control-plane tables, the outbox, and the
+  outbox sequence. A `permission denied` at step 8 or 9 means the generated set was
   not applied in full. It never means a broader grant is needed: do not answer it with `GRANT ALL`,
   and do not make the runtime role the table owner. The symptom this deployment actually produced,
   `InsufficientPrivilege: permission denied for table recall_schema_versions`, reads like a database
@@ -177,14 +181,16 @@ missing them.
 
 ```console
 recall --migration-dsn "$RECALL_MIGRATION_DSN" --table chunks_g2026_08 schema --dim 384 apply
-recall --table chunks_g2026_08 schema status
+recall --table chunks_g2026_08 schema --dim 384 status
 ```
 
-⚠️ **Pass `--dim` explicitly.** It defaults to the dimension inferred from `--embedder`, which
-defaults to `fastembed`, so omitting it **constructs an embedder and fetches a model** rather than
-reading the schema. On a host with the egress boundary closed (as the preconditions require) the
-step then fails on a network fetch that has nothing to do with the schema. Note the flag positions:
-`--migration-dsn` and `--table` are top-level and precede `schema`; `--dim` follows it.
+⚠️ **Pass `--dim` explicitly on BOTH lines, `status` included.** It defaults to the dimension
+inferred from `--embedder`, which defaults to `fastembed`, and that resolution happens **before** the
+subcommand branches, so even the read-only `status` **constructs an embedder and fetches a model**
+without it. On a host with the egress boundary closed (as the preconditions require) the step then
+fails on a network fetch that has nothing to do with the schema, and on a host where the model is
+already cached it appears to work, which is worse. Note the flag positions: `--migration-dsn` and
+`--table` are top-level and precede `schema`; `--dim` follows it.
 
 Verify: `schema status` exits non-zero when the table is not current, and every index on it is still
 `indisvalid`.
@@ -194,23 +200,40 @@ Verify: `schema status` exits non-zero when the table is not current, and every 
 > `MigrationChecksumMismatch` rather than migrating forward. There is no flag for this and there
 > should not be.
 >
-> **First, read which mismatch it is. Only one of them is a ledger problem.** `load_migrations()`
-> raises the same class for file-bytes-versus-`checksums.json` drift, for a manifest/file set
-> mismatch, and for a bad execution-mode declaration, all *before* the ledger is read at all. Those
-> mean your **working tree** is corrupt: restore the files and touch nothing in the database. Only
-> the wording `applied migration ... has checksum X, package has Y` points at the ledger.
+> **First, read which mismatch it is, and read it carefully: two of the four wordings differ by one
+> word.** `MigrationChecksumMismatch` is raised from four places, and the message is the only thing
+> that tells them apart.
+>
+> | Message | Source | Meaning |
+> |---|---|---|
+> | `migration <name> checksum drift: committed X, actual Y` | `load_migrations`, before any ledger read | **working tree corrupt** |
+> | `migration checksum manifest must be a JSON object` / `duplicate migration version` / a mode-declaration error | `load_migrations`, same | **working tree corrupt** |
+> | `applied migration <file> has checksum X, package has Y` | `schema_status` | **ledger** |
+> | `applied migration <file> checksum drift` | `apply_migrations` | **ledger** |
+>
+> ⚠️ Rows one and four both say "checksum drift" and mean opposite things. Row one names the
+> migration and prints two digests; row four begins `applied migration`. **Row four is what step 2's
+> `schema apply` raises**, so an operator running the documented command hits the ledger case with
+> the wording that most resembles the working-tree case. A working-tree diagnosis means restore the
+> files and touch nothing in the database.
 >
 > **The default remedy is to ship the change as a NEW migration version, or to restore from backup.**
 > Clearing a ledger row is the exception, not the procedure.
 >
 > If you do clear it, know exactly what you are doing. The table is `recall_schema_migrations` and
-> its primary key is `(target_table, version)`. **Both columns are required**: a `DELETE ... WHERE
-> version = '0012'` strips the row for every chunk table in the database, and every serving process
-> then refuses on restart with `SchemaTooOld`. Migrations numbered **0008 and above are recorded
-> under `target_table = '__global__'`** and re-apply database-wide.
+> its primary key is `(target_table, version)`. **Which rows exist depends on the version number**:
+>
+> * **0008 and above** are recorded once, under `target_table = '__global__'`, and re-apply
+>   database-wide. There is exactly one row, so a version-only `DELETE` happens to hit only it.
+> * **0001 to 0007** are recorded **per chunk table**. Here a `DELETE ... WHERE version = '0003'`
+>   strips the row for *every* chunk table in the database, and every serving process then refuses on
+>   restart with `SchemaTooOld`. Name both columns.
 >
 > ```sql
+> -- global (0008+): one row
 > DELETE FROM recall_schema_migrations WHERE target_table = '__global__' AND version = '0008';
+> -- per-table (0001-0007): one row PER TABLE, so name the table
+> DELETE FROM recall_schema_migrations WHERE target_table = 'chunks' AND version = '0003';
 > ```
 >
 > Preconditions, and the first one is the one people get wrong:
@@ -218,8 +241,13 @@ Verify: `schema status` exits non-zero when the table is not current, and every 
 > * The real question is not "are the two versions equivalent" but **"is re-application safe against
 >   the tables as they stand"**. Equivalence says nothing about what re-running does.
 > * Take a **restorable backup first**. Recording the deleted row is *not* a rollback: restoring the
->   row does not undo DDL the re-apply already executed, and the re-insert overwrites `applied_by`
->   and `applied_at`, so the original applier is unrecoverable.
+>   row does not undo DDL the re-apply already executed. It also corrupts the audit trail in the
+>   direction people do not expect. `applied_by` is written by **no statement in the codebase**; it
+>   exists only as the column default `DEFAULT current_user`, and the upsert's `DO UPDATE SET` list
+>   deliberately omits it. So delete-then-re-apply records the new applier correctly (the fresh
+>   INSERT takes the default), while **restore-then-re-apply preserves the ORIGINAL `applied_by`
+>   and stamps a new `applied_at`**, attributing the re-application to someone who did not perform
+>   it. If you restore the row, do not then re-apply on top of it.
 > * Re-applying takes **ACCESS EXCLUSIVE** on the target chunk table, and `apply_migrations` sets
 >   `statement_timeout = 0` deliberately, so there is no automatic escape. Re-running 0008 also does
 >   `ALTER TABLE ... NO FORCE ROW LEVEL SECURITY` and a full scan of the corpus under that lock.
@@ -245,8 +273,9 @@ recall-enterprise mark-ready g2026_08 --chunks 1000000 --sources 120000
 ```
 
 ⚠️ **`--chunks` and `--sources` are an operator ASSERTION and nothing ever checks them.**
-`mark-ready` stores the two integers verbatim; `parity` compares the two physical tables and never
-reads the registry, and `cutover` quotes the declared count only inside a refusal message. Measure
+`mark-ready` stores the two integers verbatim; `parity` **never compares them** (it reads the
+registry to resolve which physical table each generation names, then compares the two tables
+themselves), and `cutover` quotes the declared count only inside a refusal message. Measure
 them anyway, for your own audit trail, but do not treat the step as a gate: a fabricated
 `--chunks 1000000` on an empty generation exits 0. `mark-ready` also has no state guard, so it will
 move a `failed` generation to `ready`. Never use it to clear a failed state.
@@ -312,12 +341,17 @@ checks.
 tenant's **shadow**, and `retire` refuses while the named tenant routes at that generation in
 *either* slot. Detach it from the shadow slot first, then retire.
 
-⚠️ **Retirement is DATABASE-GLOBAL and there is no un-retire command.** `recall_index_generations`
-has no tenant column: `retire` checks one tenant's route and then sets `state='retired'` for the
-whole database, so every other tenant still routed at that generation is refused by the serving path
-immediately. Enumerate every tenant routed at the generation before retiring. Afterwards `set-route`
-rejects it as an active generation, so **section R no longer works**: retirement is the point of no
-return, and the only recovery is a restore.
+⚠️ **Retirement is DATABASE-GLOBAL.** `recall_index_generations` has no tenant column: `retire`
+checks one tenant's route and then sets `state='retired'` for the whole database, so every other
+tenant still routed at that generation is refused by the serving path immediately. Enumerate every
+tenant routed at the generation before retiring. Afterwards `set-route` rejects it as an active
+generation, so **section R no longer works as written**.
+
+There is no un-retire *command*, but there is an un-retire *path*, and you should know it before you
+order a restore: `mark-ready` has no state guard (step 5), so
+`recall-enterprise mark-ready <retired-generation> --chunks N --sources M` writes it back to `ready`
+and `set-route` will then accept it. Treat that as an incident procedure, not a rollback step:
+nothing re-validates the table, `retired_at` is left set, and the counts you pass are unchecked.
 
 ```console
 recall-enterprise retire g2026_07 --tenant acme
