@@ -157,28 +157,35 @@ def _index(
     started = time.monotonic()
     stats = Indexer(store, embedder, context_policy=policy).index_path(corpus, glob)
     elapsed = time.monotonic() - started
-    if not stats.chunks:
-        # `stats.skipped` is what separates the two causes. A table that is ALREADY complete
-        # returns 0 written and N skipped, because the fingerprint guard skips every file, and an
-        # earlier version reported that as though the corpus or the glob were at fault.
-        if stats.skipped:
-            raise SystemExit(
-                f"{profile}: {table} already holds this corpus at this fingerprint "
-                f"({stats.skipped} files skipped, 0 written), so nothing was re-indexed. This is a "
-                f"COMPLETE generation, not an empty one. Drop the table or point --table-prefix "
-                f"somewhere fresh."
-            )
+    # ⚠️ RESUME IS A SUCCESS, NOT A REFUSAL. The guard must fire on "this generation is EMPTY",
+    # never on "this run wrote nothing", and those differ exactly when the table is already
+    # populated: the fingerprint guard skips a file whose content is unchanged, so re-running a
+    # COMPLETE arm returns 0 written and N skipped. An earlier version refused on `stats.chunks`
+    # alone, which made a finished arm indistinguishable from a broken one and would have made a
+    # sequential resume impossible, since resuming is the whole reason the tables are kept.
+    present = store.count()
+    if not stats.chunks and not stats.skipped:
         raise SystemExit(
-            f"{profile}: indexing {corpus} with glob {glob!r} produced NO chunks and skipped "
-            f"nothing, so the glob matched no file. A parity comparison between two empty "
-            f"generations reports perfect parity."
+            f"{profile}: indexing {corpus} with glob {glob!r} matched NO file (0 written, 0 "
+            f"skipped). Check --glob against the corpus file extension."
+        )
+    if not present:
+        raise SystemExit(
+            f"{profile}: {table} holds no rows for this tenant after indexing. A parity "
+            f"comparison between two empty generations reports perfect parity."
         )
     return {
         "profile": resolved,
         "table": table,
         "context_mode": policy.mode,
         "files": stats.files,
-        "chunks": stats.chunks,
+        # `chunks` names rows PRESENT in the generation, so it means the same thing in every stage.
+        # It used to carry `stats.chunks`, rows WRITTEN by this run, which is a different quantity
+        # the moment a resume skips anything, and the compare stage reported `store.count()` under
+        # the same key. Both are kept, named for what they count.
+        "chunks": present,
+        "chunks_written": stats.chunks,
+        "files_skipped": stats.skipped,
         "index_seconds": round(elapsed, 1),
         "store": store,
         # THIS process created this table, so THIS process may drop it. False when the table was
