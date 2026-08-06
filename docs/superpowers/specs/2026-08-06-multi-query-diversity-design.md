@@ -333,3 +333,18 @@ explains almost none.
 ⛔ `mq_nested3` consumes a GOLD human rewrite and is **not deployable**; "SHIPS" is a decision
 about the mechanism under the preregistered rule, not a recommendation to deploy that arm. The
 post-hoc no-gold arm (`last`+`full` only) gains +0.0842 R@100 but trips three ranking vetoes.
+
+## Correction to the budget arm's justification
+
+A bug audit run before publication found that this document's justification for
+`mq_nested3_budget33` ("3 x 2 x 33 = 198 ≈ the control's 200") quotes a **no-overlap upper bound**,
+not the pool the arm realises. Measured: the budget arm's realised pool is **below the metric
+cutoff on 307 of 777 queries** (min 34, median 108), because the variants overlap and where they
+are byte-identical they overlap completely. Every other arm, including the primary and the
+control, is never pool-limited (`pool_below_cutoff = 0`).
+
+The handicap runs against the budget arm, so **B1's +0.1174 is a conservative lower bound** on the
+diversity share and finding 3 survives; but the arm is not cleanly budget-matched and this
+document overstated that it was. `pool_bound()` is now documented as a bound, `realised_pool_sizes`
+measures the fact, and a clean budget control would need adaptive truncation targeting a realised
+pool rather than a fixed per-leg cut.
