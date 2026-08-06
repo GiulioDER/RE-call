@@ -135,6 +135,18 @@ ABLATIONS = [
         "test_timed_public_methods_matches_the_actual_timer_call_sites",
     ),
     (
+        # Same shape as the entry above, one level along: the tuple that says which legs a
+        # caller must DRAIN, rather than which methods are timed. Dropping a leg here is what
+        # actually happened when the learned sparse leg was added, in two callers at once.
+        "STORE_QUERY_LEGS stays in step with the labels the timers emit",
+        STORE,
+        "STORE_QUERY_LEGS = (LEG_DENSE, LEG_SPARSE, LEG_LEARNED_SPARSE, LEG_META)",
+        # Drops LEG_LEARNED_SPARSE specifically, so the mutation reproduces the drift that
+        # actually happened rather than an equivalent one.
+        "STORE_QUERY_LEGS = (LEG_DENSE, LEG_SPARSE, LEG_META)",
+        "test_store_query_legs_matches_the_actual_timer_labels",
+    ),
+    (
         "snapshot() reveals truncation, not just the drain path",
         OBS,
         '"truncated": observed > len(samples),',
