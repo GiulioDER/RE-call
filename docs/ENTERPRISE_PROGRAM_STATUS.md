@@ -330,17 +330,23 @@ standing in for "shown to work", and they are not the same claim.** The table no
 
 ### What the next session should start with
 
-1. ~~Finish the parity run.~~ **Done**, and passing. The four `pfull_*` generation tables are
-   deliberately LEFT on the host, because keeping them is what made the resume cheap. Remove them
-   with the same compare invocation plus `--drop-generations`, never with psql.
+1. ~~Finish the parity run.~~ **Done**, and passing. ~~The generation tables are left on the host.~~
+   **Dropped 2026-08-06** through `PgVectorStore.drop_table()`, so the migration ledger rows went
+   with them (74 ledger rows to 46; 0 remaining for those prefixes, asserted rather than assumed).
+   ⚠️ **Reproducing the run therefore now costs a full four-arm re-index**, roughly three hours
+   sequential, not a free compare re-run. `benchmarks/drop_parity_tables.py` is the sweeper; it
+   reaches orphans `--drop-generations` cannot, because that flag only sees tables a run registered.
 2. **Run `mypy` and `pytest` against this branch**, which needs a worktree venv rather than the
-   primary clone's editable install. Both are still unverified for this change, and they are now the
-   largest untested surface here.
-3. **The committed artifact predates its own `_provenance` block.** `results/ARTIFACTS.md` requires
-   every committed artifact to carry its configuration inside the file; the generator now emits one
-   and `results/promotion/generation-parity.json` does not have it, because it was produced before
-   that change. Re-running the compare stage regenerates a compliant artifact and is **free** now
-   that the generations survive, so this is a ten-minute fix rather than a four-hour one.
+   primary clone's editable install. Both are still unverified, and with CI unable to acquire
+   runners they are now **the largest untested surface in this work**.
+3. ~~The committed artifact predates its own `_provenance` block.~~ **Stamped 2026-08-06**, and the
+   block declares `stamped_after_the_fact: true` with `measured_at` kept separate from
+   `provenance_stamped_at`. The stamp was the ONLY change, enforced rather than asserted: the tool
+   refused to write until a `json.dumps` round trip reproduced the file byte for byte, then compared
+   all nine pre-existing keys (`git diff`: 24 insertions, 0 deletions). The archived copy is the
+   untouched original and the two digests are recorded in `results/ARTIFACTS.md` and in the
+   archive's own `NOTE.md`, so the divergence is explained from both ends rather than looking like
+   tampering.
 4. Carried-forward items 1 to 3, in that order; item 1 (`validate_table_name`) is the only one that
    can produce a FALSE PASS.
 5. The campaign entry below still asks for `recall index`'s missing over-broad glob guard and the

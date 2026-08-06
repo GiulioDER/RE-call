@@ -205,9 +205,27 @@ a `promo_<uuid8>` table and drops it in a `finally`, so its generations no longe
 rebuild over the same corpus with the same embedder and pinned artifact tree, and the file says so
 in its `reconstruction_note`.
 
-⚠️ **This artifact predates the `_provenance` block** the convention above requires. The generator
-(`benchmarks/check_generation_parity.py`) now emits one; this file was produced before that change
-and carries `reconstruction_note`, `corpus_dir`, `glob`, `files_on_disk`, `baseline_profile` and
-per-generation profile/table/mode instead. Re-running the compare stage regenerates a compliant
-artifact. Full run record and SHA256 manifest:
-`/var/lib/recall-benchmarks/2026-08-06-context-mode-generation-parity/`.
+⚠️ **Its `_provenance` block was STAMPED AFTER THE FACT, and the block says so.** This artifact was
+produced before `benchmarks/check_generation_parity.py` emitted one. Rather than leave it outside
+the convention, the block was added by hand from the run's own driver log and the versions installed
+on the host that ran it. It carries `stamped_after_the_fact: true`, `measured_at` (the run) kept
+separate from `provenance_stamped_at` (the edit), and the digest of the archived original.
+
+**The block is the only difference, and that was ENFORCED rather than asserted.** The stamping tool
+refused to write until a round trip through `json.dumps` reproduced the file byte for byte, so
+re-serialisation could not smuggle in a change, then compared all nine pre-existing keys before and
+after. `git diff` records **24 insertions, 0 deletions**. (Its first version was refused by its own
+guard over a single trailing newline, which is the guard working on the tool rather than on the
+artifact.)
+
+The archive is the run record and was deliberately **not** modified, so the two copies differ by
+exactly this key:
+
+| copy | sha256 |
+|---|---|
+| archived original, covered by that directory's `MANIFEST.sha256` | `073628143b35299e…a2b50147` |
+| this committed copy, with the stamp | `d2ee470e5da874b5…c84d7e3e` |
+
+Full run record: `/var/lib/recall-benchmarks/2026-08-06-context-mode-generation-parity/`.
+⚠️ Regenerating a natively-stamped artifact now needs a **full four-arm re-index**, not a compare
+re-run: the generations were dropped once this work merged.
