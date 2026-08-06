@@ -30,6 +30,17 @@ DENSE_TIMED = """        with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_DENSE):
 SPARSE_TIMED = """        with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_SPARSE):
             return self._query_sparse(text, k, source, vec)"""
 
+#: The declaration the tuple-drift rule ablates. A CONSTANT because the tuple is multi-line: this
+#: anchor was left at the old single-line spelling when the learned sparse leg widened the tuple,
+#: and a stale anchor does not fail the sweep loudly — it prints SKIP and that rule silently stops
+#: being exercised, which is the same class of defect the rule itself exists to catch.
+TIMED_TUPLE = """TIMED_PUBLIC_METHODS = (
+    "query_dense",
+    "query_sparse",
+    "query_learned_sparse",
+    "newest_indexed_at",
+)"""
+
 TIMER_BODY = """        start = time.perf_counter()
         try:
             yield
@@ -115,8 +126,12 @@ ABLATIONS = [
         # rule that each entry must remove exactly one rule.
         "TIMED_PUBLIC_METHODS stays in step with the real timer call sites",
         STORE,
-        'TIMED_PUBLIC_METHODS = ("query_dense", "query_sparse", "newest_indexed_at")',
-        'TIMED_PUBLIC_METHODS = ("query_dense", "query_sparse")',
+        TIMED_TUPLE,
+        """TIMED_PUBLIC_METHODS = (
+    "query_dense",
+    "query_sparse",
+    "query_learned_sparse",
+)""",
         "test_timed_public_methods_matches_the_actual_timer_call_sites",
     ),
     (
