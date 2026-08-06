@@ -1,4 +1,28 @@
 {
+  "_provenance": {
+    "archived_original_sha256": "073628143b35299e9a72490fb937034f4a357441f9662984a601ecf0a2b50147",
+    "database": "recall_campaign",
+    "execution_provider": "CPU",
+    "host": "VPS2",
+    "measured_at": "2026-08-06T20:12:54+00:00",
+    "model_artifact_sha256": "9a443d711e063427f62cf559a38863122ee5ed107fdd7920de882fd66dbc919c",
+    "note": "This artifact was produced before check_generation_parity.py emitted a _provenance block. This block was added afterwards, by hand, from the run's own driver log and the versions installed on the host that ran it. It touches NO measured value. The copy archived under /var/lib/recall-benchmarks/2026-08-06-context-mode-generation-parity/ is the ORIGINAL without this block, and that archive's MANIFEST.sha256 covers the original, so the two files differ by exactly this key and nothing else.",
+    "offline": {
+      "HF_HUB_OFFLINE": "1",
+      "TRANSFORMERS_OFFLINE": "1"
+    },
+    "provenance_stamped_at": "2026-08-06T21:37:13+00:00",
+    "python": "3.12.3",
+    "runner": "benchmarks/check_generation_parity.py",
+    "stack": {
+      "fastembed": "0.8.0",
+      "onnxruntime": "1.28.0",
+      "psycopg": "3.1.17"
+    },
+    "stamped_after_the_fact": true,
+    "status": "current",
+    "validator": "recall.migration.validate_generation_parity"
+  },
   "baseline_profile": "bge-small-symmetric-v1",
   "comparisons": {
     "bge-small-context-document-v1": {
