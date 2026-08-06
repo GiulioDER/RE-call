@@ -140,6 +140,23 @@ SPARSE_MAX_NONZERO = 1000
 #: caller assert "one sample per leg per query".
 LEG_META = "meta"
 
+#: EVERY leg label `STORE_QUERY_METRIC` is emitted under, for callers that must drain all of them.
+#:
+#: `METRICS` is process-wide, so a caller measuring one configuration after another has to clear
+#: the ring between them or the previous configuration's samples are averaged into the next one's.
+#: Two callers did that against their own hand-written tuple of legs (`recall/eval/harness.py`
+#: between ablation configurations, `benchmarks/store_latency_share.py` between its probes and the
+#: measured run), and BOTH drifted when the learned sparse leg was added.
+#:
+#: Neither could fail loudly, which is why this is a constant rather than a convention: an
+#: undrained series does not raise, it silently accumulates and contaminates a published mean. A
+#: missing leg is invisible in exactly the direction that looks like a healthy run.
+#:
+#: Hand-maintained like `TIMED_PUBLIC_METHODS` and checked the same way —
+#: `test_store_query_legs_matches_the_actual_timer_labels` parses this module and requires this
+#: tuple to EQUAL the set of `leg=` labels the timers actually emit.
+STORE_QUERY_LEGS = (LEG_DENSE, LEG_SPARSE, LEG_LEARNED_SPARSE, LEG_META)
+
 #: Public methods that carry a `METRICS.timer` and delegate to a private twin. A subclass MUST
 #: override the `_`-prefixed twin, NEVER the name listed here — overriding the public method
 #: silently drops the timing, and an absent series reads exactly like a store that costs nothing.
