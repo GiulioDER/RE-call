@@ -184,6 +184,12 @@ def test_ablation_preflight_fires_once_before_run_pool_and_samples_in_scope_not_
             "--embedder", "hashing",
             "--out-dir", str(out_dir),
             "--resume", str(resume_path),
+            # This fixture hand-authors its sidecar, so the configuration that produced
+            # those rows genuinely is unknown and the resume guard refuses by default.
+            # The override is the correct annotation here: the test is about the ablation
+            # preflight, and stating that explicitly keeps it decoupled from the config
+            # schema rather than pinning a second copy of it.
+            "--allow-config-change-on-resume",
         ],
     )
 
@@ -285,6 +291,12 @@ def test_ablation_preflight_never_running_is_stamped_ran_false_not_an_empty_verd
             "--embedder", "hashing",
             "--out-dir", str(out_dir),
             "--resume", str(resume_path),
+            # This fixture hand-authors its sidecar, so the configuration that produced
+            # those rows genuinely is unknown and the resume guard refuses by default.
+            # The override is the correct annotation here: the test is about the ablation
+            # preflight, and stating that explicitly keeps it decoupled from the config
+            # schema rather than pinning a second copy of it.
+            "--allow-config-change-on-resume",
         ],
     )
 
