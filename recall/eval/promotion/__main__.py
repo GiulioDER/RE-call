@@ -20,6 +20,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import sys
 import uuid
 from collections.abc import Iterator
@@ -91,31 +92,48 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     return 0
 
 
-#: Globs with no extension in their final component. `candidate_files`' own docstring says the
-#: glob IS the boundary that keeps `.env` and `tokens.json` out of an index, and `--glob` promoted
-#: that boundary to an operator-supplied string. Measured by the CCA bug auditor on a seeded tree:
-#: `**/*`, `*` and `**` all returned `.env`, `tokens.json` and `id_rsa`.
-_OVERBROAD_GLOBS = frozenset({"*", "**", "**/*", "**/*.*", "*.*"})
+#: A literal file extension, ANCHORED at the end of the glob's final component.
+#: The first version of this guard tested for a "." anywhere in that component plus a five-member
+#: denylist. The CCA bug auditor measured both halves and found the shape open and the denylist
+#: dead. `**/[.]*` (dotfiles EXCLUSIVELY), `**/*.?*` (the semantic twin of `**/*.*`, which the
+#: denylist blocked by name), `**/*.[a-z]*` and `**/*.[!x]*` all passed and all pulled `.env`,
+#: `.npmrc` and `tokens.json` out of a seeded tree. An exhaustive fuzz over 8.1M strings then
+#: showed the denylist changed the verdict on ZERO of them: every member was already caught by the
+#: shape rules, so the part carrying the provenance comment was the part deciding nothing.
+#: Naming five strings does not close a shape.
+_EXTENSION = re.compile(r"\.[A-Za-z0-9_+-]+$")
 
 
 def _refuse_overbroad_glob(glob: str) -> None:
     """Refuse a pattern that would index whatever happens to be in the directory.
 
-    The empty-index refusal below is ONE-SIDED: it fires when the glob is too NARROW (zero chunks)
-    and cannot fire when it is too BROAD, because that yields chunks > 0. A corpus directory that
-    also holds a `.env` would then be embedded into the index and returned verbatim by search, and
-    written into the evidence artifact. So the broad side is refused here, by name.
+    The empty-index refusal in `_indexed_store` is ONE-SIDED: it fires when the glob is too NARROW
+    (zero chunks) and cannot fire when it is too BROAD, because that yields chunks > 0. A corpus
+    directory that also holds a `.env` would then be embedded into the index, returned verbatim by
+    search, and written into the evidence artifact.
 
-    A final component containing a literal extension is required. This is deliberately a small
-    allowlist-by-shape rather than a scan of what the walk returned: the check should not depend on
-    what happens to be on disk at the time.
+    The final component must END in a literal extension, and may not carry a character class, a
+    `?`, or a leading dot: each of those reconstructs a wildcard the anchor is there to forbid.
+    Validated as a strict tightening rather than asserted — every pattern this repository uses
+    (`**/*.md`, `**/*.rst`, `**/*.py`, `*.txt`, `corpus/**/*.rst`, `**/*.tar.gz`) is still
+    accepted, and every measured bypass is now refused.
+
+    ⚠️ Scope, stated because the first version's message claimed more than it checked: an
+    extension-named glob still admits a file WITH that extension. `**/*.json` matches
+    `tokens.json`. This bounds the pattern's SHAPE; it is not a secrets filter.
     """
     final = glob.rsplit("/", 1)[-1]
-    if glob in _OVERBROAD_GLOBS or "." not in final or final.endswith(".*"):
+    # The anchor alone. A first draft also tested `startswith(".")`, `"[" in final` and
+    # `"?" in final`; a mutation sweep showed BOTH survive deletion, because a final
+    # component carrying a class or a `?` cannot end in `\.[A-Za-z0-9_+-]+` anyway. Keeping
+    # them would have repeated the defect the auditor had just found in `_OVERBROAD_GLOBS`:
+    # a clause that reads as the boundary and decides nothing.
+    if not _EXTENSION.search(final):
         raise SystemExit(
-            f"--glob {glob!r} has no literal file extension, so it would index whatever the "
-            f"directory happens to contain, including files like .env or tokens.json. The glob is "
-            f"the boundary that keeps those out of an index. Name an extension, e.g. '**/*.rst'."
+            f"--glob {glob!r} does not end in a literal file extension, so it would index "
+            f"whatever the directory happens to contain rather than a named corpus. Name an "
+            f"extension, e.g. '**/*.rst'. (This bounds the pattern's shape; a glob naming an "
+            f"extension still matches every file carrying it.)"
         )
 
 
@@ -135,6 +153,11 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
     # `recall_mcp.service.make_embedder` rather than a local construction: it is the one site that
     # resolves an embedder through `recall.embedding_registry`, so an arm's profile identity comes
     # from the registry instead of from a second vocabulary maintained here.
+    # Before the model load and before any database work: this is a pure predicate over argv,
+    # and the DSN refusal twenty lines away already states that convention. Measured order was
+    # make_embedder -> connect -> CREATE TABLE -> refuse, which touched the operator's database
+    # for a request that was always going to be refused.
+    _refuse_overbroad_glob(args.glob)
     embedder = make_embedder(args.embedder)
     # The context policy has to come from the arm's own profile. `Indexer` defaults to
     # `ContextPolicy()`, which is mode "none" / `raw-v1`, and it REFUSES an embedder whose profile
@@ -157,7 +180,6 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
         # ZERO files and every one of 110 questions came back abstained with an empty pool. The
         # gate's `VacuousArm` guard did catch it, but only after four arms had each paid for a
         # full embedding pass, and its message blames the label space, which was not the fault.
-        _refuse_overbroad_glob(args.glob)
         stats = Indexer(store, embedder, context_policy=context_policy).index_path(
             Path(corpus_dir), args.glob
         )
