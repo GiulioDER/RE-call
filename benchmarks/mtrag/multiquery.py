@@ -307,6 +307,65 @@ def load_variant(root: Path, domain: str, variant: str) -> dict[str, str]:
     return out
 
 
+#: Provenance keys that must agree across every variant of one dump. If two variants disagree on
+#: any of these they were retrieved from different indexes or by different encoders, and fusing
+#: them compares arms across two systems while reporting one number.
+PROVENANCE_KEYS = ("table_prefix", "sparse_model", "sparse_profile", "embedder", "leg_depth")
+
+
+def manifest_path(out: Path) -> Path:
+    return out / "dump_manifest.json"
+
+
+def read_manifest(out: Path) -> dict[str, dict[str, Any]]:
+    """Per-variant provenance from a dump manifest, `{}` when there is nothing trustworthy.
+
+    Migrates the LEGACY shape, in which `variants` was a flat list of names and the provenance
+    and shortfall maps sat at the top level. Migrating rather than discarding matters: every dump
+    directory created before per-variant provenance existed is in that shape, including the one
+    behind the published numbers, and dropping it would destroy exactly the shortfall counts this
+    manifest exists to preserve.
+
+    Never raises on a damaged manifest. An unreadable manifest means provenance cannot be
+    verified, which the caller reports; it does not mean the leg files are unusable, and killing
+    a fusion over it would be a worse failure than the one being guarded against.
+    """
+    path = manifest_path(out)
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    variants = raw.get("variants")
+    if isinstance(variants, dict):
+        return {k: v for k, v in variants.items() if isinstance(v, dict)}
+    if isinstance(variants, list):
+        base = {key: raw.get(key) for key in
+                ("leg_depth", "legs", "embedder", "sparse_model", "sparse_profile",
+                 "table_prefix", "split")}
+        short = raw.get("legs_short_of_depth") or {}
+        empty = raw.get("empty_sparse_encodings") or {}
+        return {
+            name: {
+                **base,
+                "legs_short_of_depth": short.get(name) if isinstance(short, dict) else None,
+                "empty_sparse_encodings": empty.get(name) if isinstance(empty, dict) else None,
+                "at": raw.get("at"), "migrated_from_legacy_manifest": True,
+            }
+            for name in variants if isinstance(name, str)
+        }
+    return {}
+
+
+def write_manifest(out: Path, entries: dict[str, dict[str, Any]]) -> None:
+    manifest_path(out).write_text(
+        json.dumps({"variants": entries}, indent=2), encoding="utf-8"
+    )
+
+
 def cmd_dump(args: argparse.Namespace) -> int:
     """Retrieve every variant of every judged query and record the per-leg ID rankings.
 
@@ -331,6 +390,19 @@ def cmd_dump(args: argparse.Namespace) -> int:
     variants = args.variants or list(VARIANT_FILES)
     shortfalls: dict[str, dict[str, int]] = {}
     empty_sparse: dict[str, int] = {}
+    # Drop the entries for the variants about to be re-dumped, and persist that BEFORE writing a
+    # single leg file. Leg files are overwritten inside the loop, so a manifest written only at
+    # the end would describe freshly overwritten legs with the PREVIOUS run's provenance if the
+    # run died partway, and the consistency check would then certify a dump that is half one
+    # index and half another. Absent beats stale: a missing entry is a refusal downstream.
+    entries = {k: v for k, v in read_manifest(out).items() if k not in set(variants)}
+    write_manifest(out, entries)
+    provenance = {
+        "leg_depth": LEG_DEPTH, "legs": list(LEGS), "embedder": EMBEDDER_MODEL,
+        "sparse_model": args.sparse_model or DEFAULT_SPARSE_MODEL,
+        "sparse_profile": encoder.profile.profile_id,
+        "table_prefix": args.table_prefix, "split": "dev",
+    }
     # Constructed inside the try: `PgVectorStore.__init__` opens a live connection, so building
     # these in a comprehension outside it leaks every connection already opened when a later
     # domain's constructor raises.
@@ -386,6 +458,12 @@ def cmd_dump(args: argparse.Namespace) -> int:
                     handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             shortfalls[variant] = short
             empty_sparse[variant] = empty
+            # Written now, with the leg file already on disk, so the two cannot disagree.
+            entries[variant] = {
+                **provenance, "legs_short_of_depth": short,
+                "empty_sparse_encodings": empty, "at": utc_now(),
+            }
+            write_manifest(out, entries)
             print(json.dumps({
                 "event": "variant_done", "variant": variant, "queries": len(rows),
                 "leg_depth": LEG_DEPTH, "legs_short_of_depth": short,
@@ -394,54 +472,56 @@ def cmd_dump(args: argparse.Namespace) -> int:
             }), flush=True)
     finally:
         for store in stores.values():
-            store.close()
+            try:
+                store.close()
+            except Exception:  # noqa: BLE001 - one bad close must not leak the others
+                pass
 
-    # MERGED, not overwritten. `--variants` allows a partial dump, and `load_legs` reads
-    # `legs/<variant>.jsonl` directly, so a wholesale rewrite would let a directory assembled from
-    # two invocations (possibly against different table prefixes) read as one coherent dump while
-    # destroying the earlier variants' shortfall counts. Provenance is recorded PER VARIANT and
-    # `load_legs` refuses a mixture.
-    manifest_path = out / "dump_manifest.json"
-    manifest: dict[str, Any] = {"variants": {}}
-    if manifest_path.exists():
-        previous = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if isinstance(previous.get("variants"), dict):
-            manifest = previous
-    provenance = {
-        "leg_depth": LEG_DEPTH, "legs": list(LEGS), "embedder": EMBEDDER_MODEL,
-        "sparse_model": args.sparse_model or DEFAULT_SPARSE_MODEL,
-        "sparse_profile": encoder.profile.profile_id,
-        "table_prefix": args.table_prefix, "split": "dev",
-    }
-    for variant in variants:
-        manifest["variants"][variant] = {
-            **provenance,
-            "legs_short_of_depth": shortfalls[variant],
-            "empty_sparse_encodings": empty_sparse[variant],
-            "at": utc_now(),
-        }
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return 0
+
+
+def check_provenance(out: Path, variants: Sequence[str]) -> None:
+    """Refuse to fuse variants that were not all retrieved by the same system.
+
+    Three outcomes, and the distinction between the last two is the point:
+
+      - every requested variant recorded and agreeing -> silent, verified.
+      - a requested variant recorded but DISAGREEING -> raise. Fusing across two indexes or two
+        encoders compares arms from different systems and reports one number.
+      - a requested variant NOT recorded, while others are -> raise. An unrecorded leg file has
+        unknown provenance, and the first version of this check merely SKIPPED it, which made the
+        guard toothless against the exact partial re-dump it was written for: with one variant
+        recorded the comparison set had one element and could never disagree.
+
+    A manifest that is absent or unreadable verifies nothing, and says so rather than raising:
+    that state is a missing record, not evidence of a mixed dump.
+    """
+    recorded = read_manifest(out)
+    if not recorded:
+        print(json.dumps({
+            "event": "provenance", "verified": False,
+            "why": "no readable per-variant manifest; the dump's provenance is NOT verified",
+        }), flush=True)
+        return
+    missing = [v for v in variants if v not in recorded]
+    if missing:
+        raise RuntimeError(
+            f"the dump records provenance for {sorted(recorded)} but not for {missing}, whose leg "
+            f"files are present. An unrecorded leg file could have come from any index or "
+            f"encoder. Re-dump {missing}, or point at a clean --output-dir."
+        )
+    seen = {v: tuple(recorded[v].get(k) for k in PROVENANCE_KEYS) for v in variants}
+    if len(set(seen.values())) > 1:
+        raise RuntimeError(
+            f"the dump's variants disagree on how they were retrieved: {seen}. Fusing them would "
+            f"compare arms across different indexes or encoders and report it as one result. "
+            f"Re-dump the odd variant, or point at a clean --output-dir."
+        )
 
 
 def load_legs(out: Path, variants: Sequence[str]) -> dict[str, dict[str, dict[str, list[str]]]]:
     """`{task_id: {variant: {leg: ranking}}}`, plus the query texts, from a dump."""
-    manifest_path = out / "dump_manifest.json"
-    if manifest_path.exists():
-        recorded = json.loads(manifest_path.read_text(encoding="utf-8")).get("variants", {})
-        # The first manifests wrote `variants` as a flat LIST of names with provenance at the top
-        # level. Those dumps carry no per-variant provenance to cross-check, so there is nothing
-        # to verify and indexing them by name would raise instead.
-        if not isinstance(recorded, dict):
-            recorded = {}
-        keys = ("table_prefix", "sparse_model", "sparse_profile", "embedder", "leg_depth")
-        seen = {v: tuple(recorded[v].get(k) for k in keys) for v in variants if v in recorded}
-        if len(set(seen.values())) > 1:
-            raise RuntimeError(
-                f"the dump's variants disagree on how they were retrieved: {seen}. Fusing them "
-                f"would compare arms across different indexes or encoders and report it as one "
-                f"result. Re-dump the odd variant, or point at a clean --output-dir."
-            )
+    check_provenance(out, variants)
     by_task: dict[str, dict[str, dict[str, list[str]]]] = {}
     for variant in variants:
         path = out / "legs" / f"{variant}.jsonl"

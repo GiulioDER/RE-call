@@ -18,6 +18,8 @@ Two of these tests are load bearing for the PREREGISTRATION rather than for the 
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from benchmarks.mtrag.multiquery import (
@@ -26,8 +28,10 @@ from benchmarks.mtrag.multiquery import (
     RRF_K,
     SHIP_BAR,
     MultiQueryArm,
+    check_provenance,
     decide_verdict,
     fuse_arm,
+    read_manifest,
     realised_pool_sizes,
     rrf_scores,
     sorted_by_score,
@@ -375,3 +379,78 @@ def test_realised_pool_sizes_counts_the_queries_whose_metric_is_pool_limited() -
     assert summary["max"] == 200
     assert summary["eval_k"] == 100
     assert summary["pool_below_cutoff"] == 2
+
+
+def write_manifest_file(tmp_path, payload) -> None:
+    (tmp_path / "dump_manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def entry(prefix: str) -> dict[str, object]:
+    return {"table_prefix": prefix, "sparse_model": "m", "sparse_profile": "p",
+            "embedder": "e", "leg_depth": 100}
+
+
+def test_an_unrecorded_variant_is_refused_rather_than_skipped(tmp_path) -> None:
+    """The state the FIRST version of this guard silently accepted.
+
+    A partial re-dump against a legacy directory left only the re-dumped variant recorded. The
+    old check built its comparison set from recorded variants only, so it held one element and
+    could never disagree: the guard read as verification while verifying nothing. An unrecorded
+    leg file has unknown provenance and must be refused.
+    """
+    write_manifest_file(tmp_path, {"variants": {"rewrite": entry("B")}})
+
+    with pytest.raises(RuntimeError, match="not for"):
+        check_provenance(tmp_path, ["last", "full", "rewrite"])
+
+
+def test_variants_from_different_indexes_are_refused(tmp_path) -> None:
+    """Fusing across two table prefixes compares two systems and reports one number."""
+    write_manifest_file(tmp_path, {"variants": {"last": entry("A"), "full": entry("B")}})
+
+    with pytest.raises(RuntimeError, match="disagree"):
+        check_provenance(tmp_path, ["last", "full"])
+
+
+def test_agreeing_variants_pass(tmp_path) -> None:
+    write_manifest_file(tmp_path, {"variants": {"last": entry("A"), "full": entry("A")}})
+
+    check_provenance(tmp_path, ["last", "full"])  # does not raise
+
+
+def test_a_legacy_manifest_is_migrated_not_discarded(tmp_path) -> None:
+    """Every dump directory predating per-variant provenance is in the legacy shape.
+
+    That includes the one behind the published numbers. Discarding it on the first partial
+    re-dump would destroy exactly the leg-shortfall counts the manifest exists to preserve, and
+    would leave the untouched variants unrecorded, which is now a refusal.
+    """
+    write_manifest_file(tmp_path, {
+        "variants": ["last", "full"], "table_prefix": "A", "sparse_model": "m",
+        "sparse_profile": "p", "embedder": "e", "leg_depth": 100,
+        "legs_short_of_depth": {"last": {"dense": 0, "splade": 54}, "full": {"dense": 0}},
+        "empty_sparse_encodings": {"last": 0, "full": 0},
+    })
+
+    migrated = read_manifest(tmp_path)
+
+    assert set(migrated) == {"last", "full"}
+    assert migrated["last"]["legs_short_of_depth"] == {"dense": 0, "splade": 54}
+    assert migrated["last"]["table_prefix"] == "A"
+    check_provenance(tmp_path, ["last", "full"])  # migrated entries agree, so this passes
+
+
+def test_a_damaged_manifest_reports_unverified_instead_of_killing_the_fusion(tmp_path) -> None:
+    """An unreadable manifest is a missing record, not evidence of a mixed dump.
+
+    Raising here would destroy a perfectly good fusion over a damaged side file, which is a worse
+    failure than the one being guarded against. It must say the provenance is unverified.
+    """
+    (tmp_path / "dump_manifest.json").write_text("", encoding="utf-8")
+    check_provenance(tmp_path, ["last"])  # does not raise
+
+    write_manifest_file(tmp_path, ["not", "a", "dict"])
+    check_provenance(tmp_path, ["last"])  # does not raise
+
+    write_manifest_file(tmp_path, {"variants": {"last": "not a dict"}})
+    check_provenance(tmp_path, ["last"])  # entry dropped, so nothing is verified, and no crash
