@@ -141,10 +141,12 @@ fi
 
 # ⚠️ `--drop-generations` is deliberately NOT passed, so the four `pfull_*` tables SURVIVE this
 # run. That is the point: they cost about an hour of embedding each, and keeping them makes a
-# re-run of the compare stage free. They are the operator's to remove, and they must be removed
-# through `PgVectorStore.drop_table()`, NEVER through psql: `drop_table` deletes the matching
-# `recall_schema_migrations` rows in the same transaction, and a bare `DROP TABLE` leaves them
-# behind, after which the next run skips creation and fails validating a table that is not there.
+# re-run of the compare stage free.
+#
+# To remove them afterwards, re-run this same compare invocation WITH `--drop-generations`. Do not
+# reach for psql: `drop_table()` deletes the matching `recall_schema_migrations` rows in the same
+# transaction, and a bare `DROP TABLE` leaves them behind, after which the next run skips creation
+# and fails validating a table that is not there. That trap was hit for real on 2026-08-06.
 taskset -c 0-7 nice -n 19 "$VENV" benchmarks/check_generation_parity.py \
   --dsn "$DSN" --corpus-dir "$CORPUS" --glob '**/*.rst' \
   --table-prefix pfull --out "$OUT/generation-parity.json" \
