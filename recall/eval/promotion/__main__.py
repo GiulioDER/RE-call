@@ -20,6 +20,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import sys
 import uuid
 from collections.abc import Iterator
@@ -32,6 +33,7 @@ from recall.eval.promotion.manifest import FrozenQuestion, read_manifest, write_
 from recall.eval.promotion.records import record_from_dict
 from recall.eval.promotion.run import LEDGER_ID_FIELDS, ArmConfig, score_arm
 from recall.eval.resume import read_ledger
+from recall.lint import DEFAULT_GLOB
 
 
 def _adapters(names: list[str]) -> list[CorpusAdapter]:
@@ -90,6 +92,63 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     return 0
 
 
+#: A literal file extension, ANCHORED at the end of the glob's final component.
+#: The first version of this guard tested for a "." anywhere in that component plus a five-member
+#: denylist. The CCA bug auditor measured both halves and found the shape open and the denylist
+#: dead. `**/[.]*` (dotfiles EXCLUSIVELY), `**/*.?*` (the semantic twin of `**/*.*`, which the
+#: denylist blocked by name), `**/*.[a-z]*` and `**/*.[!x]*` all passed and all pulled `.env`,
+#: `.npmrc` and `tokens.json` out of a seeded tree. An exhaustive fuzz over 8.1M strings then
+#: showed the denylist changed the verdict on ZERO of them: every member was already caught by the
+#: shape rules, so the part carrying the provenance comment was the part deciding nothing.
+#: Naming five strings does not close a shape.
+_EXTENSION = re.compile(r"\.[A-Za-z0-9_+-]+\Z")
+#: Both separators. `rsplit("/")` alone leaves `**\.env` with a final component that does
+#: not start with a dot, while `Path.glob` still returns the file.
+_SEPARATORS = re.compile(r"[\\/]")
+
+
+def _refuse_overbroad_glob(glob: str) -> None:
+    """Refuse a pattern that would index whatever happens to be in the directory.
+
+    The empty-index refusal in `_indexed_store` is ONE-SIDED: it fires when the glob is too NARROW
+    (zero chunks) and cannot fire when it is too BROAD, because that yields chunks > 0. A corpus
+    directory that also holds a `.env` would then be embedded into the index, returned verbatim by
+    search, and written into the evidence artifact.
+
+    The final component must END in a literal extension and must not BEGIN with a dot. A class
+    or a `?` earlier in the component is accepted, because the literal tail is what bounds
+    the match: no glob metacharacter is inside `[A-Za-z0-9_+-]`.
+    Validated as a strict tightening rather than asserted — every pattern this repository uses
+    (`**/*.md`, `**/*.rst`, `**/*.py`, `*.txt`, `corpus/**/*.rst`, `**/*.tar.gz`) is still
+    accepted, and every measured bypass is now refused.
+
+    ⚠️ Scope, stated because the first version's message claimed more than it checked: an
+    extension-named glob still admits a file WITH that extension. `**/*.json` matches
+    `tokens.json`. This bounds the pattern's SHAPE; it is not a secrets filter.
+    """
+    # A dotfile basename is NOT an extension. `.env` is literally `\.` + `env` at end of string,
+    # so the anchor alone ACCEPTS `**/.env`, `**/.npmrc` and `**/.git-credentials` and the walk
+    # returns them. Measured by the CCA bug auditor against the real `candidate_files`, and it is
+    # the file this guard's own provenance comment names as what it keeps out. Distinct from the
+    # documented carve-out: `**/*.env` is an operator naming an extension; `**/.env` is the
+    # predicate misreading a name.
+    #
+    # ⚠️ An earlier comment here claimed the class and `?` clauses were "subsumed by the anchor
+    # anyway". That was FALSE: `[a-z]*.md` and `?.md` both carry one and end in a literal
+    # extension. Exhaustive enumeration over 5.2M strings put the flip counts at 63,828 and 51,672.
+    # They are dropped because everything they refused is still pinned to a literal extension, not
+    # because they could not fire. The mutation sweep that said "survives" simply never generated
+    # such a string, which is what a sweep over a narrow corpus cannot tell you.
+    final = _SEPARATORS.split(glob)[-1]
+    if final.startswith(".") or not _EXTENSION.search(final):
+        raise SystemExit(
+            f"--glob {glob!r} does not end in a literal file extension, so it would index "
+            f"whatever the directory happens to contain rather than a named corpus. Name an "
+            f"extension, e.g. '**/*.rst'. (This bounds the pattern's shape; a glob naming an "
+            f"extension still matches every file carrying it.)"
+        )
+
+
 @contextlib.contextmanager
 def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator[tuple]:
     """A throwaway uuid-named store holding the corpus, dropped on the way out.
@@ -97,6 +156,8 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
     Setup runs INSIDE the guard, matching `recall/eval/harness.py::_throwaway_store`: a failure
     while creating the schema or indexing must still drop the table and close the connection.
     """
+    from recall.context import context_policy_for_profile
+    from recall.embeddings import embedding_profile_id
     from recall.index import Indexer
     from recall.store import PgVectorStore
     from recall_mcp.service import make_embedder
@@ -104,7 +165,20 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
     # `recall_mcp.service.make_embedder` rather than a local construction: it is the one site that
     # resolves an embedder through `recall.embedding_registry`, so an arm's profile identity comes
     # from the registry instead of from a second vocabulary maintained here.
+    # Before the model load and before any database work: this is a pure predicate over argv,
+    # and the DSN refusal twenty lines away already states that convention. Measured order was
+    # make_embedder -> connect -> CREATE TABLE -> refuse, which touched the operator's database
+    # for a request that was always going to be refused.
+    _refuse_overbroad_glob(args.glob)
     embedder = make_embedder(args.embedder)
+    # The context policy has to come from the arm's own profile. `Indexer` defaults to
+    # `ContextPolicy()`, which is mode "none" / `raw-v1`, and it REFUSES an embedder whose profile
+    # declares anything else. So without this every context profile was unindexable through this
+    # harness: measured, all three failed with "embedding profile context 'context-document-v1'
+    # does not match index context 'raw-v1'" before a single question was scored. A campaign
+    # comparing context modes could not run at all, and the failure was at index time rather than
+    # in the numbers, which is the only reason it was not a silent wrong result.
+    context_policy = context_policy_for_profile(embedding_profile_id(embedder))
     store = PgVectorStore(args.dsn, dim=embedder.dim, table=f"promo_{uuid.uuid4().hex[:8]}")
     try:
         store.ensure_schema()
@@ -114,7 +188,22 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
                 f"{adapter.name}: no corpus directory to index. Pass --corpus-dir pointing at the "
                 f"documents this corpus's labels refer to."
             )
-        Indexer(store, embedder).index_path(Path(corpus_dir))
+        # `index_path` defaults to `**/*.md`. The PEPs corpus is `.rst`, so the default indexed
+        # ZERO files and every one of 110 questions came back abstained with an empty pool. The
+        # gate's `VacuousArm` guard did catch it, but only after four arms had each paid for a
+        # full embedding pass, and its message blames the label space, which was not the fault.
+        stats = Indexer(store, embedder, context_policy=context_policy).index_path(
+            Path(corpus_dir), args.glob
+        )
+        # An empty index cannot produce a measurement, and 110 abstentions is not a result. Refuse
+        # where the cause is still legible rather than three steps downstream.
+        if not stats.chunks:
+            raise SystemExit(
+                f"{adapter.name}: indexing {corpus_dir} with glob {args.glob!r} produced no "
+                f"chunks. Every question would abstain against an empty index and the gate would "
+                f"refuse the arm as vacuous, blaming the label space. Check --glob against the "
+                f"corpus file extension."
+            )
         yield store, embedder
     finally:
         try:
@@ -277,6 +366,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument("--corpus-dir", type=Path, default=None)
+    run.add_argument(
+        "--glob",
+        default=DEFAULT_GLOB,
+        help=(
+            "file pattern to index, passed to Indexer.index_path. Defaults to markdown; "
+            "a corpus of another extension (the PEPs are .rst) indexes ZERO files under "
+            "the default and every question then abstains against an empty index."
+        ),
+    )
     run.add_argument(
         "--embedder",
         default="fastembed",
