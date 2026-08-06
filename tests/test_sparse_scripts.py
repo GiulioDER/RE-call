@@ -14,6 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
+from encode_sparse import passage_id, passage_text  # noqa: E402
 from load_sparse import read_artifact  # noqa: E402
 from recall.types import Chunk  # noqa: E402
 from tests.conftest import requires_db  # noqa: E402
@@ -107,3 +108,25 @@ def test_a_loaded_artifact_is_retrievable(make_store, tmp_path: Path) -> None:
 
     assert [hit.chunk.id for hit in hits] == ["alpha"]
     assert store.sparse_row_count(header["profile_id"]) == 2
+
+
+def test_passage_id_matches_the_indexer_precedence() -> None:
+    """`_id` wins over `id`, because that is what the chunk rows are keyed on.
+
+    benchmarks/mtrag/run.py writes chunks with `str(item.get("_id") or item.get("id"))`. In the
+    MTRAG corpora the two fields happen to be equal, so keying on the wrong one works by luck --
+    and if a corpus ever disagreed, the sparse rows would key on one id while the chunks key on
+    the other, the JOIN would match nothing, and the leg would return an empty result that looks
+    exactly like a query with no matches.
+    """
+    assert passage_id({"_id": "canonical", "id": "other"}) == "canonical"
+    assert passage_id({"id": "fallback"}) == "fallback"
+
+
+def test_passage_text_is_normalised_the_same_way_the_indexer_normalises_it() -> None:
+    """Both legs must describe the SAME text, or they are indexing two different corpora.
+
+    The indexer strips NUL bytes before storing. An encoder that does not strip them is encoding
+    a string the dense leg never saw.
+    """
+    assert passage_text({"text": "a" + chr(0) + "b"}) == "ab"
