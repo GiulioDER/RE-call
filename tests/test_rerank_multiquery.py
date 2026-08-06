@@ -31,6 +31,23 @@ from benchmarks.mtrag.rerank_multiquery import (
 )
 from benchmarks.mtrag.run import DOMAINS
 
+#: Shaped like `scripts/score_pairs.py`'s header row, so the provenance path is exercised.
+SCORES_HEADER = {"_header": True, "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+                 "revision": "c5ee24cb16019beea0893ab7796b1df96625c6b8", "pairs": 0}
+
+
+def write_scores(path: Path, rows: list[dict], model: str | None = None) -> None:
+    """Write a scores file WITH the `_header` row `scripts/score_pairs.py` always emits.
+
+    `_load_scores` refuses a header-less file, because a decision that cannot name the model that
+    scored it looks exactly like one that can.
+    """
+    header = dict(SCORES_HEADER)
+    if model:
+        header["model"] = model
+    lines = [json.dumps(header)] + [json.dumps(row) for row in rows]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
 
 def write_fixture(root: Path, out: Path, depth: int, whole_depth: int | None = None) -> None:
     """A four-domain fixture whose rankings are `depth` documents deep.
@@ -82,9 +99,7 @@ def write_fixture(root: Path, out: Path, depth: int, whole_depth: int | None = N
         (out / "rankings_whole_pool.json").write_text(json.dumps(deep), encoding="utf-8")
     # The raw run's own file, so the documented fallback path stays exercisable.
     (out / "rankings.json").write_text(json.dumps(rankings), encoding="utf-8")
-    with (out / "scores.jsonl").open("w", encoding="utf-8") as handle:
-        for row in scores:
-            handle.write(json.dumps(row) + "\n")
+    write_scores(out / "scores.jsonl", scores)
 
 
 def run_apply(root: Path, out: Path, whole_pool: bool, output_dir: Path | None = None) -> dict:
@@ -93,7 +108,7 @@ def run_apply(root: Path, out: Path, whole_pool: bool, output_dir: Path | None =
         scores=out / "scores.jsonl", whole_pool=whole_pool,
     ))
     stem = (out / "scores.jsonl").stem
-    name = f"rerank_decision__{stem}{'_whole_pool' if whole_pool else ''}.json"
+    name = f"rerank_decision__{stem}{'__whole_pool' if whole_pool else ''}.json"
     return json.loads(((output_dir or out) / name).read_text(encoding="utf-8"))
 
 
@@ -116,8 +131,10 @@ def test_a_capped_ranking_is_reported_invariant_on_its_depth_not_on_its_metric(
     for arm in decision["arms"]:
         assert arm["max_ranking_length"] == EVAL_K
         assert arm["r@100_invariant"] is True
-        assert "guaranteed" in arm["r@100_invariance_basis"]
+        assert arm["r@100_invariance_basis"].startswith("guaranteed")
         assert arm["queries_reordered"] == len(DOMAINS)
+        assert arm["queries_deeper_than_cutoff"] == 0
+        assert arm["r@100_delta"] == 0.0
 
 
 def test_a_deeper_pool_is_not_reported_as_invariant(tmp_path: Path) -> None:
@@ -137,9 +154,11 @@ def test_a_deeper_pool_is_not_reported_as_invariant(tmp_path: Path) -> None:
     assert "CONFOUNDED" in decision["design"]
     for arm in decision["arms"]:
         assert arm["max_ranking_length"] == EVAL_K + 60
-        assert "NOT guaranteed" in arm["r@100_invariance_basis"]
+        assert arm["r@100_invariance_basis"].startswith("NOT guaranteed")
         assert arm["raw_R@100"] == 0.0
         assert arm["reranked_R@100"] == 1.0
+        assert arm["r@100_delta"] == 1.0
+        assert arm["queries_deeper_than_cutoff"] == len(DOMAINS)
 
 
 def test_scores_that_reorder_nothing_are_refused(tmp_path: Path) -> None:
@@ -154,6 +173,7 @@ def test_scores_that_reorder_nothing_are_refused(tmp_path: Path) -> None:
     write_fixture(root, out, depth=EVAL_K)
     rankings = json.loads((out / "rankings_equal_width.json").read_text(encoding="utf-8"))
     with (out / "scores.jsonl").open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(SCORES_HEADER) + "\n")
         for per_query in rankings.values():
             for task_id, ranked in per_query.items():
                 for doc in ranked:
@@ -205,7 +225,7 @@ def test_the_whole_pool_decision_cannot_overwrite_the_primary(tmp_path: Path) ->
     secondary = run_apply(root, out, whole_pool=True)
 
     assert (out / "rerank_decision__scores.json").exists()
-    assert (out / "rerank_decision__scores_whole_pool.json").exists()
+    assert (out / "rerank_decision__scores__whole_pool.json").exists()
     assert primary["whole_pool"] is False
     assert secondary["whole_pool"] is True
     # Re-read the primary from disk: the point is that it SURVIVED the second run.
@@ -295,6 +315,7 @@ def test_depth_not_the_metric_decides_invariance(tmp_path: Path) -> None:
                 rows.append({"qid": task_id, "doc_id": doc, "score": -1.0 - rank})
     (out / "rankings_whole_pool.json").write_text(json.dumps(deep), encoding="utf-8")
     with (out / "scores.jsonl").open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(SCORES_HEADER) + "\n")
         for row in rows:
             handle.write(json.dumps(row) + "\n")
 
@@ -308,7 +329,7 @@ def test_depth_not_the_metric_decides_invariance(tmp_path: Path) -> None:
         assert arm["r@100_delta"] == 0.0
         # The depth says otherwise, and the depth is what carries the claim.
         assert arm["r@100_invariant"] is False
-        assert "NOT guaranteed" in arm["r@100_invariance_basis"]
+        assert arm["r@100_invariance_basis"].startswith("NOT guaranteed")
     assert decision["r@100_invariant_for_every_arm"] is False
 
 
@@ -332,7 +353,10 @@ def test_two_rerankers_cannot_overwrite_each_others_decision(tmp_path: Path) -> 
     """
     root, out = tmp_path / "root", tmp_path / "out"
     write_fixture(root, out, depth=EVAL_K)
-    (out / "scores_bge.jsonl").write_bytes((out / "scores.jsonl").read_bytes())
+    rows = [json.loads(x) for x in
+            (out / "scores.jsonl").read_text(encoding="utf-8").splitlines()
+            if not json.loads(x).get("_header")]
+    write_scores(out / "scores_bge.jsonl", rows, model="BAAI/bge-reranker-v2-m3")
 
     cmd_apply(argparse.Namespace(
         mq_dir=out, output_dir=out, mtrag_root=root,
@@ -344,8 +368,10 @@ def test_two_rerankers_cannot_overwrite_each_others_decision(tmp_path: Path) -> 
     first = json.loads((out / "rerank_decision__scores.json").read_text(encoding="utf-8"))
     second = json.loads((out / "rerank_decision__scores_bge.json").read_text(encoding="utf-8"))
 
-    assert first["scores_file"] == "scores.jsonl"
-    assert second["scores_file"] == "scores_bge.jsonl"
+    assert first["scores_file"].endswith("scores.jsonl")
+    assert second["scores_file"].endswith("scores_bge.jsonl")
+    # Provenance must name the MODEL too, not just the path.
+    assert first["scores_header"]["model"] != second["scores_header"]["model"]
 
 
 class _StubReranker:
@@ -407,6 +433,7 @@ def test_validate_names_a_missing_passage_instead_of_a_bare_keyerror(tmp_path: P
     ranking = [f"d{i}" for i in range(5)]
     write_validate_fixture(out, mq_dir, ranking)
     with (out / "scores.jsonl").open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(SCORES_HEADER) + "\n")
         for rank, doc in enumerate(ranking):
             handle.write(json.dumps({"qid": "t0", "doc_id": doc, "score": float(rank)}) + "\n")
     # Drop one passage's text.
@@ -423,6 +450,7 @@ def test_validate_names_an_unscored_candidate(tmp_path: Path) -> None:
     ranking = [f"d{i}" for i in range(5)]
     write_validate_fixture(out, mq_dir, ranking)
     with (out / "scores.jsonl").open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(SCORES_HEADER) + "\n")
         for rank, doc in enumerate(ranking[:-1]):
             handle.write(json.dumps({"qid": "t0", "doc_id": doc, "score": float(rank)}) + "\n")
 
@@ -456,6 +484,7 @@ def test_validate_fails_when_a_near_tie_changes_the_top_100_set(
     offloaded = {doc: float(len(ranking) - rank) for rank, doc in enumerate(ranking)}
     offloaded[ranking[100]] = offloaded[ranking[99]] - 1e-7
     with (out / "scores.jsonl").open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(SCORES_HEADER) + "\n")
         for doc, score in offloaded.items():
             handle.write(json.dumps({"qid": "t0", "doc_id": doc, "score": score}) + "\n")
 
@@ -479,6 +508,7 @@ def test_validate_names_a_mismatched_mq_dir_before_loading_the_model(tmp_path: P
     ranking = [f"d{i}" for i in range(5)]
     write_validate_fixture(out, mq_dir, ranking, query_task="t9")
     with (out / "scores.jsonl").open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(SCORES_HEADER) + "\n")
         for rank, doc in enumerate(ranking):
             handle.write(json.dumps({"qid": "t0", "doc_id": doc, "score": float(rank)}) + "\n")
 
