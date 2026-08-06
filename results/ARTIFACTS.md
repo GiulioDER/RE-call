@@ -53,7 +53,7 @@ nothing in `results/` behind it: no `mem0` path in the tree, no `9d` entry here.
 (~123 MB of generated answers and retrieved contexts) were never committable, and nothing derived
 from them was committed instead, so the gap was invisible rather than declared.
 
-Its first consequence was immediate: the first `--verify` run found row 4's `paired p` published as
+Its first consequence was immediate: the first verified build found row 4's `paired p` published as
 `0.00018` when it is `0.00017` — row 2's value, copied down. Two weeks, and no mechanism existed
 that could have caught it.
 
@@ -61,7 +61,7 @@ that could have caught it.
 |---|---|
 | `head_to_head/paired_accuracy.json` | §9d's five-row table, the Holm maximum, and the `text-embedding-3-small` as-shipped paragraph. Derived by `benchmarks/h2h_artifact.py` **through `benchmarks/analyze.py`** — the same code that produced the published table, not a second implementation of McNemar. Carries the sha256 of both raw runs per row, so a re-scored run cannot be substituted silently |
 | `head_to_head/outcomes/*.jsonl` | one line per paired question, `{q, recall, mem0}`. This is what makes the paired test **recomputable by a reader** without the raw runs, an API key, or trust. 1,540 lines per row, ~60 KB each |
-| ⚠️ `head_to_head/outcomes/as_shipped__*.jsonl` | **two replicates of one configuration**, 25 seconds apart, byte-identical configs, 0.4117 and 0.4221. The README's `0.42` was the higher one. Keyed by run timestamp precisely so the second cannot overwrite the first — the loss of a replicate is how a spread becomes a point estimate |
+| ⚠️ `head_to_head/outcomes/as_shipped__*.jsonl` | **two replicates of one configuration**, 25 seconds apart, byte-identical configs, 0.4117 and 0.4221. The README's `0.42` was the higher one. Keyed by the run FILENAME's stem, and a repeated key is an error rather than a last-writer-wins — the loss of a replicate is how a measured spread silently becomes a point estimate. `write_artifact` also prunes any vector this build did not write, so the directory is a function of the build and cannot accumulate files that back nothing |
 
 `tests/test_h2h_artifact_backs_findings.py` asserts the committed artifact and the §9d table agree,
 so the two cannot drift apart again. The raw runs stay out of the repository; what the claim rests

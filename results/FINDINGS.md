@@ -824,7 +824,7 @@ is the memory. Paired **McNemar** over per-question outcomes, full **n=1,540** a
 > Both stood because this table was the one published result in the repository with **no
 > committed artifact to be checked against**: `ARTIFACTS.md` had no §9d entry, and no file under
 > `results/` named the comparison. Both were found within minutes of one existing — the first by
-> `benchmarks/h2h_artifact.py --verify`, the second by the test that guards it.
+> `benchmarks/h2h_artifact.py`, the second by the test that guards it.
 
 Every figure in this table is now derived, checkable and committed:
 [`results/head_to_head/paired_accuracy.json`](head_to_head/paired_accuracy.json), with the
