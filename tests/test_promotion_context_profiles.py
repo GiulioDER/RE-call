@@ -238,6 +238,10 @@ def test_a_real_indexer_refuses_a_profile_whose_policy_does_not_match():
         def __init__(self):
             self.profile = profile
 
+    # The default this test relies on. After the redundant test was deleted, a mutant setting
+    # ContextPolicy's default mode to 'document' survived the ENTIRE suite: 2356 passed,
+    # byte-identical to baseline. Both Indexer and ShadowIndexTarget default to it.
+    assert context_version_for(ContextPolicy().mode, ContextPolicy().version) == "raw-v1"
     with pytest.raises(ValueError, match="does not match index context"):
         Indexer(StubStore(), StubEmbedder(), context_policy=ContextPolicy())
 
@@ -255,9 +259,20 @@ def test_a_real_indexer_refuses_a_profile_whose_policy_does_not_match():
         # dotfiles EXCLUSIVELY and was the most dangerous pattern of all.
         "**/*.?*", "**/*.[a-z]*", "**/*.[!x]*", "**/*.j*", "**/[.]*",
         "docs/*.*", "**/.*", "**/*.", "**/README",
+        # A dotfile basename is NOT an extension, but the anchored regex reads `.env` as
+        # `\.` + `env` at end of string and ACCEPTED it, walking to the real file. This is
+        # the hole the leading-dot clause was deleted into and then restored to close.
+        "**/.env", ".env", "**/.npmrc", "**/.git-credentials",
+        # Windows separator: `rsplit("/")` alone leaves a final component that does not
+        # start with a dot, while `Path.glob` still returns the file.
+        "**\\.env", "nested\\.env",
+        # `$` matches before a trailing newline; `\Z` does not.
+        "**/*.md\n",
+        # A `?` or a class AS the extension, so widening the extension class is caught.
+        "**/*.?", "**/*.[a-z]", "**/*.[!x]",
     ],
 )
-def test_an_overbroad_glob_is_refused_by_name(glob):
+def test_a_glob_without_a_literal_extension_is_refused(glob):
     """The empty-index refusal is one-sided: it cannot fire when the glob is too BROAD, because
     that yields chunks > 0. `**/*` was measured pulling `.env`, `tokens.json` and `id_rsa` into the
     candidate set."""
@@ -269,7 +284,16 @@ def test_an_overbroad_glob_is_refused_by_name(glob):
     assert "extension" in str(exit_signal.value)
 
 
-@pytest.mark.parametrize("glob", ["**/*.rst", "**/*.md", "*.txt", "corpus/**/*.rst"])
+@pytest.mark.parametrize(
+    "glob",
+    [
+        "**/*.rst", "**/*.md", "*.txt", "corpus/**/*.rst",
+        # Named in the docstring as validated, so pin them rather than assert them.
+        "**/*.py", "**/*.tar.gz",
+        # A class or a `?` EARLIER in the component is fine: the literal tail bounds it.
+        "**/[a-z]*.md", "**/?.md",
+    ],
+)
 def test_a_glob_naming_an_extension_is_accepted(glob):
     """It must not refuse the patterns the harness actually uses, or it is just noise."""
     from recall.eval.promotion.__main__ import _refuse_overbroad_glob
