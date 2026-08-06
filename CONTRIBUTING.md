@@ -60,6 +60,25 @@ uv lock
 
 Commit the updated `uv.lock` alongside the `pyproject.toml` change.
 
+### Reproducing the CVE scan locally
+
+The `audit` job's second half scans the resolved dependency set. To run the same check before you
+push:
+
+```bash
+uv export --all-extras --no-emit-project --format requirements-txt -o requirements.lock.txt
+```
+
+```bash
+uvx pip-audit --requirement requirements.lock.txt --no-deps
+```
+
+`requirements.lock.txt` is gitignored: it is a throwaway on the CI runner, and a committed copy
+would be a second, silently drifting source of truth beside `uv.lock`. Note the export deliberately
+omits `--frozen`, so it **rewrites `uv.lock`** as a side effect. That is why CI runs `uv lock --check`
+*first*, before anything can mutate the lock, and why you should run `uv lock --check` before the
+export rather than after it.
+
 ## Run the evaluation harness (optional, for retrieval/trust-layer changes)
 
 ```bash

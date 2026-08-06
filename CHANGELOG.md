@@ -188,10 +188,10 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   the `bench` extra as never added to `dev` and never installed in CI, so no shipped wheel, no CI job
   and no deployment ever contained the vulnerable version. The constraint also lives only in
   `uv.lock`: anyone installing `recall-rag[bench]` from PyPI resolves `h2` independently.
-  `requirements.lock.txt`, which the `audit` job generates and which the
-  new operator runbook now tells a human to generate locally, is gitignored: an untracked generated
-  copy of the resolved dependency set beside `uv.lock` is a second source of truth that can drift
-  silently and be swept into a later commit.
+  `requirements.lock.txt`, which the `audit` job generates and which `CONTRIBUTING.md` now documents
+  as a local reproduction of that job, is gitignored: an untracked generated copy of the resolved
+  dependency set beside `uv.lock` is a second source of truth that can drift silently and be swept
+  into a later commit.
 
 - **Corpus text could close the evidence delimiter, and reach the model outside the data region.**
   `render_evidence_prompt` wrapped a `json.dumps` payload in `<evidence_data>...</evidence_data>`.
