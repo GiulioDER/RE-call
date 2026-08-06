@@ -106,7 +106,15 @@ ssh -i ~/.ssh/contabo_sentiment root@100.91.148.25 'cd /var/tmp/re_call_splade_2
 ```
 
 Must print `"verdict": "MATCH"`. This runs the REAL `CrossEncoderReranker` locally and requires the
-offloaded ordering to match where metrics are cut. An ordering that merely looks reasonable
+offloaded ordering to match where metrics are cut.
+
+⚠️ Run it a second time with `--whole-pool`, or the whole-pool orderings step 8 reports ship
+UNCERTIFIED. The equal-width rankings are exactly 100 deep, so the top-100 SET check can only ever
+fire on the deeper pools:
+
+```bash
+ssh -i ~/.ssh/contabo_sentiment root@100.91.148.25 'cd /var/tmp/re_call_splade_20260806/RE-call && ../.venv/bin/python -m benchmarks.mtrag.rerank_multiquery validate --mq-dir /var/tmp/re_call_splade_20260806/mq --output-dir /var/tmp/re_call_splade_20260806/mqrr --scores /var/tmp/re_call_splade_20260806/mqrr/scores_minilm.jsonl --whole-pool --sample 20'
+``` An ordering that merely looks reasonable
 produces publishable nDCG that RE-call would never compute, and nothing about it looks wrong.
 
 Validate the BGE file too, against the model its scores came from:
@@ -124,11 +132,11 @@ the offload, which is why `--model` and `--revision` exist here.
 ssh -i ~/.ssh/contabo_sentiment root@100.91.148.25 'cd /var/tmp/re_call_splade_20260806/RE-call && ../.venv/bin/python -m benchmarks.mtrag.rerank_multiquery apply --mq-dir /var/tmp/re_call_splade_20260806/mq --output-dir /var/tmp/re_call_splade_20260806/mqrr --mtrag-root /var/tmp/re_call_mtrag_20260803/mt-rag-benchmark --scores /var/tmp/re_call_splade_20260806/mqrr/scores_minilm.jsonl'
 ```
 
-Writes `rerank_decision.json`. The verdict is one of `MATERIALLY_CONVERTS`, `CONVERTS_BUT_BELOW_BAR`,
+Writes `rerank_decision__scores_minilm.json`. The name derives from the SCORES file, so the two models cannot overwrite each other. The verdict is one of `MATERIALLY_CONVERTS`, `CONVERTS_BUT_BELOW_BAR`,
 `DOES_NOT_CONVERT`, `REVERSES`, per the preregistered rule on **C1 = mq_nested3 − mq_last, nDCG@5**.
 
 Then the SECONDARY whole-pool analysis, from the same scores, in the SAME directory. It writes
-`rerank_decision_whole_pool.json`, so it cannot overwrite the primary:
+`rerank_decision__scores_minilm__whole_pool.json`, so it cannot overwrite the primary:
 
 ```bash
 ssh -i ~/.ssh/contabo_sentiment root@100.91.148.25 'cd /var/tmp/re_call_splade_20260806/RE-call && ../.venv/bin/python -m benchmarks.mtrag.rerank_multiquery apply --mq-dir /var/tmp/re_call_splade_20260806/mq --output-dir /var/tmp/re_call_splade_20260806/mqrr --mtrag-root /var/tmp/re_call_mtrag_20260803/mt-rag-benchmark --scores /var/tmp/re_call_splade_20260806/mqrr/scores_minilm.jsonl --whole-pool'

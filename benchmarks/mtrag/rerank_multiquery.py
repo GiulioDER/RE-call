@@ -216,18 +216,33 @@ def _load_scores(path: Path) -> tuple[dict[str, dict[str, float]], dict[str, Any
     one produced by the other.
     """
     scores: dict[str, dict[str, float]] = {}
-    header: dict[str, Any] = {}
+    headers: list[dict[str, Any]] = []
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():
                 continue
             row = json.loads(line)
             if row.get("_header"):
-                header = row
+                headers.append(row)
                 print(json.dumps({"event": "scores_header", **row}), flush=True)
                 continue
             scores.setdefault(str(row["qid"]), {})[str(row["doc_id"])] = float(row["score"])
-    return scores, header
+    # An absent header is not an empty one. `scripts/score_pairs.py` always writes exactly one, so
+    # zero means the file was filtered or hand-assembled and cannot be attributed to a model;
+    # recording `{}` would put an unattributable decision on disk looking like an attributed one.
+    if not headers:
+        raise RuntimeError(
+            f"{path} has no _header line, so the decision it produces could not name the model "
+            f"that scored it. `scripts/score_pairs.py` writes one; this file was filtered or "
+            f"assembled by hand."
+        )
+    if len(headers) > 1:
+        models = sorted({str(h.get("model")) for h in headers})
+        raise RuntimeError(
+            f"{path} has {len(headers)} _header lines ({models}); it is a concatenation of "
+            f"separate scoring runs, and one model name over a mixed score set is a fiction."
+        )
+    return scores, headers[0]
 
 
 def frozen_rankings(out: Path, mq_dir: Path, whole_pool: bool) -> dict[str, dict[str, list[str]]]:
@@ -393,7 +408,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
         "whole_pool": bool(args.whole_pool),
         # Which cross-encoder produced this. The runbook scores TWO of them into one directory,
         # so a decision that does not name its scores file is indistinguishable from the other's.
-        "scores_file": args.scores.name,
+        "scores_file": str(args.scores.resolve()),
         "scores_header": header,
         # Derived from the measured numbers above, never hardcoded: under --whole-pool the
         # rankings run deeper than the cutoff and R@100 is NOT invariant.
@@ -408,9 +423,27 @@ def cmd_apply(args: argparse.Namespace) -> int:
     # Derive the name from the DESIGN. `rerank_offload` learned this the same way: two runs
     # writing one filename overwrite each other and the second result looks like the first. Here
     # the loser would be the preregistered primary, replaced by the width-confounded secondary.
-    suffix = "_whole_pool" if args.whole_pool else ""
-    filename = f"rerank_decision__{args.scores.stem}{suffix}.json"
-    (out / filename).write_text(json.dumps(decision, indent=2), encoding="utf-8")
+    stem = args.scores.stem
+    if "__" in stem:
+        raise ValueError(
+            f"scores file stem {stem!r} contains '__', which this naming scheme uses as its "
+            f"separator; rename it so the design suffix stays unambiguous."
+        )
+    # `__whole_pool`, not `_whole_pool`: with a single underscore, `--scores scores_whole_pool.jsonl`
+    # without the flag produces the same filename as `--scores scores.jsonl` WITH it, and the two
+    # would overwrite each other while disagreeing about the design.
+    suffix = "__whole_pool" if args.whole_pool else ""
+    filename = f"rerank_decision__{stem}{suffix}.json"
+    target = out / filename
+    if target.exists():
+        previous = json.loads(target.read_text(encoding="utf-8")).get("scores_file")
+        if previous and previous != str(args.scores.resolve()):
+            raise RuntimeError(
+                f"{target} already holds a decision produced from {previous}, and this run used "
+                f"{args.scores.resolve()}. Same basename, different file: overwriting would "
+                f"destroy a result whose replacement records an identical-looking provenance."
+            )
+    target.write_text(json.dumps(decision, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in decision.items() if k not in ("contrasts", "arms")},
                      indent=2), flush=True)
     return 0
