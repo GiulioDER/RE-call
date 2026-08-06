@@ -139,7 +139,7 @@ precondition and aborts rather than proceeding if it fails, recorded the ledger 
 |---|---|
 | Preconditions: rows across chunk, generation and tenant_state tables | 0, asserted before acting |
 | Preconditions: pending outbox events | 0 |
-| Preconditions: disk headroom vs the active index | 578,933,866,496 bytes free against a 131,072-byte active index, **4,416,914.9x**, requirement 2.2x. ⚠️ **PASSED VACUOUSLY.** 131,072 bytes is sixteen empty 8 KiB pages, the floor for an index over ZERO rows, so the ratio bounds nothing about a real build. The same vacuity warning this entry gives `parity` applies here and I did not give it. The 2.2x factor is also unsourced: nothing in the repository derives it, and it is applied to `pg_indexes_size`, which excludes the heap that a second generation actually needs |
+| Preconditions: disk headroom vs the active index | 578,933,866,496 bytes free against a 131,072-byte active index, **4,416,914.9x**, requirement 2.2x. ⚠️ **PASSED VACUOUSLY.** Measured per index rather than asserted: 131,072 bytes is 16 pages of 8 KiB across **seven** indexes (2 pages each for the five btrees, 3 each for the GIN and HNSW), which is the empty-index floor, so the ratio bounds nothing about a real build. The same vacuity warning this entry gives `parity` applies here and I did not give it. The 2.2x factor is also unsourced: nothing in the repository derives it, and it is applied to `pg_indexes_size`, which **excludes the heap**: on this table `pg_total_relation_size` is 196,608 against a heap of 8,192, and on a populated chunk table carrying text and vectors the heap is what dominates |
 | Global migrations applied as `recall_migrator` | 0008 (re-applied), **0011, 0012, 0013**. 0009 and 0010 are also global and were already applied on 2026-08-03; they were untouched |
 | Per-table migrations applied as `recall_migrator` | 0001 to 0007 for **both** generation tables |
 | Schema state after | `current=0013 required=0013 compatible=True` on every target |
@@ -217,8 +217,9 @@ reranker and the BGE cache are both unrecorded.
 
 **The latency blocker, restated from observation rather than memory.** VPS2 **rebooted during this
 session** and reported one-minute load averages of 20.85 and then 35.24 on 12 cores, from unrelated
-live production. That is worse than the **12.55** the previous entry recorded (9.78 is two entries
-back; an earlier draft of this paragraph attributed it wrongly). ⚠️ Both readings are one-minute
+live production. That is worse than the **12.55** the previous entry recorded (9.78 belongs to the
+2026-08-05 retrieval-profiles entry, five dated entries back; an earlier draft of this paragraph put
+it one entry back, and the first correction of that draft said two, which was also wrong). ⚠️ Both readings are one-minute
 figures taken **after a reboot**, so they are still converging and are not like-for-like with the
 steady-state 1/5/15 triples earlier entries published. Normalised per core they are 1.74 and 2.94
 against 1.05, so the direction holds even though the units do not. No timing taken here is cited for
@@ -229,10 +230,10 @@ anything; the only numbers taken off that host are checksums, counts and exit co
 `docs/ENTERPRISE_RETRIEVAL.md` now opens with a real operator runbook: a preconditions section, the
 ordered eleven-step sequence (plus preconditions and rollback) as a table naming the credential and
 the non-zero exit condition for each
-step, then a section per step with what to verify afterwards, and rollback. The two hazards this
+step, then grouped sections with what to verify afterwards, and rollback. The two hazards this
 session hit are written into it at the step where an operator would hit them: the per-table
-migration step that provisioning skips, and the checksum-drift stop with the conditions under which
-clearing a ledger row is defensible.
+migration step whose ledger rows were missing (cause unknown, see the correction above), and the
+checksum-drift stop with the conditions under which clearing a ledger row is defensible.
 
 `README.md`'s production-posture table gains four rows: index generations and cutover, retrieval
 cost profiles, the generator-neutral evidence boundary, and serving latency marked ❌ **PENDING**
@@ -292,6 +293,50 @@ operations on a production database, and its first draft stated three guards tha
 Both are instances of the standard this repository already carries: **verify a memory fact before
 acting on it.** A prior session's entry is a memory, and this document is where they are stored.
 
+### Round 2, over the fix batch, and it found six more of the same family
+
+Round 1's fixes were themselves audited, by re-verifying every claim the fix batch NEWLY asserts
+against the source. **14 of 18 held. Four did not, and two more were found outside the list.** This
+is the pattern this project has recorded before: a fix batch contains defects of the family it
+repaired.
+
+| Claim the FIX BATCH asserted | Verdict | Correction |
+|---|---|---|
+| "`parity` compares the two physical tables and **never reads the registry**" | **FALSE** | `_cmd_parity` calls `control.route()`, which selects from `recall_index_generations`; that read is the module's stated design rule (an operator names a generation, the registry names the table). The true, narrower claim is that parity never **compares** the declared counts |
+| "It emits six statements, covering the chunk table, four control-plane tables and the outbox sequence" | **FALSE** | The count is right (executed: six with `--enterprise`, three without) and the coverage is not: they grant **fourteen objects plus a sequence**. My summary silently omitted `recall_schema_migrations` and all eight generation and calibration tables, **inside the bullet whose whole argument is that hand-summarised grant lists drift and cause `permission denied`**. It now says to diff against the command's own output and not against any summary, including that one |
+| "a `DELETE ... WHERE version = '0012'` strips the row for every chunk table" | **FALSE** | 0012 is ≥ 0008, so it is global and exactly one row exists. The example chosen to prove that both key columns are needed is the one case where they are not. Rewritten to split 0001-0007 (per table) from 0008+ (one global row), with a command for each |
+| "the re-insert overwrites `applied_by` and `applied_at`" | **UNCERTAIN, mechanism wrong** | `applied_by` is written by **no statement in the codebase**: it is a column default, and the upsert's `DO UPDATE SET` list omits it. The conclusion holds for delete-then-re-apply and **inverts** for restore-then-re-apply, which preserves the original applier while stamping a new timestamp. Both cases now stated |
+| "131,072 bytes is sixteen empty 8 KiB pages, the floor for **an index** over ZERO rows" | **FALSE** | Sound as a total, unsupported as a floor: it is 16 pages across **seven** indexes. Re-measured per index on the host (2 pages each for the five btrees, 3 each for the GIN and HNSW) rather than reconstructed |
+| The `MigrationChecksumMismatch` discriminator | **FALSE** | There are **four** wordings, and two of them say "checksum drift" while meaning opposite things. My rule named only `schema_status`'s, so it routed `apply_migrations`' LEDGER error into the "your working tree is corrupt, touch nothing in the database" branch. That is the error **step 2's own command raises**. Replaced with a table of all four |
+
+The last one is the sharpest, and it is the same shape as the guard-that-cannot-fire class: a
+discriminator that misclassifies the exact case the document tells the reader to produce.
+
+**The anti-regression half of round 2 found three more, and the shape is identical.** Twelve of
+seventeen hunks were SAFE, the CHANGELOG restructure verified as a **pure restore** (201 bullets
+before and after, and every one of the 197 bullets predating the stray heading back under the
+heading it had then), and the untouched sections verified byte-identical by digest rather than by
+reading. The three that were not:
+
+| Regression the FIX introduced | How it was caught |
+|---|---|
+| `CONTRIBUTING.md` says `uv export` without `--frozen` **rewrites** `uv.lock`. It does not when the lock is current | **Executed**: same SHA256 and same size before and after. The claim was copied from `ci.yml`'s own comment, which carries the same error. Corrected to the conditional truth (it updates the lock only when the lock is out of date), which is also the real reason the ordering matters |
+| The step-2 verify line `schema status` **omits `--dim`**, reintroducing the model fetch its own ⚠️ six lines below forbids | `cli.py:417` resolves `dim` **before** the subcommand branches at 419, so `status` builds an embedder too. It looked fine when run here only because this host has the model cached, which is the exact failure the runbook warns about |
+| "Retirement ... there is no un-retire command ... the only recovery is a restore" | Falsified by step 5 of the **same commit**: `mark-ready` has no state guard, so it writes a retired generation back to `ready`. An operator would order a database restore for something one command undoes |
+
+The middle one is the sharpest thing in round 2: **a fix that reintroduces its own defect one line
+below itself**, and that passes on any machine with a warm cache. That is a guard whose failure is
+invisible in the environment where it is written and live in the environment where it is used.
+
+⚠️ **Round 3 has not been run.** These corrections are round 2's output. By this project's recorded
+convergence, round 3 is where it should come back dry, and until it does the runbook's newest
+paragraphs carry the same status as round 1's did. Counts so far: **41 → 9 → ?**
+
+⚠️ **Round 2's anti-regression reviewer saw only 10 of the 41 round-1 findings**, because only two
+auditors wrote trail files and the rest returned their findings in-band. Four of its hunk mappings
+rest on inference from the commit message rather than on a finding it read. Its verdicts are
+independently sourced to code and execution, so this weakens the MAPPING, not the findings.
+
 ### Standing blockers
 
 | Blocker | Kind | Effect | Change |
@@ -317,10 +362,11 @@ acting on it.** A prior session's entry is a memory, and this document is where 
    teaches "do not proceed past a red one", and this failure mode is a green. The code is where it
    belongs.
 
-2c. **A third audit round has NOT been run.** This project's own recorded pattern is that auditing a
-   fix batch finds defects in the batch, converging at round three. Round one found 41; the fixes
-   above are round one's output and have not themselves been audited. Do that before trusting the
-   runbook operationally.
+2c. **Run audit round 3.** Round 1 found 41, round 2 found 6 more in round 1's own fixes, and the
+   corrections above are round 2's output. This project's recorded pattern is convergence at round
+   three, so round 3 is the one that should come back dry. Until it does, treat the runbook's newest
+   paragraphs as unverified. The rounds are converging on the numbers this pattern predicts
+   (41 → 6 → ?), and every defect in round 2 was in prose I wrote to fix a defect in round 1.
 3. **A CI job that runs `ruff format --check`, or a decision that formatting is unenforced.** Right
    now the answer is neither: the tool is installed, it fails, and nothing asks it.
 4. The four performance items from the 2026-08-05 evidence-boundary entry, still untouched.
