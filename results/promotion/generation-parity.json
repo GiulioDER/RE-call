@@ -1,0 +1,161 @@
+{
+  "baseline_profile": "bge-small-symmetric-v1",
+  "comparisons": {
+    "bge-small-context-document-v1": {
+      "active_chunks": 21924,
+      "content_parity_holds": true,
+      "controls": {
+        "coverage_ok": true,
+        "degenerate_hashes": [],
+        "hashes_all_sha256": true,
+        "sources_compared": 746,
+        "sources_expected": 746
+      },
+      "extra_sources": [],
+      "failures": [],
+      "hash_mismatches": [],
+      "indexes_valid": true,
+      "missing_sources": [],
+      "rls_enabled": true,
+      "shadow_chunks": 21924,
+      "valid": true
+    },
+    "bge-small-context-neighbor-v1": {
+      "active_chunks": 21924,
+      "content_parity_holds": true,
+      "controls": {
+        "coverage_ok": true,
+        "degenerate_hashes": [],
+        "hashes_all_sha256": true,
+        "sources_compared": 746,
+        "sources_expected": 746
+      },
+      "extra_sources": [],
+      "failures": [],
+      "hash_mismatches": [],
+      "indexes_valid": true,
+      "missing_sources": [],
+      "rls_enabled": true,
+      "shadow_chunks": 21924,
+      "valid": true
+    },
+    "bge-small-context-section-v1": {
+      "active_chunks": 21924,
+      "content_parity_holds": true,
+      "controls": {
+        "coverage_ok": true,
+        "degenerate_hashes": [],
+        "hashes_all_sha256": true,
+        "sources_compared": 746,
+        "sources_expected": 746
+      },
+      "extra_sources": [],
+      "failures": [],
+      "hash_mismatches": [],
+      "indexes_valid": true,
+      "missing_sources": [],
+      "rls_enabled": true,
+      "shadow_chunks": 21924,
+      "valid": true
+    }
+  },
+  "controls": {
+    "positive_control": {
+      "detected_exactly_one_source": true,
+      "file_bytes_changed": true,
+      "fired": true,
+      "parity": {
+        "active_chunks": 464,
+        "content_parity_holds": false,
+        "controls": {
+          "coverage_ok": false,
+          "degenerate_hashes": [],
+          "hashes_all_sha256": true,
+          "sources_compared": 23,
+          "sources_expected": 24
+        },
+        "extra_sources": [],
+        "failures": [
+          "raw content hashes differ between generations"
+        ],
+        "hash_mismatches": [
+          "/var/tmp/parity-full/ctl/build.rst"
+        ],
+        "indexes_valid": true,
+        "missing_sources": [],
+        "rls_enabled": true,
+        "shadow_chunks": 464,
+        "valid": false
+      },
+      "sha256_after": "4c8a764d26bbc6a28b6bf73384fb9552fdcefdbdad7a8adf6ce5fe42487b2f6d",
+      "sha256_before": "e127c7ea0de64c3f7e20c182cf0fda8046636af1aa8d0425336eb2226a719f67",
+      "victim": "build.rst"
+    },
+    "self_comparison": {
+      "active_chunks": 21924,
+      "content_parity_holds": true,
+      "controls": {
+        "coverage_ok": true,
+        "degenerate_hashes": [],
+        "hashes_all_sha256": true,
+        "sources_compared": 746,
+        "sources_expected": 746
+      },
+      "extra_sources": [],
+      "failures": [],
+      "hash_mismatches": [],
+      "indexes_valid": true,
+      "missing_sources": [],
+      "rls_enabled": true,
+      "shadow_chunks": 21924,
+      "valid": true
+    }
+  },
+  "corpus_dir": "/opt/peps-corpus/peps",
+  "files_on_disk": 746,
+  "generations": [
+    {
+      "chunks": 21924,
+      "context_mode": "none",
+      "files": null,
+      "index_seconds": null,
+      "owned": false,
+      "profile": "bge-small-symmetric-v1",
+      "scratch": false,
+      "table": "pfull_bge_small_symmetric_v1"
+    },
+    {
+      "chunks": 21924,
+      "context_mode": "document",
+      "files": null,
+      "index_seconds": null,
+      "owned": false,
+      "profile": "bge-small-context-document-v1",
+      "scratch": false,
+      "table": "pfull_bge_small_context_document_v1"
+    },
+    {
+      "chunks": 21924,
+      "context_mode": "section",
+      "files": null,
+      "index_seconds": null,
+      "owned": false,
+      "profile": "bge-small-context-section-v1",
+      "scratch": false,
+      "table": "pfull_bge_small_context_section_v1"
+    },
+    {
+      "chunks": 21924,
+      "context_mode": "neighbor",
+      "files": null,
+      "index_seconds": null,
+      "owned": false,
+      "profile": "bge-small-context-neighbor-v1",
+      "scratch": false,
+      "table": "pfull_bge_small_context_neighbor_v1"
+    }
+  ],
+  "glob": "**/*.rst",
+  "kind": "generation_parity",
+  "reconstruction_note": "The 2026-08-06 campaign's own generations were promo_<uuid8> tables dropped in a finally and no longer exist. These generations are a REBUILD over the same corpus with the same embedder, not the campaign's originals."
+}
