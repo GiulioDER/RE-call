@@ -56,6 +56,17 @@ def passage_text(item: dict) -> str:
     return str(item.get("text") or "").replace("\x00", "")
 
 
+def prepare_output(path: Path) -> None:
+    """Ensure `path`'s directory exists. The script owns its output path, directory included.
+
+    This failed on rented hardware for want of one line: the caller created the output directory
+    on only one of its two code paths, so the run died on FileNotFoundError AFTER loading the
+    model and reading the passages. The worst place to discover a missing mkdir is on a metered
+    GPU, so the encoder no longer depends on its caller for it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
 def read_passages(path: Path, limit: int | None) -> list[dict]:
     rows = []
     with path.open(encoding="utf-8") as handle:
@@ -118,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         max_length=args.max_length,
     )
 
+    prepare_output(args.output)
     passages = read_passages(args.input, args.limit)
     done = already_done(args.output) if args.resume else set()
     pending = [p for p in passages if passage_id(p) not in done]
