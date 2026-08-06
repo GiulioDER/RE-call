@@ -426,3 +426,171 @@ def test_a_dual_write_leaves_byte_identical_raw_text_in_both_generations(
                 conn.execute(
                     "DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,)
                 )
+
+
+@contextlib.contextmanager
+def _two_generations(dim: int = DIM):
+    """Provision an active + shadow generation pair, and tear the whole lot down.
+
+    Same provisioning as `test_a_dual_write_leaves_byte_identical_raw_text_in_both_generations`,
+    lifted so the re-index tests below can build the SECOND indexer over the SAME two stores.
+    Everything is created inside the `try`, for the reason that test's comment gives: a failure
+    partway through provisioning otherwise strands a physical table and a registry row, and a
+    generation row whose table is gone breaks every later test on this database.
+    """
+    suffix = uuid.uuid4().hex[:10]
+    tenant = f"t_{suffix}"
+    active_id, shadow_id = f"g_active_{suffix}", f"g_shadow_{suffix}"
+    active_table, shadow_table = f"c_active_{suffix}", f"c_shadow_{suffix}"
+    control = ControlPlane(TEST_DSN)
+    active = shadow = None
+    try:
+        control.apply_migrations()
+        for table in (active_table, shadow_table):
+            apply_migrations(TEST_DSN, table=table, dim=dim)
+        control.register_generation(active_id, active_table, "profile-a", dim)
+        control.register_generation(shadow_id, shadow_table, "profile-b", dim)
+        control.set_generation_state(active_id, "ready", chunk_count=0, source_count=0)
+        active = PgVectorStore(
+            TEST_DSN, dim=dim, table=active_table, tenant=tenant, generation_id=active_id
+        )
+        shadow = PgVectorStore(
+            TEST_DSN, dim=dim, table=shadow_table, tenant=tenant, generation_id=shadow_id
+        )
+        yield control, active, shadow
+    finally:
+        for store in (active, shadow):
+            if store is not None:
+                with contextlib.suppress(Exception):
+                    store.close()
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+            conn.execute("DELETE FROM recall_migration_events WHERE tenant_id = %s", (tenant,))
+            conn.execute("DELETE FROM recall_tenant_routes WHERE tenant_id = %s", (tenant,))
+            conn.execute(
+                "DELETE FROM recall_index_generations WHERE generation_id = ANY(%s)",
+                ([active_id, shadow_id],),
+            )
+            for table in (active_table, shadow_table):
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
+                conn.execute(
+                    "DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,)
+                )
+
+
+def _indexer(active, shadow, control, active_mode: str, shadow_mode: str) -> Indexer:
+    return Indexer(
+        active,
+        _ProfiledEmbedder(PROFILE_FOR_MODE[active_mode]),
+        context_policy=ContextPolicy(mode=active_mode),  # type: ignore[arg-type]
+        shadow=ShadowIndexTarget(
+            store=shadow,
+            embedder=_ProfiledEmbedder(PROFILE_FOR_MODE[shadow_mode]),
+            control_plane=control,
+            context_policy=ContextPolicy(mode=shadow_mode),  # type: ignore[arg-type]
+        ),
+    )
+
+
+@requires_db
+def test_attaching_a_shadow_to_an_indexed_corpus_actually_fills_the_shadow(tmp_path) -> None:
+    """The blue-green migration as an operator performs it: index, THEN attach the shadow.
+
+    `test_a_dual_write_leaves_byte_identical_raw_text_in_both_generations` covers the case where
+    the shadow is present on the first pass. It is the case that does not happen: you do not
+    provision a second generation before you have a first one to migrate off. The real sequence is
+    index the corpus, register a candidate profile, attach it as a shadow, re-index.
+
+    On that sequence the skip guard is keyed on the ACTIVE fingerprint alone, so every file is
+    already up to date, every file is skipped, and the shadow is never written. The run reports
+    success, `recall index` prints a skipped count, and the shadow table is empty — which the
+    cutover then refuses, having spent an ingest to learn nothing.
+    """
+    corpus = _write_corpus(tmp_path)
+    with _two_generations() as (control, active, shadow):
+        first = Indexer(
+            active,
+            _ProfiledEmbedder(PROFILE_FOR_MODE["none"]),
+            context_policy=ContextPolicy(mode="none"),
+        ).index_path(corpus)
+        assert first.files and _rows(active), "the active generation must be populated first"
+        assert not _rows(shadow), "the shadow must start empty, or this proves nothing"
+
+        second = _indexer(active, shadow, control, "none", "section").index_path(corpus)
+
+        shadow_rows = _rows(shadow)
+        assert shadow_rows, (
+            f"attaching a shadow and re-indexing wrote NOTHING to it "
+            f"(files={second.files}, skipped={second.skipped}, chunks={second.chunks}): "
+            f"the skip guard is keyed on the active fingerprint only, so an unchanged corpus "
+            f"short-circuits before the shadow write ever runs"
+        )
+        active_rows = _rows(active)
+        assert [(r.source, r.ord, r.text) for r in active_rows] == [
+            (r.source, r.ord, r.text) for r in shadow_rows
+        ]
+        assert {r.context_mode for r in shadow_rows} == {"section"}
+        assert control.pending_events(active.tenant) == []
+
+
+@requires_db
+def test_an_unchanged_corpus_with_a_filled_shadow_still_skips(tmp_path) -> None:
+    """The other direction, so the fix cannot be "stop skipping".
+
+    Once BOTH generations are current, a third pass must re-embed nothing. Without this the
+    obvious repair — drop the skip whenever a shadow is attached — would pass the test above while
+    turning every incremental re-index into a full one, which for a cloud embedder is a bill.
+    """
+    corpus = _write_corpus(tmp_path)
+    with _two_generations() as (control, active, shadow):
+        _indexer(active, shadow, control, "none", "section").index_path(corpus)
+        assert _rows(active) and _rows(shadow)
+
+        again = _indexer(active, shadow, control, "none", "section").index_path(corpus)
+
+        assert again.files == 0, "an unchanged corpus must not be re-indexed"
+        assert again.skipped == len(CORPUS), f"expected all {len(CORPUS)} files skipped"
+        assert again.chunks == 0
+
+
+@requires_db
+def test_swapping_the_shadow_profile_on_a_filled_shadow_re_indexes_it(tmp_path) -> None:
+    """The second half of the same operator sequence: retire candidate B for candidate C.
+
+    The two tests above pin the shadow term of the skip predicate only through the case
+    where the shadow is EMPTY. That leaves the fingerprint COMPARISON itself unguarded, and
+    the hole is not theoretical: replacing `known_shadow.get(str(f)) == shadow_fingerprint`
+    with a presence-only `str(f) in known_shadow` passes both of them. Under that mutant an
+    operator who swaps the candidate profile on an already-filled shadow gets every file
+    skipped, and the shadow keeps the OLD profile's vectors under a generation registered
+    for the new one -- which the cutover cannot detect, because the shadow is not empty.
+
+    So this indexes the shadow under `section`, then re-indexes with the shadow moved to
+    `neighbor`, and asserts the stored rows actually moved.
+    """
+    corpus = _write_corpus(tmp_path)
+    with _two_generations() as (control, active, shadow):
+        _indexer(active, shadow, control, "none", "section").index_path(corpus)
+        before = _rows(shadow)
+        assert before and {r.context_mode for r in before} == {"section"}
+
+        moved = _indexer(active, shadow, control, "none", "neighbor").index_path(corpus)
+
+        after = _rows(shadow)
+        assert moved.files == len(CORPUS), (
+            f"changing the shadow's profile must re-index every file; got files={moved.files}, "
+            f"skipped={moved.skipped}. A skip predicate that only asks whether the shadow HAS "
+            f"the source, rather than whether it has it under THIS profile, reports success here "
+            f"and leaves the previous candidate's vectors in place."
+        )
+        assert {r.context_mode for r in after} == {"neighbor"}
+        # The fingerprints must have moved too, or the rows were rewritten under a stale key
+        # and the NEXT run would skip them.
+        assert {r.index_fingerprint for r in after} != {r.index_fingerprint for r in before}
+        # And the active generation is untouched in meaning: same mode, same text.
+        active_rows = _rows(active)
+        assert {r.context_mode for r in active_rows} == {"none"}
+        assert [(r.source, r.ord, r.text) for r in active_rows] == [
+            (r.source, r.ord, r.text) for r in after
+        ]
+        assert control.pending_events(active.tenant) == []
