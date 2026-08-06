@@ -47,8 +47,11 @@ export TRANSFORMERS_OFFLINE=1
 export OPENBLAS_NUM_THREADS=2
 export MKL_NUM_THREADS=2
 export OMP_NUM_THREADS=2
-# This one DOES reach fastembed, unlike OMP_NUM_THREADS. Four arms share the CPU budget.
-export RECALL_EMBED_THREADS=${RECALL_EMBED_THREADS:-2}
+# ⚠️ `RECALL_EMBED_THREADS` deliberately NOT set here. It is a LIVE knob (`recall/embeddings.py`
+# reads it into the fastembed thread budget), so setting it would change every arm's thread count,
+# which contradicts this header's claim that the core budget is the one the 2026-08-06 campaign
+# used. The finding this block answers was a FALSE COMMENT, and the fix for a false comment is a
+# true comment, not a new runtime knob.
 
 cd "$REPO" || exit 1
 command -v taskset >/dev/null || { echo "FATAL: taskset absent; refusing to run unpinned"; exit 2; }
@@ -57,7 +60,11 @@ command -v taskset >/dev/null || { echo "FATAL: taskset absent; refusing to run 
 # Every redirection below writes into $OUT. Without this the arms fail at the redirect, before
 # `taskset` ever runs, and the banners still print as though they had started.
 mkdir -p "$OUT" || { echo "FATAL: cannot create $OUT"; exit 2; }
-[ "$(nproc)" -ge 8 ] || { echo "FATAL: fewer than 8 cores; the pins below do not exist"; exit 2; }
+# `$(nproc)` expands EMPTY if nproc is absent or errors, and `[ "" -ge 8 ]` exits 2 with
+# "integer expected", so the bare form refuses a 12-core host on a missing binary. Default to 0
+# and test a variable that is always an integer.
+cores=$(nproc 2>/dev/null || echo 0)
+[ "$cores" -ge 8 ] || { echo "FATAL: $cores cores visible; the pins below do not exist"; exit 2; }
 
 idx() {
   local prof=$1 cpus=$2 rc
@@ -108,6 +115,12 @@ if [ "$failed" -ne 0 ]; then
   exit 3
 fi
 
+# ⚠️ `--drop-generations` is deliberately NOT passed, so the four `pfull_*` tables SURVIVE this
+# run. That is the point: they cost about an hour of embedding each, and keeping them makes a
+# re-run of the compare stage free. They are the operator's to remove, and they must be removed
+# through `PgVectorStore.drop_table()`, NEVER through psql: `drop_table` deletes the matching
+# `recall_schema_migrations` rows in the same transaction, and a bare `DROP TABLE` leaves them
+# behind, after which the next run skips creation and fails validating a table that is not there.
 taskset -c 0-7 nice -n 19 "$VENV" benchmarks/check_generation_parity.py \
   --dsn "$DSN" --corpus-dir "$CORPUS" --glob '**/*.rst' \
   --table-prefix pfull --out "$OUT/generation-parity.json" \

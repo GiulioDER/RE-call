@@ -361,12 +361,19 @@ def main() -> int:
                 )
             marker = ctl / ".parity-scratch"
             if ctl.exists():
-                # Only a directory this script previously created may be recursively deleted.
-                if not ctl.is_dir() or not marker.is_file():
+                # Only a directory this script created, or one that is EMPTY, may be recursively
+                # deleted. The empty case matters: a directory left by an earlier harness, or by a
+                # crash in the one-syscall window between `mkdir` and the marker write below,
+                # would otherwise abort the run AFTER the comparisons and BEFORE the artifact is
+                # written. Refusing a path that previously worked is a regression, and deleting an
+                # empty directory destroys nothing.
+                if not ctl.is_dir():
+                    raise SystemExit(f"--control-corpus {ctl} exists and is not a directory.")
+                if not marker.is_file() and any(ctl.iterdir()):
                     raise SystemExit(
-                        f"--control-corpus {ctl} exists and carries no {marker.name} marker, so "
-                        f"it was not created by this harness. Refusing to delete it. Point the "
-                        f"flag at a fresh path."
+                        f"--control-corpus {ctl} is a NON-EMPTY directory carrying no "
+                        f"{marker.name} marker, so it was not created by this harness. Refusing "
+                        f"to delete it. Point the flag at a fresh path."
                     )
                 shutil.rmtree(ctl)
             ctl.mkdir(parents=True)
@@ -452,7 +459,9 @@ def main() -> int:
                 gen["store"].drop_table()
             except Exception as exc:  # pragma: no cover - cleanup diagnostics only
                 print(f"WARN could not drop {gen['table']}: {exc}", file=sys.stderr)
-        if args.drop_generations:
+        # `--keep-tables` wins over `--drop-generations`: an operator who asked to keep tables must
+        # not have them dropped by a second flag that reads as narrower.
+        if args.drop_generations and not args.keep_tables:
             for gen in built:
                 if gen.get("owned"):
                     continue
