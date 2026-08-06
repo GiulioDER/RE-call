@@ -110,25 +110,51 @@ idx() {
 # STAGGERED, not simultaneous. `ensure_schema()` takes a process-wide advisory lock and
 # `apply_migrations` refuses rather than waiting, so four arms started together race and three die
 # with ConcurrentMigrator. A stagger is a race made unlikely, not a race removed.
-pids=()
-profiles=()
-idx bge-small-symmetric-v1 0,1 &         pids+=($!); profiles+=(bge-small-symmetric-v1)
-sleep 90
-idx bge-small-context-document-v1 2,3 &  pids+=($!); profiles+=(bge-small-context-document-v1)
-sleep 90
-idx bge-small-context-section-v1 4,5 &   pids+=($!); profiles+=(bge-small-context-section-v1)
-sleep 90
-idx bge-small-context-neighbor-v1 6,7 &  pids+=($!); profiles+=(bge-small-context-neighbor-v1)
-
-# `wait` with no operand returns 0 no matter how its children died. Waiting on each PID is what
-# turns four captured statuses into one verdict.
+ARMS=(
+  bge-small-symmetric-v1
+  bge-small-context-document-v1
+  bge-small-context-section-v1
+  bge-small-context-neighbor-v1
+)
+CPUS=(0,1 2,3 4,5 6,7)
 failed=0
-for i in "${!pids[@]}"; do
-  if ! wait "${pids[$i]}"; then
-    echo "FAILED arm: ${profiles[$i]} (see $OUT/idx-${profiles[$i]}.log)"
-    failed=$((failed + 1))
-  fi
-done
+
+if [ -n "${PARITY_SEQUENTIAL:-}" ]; then
+  # ⚠️ MEMORY is why this mode exists, not CPU. Four concurrent arms held roughly 18 GB and drove
+  # a 47 GB host to 3 GB available on 2026-08-06, while it was also running live production.
+  # `taskset` and `nice` bound CPU and do NOTHING about resident memory, so the pins gave no
+  # protection at all. One arm at a time keeps ONE embedding model resident, and it gets all eight
+  # cores because nothing else of ours is running.
+  #
+  # This mode is also how a RESUME is meant to run: the fingerprint guard skips files already
+  # indexed at the same content, so an interrupted arm continues instead of restarting.
+  echo "=== $(date -Is) SEQUENTIAL mode: one arm at a time on cores 0-7 ==="
+  for arm in "${ARMS[@]}"; do
+    if ! idx "$arm" 0-7; then
+      echo "FAILED arm: $arm (see $OUT/idx-$arm.log)"
+      failed=$((failed + 1))
+    fi
+  done
+else
+  pids=()
+  profiles=()
+  for i in "${!ARMS[@]}"; do
+    idx "${ARMS[$i]}" "${CPUS[$i]}" &
+    pids+=($!)
+    profiles+=("${ARMS[$i]}")
+    # Stagger every arm but the last; see the advisory-lock note above.
+    [ "$i" -lt 3 ] && sleep 90
+  done
+
+  # `wait` with no operand returns 0 no matter how its children died. Waiting on each PID is what
+  # turns four captured statuses into one verdict.
+  for i in "${!pids[@]}"; do
+    if ! wait "${pids[$i]}"; then
+      echo "FAILED arm: ${profiles[$i]} (see $OUT/idx-${profiles[$i]}.log)"
+      failed=$((failed + 1))
+    fi
+  done
+fi
 echo "=== $(date -Is) ALL INDEX STAGES DONE, failed=$failed ==="
 
 # Refuse rather than compare an incomplete set. With a dead arm the compare stage would either
