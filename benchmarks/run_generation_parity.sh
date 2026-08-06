@@ -82,7 +82,26 @@ mkdir -p "$OUT" || { echo "FATAL: cannot create $OUT"; exit 2; }
 # host where the `4,5` and `6,7` arms cannot run at all. Only a mask containing NO valid CPU is
 # refused (measured: `taskset -c 50-99 true` fails "Invalid argument"), so the probe has to be at
 # the granularity of the masks actually used.
-for mask in 0,1 2,3 4,5 6,7 0-7; do
+ARMS=(
+  bge-small-symmetric-v1
+  bge-small-context-document-v1
+  bge-small-context-section-v1
+  bge-small-context-neighbor-v1
+)
+CPUS=(0,1 2,3 4,5 6,7)
+# Compared as VALUE, not length: `[ -n "$X" ]` treats `PARITY_SEQUENTIAL=0` as "on", so an
+# operator explicitly disabling the mode would have got it.
+SEQ=0
+[ "${PARITY_SEQUENTIAL:-0}" = 1 ] && SEQ=1
+# One entry per arm, or the launch loop dies on `${CPUS[$i]}` under `set -u` AFTER forking
+# children it then never waits on. Refuse before anything is started.
+[ "${#ARMS[@]}" -eq "${#CPUS[@]}" ] || { echo "FATAL: ARMS and CPUS differ in length"; exit 2; }
+
+# Probe only the masks the SELECTED mode will use. Sequential mode exists for a constrained host,
+# so probing the four two-core pins there would refuse the very hosts it was added to serve: on a
+# four-core box the `4,5` probe fails while `0-7` (clamped to 0-3) succeeds.
+if [ "$SEQ" = 1 ]; then PROBE_MASKS=(0-7); else PROBE_MASKS=("${CPUS[@]}" 0-7); fi
+for mask in "${PROBE_MASKS[@]}"; do
   taskset -c "$mask" true 2>/dev/null || {
     echo "FATAL: cannot pin to cores '$mask' on this host (nproc --all reports $(nproc --all 2>&1));"
     echo "       refusing to run unpinned."
@@ -110,16 +129,9 @@ idx() {
 # STAGGERED, not simultaneous. `ensure_schema()` takes a process-wide advisory lock and
 # `apply_migrations` refuses rather than waiting, so four arms started together race and three die
 # with ConcurrentMigrator. A stagger is a race made unlikely, not a race removed.
-ARMS=(
-  bge-small-symmetric-v1
-  bge-small-context-document-v1
-  bge-small-context-section-v1
-  bge-small-context-neighbor-v1
-)
-CPUS=(0,1 2,3 4,5 6,7)
 failed=0
 
-if [ -n "${PARITY_SEQUENTIAL:-}" ]; then
+if [ "$SEQ" = 1 ]; then
   # ⚠️ MEMORY is why this mode exists, not CPU. Four concurrent arms held roughly 18 GB and drove
   # a 47 GB host to 3 GB available on 2026-08-06, while it was also running live production.
   # `taskset` and `nice` bound CPU and do NOTHING about resident memory, so the pins gave no
@@ -143,7 +155,9 @@ else
     pids+=($!)
     profiles+=("${ARMS[$i]}")
     # Stagger every arm but the last; see the advisory-lock note above.
-    [ "$i" -lt 3 ] && sleep 90
+    # Derived from the array, not a hand-written 3: a fifth arm would otherwise get no stagger,
+    # which is the exact advisory-lock race the comment above exists to make unlikely.
+    [ "$i" -lt $(( ${#ARMS[@]} - 1 )) ] && sleep 90
   done
 
   # `wait` with no operand returns 0 no matter how its children died. Waiting on each PID is what
