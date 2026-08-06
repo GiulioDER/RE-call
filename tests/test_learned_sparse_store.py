@@ -111,3 +111,4 @@ def test_a_query_never_returns_rows_encoded_under_a_different_profile(make_store
     hits = store.query_learned_sparse({7: 1.0}, k=5, profile_id="profile-a")
 
     assert [hit.chunk.id for hit in hits] == []
+
