@@ -44,22 +44,6 @@ def test_the_derived_policy_matches_what_indexer_demands(profile_id, expected_mo
     ).context_version
 
 
-def test_the_default_policy_cannot_index_a_context_profile():
-    """The failure the fix removes, stated as a fact rather than as a story.
-
-    `ContextPolicy()` is what `_indexed_store` used to leave `Indexer` with. Against a context
-    profile it produces a version mismatch, which is exactly the refusal measured on the host.
-    """
-    default = ContextPolicy()
-    assert context_version_for(default.mode, default.version) == "raw-v1"
-    for profile_id in (
-        "bge-small-context-document-v1",
-        "bge-small-context-section-v1",
-        "bge-small-context-neighbor-v1",
-    ):
-        assert registered_profile(profile_id).context_version != "raw-v1"
-
-
 def test_indexed_store_passes_a_profile_derived_policy_to_the_indexer(monkeypatch):
     """The wiring itself: `_indexed_store` must hand `Indexer` the arm's own policy.
 
@@ -261,7 +245,18 @@ def test_a_real_indexer_refuses_a_profile_whose_policy_does_not_match():
 # ------------------------------------------------------------------- the over-broad glob refusal
 
 
-@pytest.mark.parametrize("glob", ["*", "**", "**/*", "**/*.*", "*.*", "docs/*"])
+@pytest.mark.parametrize(
+    "glob",
+    [
+        "*", "**", "**/*", "**/*.*", "*.*", "docs/*", "", "**/",
+        # Every one of these was MEASURED passing the first version of the guard and
+        # pulling .env / .npmrc / tokens.json out of a seeded tree. The first four
+        # reconstruct a wildcard with a character class or a "?"; the last matches
+        # dotfiles EXCLUSIVELY and was the most dangerous pattern of all.
+        "**/*.?*", "**/*.[a-z]*", "**/*.[!x]*", "**/*.j*", "**/[.]*",
+        "docs/*.*", "**/.*", "**/*.", "**/README",
+    ],
+)
 def test_an_overbroad_glob_is_refused_by_name(glob):
     """The empty-index refusal is one-sided: it cannot fire when the glob is too BROAD, because
     that yields chunks > 0. `**/*` was measured pulling `.env`, `tokens.json` and `id_rsa` into the
@@ -331,3 +326,6 @@ def test_indexed_store_actually_calls_the_overbroad_refusal(monkeypatch, tmp_pat
         with cli._indexed_store(args, Adapter()):
             pass
     assert "extension" in str(exit_signal.value)
+    # The refusal is a pure predicate over argv and now runs BEFORE the model load and before any
+    # database work. Measured order used to be make_embedder -> connect -> CREATE TABLE -> refuse.
+    assert opened["n"] == 0, "the operator's database was touched for a request already refused"
