@@ -91,6 +91,37 @@ SPARSE_TABLE = "recall_sparse_v1"
 #: column type, so a model with a different vocabulary needs its own table, not a wider column.
 SPARSE_DIM = 30522
 
+#: How far past `k` the learned sparse HNSW walk is widened.
+#:
+#: MEASURED on the real index (183,408 clapnq rows inside a 366,479-row sidecar shared by four
+#: corpora), asking for k=100:
+#:
+#:     ef_search   40 (pgvector default) ->   6 candidates
+#:     ef_search  100                    ->  19
+#:     ef_search  400                    ->  72
+#:     ef_search 1000                    -> 100
+#:
+#: 10x, not the dense leg's 4x, because this index is shared: the tenant/chunk_table/profile_id
+#: predicates and the strictly-positive-overlap filter discard most of what the walk visits, so
+#: the scan runs out of budget long before it has k survivors. The dense leg scans a table that
+#: is already one corpus, and needs less.
+#:
+#: ⚠️ Without this the leg silently returns a TWENTIETH of the candidates it was asked for. It
+#: does not error; it reads on a benchmark as "learned sparse does not help", which is a wrong
+#: conclusion manufactured by an index setting.
+SPARSE_EF_SEARCH_MULTIPLIER = 10
+
+
+def sparse_ef_search(k: int) -> int:
+    """`hnsw.ef_search` for a learned sparse query returning `k` rows.
+
+    Raise-only: never below pgvector's own default, and capped at what pgvector accepts rather
+    than raising on a `k` that is otherwise legal.
+    """
+    widened = k * SPARSE_EF_SEARCH_MULTIPLIER
+    return max(_PGVECTOR_DEFAULT_EF_SEARCH, min(widened, _HNSW_EF_SEARCH_MAX))
+
+
 #: pgvector's HNSW ceiling on non-zero elements. Duplicated from `recall.sparse.HNSW_MAX_NONZERO`
 #: ON PURPOSE: `recall.store` must not import `recall.sparse`, which would drag torch into the
 #: import graph of every store user. The migration's CHECK constraint is the third copy and the
@@ -1554,7 +1585,27 @@ class PgVectorStore:
             params["dense"] = Vector(vec)
         if source:
             params["source"] = source
-        rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
+
+        # Widen the HNSW walk, exactly as `_query_dense` does and for the same reason. See
+        # SPARSE_EF_SEARCH_MULTIPLIER: at pgvector's default this leg returned 6 of 100.
+        # `SET LOCAL` only survives inside a transaction, and this store's connections are
+        # autocommit, so the transaction is opened explicitly. `set_config(..., is_local => true)`
+        # rather than a literal SET so the value can be GREATEST(current, wanted): an operator who
+        # already raised ef_search must not have it LOWERED here.
+        ef_search = sparse_ef_search(k)
+        widen = (
+            "SELECT set_config('hnsw.ef_search', GREATEST("
+            "COALESCE(NULLIF(current_setting('hnsw.ef_search', true), ''), %(default_ef)s)"
+            "::int, %(want_ef)s)::text, true)"
+        )
+        widen_params = {"default_ef": str(_PGVECTOR_DEFAULT_EF_SEARCH), "want_ef": ef_search}
+
+        def _op(conn: "psycopg.Connection") -> list[tuple]:
+            with conn.transaction():
+                conn.execute(widen, widen_params)
+                return conn.execute(sql, params).fetchall()
+
+        rows = self._with_retry(_op)
         return self._rows_to_hits(rows)
 
     def replace_sources(

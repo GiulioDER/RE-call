@@ -204,3 +204,32 @@ def test_encoder_sends_inputs_to_the_models_device(tiny_splade) -> None:
 
     assert encoder.device == next(model.parameters()).device
     assert encoder.device.type == "meta"
+
+
+def test_sparse_ef_search_widens_far_enough_to_fill_k() -> None:
+    """The multiplier that stops the learned sparse leg silently under-returning.
+
+    MEASURED on the real 183,408-row index, four corpora sharing one sidecar, k=100:
+
+        ef_search   40 (pgvector default) ->   6 candidates
+        ef_search  100                    ->  19
+        ef_search  400                    ->  72
+        ef_search 1000                    -> 100
+
+    The tenant/table/profile filters discard most of what the HNSW walk visits, so the scan
+    exhausts its budget long before k survivors. A 10x multiplier is what closed the gap.
+
+    This unit test pins the ARITHMETIC and the cap. It deliberately does NOT claim to reproduce
+    the truncation: that needs an index large enough for Postgres to choose HNSW over a seq scan,
+    and a test at that scale would be slow and flaky. A version of this written at 150 rows
+    passed against the buggy code, which is why the evidence above is a measurement rather than
+    an assertion.
+    """
+    from recall.store import _HNSW_EF_SEARCH_MAX, sparse_ef_search
+
+    assert sparse_ef_search(100) == 1000
+    assert sparse_ef_search(20) == 200
+    # Never below pgvector's own default: widening must only ever widen.
+    assert sparse_ef_search(1) == 40
+    # Capped at what pgvector accepts, rather than raising on a legal k.
+    assert sparse_ef_search(500) == _HNSW_EF_SEARCH_MAX
