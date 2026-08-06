@@ -252,8 +252,11 @@ class SearchResult(BaseModel):
     stage_ms: dict[str, float] = Field(
         default_factory=dict,
         description="Per-stage wall time in milliseconds: admission_wait, query_embedding, "
-        "dense_retrieval, sparse_retrieval, fusion, reranking, trust_evaluation, "
-        "evidence_assembly. Stage names are library constants and carry no corpus-derived text.",
+        "dense_retrieval, sparse_retrieval, learned_sparse_retrieval, fusion, reranking, "
+        "trust_evaluation, evidence_assembly. Every key is present on every response, including "
+        "for a retrieval leg the configuration switched off: such a leg reports ~0 rather than "
+        "dropping its key, so an absent series never has to be read as either. Stage names are "
+        "library constants and carry no corpus-derived text.",
     )
     total_ms: float = Field(
         default=0.0,
