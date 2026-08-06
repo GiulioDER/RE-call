@@ -11,6 +11,177 @@ before that change can go green.
 
 ---
 
+
+## 2026-08-06, context modes on the PEPs: a null, and a question that narrowed three times
+Four arms, one corpus, 88 paired answerable questions. **No context mode is distinguishable from
+the raw baseline.** All three candidates refused promotion. This directory holds the negative
+result, which is retained deliberately: the brief asked for it to be published if the candidate
+lost, and it did.
+
+## The result
+
+| candidate | delta hit@5 | bootstrap 95% CI | Holm p |
+|---|---|---|---|
+| `bge-small-context-document-v1` | +2.27 pp | [-3.41, +7.95] pp | 0.3438 |
+| `bge-small-context-section-v1` | +2.27 pp | [-3.41, +7.95] pp | 0.3438 |
+| `bge-small-context-neighbor-v1` | +0.00 pp | [-6.82, +6.82] pp | 1.0000 |
+
+Every interval straddles zero. **+2.27 pp is two questions.** With 88 paired answerable questions
+the smallest expressible move is 1.14 pp, so document and section mode each got two more right than
+baseline and neighbour mode got none. At this width the study can only detect large effects, and
+there were none to detect.
+
+Promotion refused for all three, on five criteria each: the macro CI does not clear zero; no corpus
+reaches Holm-corrected significance; `superseded_trust_rate` NOT MEASURED (development trust
+policy); security verification not green; latency PENDING.
+
+## ⚠️ The latency column is NOT a measurement
+
+Diagnostic-only p95: baseline 3320 ms, document 2063 ms, neighbour 818 ms, section 626 ms. If that
+ordering held it would be a large effect favouring the candidates. **It cannot be cited.** It was
+taken on a host at load average 20-40 with four arms competing for eight cores, which is exactly why
+`latency_status` is PENDING and why the harness files these under `observed_diagnostic_only`. It is
+a reason to want the reference host, not evidence about the profiles.
+
+## The question narrowed three times, and each narrowing was forced
+
+The brief asked for five corpora. What ran was one.
+
+* **`ladder` is incompatible with this harness.** `benchmarks/ladder/run.py` ingests "per distinct
+  corpus state" and keys instances by `(scope, excised_doc_ids)`: each of its 1800 instances has its
+  own corpus with its gold documents excised, and that excision IS the experiment. The promotion
+  harness indexes one directory and searches every question against it, so the 1500 unanswerable
+  instances would have been searched against a corpus still containing their answers. It would have
+  produced numbers.
+* **`labelled` cannot certify and cannot pass the regression gate.** Certification needs 20
+  answerable and 20 unanswerable; it has 14 answerable in total. Separately its hit@5 granularity is
+  7.14 pp against a 2 pp no-regression threshold, so any single question moving the wrong way
+  breaches the gate and no smaller move exists.
+* **`locomo`, `longmemeval`, `mtrag`** need host data and were out of scope for this run.
+
+So the macro-across-corpora design collapsed to a single corpus. The gate's multi-corpus criteria
+(macro average, Holm across corpora, per-corpus regression) all degenerate to one corpus, and the
+decision documents say so rather than presenting a macro over n=1 as though it were a macro.
+
+## Two defects in the harness were found by running it, and fixed
+
+Both made a whole class of arm impossible, and neither was visible by reading:
+
+1. `_indexed_store` never passed a `context_policy`, so `Indexer` defaulted to `raw-v1` and REFUSED
+   every context profile. All three candidate arms died at index time before a single question was
+   scored, while the raw baseline scored 110 of 110.
+2. `index_path` defaults to `**/*.md` and the PEPs are `.rst`, so indexing wrote ZERO chunks and all
+   110 questions abstained against an empty index with `dense_cosine: nan`. The gate's `VacuousArm`
+   guard did catch it, which is the guard working, but only after four arms had each paid for a full
+   embedding pass, and its message blames the label space, which was not the fault.
+
+Fixed on `codex/promotion-calibration-wiring` (`2b815b3`): the policy is derived from the arm's own
+profile, there is a `--glob` argument, and an empty index is refused at index time where the cause
+is still legible. Eight tests, both mutations killed.
+
+## What is in here
+
+| File | What it is |
+|---|---|
+| `peps.manifest.jsonl` | the frozen question set, digest `20e4928f2d799e57…a1885c`, 110 questions (88 answerable) |
+| `baseline.*.jsonl`, `ctx-*.jsonl` | four arm ledgers, 110 rows each, ALL rows carrying real hits |
+| `decision.ctx-*.json` | three PromotionDecisions, all `promoted: false` |
+| `run_arms.sh`, `rerun_section.sh` | the drivers, warts included (see below) |
+| `arm-*.log`, `run.log` | per-arm and driver logs |
+
+**Every ledger was checked for non-empty `retrieved_chunk_ids` before any number here was read.**
+That check is not ceremony: the previous attempt produced four ledgers of 110 rows each in which
+every single row was empty, and they looked identical to these from the outside.
+
+## Operational record, including what went wrong
+
+Five launch attempts. The failures are recorded because they were mine and they are the reusable
+part:
+
+* **Unthrottled first run**: 634% CPU for 44 minutes on a host whose permanent ~9 load from live
+  production is a documented standing blocker for this program.
+* **`OMP_NUM_THREADS` does not cap onnxruntime.** The driver set it to 2 with a comment explaining
+  that it capped the CPU execution provider. Measured: 24 threads, 6.2 cores. **`taskset` is the
+  cap.** Verify with delta `utime+stime` from `/proc/PID/stat`, NOT with `ps` %CPU, which is a
+  LIFETIME AVERAGE and reads as though the pin failed for minutes after a fast start.
+* **Four arms launched simultaneously**: `ensure_schema()` takes a process-wide advisory lock and
+  `apply_migrations` refuses rather than waiting, so three died instantly with `ConcurrentMigrator`.
+  Fixed by staggering 90 s. A stagger is a race made unlikely, not a race removed.
+* **`exit=$?` after `$(date -Is)` reports the DATE's exit status.** The command substitution runs
+  first and resets `$?`. Every arm reported `exit=0`, including `ctx-section`, which died after 3h11m
+  having written nothing. A status line that could only ever say success.
+* **CRLF line endings** from a Windows-authored script made `set -u` a syntax error, so two launches
+  silently did nothing.
+
+`ctx-section` was re-run alone and completed (`rc=0`, captured on its own line this time). Why the
+first attempt died is **not established**: no OOM kill in the journal, 27 GB free, a 0-byte log, and
+its throwaway table left undropped so the `finally` never ran. Recorded as unexplained rather than
+attributed.
+
+## Provenance
+
+* Host: VPS2, root SSH. This program lives in `/opt/recall-enterprise`, outside qwen-mcp's four file
+  roots, so root SSH is the documented fallback and was used.
+* Database: `recall_campaign`, created for this work with migrations 0001-0011 applied and verified
+  (11 ledger rows, checksum drift none). `recall_enterprise` was NOT touched: it refuses 0011 on a
+  pre-existing checksum drift in `0008`, edited in place by #196 after that database was provisioned.
+* Stack: fastembed 0.8.0, onnxruntime 1.28.0, Python 3.12.
+* Artifact tree: a digest-bound copy of the provisioned bge cache,
+  `9a443d711e063427f62cf559a38863122ee5ed107fdd7920de882fd66dbc919c`.
+* Trust policy: `development` on every arm. The harness cannot supply a calibration at all
+  (`StoreSearch` is constructed without `calibration=`, there is no `--calibration` flag, and the run
+  indexes into a throwaway table that is not a registered generation), so strict mode refuses every
+  search regardless of what artifact exists.
+
+## ⚠️ Known defect these ledgers are exposed to
+
+`--glob` and `--corpus-dir` select WHICH corpus an arm measured and appear in none of
+`ArmConfig.identity()`, `artifact_stem()`, or the fields `score_arm` compares on resume. Re-running
+an arm under a different corpus selector lands in the SAME ledger, resumes every row and republishes
+the previous corpus's results. Demonstrated by the CCA bug auditor. **Unfixed at the time of
+writing.** These ledgers are correct because the directory was cleaned before the run, not because
+the harness would have prevented it.
+
+
+### What the next session should start with
+
+1. **`recall index` has NO over-broad glob guard, and it is the path that matters.**
+   `recall/cli.py:739` passes `--glob` from argv straight to `index_path`, writing into the
+   operator's PERSISTENT `--table`. The guard added this session sits only on the eval harness,
+   whose store is `promo_<uuid8>` and is dropped in a `finally`. Measured: `candidate_files(root,
+   '**/*')` returns `.env`, `id_rsa`, `tokens.json`. **The guard went on the safe path and the
+   dangerous one was left open.** Its right home is `recall.index.candidate_files`, the one place
+   every caller passes through, which also covers `recall_index` MCP, `recall lint` and
+   `recall fix`.
+
+2. **`--glob` is the wrong mechanism, and the evidence is not that it took three corrections.**
+   The adapters already know the extension, and for three of them it is INSIDE the label strings
+   the scorer compares against: `PepsAdapter` labels are `pep-0690.rst`, `LongMemEvalAdapter`
+   emits `f"{sid}.md"`, `LocomoAdapter` resolves to `.md`. The glob is a SCORING input, not a
+   confinement setting, and neither guard can see it go wrong: `_indexed_store` refuses only
+   `chunks == 0`, and `VacuousArm` returns as soon as ONE answerable question hits at 20, so a
+   partial label-space mismatch scores a depressed-but-plausible number and publishes it.
+   Recommendation: declare `glob: tuple[str, ...]` on the adapter with a `corpus_glob()` accessor
+   built like `label_kind()`, which already refuses an adapter that declared none; keep
+   `--corpus-dir`; delete `--glob` from `run`. `LEDGER_ID_FIELDS` already contains `corpus`, so
+   deriving the glob from the adapter closes half of item 3 for free. It also restores a
+   capability the predicate makes impossible: a multi-extension corpus is inexpressible, since
+   pathlib rejects `**/*.{md,rst}` and the only working spelling, `**/*.[mr]*`, is refused as the
+   round-1 bypass shape.
+
+3. **The arm-identity defect**, above: `--glob` and `--corpus-dir` are absent from
+   `ArmConfig.identity()`, `artifact_stem()` and the resume comparison.
+
+4. **The local dev database on 5432 carries migrations `0012` and `0013` that exist on NO
+   committed branch.** Someone has uncommitted schema work applied there; it makes every
+   DB-backed test in a fresh worktree fail with `SchemaTooNew`.
+
+5. If the context-mode question is worth answering, it needs a corpus that can express an answer.
+   88 paired questions cannot resolve anything under about 7 pp.
+
+---
+
+
 ## 2026-08-05, the paired comparison: stopped before it ran, because its two arms are the same system
 
 Branch cut fresh from `origin/master` at `ca8ccd8`, in its own worktree (`…/RE-call-paired`). The
