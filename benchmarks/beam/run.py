@@ -693,6 +693,18 @@ def build_parser() -> argparse.ArgumentParser:
         "unanswerable questions score HIGHER than its answerable ones.",
     )
     parser.add_argument(
+        "--calibration",
+        type=Path,
+        default=None,
+        help="A calibration file (from `benchmarks.beam.calibrate`) supplying the abstention "
+        "threshold for --embedder. Without it the library's UNTUNED 0.50 cosine floor applies, "
+        "which is not comparable across embedders: on voyage-4-large it starves 23.3% of "
+        "questions to empty retrieval (7% on text-embedding-3-small, 0% on bge-small), and an "
+        "empty context makes the vendored answerer emit its refusal string — so a quarter of the "
+        "run would score as false abstentions caused by the harness. The file is keyed by "
+        "embedder and the run REFUSES if it holds no entry for this one.",
+    )
+    parser.add_argument(
         "--no-judge",
         action="store_true",
         help="Generate answers and DO NOT judge them. BEAM's judge reads only (question, nugget, "
@@ -836,6 +848,27 @@ def _main() -> None:
     # conversation is ready in ~3 s.
     n_conversations = count_conversations(args.data, indices)
     conversations = iter_conversations(args.data, args.chat_size, indices)
+    calibration = None
+    if args.calibration:
+        from recall.calibration import load_for
+
+        calibration = load_for(args.embedder, args.calibration)
+        if calibration is None:
+            # Refused rather than warned. The whole reason to pass this flag is that the untuned
+            # default starves this embedder, so falling back to it silently would produce exactly
+            # the run the flag was used to avoid — and it would look like a calibrated one.
+            raise SystemExit(
+                f"{args.calibration} holds no calibration for embedder {args.embedder!r}. A "
+                f"calibration file is keyed BY EMBEDDER, and a threshold fitted for a different "
+                f"one does not transfer: cosines live in a different regime per model. Fit one "
+                f"with `python -m benchmarks.beam.calibrate --embedder {args.embedder} ...`."
+            )
+        print(
+            f"calibration: threshold={calibration.threshold:.4f} "
+            f"certified={calibration.certified}",
+            flush=True,
+        )
+
     system = BeamRecallSystem(
         args.dsn,
         embedder_name=args.embedder,
@@ -844,6 +877,7 @@ def _main() -> None:
         entailment_top_n=args.entailment,
         reranker_name=args.reranker,
         candidate_k=args.candidate_k,
+        calibration=calibration,
     )
 
     if args.dry_run:
