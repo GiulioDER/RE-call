@@ -101,7 +101,10 @@ def cmd_freeze(args: argparse.Namespace) -> int:
 #: showed the denylist changed the verdict on ZERO of them: every member was already caught by the
 #: shape rules, so the part carrying the provenance comment was the part deciding nothing.
 #: Naming five strings does not close a shape.
-_EXTENSION = re.compile(r"\.[A-Za-z0-9_+-]+$")
+_EXTENSION = re.compile(r"\.[A-Za-z0-9_+-]+\Z")
+#: Both separators. `rsplit("/")` alone leaves `**\.env` with a final component that does
+#: not start with a dot, while `Path.glob` still returns the file.
+_SEPARATORS = re.compile(r"[\\/]")
 
 
 def _refuse_overbroad_glob(glob: str) -> None:
@@ -112,8 +115,9 @@ def _refuse_overbroad_glob(glob: str) -> None:
     directory that also holds a `.env` would then be embedded into the index, returned verbatim by
     search, and written into the evidence artifact.
 
-    The final component must END in a literal extension, and may not carry a character class, a
-    `?`, or a leading dot: each of those reconstructs a wildcard the anchor is there to forbid.
+    The final component must END in a literal extension and must not BEGIN with a dot. A class
+    or a `?` earlier in the component is accepted, because the literal tail is what bounds
+    the match: no glob metacharacter is inside `[A-Za-z0-9_+-]`.
     Validated as a strict tightening rather than asserted — every pattern this repository uses
     (`**/*.md`, `**/*.rst`, `**/*.py`, `*.txt`, `corpus/**/*.rst`, `**/*.tar.gz`) is still
     accepted, and every measured bypass is now refused.
@@ -123,12 +127,21 @@ def _refuse_overbroad_glob(glob: str) -> None:
     `tokens.json`. This bounds the pattern's SHAPE; it is not a secrets filter.
     """
     final = glob.rsplit("/", 1)[-1]
-    # The anchor alone. A first draft also tested `startswith(".")`, `"[" in final` and
-    # `"?" in final`; a mutation sweep showed BOTH survive deletion, because a final
-    # component carrying a class or a `?` cannot end in `\.[A-Za-z0-9_+-]+` anyway. Keeping
-    # them would have repeated the defect the auditor had just found in `_OVERBROAD_GLOBS`:
-    # a clause that reads as the boundary and decides nothing.
-    if not _EXTENSION.search(final):
+    # A dotfile basename is NOT an extension. `.env` is literally `\.` + `env` at end of string,
+    # so the anchor alone ACCEPTS `**/.env`, `**/.npmrc` and `**/.git-credentials` and the walk
+    # returns them. Measured by the CCA bug auditor against the real `candidate_files`, and it is
+    # the file this guard's own provenance comment names as what it keeps out. Distinct from the
+    # documented carve-out: `**/*.env` is an operator naming an extension; `**/.env` is the
+    # predicate misreading a name.
+    #
+    # ⚠️ An earlier comment here claimed the class and `?` clauses were "subsumed by the anchor
+    # anyway". That was FALSE: `[a-z]*.md` and `?.md` both carry one and end in a literal
+    # extension. Exhaustive enumeration over 5.2M strings put the flip counts at 63,828 and 51,672.
+    # They are dropped because everything they refused is still pinned to a literal extension, not
+    # because they could not fire. The mutation sweep that said "survives" simply never generated
+    # such a string, which is what a sweep over a narrow corpus cannot tell you.
+    final = _SEPARATORS.split(glob)[-1]
+    if final.startswith(".") or not _EXTENSION.search(final):
         raise SystemExit(
             f"--glob {glob!r} does not end in a literal file extension, so it would index "
             f"whatever the directory happens to contain rather than a named corpus. Name an "
