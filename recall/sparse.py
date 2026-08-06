@@ -131,6 +131,12 @@ def splade_weights(logits: "torch.Tensor", attention_mask: "torch.Tensor") -> li
 KNOWN_MODELS: dict[str, str] = {
     "prithivida/Splade_PP_en_v1": "apache-2.0",
     "naver/splade-v3": "cc-by-nc-sa-4.0",
+    # SPLADE++ EnsembleDistil. Same BERT MLM architecture and 30522 vocabulary as the two above,
+    # so it is a drop-in for this encoder, and stronger than the default (MRR@10 38.3 vs 37.22).
+    # It exists here because `naver/splade-v3` is a GATED repo: reaching it needs an approved
+    # HuggingFace account, not merely the licence flag. This is the closest ungated substitute
+    # for the "is our checkpoint the weak link?" control.
+    "naver/splade-cocondenser-ensembledistil": "cc-by-nc-sa-4.0",
 }
 
 DEFAULT_MODEL = "prithivida/Splade_PP_en_v1"
