@@ -8,10 +8,10 @@ share it occupies.
 **Where the numbers come from.** `HybridRetriever` already records per-query stage timings and
 returns them on every result as `diagnostics.stage_ms` (`query_embedding`, `dense_retrieval`,
 `sparse_retrieval`, `learned_sparse_retrieval`, `fusion`, `reranking`). This benchmark READS that,
-rather than adding a parallel instrument. An earlier draft of this file did add one, on the false premise that no
-per-stage timing existed — it did, and had shipped; the premise came from reading a checkout 61
-commits behind master. The store-internal `recall_store_query_ms` metric is still used here, for
-the two things `stage_ms` cannot give:
+rather than adding a parallel instrument. An earlier draft of this file did add one, on the false
+premise that no per-stage timing existed — it did, and had shipped; the premise came from
+reading a checkout 61 commits behind master. The store-internal `recall_store_query_ms` metric
+is still used here, for the two things `stage_ms` cannot give:
 
   1. `newest_indexed_at()`. `search()` calls it once per query for its staleness report and it is
      an uncached `SELECT max(indexed_at)` — a real store round trip that sits OUTSIDE every
@@ -91,6 +91,7 @@ from recall.store import (
     LEG_LEARNED_SPARSE,
     LEG_META,
     LEG_SPARSE,
+    STORE_QUERY_LEGS,
     STORE_QUERY_METRIC,
     PgVectorStore,
     warn_if_insecure_dsn,
@@ -196,7 +197,10 @@ def _drain(leg: str) -> tuple[list[float], int]:
 
 
 def _clear_legs() -> None:
-    for leg in (LEG_DENSE, LEG_SPARSE, LEG_LEARNED_SPARSE, LEG_META):
+    # `STORE_QUERY_LEGS`, not a tuple written out here: this list and the one in
+    # `recall/eval/harness.py` both drifted when the learned sparse leg was added, and an
+    # undrained series contaminates the next measurement without raising.
+    for leg in STORE_QUERY_LEGS:
         METRICS.drain_histogram(STORE_QUERY_METRIC, leg=leg)
 
 
