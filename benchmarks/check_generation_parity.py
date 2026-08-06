@@ -369,7 +369,19 @@ def main() -> int:
                 # empty directory destroys nothing.
                 if not ctl.is_dir():
                     raise SystemExit(f"--control-corpus {ctl} exists and is not a directory.")
-                if not marker.is_file() and any(ctl.iterdir()):
+                # `Path.is_file()` swallows OSError but `iterdir()` raises it, so a directory that
+                # cannot be listed would abort with a bare PermissionError traceback instead of
+                # the refusal this block exists to produce. FAILING TO LIST MUST READ AS
+                # "NOT EMPTY": the one thing that must never follow from an unknown directory is
+                # a recursive delete.
+                try:
+                    empty = not any(ctl.iterdir())
+                except OSError as exc:
+                    raise SystemExit(
+                        f"--control-corpus {ctl} cannot be listed ({exc}); refusing to delete a "
+                        f"directory whose contents are unknown."
+                    ) from exc
+                if not marker.is_file() and not empty:
                     raise SystemExit(
                         f"--control-corpus {ctl} is a NON-EMPTY directory carrying no "
                         f"{marker.name} marker, so it was not created by this harness. Refusing "
