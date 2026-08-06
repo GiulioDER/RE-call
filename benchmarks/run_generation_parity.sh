@@ -61,9 +61,22 @@ command -v taskset >/dev/null || { echo "FATAL: taskset absent; refusing to run 
 # `taskset` ever runs, and the banners still print as though they had started.
 mkdir -p "$OUT" || { echo "FATAL: cannot create $OUT"; exit 2; }
 # `$(nproc)` expands EMPTY if nproc is absent or errors, and `[ "" -ge 8 ]` exits 2 with
-# "integer expected", so the bare form refuses a 12-core host on a missing binary. Default to 0
-# and test a variable that is always an integer.
-cores=$(nproc 2>/dev/null || echo 0)
+# "integer expected", so the bare form refuses a 12-core host on a missing binary.
+#
+# ⚠️ The first repair of that was `cores=$(nproc 2>/dev/null || echo 0)` under a comment claiming
+# it produced "a variable that is always an integer". It did not: `nproc` exiting 0 with EMPTY
+# output leaves `cores` empty, and the `integer expected` shape survived untouched. The `2>/dev/null`
+# also discarded the only evidence of WHY it failed. Both are fixed by validating the value and
+# keeping the message: "could not determine" and "determined, and it is too few" are different
+# facts and must not print the same.
+cores=$(nproc 2>&1)
+case ${cores:-} in
+  ''|*[!0-9]*)
+    echo "FATAL: could not determine the core count (nproc said: ${cores:-<no output>}); the pins"
+    echo "       below need 8 cores. Refusing rather than guessing."
+    exit 2
+    ;;
+esac
 [ "$cores" -ge 8 ] || { echo "FATAL: $cores cores visible; the pins below do not exist"; exit 2; }
 
 idx() {
