@@ -114,7 +114,9 @@ def _table_exists(dsn: str, table: str) -> bool:
     because every migration reads as already applied and it returns without creating anything. A
     re-run over tables another process built would then mark them owned and drop them.
     """
-    with psycopg.connect(dsn) as conn:
+    # `connect_timeout` matches recall/store.py and recall/schema.py, whose comment records why:
+    # without it a dead host hangs the caller on the TCP handshake indefinitely.
+    with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
         row = conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()
     return bool(row and row[0] is not None)
 
@@ -156,9 +158,20 @@ def _index(
     stats = Indexer(store, embedder, context_policy=policy).index_path(corpus, glob)
     elapsed = time.monotonic() - started
     if not stats.chunks:
+        # `stats.skipped` is what separates the two causes. A table that is ALREADY complete
+        # returns 0 written and N skipped, because the fingerprint guard skips every file, and an
+        # earlier version reported that as though the corpus or the glob were at fault.
+        if stats.skipped:
+            raise SystemExit(
+                f"{profile}: {table} already holds this corpus at this fingerprint "
+                f"({stats.skipped} files skipped, 0 written), so nothing was re-indexed. This is a "
+                f"COMPLETE generation, not an empty one. Drop the table or point --table-prefix "
+                f"somewhere fresh."
+            )
         raise SystemExit(
-            f"{profile}: indexing {corpus} with glob {glob!r} produced NO chunks. A parity "
-            f"comparison between two empty generations reports perfect parity."
+            f"{profile}: indexing {corpus} with glob {glob!r} produced NO chunks and skipped "
+            f"nothing, so the glob matched no file. A parity comparison between two empty "
+            f"generations reports perfect parity."
         )
     return {
         "profile": resolved,
@@ -259,9 +272,11 @@ def main() -> int:
     parser.add_argument(
         "--drop-generations",
         action="store_true",
-        help="Also drop the four generation tables this process did NOT create. Off by default: "
-        "they cost about an hour of embedding each and are what makes a re-run of the compare "
-        "stage free.",
+        help="Also drop the four GENERATION tables, whether or not this process created them. Off "
+        "by default: they cost about an hour of embedding each, and keeping them is what makes a "
+        "re-run of the compare stage free. This is the supported way to remove them, because "
+        "PgVectorStore.drop_table() also clears the migration ledger rows that a bare psql DROP "
+        "TABLE would orphan.",
     )
     args = parser.parse_args()
     if args.stage == "index" and not args.profile:
@@ -438,7 +453,17 @@ def main() -> int:
             built.append(clean)
             # One file, one appended line. The raw content hash is sha256 over the whole file, so
             # this must move exactly one source's hash and nothing else.
-            victim = sorted(ctl.glob(control_glob))[0]
+            # Exclude the marker explicitly rather than relying on the glob. pathlib `*` DOES match
+            # dotfiles, so a `--glob '**/*'` derives a control glob that pulls `.parity-scratch`
+            # in, and `.` sorts first, so the harness would mutate its OWN marker and score a
+            # blocking control green while measuring nothing from the corpus.
+            candidates = [p for p in sorted(ctl.glob(control_glob)) if p.name != marker.name]
+            if not candidates:
+                raise SystemExit(
+                    f"control corpus {ctl} matched no file under {control_glob!r} once the "
+                    f"{marker.name} marker is excluded."
+                )
+            victim = candidates[0]
             before = hashlib.sha256(victim.read_bytes()).hexdigest()
             with victim.open("a", encoding="utf-8") as handle:
                 handle.write("\n.. parity positive control\n")
@@ -510,11 +535,24 @@ def main() -> int:
         # An earlier version had two loops and got rule 3 backwards on the success path of
         # `--stage all`: every arm there is created by this process, so all four were dropped on a
         # clean run, which contradicted the rationale `--drop-generations` states for its default.
+        # ⚠️ Ownership is NOT the gate, and an earlier version of this loop made it one. That
+        # skipped every not-owned table first, which silently killed `--drop-generations` in the
+        # ONLY stage that can reach it: a compare stage marks all four generations `owned=False`
+        # by construction, so the flag became a no-op in the one path the driver runs, while its
+        # own help text still advertised the old meaning. Safety here comes from the
+        # scratch/generation split (a generation is never dropped implicitly), not from refusing
+        # an operator who asked explicitly. `owned` is reported, and narrates the loud case.
         for gen in built:
-            if args.keep_tables or not gen.get("owned"):
+            if args.keep_tables:
                 continue
             if not gen.get("scratch") and not args.drop_generations:
                 continue
+            if not gen.get("scratch") and not gen.get("owned"):
+                print(
+                    f"NOTE dropping {gen['table']}, which this process did NOT create, because "
+                    f"--drop-generations was passed",
+                    file=sys.stderr,
+                )
             try:
                 gen["store"].drop_table()
             except Exception as exc:  # pragma: no cover - cleanup diagnostics only
