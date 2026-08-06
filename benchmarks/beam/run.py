@@ -361,12 +361,24 @@ def _run_config(args: argparse.Namespace, system: Any) -> dict[str, Any]:
 def _write_run_config(path: Path, config: dict[str, Any]) -> None:
     """Write the run's configuration beside its sidecar, before any paid call."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(config, ensure_ascii=False, indent=1), encoding="utf-8")
+    path.write_text(json.dumps(config, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def _config_sidecar_for(sidecar: Path) -> Path:
-    """`x.partial.jsonl` -> `x.partial.config.json`."""
-    return sidecar.with_suffix(".config.json")
+    """`x.partial.jsonl` -> `x.partial.config.jsonl`.
+
+    `.jsonl` and NOT `.json`, which matters more than it looks. The results directory has a
+    convention this file has to stay out of the way of: `<base>.json` is the finished artifact and
+    several callers pick it up with `glob("*.json")` expecting exactly one match, while
+    `glob("*.partial.jsonl")` collects the crash-recovery sidecars and is counted. A config named
+    `.config.json` silently joins the first set — a real collision, caught by
+    `[artifact] = out_dir.glob("*.json")` raising "too many values to unpack".
+
+    `*.json` does not match a `.jsonl` suffix, and `*.partial.jsonl` does not match
+    `.partial.config.jsonl`, so this name is in neither set. A single JSON object on one line is
+    valid JSONL, so the extension is honest about the contents rather than a dodge.
+    """
+    return sidecar.with_suffix(".config.jsonl")
 
 
 def _check_resume_config(
@@ -694,7 +706,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-config-change-on-resume",
         action="store_true",
         help="Permit --resume across a configuration change. Off by default: the sidecar's "
-        "sibling .partial.config.json is compared against this run's configuration and a "
+        "sibling .partial.config.jsonl is compared against this run's configuration and a "
         "mismatch aborts. Without that check a resume silently folds rows produced under one "
         "embedder/k/reranker into an artifact that records only the new one, and nothing "
         "downstream can tell afterwards.",
@@ -896,7 +908,7 @@ def _main() -> None:
     # sidecar that says what produced it. The blocked 2026-07-28 best-config run is the reason
     # this exists: its runner lived in /tmp, /tmp was cleared by a reboot, and the 5 rows it had
     # already paid for became unusable because nothing recorded their configuration.
-    _write_run_config(out_base.with_suffix(".partial.config.json"), run_config)
+    _write_run_config(out_base.with_suffix(".partial.config.jsonl"), run_config)
 
     def _score(question: Question) -> dict[str, Any]:
         # Retrieval happens INSIDE the worker: it opens its own store and connection, so the
