@@ -208,18 +208,26 @@ def cmd_pairs(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_scores(path: Path) -> dict[str, dict[str, float]]:
+def _load_scores(path: Path) -> tuple[dict[str, dict[str, float]], dict[str, Any]]:
+    """Scores, and the header naming the model that produced them.
+
+    The header is RETURNED rather than printed and dropped: it carries the model and revision, and
+    a decision file that does not say which cross-encoder produced it cannot be told apart from
+    one produced by the other.
+    """
     scores: dict[str, dict[str, float]] = {}
+    header: dict[str, Any] = {}
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():
                 continue
             row = json.loads(line)
             if row.get("_header"):
+                header = row
                 print(json.dumps({"event": "scores_header", **row}), flush=True)
                 continue
             scores.setdefault(str(row["qid"]), {})[str(row["doc_id"])] = float(row["score"])
-    return scores
+    return scores, header
 
 
 def frozen_rankings(out: Path, mq_dir: Path, whole_pool: bool) -> dict[str, dict[str, list[str]]]:
@@ -275,7 +283,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
         qrels.update(qrels_by_domain[domain])
 
     rankings = frozen_rankings(out, mq_dir, args.whole_pool)
-    scores = _load_scores(args.scores)
+    scores, header = _load_scores(args.scores)
     shared = sorted(
         set.intersection(*(set(rankings[name]) for name in RERANK_ARMS)) & set(qrels)
     )
@@ -311,8 +319,8 @@ def cmd_apply(args: argparse.Namespace) -> int:
         row["r@100_invariant"] = deepest <= EVAL_K
         row["r@100_invariance_basis"] = (
             "guaranteed: ranking is no deeper than the cutoff" if deepest <= EVAL_K
-            else "NOT invariant: ranking is deeper than the cutoff, reranking moves documents "
-                 "across it"
+            else "NOT guaranteed: ranking is deeper than the cutoff, so reranking CAN move "
+                 "documents across it. Whether it did is the raw vs reranked R@100 beside this."
         )
         if deepest > EVAL_K:
             any_pool_limited = True
@@ -322,6 +330,9 @@ def cmd_apply(args: argparse.Namespace) -> int:
         # on legitimate data where a real reordering happens not to cross the cutoff.
         reordered = sum(1 for t in shared if reranked[name][t] != rankings[name][t])
         row["queries_reordered"] = reordered
+        row["queries_deeper_than_cutoff"] = sum(
+            1 for t in shared if len(rankings[name][t]) > EVAL_K)
+        row["r@100_delta"] = row["reranked_R@100"] - row["raw_R@100"]
         if reordered == 0:
             raise RuntimeError(
                 f"arm {name}: reranking changed the order of NONE of {len(shared)} queries. The "
@@ -380,6 +391,10 @@ def cmd_apply(args: argparse.Namespace) -> int:
             "equal width: every arm reranked over its own top-%d" % EVAL_K
         ),
         "whole_pool": bool(args.whole_pool),
+        # Which cross-encoder produced this. The runbook scores TWO of them into one directory,
+        # so a decision that does not name its scores file is indistinguishable from the other's.
+        "scores_file": args.scores.name,
+        "scores_header": header,
         # Derived from the measured numbers above, never hardcoded: under --whole-pool the
         # rankings run deeper than the cutoff and R@100 is NOT invariant.
         "r@100_invariant_for_every_arm": all(r["r@100_invariant"] for r in summaries),
@@ -393,7 +408,8 @@ def cmd_apply(args: argparse.Namespace) -> int:
     # Derive the name from the DESIGN. `rerank_offload` learned this the same way: two runs
     # writing one filename overwrite each other and the second result looks like the first. Here
     # the loser would be the preregistered primary, replaced by the width-confounded secondary.
-    filename = "rerank_decision_whole_pool.json" if args.whole_pool else "rerank_decision.json"
+    suffix = "_whole_pool" if args.whole_pool else ""
+    filename = f"rerank_decision__{args.scores.stem}{suffix}.json"
     (out / filename).write_text(json.dumps(decision, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in decision.items() if k not in ("contrasts", "arms")},
                      indent=2), flush=True)
@@ -415,7 +431,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         )
     mq_dir = args.mq_dir.resolve()
     out = args.output_dir.resolve()
-    scores = _load_scores(args.scores)
+    scores, _header = _load_scores(args.scores)
     docs: dict[str, str] = {}
     with (out / "docs.jsonl").open(encoding="utf-8") as handle:
         for line in handle:
@@ -438,6 +454,13 @@ def cmd_validate(args: argparse.Namespace) -> int:
             f"(e.g. {sorted(needed - set(docs))[:3]}). The payload and the --whole-pool flag "
             f"disagree: a whole-pool validation needs a payload built with "
             f"`pairs --include-whole-pool`."
+        )
+    unqueried = [t for t in sample_ids if t not in queries]
+    if unqueried:
+        raise RuntimeError(
+            f"{len(unqueried)} sampled tasks have no query text in {mq_dir} (e.g. "
+            f"{unqueried[:3]}); --mq-dir does not match the frozen rankings. Checked before the "
+            f"cross-encoder is loaded, because on rented hardware that load is paid minutes."
         )
     unscored = {c for t in sample_ids for c in rankings[t] if c not in scores.get(t, {})}
     if unscored:
@@ -469,6 +492,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
         offloaded_order = rerank_order(candidates, offloaded_scores)
         if local_order[:ORDER_EXACT_K] != offloaded_order[:ORDER_EXACT_K]:
             failures.append({"task_id": task_id, "why": f"top-{ORDER_EXACT_K} order differs"})
+        elif set(local_order[:EVAL_K]) != set(offloaded_order[:EVAL_K]):
+            # What R@100 COUNTS, which order within the cut does not affect. Omitting this was an
+            # equal-width assumption: capped, the top-100 set is the whole ranking and cannot
+            # differ. Under --whole-pool a near-tie straddling rank 100 changes the set, and
+            # `rerank_offload` records a real case of two candidates swapping on a 9.5e-07 gap.
+            failures.append({"task_id": task_id, "why": f"top-{EVAL_K} set differs"})
         elif local_order != offloaded_order:
             ties.append(task_id)
 
