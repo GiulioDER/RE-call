@@ -9,5 +9,7 @@
   "0008_generation_foundation.sql": "d9cb4951144dc405f0b1aab7e057ae803c818e8cd17246eee6fa547a31e5dff2",
   "0009_chunks_v1_tsv_index.sql": "fd93c0cb5116d2cd36ce12255433cc2d64f113a51481b2e16e47054ae6c75eec",
   "0010_chunks_v1_embedding_index.sql": "ad1c0b1ee4d924ffc3fc2241a44400c947ed98c08d5d3ed6293211266c99d774",
-  "0011_calibration_binding.sql": "bed13caba2235734596b54512f397d60c0c7890257c1898adc5037e2fc47a2a4"
+  "0011_calibration_binding.sql": "bed13caba2235734596b54512f397d60c0c7890257c1898adc5037e2fc47a2a4",
+  "0012_learned_sparse.sql": "c0a37b10a3ef7b68538db24aafa429ae09d116877550efa787185f4266477603",
+  "0013_learned_sparse_index.sql": "097916a7fd3f8e3e647c46f9dd0a5fc5d0f13f444cc255ed98438caafe656800"
 }
