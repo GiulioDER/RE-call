@@ -72,6 +72,8 @@ import os
 import shutil
 import sys
 import time
+from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import psycopg
@@ -93,6 +95,14 @@ CANDIDATES = (
 )
 
 _HEX = set("0123456789abcdef")
+
+
+def _dist_version(pkg: str) -> str | None:
+    """Recorded, never asserted: a provenance block states what ran, it does not gate on it."""
+    try:
+        return version(pkg)
+    except PackageNotFoundError:  # pragma: no cover - depends on the deployment
+        return None
 
 
 def _is_sha256_hex(value: str) -> bool:
@@ -309,6 +319,26 @@ def main() -> int:
 
     built: list[dict] = []
     report: dict = {
+        # `results/ARTIFACTS.md` requires every committed artifact to carry its configuration
+        # INSIDE the file, "so a file that gets opened, copied or linked on its own still says what
+        # it is". The first artifact this script produced predates this block and does not have it.
+        "_provenance": {
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "runner": "benchmarks/check_generation_parity.py",
+            "validator": "recall.migration.validate_generation_parity",
+            "stack": {
+                pkg: _dist_version(pkg) for pkg in ("fastembed", "onnxruntime", "psycopg")
+            },
+            "python": sys.version.split()[0],
+            # The artifact tree the embedders were pinned to, as ENFORCED at load time rather than
+            # as described here: `RECALL_MODEL_SHA256` is what `verify_artifact` compares against.
+            "model_artifact_sha256": os.environ.get("RECALL_MODEL_SHA256"),
+            "offline": {
+                "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE"),
+                "TRANSFORMERS_OFFLINE": os.environ.get("TRANSFORMERS_OFFLINE"),
+            },
+            "status": "current",
+        },
         "kind": "generation_parity",
         "corpus_dir": str(corpus),
         "glob": args.glob,

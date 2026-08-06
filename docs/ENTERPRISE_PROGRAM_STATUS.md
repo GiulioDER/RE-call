@@ -12,13 +12,46 @@ before that change can go green.
 ---
 
 
-## 2026-08-06, generation parity: the campaign was already run, the invariant was already covered, and the measurement did not finish
+## 2026-08-06, generation parity: the invariant HOLDS at campaign scale, and it took three launches
 
 Briefed to run the three-context-mode promotion campaign and, additionally, to verify the parity
 invariant this family of profiles rests on. **The campaign had already been run and merged before
-this session started.** The parity verification had not, and it is the only part of the brief still
-open. It is **not finished either**: the first run was stopped at 11% to 26% of each arm. What landed is
-the harness, a DEEP audit of it, and several corrections to claims of mine.
+this session started.** The parity verification had not, and it was the only part of the brief still
+open. It is now **done and passing**.
+
+### The result
+
+**No context mode alters the raw chunk content or the raw content hashes it stores.** Three
+independent comparisons against the raw baseline, over the same corpus and glob the campaign used.
+
+| comparison | content parity | chunks | missing | extra | hash mismatches | coverage |
+|---|---|---|---|---|---|---|
+| baseline vs `bge-small-context-document-v1` | **holds** | 21924 = 21924 | 0 | 0 | 0 | 746/746 |
+| baseline vs `bge-small-context-section-v1` | **holds** | 21924 = 21924 | 0 | 0 | 0 | 746/746 |
+| baseline vs `bge-small-context-neighbor-v1` | **holds** | 21924 = 21924 | 0 | 0 | 0 | 746/746 |
+
+`rls_enabled` and `indexes_valid` were true on every generation, so `GenerationParity.valid` is true
+too and no host-shaped failure is hiding inside the content verdict.
+
+**The headline is an ABSENCE, so the controls are the result.** All four gated the exit code and all
+four passed. **0 degenerate hashes** over 746 sources per comparison, so this is not the
+`coalesce(…, '')` trap comparing two absences. **746 of 746 sources compared**, so it is not two
+empty generations reporting no mismatches. The **positive control FIRED**: one changed file came
+back `valid: false` with exactly one entry in `hash_mismatches` and the failure string
+`raw content hashes differ between generations`. And the self-comparison held on every field.
+
+Verbatim verdict line: `comparisons=3/3 content_parity=True coverage=True hashes_sha256=True
+self_comparison=True positive_control_fired=True`
+
+Archived at `/var/lib/recall-benchmarks/2026-08-06-context-mode-generation-parity/`, **8 of 8 files
+verify with `sha256sum -c`**. The result JSON is committed at
+`results/promotion/generation-parity.json`.
+
+⚠️ **This does not say a context mode is good.** The campaign already ran and refused all three. It
+says the four arms were describing the SAME corpus, which is the precondition that comparison rests
+on and which nothing had checked at this scale.
+
+What else landed: the harness, five review rounds over it, and several corrections to claims of mine.
 
 ⚠️ **Evidence in this entry is of two kinds and they are labelled.** Rows marked HOST are measured
 on VPS2 against `recall_campaign` and the archive under `/var/lib/recall-benchmarks/`, and **cannot
@@ -80,16 +113,17 @@ assertions. A scale-and-realism check on covered ground, not a first look.
 | `taskset` mask probe | HOST | all five real masks pass; `taskset -c 50,51 true` refuses, so the guard can fire |
 | `ruff check` | REPO | clean on 0.15.22, inside CI's `>=0.5,<0.16` pin |
 | shell syntax, `bash -n` | REPO | clean |
-| Full 746-file parity run | HOST | ⛔ **NOT COMPLETED** on the first attempt. Relaunched; see round 4 |
+| Full 746-file parity run | HOST | ✅ **COMPLETED on the third launch.** Four arms `rc=0`, 21,924 chunks each, compare `rc=0`, all five gates green |
+| Archive integrity, this run | HOST | **8 of 8 files pass `sha256sum -c`** |
 | `mypy`, `pytest` | — | ⛔ **NOT RUN.** See below |
 
-⚠️ **The current harness's SUCCESS PATH has never been smoked.** The only end-to-end pass in this
-table belongs to `4021381`, and this entry's own audit section shows that version's verdict was not
-gating: its `content_parity_holds` omitted the chunk-count term and its `ctl_ok` was
-`ctl is None or ...`, so a control could pass vacuously. The code has been rewritten four times
-since. Everything executed against the post-audit harness exercises a REFUSAL or a cleanup, never a
-successful comparison. So "the harness is committed and audited" must not be read as "the harness
-has been shown to work"; the relaunched run is the first execution of its happy path.
+✅ **The harness's success path is now smoked, and this row used to say the opposite.** Until the
+third launch, the only end-to-end pass in this table belonged to `4021381`, a version this entry's
+own audit section shows was not gating: its `content_parity_holds` omitted the chunk-count term and
+its `ctl_ok` was `ctl is None or ...`, so a control could pass vacuously. Everything executed against
+the post-audit harness exercised a REFUSAL or a cleanup, never a successful comparison, and
+**"audited" was standing in for "shown to work"**. It no longer is: the completed run drove every
+control, including the positive one, through the success path.
 
 **The full run is the deliverable and it did not exist at the time of the first write-up.** Four
 arms were indexing concurrently at two pinned cores each and were terminated (`rc=143`) at 13:14
@@ -296,13 +330,20 @@ standing in for "shown to work", and they are not the same claim.** The table no
 
 ### What the next session should start with
 
-1. **Finish the parity run when VPS2 is free.** The harness is committed and audited; the run is
-   four `--stage index` arms plus one `--stage compare`. Drop the leftover `pfull_*` / `psmoke_*`
-   tables through `drop_table()` first, per carried-forward item 7.
+1. ~~Finish the parity run.~~ **Done**, and passing. The four `pfull_*` generation tables are
+   deliberately LEFT on the host, because keeping them is what made the resume cheap. Remove them
+   with the same compare invocation plus `--drop-generations`, never with psql.
 2. **Run `mypy` and `pytest` against this branch**, which needs a worktree venv rather than the
-   primary clone's editable install. Both are unverified for this change.
-3. Carried-forward items 1 to 3, in that order.
-4. The campaign entry below still asks for `recall index`'s missing over-broad glob guard and the
+   primary clone's editable install. Both are still unverified for this change, and they are now the
+   largest untested surface here.
+3. **The committed artifact predates its own `_provenance` block.** `results/ARTIFACTS.md` requires
+   every committed artifact to carry its configuration inside the file; the generator now emits one
+   and `results/promotion/generation-parity.json` does not have it, because it was produced before
+   that change. Re-running the compare stage regenerates a compliant artifact and is **free** now
+   that the generations survive, so this is a ten-minute fix rather than a four-hour one.
+4. Carried-forward items 1 to 3, in that order; item 1 (`validate_table_name`) is the only one that
+   can produce a FALSE PASS.
+5. The campaign entry below still asks for `recall index`'s missing over-broad glob guard and the
    arm-identity defect. Neither was touched here.
 
 ---
