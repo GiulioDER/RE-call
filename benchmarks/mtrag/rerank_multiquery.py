@@ -88,9 +88,15 @@ def load_arm_rankings(mq_dir: Path, whole_pool: bool = False) -> dict[str, dict[
     """
     from benchmarks.mtrag.multiquery import MQ_ARMS, POST_HOC_ARMS, fuse_arm, load_legs
 
+    declared = {a.name: a for a in (*MQ_ARMS, *POST_HOC_ARMS)}
+    undeclared = [name for name in RERANK_ARMS if name not in declared]
+    if undeclared:
+        raise RuntimeError(
+            f"arms {undeclared} are in RERANK_ARMS but declared in neither MQ_ARMS nor "
+            f"POST_HOC_ARMS, so they cannot be rebuilt from the legs dump"
+        )
     if whole_pool:
         legs = load_legs(mq_dir, list(VARIANT_FILES))
-        declared = {a.name: a for a in (*MQ_ARMS, *POST_HOC_ARMS)}
         return {
             name: {t: fuse_arm(declared[name], legs[t]) for t in legs} for name in RERANK_ARMS
         }
@@ -100,13 +106,6 @@ def load_arm_rankings(mq_dir: Path, whole_pool: bool = False) -> dict[str, dict[
     out = {name: rankings[name] for name in RERANK_ARMS if name in rankings}
     missing = [name for name in RERANK_ARMS if name not in out]
     if missing:
-        declared = {a.name: a for a in (*MQ_ARMS, *POST_HOC_ARMS)}
-        undeclared = [name for name in missing if name not in declared]
-        if undeclared:
-            raise RuntimeError(
-                f"arms {undeclared} are in RERANK_ARMS but declared in neither MQ_ARMS nor "
-                f"POST_HOC_ARMS, so they cannot be rebuilt from the legs dump"
-            )
         legs = load_legs(mq_dir, list(VARIANT_FILES))
         for name in missing:
             out[name] = {t: fuse_arm(declared[name], legs[t])[:EVAL_K] for t in legs}
@@ -234,8 +233,30 @@ def frozen_rankings(out: Path, mq_dir: Path, whole_pool: bool) -> dict[str, dict
     name = "rankings_whole_pool.json" if whole_pool else "rankings_equal_width.json"
     path = out / name
     if path.exists():
-        with path.open(encoding="utf-8") as handle:
-            return json.load(handle)
+        try:
+            with path.open(encoding="utf-8") as handle:
+                loaded = json.load(handle)
+        except json.JSONDecodeError as exc:
+            # `cmd_pairs` writes these with a non-atomic write_text, so an interrupted run leaves
+            # a partial file. A truncated frozen ranking is not an absent one and must not read as
+            # agreement, so this refuses rather than quietly re-deriving.
+            raise RuntimeError(
+                f"{path} exists but is not valid JSON ({exc}); it was probably written by an "
+                f"interrupted `pairs` run. Delete it to re-derive, or re-run `pairs`."
+            ) from exc
+        # The preferred path must be at least as strict as the fallback it replaced. An arm
+        # MISSING gives a bare KeyError three loops later; an EXTRA arm is worse, because `shared`
+        # intersects over every arm present and would silently shrink the query population that
+        # every published number is computed on.
+        declared, present = set(RERANK_ARMS), set(loaded)
+        if present != declared:
+            raise RuntimeError(
+                f"{path} holds arms {sorted(present)} but this run declares "
+                f"{sorted(declared)}. Missing: {sorted(declared - present)}; "
+                f"unexpected: {sorted(present - declared)}. Re-run `pairs` against the current "
+                f"RERANK_ARMS rather than mixing the two."
+            )
+        return loaded
     print(json.dumps({"event": "frozen_rankings_absent", "expected": str(path),
                       "falling_back_to": str(mq_dir)}), flush=True)
     return load_arm_rankings(mq_dir, whole_pool=whole_pool)
@@ -255,7 +276,9 @@ def cmd_apply(args: argparse.Namespace) -> int:
 
     rankings = frozen_rankings(out, mq_dir, args.whole_pool)
     scores = _load_scores(args.scores)
-    shared = sorted(set.intersection(*(set(r) for r in rankings.values())) & set(qrels))
+    shared = sorted(
+        set.intersection(*(set(rankings[name]) for name in RERANK_ARMS)) & set(qrels)
+    )
     if not shared:
         raise RuntimeError("no query is present in every arm's rankings and the qrels")
 
@@ -276,31 +299,34 @@ def cmd_apply(args: argparse.Namespace) -> int:
                 fn(rankings[name][t], qrels[t]) for t in shared) / len(shared)
             row[f"reranked_{metric}"] = sum(
                 fn(reranked[name][t], qrels[t]) for t in shared) / len(shared)
-        # 🔑 MEASURED, not asserted. The first version compared set(raw) against set(reranked),
-        # which `rerank_order` makes unsatisfiable: it returns a permutation of its input by
-        # construction, so that check could never fire. It was a gate that cannot fail dressed up
-        # as a guarantee, in a file that argues against exactly that.
-        #
-        # What actually makes R@100 invariant is that the ranking is no DEEPER than the cutoff.
-        # Under `--whole-pool` it is not, and R@100 genuinely moves, so the flag is derived from
-        # the numbers rather than hardcoded.
+        # 🔑 R@100 invariance is a PROPERTY OF THE DESIGN, not something an R@100 comparison can
+        # evidence. At depth <= EVAL_K, `rerank_order` returns a permutation and `recall_at` takes
+        # `set(ranked[:EVAL_K])`, so raw and reranked R@100 are bit-identical NO MATTER WHAT the
+        # scores say. Two successive versions of this code tried to infer the property from that
+        # comparison; both were unsatisfiable, i.e. gates that could not fire, which is the exact
+        # thing this module argues against. So the flag is now read off the depth, which is what
+        # actually carries the claim, and the number is reported beside it.
         deepest = max(len(rankings[name][t]) for t in shared)
-        invariant = row["raw_R@100"] == row["reranked_R@100"]
         row["max_ranking_length"] = deepest
-        row["r@100_invariant"] = invariant
+        row["r@100_invariant"] = deepest <= EVAL_K
+        row["r@100_invariance_basis"] = (
+            "guaranteed: ranking is no deeper than the cutoff" if deepest <= EVAL_K
+            else "NOT invariant: ranking is deeper than the cutoff, reranking moves documents "
+                 "across it"
+        )
         if deepest > EVAL_K:
             any_pool_limited = True
-            if invariant:
-                raise RuntimeError(
-                    f"arm {name} has rankings up to {deepest} deep, so reranking can push a "
-                    f"document past the R@100 cutoff, yet raw and reranked R@100 are identical. "
-                    f"That is too improbable to publish: check the scores actually reordered."
-                )
-        elif not invariant:
+
+        # The deterministic gate the R@100 comparison was standing in for: did the scores actually
+        # reorder anything? Unlike "R@100 moved", this cannot be satisfied by luck and cannot fire
+        # on legitimate data where a real reordering happens not to cross the cutoff.
+        reordered = sum(1 for t in shared if reranked[name][t] != rankings[name][t])
+        row["queries_reordered"] = reordered
+        if reordered == 0:
             raise RuntimeError(
-                f"arm {name} is capped at {deepest} <= {EVAL_K} yet its R@100 changed under "
-                f"reranking. Reordering a set cannot change its membership, so the ranking that "
-                f"was scored is not the ranking being measured."
+                f"arm {name}: reranking changed the order of NONE of {len(shared)} queries. The "
+                f"scores file does not correspond to these rankings, or every score is equal. "
+                f"Publishing this would report the raw ordering as a reranked result."
             )
         summaries.append(row)
         print(json.dumps({"event": "arm_reranked",
@@ -364,7 +390,11 @@ def cmd_apply(args: argparse.Namespace) -> int:
         "contrasts": {cid: {**details[cid], **results[cid]} for cid, *_ in RERANK_CONTRASTS},
         "at": utc_now(),
     }
-    (out / "rerank_decision.json").write_text(json.dumps(decision, indent=2), encoding="utf-8")
+    # Derive the name from the DESIGN. `rerank_offload` learned this the same way: two runs
+    # writing one filename overwrite each other and the second result looks like the first. Here
+    # the loser would be the preregistered primary, replaced by the width-confounded secondary.
+    filename = "rerank_decision_whole_pool.json" if args.whole_pool else "rerank_decision.json"
+    (out / filename).write_text(json.dumps(decision, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in decision.items() if k not in ("contrasts", "arms")},
                      indent=2), flush=True)
     return 0
@@ -393,7 +423,28 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 row = json.loads(line)
                 docs[str(row["doc_id"])] = str(row["text"])
     queries = load_queries(mq_dir, "last")
-    rankings = frozen_rankings(out, mq_dir, args.whole_pool)["mq_nested3"]
+    all_rankings = frozen_rankings(out, mq_dir, args.whole_pool)
+    probe = "mq_nested3"
+    if probe not in all_rankings:
+        raise RuntimeError(f"{probe} is absent from the rankings; nothing to validate against")
+    rankings = {t: r for t, r in all_rankings[probe].items() if r}
+    if not rankings:
+        raise RuntimeError(f"{probe} has no non-empty ranking to validate")
+    sample_ids = sorted(rankings)[: args.sample]
+    needed = {c for t in sample_ids for c in rankings[t]}
+    if not needed <= set(docs):
+        raise RuntimeError(
+            f"{len(needed - set(docs))} candidates have no text in {out / 'docs.jsonl'} "
+            f"(e.g. {sorted(needed - set(docs))[:3]}). The payload and the --whole-pool flag "
+            f"disagree: a whole-pool validation needs a payload built with "
+            f"`pairs --include-whole-pool`."
+        )
+    unscored = {c for t in sample_ids for c in rankings[t] if c not in scores.get(t, {})}
+    if unscored:
+        raise RuntimeError(
+            f"{len(unscored)} candidates have no score (e.g. {sorted(unscored)[:3]}); the scores "
+            f"file does not cover the rankings being validated."
+        )
 
     # The gate must instantiate the reranker the SCORES came from. Validating BGE scores against a
     # MiniLM ordering fails for a reason that has nothing to do with the offload, and the same
@@ -406,7 +457,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
     reranker = CrossEncoderReranker(**kwargs)
     failures, ties = [], []
     worst = 0.0
-    for task_id in sorted(rankings)[: args.sample]:
+    for task_id in sample_ids:
         candidates = rankings[task_id]
         hits = [ScoredChunk(chunk=Chunk(id=c, source="s", text=docs[c], metadata={}), score=0.0)
                 for c in candidates]

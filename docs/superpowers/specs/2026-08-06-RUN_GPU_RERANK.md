@@ -127,17 +127,16 @@ ssh -i ~/.ssh/contabo_sentiment root@100.91.148.25 'cd /var/tmp/re_call_splade_2
 Writes `rerank_decision.json`. The verdict is one of `MATERIALLY_CONVERTS`, `CONVERTS_BUT_BELOW_BAR`,
 `DOES_NOT_CONVERT`, `REVERSES`, per the preregistered rule on **C1 = mq_nested3 − mq_last, nDCG@5**.
 
-Then the SECONDARY whole-pool analysis, from the same scores, into its own directory so it cannot
-overwrite the primary decision:
+Then the SECONDARY whole-pool analysis, from the same scores, in the SAME directory. It writes
+`rerank_decision_whole_pool.json`, so it cannot overwrite the primary:
 
 ```bash
-ssh -i ~/.ssh/contabo_sentiment root@100.91.148.25 'cd /var/tmp/re_call_splade_20260806/RE-call && ../.venv/bin/python -m benchmarks.mtrag.rerank_multiquery apply --mq-dir /var/tmp/re_call_splade_20260806/mq --output-dir /var/tmp/re_call_splade_20260806/mqrr_wholepool --mtrag-root /var/tmp/re_call_mtrag_20260803/mt-rag-benchmark --scores /var/tmp/re_call_splade_20260806/mqrr/scores_minilm.jsonl --whole-pool'
+ssh -i ~/.ssh/contabo_sentiment root@100.91.148.25 'cd /var/tmp/re_call_splade_20260806/RE-call && ../.venv/bin/python -m benchmarks.mtrag.rerank_multiquery apply --mq-dir /var/tmp/re_call_splade_20260806/mq --output-dir /var/tmp/re_call_splade_20260806/mqrr --mtrag-root /var/tmp/re_call_mtrag_20260803/mt-rag-benchmark --scores /var/tmp/re_call_splade_20260806/mqrr/scores_minilm.jsonl --whole-pool'
 ```
 
-⚠️ Copy `rankings_whole_pool.json` into that directory first, or `apply` will fall back to
-re-deriving and say so on stdout. Its output carries `whole_pool: true` and a `design` field
-naming the width confound; **R@100 is NOT invariant there** and the run reports that per arm rather
-than assuming it.
+⚠️ Its output carries `whole_pool: true` and a `design` field naming the width confound.
+**R@100 is NOT invariant there**, and the run reports that per arm from the ranking depth rather
+than assuming it. Do not compare these numbers against the equal-width contrast.
 
 ### 9. Destroy the instance
 
