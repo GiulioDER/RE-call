@@ -252,6 +252,11 @@ module = [
     # submitter-side adapters, which import it. Same shape as every entry above: the module must
     # type-check without the thing it optionally talks to.
     "membench.*",
+    # benchmarks/mtrag/multiquery.py is a benchmark module carrying no py.typed marker, and it is
+    # imported by `deployable_fusion_weight` so the follow-on arm reuses its frozen fusion rather
+    # than restating it. Same shape as every entry above: the importing module must type-check
+    # whether or not the imported one is present, which also keeps the two mergeable in any order.
+    "benchmarks.mtrag.multiquery",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
