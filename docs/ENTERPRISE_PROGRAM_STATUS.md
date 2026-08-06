@@ -181,6 +181,306 @@ the harness would have prevented it.
 
 ---
 
+
+## 2026-08-05, the paired comparison: stopped before it ran, because its two arms are the same system
+
+Branch cut fresh from `origin/master` at `ca8ccd8`, in its own worktree (`…/RE-call-paired`). The
+primary clone was clean and on `master` for once; it was still left alone, because three
+consecutive entries below record finding somebody else's uncommitted work in it.
+
+### Session ledger
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | Verify the three stated preconditions | done. **One holds, two do not**; evidence per precondition below |
+| 2 | Predict the outcome and the invariants before running | done, and the prediction is what stopped the run |
+| 3 | Run the paired comparison, both retrieval profiles, five corpora | **NOT DONE, deliberately.** The two named arms cannot produce different vectors. Measured, with controls |
+| 4 | Machine-readable decision, negative result retained, archived | done, as a **precondition audit** rather than a counterfeit `PromotionDecision` |
+| 5 | Decide which candidate the campaign should actually compare | **not mine to decide.** Two registered candidates are real; the choice is below and needs the operator |
+
+### The headline: the candidate is not a different system
+
+`bge-small-symmetric-v1` and `bge-small-asymmetric-v1` are registered in
+`recall/embedding_registry.py` with the same `model_name`, `dimension`, `context_mode`,
+`normalization`, `instruction_version`, `chunker_version` and `backend`. They differ in exactly two
+fields, `query_mode` and `passage_mode`, and `/opt/recall-enterprise/manifest.json` records them as
+the active and shadow profiles of **one** provisioned artifact tree
+(`9a443d711e06…c919c`, recomputed this session and equal to the recorded value).
+
+So the entire retrieval difference between the two arms is whatever the backend's `query_embed` and
+`passage_embed` do differently from `embed`. Measured on VPS2 against that tree, offline: **nothing.
+Six probes, three query-shaped and three passage-shaped, all three encoders byte-identical on every
+one, cosine exactly 1.0.**
+
+**And the reason is a property of the library, not of this host.** `BAAI/bge-small-en-v1.5`
+resolves to `OnnxTextEmbedding`, which does **not** override `query_embed` or `passage_embed`: both
+come from `TextEmbeddingBase` and `yield from self.embed(...)` with no instruction. The script walks
+that delegation chain (`TextEmbedding.query_embed` → `TextEmbeddingBase.query_embed`) and reports
+it, so the finding rests on two independent legs, behaviour and source, and does not expire with
+this deployment.
+
+A paired comparison of the two is therefore a system compared with itself. Every question's `hit@5`
+delta is zero by construction, the stratified paired bootstrap interval is `[0, 0]`, and the gate
+refuses for a reason that describes neither profile. `results/promotion/decision.null-difference.json`
+is the same KIND of null, produced by the previous session deliberately as the harness's own
+control. **It is not the same artifact**, and the difference is the dangerous part: both of its arms
+are `bge-small-symmetric-v1` at one fingerprint, so its deltas are exact zeros, whereas the briefed
+pairing has two fingerprints and two physical tables, so its deltas would be tie-break noise around
+zero. Running the campaign as briefed would have published a noisier control under a candidate's
+name and called it the first real paired comparison.
+
+**This also corrects the session-8 entry below**, which grouped `bge-small-asymmetric-v1` with the
+context profiles as differing "in the passage TEXT they embed". It does not: `context_mode` is
+`none` for both it and `bge-small-symmetric-v1`, so their `context_version` is `raw-v1` on both
+sides and the passage text is identical too. Only the three context profiles differ in text.
+
+⚠️ **Worse than uninformative.** The two profiles have different fingerprints, so they index into
+two different physical tables. Ties among equal scores can break on row order, so two provably
+identical systems can still yield a handful of nonzero per-question deltas. A gate fed that noise
+can report a corpus improvement with a Holm-corrected p-value attached to it. A null that is
+*exactly* zero refuses cleanly; a null contaminated by tie-break noise is the shape that promotes
+something.
+
+**This was predicted in writing before it was measured**, from the registry alone, and the
+measurement is the confirmation rather than the discovery. Session 8 had already recorded the same
+fact (`docs_search`, cosine 0.81, no gap warning) and this run is an independent confirmation with
+different probe texts, made because a fact that decides whether a whole campaign is worth running is
+one to confirm rather than inherit.
+
+### The preconditions: one holds, two do not
+
+The brief said to stop and say so rather than improvise if any was missing. Two are missing.
+
+| Precondition | Verdict | Evidence |
+|---|---|---|
+| The prior session's promotion harness is merged | **HOLDS** | `recall/eval/promotion/` is on `origin/master` at `ca8ccd8` (PR #208, merged as `c6c0197`), and `results/promotion/decision.null-difference.json` proves the producer has been driven end to end. ⚠️ PR **#203** (eval question-id validation, shared scoring flag, nearest-rank percentile) is still **OPEN**; it touches `benchmarks/` scoring rather than this package |
+| Frozen manifests exist | **FAILS, for five of the six corpora**, but the gap is smaller than this entry first said | the only PROMOTION-format frozen manifest is `results/promotion/labelled.manifest.jsonl`: 25 questions, digest `cad3281c…`. **Correction, from the CCA doc auditor:** the ladder already carries its own frozen manifest, `results/ladder/manifest.jsonl`, 1800 instances, digest `6bfe2d2b…`, which `LadderAdapter` re-expresses rather than re-derives. My evidence command was `find / -xdev -maxdepth 8 -name '*.manifest.jsonl'`, a glob that **cannot match a file named `manifest.jsonl`**, so the search that produced "nothing anywhere" was incapable of finding it |
+| Profile-scoped calibration artifacts exist for both profiles | **FAILS, for both** | the mechanism exists (`save_for_profile` / `load_for_profile`, `PROFILE_FINGERPRINT_KEY`, covered by `tests/test_calibration_profile_scope.py`). No artifact does. The only two RE-call calibration artifacts on the host belong to a Voyage embedder and an OpenAI embedder, **both `certified: false`**, and neither names a BGE profile. Relation `recall_calibrations` **does not exist** in either RE-call database there, and the deployment manifest records `core_schema_current: 0010` while calibration binding is migration `0011` |
+
+**The corpus DATA is not the problem, and three of the six need no host data at all.** Measured by
+calling `unavailable_reason()` on every adapter from a bare checkout:
+
+| Corpus | Freezable from a clean clone? |
+|---|---|
+| `labelled`, `ladder`, `peps` | **yes**, `unavailable_reason() is None` for all three |
+| `locomo`, `longmemeval`, `mtrag` | no: need `locomo10.json`, `longmemeval_s.json` and the MT-RAG release, all provisioned on the host |
+
+So the blocker is narrower than "five corpora cannot be scored": three can be frozen today with one
+command, and only the other three depend on host data. What is absent everywhere is the frozen
+question set, whose entire value is that it predates any candidate result, and the calibration
+without which `superseded_trust_rate` is `null` rather than a number.
+
+> Host paths and database names with no prior art in this repository are deliberately not
+> written out here. This repository is public,
+> and the CCA security auditor found that five such strings in the first draft of this entry had no
+> prior art anywhere in it. The operator runbook is the place for them; a handoff needs to say what
+> exists, not where.
+
+That last one is not a formality. `recall.eval.promotion run --trust-policy strict` **refuses**
+without a generation-bound certified calibration, and `--trust-policy development` records every
+verdict as `unverified`, under which the gate's "superseded trust rate exactly zero" criterion
+cannot be evaluated at all. The existing null-difference decision says exactly that in its
+`failures` list.
+
+### What was measured
+
+`benchmarks/check_profile_encoder_distinctness.py`, run on VPS2 by root SSH. qwen-mcp's file roots
+are `/opt/sentiment_agent`, `/var/lib/qwen_agent`, `/var/log/qwen_agent` and
+`/etc/systemd/system`; this program lives in `/opt/recall-enterprise`, outside all four, so root SSH
+is the documented fallback and is stated here rather than left to be inferred.
+
+The script does not import the `recall` package. The subject is what the BACKEND does, and asking
+the code under test whether its own two configurations differ is the self-comparison this program
+keeps recording. Five controls, all blocking:
+
+| Control | Result |
+|---|---|
+| Positive: two texts that must not agree | fired, cosine `0.65494816858` |
+| Determinism: the same call twice | byte-identical, so an "identical" reading is not luck |
+| Coverage: every declared probe produced a row, both shapes present | fired, 6 of 6. `all([])` is `True`, so a truncated probe set would have read as identity |
+| **Sensitivity: a deliberate 1e-4 rad rotation must be reported as DIFFERENT** | fired, cosine `0.999999995`. **This is the control the first version did not have** |
+| Identity: artifact digest bound, vector width matched | fired, digest equals the manifest's, `local_files_only` confirmed consumed |
+
+**The sensitivity row is the finding of this session's own audit.** The first version's two controls both
+varied the TEXT and held the ENCODER fixed, at a cosine of 0.65, while the probes vary the ENCODER
+and hold the text fixed, and the null is drawn on that axis. So it established that the comparator
+separates grossly different vectors and never that it could see a small difference between two
+encoders. **A positive control validates the MECHANISM, not the SCOPE**, and I shipped an instance
+of this program's own standing lesson.
+
+The related defect was in the arithmetic. `_cosine` computed entirely in float32, so it returned
+values **above 1.0** for byte-identical vectors (31.9% of 20000 trials, max `1.000000119209`) and
+returned exactly `1.0` for vectors differing in 382 of 384 components (a 3e-5 rad rotation). The
+published "cosine exactly 1.0" was not a property that implementation reliably produced. It now
+computes in float64 and clamps; reverting it to float32 turns **11 of the 28 new tests** red.
+
+Every guard was shown able to fail by mutation, applied and restored **by bytes**, with the file
+verified byte-identical afterwards: sensitivity, coverage, provisioning, digest binding, the float64
+cosine, the usage-versus-help exit split, the AST delegation check, the verdict's use of it, the
+schema stamp and the provenance stamp. **10 of 10 killed** in one sweep.
+
+Two earlier rounds got this wrong, and both errors were in the SWEEP rather than in the code, which
+is why the count is stated from a single clean run rather than accumulated across rounds. One
+mutation's search string did not match and the harness aborted that row instead of reporting a
+survival, which is the behaviour that makes the other rows mean anything. And "delete the schema
+key" **survived**, because the test read the committed artifact FILE and could not see the emitter
+losing the key: a test that pins an artifact does not pin the code that writes it.
+
+**No timing is reported and none is citable.** VPS2 showed a load average of 9.37 / 8.79 / 9.46 on
+12 cores while this ran, from unrelated live production. The only numbers taken from VPS2 here are
+digests, byte comparisons and cosines.
+
+### Archived
+
+`/var/lib/recall-benchmarks/2026-08-05-embedding-profile-distinctness/`, with `MANIFEST.sha256`
+covering every file and `sha256sum -c` passing. The archive is populated from `git show <rev>:<path>`, so it holds exactly the bytes git stores,
+and `result.json` carries `script_sha256`, the producing script's digest over LF-normalised bytes.
+
+**No digests are quoted here, deliberately.** The invariant is stated instead, and it is checkable
+with one command against any revision:
+
+```
+git show <rev>:benchmarks/check_profile_encoder_distinctness.py | sha256sum   # == the archived copy
+jq -r .script_sha256 results/promotion/encoder-distinctness.bge-small.json    # == the same value
+```
+
+⚠️ **This one sentence was wrong four times, and the fourth is the one that matters.** It quoted
+the digest of the script *before* the audit rewrote 694 lines of it; then a test-file digest that
+moved when one test was appended; then it compared a CRLF working copy against an LF git blob, so
+the archived file and the committed file genuinely differed and `sha256sum` on the working copy
+could never have detected it. Each time the value was patched. The fourth time it went stale
+**inside the commit that wrote it**, which is structural: a document cannot correctly quote the
+digest of a file it is committed alongside, because writing the quote changes the tree.
+
+**Four rounds on one claim means the mechanism is wrong, not the number**, and the first three
+patches were all treating a mechanism failure as an arithmetic one. Naming the invariant and the
+command ends it: there is no value left to go stale, and `script_sha256` puts the provenance inside
+the artifact where it travels with the result instead of in a paragraph beside it. The previous
+session recorded the same class from the other side, a mutation harness whose `write_text` restore
+rewrote LF as CRLF and left ten files dirty.
+
+Two machine-readable artifacts, and neither is a `PromotionDecision`. No arm was scored, so
+emitting that schema would have described a gate evaluation that never happened, and a refusal to
+run must not read like a run that refused.
+
+| Artifact | Where | Schema |
+|---|---|---|
+| The precondition verdicts and their evidence | archive only | `recall-precondition-audit-v1` |
+| The measurement itself | **in the repository**, `results/promotion/encoder-distinctness.bge-small.json`, and in the archive | `recall-encoder-distinctness-v1` |
+
+The second is committed so the finding survives without host access, and it carries an explicit
+`schema` key because it sits in `results/promotion/`, the directory promotion decisions are written
+into, where a reader should not have to infer the kind from the filename. A test asserts both the
+schema and the absence of `promoted` / `bootstrap_interval`.
+
+### What was deliberately not done
+
+1. **No arm was scored, no manifest was frozen, no calibration was authored.** Each of those would
+   have been improvising a missing precondition into existence, which the brief forbade and which
+   would have produced a manifest that postdates the candidate — the one property a frozen manifest
+   exists to deny.
+2. **The MT-RAG pool-100 preregistration was not touched, relabelled or extended.** It is a valid
+   preregistered baseline and it cannot certify a pool-20 quality profile.
+3. **No new profile was registered.** Giving BGE a query instruction would make the asymmetric
+   profile genuinely asymmetric, and that is a new model candidate, which this program's standing
+   scope puts behind a separately registered experiment.
+
+### The decision the next session needs from the operator
+
+The campaign's machinery is sound; only its candidate is empty. Two registered candidates would
+make it a real experiment, and choosing between them is a decision rather than a fix:
+
+1. **The context-mode profiles** — `bge-small-context-{document,section,neighbor}-v1` against
+   `bge-small-symmetric-v1`. These genuinely differ: the same encoder over different passage text,
+   which is the one axis the byte-identity finding above leaves intact. The context-modes entry
+   below deliberately did not measure which mode wins and named it the next campaign. **This is the
+   paired embedding comparison that is actually available today.**
+
+   Two things make it cleaner than it looks, and both come out of this session's measurement.
+   The briefed arms share `context_version = raw-v1`, so they were identical in **passage text as
+   well as encoder**, which is why their null is exact rather than approximate. And the context
+   profiles declare `query_embed` / `passage_embed` while `bge-small-symmetric-v1` declares
+   `embed`, so a comparison between them nominally varies two things at once — except that the
+   encoder-mode variation is now **measured to be a no-op on this backend**, which makes it a
+   genuine single-variable experiment. That is only true because of the measurement above; without
+   it, the comparison would have been confounded and nobody would have known.
+2. **The retrieval profiles** — `fast` against `quality` (pinned MiniLM, pool 20) on one embedding
+   profile. Also a real difference, and it is the arm the MT-RAG pool-100 results cannot certify.
+   But it varies the retrieval profile rather than the embedding profile, so the gate's arms mean
+   something different and the brief's framing would have to move with it.
+
+Either way the two failing preconditions have to be met first: freeze a manifest per corpus, and
+author a generation-bound certified calibration (which needs migration `0011` applied on the host,
+where the schema is currently at `0010`).
+
+### Gates run
+
+| Gate | Result |
+|---|---|
+| `ruff check .` | clean, ruff 0.15.22 |
+| `mypy` | clean, 149 source files |
+| `pytest tests/test_bench_profile_encoder_distinctness.py` | **28 passed** (new file) |
+| `pytest` on the four suites reading the edited documents | 81 passed |
+| `benchmarks/claim_gate.py` | exit 0 |
+| Mutation sweep over the new guards | **10 of 10 killed**, one clean sweep, file restored byte-identical |
+| CCA audit | DEEP tier, 5 auditors, **31 findings**; then the anti-regression and architect gates, **2 regressions + 8 more**; see below |
+
+### The audit found the apparatus, not the conclusion, and that is the second headline
+
+**Deterministic coverage was NONE** (`cca_checks` is not installed in this venv), so every verdict
+rests on LLM adjudication plus what I re-executed myself. Two auditors were deliberately not
+dispatched: `perf-auditor` (nothing here is on a hot path) and `env-validator` (no config key was
+added). Those two dimensions are **unaudited** for this change, and a skipped gate must not read
+like a passing one.
+
+The conclusion survived every finding. The apparatus did not:
+
+| Finding | Outcome |
+|---|---|
+| **Both controls varied the TEXT and never the ENCODER**, so a text-keyed cache would have passed them, and the harness's resolution on the decision axis was never demonstrated | fixed: the sensitivity control, plus delegation-chain introspection |
+| **`_cosine` computed in float32**: above 1.0 for byte-identical vectors, blind below 3e-5 rad | fixed: float64 and clamped. Reverting it turns 11 of 28 tests red |
+| **fastembed 0.8.0's artifact-miss path `rmtree`s and `unlink`s BEFORE checking `local_files_only`**, and the default `--cache-dir` was the production tree with "run as root" in the instructions | fixed: `assert_provisioned` refuses that state before the loader is constructed, and the run instruction now uses a copy. **I had already run the first version as root against the live tree**; it survived only because the tree resolves cleanly |
+| **Nothing bound the result to the artifact** it was attributed to: no digest, no width check | fixed, both, before any encoding |
+| **No test seam and no companion test.** The only proof a control could refuse was a copy hand-edited on the host and deleted | fixed: `model_factory`, and a test file now carrying 28 tests against a stub backend, so CI runs them without the `fastembed` extra |
+| **"The only frozen manifest anywhere is `labelled`"** came from a glob that cannot match `manifest.jsonl` | fixed above; the ladder has one and three corpora freeze from a clean clone |
+| **The CHANGELOG called the existing null-difference decision "already that artifact"** while this entry argued the real pairing differs in exactly the way that matters | fixed; both now say same KIND, not same artifact |
+| Argparse usage errors exited 2, the same code as a refused control | fixed, usage is 64 |
+| Version lookup ran after the measurement and could destroy it; `hasattr` where `callable` was meant; `NaN` serialised into a "machine-readable" artifact; offline guard only in `main()`; the verdict hardcoded profile names while the model was a parameter | all fixed |
+| Prior-work statement was the fifth paragraph rather than the first, and the module carried no `PRE-REGISTERED` block | fixed, per `benchmarks/EXPERIMENT-CONVENTION.md` |
+| Five host paths and two database names had no prior art in this **public** repository | fixed, genericised |
+
+Recorded and **not** fixed: the backend's native dtype is still not recorded beside the byte
+comparison, so "byte-identical" is stated at float32 resolution without saying so; and `numpy` is
+imported in several helpers rather than once, which is the repo's optional-extra idiom applied more
+times than it needs to be.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** VPS2 showed load average 9.37 on 12 cores during this session. | External dependency. Do not work around it. | Latency is **PENDING**; promotion blocked on latency grounds. Quality and safety gates still run. | unchanged, restated from observation |
+| **No frozen manifest outside `labelled`.** | Open, **new to this list** | Four of the five corpora in the campaign brief cannot be scored reproducibly. | new |
+| **No certified calibration for any BGE profile, and `recall_calibrations` is not deployed.** | Open, **new to this list** | Under `strict` the harness refuses; under `development` every trust verdict is `unverified` and the superseded-trust gate cannot be evaluated. | new |
+| **No production corpus.** | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
+| **No approved local generator confirmed.** | Open | The generator-neutral evidence path stays unexercised end to end. | unchanged |
+
+### What the next session should start with
+
+1. **The operator's answer to the candidate question above.** Everything else is downstream of it.
+2. **Freeze a manifest per corpus**, once the candidate is chosen: `python -m recall.eval.promotion
+   freeze --corpus …`. The adapters for all six exist; the data is provisioned on VPS2; nothing has
+   been frozen but `labelled`.
+3. **Apply migration `0011` on the host and author a calibration bound to a generation.** Until
+   then no decision can be green, and the `superseded_trust_rate` gate is not merely failing but
+   unevaluable.
+4. **PR #203** is still open and touches the scoring path. Land it before any campaign quotes a
+   percentile.
+5. The dual-write skip defect (`recall/index.py:426`/`:459`) named two entries below is still open
+   and is still the only item that can silently half-populate a shadow generation.
+
+---
+
+
 ## 2026-08-05, the evidence boundary: reachable, and the delimiter it could not defend
 
 ### Session ledger
@@ -1586,6 +1886,9 @@ Nothing in this session depends on that being false, and nothing here changes it
 
 * the three context profiles and `bge-small-asymmetric-v1` currently differ from
   `bge-small-symmetric-v1` in the passage TEXT they embed, not in the encoder they use;
+  **[corrected 2026-08-05, see the top entry: `bge-small-asymmetric-v1` does NOT belong in this
+  sentence. Its `context_mode` is `none`, the same as the symmetric profile, so its passage text
+  is identical too. Only the three context profiles differ in text.]**
 * the dispatch still has to be correct, because `qwen3-embedding-0.6b-384-v1` does use a distinct
   instruction-prefixed query encoder, and because a future fastembed or model could add one
   without changing a profile ID;

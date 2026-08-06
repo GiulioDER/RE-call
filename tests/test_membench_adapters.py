@@ -22,7 +22,7 @@ import pytest
 
 import recall
 from benchmarks.membench import _env
-from tests.conftest import requires_db
+from tests.conftest import requires_db, requires_fastembed
 
 _HAS_MEMBENCH = importlib.util.find_spec("membench") is not None
 requires_membench = pytest.mark.skipif(
@@ -110,6 +110,14 @@ def test_both_adapters_import_and_report_the_live_version():
 
 @requires_membench
 @requires_db
+# The only test here that constructs an adapter for real, so the only one that reaches
+# `_env._build_embedder()`, which returns a `FastEmbedEmbedder` unless `MEMBENCH_EMBEDDER` names a
+# Voyage model. That is an OPTIONAL extra: without this guard the test fails with
+# `ImportError: FastEmbedEmbedder requires the fastembed extra` on any machine that has mem-bench
+# and a reachable Postgres but not the extra. The neighbouring `_env` tests stub `_build_embedder`
+# for the same reason, and `test_both_adapters_import_and_report_the_live_version` sidesteps it by
+# reading the property off `object.__new__` without running `__init__`.
+@requires_fastembed
 def test_temporal_adapter_puts_the_intervals_where_recall_reads_them(monkeypatch):
     """The axis measures SELECTION, so the runner hands the intervals over deliberately.
 
@@ -138,6 +146,16 @@ def test_temporal_adapter_puts_the_intervals_where_recall_reads_them(monkeypatch
     table = "mbt_" + uuid.uuid4().hex[:8]
     monkeypatch.setenv("MEMBENCH_DSN", TEST_DSN)
     monkeypatch.setenv("MEMBENCH_TABLE", table)
+    # Pin the arm to the default local one, as the `_env` tests above already do for themselves.
+    # `from_env` reads all of these, so ambient values steer the adapter this test builds: with
+    # `MEMBENCH_RERANKER=voyage:...` or `MEMBENCH_EMBEDDER=voyage:...` set, the run either dies on
+    # a missing `VOYAGE_API_KEY` or, with one present, makes a live network call from
+    # `VoyageEmbedder.__init__` just to learn its dimension — turning a local database test into a
+    # network test. Clearing them is also what makes `@requires_fastembed` above both necessary
+    # AND sufficient: the FastEmbed route is now the only reachable one, so the guard cannot skip
+    # a configuration that would have worked.
+    for unset in ("MEMBENCH_EMBEDDER", "MEMBENCH_RERANKER", "MEMBENCH_K", "MEMBENCH_CANDIDATE_K"):
+        monkeypatch.delenv(unset, raising=False)
     import benchmarks.membench.recall_temporal as rt
 
     importlib.reload(rt)
