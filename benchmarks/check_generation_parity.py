@@ -332,7 +332,15 @@ def main() -> int:
             print(f"indexing {args.profile} -> {table}", flush=True)
             gen = _index(args.dsn, table, args.profile, corpus, args.glob)
             built.append(gen)
-            print(f"  {gen['chunks']} chunks in {gen['index_seconds']}s", flush=True)
+            # All three, because `--stage index` never writes the report (it returns before the
+            # artifact is built, and the driver passes --out /dev/null), so this log line is the
+            # ONLY place a resume leaves evidence of whether it did any work. Printing rows-present
+            # alone makes a no-op resume look identical to a fresh build.
+            print(
+                f"  {gen['chunks']} rows present ({gen['chunks_written']} written, "
+                f"{gen['files_skipped']} files skipped) in {gen['index_seconds']}s",
+                flush=True,
+            )
             return 0
 
         if args.stage == "all":
