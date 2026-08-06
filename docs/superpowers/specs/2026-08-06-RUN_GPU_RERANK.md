@@ -109,9 +109,14 @@ Must print `"verdict": "MATCH"`. This runs the REAL `CrossEncoderReranker` local
 offloaded ordering to match where metrics are cut. An ordering that merely looks reasonable
 produces publishable nDCG that RE-call would never compute, and nothing about it looks wrong.
 
-⚠️ Validating BGE scores against MiniLM's ordering fails for a reason that has nothing to do with
-the offload. For the BGE file pass `--model BAAI/bge-reranker-v2-m3 --revision 953dc6f...` if the
-validate step grows that flag; otherwise validate MiniLM only and treat BGE as secondary evidence.
+Validate the BGE file too, against the model its scores came from:
+
+```bash
+ssh -i ~/.ssh/contabo_sentiment root@100.91.148.25 'cd /var/tmp/re_call_splade_20260806/RE-call && ../.venv/bin/python -m benchmarks.mtrag.rerank_multiquery validate --mq-dir /var/tmp/re_call_splade_20260806/mq --output-dir /var/tmp/re_call_splade_20260806/mqrr --scores /var/tmp/re_call_splade_20260806/mqrr/scores_bge.jsonl --model BAAI/bge-reranker-v2-m3 --revision 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e --sample 20'
+```
+
+⚠️ Validating BGE scores against a MiniLM ordering fails for a reason that has nothing to do with
+the offload, which is why `--model` and `--revision` exist here.
 
 ### 8. Apply and decide
 
@@ -121,6 +126,18 @@ ssh -i ~/.ssh/contabo_sentiment root@100.91.148.25 'cd /var/tmp/re_call_splade_2
 
 Writes `rerank_decision.json`. The verdict is one of `MATERIALLY_CONVERTS`, `CONVERTS_BUT_BELOW_BAR`,
 `DOES_NOT_CONVERT`, `REVERSES`, per the preregistered rule on **C1 = mq_nested3 − mq_last, nDCG@5**.
+
+Then the SECONDARY whole-pool analysis, from the same scores, into its own directory so it cannot
+overwrite the primary decision:
+
+```bash
+ssh -i ~/.ssh/contabo_sentiment root@100.91.148.25 'cd /var/tmp/re_call_splade_20260806/RE-call && ../.venv/bin/python -m benchmarks.mtrag.rerank_multiquery apply --mq-dir /var/tmp/re_call_splade_20260806/mq --output-dir /var/tmp/re_call_splade_20260806/mqrr_wholepool --mtrag-root /var/tmp/re_call_mtrag_20260803/mt-rag-benchmark --scores /var/tmp/re_call_splade_20260806/mqrr/scores_minilm.jsonl --whole-pool'
+```
+
+⚠️ Copy `rankings_whole_pool.json` into that directory first, or `apply` will fall back to
+re-deriving and say so on stdout. Its output carries `whole_pool: true` and a `design` field
+naming the width confound; **R@100 is NOT invariant there** and the run reports that per arm rather
+than assuming it.
 
 ### 9. Destroy the instance
 
