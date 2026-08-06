@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from encode_sparse import passage_id, passage_text  # noqa: E402
+from encode_sparse import passage_id, passage_text, prepare_output  # noqa: E402
 from load_sparse import read_artifact  # noqa: E402
 from recall.types import Chunk  # noqa: E402
 from tests.conftest import requires_db  # noqa: E402
@@ -130,3 +130,19 @@ def test_passage_text_is_normalised_the_same_way_the_indexer_normalises_it() -> 
     a string the dense leg never saw.
     """
     assert passage_text({"text": "a" + chr(0) + "b"}) == "ab"
+
+
+def test_output_directory_is_created_rather_than_assumed(tmp_path: Path) -> None:
+    """The encoder owns its output path, including the directory.
+
+    It failed on the GPU box for exactly this: the caller had only created `vectors/` on one of
+    its two code paths, so the measurement run died on FileNotFoundError AFTER loading the model
+    and reading 1000 passages. Cheap to prevent, and the failure lands at the worst moment -- on
+    rented hardware, with the meter running.
+    """
+    target = tmp_path / "deep" / "nested" / "vectors.jsonl"
+
+    prepare_output(target)
+
+    assert target.parent.is_dir()
+    assert not target.exists()  # the FILE is the caller's to write, only the directory is made
