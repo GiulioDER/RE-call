@@ -155,6 +155,31 @@ swallows, so an unlistable directory aborted with a bare traceback instead of th
 to list now reads as NOT EMPTY, because the one thing that must never follow from an unknown
 directory is a recursive delete.
 
+### Round 4 was the run itself, and it found what three review rounds could not
+
+The relaunch refused immediately: **"FATAL: 2 cores visible"** on a twelve-core host. `nproc`
+honours `OMP_NUM_THREADS`, and this script exports it as 2 about fifteen lines above the core
+count. So the guard read 2 and refused the run outright.
+
+That is an interaction between **two fixes from the same batch**: one set `OMP_NUM_THREADS` to make
+a false comment true, the other counted cores to fail closed. Three review rounds read the two
+hunks separately and none connected them, because *nothing had run the script end to end between
+them*. 🔑 **Reviewing two hunks separately is not reviewing their interaction, and the only thing
+that reliably finds an interaction is execution.**
+
+The repair is not a better count. A count was a PROXY for the question the pins ask, and all three
+shapes of the proxy were wrong differently: the bare `$(nproc)` broke on a missing binary, the
+defaulted one broke on empty output, and the validated one broke on `OMP_NUM_THREADS`. The guard
+now **probes each mask it will actually use** (`0,1`, `2,3`, `4,5`, `6,7`, `0-7`) with
+`taskset -c "$mask" true`, which is not a measurement of anything: it is the operation itself, and
+is therefore immune to all three failure modes at once.
+
+⚠️ One correction made while proving it, which is why the probe is per-mask rather than over the
+union: a **partially valid mask SUCCEEDS.** `taskset -c 0-7` on a four-core host sets affinity to
+0-3 and returns 0, so a union probe would have passed on a host where two of the four arms could
+not run. Only a mask with NO valid CPU is refused, measured: `taskset -c 50-99 true` fails with
+`Invalid argument`. The guard was shown to fire before it was trusted.
+
 ### Carried forward, unfixed
 
 1. **`--table-prefix` reaches a table name through `isidentifier()`, not `validate_table_name()`.**

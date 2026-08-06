@@ -60,24 +60,35 @@ command -v taskset >/dev/null || { echo "FATAL: taskset absent; refusing to run 
 # Every redirection below writes into $OUT. Without this the arms fail at the redirect, before
 # `taskset` ever runs, and the banners still print as though they had started.
 mkdir -p "$OUT" || { echo "FATAL: cannot create $OUT"; exit 2; }
-# `$(nproc)` expands EMPTY if nproc is absent or errors, and `[ "" -ge 8 ]` exits 2 with
-# "integer expected", so the bare form refuses a 12-core host on a missing binary.
+# ⚠️ DO NOT COUNT CORES HERE, and the reason is worth the paragraph.
 #
-# ⚠️ The first repair of that was `cores=$(nproc 2>/dev/null || echo 0)` under a comment claiming
-# it produced "a variable that is always an integer". It did not: `nproc` exiting 0 with EMPTY
-# output leaves `cores` empty, and the `integer expected` shape survived untouched. The `2>/dev/null`
-# also discarded the only evidence of WHY it failed. Both are fixed by validating the value and
-# keeping the message: "could not determine" and "determined, and it is too few" are different
-# facts and must not print the same.
-cores=$(nproc 2>&1)
-case ${cores:-} in
-  ''|*[!0-9]*)
-    echo "FATAL: could not determine the core count (nproc said: ${cores:-<no output>}); the pins"
-    echo "       below need 8 cores. Refusing rather than guessing."
+# This guard went through three shapes before it was right. `[ "$(nproc)" -ge 8 ]` refused a
+# 12-core host whenever `nproc` was missing, because the empty expansion made `[ "" -ge 8 ]` exit
+# with "integer expected". Validating the value fixed that and was still wrong, because **`nproc`
+# honours `OMP_NUM_THREADS`**, which THIS SCRIPT exports as 2 about fifteen lines above. So the
+# count read 2 on a twelve-core machine and refused the run outright.
+#
+# That was an interaction between two fixes from the SAME batch: one set `OMP_NUM_THREADS` to make
+# a false comment true, the other counted cores to fail closed. Three review rounds missed it
+# because each read the two hunks separately and the script was never run end to end between them.
+#
+# The repair is not a better count. A count is a PROXY for the question the pins below actually
+# ask, and every shape of the proxy was wrong in a different way. Ask the kernel the real question
+# instead: can this process take the mask it is about to use? That is immune to OMP_NUM_THREADS,
+# to a missing binary, to cpuset restrictions and to affinity inherited from the caller, because it
+# is not a measurement of anything. It is the operation itself.
+# Probe EACH mask this script uses, not the union. A partially valid mask SUCCEEDS: `taskset -c
+# 0-7` on a four-core host sets affinity to 0-3 and returns 0, so probing the union would pass on a
+# host where the `4,5` and `6,7` arms cannot run at all. Only a mask containing NO valid CPU is
+# refused (measured: `taskset -c 50-99 true` fails "Invalid argument"), so the probe has to be at
+# the granularity of the masks actually used.
+for mask in 0,1 2,3 4,5 6,7 0-7; do
+  taskset -c "$mask" true 2>/dev/null || {
+    echo "FATAL: cannot pin to cores '$mask' on this host (nproc --all reports $(nproc --all 2>&1));"
+    echo "       refusing to run unpinned."
     exit 2
-    ;;
-esac
-[ "$cores" -ge 8 ] || { echo "FATAL: $cores cores visible; the pins below do not exist"; exit 2; }
+  }
+done
 
 idx() {
   local prof=$1 cpus=$2 rc
