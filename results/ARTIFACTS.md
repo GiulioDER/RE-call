@@ -188,3 +188,26 @@ The committed artifacts are records of specific configurations. **Do not point `
 the harness docstrings deliberately no longer suggest a path that would overwrite a retained record.
 Write new runs to a new filename, and if the run is meant to replace a published table, stamp its
 `_provenance` and update the superseded row here in the same change.
+
+## `results/promotion/generation-parity.json`
+
+**What it measured:** that a context mode changes the text EMBEDDED and never the raw chunk content
+or raw content hash STORED. Four generations built over the PEPs corpus (746 sources, 21,924 chunks
+each) under `bge-small-symmetric-v1` and the three `bge-small-context-*-v1` profiles, compared
+pairwise against the baseline with the shipped `recall.migration.validate_generation_parity`.
+
+Result: parity holds on all three, 0 missing sources, 0 extra, 0 hash mismatches, equal chunk
+counts, 746/746 coverage, 0 degenerate hashes, and a positive control that fired on exactly one
+changed file.
+
+⚠️ **These are NOT the 2026-08-06 promotion campaign's own generations.** That harness indexes into
+a `promo_<uuid8>` table and drops it in a `finally`, so its generations no longer exist. This is a
+rebuild over the same corpus with the same embedder and pinned artifact tree, and the file says so
+in its `reconstruction_note`.
+
+⚠️ **This artifact predates the `_provenance` block** the convention above requires. The generator
+(`benchmarks/check_generation_parity.py`) now emits one; this file was produced before that change
+and carries `reconstruction_note`, `corpus_dir`, `glob`, `files_on_disk`, `baseline_profile` and
+per-generation profile/table/mode instead. Re-running the compare stage regenerates a compliant
+artifact. Full run record and SHA256 manifest:
+`/var/lib/recall-benchmarks/2026-08-06-context-mode-generation-parity/`.
