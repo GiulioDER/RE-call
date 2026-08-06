@@ -314,6 +314,28 @@ different things.
 VPS2 has no GPU, so Task 9 is unaffected, and it passes `--sparse-device cpu` explicitly so the
 artifact records a chosen device rather than an incidental one.
 
+### Decided 2026-08-07: local runs stay on CPU
+
+An attempt to install a CUDA torch on 2026-08-07 did not take, for two reasons worth writing down
+because both are silent. `pip install torch --index-url .../cu126` reported **"Requirement already
+satisfied: torch (2.13.0)"** and installed nothing: the CPU and CUDA builds share the version
+`2.13.0`, and the local variant suffix (`+cpu` versus `+cu126`) is not part of what that check
+compares, so pip kept the CPU wheel. Only `torchvision` installed, as `0.28.0+cu126`, leaving a
+CUDA torchvision paired with a CPU torch. It also went into **Python 3.14**'s user site, while every
+venv in this project is Python 3.12 and cannot see it.
+
+A `cp312` wheel does exist: a dry run resolves `torch-2.13.0+cu126` cleanly. It was **not**
+installed, deliberately. PyTorch dropped Pascal and Maxwell kernels from its CUDA wheels around 2.8,
+with `sm_61` named specifically, and this project is on 2.13, so roughly 3 GB of download would
+likely land a wheel with no kernels for this card. The user's call was to skip the probe and stay on
+CPU locally.
+
+Consequences, so nobody re-opens this: `torch` on the local box stays a `+cpu` build,
+`--sparse-device cuda` refuses here **by design** and that refusal is a fixture of the environment
+rather than a fault, and `--sparse-device auto` resolves to CPU and says so. The device checks still
+ship in full, because the next box may be a different one. No measured artifact is affected, since
+VPS2 has no GPU regardless.
+
 ## Open risks
 
 | Risk | Handling |

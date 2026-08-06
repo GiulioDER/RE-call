@@ -13,12 +13,68 @@
 ## Global Constraints
 
 - **Worktree:** `C:/Users/gde00/Documents/recall-spladecli`, branch `feat/splade-cli-arm`, based on `origin/master` `4983f44`. Do not work in `/Documents/recall`, `/Documents/recall-splade`, or any `/opt/recall-*` tree on VPS2: those belong to other lanes.
-- **Test interpreter:** `/c/Users/gde00/Documents/recall/.venv/Scripts/python.exe`, invoked as `python -m pytest` **from the worktree root**, so the local `recall/` package shadows any installed copy. Verified: `import recall` resolves to `C:\Users\gde00\Documents\recall-spladecli\recall\__init__.py`.
+- **Test interpreter:** `.venv/Scripts/python.exe`, the worktree's **own** venv, invoked as `python -m pytest` **from the worktree root**. Created by Task 0. Deliberately not `/Documents/recall/.venv`: that one is shared with other lanes, and anything installed into it changes their runs too.
+- **Local GPU: decided, do not re-open.** The box has a GTX 1070 Ti (Pascal, `sm_61`, 8 GB), and PyTorch dropped Pascal kernels from its CUDA wheels around 2.8 while this project is on 2.13. Rather than spend roughly 3 GB of download to find out, the decision on 2026-08-07 was to **stay on CPU locally** and ship `--sparse-device` with its checks intact (Task 8b). So `torch` here stays a `+cpu` build, `--sparse-device cuda` refuses on this box by design, and that refusal is a fixture of the local environment rather than a fault to be fixed. VPS2 has no GPU either way, so no measured artifact is affected.
 - **Test database:** `RECALL_TEST_DSN`, defaulting to the local dev DSN on `localhost:5432`. Tests marked `@requires_db` skip when it is unreachable. That container is shared with other sessions; every test here uses the `make_store` fixture, which creates and drops a uuid-named table.
 - **`torch` and `transformers` are imported inside functions, never at module scope** in `recall/sparse.py`, so a lexical-only install never needs the `sparse` extra. Tests use a hand-written deterministic encoder, not a checkpoint: no 500 MB download, no network.
 - **`SPARSE_TABLE = "recall_sparse_v1"`**, `SPARSE_DIM = 30522`, `SPARSE_MAX_NONZERO = 1000`, all in `recall/store.py`.
 - **No dash as punctuation** in any prose written to this repository by this plan (comments, docstrings, markdown). Hyphens inside identifiers and inside verbatim quotations are fine.
 - **Every new guard is shown failing before it is shown passing.** A test written after the change and never run red is a hypothesis, not a guard.
+
+---
+
+### Task 0: the worktree's own venv
+
+**Files:**
+- Create: `C:/Users/gde00/Documents/recall-spladecli/.venv` (already covered by `.gitignore:11`)
+
+**Interfaces:**
+- Produces: the interpreter every command in every later task uses.
+
+Isolated on purpose. `/Documents/recall/.venv` is the main clone's, shared with the beam, fusion and enterprise lanes among others, and a dependency change made there reaches all of them.
+
+- [ ] **Step 1: Create it and install the project**
+
+```bash
+cd /c/Users/gde00/Documents/recall-spladecli && py -3.12 -m venv .venv && .venv/Scripts/python.exe -m pip install -e ".[fastembed,sparse,dev,rerank]"
+```
+
+`sparse` brings `transformers` and `torch`; `rerank` brings `sentence-transformers`, which `CrossEncoderReranker` needs for the `--rerank` path.
+
+- [ ] **Step 2: Verify the local package shadows any installed copy**
+
+```bash
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -c "
+import recall, torch, transformers, fastembed, psycopg, pgvector
+print('recall      ', recall.__file__)
+print('torch       ', torch.__version__, torch.version.cuda)
+print('transformers', transformers.__version__)
+"
+```
+
+Expected: `recall.__file__` under `C:\Users\gde00\Documents\recall-spladecli\recall\`, and torch reporting a `+cpu` build with `None` for the CUDA version. That CPU build is the decision recorded in Global Constraints, not a problem to solve.
+
+- [ ] **Step 3: Confirm the database the tests will use is reachable**
+
+```bash
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -c "
+from tests.conftest import TEST_DSN, _db_available
+print('dsn      ', TEST_DSN.rsplit('@', 1)[-1])
+print('reachable', _db_available())
+"
+```
+
+Expected: `reachable True`. If False, every `@requires_db` test in this plan silently SKIPS, and a green run would mean nothing was checked. Start the container (`docker compose up -d --wait`) before going further.
+
+- [ ] **Step 4: Baseline the suite before changing anything**
+
+```bash
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest -q 2>&1 | tail -15
+```
+
+Record the pass, fail and skip counts. Later tasks compare against this baseline, and without it a pre-existing failure gets attributed to this work.
+
+Nothing to commit: `.venv` is ignored.
 
 ---
 
@@ -152,7 +208,7 @@ def test_progress_reports_the_running_written_count(make_store) -> None:
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_sparse_indexing.py -v
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_sparse_indexing.py -v
 ```
 
 Expected: collection error, `ImportError: cannot import name 'SparseIndexResult' from 'recall.sparse'`.
@@ -248,7 +304,7 @@ def store_sparse_vectors(
 - [ ] **Step 4: Run the test to verify it passes**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_sparse_indexing.py -v -k "store_sparse_vectors or term_free or progress"
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_sparse_indexing.py -v -k "store_sparse_vectors or term_free or progress"
 ```
 
 Expected: 3 passed. (The other tests in the file still fail on import until Tasks 2 and 3 land; if collection blocks, comment out the `assert_sparse_coverage` and `backfill_learned_sparse` imports for this step and restore them in Task 2.)
@@ -339,7 +395,7 @@ Add `SparseCoverageError` to the imports at the top of the file.
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_sparse_indexing.py -v -k coverage
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_sparse_indexing.py -v -k coverage
 ```
 
 Expected: collection error, `ImportError: cannot import name 'SparseCoverageError'`.
@@ -387,7 +443,7 @@ def assert_sparse_coverage(
 - [ ] **Step 4: Run the test to verify it passes**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_sparse_indexing.py -v -k coverage
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_sparse_indexing.py -v -k coverage
 ```
 
 Expected: 3 passed.
@@ -462,7 +518,7 @@ def test_backfill_is_idempotent(make_store) -> None:
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_sparse_indexing.py -v -k backfill
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_sparse_indexing.py -v -k backfill
 ```
 
 Expected: `ImportError: cannot import name 'backfill_learned_sparse'`.
@@ -502,7 +558,7 @@ def backfill_learned_sparse(
 - [ ] **Step 4: Run the whole file to verify it passes**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_sparse_indexing.py -v
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_sparse_indexing.py -v
 ```
 
 Expected: 8 passed.
@@ -629,7 +685,7 @@ def test_attaching_a_sparse_encoder_to_an_indexed_corpus_fills_the_sidecar(
 - [ ] **Step 2: Run the tests against the un-integrated `Indexer` and watch them go red**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_indexer_sparse_hook.py -v
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_indexer_sparse_hook.py -v
 ```
 
 Expected: both FAIL with `TypeError: Indexer.__init__() got an unexpected keyword argument 'sparse_encoder'`. **Record this output.** If either test passes here, stop: it is not testing what it claims to.
@@ -722,7 +778,7 @@ Then add the helper immediately after `_flush`:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_indexer_sparse_hook.py -v
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_indexer_sparse_hook.py -v
 ```
 
 Expected: 2 passed.
@@ -730,7 +786,7 @@ Expected: 2 passed.
 - [ ] **Step 6: Run the existing indexer suite for regressions**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/ -v -k "index or shadow" 2>&1 | tail -30
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/ -v -k "index or shadow" 2>&1 | tail -30
 ```
 
 Expected: no new failures against the pre-change baseline.
@@ -800,7 +856,7 @@ Ensure the file imports `psycopg`, `SPARSE_TABLE` from `recall.store`, `TEST_DSN
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_learned_sparse_store.py::test_dropping_the_table_removes_its_sidecar_rows -v
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_learned_sparse_store.py::test_dropping_the_table_removes_its_sidecar_rows -v
 ```
 
 Expected: FAIL, `assert 1 == 0`.
@@ -835,7 +891,7 @@ Note the deliberate absence of a `tenant_id` filter: `drop_table` removes the ta
 - [ ] **Step 4: Run the test to verify it passes**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_learned_sparse_store.py -v
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_learned_sparse_store.py -v
 ```
 
 Expected: all pass.
@@ -926,7 +982,7 @@ def test_read_load_per_core_is_none_or_a_positive_float() -> None:
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_hostload.py -v
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_hostload.py -v
 ```
 
 Expected: collection error, `ModuleNotFoundError: No module named 'recall.eval.hostload'`.
@@ -1000,7 +1056,7 @@ def assert_host_quiet(
 - [ ] **Step 4: Run the test to verify it passes**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_hostload.py -v
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_hostload.py -v
 ```
 
 Expected: 5 passed.
@@ -1138,7 +1194,7 @@ def test_the_lexical_arm_still_reports_a_null_learned_fire_rate(make_store) -> N
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_store_latency_splade_arm.py -v
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_store_latency_splade_arm.py -v
 ```
 
 Expected: FAIL, `AttributeError: 'LegSplit' object has no attribute 'sparse_backend'`.
@@ -1169,7 +1225,7 @@ In the `LegSplit(...)` construction inside `measure`, add the matching argument 
 - [ ] **Step 4: Run the test to verify it passes**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_store_latency_splade_arm.py -v
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_store_latency_splade_arm.py -v
 ```
 
 Expected: 2 passed.
@@ -1378,7 +1434,7 @@ Usage:
 - [ ] **Step 9: Verify the whole file still behaves, including the lexical path**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_store_latency_splade_arm.py -v && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/ -k "store_latency or store_query_latency" -v 2>&1 | tail -20
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_store_latency_splade_arm.py -v && .venv/Scripts/python.exe -m pytest tests/ -k "store_latency or store_query_latency" -v 2>&1 | tail -20
 ```
 
 Expected: all pass.
@@ -1388,7 +1444,7 @@ Expected: all pass.
 This is the first execution of the arm the docstring said could not be selected. It downloads `prithivida/Splade_PP_en_v1` (apache-2.0) on first use.
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe benchmarks/store_latency_share.py --embedder hashing --queries 5 --repeats 1 --candidate-k 10 --sparse-backend lexical --sparse-backend splade --allow-busy-host --out /c/Users/gde00/AppData/Local/Temp/claude/splade_smoke
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe benchmarks/store_latency_share.py --embedder hashing --queries 5 --repeats 1 --candidate-k 10 --sparse-backend lexical --sparse-backend splade --allow-busy-host --out /c/Users/gde00/AppData/Local/Temp/claude/splade_smoke
 ```
 
 Expected: two rows in the printed table, the `splade` row showing a learned fire rate and `n/a` in the sparse fire column, the `lexical` row the reverse. `--allow-busy-host` is correct here: this is a smoke test, not an artifact.
@@ -1474,7 +1530,7 @@ The last entry's test lives in a different file from `TESTS`, so check how the s
 - [ ] **Step 3: Run the sweep**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe scripts/ablate_store_latency_guards.py 2>&1 | tail -30
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe scripts/ablate_store_latency_guards.py 2>&1 | tail -30
 ```
 
 Expected: every entry reports the named test going RED under its mutation, and no entry reports SKIP. A SKIP is a failure of this task, not a pass.
@@ -1649,7 +1705,7 @@ def test_requesting_cpu_never_consults_cuda() -> None:
 - [ ] **Step 2: Run the tests to verify they fail**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_sparse_device.py -v
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_sparse_device.py -v
 ```
 
 Expected: collection error, `ImportError: cannot import name 'DeviceReport' from 'recall.sparse'`.
@@ -1808,7 +1864,7 @@ def resolve_sparse_device(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -m pytest tests/test_sparse_device.py -v
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_sparse_device.py -v
 ```
 
 Expected: 8 passed.
@@ -1818,7 +1874,7 @@ Expected: 8 passed.
 Not an assertion in the suite: that would encode one machine into the test file. Run it once and read it.
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe -c "
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -c "
 from recall.sparse import inspect_sparse_device
 print(inspect_sparse_device('auto'))
 "
@@ -1897,7 +1953,7 @@ In the artifact body, beside `"sparse_profile"`, add:
 `torch` here is a CPU-only build, so this must refuse. This is the guard shown firing through the CLI, not through a monkeypatch.
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe benchmarks/store_latency_share.py --embedder hashing --queries 3 --repeats 1 --candidate-k 10 --sparse-backend splade --sparse-device cuda --allow-busy-host --out /c/Users/gde00/AppData/Local/Temp/claude/splade_device_probe; echo "exit=$?"
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe benchmarks/store_latency_share.py --embedder hashing --queries 3 --repeats 1 --candidate-k 10 --sparse-backend splade --sparse-device cuda --allow-busy-host --out /c/Users/gde00/AppData/Local/Temp/claude/splade_device_probe; echo "exit=$?"
 ```
 
 Expected: a non-zero exit with `SparseDeviceError: --sparse-device cuda was requested but torch is a CPU-only build ...`, raised **before** the corpus is generated. If it generates a corpus first, the resolve call is in the wrong place: move it above the corpus build.
@@ -1905,7 +1961,7 @@ Expected: a non-zero exit with `SparseDeviceError: --sparse-device cuda was requ
 - [ ] **Step 8: Verify `auto` still runs, on CPU, and says so**
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe benchmarks/store_latency_share.py --embedder hashing --queries 3 --repeats 1 --candidate-k 10 --sparse-backend splade --sparse-device auto --allow-busy-host --out /c/Users/gde00/AppData/Local/Temp/claude/splade_device_auto
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe benchmarks/store_latency_share.py --embedder hashing --queries 3 --repeats 1 --candidate-k 10 --sparse-backend splade --sparse-device auto --allow-busy-host --out /c/Users/gde00/AppData/Local/Temp/claude/splade_device_auto
 ```
 
 Expected: `learned sparse device: cpu (requested auto)` followed by the refusal line, then a normal run. Confirm `splits.json` carries `sparse_device.resolved == "cpu"` and a non-null `refusal`.
@@ -1927,7 +1983,7 @@ Append to `ABLATIONS` in `scripts/ablate_store_latency_guards.py`, alongside the
 Run the sweep and confirm no entry prints SKIP:
 
 ```bash
-cd /c/Users/gde00/Documents/recall-spladecli && /c/Users/gde00/Documents/recall/.venv/Scripts/python.exe scripts/ablate_store_latency_guards.py 2>&1 | tail -30
+cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe scripts/ablate_store_latency_guards.py 2>&1 | tail -30
 ```
 
 - [ ] **Step 10: Commit**
