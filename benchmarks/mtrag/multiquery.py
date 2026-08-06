@@ -105,11 +105,17 @@ class MultiQueryArm:
     role: str = "ablation"
 
     def pool_bound(self) -> int:
-        """The most distinct chunks this arm's fusion can hold before truncation to `EVAL_K`.
+        """UPPER BOUND on distinct chunks this arm's fusion can hold, assuming NO overlap.
 
-        A metric cut deeper than this measures the POOL rather than the ranking. Every declared
-        arm clears 100 comfortably, but the budget arm exists precisely to shrink this, so it is
-        computed rather than assumed.
+        ⚠️ This is a bound, not a measurement, and it must not be read as certifying that a
+        metric cut at `EVAL_K` measures ranking rather than pool. The variants overlap heavily
+        (they are reformulations of one question), and where they are byte-identical they overlap
+        completely: `mq_nested3_budget33` on such a query fuses three copies of the same two
+        33-deep legs and realises at most 66 distinct documents against a cut at 100, while this
+        method still returns 198.
+
+        `realised_pool_sizes` is the measurement. Use that to decide whether a metric is
+        pool-limited; use this only to reason about the ceiling.
         """
         return len(self.variants) * len(LEGS) * (self.leg_truncate or LEG_DEPTH)
 
@@ -322,14 +328,18 @@ def cmd_dump(args: argparse.Namespace) -> int:
     encoder = SpladeEncoder.from_pretrained(args.sparse_model or DEFAULT_SPARSE_MODEL)
     qrels = load_qrels(root, "dev")
 
-    stores = {
-        domain: PgVectorStore(dsn, embedder.dim, table=table_name(args.table_prefix, domain))
-        for domain in DOMAINS
-    }
     variants = args.variants or list(VARIANT_FILES)
     shortfalls: dict[str, dict[str, int]] = {}
     empty_sparse: dict[str, int] = {}
+    # Constructed inside the try: `PgVectorStore.__init__` opens a live connection, so building
+    # these in a comprehension outside it leaks every connection already opened when a later
+    # domain's constructor raises.
+    stores: dict[str, Any] = {}
     try:
+        for domain in DOMAINS:
+            stores[domain] = PgVectorStore(
+                dsn, embedder.dim, table=table_name(args.table_prefix, domain)
+            )
         for variant in variants:
             started = time.perf_counter()
             rows = []
@@ -386,18 +396,52 @@ def cmd_dump(args: argparse.Namespace) -> int:
         for store in stores.values():
             store.close()
 
-    (out / "dump_manifest.json").write_text(json.dumps({
-        "variants": variants, "leg_depth": LEG_DEPTH, "legs": list(LEGS),
-        "legs_short_of_depth": shortfalls, "empty_sparse_encodings": empty_sparse,
-        "embedder": EMBEDDER_MODEL, "sparse_model": args.sparse_model or DEFAULT_SPARSE_MODEL,
+    # MERGED, not overwritten. `--variants` allows a partial dump, and `load_legs` reads
+    # `legs/<variant>.jsonl` directly, so a wholesale rewrite would let a directory assembled from
+    # two invocations (possibly against different table prefixes) read as one coherent dump while
+    # destroying the earlier variants' shortfall counts. Provenance is recorded PER VARIANT and
+    # `load_legs` refuses a mixture.
+    manifest_path = out / "dump_manifest.json"
+    manifest: dict[str, Any] = {"variants": {}}
+    if manifest_path.exists():
+        previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(previous.get("variants"), dict):
+            manifest = previous
+    provenance = {
+        "leg_depth": LEG_DEPTH, "legs": list(LEGS), "embedder": EMBEDDER_MODEL,
+        "sparse_model": args.sparse_model or DEFAULT_SPARSE_MODEL,
         "sparse_profile": encoder.profile.profile_id,
-        "table_prefix": args.table_prefix, "split": "dev", "at": utc_now(),
-    }, indent=2), encoding="utf-8")
+        "table_prefix": args.table_prefix, "split": "dev",
+    }
+    for variant in variants:
+        manifest["variants"][variant] = {
+            **provenance,
+            "legs_short_of_depth": shortfalls[variant],
+            "empty_sparse_encodings": empty_sparse[variant],
+            "at": utc_now(),
+        }
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return 0
 
 
 def load_legs(out: Path, variants: Sequence[str]) -> dict[str, dict[str, dict[str, list[str]]]]:
     """`{task_id: {variant: {leg: ranking}}}`, plus the query texts, from a dump."""
+    manifest_path = out / "dump_manifest.json"
+    if manifest_path.exists():
+        recorded = json.loads(manifest_path.read_text(encoding="utf-8")).get("variants", {})
+        # The first manifests wrote `variants` as a flat LIST of names with provenance at the top
+        # level. Those dumps carry no per-variant provenance to cross-check, so there is nothing
+        # to verify and indexing them by name would raise instead.
+        if not isinstance(recorded, dict):
+            recorded = {}
+        keys = ("table_prefix", "sparse_model", "sparse_profile", "embedder", "leg_depth")
+        seen = {v: tuple(recorded[v].get(k) for k in keys) for v in variants if v in recorded}
+        if len(set(seen.values())) > 1:
+            raise RuntimeError(
+                f"the dump's variants disagree on how they were retrieved: {seen}. Fusing them "
+                f"would compare arms across different indexes or encoders and report it as one "
+                f"result. Re-dump the odd variant, or point at a clean --output-dir."
+            )
     by_task: dict[str, dict[str, dict[str, list[str]]]] = {}
     for variant in variants:
         path = out / "legs" / f"{variant}.jsonl"
@@ -457,6 +501,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 domains[str(row["task_id"])] = str(row["domain"])
 
     control = next(a for a in MQ_ARMS if a.name == "mq_last")
+    if args.sample < 1:
+        raise ValueError(
+            f"--sample must be >= 1, got {args.sample}. A zero sample prints verdict MATCH "
+            f"having compared nothing, and this project has already shipped one gate that could "
+            f"never fail; that is exactly as useless as one that could never pass."
+        )
     sample = sorted(legs)[: args.sample]
     failures = []
     stores = {}
@@ -487,7 +537,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
             store.close()
 
     verdict = "MATCH" if not failures else "MISMATCH"
+    sampled_domains: dict[str, int] = {}
+    for task_id in sample:
+        sampled_domains[domains[task_id]] = sampled_domains.get(domains[task_id], 0) + 1
     print(json.dumps({"event": "validate", "sampled": len(sample), "arm": control.name,
+                      "sampled_domains": sampled_domains,
                       "failures": failures[:5], "failure_count": len(failures),
                       "verdict": verdict}, indent=2), flush=True)
     return 0 if not failures else 1
@@ -517,14 +571,26 @@ def cmd_fuse(args: argparse.Namespace) -> int:
     print(json.dumps({"event": "fuse_setup", "queries": len(shared),
                       "variants": wanted}), flush=True)
 
+    if not shared:
+        raise RuntimeError(
+            "no query is present in both the dump and the dev qrels; check --mtrag-root points "
+            "at the release the dump was taken from"
+        )
+
     rankings: dict[str, dict[str, list[str]]] = {}
     summaries = []
     for arm in MQ_ARMS:
         per_query = {}
+        pool_sizes: list[int] = []
         metrics: dict[str, list[float]] = {
             "nDCG@5": [], "R@5": [], "R@10": [], "R@100": []}
         for task_id in shared:
-            fused = fuse_arm(arm, legs[task_id])[:EVAL_K]
+            complete = fuse_arm(arm, legs[task_id])
+            # The REALISED pool, measured before truncation. `pool_bound()` is a no-overlap upper
+            # bound and overstates this badly wherever the variants agree, which is exactly where
+            # a pool-limited R@100 would otherwise pass unnoticed.
+            pool_sizes.append(len(complete))
+            fused = complete[:EVAL_K]
             per_query[task_id] = fused
             relevant = qrels[task_id]
             metrics["nDCG@5"].append(ndcg_at(fused, relevant, 5))
@@ -534,6 +600,7 @@ def cmd_fuse(args: argparse.Namespace) -> int:
         rankings[arm.name] = per_query
         summary = {
             "arm": asdict(arm), "queries": len(shared), "pool_bound": arm.pool_bound(),
+            "realised_pool_sizes": realised_pool_sizes(pool_sizes),
             **{name: sum(vals) / len(vals) for name, vals in metrics.items()},
         }
         summaries.append(summary)
@@ -549,6 +616,26 @@ def cmd_fuse(args: argparse.Namespace) -> int:
     (out / "pool_ceilings.json").write_text(json.dumps(ceilings, indent=2), encoding="utf-8")
     print(json.dumps({"event": "pool_ceilings", **ceilings}, indent=2), flush=True)
     return 0
+
+
+def realised_pool_sizes(sizes: Sequence[int]) -> dict[str, Any]:
+    """Distribution of how many distinct documents an arm's fusion actually held.
+
+    🔑 `pool_below_cutoff` is the number that matters: on those queries the arm's R@100 is capped
+    by how much it retrieved, not by how well it ranked, so the metric is measuring the pool. An
+    arm with a large count here is being compared unfairly against one with none, and neither
+    `pool_bound()` nor any score in the summary would show it.
+    """
+    ordered = sorted(sizes)
+    n = len(ordered)
+    return {
+        "min": ordered[0] if n else None,
+        "p25": ordered[n // 4] if n else None,
+        "median": ordered[n // 2] if n else None,
+        "max": ordered[-1] if n else None,
+        "eval_k": EVAL_K,
+        "pool_below_cutoff": sum(1 for s in ordered if s < EVAL_K),
+    }
 
 
 def pool_ceilings(
@@ -831,6 +918,8 @@ def cmd_posthoc(args: argparse.Namespace) -> int:
     with (out / "rankings.json").open(encoding="utf-8") as handle:
         control_rankings = json.load(handle)["mq_last"]
     shared = sorted(set(legs) & set(qrels) & set(control_rankings))
+    if not shared:
+        raise RuntimeError("no query is present in the dump, the qrels and mq_last's rankings")
 
     rng = random.Random(20260806)
     rows = []

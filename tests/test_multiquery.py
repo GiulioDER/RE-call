@@ -28,6 +28,7 @@ from benchmarks.mtrag.multiquery import (
     MultiQueryArm,
     decide_verdict,
     fuse_arm,
+    realised_pool_sizes,
     rrf_scores,
     sorted_by_score,
 )
@@ -346,3 +347,31 @@ def test_sorted_by_score_breaks_ties_by_first_appearance() -> None:
     the control diverge from the shipped system on the ties a cut at 5 is most sensitive to.
     """
     assert sorted_by_score({"a": 1.0, "b": 2.0, "c": 1.0}) == ["b", "a", "c"]
+
+
+def test_the_budget_arm_realises_far_less_than_its_bound_when_variants_coincide() -> None:
+    """`pool_bound()` is a no-overlap UPPER BOUND and must not be read as certifying a metric.
+
+    Found by a bug audit before this shipped. On a query whose three variants are byte-identical
+    (102 of 777 on dev) `mq_nested3_budget33` fuses three copies of the same two 33-deep legs, so
+    it realises at most 66 distinct documents against a cut at 100, while `pool_bound()` still
+    returns 198. Its R@100 on those queries measures the POOL, not the ranking, and nothing in the
+    scores would reveal it.
+    """
+    identical = {"dense": [f"d{i}" for i in range(100)],
+                 "splade": [f"s{i}" for i in range(100)]}
+    variants = legs(last=dict(identical), full=dict(identical), rewrite=dict(identical))
+    arm = next(a for a in MQ_ARMS if a.name == "mq_nested3_budget33")
+
+    assert arm.pool_bound() == 198
+    assert len(fuse_arm(arm, variants)) == 66
+
+
+def test_realised_pool_sizes_counts_the_queries_whose_metric_is_pool_limited() -> None:
+    """The count is the point: it is what `pool_bound()` cannot tell you."""
+    summary = realised_pool_sizes([66, 66, 120, 200])
+
+    assert summary["min"] == 66
+    assert summary["max"] == 200
+    assert summary["eval_k"] == 100
+    assert summary["pool_below_cutoff"] == 2
