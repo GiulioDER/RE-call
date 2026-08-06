@@ -66,7 +66,7 @@ class Row:
     #:
     #: Strings because the digits ARE the claim: `str(0.370)` is `"0.37"`, so holding these
     #: as floats silently drops a decimal place and checks the cell at lower precision than
-    #: it was published at. That is not hypothetical -- it let `0.370` pass --verify while
+    #: it was published at. That is not hypothetical -- it let `0.370` pass verification while
     #: the value was 0.36948, which rounds to 0.369.
     published_recall: str
     published_mem0: str
@@ -99,7 +99,7 @@ PUBLISHED_ROWS: tuple[Row, ...] = (
         "mem0_k20_rejudged_gpt4o.json",
         # §9d published 0.00018 for this row. The value is 1.7484e-4, which rounds to
         # 0.00017; 0.00018 is the row ABOVE's p (1.8261e-4), evidently copied down. Found
-        # by this script's --verify on the first run it was ever able to make, which is
+        # by this script's verification on the first run it was ever able to make, which
         # the argument for the artifact existing: the table had nothing to be checked
         # against for two weeks. FINDINGS.md is corrected in the same commit. Nothing
         # downstream moves -- both values are orders below any threshold, and the Holm
@@ -431,7 +431,7 @@ def verify_against_published(artifact: Mapping[str, Any]) -> list[str]:
                 )
         if not _agrees(row["mcnemar"]["p_value"], published["p"]):
             problems.append(
-                f"{row['row_id']}: p derived {row['mcnemar']['p_value']:.6f} does not round "
+                f"{row['row_id']}: p derived {row['mcnemar']['p_value']:.6g} does not round "
                 f"to published {published['p']}"
             )
     return problems
