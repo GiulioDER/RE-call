@@ -88,14 +88,14 @@ def main() -> int:
         PgVectorStore(args.dsn, dim=args.dim, table=table).drop_table()
         print(f"dropped {table}", flush=True)
 
+    # ⚠️ Filtered in Python with the SAME `startswith` the drop used, NOT with SQL `LIKE`.
+    # `_` is a single-character WILDCARD in LIKE, so `pfull_%` also matches `pfullX_foo`, which
+    # `startswith(("pfull_",))` does not. Two filters that are meant to describe one set must be
+    # one predicate, or the verification can fail on rows the drop was never going to touch.
     with psycopg.connect(args.dsn, autocommit=True, connect_timeout=10) as conn:
-        left = conn.execute(
-            "SELECT count(*) FROM recall_schema_migrations WHERE "
-            + " OR ".join(["target_table LIKE %s"] * len(prefixes)),
-            tuple(f"{p}%" for p in prefixes),
-        ).fetchone()
+        ledger = conn.execute("SELECT target_table FROM recall_schema_migrations").fetchall()
     # The reason this is not a psql DROP, asserted rather than assumed.
-    remaining = int(left[0]) if left else -1
+    remaining = sum(1 for (t,) in ledger if t.startswith(prefixes))
     print(f"ledger rows remaining for those prefixes: {remaining} (must be 0)")
     return 0 if remaining == 0 else 1
 
