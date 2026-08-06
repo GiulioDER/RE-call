@@ -154,7 +154,12 @@ LEG_META = "meta"
 #: this recurred twice already. `test_timed_public_methods_matches_the_actual_timer_call_sites`
 #: parses this module and requires this tuple to EQUAL the set of methods that actually open a
 #: `METRICS.timer` on `STORE_QUERY_METRIC`.
-TIMED_PUBLIC_METHODS = ("query_dense", "query_sparse", "newest_indexed_at")
+TIMED_PUBLIC_METHODS = (
+    "query_dense",
+    "query_sparse",
+    "query_learned_sparse",
+    "newest_indexed_at",
+)
 
 #: How long schema DDL may WAIT FOR A LOCK before giving up (ms). Not a bound on the work — the
 #: HNSW build is deliberately unbounded, see `ensure_schema` — only on queueing. Short on purpose:
