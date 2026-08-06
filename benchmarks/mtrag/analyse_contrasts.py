@@ -129,6 +129,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--split", default="dev")
     parser.add_argument("--control", default="hybrid_lexical")
     parser.add_argument("--treatment", default="hybrid_splade")
+    parser.add_argument("--scores", type=Path, default=None,
+                        help="scores file; defaults to <offload-dir>/scores.jsonl")
     args = parser.parse_args(argv)
 
     rng = random.Random(SEED)
@@ -139,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
 
     control = load_pool(args.offload_dir / "pools" / f"{args.control}.jsonl")
     treatment = load_pool(args.offload_dir / "pools" / f"{args.treatment}.jsonl")
-    scores = load_scores(args.offload_dir / "scores.jsonl")
+    scores = load_scores(args.scores or (args.offload_dir / "scores.jsonl"))
 
     shared = sorted(set(control) & set(treatment) & set(qrels))
     print(json.dumps({"event": "setup", "paired_queries": len(shared),

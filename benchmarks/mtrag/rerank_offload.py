@@ -258,7 +258,12 @@ def cmd_apply(args: argparse.Namespace) -> int:
         print(json.dumps({"event": "scored", "arm": arm_name, "reranked": reranked,
                           **metrics["overall"]}), flush=True)
 
-    name = "reranked_summary.json" if reranked else "retrieval_only_summary.json"
+    # Derive the name from the SCORES file. Two rerankers writing `reranked_summary.json` would
+    # silently overwrite each other, and the second result would look like the first.
+    name = (
+        f"reranked_summary__{args.scores.stem}.json" if reranked
+        else "retrieval_only_summary.json"
+    )
     (out / name).write_text(
         json.dumps(summaries, indent=2), encoding="utf-8"
     )
@@ -273,6 +278,16 @@ def cmd_validate(args: argparse.Namespace) -> int:
     """
     from recall.rerank import CrossEncoderReranker
     from recall.types import Chunk, ScoredChunk
+
+    # The gate must instantiate the reranker the SCORES came from. Validating BGE scores against
+    # a MiniLM ordering would fail for a reason that has nothing to do with the offload, and the
+    # scores header records which model that was, so a mismatch here is detectable rather than
+    # assumed.
+    reranker_kwargs = {}
+    if args.model:
+        reranker_kwargs["model"] = args.model
+    if args.revision:
+        reranker_kwargs["revision"] = args.revision
 
     out = args.output_dir.resolve()
     scores = _load_scores(args.scores)
@@ -291,7 +306,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 rows.append(json.loads(line))
     sample = rows[: args.sample]
 
-    reranker = CrossEncoderReranker()
+    reranker = CrossEncoderReranker(**reranker_kwargs)
     failures: list[dict] = []
     ties: list[dict] = []
     worst_delta = 0.0
@@ -358,6 +373,9 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--scores", type=Path, required=(name == "validate"))
         if name == "validate":
             p.add_argument("--sample", type=int, default=20)
+            p.add_argument("--model", default=None,
+                           help="reranker the scores came from; omit for RE-call's pinned default")
+            p.add_argument("--revision", default=None)
     args = parser.parse_args(argv)
     return {"dump": cmd_dump, "apply": cmd_apply, "validate": cmd_validate}[args.cmd](args)
 
