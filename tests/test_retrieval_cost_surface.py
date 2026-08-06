@@ -298,6 +298,11 @@ EXPECTED_STAGES = {
     "query_embedding",
     "dense_retrieval",
     "sparse_retrieval",
+    # Recorded even when the leg is switched off, exactly like the two legs above: the timing
+    # sits outside the `if` in `retriever.py`, so an unconfigured SPLADE arm reports ~0 rather
+    # than dropping the key. A stage that appears only when enabled would make an absent series
+    # ambiguous between "off" and "untimed", which is the confusion this set exists to prevent.
+    "learned_sparse_retrieval",
     "fusion",
     "reranking",
     "trust_evaluation",
