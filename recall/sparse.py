@@ -6,6 +6,7 @@ See `docs/superpowers/specs/2026-08-06-learned-sparse-splade-design.md`.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from contextlib import closing
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any, Protocol
@@ -294,6 +295,24 @@ class SparseIndexResult:
     empty_ids: list[str]
 
 
+def _validated_batch_size(batch_size: Any) -> int:
+    """The one place a batch size is checked, shared by both entry points.
+
+    Shared rather than duplicated because `backfill_learned_sparse` derives TWO values from this
+    argument — the `iter_chunks` FETCH size and the encode batch — and the moment each validates
+    its own copy they are free to disagree about what the caller asked for.
+
+    The `isinstance` half is not decoration. `None` is the realistic mistake (an unset option
+    threaded through) and a bare `batch_size < 1` answers it with `TypeError: '<' not supported
+    between instances of 'NoneType' and 'int'`, which names neither the argument nor the rule.
+    """
+    if not isinstance(batch_size, int) or batch_size < 1:
+        raise ValueError(
+            f"batch_size must be >= 1, got {batch_size!r}; nothing would be encoded"
+        )
+    return batch_size
+
+
 def store_sparse_vectors(
     store: Any,
     encoder: SparseEncoderProtocol,
@@ -315,9 +334,23 @@ def store_sparse_vectors(
 
     `progress` receives the running written count after each batch, so a caller can print
     something during a CPU encode that takes tens of minutes.
+
+    The iterator is CLOSED on the way out, and that matters most on the failing path. `items` is
+    routinely a generator over `store.iter_chunks()`, a server-side cursor holding one pooled
+    connection open inside a transaction for its whole scan. If `encoder.encode` or
+    `store.upsert_sparse` raises mid-batch, a bare `for` loop abandons that generator suspended
+    mid-yield, still holding the connection, and cleanup falls to CPython refcounting finalising
+    the orphan. That is usually prompt but is NOT guaranteed: anything retaining the traceback —
+    a retry loop storing the exception, a caller logging `sys.exc_info()`, a test framework's
+    `excinfo` — keeps this frame alive and `items` with it, and the connection stays checked out
+    for as long as that reference lives. Closing here is what makes the release deterministic
+    rather than a property of the garbage collector.
+
+    This belongs at this level because this function is the ACTUAL consumer: it is what advances
+    the iterator, so it is what owes it a close. A caller wrapping its own generator is welcome
+    to, and `backfill_learned_sparse` does, but that protects only that caller.
     """
-    if batch_size < 1:
-        raise ValueError(f"batch_size must be >= 1, got {batch_size}; nothing would be encoded")
+    batch_size = _validated_batch_size(batch_size)
 
     profile_id = encoder.profile.profile_id
     written = 0
@@ -341,11 +374,19 @@ def store_sparse_vectors(
         if progress is not None:
             progress(written)
 
-    for item in items:
-        batch.append(item)
-        if len(batch) >= batch_size:
-            _flush_batch()
-    _flush_batch()
+    items_iter = iter(items)
+    try:
+        for item in items_iter:
+            batch.append(item)
+            if len(batch) >= batch_size:
+                _flush_batch()
+        _flush_batch()
+    finally:
+        # `items` is an `Iterable`, not a generator: a list's iterator has no `close`, and the
+        # signature deliberately accepts both. `contextlib.closing` would demand the method.
+        close = getattr(items_iter, "close", None)
+        if close is not None:
+            close()
 
     return SparseIndexResult(written=written, empty_ids=empty_ids)
 
@@ -421,15 +462,35 @@ def backfill_learned_sparse(
     is every corpus that exists today. It streams `store.iter_chunks()`, a server-side cursor
     that excludes the dense vector, so a corpus larger than memory is fine.
 
+    `batch_size` is validated ONCE, here, and the single validated value is then both the cursor's
+    FETCH size and the encode batch. It used to be clamped with `max(batch_size, 1)` for the
+    cursor and passed through raw to `store_sparse_vectors`, which left one argument feeding two
+    separately-derived meanings: nothing today can tell them apart, because every value the clamp
+    would change is a value the other side rejects, but that is a coincidence of the current
+    validation order rather than a property, and it costs nothing to not depend on it.
+
     IDEMPOTENT, not resumable. `upsert_sparse` is ON CONFLICT DO UPDATE, so re-invoking simply
     re-encodes. Skipping ids already present would need a `store.sparse_ids(profile_id)` this
     store does not have, and at the corpus sizes this serves it would buy nothing. That is a
     decision, not an oversight.
+
+    `store.iter_chunks()` holds a pool-borrowed connection open inside an explicit
+    `conn.transaction()`, with a named server-side cursor bound to it, for the entire life of the
+    generator. This is the one call site that drives that generator through fallible work,
+    `encoder.encode` and `store.upsert_sparse`, rather than materialising it or reading plain
+    attributes. If either raises mid-batch, the generator would otherwise be abandoned mid-yield,
+    still holding its transaction and its pooled connection open, reclaimed only whenever CPython
+    happens to garbage-collect it, which is not promptly once a traceback is retained anywhere up
+    the stack. `closing` forces the generator's own cleanup (rolling back the transaction and
+    releasing the connection) on the way out, success or failure, so this function owns the
+    resource it created instead of leaving that to its caller.
     """
-    return store_sparse_vectors(
-        store,
-        encoder,
-        ((chunk.id, chunk.text) for chunk in store.iter_chunks(batch_size=max(batch_size, 1))),
-        batch_size=batch_size,
-        progress=progress,
-    )
+    batch_size = _validated_batch_size(batch_size)
+    with closing(store.iter_chunks(batch_size=batch_size)) as chunks:
+        return store_sparse_vectors(
+            store,
+            encoder,
+            ((chunk.id, chunk.text) for chunk in chunks),
+            batch_size=batch_size,
+            progress=progress,
+        )

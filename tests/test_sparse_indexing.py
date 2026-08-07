@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import closing
+import gc
+
 import pytest
 
 from recall.sparse import (
@@ -12,8 +15,9 @@ from recall.sparse import (
     backfill_learned_sparse,
     store_sparse_vectors,
 )
+from recall.store import PgVectorStore
 from recall.types import Chunk
-from tests.conftest import requires_db
+from tests.conftest import TEST_DSN, requires_db
 
 PROFILE_ID = "kw-index-test"
 
@@ -40,6 +44,35 @@ class KeywordSparseEncoder:
             {self._vocabulary[w]: 1.0 for w in text.lower().split() if w in self._vocabulary}
             for text in texts
         ]
+
+
+class ExplodingSparseEncoder(KeywordSparseEncoder):
+    """Encodes normally until `fail_on_batch`, then raises.
+
+    Stands in for the whole family of mid-corpus failures the streaming path has to survive: a
+    transient DB error, an encoder OOM on a long passage, `upsert_sparse`'s nnz > 0 CHECK firing
+    on unexpected input. They differ only in the exception type; what matters here is that one
+    arrives while the source iterator is suspended mid-scan.
+    """
+
+    def __init__(self, vocabulary: dict[str, int], *, fail_on_batch: int) -> None:
+        super().__init__(vocabulary)
+        self._fail_on_batch = fail_on_batch
+
+    def encode(self, texts: list[str]) -> list[dict[int, float]]:
+        if len(self.batches) + 1 == self._fail_on_batch:
+            raise RuntimeError("encoder failed partway through the corpus")
+        return super().encode(texts)
+
+
+def _checked_out(store: PgVectorStore) -> int:
+    """Connections the pool has handed out and not got back.
+
+    `pool_size` is how many the pool has opened, `pool_available` how many are sitting idle in
+    it; the difference is what someone is still holding.
+    """
+    stats = store._pool.get_stats()
+    return stats["pool_size"] - stats["pool_available"]
 
 
 class StubEmbedder:
@@ -216,6 +249,15 @@ def test_backfill_encodes_a_corpus_that_was_already_indexed(make_store) -> None:
 def test_backfill_is_idempotent(make_store) -> None:
     """`upsert_sparse` is ON CONFLICT DO UPDATE, so a re-run re-encodes rather than duplicating.
 
+    Pins both halves of the idempotence contract. First, no duplication: the row count stays 1
+    across two runs. Second, and the half a row count alone cannot tell apart from a regression,
+    always RE-ENCODES rather than skipping ids already present: each call's own
+    `SparseIndexResult.written` must report 1, because `upsert_sparse` always runs its
+    INSERT ... ON CONFLICT DO UPDATE and returns `len(rows)` whether the row was inserted or
+    updated. A hypothetical future version that silently skipped already-encoded ids would still
+    leave the row count at 1, but would report `written == 0` on the second call, which is
+    what asserting on both `written` values catches and a row-count-only assertion would not.
+
     Deliberately NOT resumable: skipping ids already present would need a new
     `store.sparse_ids(profile_id)`, and at the corpus sizes this serves that buys nothing.
     """
@@ -223,7 +265,148 @@ def test_backfill_is_idempotent(make_store) -> None:
     store.upsert([_chunk("a", "aardvark")], [[0.1] * 64])
     encoder = KeywordSparseEncoder({"aardvark": 7})
 
-    backfill_learned_sparse(store, encoder)
-    backfill_learned_sparse(store, encoder)
+    first = backfill_learned_sparse(store, encoder)
+    second = backfill_learned_sparse(store, encoder)
 
+    assert first.written == 1
+    assert second.written == 1
     assert store.sparse_row_count(PROFILE_ID) == 1
+
+
+def _id_text_stream(store: PgVectorStore):
+    """A caller's own streaming source: the pooled cursor, adapted to `(id, text)` pairs.
+
+    A generator FUNCTION rather than the generator EXPRESSION `backfill_learned_sparse` builds,
+    and the difference is load-bearing. Closing a genexp only drops the genexp's reference to the
+    iterator it wraps; the wrapped generator is closed only if that was the last reference, which
+    puts it back on refcounting. A generator function has its own frame, so `close()` runs this
+    `with` block's exit and the release is the language's, not the collector's.
+    """
+    with closing(store.iter_chunks(batch_size=1)) as chunks:
+        for chunk in chunks:
+            yield chunk.id, chunk.text
+
+
+@requires_db
+def test_a_failed_encode_closes_the_iterator_it_was_handed(make_store) -> None:
+    """A mid-corpus failure must not strand the source iterator's pooled connection.
+
+    `iter_chunks` is a server-side cursor, and `store.py::_borrowed` holds ONE pooled connection
+    open inside an explicit transaction for the whole of its scan. When `encode` raises partway
+    through, `store_sparse_vectors`' driving loop is abandoned with the source suspended
+    mid-scan, and nothing in the language hands the connection back: cleanup falls to CPython
+    refcounting finalising the orphan. That is usually prompt and is NOT guaranteed — anything
+    retaining the traceback (a retry loop storing the exception, a caller logging
+    `sys.exc_info()`, a test framework's `excinfo`) keeps this function's frame alive, and its
+    `items` local with it, so the connection stays checked out as long as that reference lives.
+
+    The test holds `items` itself rather than leaning on GC to drop it. The reference is alive at
+    the assertion by construction, so refcounting CANNOT be what brings the count to zero: only
+    an explicit `close()` inside `store_sparse_vectors` can. Closing it again in `finally` is
+    what stops a RED run leaving an open transaction on the test table and deadlocking the
+    fixture's `DROP TABLE` behind it.
+    """
+    corpus = make_store(64)
+    ids = ["a", "b", "c", "d"]
+    corpus.upsert([_chunk(cid, f"{cid} aardvark") for cid in ids], [[0.1] * 64] * len(ids))
+
+    # A POOLED store over the same table: the default connection mode holds one long-lived
+    # connection and borrows nothing, so it has no checkout to strand and cannot show this bug.
+    # max_size=2 is required, not incidental — the cursor holds one for the whole scan while
+    # `upsert_sparse` borrows a second, and a max_size of 1 would deadlock instead of leaking.
+    pooled = PgVectorStore(TEST_DSN, dim=64, table=corpus.table, pool_size=2)
+    items = _id_text_stream(pooled)
+    try:
+        encoder = ExplodingSparseEncoder({"aardvark": 7}, fail_on_batch=3)
+
+        with pytest.raises(RuntimeError, match="failed partway through"):
+            store_sparse_vectors(pooled, encoder, items, batch_size=1)
+
+        # Two batches were written before the third raised, so the scan really was suspended
+        # mid-corpus rather than exhausted — an exhausted iterator releases on its own and would
+        # make the assertion below pass for the wrong reason.
+        assert encoder.batches == [1, 1]
+        assert pooled.sparse_row_count(PROFILE_ID) == 2
+        assert _checked_out(pooled) == 0
+    finally:
+        items.close()
+        pooled.close()
+
+
+@requires_db
+def test_a_failed_backfill_releases_the_streaming_cursors_connection(make_store) -> None:
+    """End-to-end: the real backfill path strands nothing when a caller keeps the exception.
+
+    ⚠️ What this pins, exactly, measured by mutation rather than assumed. It fails only when BOTH
+    releases are removed; either one alone satisfies it:
+
+    | code state                          | this test |
+    |-------------------------------------|-----------|
+    | both releases present               | pass      |
+    | no `store_sparse_vectors` close     | pass      |
+    | no `backfill` `closing()`           | pass      |
+    | neither (the original code)         | FAIL      |
+
+    So it is a regression guard on the OUTCOME — "the backfill leaks no connection" — and NOT a
+    guard on the backfill's own `closing()`. Nothing here can distinguish that call, because
+    `store_sparse_vectors` closing the generator expression drops the expression's only reference
+    to the cursor and CPython finalises it there and then. The redundancy is deliberate
+    defence-in-depth, not a second thing under test, and saying otherwise would make this a guard
+    that reads as protection and cannot fire.
+    `test_a_failed_encode_closes_the_iterator_it_was_handed` is what pins the consumer's close.
+
+    The exception is retained in `held`, which is what makes this a test rather than a
+    measurement of the collector. That reference keeps the whole traceback — and every frame's
+    locals along it — alive across the assertion, which is precisely the production shape (a
+    retry loop that stores the failure before deciding whether to retry) that turns "the GC will
+    get to it" into a connection checked out indefinitely.
+
+    `held` is dropped in `finally` before pytest captures a failure, so a RED run releases the
+    cursor and the fixture's `DROP TABLE` is not left blocking behind an idle transaction.
+    """
+    corpus = make_store(64)
+    ids = ["a", "b", "c", "d"]
+    corpus.upsert([_chunk(cid, f"{cid} aardvark") for cid in ids], [[0.1] * 64] * len(ids))
+
+    pooled = PgVectorStore(TEST_DSN, dim=64, table=corpus.table, pool_size=2)
+    encoder = ExplodingSparseEncoder({"aardvark": 7}, fail_on_batch=3)
+    held: BaseException | None = None
+    try:
+        try:
+            backfill_learned_sparse(pooled, encoder, batch_size=1)
+        except RuntimeError as exc:
+            held = exc
+
+        assert held is not None, "the encoder was supposed to fail on the third batch"
+        assert encoder.batches == [1, 1]
+        assert _checked_out(pooled) == 0
+    finally:
+        held = None
+        gc.collect()
+        pooled.close()
+
+
+def test_both_entry_points_refuse_a_non_integer_batch_size_by_name() -> None:
+    """One validation, reached the same way from both doors.
+
+    `None` is the plausible caller mistake — an unset CLI option threaded through — and it has to
+    arrive as the descriptive `ValueError` a `0` gets. Before this, neither door managed that:
+    `store_sparse_vectors` compared `None < 1` and raised `TypeError: '<' not supported between
+    instances of 'NoneType' and 'int'`, and `backfill_learned_sparse` never got that far because
+    `max(None, 1)` raised its own `TypeError` one frame earlier, naming neither the argument nor
+    the constraint.
+
+    That `max()` was also the reason the two doors could disagree about what "batch size" meant:
+    it clamped the value handed to `iter_chunks` while passing the raw one to
+    `store_sparse_vectors`, so the FETCH size and the encode size were separately derived from
+    one argument. They now share a single validated value.
+
+    Neither `store` nor `encoder` is touched, and that is the second half of the contract rather
+    than a shortcut: the refusal has to land before a cursor is opened, so passing `None` for
+    both is itself the assertion. No database is needed to prove it.
+    """
+    with pytest.raises(ValueError, match="batch_size must be >= 1"):
+        store_sparse_vectors(None, None, [], batch_size=None)
+
+    with pytest.raises(ValueError, match="batch_size must be >= 1"):
+        backfill_learned_sparse(None, None, batch_size=None)
