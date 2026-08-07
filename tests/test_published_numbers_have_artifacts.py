@@ -449,6 +449,14 @@ def test_the_registry_values_parse_as_floats_matching_their_own_precision() -> N
 #: `~0` to the runbook. The baseline was regenerated against the tip and went red in CI. See the
 #: note on `GATED_DOCS` in `benchmarks/claim_gate.py`.
 #:
+#: 2557 -> 2558 (+1) on 2026-08-08, shortening the README into `docs/EVIDENCE.md`,
+#: `docs/PRODUCTION.md`, `docs/PRIOR_ART.md` and `docs/ENGINEERING.md`. Almost entirely a MOVE, and
+#: the move is the thing to check rather than the total: `README.md` went 299 -> 21 while the four
+#: destinations went 0 -> 279, and the multiset over those five documents lost nothing at all. The
+#: whole +1 is one occurrence of `0`, from the product name `Mem0` in the README's new "Read next"
+#: row. Seventeen occurrences of that same name were already frozen, so this is the existing
+#: treatment of a name the number regex cannot tell from a figure, not a new unbacked claim.
+#:
 #: SIX OCCURRENCES were MARKED instead of baselined, because freezing them would have been the gate
 #: certifying its own author's unbacked numbers: the five Qwen3 latency measurements the document
 #: uses to justify a rejection verdict (taken on VPS2 on 2026-08-03, before this repository's
