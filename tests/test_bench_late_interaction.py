@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -5,7 +7,9 @@ from benchmarks.mtrag.late_interaction import (
     LATE_ARMS,
     LateArm,
     arm_record,
+    assert_complete,
     holm_family,
+    load_pairs_inverted,
     score_stream,
 )
 
@@ -223,3 +227,40 @@ def test_score_stream_refuses_a_query_with_no_tokens():
                 pairs={"d1": {"qa"}},
             )
         )
+
+
+def test_load_pairs_inverted(tmp_path: Path):
+    path = tmp_path / "pairs.jsonl"
+    path.write_text(
+        '{"qid": "q1", "doc_id": "d1"}\n'
+        '{"qid": "q2", "doc_id": "d1"}\n'
+        '{"qid": "q1", "doc_id": "d2"}\n',
+        encoding="utf-8",
+    )
+    assert load_pairs_inverted(path) == {"d1": {"q1", "q2"}, "d2": {"q1"}}
+
+
+def test_load_pairs_inverted_ignores_blank_lines(tmp_path: Path):
+    path = tmp_path / "pairs.jsonl"
+    path.write_text('{"qid": "q1", "doc_id": "d1"}\n\n', encoding="utf-8")
+    assert load_pairs_inverted(path) == {"d1": {"q1"}}
+
+
+def test_assert_complete_passes_when_every_pair_is_scored():
+    # No assert: `assert_complete` returns None and signals success by NOT raising, so the call
+    # completing IS the assertion. `assert f(...) is None` would read as a test that checks
+    # nothing, which is worse than no assert at all.
+    assert_complete({"d1": {"q1"}}, {"d1": {"q1"}})
+
+
+def test_assert_complete_raises_on_a_missing_score():
+    """G3. A missing score does NOT raise on its own, it sinks the document to the bottom of the
+    ranking. That is the `ef_search` failure shape: `_query_learned_sparse` returned 6 of 100 and
+    no test caught it, a timing anomaly did. So counts are asserted, never assumed."""
+    with pytest.raises(ValueError, match="1 pair"):
+        assert_complete({"d1": {"q1", "q2"}}, {"d1": {"q1"}})
+
+
+def test_assert_complete_raises_on_a_wholly_unscored_document():
+    with pytest.raises(ValueError, match="1 pair"):
+        assert_complete({"d1": {"q1"}, "d2": {"q1"}}, {"d1": {"q1"}})
