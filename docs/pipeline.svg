@@ -1,0 +1,314 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 3950" width="1400" height="3950" role="img" aria-labelledby="t d"><title id="t">The RE-call pipeline, ingest to answer</title><desc id="d">A top-to-bottom diagram of every phase of RE-call: lint, chunking, contextualisation, embedding (with every embedder tested, ranked), an optional learned sparse sidecar, the Postgres store, then query embedding, three retrieval legs, RRF fusion, optional rerank, gap warning, the trust layer, an optional entailment judge, abstention, evidence construction and the MCP surface. Colour encodes what an option costs: shipped default, best measured, free and local, cloud egress, opt-in, or rejected.</desc><rect width="1400" height="3950" rx="18" fill="#0d1117" stroke="#30363d"/>
+<text x="156.0" y="64.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="40" fill="#e6edf3" font-weight="700" text-anchor="start">RE-call</text>
+<text x="334.0" y="64.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="20" fill="#adbac7" font-weight="400" text-anchor="start">— the full pipeline, corpus to answer</text>
+<text x="156.0" y="92.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="13" fill="#6e7681" font-weight="400" text-anchor="start">every phase, top to bottom · colour says what a thing costs you, not how important it is</text>
+<rect x="156" y="124" width="1204" height="84" rx="10" fill="#161b22" stroke="#21262d"/>
+<text x="174.0" y="148.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.5" fill="#6e7681" font-weight="400" text-anchor="start">LEGEND</text>
+<rect x="174.0" y="159.0" width="13" height="13" rx="3" fill="#56d364" stroke="#2ea043"/>
+<text x="195.0" y="170.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.4" fill="#adbac7" font-weight="600" text-anchor="start">shipped default</text>
+<text x="302.0" y="170.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10.6" fill="#6e7681" font-weight="400" text-anchor="start">what runs if you change nothing</text>
+<rect x="563.3" y="159.0" width="13" height="13" rx="3" fill="#79c0ff" stroke="#58a6ff"/>
+<text x="584.3" y="170.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.4" fill="#adbac7" font-weight="600" text-anchor="start">best measured</text>
+<text x="678.1" y="170.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10.6" fill="#6e7681" font-weight="400" text-anchor="start">highest quality on the numbers we have</text>
+<rect x="952.7" y="159.0" width="13" height="13" rx="3" fill="#238636" stroke="#238636"/>
+<text x="973.7" y="170.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.4" fill="#adbac7" font-weight="600" text-anchor="start">free · stays local</text>
+<text x="1100.5" y="170.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10.6" fill="#6e7681" font-weight="400" text-anchor="start">no API key, no egress, $0 marginal</text>
+<rect x="174.0" y="183.0" width="13" height="13" rx="3" fill="#1f6feb" stroke="#1f6feb"/>
+<text x="195.0" y="194.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.4" fill="#adbac7" font-weight="600" text-anchor="start">cloud · data leaves</text>
+<text x="328.4" y="194.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10.6" fill="#6e7681" font-weight="400" text-anchor="start">your corpus is sent to a vendor</text>
+<rect x="563.3" y="183.0" width="13" height="13" rx="3" fill="#d29922" stroke="#9e6a03"/>
+<text x="584.3" y="194.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.4" fill="#adbac7" font-weight="600" text-anchor="start">opt-in</text>
+<text x="631.9" y="194.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10.6" fill="#6e7681" font-weight="400" text-anchor="start">off by default; measured cost</text>
+<rect x="952.7" y="183.0" width="13" height="13" rx="3" fill="#f85149" stroke="#8c2c25"/>
+<text x="973.7" y="194.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.4" fill="#adbac7" font-weight="600" text-anchor="start">rejected / refused</text>
+<text x="1100.5" y="194.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10.6" fill="#6e7681" font-weight="400" text-anchor="start">measured and turned down, with the reason</text>
+<line x1="156" y1="242" x2="1360" y2="242" stroke="#30363d"/>
+<text x="156.0" y="268.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="13.5" fill="#e6edf3" font-weight="700" text-anchor="start">INGEST</text>
+<text x="223.6" y="268.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="12" fill="#6e7681" font-weight="400" text-anchor="start">— the write path. No LLM anywhere on it, which is why it is free.</text>
+<rect x="196" y="288.0" width="780" height="92.8" rx="10" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="197.0" y="297.0" width="4" height="74.8" rx="2" fill="#56d364"/>
+<text x="222.0" y="320.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">1 · Memos on disk</text>
+<text x="956.0" y="319.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="end">corpus</text>
+<text x="222.0" y="340.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">Plain markdown with YAML frontmatter. Validity is DECLARED by the author — `supersedes:`, `valid_from:`, `valid_until:`</text>
+<text x="222.0" y="356.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">— never inferred by an LLM at ingest. That is the whole reason writing a memory costs $0.</text>
+<line x1="586.0" y1="380.8" x2="586.0" y2="411.8" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 411.8 L 591.0 411.8 L 586.0 420.8 Z" fill="#484f58"/>
+<rect x="196" y="420.8" width="780" height="125.6" rx="10" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="197.0" y="429.8" width="4" height="107.6" rx="2" fill="#56d364"/>
+<text x="222.0" y="452.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">2 · recall lint — the write-time guard</text>
+<text x="956.0" y="451.8" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="end">CI gate</text>
+<text x="222.0" y="472.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">Checks the supersession graph before anything is indexed: dangling, self- and cyclic edges, malformed dates, version-</text>
+<text x="222.0" y="489.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">sibling and closed-in-prose smells. No database needed, exit 1 on error, CI-ready.</text>
+<text x="222.0" y="505.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">`--semantic` (opt-in, DB-backed) adds the missing-edge check: a new memo highly similar to a prior closed decision it</text>
+<text x="222.0" y="522.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">never references.</text>
+<line x1="586.0" y1="546.4" x2="586.0" y2="577.4" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 577.4 L 591.0 577.4 L 586.0 586.4 Z" fill="#484f58"/>
+<rect x="196" y="586.4" width="780" height="109.2" rx="10" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="197.0" y="595.4" width="4" height="91.2" rx="2" fill="#56d364"/>
+<text x="222.0" y="618.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">3 · Walk · confine · content-hash skip</text>
+<text x="956.0" y="617.4" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="end">incremental</text>
+<text x="222.0" y="638.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">Root-confined file walk; every file keyed by its ROOT-RELATIVE path so a/notes.md and b/notes.md cannot collide in</text>
+<text x="222.0" y="654.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">provenance. Unchanged files are skipped on content hash, files gone from disk are pruned behind a guard. 5,100 chunks /</text>
+<text x="222.0" y="671.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">1,120 files: full 7.4 s, unchanged re-index 0.22 s.</text>
+<line x1="586.0" y1="695.6" x2="586.0" y2="726.6" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 726.6 L 591.0 726.6 L 586.0 735.6 Z" fill="#484f58"/>
+<rect x="196" y="735.6" width="780" height="109.2" rx="10" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="197.0" y="744.6" width="4" height="91.2" rx="2" fill="#56d364"/>
+<text x="222.0" y="767.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">4 · Chunking</text>
+<text x="956.0" y="766.6" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="end">800 chars</text>
+<text x="222.0" y="787.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">`chunk_text` packs markdown blocks to ~800 chars with overlap and splits oversized ones; `chunk_code` breaks on def /</text>
+<text x="222.0" y="804.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">class / decorator boundaries. 400 / 800 / 1600 were measured — the shipped 800 was already best on MRR. Re-indexing</text>
+<text x="222.0" y="820.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">REPLACES a file's rows wholesale, so a withdrawn `supersedes:` leaves no stale chunk behind.</text>
+<line x1="586.0" y1="844.8" x2="586.0" y2="875.8" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 875.8 L 591.0 875.8 L 586.0 884.8 Z" fill="#484f58"/>
+<rect x="196" y="884.8" width="780" height="109.2" rx="10" fill="#221a0c" stroke="#9e6a03" stroke-opacity="0.85"/>
+<rect x="197.0" y="893.8" width="4" height="91.2" rx="2" fill="#d29922"/>
+<text x="222.0" y="916.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">5 · Contextualisation</text>
+<text x="956.0" y="915.8" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#d29922" font-weight="400" text-anchor="end">none by default</text>
+<text x="222.0" y="936.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">How much of a chunk's surroundings is folded into the text that gets embedded: `none` (shipped) / `document` / `section`</text>
+<text x="222.0" y="953.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">/ `neighbor`. The mode is derived into the profile's `context_version`, never declared twice — so a context change is a</text>
+<text x="222.0" y="969.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">NEW embedding identity and cannot silently disagree with vectors already stored.</text>
+<line x1="586.0" y1="994.0" x2="586.0" y2="1025.0" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 1025.0 L 591.0 1025.0 L 586.0 1034.0 Z" fill="#484f58"/>
+<rect x="196" y="1034.0" width="780" height="943.0" rx="10" fill="#0f1620" stroke="#30363d"/>
+<rect x="197" y="1043.0" width="4" height="925.0" rx="2" fill="#56d364"/>
+<text x="222.0" y="1066.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">6 · Embedding</text>
+<text x="956.0" y="1065.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="end">pluggable · one Embedder protocol</text>
+<text x="222.0" y="1088.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.4" fill="#8b949e" font-weight="400" text-anchor="start">Every input that can change a stored vector — model, dimension, query/passage mode, normalisation, chunker, context — is one declared identity.</text>
+<rect x="210.0" y="1104.0" width="752.0" height="79.6" rx="7" fill="#0e1e33" stroke="#58a6ff" stroke-opacity="0.7"/>
+<circle cx="226.0" cy="1119.0" r="4.6" fill="#79c0ff"/>
+<text x="240.0" y="1123.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="12.6" fill="#e6edf3" font-weight="700" text-anchor="start">voyage-3</text>
+<text x="950.0" y="1123.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#79c0ff" font-weight="400" text-anchor="end">cloud · Voyage</text>
+<text x="240.0" y="1140.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">The best retrieval quality measured here. +0.282 hit@5 over bge-small on an idiosyncratic private corpus (0.348 → 0.630) and</text>
+<text x="240.0" y="1155.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">it wins 16 of 17 BEIR / CQADupStack corpora, median ≈ +0.06 hit@5, with the gap growing with the haystack. Price: 45 ms →</text>
+<text x="240.0" y="1170.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">246 ms per query, an API dependency, and your corpus leaves your infrastructure.</text>
+<rect x="210.0" y="1189.6" width="752.0" height="64.4" rx="7" fill="#0d1524" stroke="#1f6feb" stroke-opacity="0.7"/>
+<circle cx="226.0" cy="1204.6" r="4.6" fill="#1f6feb"/>
+<text x="240.0" y="1208.6" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="12.6" fill="#e6edf3" font-weight="700" text-anchor="start">voyage-4-large</text>
+<text x="950.0" y="1208.6" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#1f6feb" font-weight="400" text-anchor="end">cloud · Voyage</text>
+<text x="240.0" y="1225.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">The current Voyage generation; used for the BEAM k-sweep (k=45). Its cosines sit in an entirely different regime — the</text>
+<text x="240.0" y="1240.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">shipped 0.50 floor starves 23.3 % of questions on it. No head-to-head quality number against the locals yet.</text>
+<rect x="210.0" y="1260.0" width="752.0" height="64.4" rx="7" fill="#0d1524" stroke="#1f6feb" stroke-opacity="0.7"/>
+<circle cx="226.0" cy="1275.0" r="4.6" fill="#1f6feb"/>
+<text x="240.0" y="1279.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="12.6" fill="#e6edf3" font-weight="700" text-anchor="start">voyage-finance-2</text>
+<text x="950.0" y="1279.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#1f6feb" font-weight="400" text-anchor="end">cloud · domain</text>
+<text x="240.0" y="1296.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">FinanceBench, 150 questions over 72,151 chunks: dense + reranker went 0.393 → 0.527 (p&lt;0.001) when the candidate pool grew</text>
+<text x="240.0" y="1311.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">40 → 100 with ef_search corrected. Measured only on its own domain, so it ranks here on evidence rather than above it.</text>
+<rect x="210.0" y="1330.4" width="752.0" height="79.6" rx="7" fill="#101a13" stroke="#238636" stroke-opacity="0.7"/>
+<circle cx="226.0" cy="1345.4" r="4.6" fill="#238636"/>
+<text x="240.0" y="1349.4" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="12.6" fill="#e6edf3" font-weight="700" text-anchor="start">bge-large-en-v1.5</text>
+<text x="950.0" y="1349.4" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#238636" font-weight="400" text-anchor="end">local · free</text>
+<text x="240.0" y="1366.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">The strongest LOCAL result: on LOCOMO's same-embedder control it scored judged accuracy 0.478 against text-</text>
+<text x="240.0" y="1381.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">embedding-3-small's 0.412–0.422 on the same benchmark. Cosine median 0.827 (memory) / 0.782 (BEAM), starves nothing at the</text>
+<text x="240.0" y="1396.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">shipped floor.</text>
+<rect x="210.0" y="1416.0" width="752.0" height="79.6" rx="7" fill="#12241a" stroke="#2ea043" stroke-opacity="0.7"/>
+<circle cx="226.0" cy="1431.0" r="4.6" fill="#56d364"/>
+<text x="240.0" y="1435.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="12.6" fill="#e6edf3" font-weight="700" text-anchor="start">bge-small-en-v1.5</text>
+<text x="950.0" y="1435.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="end">★ shipped default</text>
+<text x="240.0" y="1452.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">384-dim, FastEmbed, offline, no API key, $0 forever. Dense-only nDCG@10 0.97 where the corpus is easy; hit@5 0.705 on public</text>
+<text x="240.0" y="1467.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">technical prose and 0.348 on a jargon-heavy private one — that spread IS the finding. Highest cosine median of everything</text>
+<text x="240.0" y="1482.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">measured (0.852 / 0.819) and 0 % starved at the 0.50 floor.</text>
+<rect x="210.0" y="1501.6" width="752.0" height="79.6" rx="7" fill="#0d1524" stroke="#1f6feb" stroke-opacity="0.7"/>
+<circle cx="226.0" cy="1516.6" r="4.6" fill="#1f6feb"/>
+<text x="240.0" y="1520.6" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="12.6" fill="#e6edf3" font-weight="700" text-anchor="start">text-embedding-3-small</text>
+<text x="950.0" y="1520.6" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#1f6feb" font-weight="400" text-anchor="end">cloud · OpenAI</text>
+<text x="240.0" y="1537.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">Mem0's documented default, carried so the head-to-head runs on the competitor's own embedder: RE-call 0.412 / 0.422 judged</text>
+<text x="240.0" y="1552.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">accuracy vs Mem0's 0.366 (n=1,540). It is also the one model the shipped 0.50 gap floor mis-fits — median 0.710 / 0.608, 16</text>
+<text x="240.0" y="1568.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">% of BEAM questions starved.</text>
+<rect x="210.0" y="1587.2" width="752.0" height="64.4" rx="7" fill="#101a13" stroke="#238636" stroke-opacity="0.7"/>
+<circle cx="226.0" cy="1602.2" r="4.6" fill="#238636"/>
+<text x="240.0" y="1606.2" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="12.6" fill="#e6edf3" font-weight="700" text-anchor="start">gte-base</text>
+<text x="950.0" y="1606.2" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#238636" font-weight="400" text-anchor="end">local · free</text>
+<text x="240.0" y="1623.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">768-dim, a DIFFERENT architecture family — run as the ladder-v3 generality arm, where 90 % of the questions monotone under</text>
+<text x="240.0" y="1638.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">bge-small stayed monotone under it. Explicitly NOT a quality comparison: nothing measured says it is better or worse.</text>
+<rect x="210.0" y="1657.6" width="752.0" height="79.6" rx="7" fill="#101a13" stroke="#238636" stroke-opacity="0.7"/>
+<circle cx="226.0" cy="1672.6" r="4.6" fill="#238636"/>
+<text x="240.0" y="1676.6" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="12.6" fill="#e6edf3" font-weight="700" text-anchor="start">all-MiniLM-L6-v2</text>
+<text x="950.0" y="1676.6" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#238636" font-weight="400" text-anchor="end">local · free</text>
+<text x="240.0" y="1693.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">The fine-tuning base. Recall@5 1.00 held-out BEFORE and AFTER contrastive fine-tuning on (query, gold-chunk) pairs — an</text>
+<text x="240.0" y="1708.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">honest null: a modern small embedder already retrieved the right chunk for every held-out query, so there was nothing left</text>
+<text x="240.0" y="1724.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">to win.</text>
+<rect x="210.0" y="1743.2" width="752.0" height="79.6" rx="7" fill="#24120f" stroke="#8c2c25" stroke-opacity="0.7"/>
+<circle cx="226.0" cy="1758.2" r="4.6" fill="#f85149"/>
+<text x="240.0" y="1762.2" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="12.6" fill="#e6edf3" font-weight="700" text-anchor="start">Qwen3-Embedding-0.6B</text>
+<text x="950.0" y="1762.2" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#f85149" font-weight="400" text-anchor="end">rejected 2026-08-03</text>
+<text x="240.0" y="1779.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">Rejected on CPU SERVING LATENCY alone, at a four-thread budget: query p95 5.8 s and a 20-passage batch p50 of 41 s against a</text>
+<text x="240.0" y="1794.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">250 ms profile budget. Its retrieval quality was never measured, so nothing here says it is worse at retrieval — the</text>
+<text x="240.0" y="1809.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">rejection record is kept in the registry with its numbers so the next session cannot re-litigate it.</text>
+<rect x="210.0" y="1828.8" width="752.0" height="64.4" rx="7" fill="#101a13" stroke="#238636" stroke-opacity="0.7"/>
+<circle cx="226.0" cy="1843.8" r="4.6" fill="#238636"/>
+<text x="240.0" y="1847.8" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="12.6" fill="#e6edf3" font-weight="700" text-anchor="start">hashing-64</text>
+<text x="950.0" y="1847.8" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#238636" font-weight="400" text-anchor="end">local · no model</text>
+<text x="240.0" y="1864.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">Dependency-free and non-semantic, so the whole test suite runs offline. Its answerable and unanswerable cosine distributions</text>
+<text x="240.0" y="1880.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">OVERLAP, so no threshold separates them: the floor case proving gap detection is bounded by the embedder, not by the guard.</text>
+<line x1="216.0" y1="1901.2" x2="956.0" y2="1901.2" stroke="#21262d"/>
+<text x="222.0" y="1917.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10.8" fill="#6e7681" font-weight="400" text-anchor="start" font-style="italic">Ordered best → worst by measured retrieval quality where a number exists. These numbers come from different corpora and are not one</text>
+<text x="222.0" y="1931.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10.8" fill="#6e7681" font-weight="400" text-anchor="start" font-style="italic">leaderboard — the two directly paired comparisons are voyage-3 vs bge-small (17 BEIR corpora, hit@5) and bge-large vs text-</text>
+<text x="222.0" y="1946.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10.8" fill="#6e7681" font-weight="400" text-anchor="start" font-style="italic">embedding-3-small (LOCOMO, judged accuracy).</text>
+<rect x="1056" y="1074.0" width="304" height="255.4" rx="10" fill="#221a0c" stroke="#9e6a03" stroke-opacity="0.85"/>
+<rect x="1057.0" y="1083.0" width="4" height="237.4" rx="2" fill="#d29922"/>
+<text x="1082.0" y="1106.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">6b · Learned sparse (SPLADE)</text>
+<text x="1082.0" y="1122.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#d29922" font-weight="400" text-anchor="start">sidecar table</text>
+<text x="1082.0" y="1141.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">Encodes term weights over the vocabulary</text>
+<text x="1082.0" y="1157.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">into the `recall_sparse_v1` sidecar at</text>
+<text x="1082.0" y="1173.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">index time, and a query encoder at</text>
+<text x="1082.0" y="1190.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">search time.</text>
+<text x="1082.0" y="1206.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">REFUSED under RECALL_ENV=production: the</text>
+<text x="1082.0" y="1223.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">sidecar has no foreign key to the chunk</text>
+<text x="1082.0" y="1239.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">table and the erasure paths predate it,</text>
+<text x="1082.0" y="1255.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">so a forgotten chunk would leave</text>
+<text x="1082.0" y="1272.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">partially reconstructable term weights</text>
+<text x="1082.0" y="1288.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">behind. Wiring erasure is the</text>
+<text x="1082.0" y="1305.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">precondition for lifting the refusal.</text>
+<path d="M 976.0 1124.0 H 1016.0 V 1120.0 H 1047.0" fill="none" stroke="#d29922" stroke-width="1.6" stroke-dasharray="5 4"/>
+<path d="M 1047.0 1115.0 L 1047.0 1125.0 L 1056.0 1120.0 Z" fill="#d29922"/>
+<text x="990.0" y="1115.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.6" fill="#d29922" font-weight="400" text-anchor="start">optional</text>
+<line x1="586.0" y1="1977.0" x2="586.0" y2="2008.0" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 2008.0 L 591.0 2008.0 L 586.0 2017.0 Z" fill="#484f58"/>
+<path d="M 1056.0 1309.4 H 1016.0 V 2057.0 H 985.0" fill="none" stroke="#d29922" stroke-width="1.6" stroke-dasharray="5 4"/>
+<path d="M 985.0 2052.0 L 985.0 2062.0 L 976.0 2057.0 Z" fill="#d29922"/>
+<rect x="196" y="2017.0" width="780" height="125.6" rx="10" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="197.0" y="2026.0" width="4" height="107.6" rx="2" fill="#56d364"/>
+<text x="222.0" y="2049.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">7 · Store — PostgreSQL + pgvector</text>
+<text x="956.0" y="2048.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="end">pgvector · HNSW</text>
+<text x="222.0" y="2069.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">One transactional database holds both legs: dense vectors on an HNSW index and Postgres FTS `tsvector` side by side. No</text>
+<text x="222.0" y="2085.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">separate vector service to operate. Row-level security per tenant, `recall forget` for right-to-erasure, registered</text>
+<text x="222.0" y="2101.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">index generations with a shadow route, durable ordered outbox and a transactional cutover that refuses while events are</text>
+<text x="222.0" y="2118.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">pending. Measured at 50,600 chunks: recall@5 1.00 filtered and unfiltered.</text>
+<line x1="156" y1="2196.6" x2="1360" y2="2196.6" stroke="#30363d"/>
+<text x="156.0" y="2222.6" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="13.5" fill="#e6edf3" font-weight="700" text-anchor="start">QUERY</text>
+<text x="215.0" y="2222.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="12" fill="#6e7681" font-weight="400" text-anchor="start">— the read path. Postgres does the searching; the guards decide what may be served.</text>
+<rect x="196" y="2242.6" width="780" height="125.6" rx="10" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="197.0" y="2251.6" width="4" height="107.6" rx="2" fill="#56d364"/>
+<text x="222.0" y="2274.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">8 · Query → query vector</text>
+<text x="956.0" y="2273.6" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="end">asymmetric</text>
+<text x="222.0" y="2294.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">The query is embedded with the profile's QUERY encoder (`query_embed`), not the passage encoder — the registry makes the</text>
+<text x="222.0" y="2311.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">two dispatch keys, so an asymmetric profile cannot silently produce a query vector from the passage side.</text>
+<text x="222.0" y="2327.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">`search_fused` optionally also embeds the recent conversation turns and fuses both: +0.0084 nDCG@5 and +0.0842 R@100</text>
+<text x="222.0" y="2343.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">WITH a reranker, −0.0447 without — so it refuses to run unreranked rather than warn.</text>
+<line x1="586.0" y1="2368.2" x2="586.0" y2="2399.2" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 2399.2 L 591.0 2399.2 L 586.0 2408.2 Z" fill="#484f58"/>
+<text x="196.0" y="2396.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="12.4" fill="#adbac7" font-weight="700" text-anchor="start">9 · Retrieval legs — run in parallel</text>
+<rect x="196.0" y="2408.2" width="250.7" height="120.8" rx="9" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="197.0" y="2416.2" width="4" height="104.8" rx="2" fill="#56d364"/>
+<text x="212.0" y="2434.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="12.6" fill="#e6edf3" font-weight="700" text-anchor="start">Dense</text>
+<text x="212.0" y="2456.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">pgvector cosine (`&lt;=&gt;`) over HNSW, top</text>
+<text x="212.0" y="2471.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">`candidate_k`. Catches paraphrase — the</text>
+<text x="212.0" y="2486.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">question worded nothing like the memo.</text>
+<line x1="321.3" y1="2529.0" x2="321.3" y2="2560.0" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 316.3 2560.0 L 326.3 2560.0 L 321.3 2569.0 Z" fill="#484f58"/>
+<rect x="460.7" y="2408.2" width="250.7" height="120.8" rx="9" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="461.7" y="2416.2" width="4" height="104.8" rx="2" fill="#56d364"/>
+<text x="476.7" y="2434.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="12.6" fill="#e6edf3" font-weight="700" text-anchor="start">Sparse · lexical</text>
+<text x="476.7" y="2456.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">Postgres FTS: `websearch_to_tsquery` +</text>
+<text x="476.7" y="2471.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">`ts_rank`. Catches exact identifiers,</text>
+<text x="476.7" y="2486.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">error codes and rare tokens that</text>
+<text x="476.7" y="2501.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">embeddings smear.</text>
+<line x1="586.0" y1="2529.0" x2="586.0" y2="2560.0" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 2560.0 L 591.0 2560.0 L 586.0 2569.0 Z" fill="#484f58"/>
+<rect x="725.3" y="2408.2" width="250.7" height="120.8" rx="9" fill="#221a0c" stroke="#9e6a03" stroke-opacity="0.85"/>
+<rect x="726.3" y="2416.2" width="4" height="104.8" rx="2" fill="#d29922"/>
+<text x="741.3" y="2434.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="12.6" fill="#e6edf3" font-weight="700" text-anchor="start">Sparse · learned</text>
+<text x="741.3" y="2456.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">SPLADE weights. REPLACES the lexical</text>
+<text x="741.3" y="2471.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">leg by default rather than adding to</text>
+<text x="741.3" y="2486.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">it: a weak extra leg injects fusion</text>
+<text x="741.3" y="2501.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.0" fill="#8b949e" font-weight="400" text-anchor="start">noise at ranks 37–54.</text>
+<line x1="850.7" y1="2529.0" x2="850.7" y2="2560.0" stroke="#d29922" stroke-width="1.6" stroke-dasharray="5 4"/>
+<path d="M 845.7 2560.0 L 855.7 2560.0 L 850.7 2569.0 Z" fill="#d29922"/>
+<text x="862.7" y="2553.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.6" fill="#d29922" font-weight="400" text-anchor="start">optional</text>
+<rect x="196" y="2569.0" width="780" height="109.2" rx="10" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="197.0" y="2578.0" width="4" height="91.2" rx="2" fill="#56d364"/>
+<text x="222.0" y="2601.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">10 · Reciprocal Rank Fusion</text>
+<text x="956.0" y="2600.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="end">k = 60</text>
+<text x="222.0" y="2621.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">RRF at k=60 over every enabled leg's `candidate_k` candidates. Each surviving hit is re-scored to its TRUE dense cosine</text>
+<text x="222.0" y="2637.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">whichever leg found it, so one single basis reaches the trust layer — a cosine measured against a different string would</text>
+<text x="222.0" y="2653.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">silently mean something else downstream.</text>
+<line x1="586.0" y1="2678.2" x2="586.0" y2="2709.2" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 2709.2 L 591.0 2709.2 L 586.0 2718.2 Z" fill="#484f58"/>
+<rect x="196" y="2718.2" width="780" height="125.6" rx="10" fill="#221a0c" stroke="#9e6a03" stroke-opacity="0.85"/>
+<rect x="197.0" y="2727.2" width="4" height="107.6" rx="2" fill="#d29922"/>
+<text x="222.0" y="2750.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">11 · Cross-encoder rerank</text>
+<text x="956.0" y="2749.2" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#d29922" font-weight="400" text-anchor="end">off by default</text>
+<text x="222.0" y="2770.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">ms-marco-MiniLM over the WHOLE fused pool before truncating to k — slicing to k first would hide from the cross-encoder</text>
+<text x="222.0" y="2786.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">exactly the document reranking exists to rescue. Worth +0.065 hit@5 on a weak-embedder corpus (n.s., 57× latency: 45 ms</text>
+<text x="222.0" y="2803.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">→ 2,568 ms) and nothing where dense already scores nDCG@10 0.97. A reranker can only reorder what fusion already</text>
+<text x="222.0" y="2819.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">retrieved.</text>
+<line x1="586.0" y1="2843.8" x2="586.0" y2="2874.8" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 2874.8 L 591.0 2874.8 L 586.0 2883.8 Z" fill="#484f58"/>
+<rect x="196" y="2883.8" width="780" height="125.6" rx="10" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="197.0" y="2892.8" width="4" height="107.6" rx="2" fill="#56d364"/>
+<text x="222.0" y="2915.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">12 · Gap warning</text>
+<text x="956.0" y="2914.8" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="end">fail-closed</text>
+<text x="222.0" y="2935.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">If the best DENSE cosine is below the threshold, the result is flagged 'probable corpus gap — treat as noise' instead of</text>
+<text x="222.0" y="2952.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">serving nearest-noise as an answer. The published negative result: the 0.50 default sits at the 0th percentile of five</text>
+<text x="222.0" y="2968.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">measured distributions and the 16th of the sixth. No fixed constant transfers across embedders, so calibrate against</text>
+<text x="222.0" y="2985.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">your own labelled set — do not ship the constant.</text>
+<line x1="586.0" y1="3009.4" x2="586.0" y2="3040.4" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 3040.4 L 591.0 3040.4 L 586.0 3049.4 Z" fill="#484f58"/>
+<rect x="196" y="3049.4" width="780" height="174.8" rx="10" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="197.0" y="3058.4" width="4" height="156.8" rx="2" fill="#56d364"/>
+<text x="222.0" y="3081.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">13 · Trust layer — validity beats similarity</text>
+<text x="956.0" y="3080.4" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="end">always on</text>
+<text x="222.0" y="3101.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">A pure post-processing pass, no DB access and no clock read. Bi-temporal: `now` is valid time (expired / not_yet_valid</text>
+<text x="222.0" y="3117.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">from the memo's own window), `known_as_of` is transaction time (not_yet_known from `first_indexed_at`), and supersession</text>
+<text x="222.0" y="3134.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">edges rewind with it.</text>
+<text x="222.0" y="3150.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">Verdict precedence: invalid_metadata &gt; not_yet_known &gt; superseded &gt; expired / not_yet_valid &gt; low_confidence &gt; ok. When</text>
+<text x="222.0" y="3167.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">a superseded hit scored above threshold — it WOULD have been the confident answer — its retrieved successor is promoted</text>
+<text x="222.0" y="3183.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">to `ok` even at a lower cosine, and hits reorder valid-first. That single decision is the thesis: cos 0.806 stale loses</text>
+<text x="222.0" y="3199.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">to cos 0.784 current.</text>
+<rect x="1056" y="3025.5" width="304" height="222.6" rx="10" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="1057.0" y="3034.5" width="4" height="204.6" rx="2" fill="#56d364"/>
+<text x="1082.0" y="3057.5" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">Calibration — fitted, not constant</text>
+<text x="1082.0" y="3073.5" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="start">per embedder</text>
+<text x="1082.0" y="3092.5" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">The confidence curve and the abstention</text>
+<text x="1082.0" y="3108.9" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">threshold are fitted per (embedder,</text>
+<text x="1082.0" y="3125.3" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">corpus) from a small labelled answerable</text>
+<text x="1082.0" y="3141.7" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">/ unanswerable set, and the result is</text>
+<text x="1082.0" y="3158.1" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">bound to that generation's fingerprint.</text>
+<text x="1082.0" y="3174.5" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">An uncalibrated retriever warns rather</text>
+<text x="1082.0" y="3190.9" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">than pretending; a threshold copied from</text>
+<text x="1082.0" y="3207.3" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">another embedder is the failure this</text>
+<text x="1082.0" y="3223.7" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">whole box exists to prevent.</text>
+<path d="M 1056.0 3136.8 H 1016.0 V 3136.8 H 985.0" fill="none" stroke="#56d364" stroke-width="1.6" stroke-dasharray="5 4"/>
+<path d="M 985.0 3131.8 L 985.0 3141.8 L 976.0 3136.8 Z" fill="#56d364"/>
+<line x1="586.0" y1="3224.2" x2="586.0" y2="3255.2" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 3255.2 L 591.0 3255.2 L 586.0 3264.2 Z" fill="#484f58"/>
+<rect x="196" y="3264.2" width="780" height="125.6" rx="10" fill="#221a0c" stroke="#9e6a03" stroke-opacity="0.85"/>
+<rect x="197.0" y="3273.2" width="4" height="107.6" rx="2" fill="#d29922"/>
+<text x="222.0" y="3296.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">14 · Entailment judge</text>
+<text x="956.0" y="3295.2" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#d29922" font-weight="400" text-anchor="end">off by default</text>
+<text x="222.0" y="3316.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">A QNLI cross-encoder asked, per verdict-ok hit, 'does this text answer this question?' — non-answering hits are demoted</text>
+<text x="222.0" y="3332.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">to `not_entailed`. It exists for the NEAR-MISS, an adjacent memory that clears any cosine threshold by construction,</text>
+<text x="222.0" y="3349.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">which the gap check cannot catch by definition. A decision at the judge's own model-fixed boundary, so there is nothing</text>
+<text x="222.0" y="3365.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">to recalibrate per embedder. Cost is one model pass per ok candidate.</text>
+<line x1="586.0" y1="3389.8" x2="586.0" y2="3420.8" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 3420.8 L 591.0 3420.8 L 586.0 3429.8 Z" fill="#484f58"/>
+<rect x="196" y="3429.8" width="780" height="109.2" rx="10" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="197.0" y="3438.8" width="4" height="91.2" rx="2" fill="#56d364"/>
+<text x="222.0" y="3461.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">15 · Abstain, or serve</text>
+<text x="956.0" y="3460.8" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="end">“I don't know”</text>
+<text x="222.0" y="3481.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">No hit earned `ok` ⇒ an explicit abstention carrying its reason (corpus gap / superseded / expired / not entailed),</text>
+<text x="222.0" y="3498.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">rather than the nearest match. Every result also reports freshness: how old the newest indexed content is, so a stale</text>
+<text x="222.0" y="3514.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">index warns instead of silently serving rot.</text>
+<line x1="586.0" y1="3539.0" x2="586.0" y2="3570.0" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 3570.0 L 591.0 3570.0 L 586.0 3579.0 Z" fill="#484f58"/>
+<rect x="196" y="3579.0" width="780" height="125.6" rx="10" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="197.0" y="3588.0" width="4" height="107.6" rx="2" fill="#56d364"/>
+<text x="222.0" y="3611.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">16 · Evidence construction</text>
+<text x="956.0" y="3610.0" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="end">no LLM shipped</text>
+<text x="222.0" y="3631.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">Generator-neutral by construction: a fixed system prompt with no interpolation site, every corpus byte JSON-escaped</text>
+<text x="222.0" y="3647.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">inside a delimiter whose own angle brackets are escaped, capped by `max_items` and an EXACT token budget. Citations must</text>
+<text x="222.0" y="3663.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">resolve to supplied chunk IDs — structural validation only, it does not claim the cited passage entails the answer. An</text>
+<text x="222.0" y="3680.2" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">abstention bypasses the generator entirely.</text>
+<line x1="586.0" y1="3704.6" x2="586.0" y2="3735.6" stroke="#484f58" stroke-width="1.6"/>
+<path d="M 581.0 3735.6 L 591.0 3735.6 L 586.0 3744.6 Z" fill="#484f58"/>
+<rect x="196" y="3744.6" width="780" height="109.2" rx="10" fill="#12241a" stroke="#2ea043" stroke-opacity="0.85"/>
+<rect x="197.0" y="3753.6" width="4" height="91.2" rx="2" fill="#56d364"/>
+<text x="222.0" y="3776.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="14.0" fill="#e6edf3" font-weight="700" text-anchor="start">17 · Surface</text>
+<text x="956.0" y="3775.6" font-family="ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace" font-size="10.2" fill="#56d364" font-weight="400" text-anchor="end">MCP · CLI · SDK</text>
+<text x="222.0" y="3796.6" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">`recall_search` · `recall_evidence` · `recall_index` · `recall_forget` · `recall_stats` over MCP (stdio), plus the CLI</text>
+<text x="222.0" y="3813.0" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">and drop-in LangChain / LlamaIndex retrievers. Every hit returns verdict + calibrated confidence + provenance +</text>
+<text x="222.0" y="3829.4" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#8b949e" font-weight="400" text-anchor="start">`indexed_at`, alongside diagnostics naming the exact tenant, generation, pipeline and corpus fingerprint it came from.</text>
+<line x1="156" y1="3897.7999999999993" x2="1360" y2="3897.7999999999993" stroke="#30363d"/>
+<text x="156.0" y="3923.8" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.6" fill="#6e7681" font-weight="400" text-anchor="start" font-style="italic">Every number on this diagram is measured and sourced in results/FINDINGS.md; where a cell carries no number, none was measured, and it says so.</text>
+</svg>

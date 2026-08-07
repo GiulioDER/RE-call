@@ -22,6 +22,8 @@
   &nbsp;·&nbsp;
   <a href="#see-it-in-one-screen">See it</a>
   &nbsp;·&nbsp;
+  <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/pipeline.svg">The pipeline</a>
+  &nbsp;·&nbsp;
   <a href="#what-is-actually-verified">What's verified</a>
   &nbsp;·&nbsp;
   <a href="#quickstart--2-minutes-no-api-key">Quickstart</a>
