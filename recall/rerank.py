@@ -224,8 +224,8 @@ class LateInteractionReranker:
         # to prevent. Ranking such a document LAST satisfies the original objection (last is not
         # mid) without letting one bad chunk break every query that retrieves it.
         #
-        # The QUERY side deliberately still raises, via `maxsim`: if the query encodes to nothing
-        # there is no evidence to rank ANY document by, so there is no salvageable ordering.
+        # The QUERY side deliberately still raises, in the guard above: if the query encodes to
+        # nothing there is no evidence to rank ANY document by, so no ordering is salvageable.
         scores = [
             float("-inf") if d.shape[0] == 0 else maxsim(qtokens, d) for d in dtokens
         ]
