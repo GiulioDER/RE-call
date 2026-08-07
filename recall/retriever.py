@@ -348,6 +348,10 @@ class HybridRetriever:
 
         ⚠️ The gain is CONDITIONAL on reranking. Raw, this arm scores 0.0447 nDCG@5 BELOW
         `search()`. That is why a missing reranker is refused instead of warned about.
+
+        The returned result can carry FEWER than `k` hits. A chunk deleted between retrieval and
+        the final rescore is omitted by `cosines_for`, and that hit is dropped rather than served
+        a stale score that could still be on the history's basis rather than the query's.
         """
         if k < 1:
             raise ValueError(f"k must be >= 1, got {k}")

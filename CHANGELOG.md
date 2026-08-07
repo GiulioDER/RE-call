@@ -9,6 +9,23 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
+- **`HybridRetriever.search_fused(query, history, k, source)`: multi-query fusion of the current
+  turn with prior turns.** Fuses retrieval for `query` with retrieval for a concatenation of prior
+  turns, then reranks once. Measured on MTRAG-human dev at `candidate_k=100` with a reranker:
+  **+0.0084 nDCG@5** (Holm-significant) and **+0.0842 R@100** over single-query `search`,
+  consistent under two cross-encoders 25x apart in size, on one dev split. The gain is conditional
+  on reranking: raw, this arm is **0.0447 nDCG@5 worse** than `search()`, which is why
+  `search_fused` refuses rather than warns when no reranker is configured; RE-call ships with the
+  reranker off by default. It costs roughly 2x the retrieval of `search()` plus mandatory
+  reranking (about 1,050 ms/query on CPU), so it is opt-in by data: no `history`, no fusion, and
+  `search()` is unchanged.
+
+  Adds `PgVectorStore.cosines_for`, used to put every returned hit back on the query's cosine
+  basis after rerank. A chunk deleted between retrieval and that rescore is omitted from
+  `cosines_for` and dropped from the result rather than served a stale, possibly history basis
+  score, so `search_fused` can return fewer than `k` hits. Library only for now: not exposed as an
+  MCP tool.
+
 - **`benchmarks/check_profile_encoder_distinctness.py`, and the finding it exists to record.**
   `bge-small-symmetric-v1` and `bge-small-asymmetric-v1` differ in two registry fields
   (`query_mode`, `passage_mode`) and share every other identity field and one provisioned artifact
