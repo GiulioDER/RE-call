@@ -75,9 +75,16 @@ def test_arm_with_an_unregistered_checkpoint_raises_on_licence():
         LateArm("li_future", "some/unrecorded").licence
 
 
-def test_holm_family_raises_even_when_handed_a_single_use_iterator():
-    """The gate must not degrade to silent omission on a type violation. Iterating the argument
-    twice without materialising it would return an empty tuple here instead of raising."""
-    arms = iter([_by_name("li_colbertv2"), _by_name("li_jina")])
-    with pytest.raises(ValueError, match="li_jina"):
-        holm_family(arms)
+def test_holm_family_returns_every_name_when_handed_a_single_use_iterator():
+    """Reading the argument twice would exhaust the iterator on the `blocked` scan, and the return
+    would then be an empty tuple: silent omission of arms the caller believed were included.
+
+    Every arm here is DEPLOYABLE, and that is the whole point. With a blocked arm in the iterator
+    the function raises during the first read and never reaches the second, so that version of
+    this test passes against the unmaterialised implementation and proves nothing. Verified: the
+    unfixed code raises on a mixed iterator and returns () on this one.
+    """
+    assert holm_family(iter([_by_name("li_colbertv2"), _by_name("li_answerai")])) == (
+        "li_colbertv2",
+        "li_answerai",
+    )
