@@ -9,6 +9,7 @@ from recall.sparse import (
     SparseIndexResult,
     SparseProfile,
     assert_sparse_coverage,
+    backfill_learned_sparse,
     store_sparse_vectors,
 )
 from recall.types import Chunk
@@ -189,3 +190,40 @@ def test_coverage_names_the_empty_chunks_as_the_explanation(make_store) -> None:
 
     with pytest.raises(SparseCoverageError, match="encoded to an empty vector: b"):
         assert_sparse_coverage(store, PROFILE_ID, empty_ids=result.empty_ids)
+
+
+@requires_db
+def test_backfill_encodes_a_corpus_that_was_already_indexed(make_store) -> None:
+    """The case that actually matters: every corpus in existence today is already indexed.
+
+    `Indexer` has never written the sidecar, so there is no corpus anywhere whose learned sparse
+    vectors were written at index time. The backfill is the only path that can reach them, and it
+    is what `benchmarks/store_latency_share.py` calls after `_throwaway_store` has already run.
+    """
+    store = make_store(64)
+    store.upsert(
+        [_chunk("a", "aardvark"), _chunk("b", "beta")], [[0.1] * 64, [0.1] * 64]
+    )
+    encoder = KeywordSparseEncoder({"aardvark": 7, "beta": 9})
+
+    result = backfill_learned_sparse(store, encoder)
+
+    assert result.written == 2
+    assert_sparse_coverage(store, PROFILE_ID, empty_ids=result.empty_ids)
+
+
+@requires_db
+def test_backfill_is_idempotent(make_store) -> None:
+    """`upsert_sparse` is ON CONFLICT DO UPDATE, so a re-run re-encodes rather than duplicating.
+
+    Deliberately NOT resumable: skipping ids already present would need a new
+    `store.sparse_ids(profile_id)`, and at the corpus sizes this serves that buys nothing.
+    """
+    store = make_store(64)
+    store.upsert([_chunk("a", "aardvark")], [[0.1] * 64])
+    encoder = KeywordSparseEncoder({"aardvark": 7})
+
+    backfill_learned_sparse(store, encoder)
+    backfill_learned_sparse(store, encoder)
+
+    assert store.sparse_row_count(PROFILE_ID) == 1
