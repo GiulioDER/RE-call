@@ -320,6 +320,14 @@ def load_dev_tasks(root: Path, query_mode: str) -> list[dict[str, Any]]:
                 if "_id" not in item or "text" not in item:
                     raise RuntimeError(f"{path}:{line_no} is missing _id or text")
                 task_id = str(item["_id"])
+                if CONVERSATION_SEPARATOR not in task_id:
+                    raise RuntimeError(
+                        f"{path}:{line_no} has id {task_id!r}, which carries no "
+                        f"{CONVERSATION_SEPARATOR!r}. The conversation id is derived by splitting "
+                        f"on it, so a different id convention would silently record "
+                        f"conversation_id == task_id rather than failing. This file has already "
+                        f"cost three defects found only at runtime; the assumption is checked."
+                    )
                 # MTRAG uses ONE id convention across both splits: the sealed release ships
                 # `conversation_id` "18ef26..." beside `task_id` "18ef26...<::>7", and a dev
                 # `_id` reads "dd6b6f...<::>2". So the conversation id is the part before the
@@ -329,12 +337,22 @@ def load_dev_tasks(root: Path, query_mode: str) -> list[dict[str, Any]]:
                 # already passed. Normalising here keeps the writer identical across splits,
                 # which is the same reason this function normalises the other fields.
                 text = str(item["text"])
+                # `full` (the `_questions` file) concatenates the conversation, one turn per
+                # line, each with its own speaker tag. Collapsing that into a single
+                # {"speaker": "user", "text": ...} would record one fabricated turn whose body
+                # contains several real ones, which is not what the submission format means by
+                # `input`. `last` and `rewrite` are single-line, so they yield one entry anyway.
+                turns = [
+                    {"speaker": "user", "text": stripped}
+                    for stripped in strip_speaker(text).splitlines()
+                    if stripped
+                ]
                 tasks.append(
                     {
                         "task_id": task_id,
                         "conversation_id": task_id.split(CONVERSATION_SEPARATOR, 1)[0],
                         "Collection": domain,
-                        "input": [{"speaker": "user", "text": strip_speaker(text)}],
+                        "input": turns,
                         "_domain": domain,
                         "_text": text,
                     }
@@ -603,6 +621,34 @@ def run_arm(
     return summary
 
 
+def arm_runs_on(arm: "Arm", split: str) -> bool:
+    """Whether this arm has a queries file on `split` at all.
+
+    `recent3` slices a conversation, which the dev release does not ship: `dev_tasks_path` raises
+    for it. So a dev run cannot include those arms, and asking for the DEFAULT selection on the
+    default split must not be a way to discover that.
+    """
+    return split != "dev" or arm.query_mode in DEV_QUERY_FILES
+
+
+def select_arm_names(requested: "Sequence[str] | None", split: str) -> list[str]:
+    """The arms to run, with the default narrowed to what this split can actually run.
+
+    ⚠️ `--split` defaults to `dev` deliberately, so the sealed set has to be typed out to reach.
+    That default was unrunnable: the default `ARMS` tuple mixes `last` and `recent3`, `recent3`
+    has no dev file, and `dev_query_mode_for` refused the mixture before anything was written. So
+    `python -m benchmarks.mtrag.run` on its own defaults died before the manifest existed, and the
+    CLI help said nothing about it.
+
+    An EXPLICIT `--arms` is still honoured exactly as given, including into the refusal: someone
+    who names two incompatible arms should be told, not quietly given one of them. Only the
+    DEFAULT is narrowed, which is the case where no one expressed an intent to be contradicted.
+    """
+    if requested:
+        return list(requested)
+    return [arm.name for arm in ARMS if arm_runs_on(arm, split)]
+
+
 def dev_query_mode_for(arm_names: "Sequence[str]", split: str) -> str:
     """The single query mode a run's manifest can honestly describe.
 
@@ -726,7 +772,7 @@ def main(argv: list[str] | None = None) -> int:
     root = args.mtrag_root.resolve()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    selected_arm_names = args.arms or [arm.name for arm in ARMS]
+    selected_arm_names = select_arm_names(args.arms, args.split)
     query_mode = dev_query_mode_for(selected_arm_names, args.split)
     release = validate_release(root, args.split, query_mode)
     manifest = {
@@ -777,7 +823,7 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(index_results, indent=2), encoding="utf-8"
         )
     if args.phase in ("evaluate", "all"):
-        selected = set(args.arms or [arm.name for arm in ARMS])
+        selected = set(selected_arm_names)
         summaries = []
         for arm in ALL_ARMS:
             if arm.name in selected:

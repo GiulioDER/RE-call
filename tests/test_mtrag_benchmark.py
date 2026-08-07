@@ -178,14 +178,14 @@ def _fake_release(
         for mode_file in query_modes:
             (dev_dir / f"{domain}_{mode_file}.jsonl").write_text(
                 "".join(
-                    _json.dumps({"_id": f"{domain}-dev-{i}", "text": f"q {mode_file}"}) + "\n"
+                    _json.dumps({"_id": f"{domain}conv{i}<::>1", "text": f"q {mode_file}"}) + "\n"
                     for i in range(dev_queries)
                 ),
                 encoding="utf-8",
             )
         (dev_dir / "qrels" / "dev.tsv").write_text(
             "query\tcorpus\tscore\n"
-            + "".join(f"{domain}-dev-{i}\tc{i}\t1\n" for i in range(dev_queries)),
+            + "".join(f"{domain}conv{i}<::>1\tc{i}\t1\n" for i in range(dev_queries)),
             encoding="utf-8",
         )
 
@@ -305,3 +305,90 @@ def test_dev_tasks_carry_the_fields_the_prediction_writer_reads(tmp_path) -> Non
     assert task["input"] == [
         {"speaker": "user", "text": "Do the Cardinals play outside the US?"}
     ], "input must be the turn WITHOUT the speaker prefix the release ships"
+
+
+def _write_dev(root, domain: str, mode_file: str, rows: list[dict]) -> None:
+    import json as _json
+
+    d = root / "mtrag-human" / "retrieval_tasks" / domain
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{domain}_{mode_file}.jsonl").write_text(
+        "".join(_json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+    )
+
+
+def test_full_mode_records_one_input_entry_per_turn(tmp_path) -> None:
+    """The `_questions` file concatenates the conversation, one turn per line.
+
+    Collapsing it into a single `{"speaker": "user", "text": ...}` records one fabricated turn
+    whose body contains several real ones, which is not what the submission format means by
+    `input`. Dormant today, since every declared dev arm uses `last`, but `DEV_QUERY_FILES`
+    exposes `full` and the CLI can select it.
+    """
+    for domain in run.DOMAINS:
+        rows = []
+        if domain == run.DOMAINS[0]:
+            rows = [{"_id": "conv9<::>2", "text": "|user|: where do they play\n|user|: outside the US?"}]
+        _write_dev(tmp_path, domain, "questions", rows)
+
+    tasks = run.load_dev_tasks(tmp_path, "full")
+
+    assert tasks[0]["input"] == [
+        {"speaker": "user", "text": "where do they play"},
+        {"speaker": "user", "text": "outside the US?"},
+    ]
+
+
+def test_an_id_without_the_separator_is_refused(tmp_path) -> None:
+    """The conversation id is derived by splitting; a different convention must not pass silently.
+
+    `.split(sep, 1)[0]` on an id lacking the separator returns the whole id, so conversation_id
+    would equal task_id and look plausible.
+    """
+    import pytest as _pytest
+
+    for domain in run.DOMAINS:
+        rows = [{"_id": "no-separator-here", "text": "|user|: hi"}] if domain == run.DOMAINS[0] else []
+        _write_dev(tmp_path, domain, "lastturn", rows)
+
+    with _pytest.raises(RuntimeError, match="carries no"):
+        run.load_dev_tasks(tmp_path, "last")
+
+
+def test_the_recorded_input_is_what_the_retriever_was_given(tmp_path) -> None:
+    """`_text` and `input` are computed separately from one source; pin that they agree.
+
+    If they drift, the prediction records an `input` that is not what was searched, and no
+    existing test compares them.
+    """
+    for domain in run.DOMAINS:
+        rows = [{"_id": "c1<::>1", "text": "|user|: how many teams"}] if domain == run.DOMAINS[0] else []
+        _write_dev(tmp_path, domain, "lastturn", rows)
+
+    task = run.load_dev_tasks(tmp_path, "last")[0]
+
+    assert run.query_text(task, "last") == task["input"][-1]["text"]
+
+
+def test_the_default_arm_selection_is_runnable_on_the_default_split() -> None:
+    """`--split dev` is the default so the sealed set must be typed out. It has to work.
+
+    The default ARMS tuple mixes `last` and `recent3`, and `recent3` has no dev file, so the
+    default selection on the default split used to refuse before writing anything.
+    """
+    names = run.select_arm_names(None, "dev")
+
+    assert names, "the default dev selection must not be empty"
+    assert run.dev_query_mode_for(names, "dev") == "last"
+    assert "recall_default_recent3" not in names
+
+
+def test_an_explicit_arm_request_is_still_honoured_into_the_refusal() -> None:
+    """Narrowing applies to the DEFAULT only. Naming two incompatible arms must still raise."""
+    import pytest as _pytest
+
+    explicit = ["recall_default_last", "recall_default_recent3"]
+
+    assert run.select_arm_names(explicit, "dev") == explicit
+    with _pytest.raises(ValueError, match="query mode"):
+        run.dev_query_mode_for(run.select_arm_names(explicit, "dev"), "dev")
