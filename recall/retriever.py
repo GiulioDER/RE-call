@@ -357,6 +357,19 @@ class HybridRetriever:
                 "WITH one and at -0.0447 WITHOUT one, so serving it unreranked would be a "
                 "measurably worse system than search(). Pass a reranker, or call search()."
             )
+        # A bare `str` satisfies `Sequence[str]` at runtime, so the type annotation alone does
+        # not stop a caller from passing one turn as a string instead of a one-element list.
+        # Without this guard, `build_history_query` would iterate the string character by
+        # character and join each character with a newline, and mypy would not catch it at a
+        # call site that types the argument loosely: the failure is silent, not loud, so it is
+        # refused here instead. `bytes` is refused alongside it for the same reason a caller
+        # could pass one by mistake, even though its elements are `int`, not `str`, so it does
+        # not itself satisfy `Sequence[str]`.
+        if isinstance(history, (str, bytes)):
+            raise ValueError(
+                f"history must be a list or other sequence of turns, not a bare {type(history).__name__}; "
+                f"wrap a single turn as [history] to pass it"
+            )
         if not history:
             raise ValueError(
                 "search_fused requires a non-empty history; call search() for single-query "
