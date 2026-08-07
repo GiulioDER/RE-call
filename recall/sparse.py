@@ -494,3 +494,149 @@ def backfill_learned_sparse(
             batch_size=batch_size,
             progress=progress,
         )
+
+
+#: What BERT-base fp32 inference needs with headroom for activations at batch 32. Stated as a
+#: number rather than computed, and exposed as a parameter, because a caller running a larger
+#: checkpoint or a bigger batch has a different answer and should not have to edit this file.
+DEFAULT_REQUIRED_VRAM_MB = 2048
+
+SPARSE_DEVICES = ("auto", "cpu", "cuda")
+
+
+class SparseDeviceError(RuntimeError):
+    """A device was asked for by name and cannot be used."""
+
+
+@dataclass(frozen=True)
+class DeviceReport:
+    """Everything the device decision was made from, kept so it can be printed and stamped.
+
+    `learned_sparse_encode_ms_mean` is a transformer forward pass, so its value on CPU and on GPU
+    are measurements of different things. An artifact that does not record which one it was cannot
+    be compared against another, which is why this whole object reaches provenance rather than
+    only the resolved string.
+    """
+
+    requested: str
+    resolved: str
+    torch_cuda_build: str | None
+    device_name: str | None
+    capability: tuple[int, int] | None
+    supported_architectures: tuple[str, ...]
+    free_vram_mb: int | None
+    refusal: str | None
+
+
+def device_refusal(
+    *,
+    cuda_build: str | None,
+    device_count: int,
+    capability: tuple[int, int] | None,
+    arch_list: tuple[str, ...],
+    free_vram_mb: int | None,
+    required_vram_mb: int = DEFAULT_REQUIRED_VRAM_MB,
+) -> str | None:
+    """Why CUDA cannot be used, or `None` when it can.
+
+    A PURE function over the facts, deliberately. Every branch is then reachable from a test on a
+    box with no GPU and no CUDA build, which is the only way this guard gets shown FIRING rather
+    than shown running. The collector that gathers these facts has no logic in it.
+
+    The checks are ordered so each names its own fix. A CPU-only wheel and an absent card need
+    different actions, and telling someone with a working card that they have no GPU sends them
+    to the wrong one.
+    """
+    if cuda_build is None:
+        return (
+            "torch is a CPU-only build (torch.version.cuda is None), so no GPU is reachable "
+            "regardless of what hardware is present. Install a CUDA build of torch."
+        )
+    if device_count < 1:
+        return (
+            f"torch is built against CUDA {cuda_build} but reports no CUDA device. The driver, "
+            f"the container's device mapping or CUDA_VISIBLE_DEVICES is where to look."
+        )
+    if capability is not None:
+        arch = f"sm_{capability[0]}{capability[1]}"
+        if arch_list and arch not in arch_list:
+            return (
+                f"this card is compute capability {capability[0]}.{capability[1]} ({arch}) and "
+                f"the installed torch was not built for it. It carries {', '.join(arch_list)}. "
+                f"A wheel without the architecture does not decline politely, so this refuses "
+                f"here instead. Install a torch build listing {arch}, or pass --sparse-device cpu."
+            )
+    if free_vram_mb is not None and free_vram_mb < required_vram_mb:
+        return (
+            f"only {free_vram_mb} MiB of VRAM is free and this needs about {required_vram_mb} "
+            f"MiB. Encoding would fail partway through a corpus rather than here."
+        )
+    return None
+
+
+def inspect_sparse_device(
+    requested: str = "auto", required_vram_mb: int = DEFAULT_REQUIRED_VRAM_MB
+) -> DeviceReport:
+    """Read the device facts off torch and apply `device_refusal` to them.
+
+    `requested="cpu"` short-circuits before importing torch. Otherwise asking for CPU on a box
+    with no torch would import torch in order to decide it did not need torch.
+    """
+    if requested == "cpu":
+        return DeviceReport(
+            requested=requested, resolved="cpu", torch_cuda_build=None, device_name=None,
+            capability=None, supported_architectures=(), free_vram_mb=None, refusal=None,
+        )
+
+    try:
+        import torch
+    except ImportError:
+        return DeviceReport(
+            requested=requested, resolved="cpu", torch_cuda_build=None, device_name=None,
+            capability=None, supported_architectures=(), free_vram_mb=None,
+            refusal="torch is not installed; the learned sparse path needs the `sparse` extra",
+        )
+
+    cuda_build = torch.version.cuda
+    device_count = torch.cuda.device_count() if cuda_build else 0
+    name = None
+    capability = None
+    free_vram_mb = None
+    arch_list: tuple[str, ...] = ()
+    if device_count:
+        name = torch.cuda.get_device_name(0)
+        capability = torch.cuda.get_device_capability(0)
+        arch_list = tuple(torch.cuda.get_arch_list())
+        # `mem_get_info` returns (free, total) in bytes. FREE rather than total: another process
+        # holding the card is the common case on a shared box, and total would say yes to a card
+        # with nothing left to give.
+        free_bytes, _total = torch.cuda.mem_get_info(0)
+        free_vram_mb = int(free_bytes // (1024 * 1024))
+
+    refusal = device_refusal(
+        cuda_build=cuda_build, device_count=device_count, capability=capability,
+        arch_list=arch_list, free_vram_mb=free_vram_mb, required_vram_mb=required_vram_mb,
+    )
+    return DeviceReport(
+        requested=requested, resolved="cpu" if refusal else "cuda",
+        torch_cuda_build=cuda_build, device_name=name, capability=capability,
+        supported_architectures=arch_list, free_vram_mb=free_vram_mb, refusal=refusal,
+    )
+
+
+def resolve_sparse_device(
+    requested: str = "auto", required_vram_mb: int = DEFAULT_REQUIRED_VRAM_MB
+) -> str:
+    """The device string for `SpladeEncoder.from_pretrained`, refusing a named GPU it cannot use.
+
+    `auto` means "use it if it is there", so a refusal is information and the answer is `cpu`.
+    `cuda` is a STATEMENT about the run, and answering `cpu` to it would make that statement false
+    while producing correct vectors roughly a hundred times more slowly, with nothing to show for
+    it. See the note on `SpladeEncoder.device`.
+    """
+    if requested not in SPARSE_DEVICES:
+        raise ValueError(f"device must be one of {SPARSE_DEVICES}, got {requested!r}")
+    report = inspect_sparse_device(requested, required_vram_mb=required_vram_mb)
+    if requested == "cuda" and report.refusal:
+        raise SparseDeviceError(f"--sparse-device cuda was requested but {report.refusal}")
+    return report.resolved

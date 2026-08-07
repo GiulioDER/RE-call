@@ -202,6 +202,14 @@ ABLATIONS = [
         "tests/test_store_latency_splade_arm.py",
         "test_the_splade_arm_reports_a_learned_fire_rate_and_no_lexical_leg",
     ),
+    (
+        "an explicitly requested cuda device is refused when unusable",
+        SPARSE,
+        "    if requested == \"cuda\" and report.refusal:",
+        "    if False and report.refusal:",
+        "tests/test_sparse_device.py",
+        "test_requesting_cuda_explicitly_raises_rather_than_falling_back",
+    ),
 ]
 
 

@@ -93,7 +93,7 @@ from recall.eval.synthetic import generate
 from recall.observability import HISTOGRAM_CAPACITY, METRICS, percentile
 from recall.rerank import CrossEncoderReranker, Reranker
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
-from recall.sparse import assert_sparse_coverage, backfill_learned_sparse
+from recall.sparse import SPARSE_DEVICES, assert_sparse_coverage, backfill_learned_sparse
 from recall.store import (
     LEG_DENSE,
     LEG_LEARNED_SPARSE,
@@ -666,6 +666,11 @@ def main() -> int:
         help="required for the naver checkpoints (cc-by-nc-sa-4.0); RE-call itself is MIT",
     )
     ap.add_argument(
+        "--sparse-device", choices=list(SPARSE_DEVICES), default="auto",
+        help="`cuda` REFUSES if the GPU is unusable rather than falling back; `auto` falls back "
+             "to CPU and prints what it chose",
+    )
+    ap.add_argument(
         "--max-load-per-core", type=float, default=DEFAULT_MAX_LOAD_PER_CORE,
         help="refuse to measure above this 1-minute load average per core",
     )
@@ -704,16 +709,26 @@ def main() -> int:
     emb = _make_embedder(args.embedder)
 
     sparse_encoder = None
+    sparse_device_report = None
     if wants_learned:
         # Imported HERE, not at module scope: torch and transformers are the `sparse` extra, and
         # a lexical-only run must not require them to be installed at all.
-        from recall.sparse import DEFAULT_MODEL, HNSW_MAX_NONZERO, SpladeEncoder
+        from recall.sparse import (
+            DEFAULT_MODEL, HNSW_MAX_NONZERO, SpladeEncoder,
+            inspect_sparse_device, resolve_sparse_device,
+        )
 
+        sparse_device_report = inspect_sparse_device(args.sparse_device)
+        device = resolve_sparse_device(args.sparse_device)
+        print(f"learned sparse device: {device} (requested {args.sparse_device})")
+        if sparse_device_report.refusal:
+            print(f"  GPU not used: {sparse_device_report.refusal}")
         sparse_encoder = SpladeEncoder.from_pretrained(
             args.sparse_model or DEFAULT_MODEL,
             top_k=args.sparse_top_k or HNSW_MAX_NONZERO,
             revision=args.sparse_revision,
             accept_noncommercial_license=args.accept_noncommercial_license,
+            device=device,
         )
         print(f"learned sparse encoder: {sparse_encoder.profile.fingerprint()}")
 
@@ -824,6 +839,21 @@ def main() -> int:
                         "artifact_digest": sparse_encoder.profile.artifact_digest,
                         "top_k": sparse_encoder.profile.top_k,
                         "fingerprint": sparse_encoder.profile.fingerprint(),
+                    }
+                ),
+                "sparse_device": (
+                    None if sparse_device_report is None
+                    else {
+                        "requested": sparse_device_report.requested,
+                        "resolved": sparse_device_report.resolved,
+                        "device_name": sparse_device_report.device_name,
+                        "torch_cuda_build": sparse_device_report.torch_cuda_build,
+                        "capability": (
+                            None if sparse_device_report.capability is None
+                            else list(sparse_device_report.capability)
+                        ),
+                        "free_vram_mb": sparse_device_report.free_vram_mb,
+                        "refusal": sparse_device_report.refusal,
                     }
                 ),
                 "stack": model_stack(),
