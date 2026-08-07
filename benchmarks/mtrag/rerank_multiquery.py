@@ -38,6 +38,7 @@ import argparse
 import json
 import random
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +68,7 @@ RERANK_CONTRASTS = (
 CONVERSION_BAR = 0.010
 
 
-def metric_fn(name: str):
+def metric_fn(name: str) -> Callable[[list[str], set[str]], float]:
     kind, _, depth = name.partition("@")
     k = int(depth)
     score = ndcg_at if kind == "nDCG" else recall_at
@@ -279,7 +280,7 @@ def frozen_rankings(out: Path, mq_dir: Path, whole_pool: bool) -> dict[str, dict
                 f"unexpected: {sorted(present - declared)}. Re-run `pairs` against the current "
                 f"RERANK_ARMS rather than mixing the two."
             )
-        return loaded
+        return {name: loaded[name] for name in RERANK_ARMS}
     print(json.dumps({"event": "frozen_rankings_absent", "expected": str(path),
                       "falling_back_to": str(mq_dir)}), flush=True)
     return load_arm_rankings(mq_dir, whole_pool=whole_pool)

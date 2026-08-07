@@ -558,7 +558,9 @@ def check_provenance(out: Path, variants: Sequence[str]) -> None:
         }), flush=True)
         return
 
-    absent, unrecorded, in_flight = [], [], []
+    absent: list[str] = []
+    unrecorded: list[str] = []
+    in_flight: list[str] = []
     for variant in variants:
         entry = recorded.get(variant)
         if entry is None:
@@ -1101,19 +1103,20 @@ def cmd_posthoc(args: argparse.Namespace) -> int:
                  for t in shared], rng,
             )
         tripped = sorted(m for m, s in vetoes.items() if s["ci_high"] < 0)
+        delta_stats: dict[str, Any] = paired_stats(deltas, rng)
         row = {
             "post_hoc": True, "arm": asdict(arm), "queries": len(shared),
             **{name: sum(vals) / len(vals) for name, vals in metrics.items()},
-            "vs_mq_last_R@100": paired_stats(deltas, rng),
+            "vs_mq_last_R@100": delta_stats,
             "vs_mq_last_vetoes": vetoes,
             "vetoes_tripped": tripped,
         }
         rows.append(row)
         print(json.dumps({"event": "post_hoc_arm", "arm": arm.name, "post_hoc": True,
                           **{k: round(v, 4) for k, v in row.items() if isinstance(v, float)},
-                          "delta_R@100": round(row["vs_mq_last_R@100"]["mean_delta"], 4),
-                          "ci": [round(row["vs_mq_last_R@100"]["ci_low"], 4),
-                                 round(row["vs_mq_last_R@100"]["ci_high"], 4)],
+                          "delta_R@100": round(delta_stats["mean_delta"], 4),
+                          "ci": [round(delta_stats["ci_low"], 4),
+                                 round(delta_stats["ci_high"], 4)],
                           "vetoes_tripped": tripped}), flush=True)
     (out / "posthoc.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
     return 0

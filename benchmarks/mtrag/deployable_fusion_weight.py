@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from typing import Any
 import random
 from pathlib import Path
 
@@ -90,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
                       "weight": TREATMENT.weights}), flush=True)
 
     for name, ranking in rankings.items():
-        row = {"event": "arm", "arm": name}
+        row: dict[str, Any] = {"event": "arm", "arm": name}
         for mname, fn, k in VETO_METRICS:
             row[mname] = round(sum(fn(ranking[q], qrels[q], k) for q in shared) / len(shared), 4)
         row["R@100"] = round(
