@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from recall.sparse import SparseIndexResult, SparseProfile, store_sparse_vectors
+from recall.sparse import (
+    SparseCoverageError,
+    SparseIndexResult,
+    SparseProfile,
+    assert_sparse_coverage,
+    store_sparse_vectors,
+)
 from recall.types import Chunk
 from tests.conftest import requires_db
 
@@ -102,3 +108,49 @@ def test_progress_reports_the_running_written_count(make_store) -> None:
     )
 
     assert seen == [2, 3]
+
+
+@requires_db
+def test_coverage_passes_when_every_chunk_is_encoded(make_store) -> None:
+    store = make_store(64)
+    store.upsert(
+        [_chunk("a", "aardvark"), _chunk("b", "beta")], [[0.1] * 64, [0.1] * 64]
+    )
+    encoder = KeywordSparseEncoder({"aardvark": 7, "beta": 9})
+    store_sparse_vectors(store, encoder, [("a", "aardvark"), ("b", "beta")])
+
+    assert_sparse_coverage(store, PROFILE_ID)  # must not raise
+
+
+@requires_db
+def test_coverage_refuses_a_half_encoded_corpus(make_store) -> None:
+    """"The corpus is half encoded" is a state that exists, and a query over it returns
+    plausible thin results rather than an error. So it is refused here, loudly, with both counts
+    in the message."""
+    store = make_store(64)
+    store.upsert(
+        [_chunk("a", "aardvark"), _chunk("b", "beta")], [[0.1] * 64, [0.1] * 64]
+    )
+    encoder = KeywordSparseEncoder({"aardvark": 7})
+    store_sparse_vectors(store, encoder, [("a", "aardvark")])
+
+    with pytest.raises(SparseCoverageError, match="1 of 2"):
+        assert_sparse_coverage(store, PROFILE_ID)
+
+
+@requires_db
+def test_coverage_names_the_empty_chunks_as_the_explanation(make_store) -> None:
+    """A shortfall fully explained by term-free passages still refuses, but says WHY.
+
+    An operator who knows the two missing chunks are punctuation can proceed. One who is told
+    only "1 of 2" cannot tell that from a broken encoder.
+    """
+    store = make_store(64)
+    store.upsert(
+        [_chunk("a", "aardvark"), _chunk("b", "!!!")], [[0.1] * 64, [0.1] * 64]
+    )
+    encoder = KeywordSparseEncoder({"aardvark": 7})
+    result = store_sparse_vectors(store, encoder, [("a", "aardvark"), ("b", "!!!")])
+
+    with pytest.raises(SparseCoverageError, match="encoded to an empty vector: b"):
+        assert_sparse_coverage(store, PROFILE_ID, empty_ids=result.empty_ids)

@@ -348,3 +348,38 @@ def store_sparse_vectors(
     _flush_batch()
 
     return SparseIndexResult(written=written, empty_ids=empty_ids)
+
+
+class SparseCoverageError(RuntimeError):
+    """Fewer sidecar rows than chunks. The retrieval leg would answer, thinly and silently."""
+
+
+def assert_sparse_coverage(
+    store: Any, profile_id: str, *, empty_ids: "Iterable[str]" = ()
+) -> None:
+    """Refuse a corpus whose sidecar is not complete under `profile_id`.
+
+    This is the corpus-level half of the empty-vector decision made in `store_sparse_vectors`,
+    and it is the reason skipping a row there is safe. A partially encoded corpus does not error
+    on query: the learned leg simply retrieves from the fraction that exists, and the result is
+    indistinguishable from a corpus where those passages genuinely did not match.
+
+    `empty_ids` is what `store_sparse_vectors` returned. It does not suppress the refusal, it
+    EXPLAINS it: an operator who can see that the missing chunks were term-free can proceed,
+    where "1 of 2" alone cannot be told apart from a broken encoder.
+    """
+    encoded = store.sparse_row_count(profile_id)
+    total = store.count()
+    if encoded == total:
+        return
+    message = (
+        f"learned sparse sidecar holds {encoded} of {total} chunks under profile "
+        f"{profile_id!r}. A query would retrieve from the encoded fraction and report nothing, "
+        f"so no result from this corpus may be quoted."
+    )
+    named = list(empty_ids)
+    if named:
+        shown = ", ".join(named[:10])
+        more = f" (and {len(named) - 10} more)" if len(named) > 10 else ""
+        message += f" {len(named)} chunk(s) encoded to an empty vector: {shown}{more}."
+    raise SparseCoverageError(message)
