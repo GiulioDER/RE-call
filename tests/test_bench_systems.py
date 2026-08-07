@@ -94,6 +94,33 @@ def test_mem0_guard_reports_an_unimportable_package_as_absent(
     assert _mem0_installed() is False
 
 
+def test_the_guard_does_not_import_mem0_when_the_breaking_module_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The skip path must cost nothing, which is a property of the CHECK ORDER.
+
+    In the failure this guard exists to catch, mem0 imports fine and `sentence_transformers` does
+    not. Checking mem0 first would fully import it, spawning a background daemon thread, purely to
+    then decide to skip the test that would have used it. The previous commit claimed "mem0 never
+    imported" and pinned nothing, so reordering the tuple back would have gone unnoticed.
+    """
+    attempted: list[str] = []
+
+    def record(name: str) -> object:
+        attempted.append(name)
+        if name == "sentence_transformers":
+            raise RuntimeError("operator torchvision::nms does not exist")
+        return object()
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(importlib, "import_module", record)
+
+    assert _mem0_installed() is False
+    assert attempted == ["sentence_transformers"], (
+        f"the guard should stop at the module that breaks, but attempted {attempted}"
+    )
+
+
 class _FakeSystem:
     name = "fake"
 
