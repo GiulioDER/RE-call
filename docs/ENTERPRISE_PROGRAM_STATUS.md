@@ -12,9 +12,13 @@ that change can go green.
 ⚠️ Do not read that as "`docs/*.md` is outside the gate", which is what this paragraph said until
 2026-08-07 and which has been false since `3509256`: **`docs/ENTERPRISE_RETRIEVAL.md` IS gated**,
 and an edit to the runbook that adds an unmarked number fails
-`test_no_new_unmarked_numbers[docs/ENTERPRISE_RETRIEVAL.md]`. The exemption is this file's alone,
-and the reason is on `GATED_DOCS`: this file gains an entry every session and `build_baseline()`
-regenerates every entry in one pass.
+`test_no_new_unmarked_numbers[docs/ENTERPRISE_RETRIEVAL.md]`.
+
+Nor is the mirror image true. **The REASONED exemption recorded on `GATED_DOCS` is this file's
+alone** — it gains an entry every session and `build_baseline()` regenerates every entry in one
+pass. Every *other* `docs/*.md` (`AUTH.md`, `CALIBRATION.md`, `MIGRATIONS.md`, `MODEL_LICENSES.md`
+and the rest) is simply **not gated yet**, which is not the same thing: a number added to one of
+those is unchecked, and nothing will say so.
 
 ---
 
@@ -49,8 +53,13 @@ Verified by mutation rather than by reading: I appended two plainly unmarked num
 `docs/ENTERPRISE_RETRIEVAL.md`, which **is** a gated document, and the script still exited zero. The
 same edit is caught immediately by `pytest tests/test_published_numbers_have_artifacts.py`.
 
-`benchmarks/evidence_injection.py` is the same shape, and it matters more: it is the **frozen
-adversarial suite** the generation campaign's last gate names. Its real gate is
+`benchmarks/evidence_injection.py` has the same shape, and it matters more: it is the **frozen
+adversarial suite** the generation campaign's last gate names. The quantifier differs, though, and
+the difference is worth keeping straight: `claim_gate.py` imports stdlib only, so it exits zero on
+any repository state whatsoever; `evidence_injection.py` imports `recall.evidence` at module scope,
+so as a script it either exits zero having asserted nothing or dies on an import error. Neither
+outcome is a gate verdict, which is the point, but "exits zero unconditionally" is only literally
+true of the first. Its real gate is
 `tests/test_evidence_injection.py`, which pins `suite_digest`, refuses an increase in
 `injection_success_rate`, carries a positive control against the renderer it replaced and a negative
 control against a renderer that ships no evidence at all.
@@ -166,11 +175,12 @@ nothing was written to the deployment, and no migration was applied: there were 
 | Shadow generation for a winning profile | **None to register.** All four committed decisions read `promoted=false` with `latency_p95_ms=None` — re-read from the artifacts, not quoted |
 | Disk headroom | 572,794,634,240 bytes free against a 131,072-byte active index: **4,370,076.2x**, requirement 2.2x. ⚠️ **PASSES VACUOUSLY**, and the per-index breakdown is why: five btrees at 16,384 and two at 24,576 sum to exactly 131,072, the empty-index floor. It bounds nothing about a real build. The 2.2x factor remains unsourced and is applied to a base that excludes the heap |
 
-**The command I did not run, and why.** `recall_migrator` and `recall_runtime` both have
-`rolpassword` NULL, and `pg_hba.conf` offers `peer` on local sockets and `scram-sha-256` over TCP.
-There is therefore no way to connect the enterprise CLI **as those roles** without minting
-credentials on a host that also runs a live money path, which is not a change to make unilaterally.
-So `readiness`, `status` and `parity` were **not** re-obtained as the serving role this session.
+**The command I did not run, and why.** Neither documented role has a usable credential path from
+this session: connecting the enterprise CLI **as those roles** would have meant provisioning
+credentials on a host that also runs a live money path, which is not a change to make
+unilaterally. (The specifics are an operations detail and are deliberately not written down in a
+public repository; they are in the private ops notes.) So `readiness`, `status` and `parity` were
+**not** re-obtained as the serving role this session.
 
 Running them as `postgres` instead was available and was **refused**: a superuser bypasses RLS, so
 `readiness`'s row-level-security verdict would have been green and meaningless — the exact vacuous
@@ -180,6 +190,73 @@ readiness verdict. Recorded as a new external dependency.
 
 The parity guard's evidence does not depend on that: it was proven red-against-old-code against real
 PostgreSQL in the suite, which is stronger than a single host invocation would have been.
+
+### The audit: 27 findings, and the prose I wrote to fix a prose defect was where they were
+
+The diff went through the tiered CCA pipeline at **DEEP** (`RUN_STAKES` fires: this CLI gates
+`cutover` and `retire`). **27 raw findings from six auditors**, and because a bare total is not
+checkable, the split: `security-auditor` 2, `bug-auditor` 3, high-stakes 4, `numeric-auditor` 3,
+data-integrity 4, `doc-auditor` 11. A seventh pass (`differential-review`) then reviewed the fix
+batch itself and returned 12 SAFE, 1 SCOPE_CREEP, 2 REGRESSION_RISK over 15 hunks. ✅ Unlike the entry below, deterministic
+coverage was **available** this run: `cca_checks capabilities` reports `definedness, nullability,
+type, taint, clock_leak` for Python. ⚠️ `numeric` is **not** among them, so the DEEP tier's rule
+that a `NUM-*` P1 must carry a `hypothesis` artifact could not be satisfied mechanically — the two
+NUM findings were settled by **mutation** instead, which is stronger than the LLM re-read it
+replaces.
+
+**The one P1 was mine, and it was false.** My new runbook line said *"a partially filled shadow is
+still a green, and no code guard catches it."* Three auditors falsified it independently, and the
+repository already owned the test that does: `test_parity_passes_on_matching_generations_and_fails_on_a_gap`
+deletes one source from the shadow and asserts exit 1. A shadow partial **relative to the active**
+fails on missing sources and on differing chunk counts. What is genuinely unguarded is a pair that
+agrees with each other while both are short of the corpus on disk — a narrower claim, and the one
+the adjacent paragraph was already making. My version also contradicted its own document 31 lines
+later. The wrong action it invites is concrete: an operator who hits a parity failure, having read
+that partial fills are never caught, concludes the failure must be an intended corpus change and
+reaches for `--allow-divergent-corpus`, which that same page forbids for exactly this case.
+
+**The sharpest finding, found by two auditors independently: the guard's scoping had no guard.**
+My code comment said the condition is BOTH empty and that "this must not restate [a real
+divergence] as a vacuity error". **Mutating `and` to `or` left all 18 tests green** — verified by
+running it, not by reading. Every parity test had both sides populated or both sides empty; none
+put a zero on exactly one side. So the load-bearing half of the change was asserted only in prose,
+inside the commit whose entire subject is that prose is the weakest place to keep a guard. That is
+the defect class this repository tracks, committed one level down from its own repair.
+
+| Finding | Verdict | Outcome |
+|---|---|---|
+| "A partially filled shadow is still a green" — **false** | CONFIRMED, by the repo's own committed test | fixed in the runbook, README and CHANGELOG; scoped to the corpus-on-disk case that is genuinely unguarded |
+| **`and` → `or` mutant survives the whole suite** | CONFIRMED **by execution** | new test `test_parity_reports_a_missing_shadow_as_missing_sources_not_as_vacuity`, which asserts the *reason* and kills the mutant |
+| The refusal returned **before** the `parity.failures` loop, suppressing `rls_enabled` and `indexes_valid` — catalog facts that can be false on an EMPTY pair | CONFIRMED by six auditors | fixed: failures print first; new test pins it. ⚠️ My first wording of the justification was itself a false enumeration — I wrote that `parity` is the *only* step inspecting the shadow's RLS, and `cutover` checks it too via `_require_parity`. The true, narrower claim is that for a BOTH-EMPTY pair `cutover` refuses at `_require_non_empty_shadow` before reaching that check, so this is the only place an *empty* pair's RLS failure surfaces |
+| "the one failure mode in the cutover sequence that presents as a green" — **overstated** | CONFIRMED: `cutover` calls `_require_non_empty_shadow` *before* `_require_parity`, deliberately outside it so `--allow-divergent-corpus` cannot skip it | fixed: what this closes is the misleading green at step 8, **not** a path to a promoted empty index |
+| "**the one** failure mode" is wrong a second way: rows can exist while every `content_hash` is absent, so `''` compares equal to `''` | CONFIRMED — the repo gates this separately in `benchmarks/check_generation_parity.py` | claim corrected in code comment, runbook and README; detection **not** implemented (that is a feature, not this fix) |
+| My header correction replaced one over-generalisation with its mirror image: "the exemption is this file's alone" implies the other 13 `docs/*.md` are gated | CONFIRMED | fixed: they are simply **not gated yet**, which is not the same thing |
+| "the runbook edit **removed** more prose than it added" | CONFIRMED FALSE — measured **+214 / −104 words** | fixed; the reduction is recorded as still owed |
+| Section R still enumerated parity's exit conditions without the new one, so the document listed them two ways | CONFIRMED | fixed, with the step-8 table named as authoritative |
+| "exits zero unconditionally" holds for `claim_gate.py` (stdlib only) but not for `evidence_injection.py`, which can die on an import | CONFIRMED | quantifier scoped |
+| The entry published a live deployment's authentication posture in a **public** repository | CONFIRMED, low severity | the blocker is kept; the mechanism detail moved to private ops notes |
+| The refusal message named only the shadow, and named neither the tenant nor the generations | CONFIRMED | message now names the tenant and both generation ids, and gives the remedy that actually clears the state |
+
+**Round 2, over the fix batch, found three more — and the pattern held exactly.** The
+anti-regression pass returned 12 SAFE, 1 SCOPE_CREEP and 2 REGRESSION_RISK; the architect gate then
+returned **REVISE** on three, every one of them a defect *in the prose written to fix round 1*:
+
+| Round 2 finding | Why it is the same defect |
+|---|---|
+| My new refusal message changed the emitted string, and the runbook and CHANGELOG still quoted the **old** literal | A false quote, in the gated document, introduced by the commit whose subject is false claims about code. Both now quote a real substring, verified by reconstructing the emitted string and asserting containment rather than by eye |
+| I wrote that `parity` is "the **sole** place a shadow's RLS is checked". **False** — `cutover` checks it too, via `_require_parity` → `validate_generation_parity` | An enumeration that missed one, which is precisely finding F-A and F-D, committed inside their own fix. The true claim is narrower: for a BOTH-EMPTY pair `cutover` refuses at `_require_non_empty_shadow` before reaching that check, so this is the only place an **empty** pair's RLS failure surfaces |
+| The overstatement corrected in three files survived **verbatim** in a fourth — the test docstring | "Fixed" was recorded while one copy stood. A test docstring is prose about code in exactly the sense this batch is about: it is what the next reader consults to learn why the guard exists |
+
+So this session's series is **27 → 3**, and the honest reading matches the entry below: the defects
+are not in the code, they are in the explanatory prose, and each round's prose generates the next
+round's findings. The code change has been stable at twenty lines since the first draft and no
+audit round has found a defect in it.
+
+**Deferred, deliberately.** Moving the emptiness check *into* `validate_generation_parity` so
+`ControlPlane._require_parity` and the benchmark harness inherit it is the better long-term shape,
+and it changes semantics for two other consumers — that belongs in its own change with its own
+tests, not folded into this one. Today the invariant holds by ordering in `control_plane.py`, which
+is recorded rather than relied on silently.
 
 ### The latency blocker, measured better than last time
 
@@ -199,7 +276,7 @@ cited for anything; the only values taken off it are checksums, counts, sizes an
 | **`recall_runtime` lacks `SELECT` on `recall_schema_versions`.** | Provisioning gap, deliberately not fixed | `status` and `readiness` fail on the credential they document. | unchanged |
 | **Model licences unrecorded for 2 of 3 artifacts.** | Provisioning gap | Redistribution rights are not recorded. | unchanged |
 | **Outbound network unblocked on VPS2.** | Deployment gap | The documented workload-boundary control is absent. | unchanged |
-| **No password on `recall_migrator` / `recall_runtime`.** | Provisioning gap | The enterprise CLI cannot be run as the roles it documents, so no readiness verdict can be obtained for the serving role. | **new** |
+| **No credential path for the documented roles.** | Provisioning gap | The enterprise CLI cannot be run as the roles it documents, so no readiness verdict can be obtained for the serving role. Specifics in the private ops notes, not here. | **new** |
 | **Both roles are `INHERIT`, not `NOINHERIT`.** | Provisioning gap | A documented precondition is unmet. Inert today (`pg_auth_members` is empty) and would stop being inert the moment either role is granted membership in anything. | **new** |
 
 ### What the next session should start with
@@ -214,11 +291,16 @@ cited for anything; the only values taken off it are checksums, counts, sizes an
 3. **`readiness` still only evaluates the ACTIVE generation**, so a shadow with a missing per-table
    ledger is invisible until it is promoted. Unchanged from the entry below, and still worth
    deciding.
-4. **Nothing here is blocked on more auditing.** Round 5 was not run. The entry below concluded
-   after four rounds that dense cross-referential prose about code is a medium this process does not
-   converge in (41 → 9 → 6 → 12), and this session's method was the reduction that entry recommended:
-   the runbook edit **removed** more prose than it added, and the one code change is twenty lines
-   with a red-state proof.
+4. **The audit ran, and the trend still has not converged.** The entry below concluded after four
+   rounds that dense cross-referential prose about code is a medium this process does not converge
+   in (41 → 9 → 6 → 12). This session's diff went through the tiered CCA pipeline at DEEP and came
+   back with **27 raw findings across six auditors**, and the important thing about them is *where*
+   they were: almost all in the prose I had just written to fix a prose defect. See the audit
+   section above. I claimed in an earlier draft of this entry that "the runbook edit removed more
+   prose than it added"; **measured on `git diff` added/removed lines through `wc -w`, it added
+   214 words and removed 104** (the method matters — a `\w+` tokenisation gives 209/99, and an
+   unstated method is how a number like this drifts). The reduction that entry recommended is
+   still owed, and this entry does not deliver it either.
 
 
 ## 2026-08-07, closing the program: two gates were red before I touched anything, and one had been red behind a job that never ran

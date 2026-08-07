@@ -314,24 +314,48 @@ recall-enterprise readiness acme
 
 🛑 **STOP if `shadow chunks` differs from the `--chunks` you measured at step 5.**
 
-✅ **The both-empty case is now refused by the command itself.** `parity` exits non-zero with
-`both generations are empty, so the comparison is vacuous` when neither generation holds a chunk.
-It used to exit zero and print `parity: OK` — two empty generations cannot disagree, so every
-comparison it makes was vacuously satisfied — and that was the one place in this sequence where the
-rule "each step is a gate, do not proceed past a red one" could not help, because the failure mode
-was a **green**. That guard lived only in this paragraph, which is the weakest place to keep one:
-prose, in the document an operator is reading for permission to proceed. There is **no override
-flag**, and that is deliberate — see `--allow-divergent-corpus` below for why a refusal that
-advertises its own escape hatch is worse than no refusal.
+✅ **The both-empty case is now refused by the command itself.** When neither generation holds a
+chunk for the tenant, `parity` exits non-zero with a refusal naming the tenant and both generation
+ids, which says `so the comparison is vacuous and certifies nothing` and then tells you what to do:
+while a shadow route exists, indexing writes both generations, so index the corpus and compare
+again. It also prints any other parity failure **before** that refusal, so an empty pair whose
+row-level security is not forced still says so — for an empty pair this is the only place that
+failure surfaces, since `readiness` evaluates the active generation and `cutover` refuses on
+emptiness before reaching its own parity check. It used to exit zero and print `parity: OK` — two empty generations cannot
+disagree, so every comparison it makes was vacuously satisfied. That guard lived only in this
+paragraph, which is the weakest place to keep one: prose, in the document an operator is reading
+for permission to proceed. There is **no override flag**, and that is deliberate — see
+`--allow-divergent-corpus` below for why a refusal that advertises its own escape hatch is worse
+than no refusal.
 
-⚠️ **A partially filled shadow is still a green, and no code guard catches it.** The refusal above
-fires only when *both* generations are empty. Compare `shadow chunks` against your own measurement.
+⚠️ **What that closes is the misleading green at THIS step, not a path to a promoted empty index.**
+`cutover` calls `_require_non_empty_shadow` before its parity check, deliberately outside it so
+`--allow-divergent-corpus` cannot skip it, and that refusal has always been there. Do not read the
+parity refusal as the thing standing between you and an empty promotion.
+
+⚠️ **A shadow partially filled relative to the ACTIVE generation IS caught** — parity fails on
+`shadow generation is missing sources`, on `shadow generation contains extra sources`, or on
+`chunk counts differ between generations`. What no guard catches is a pair that agrees with each
+other and is short of the **corpus on disk**, because parity compares the two generations to each
+other and to nothing else. That is why the paragraph below tells you to compare the shadow's source
+set against the corpus rather than only against the active generation, and why you should read the
+chunk counts this command prints against the counts you measured at `mark-ready`.
+
+⚠️ **Emptiness is not the only vacuous green.** `source_raw_hashes()` reads
+`coalesce(metadata->>'content_hash', '')`, so two generations whose rows all lack a content hash
+compare an empty string against an empty string and agree perfectly while certifying nothing.
+`parity` does **not** detect that; `benchmarks/check_generation_parity.py` gates it as a separate
+blocking control.
 
 `cutover`'s own emptiness check only catches a **totally** empty shadow, so a partially filled one
-passes both. The residual gap that produces one is on the delete path, not the write path:
-`_prune_vanished` keys its candidate set on the active generation, so a source the shadow holds and
-the active does not survives the prune and rides the cutover into the promoted generation. Compare
-the shadow's source set against the corpus on disk, not only against the active generation.
+passes *that* check. It does not pass `parity`, which compares the two generations and fails on
+missing sources, extra sources or differing chunk counts — and `cutover` runs that comparison too
+unless `--allow-divergent-corpus` is passed. The gap on the delete path is therefore a gap in what
+the comparison can *see*, not a hole it waves through: `_prune_vanished` keys its candidate set on
+the active generation, so a source the shadow holds and the active does not survives the prune, and
+it is reported here as `extra sources` — which an operator under time pressure can mistake for a
+deliberate corpus change and clear with the very flag that then skips the comparison. Compare the
+shadow's source set against the corpus on disk, not only against the active generation.
 
 Run `readiness` with `RECALL_SERVING_DSN` set. Its row level security verdict is about the role it
 connects as, and it prints that role, so the verdict names its own subject. On the migration role a
@@ -470,7 +494,7 @@ recall-enterprise replay acme
 recall-enterprise parity acme
 ```
 
-`replay` opens only the generations the pending events name, resolving each physical table from `recall_index_generations`, and exits non-zero if anything is still pending afterwards. `parity` exits non-zero when the generations disagree on sources, raw content hashes or chunk counts, and also when either generation has an invalid required index or does not have row level security forced. `status` reports generations, the tenant's route and the outbox depth; it never prints a pending event's payload, which holds corpus text and vectors. It also lists any registry row whose `physical_table` the identifier allowlist rejects, rather than failing on it: such a row cannot serve, and the command an operator uses to find it must not be the command that dies on it. Run `recall-enterprise status` before upgrading.
+`replay` opens only the generations the pending events name, resolving each physical table from `recall_index_generations`, and exits non-zero if anything is still pending afterwards. `parity` exits non-zero when the generations disagree on sources, raw content hashes or chunk counts, when either generation has an invalid required index or does not have row level security forced, and when both generations are empty (two empty generations cannot disagree, so the comparison would be vacuous). The step table above is the single authoritative list. `status` reports generations, the tenant's route and the outbox depth; it never prints a pending event's payload, which holds corpus text and vectors. It also lists any registry row whose `physical_table` the identifier allowlist rejects, rather than failing on it: such a row cannot serve, and the command an operator uses to find it must not be the command that dies on it. Run `recall-enterprise status` before upgrading.
 
 `readiness` runs the startup checks for one tenant without starting a server, and exits non-zero when any of them fails. Run it with `RECALL_SERVING_DSN` set: its row level security verdict is about the role it connects as, and it prints that role so the result names its own subject.
 
