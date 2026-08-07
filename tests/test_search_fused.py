@@ -248,3 +248,45 @@ def test_a_hit_missing_from_the_final_rescore_is_dropped_not_served_stale() -> N
     ids = {hit.chunk.id for hit in result.hits}
     assert "b" not in ids
     assert "a" in ids
+
+
+def test_history_identical_to_the_query_matches_plain_search_below_the_cap() -> None:
+    """Nested RRF over two copies of one ranking is order-preserving.
+
+    The same structural property the benchmark's 102 turn-1 queries rested on: identical text
+    gives identical leg rankings, and fusing a ranking with itself cannot reorder it.
+    """
+    rows = [(f"d{i}", 0.9 - i * 0.01) for i in range(10)]
+    store = FakeStore(dense=rows, sparse=[(f"s{i}", 0.4) for i in range(10)])
+    retriever = HybridRetriever(
+        store, FakeEmbedder(), reranker=_StubReranker(), candidate_k=20,
+        sparse_backend="lexical",
+    )
+
+    plain = [h.chunk.id for h in retriever.search("q", k=10).hits]
+    fused = [h.chunk.id for h in retriever.search_fused("q", ["q"], k=10).hits]
+
+    assert fused == plain
+
+
+def test_above_the_cap_the_two_legitimately_diverge() -> None:
+    """Asserted rather than hidden.
+
+    `search` reranks its whole pool; `search_fused` caps at 100 because reranking a wider pool was
+    measured to LOSE coverage. Above the cap the invariant above does not hold, and pretending it
+    did would be an untrue claim in a passing test.
+    """
+    from recall.retriever import FUSED_RERANK_POOL_CAP
+
+    rows = [(f"d{i}", 0.9) for i in range(FUSED_RERANK_POOL_CAP + 40)]
+    store = FakeStore(dense=rows, sparse=[])
+    retriever = HybridRetriever(
+        store, FakeEmbedder(), reranker=_StubReranker(),
+        candidate_k=FUSED_RERANK_POOL_CAP + 40, sparse_backend="lexical",
+    )
+
+    plain = retriever.search("q", k=1000).hits
+    fused = retriever.search_fused("q", ["q"], k=1000).hits
+
+    assert len(plain) > FUSED_RERANK_POOL_CAP
+    assert len(fused) == FUSED_RERANK_POOL_CAP
