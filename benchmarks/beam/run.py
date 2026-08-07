@@ -46,6 +46,7 @@ import os
 import re
 import statistics
 import threading
+import urllib.parse
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -163,17 +164,26 @@ def score_question(
     if "ANSWER:" in answer:
         answer = answer.rsplit("ANSWER:", 1)[-1].strip()
     judged = judge is not None
-    if judged:
+    if judge is not None:
         mean, nuggets, errors = judge_answer(question, answer, judge)
     else:
-        mean, nuggets, errors = float("nan"), [], 0
+        # None, not NaN. `json.dumps` emits a bare `NaN` token, which is not valid JSON: jq,
+        # JSON.parse and Postgres jsonb all reject it, and with --no-judge that is EVERY row of a
+        # deliverable whose whole purpose is to be scored later by something else. `judged: false`
+        # and `judgment: "UNJUDGED"` already carry the state. Verified: allow_nan=False rejects it.
+        mean, nuggets, errors = None, [], 0
+    mean_number: float | None = mean if isinstance(mean, float) and mean == mean else None
     if not judged:
         # NOT "ERROR". An unjudged row and a row whose judge failed are different states, and
         # `aggregate` counts every non-numeric score as an error — so reusing ERROR here would
         # report a clean generate-only run as 300 judge failures.
         judgment = "UNJUDGED"
     else:
-        judgment = ("PASS" if mean >= 0.5 else "FAIL") if mean == mean else "ERROR"
+        judgment = (
+            ("PASS" if (mean_number or 0.0) >= 0.5 else "FAIL")
+            if mean_number is not None
+            else "ERROR"
+        )
     return {
         "question_id": question.question_id,
         "question_type": question.question_type,
@@ -218,7 +228,7 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """
     judged_rows = [r for r in rows if r.get("judged", True)]
     unjudged_rows = [r for r in rows if not r.get("judged", True)]
-    scored = [r for r in judged_rows if r["score"] == r["score"]]
+    scored = [r for r in judged_rows if isinstance(r["score"], (int, float)) and r["score"] == r["score"]]
     by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in scored:
         by_type[row["question_type"]].append(row)
@@ -325,6 +335,20 @@ def _writer(path: Path) -> tuple[Callable[[dict[str, Any]], None], TextIO]:
     return write, handle
 
 
+def _redacted_database(dsn: str) -> str:
+    """`host:port/dbname` from a DSN, with every credential component discarded.
+
+    The raw DSN must never reach the sidecar or the artifact — `recall/store.py` keeps a
+    `redacted_dsn` helper for the same reason — but the database identity has to be compared, or
+    "same table name, different host" passes the resume guard.
+    """
+    try:
+        parsed = urllib.parse.urlsplit(dsn)
+        return f"{parsed.hostname or ''}:{parsed.port or ''}/{(parsed.path or '').lstrip('/')}"
+    except ValueError:
+        return ""
+
+
 def _run_config(args: argparse.Namespace, system: Any) -> dict[str, Any]:
     """The configuration that identifies a run's rows, for the resume guard.
 
@@ -355,6 +379,14 @@ def _run_config(args: argparse.Namespace, system: Any) -> dict[str, Any]:
         "entailment_top_n": entailment.get("top_n"),
         "table": described.get("table"),
         "question_types": args.question_types or "all",
+        # Added after six auditors independently found them missing. The calibration changes which
+        # memories reach the answerer; `--data` is the corpus the docstring already claimed to
+        # cover; and the database is what makes "same table name, different host" — the exact
+        # scenario transfer_index.py exists to create — distinguishable.
+        "calibration_threshold": (described.get("calibration") or {}).get("threshold"),
+        "calibration_certified": (described.get("calibration") or {}).get("certified"),
+        "data": str(getattr(args, "data", None) or ""),
+        "database": _redacted_database(getattr(args, "dsn", "")),
     }
 
 
@@ -698,11 +730,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="A calibration file (from `benchmarks.beam.calibrate`) supplying the abstention "
         "threshold for --embedder. Without it the library's UNTUNED 0.50 cosine floor applies, "
-        "which is not comparable across embedders: on voyage-4-large it starves 23.3% of "
-        "questions to empty retrieval (7% on text-embedding-3-small, 0% on bge-small), and an "
+        "which is not comparable across embedders: on voyage-4-large it starves 23.3%% of "
+        "questions to empty retrieval (7%% on text-embedding-3-small, 0%% on bge-small), and an "
         "empty context makes the vendored answerer emit its refusal string — so a quarter of the "
-        "run would score as false abstentions caused by the harness. The file is keyed by "
-        "embedder and the run REFUSES if it holds no entry for this one.",
+        "run would score as false abstentions caused by the harness. The file is keyed by the "
+        "embedding PROFILE ID (not the --embedder string) and the run REFUSES if it holds no "
+        "entry for this one.",
     )
     parser.add_argument(
         "--no-judge",
@@ -848,27 +881,9 @@ def _main() -> None:
     # conversation is ready in ~3 s.
     n_conversations = count_conversations(args.data, indices)
     conversations = iter_conversations(args.data, args.chat_size, indices)
-    calibration = None
-    if args.calibration:
-        from recall.calibration import load_for
-
-        calibration = load_for(args.embedder, args.calibration)
-        if calibration is None:
-            # Refused rather than warned. The whole reason to pass this flag is that the untuned
-            # default starves this embedder, so falling back to it silently would produce exactly
-            # the run the flag was used to avoid — and it would look like a calibrated one.
-            raise SystemExit(
-                f"{args.calibration} holds no calibration for embedder {args.embedder!r}. A "
-                f"calibration file is keyed BY EMBEDDER, and a threshold fitted for a different "
-                f"one does not transfer: cosines live in a different regime per model. Fit one "
-                f"with `python -m benchmarks.beam.calibrate --embedder {args.embedder} ...`."
-            )
-        print(
-            f"calibration: threshold={calibration.threshold:.4f} "
-            f"certified={calibration.certified}",
-            flush=True,
-        )
-
+    # The PATH is passed down, not a pre-resolved object: only BeamRecallSystem knows the
+    # embedding profile id, and that is the key the file is written under. Resolving it here
+    # against `args.embedder` never matched.
     system = BeamRecallSystem(
         args.dsn,
         embedder_name=args.embedder,
@@ -877,8 +892,12 @@ def _main() -> None:
         entailment_top_n=args.entailment,
         reranker_name=args.reranker,
         candidate_k=args.candidate_k,
-        calibration=calibration,
+        calibration_path=args.calibration,
     )
+    if args.calibration:
+        described = system.describe()["calibration"]
+        print(f"calibration: threshold={described['threshold']} "
+              f"certified={described['certified']}", flush=True)
 
     if args.dry_run:
         report: list[dict[str, Any]] = []
@@ -1020,6 +1039,13 @@ def _main() -> None:
         # record describe the run in identical terms rather than two hand-maintained copies.
         "run_config": run_config,
         "no_judge": bool(args.no_judge),
+        # An override that leaves no trace lets a run that crossed configurations read as clean.
+        # `allow_inert_arm` two blocks below is stamped for exactly this reason, and the guard's
+        # own docstring claimed "the caller stamps it" while nothing did.
+        "resume": {
+            "sidecars": [str(x) for x in (args.resume or [])],
+            "allow_config_change": bool(args.allow_config_change_on_resume),
+        },
         "metrics": aggregate(rows),
         "usage": {
             "total": total,

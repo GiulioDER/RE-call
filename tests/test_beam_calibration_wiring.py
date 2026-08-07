@@ -112,10 +112,15 @@ def test_describe_records_which_gate_produced_the_numbers(captured) -> None:
     assert calibrated["threshold"] == 0.3
     assert calibrated["certified"] is False
 
+    # CONTRACT CHANGE, finding CODE-007/ENV-013: `threshold` is a float in BOTH branches now.
+    # It used to be prose ("library default 0.50") on the uncalibrated path, which made the
+    # published field uncomputable and duplicated a named constant that could drift.
+    from recall.guards import DEFAULT_GAP_THRESHOLD
+
     uncalibrated = _system().describe()["calibration"]
-    assert uncalibrated["source"] == "none"
+    assert uncalibrated["source"] == "library-default"
     assert uncalibrated["certified"] is False
-    assert "0.50" in str(uncalibrated["threshold"])
+    assert uncalibrated["threshold"] == DEFAULT_GAP_THRESHOLD
 
 
 def test_the_other_retrieval_knobs_still_arrive(captured) -> None:
@@ -136,12 +141,19 @@ def test_describe_records_that_the_gate_could_not_fire(captured) -> None:
     rather than refusing. An artifact reporting only a threshold would invite its false-abstention
     rate to be read as evidence about a gate that never fired.
     """
-    described = _system(calibration=_Calibration()).describe()
-    policy = described["trust_policy"]
+    # CONTRACT CHANGE, finding DOC-001/DOC-002/BUG-002. This test previously asserted "the
+    # threshold does NOT cull" on a system built WITH a calibration — locking in a false claim.
+    # `recall/trust.py` blanks verdicts only when `calibration is None`; the explicit-calibration
+    # branch preserves them, so on that path the trust layer really does cull and abstain.
+    calibrated = _system(calibration=_Calibration()).describe()["trust_policy"]
+    assert calibrated["mode"] == "development"
+    assert calibrated["enforced"] is True, "an explicit calibration IS enforced"
+    assert "culls hits" in calibrated["note"]
 
-    assert policy["mode"] == "development"
-    assert policy["enforced"] is False, "development mode does not enforce the threshold"
-    assert "does NOT cull" in policy["note"]
+    # The control: with no calibration the old statement is the true one.
+    uncalibrated = _system().describe()["trust_policy"]
+    assert uncalibrated["enforced"] is False
+    assert "culls nothing" in uncalibrated["note"]
 
 
 def test_the_policy_flag_is_derived_not_asserted(captured) -> None:

@@ -70,7 +70,11 @@ def test_generate_only_row_can_be_judged_later_without_regeneration() -> None:
 
     assert row["judged"] is False
     assert row["judgment"] == "UNJUDGED"
-    assert row["score"] != row["score"], "an unjudged row carries NaN, not a number"
+    # CONTRACT CHANGE, finding DAT-009: an unjudged row now carries None, not NaN. `json.dumps`
+    # emits a bare `NaN` token that is not valid JSON, and with --no-judge that was every row of
+    # an artifact whose purpose is to be read by something other than Python.
+    assert row["score"] is None, "an unjudged row carries None (valid JSON), not NaN"
+    assert json.dumps(row, allow_nan=False), "the row must be STRICT-JSON serialisable"
     assert len(answerer.prompts) == 1
 
     # Round-trip through a serialised artifact: the deferred judge gets a FILE, not live objects.

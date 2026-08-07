@@ -244,6 +244,9 @@ module = [
     # includes `benchmarks`, and the typecheck job installs `.[dev]` only, so without this the job
     # fails on a dependency it deliberately does not install.
     "pyarrow.*",
+    # Imported lazily inside embed_parity._providers(); the module must type-check
+    # without the extra installed, and CI installs only .[dev].
+    "onnxruntime.*",
     # S3 extra. Imported lazily by recall.manifest and absent from the default/dev install.
     "boto3.*",
     # mem-bench: a SEPARATE repo, deliberately NOT a dependency of this one. Its `membench` package

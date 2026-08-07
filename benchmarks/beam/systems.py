@@ -16,6 +16,7 @@ from typing import Any
 
 from benchmarks.beam.dataset import Conversation
 from recall.embeddings import embedding_profile_id
+from recall.guards import DEFAULT_GAP_THRESHOLD
 # The same object `research_search` defaults to. Imported so `describe()` reports the policy this
 # arm ACTUALLY runs under rather than a hand-written claim about it: if the harness ever switches
 # to strict, the artifact follows automatically instead of going quietly stale.
@@ -230,6 +231,7 @@ class BeamRecallSystem:
         candidate_k: int | None = None,
         entailment_top_n: int = 0,
         calibration: Any | None = None,
+        calibration_path: Any | None = None,
     ) -> None:
         from benchmarks.systems import resolve_embedder, resolve_reranker
 
@@ -269,6 +271,24 @@ class BeamRecallSystem:
         # an empty context makes the vendored prompt emit its refusal string. Left unset on this
         # embedder, roughly a quarter of the run would score as false abstentions produced by the
         # harness rather than by the retriever.
+        # Resolved HERE because this is the only place that knows the embedding PROFILE ID, and
+        # that is the key a calibration file is written under. run.py used to call
+        # `load_for(args.embedder, path)` with the CLI string, which never matches: `fastembed`
+        # resolves to profile `bge-small-symmetric-v1`, so every calibrated run on the free arm
+        # died telling the operator to fit the file they had just passed. Verified by execution.
+        if calibration_path is not None:
+            from recall.calibration import load_for
+
+            profile = embedding_profile_id(self._embedder)
+            calibration = load_for(profile, calibration_path)
+            if calibration is None:
+                raise SystemExit(
+                    f"{calibration_path} holds no calibration for embedding profile {profile!r} "
+                    f"(the --embedder string is {embedder_name!r}; the FILE is keyed by the "
+                    f"profile id, not by that string). It may also be absent, unreadable or "
+                    f"malformed — check the path exists on this host. Fit one with: "
+                    f"python -m benchmarks.beam.calibrate --embedder {embedder_name} ..."
+                )
         self._calibration = calibration
         self._tenant: str | None = None
         #: filename -> turn date, so a retrieved chunk can be handed back with its date.
@@ -301,15 +321,31 @@ class BeamRecallSystem:
                     "certified": getattr(self._calibration, "certified", None),
                 }
                 if self._calibration is not None
-                else {"source": "none", "threshold": "library default 0.50", "certified": False}
+                else {
+                    "source": "library-default",
+                    # A float in BOTH branches. Prose here made the field uncomputable, and
+                    # hardcoding 0.50 duplicated a named constant that could drift.
+                    "threshold": DEFAULT_GAP_THRESHOLD,
+                    "certified": False,
+                }
             ),
+            # `enforced` is the CONJUNCTION of two independent facts, and deriving it from the
+            # policy alone published a falsehood. `recall/trust.py` blanks verdicts and forces
+            # `abstained=False` only inside `if calibration is None:`; the explicit-calibration
+            # branch deliberately preserves them ("this is the path every abstention benchmark
+            # measures"). So with --calibration the threshold DOES cull and the trust layer DOES
+            # abstain, while the artifact said it structurally could not.
             "trust_policy": {
                 "mode": RESEARCH_POLICY.mode.value,
-                "enforced": RESEARCH_POLICY.strict,
+                "enforced": bool(self._calibration is not None or RESEARCH_POLICY.strict),
                 "note": (
-                    "development mode degrades instead of refusing: the abstention threshold "
-                    "above does NOT cull hits, so any abstention in this run came from the "
-                    "answerer emitting its refusal string, not from the trust layer"
+                    "an explicit calibration is in force: the threshold culls hits and a query "
+                    "with nothing above it returns empty context, so an abstention here may come "
+                    "from the trust layer"
+                    if self._calibration is not None
+                    else "development mode with no calibration: verdicts are blanked and "
+                    "abstained is forced False, so the threshold culls nothing and any abstention "
+                    "came from the answerer emitting its refusal string"
                 ),
             },
             "embedder": {
