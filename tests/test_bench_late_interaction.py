@@ -353,3 +353,16 @@ def test_resolve_arm_allows_a_deployable_arm_without_the_optin():
 def test_resolve_arm_refuses_an_unknown_arm():
     with pytest.raises(SystemExit, match="unknown arm"):
         _resolve_arm("li_nonexistent", False)
+
+
+def test_validate_sample_names_a_task_with_no_offloaded_scores():
+    """An incomplete input must not be reported as a MISMATCH: that verdict means the
+    offloaded ordering disagreed with the live reranker, which was never measured here."""
+    with pytest.raises(ValueError, match="no offloaded scores for task"):
+        validate_sample(_live_reranker(_TABLE), _ROWS, _DOCS, {})
+
+
+def test_validate_sample_names_the_candidates_it_is_missing():
+    partial = {"t1": {"far": 0.0}}
+    with pytest.raises(ValueError, match="missing offloaded scores for 2 of 3"):
+        validate_sample(_live_reranker(_TABLE), _ROWS, _DOCS, partial)

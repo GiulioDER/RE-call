@@ -300,7 +300,23 @@ def validate_sample(
             ScoredChunk(chunk=Chunk(id=c, source="s", text=docs[c], metadata={}), score=0.0)
             for c in candidates
         ]
+        # An incomplete scores file is an INPUT error, not a MISMATCH: MISMATCH means the
+        # offloaded ordering disagreed with the live reranker, and reporting a truncated run as a
+        # measured disagreement would archive it as evidence of something that was never measured.
+        # So this raises with what is actually missing, rather than a bare KeyError naming one key.
+        if row["task_id"] not in scores:
+            raise ValueError(
+                f"no offloaded scores for task {row['task_id']!r}: the scores file is incomplete "
+                f"for this pool. Re-run `score`, which asserts completeness before it exits."
+            )
         offloaded_scores = scores[row["task_id"]]
+        unscored = [c for c in candidates if c not in offloaded_scores]
+        if unscored:
+            raise ValueError(
+                f"task {row['task_id']!r} is missing offloaded scores for {len(unscored)} of "
+                f"{len(candidates)} candidates, e.g. {unscored[:3]}. The scores file is "
+                f"incomplete. Re-run `score`, which asserts completeness before it exits."
+            )
 
         qtokens = list(reranker._encoder.query_embed([row["query"]]))[0]
         dtokens = list(reranker._encoder.passage_embed([h.chunk.text for h in hits]))
