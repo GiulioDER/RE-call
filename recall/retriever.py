@@ -386,4 +386,83 @@ class HybridRetriever:
             raise ValueError(
                 "history contained no usable text after stripping speaker tags and blank turns"
             )
-        raise NotImplementedError("fusion lands in Task 5")
+        primary = self._retrieve_legs(query, source)
+        started = time.perf_counter()
+        secondary = self._retrieve_legs(history_query, source, report_vec=primary.qvec)
+        history_ms = (time.perf_counter() - started) * 1000.0
+
+        started = time.perf_counter()
+
+        def _inner(legs: _Legs) -> list[str]:
+            scores = _rrf(
+                [
+                    [h.chunk.id for h in legs.dense],
+                    [h.chunk.id for h in legs.sparse],
+                    [h.chunk.id for h in legs.learned],
+                ]
+            )
+            return sorted(scores, key=lambda cid: scores[cid], reverse=True)
+
+        # Nested, not flat: contrast T1 found the two topologies indistinguishable on R@100 with
+        # flat nominally ahead, but the arm that was MEASURED and won is the nested one. Shipping
+        # the nominally better arm from a non-significant contrast is reading noise.
+        outer = _rrf([_inner(primary), _inner(secondary)])
+        ranked_ids = sorted(outer, key=lambda cid: outer[cid], reverse=True)
+        realised_pool = len(ranked_ids)
+        ranked_ids = ranked_ids[:FUSED_RERANK_POOL_CAP]
+
+        # `primary` first so that where both variants surfaced a chunk, the hit carrying the
+        # QUERY's cosine wins.
+        by_id: dict[str, ScoredChunk] = {}
+        for legs in (primary, secondary):
+            for group in (legs.dense, legs.sparse, legs.learned):
+                for hit in group:
+                    by_id.setdefault(hit.chunk.id, hit)
+        dense_score = {h.chunk.id: h.score for h in primary.dense}
+        hits = [
+            _rescored(by_id[cid], dense_score.get(cid, by_id[cid].score)) for cid in ranked_ids
+        ]
+        outer_ms = (time.perf_counter() - started) * 1000.0
+
+        started = time.perf_counter()
+        # Bound locally so mypy keeps the narrowing from the refusal above. Deliberately NOT an
+        # `assert`: asserts are stripped under `python -O`, which would turn the guaranteed
+        # ValueError into an AttributeError exactly when optimisation is on.
+        reranker = self._reranker
+        if reranker is None:  # pragma: no cover: the refusal above already returned
+            raise ValueError("search_fused requires a reranker")
+        hits = reranker.rerank(query, hits)
+        rerank_ms = (time.perf_counter() - started) * 1000.0
+        hits = hits[:k]
+
+        # Put every RETURNED hit on one basis. Only the returned ones: <= k rows on a primary key
+        # lookup, so the extra round trip is small, and hits below the cut are never reported.
+        started = time.perf_counter()
+        fresh = self._store.cosines_for([h.chunk.id for h in hits], primary.qvec)
+        hits = [_rescored(h, fresh.get(h.chunk.id, h.score)) for h in hits]
+        rescore_ms = (time.perf_counter() - started) * 1000.0
+
+        timings = dict(primary.timings)
+        timings["history_retrieval"] = history_ms
+        timings["outer_fusion"] = outer_ms
+        timings["reranking"] = rerank_ms
+        timings["rescore"] = rescore_ms
+
+        gap = gap_warning(list(dense_score.values()), self._gap_threshold)
+        stale = staleness(
+            self._store.newest_indexed_at(), datetime.now(timezone.utc), self._max_age
+        )
+        return RetrievalResult(
+            query=query,
+            hits=hits,
+            gap_warning=gap,
+            staleness=stale,
+            diagnostics=RetrievalDiagnostics(
+                embedding_profile=embedding_profile_id(self._embedder),
+                retrieval_profile=self._retrieval_profile,
+                index_generation=self._index_generation,
+                candidate_pool_size=realised_pool,
+                reranking_ran=True,
+                stage_ms={key: round(value, 3) for key, value in timings.items()},
+            ),
+        )
