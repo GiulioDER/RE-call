@@ -64,6 +64,7 @@ import os
 from pathlib import Path
 
 import psycopg
+from psycopg import sql
 
 #: Columns postgres computes itself. Discovered per table rather than assumed; this is only the
 #: catalog predicate used to find them.
@@ -479,17 +480,40 @@ def restore(dsn: str, table: str, src: Path, *, truncate: bool = False) -> dict[
             if tenants:
                 where, params = "chunk_table = %s AND tenant_id = ANY(%s)", (table, list(tenants))
                 scope = f"for {len(tenants)} restored tenant(s)"
-                tenant_list = ", ".join(f"'{t}'" for t in tenants)
+                # QUOTED through psycopg, not hand-wrapped in apostrophes. The sidecar validator
+                # accepts any non-empty string, and this list is the operator's REMEDY: with a
+                # hand-quoted `'{t}'`, a tenant holding an apostrophe either produced a query that
+                # does not parse, or — demonstrated against a live database — one that returned
+                # MORE tenants than the refusal named, printed directly under the promise that it
+                # is "scoped exactly as this refusal is". The string is never executed here (it is
+                # printed for a human), so the risk is a wrong remedy rather than injection, which
+                # is precisely the failure this guard exists to prevent.
+                #
+                # Capped like the groups are: the branch that fires past 20 groups is the one that
+                # tends to have many tenants (groups = tenants x profiles, and BEAM provisions one
+                # tenant per conversation), so inlining all of them would leave the message bounded
+                # on one axis and unbounded on the other.
+                _TENANTS_SHOWN = 20
+                quoted = [
+                    sql.Literal(t).as_string(conn) for t in tenants[:_TENANTS_SHOWN]
+                ]
+                tenant_list = ", ".join(quoted)
+                if len(tenants) > _TENANTS_SHOWN:
+                    tenant_list += (
+                        f" /* + {len(tenants) - _TENANTS_SHOWN} more; full list in the dump's "
+                        f"sidecar under 'tenants' */"
+                    )
                 operator_sql = (
                     f"SELECT tenant_id, profile_id, count(*) FROM {SPARSE_TABLE} "
-                    f"WHERE chunk_table = '{table}' AND tenant_id IN ({tenant_list}) GROUP BY 1, 2"
+                    f"WHERE chunk_table = {sql.Literal(table).as_string(conn)} "
+                    f"AND tenant_id IN ({tenant_list}) GROUP BY 1, 2"
                 )
             else:
                 where, params = "chunk_table = %s", (table,)
                 scope = "across all tenants"
                 operator_sql = (
                     f"SELECT tenant_id, profile_id, count(*) FROM {SPARSE_TABLE} "
-                    f"WHERE chunk_table = '{table}' GROUP BY 1, 2"
+                    f"WHERE chunk_table = {sql.Literal(table).as_string(conn)} GROUP BY 1, 2"
                 )
             # The total is an AGGREGATE the server computes; only the breakdown needs rows. The
             # previous version capped the rendered string but still `fetchall()`ed one tuple per
