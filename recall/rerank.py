@@ -212,7 +212,18 @@ class LateInteractionReranker:
         qtokens = list(self._encoder.query_embed([query]))[0]  # type: ignore[attr-defined]
         texts = [h.chunk.text for h in hits]
         dtokens = list(self._encoder.passage_embed(texts))  # type: ignore[attr-defined]
-        scores = [maxsim(qtokens, d) for d in dtokens]
+        # A document that encodes to zero tokens cannot be scored, and `maxsim` refuses it. That
+        # refusal is right for ONE document, because 0.0 is not a neutral score, it lands the item
+        # mid-pool. It is wrong for a BATCH: raising here would abort reranking for every hit in
+        # the request over one malformed chunk, which is worse than the outcome the refusal exists
+        # to prevent. Ranking such a document LAST satisfies the original objection (last is not
+        # mid) without letting one bad chunk break every query that retrieves it.
+        #
+        # The QUERY side deliberately still raises, via `maxsim`: if the query encodes to nothing
+        # there is no evidence to rank ANY document by, so there is no salvageable ordering.
+        scores = [
+            float("-inf") if d.shape[0] == 0 else maxsim(qtokens, d) for d in dtokens
+        ]
         order = sorted(range(len(hits)), key=lambda i: scores[i], reverse=True)
         # Reorder ONLY, each hit keeps its dense cosine `score`, `indexed_at` and
         # `first_indexed_at`. Identical to CrossEncoderReranker.rerank and for the identical
