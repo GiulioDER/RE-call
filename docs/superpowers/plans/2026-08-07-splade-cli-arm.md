@@ -784,6 +784,92 @@ Then add the helper immediately after `_flush`:
         return len(chunks)
 ```
 
+- [ ] **Step 4b: give the skip predicate a sparse term, and the store the primitive it needs**
+
+Hooking `_flush` stops either branch being forgotten. It does NOT survive the skip: `index_path`
+refuses to re-index a file whose fingerprint matches, and that `continue` sits ABOVE `_flush`, so
+on an already-indexed corpus the hook is never reached. This is the same shape as the shadow bug,
+and it takes the same repair: the predicate must know about every generation being written.
+
+First, a new store method in `recall/store.py`, beside `sparse_row_count`:
+
+```python
+    def sparse_covered_sources(self, profile_id: str) -> set[str]:
+        """Sources whose EVERY chunk has a sidecar row under `profile_id`.
+
+        `index_path`'s skip predicate needs a per-SOURCE answer, and the sidecar is keyed by
+        chunk id, so the join has to be made here rather than inferred from a count. Partial
+        coverage of a source is deliberately reported as NOT covered: re-encoding a source that
+        is already half done is cheap, and skipping one that is half done leaves a hole no later
+        run would fill.
+
+        ⚠️ A source containing a chunk that encodes to an EMPTY vector can never reach full
+        coverage, because `store_sparse_vectors` skips those rows by design. Such a source is
+        therefore re-encoded on every run. That is wasted work, not wrong work, and it is rare
+        (a passage with no surviving terms at all); the alternative would be a record of
+        attempts, which is a bigger structure than the saving justifies.
+        """
+        def _op(conn: "psycopg.Connection") -> set[str]:
+            rows = conn.execute(
+                f"""
+                SELECT c.source
+                FROM {self._table} c
+                LEFT JOIN {SPARSE_TABLE} s
+                  ON s.tenant_id = %(tenant)s
+                 AND s.chunk_table = %(chunk_table)s
+                 AND s.profile_id = %(profile)s
+                 AND s.id = c.id
+                WHERE c.tenant_id = %(tenant)s
+                GROUP BY c.source
+                HAVING count(*) FILTER (WHERE s.id IS NULL) = 0
+                """,
+                {"tenant": self._tenant, "chunk_table": self._table, "profile": profile_id},
+            ).fetchall()
+            return {row[0] for row in rows}
+
+        return self._with_retry(_op)
+```
+
+Then in `recall/index.py`, read it ONCE per run, next to where `known_shadow` is read:
+
+```python
+        known_sparse = (
+            frozenset()
+            if self._sparse_encoder is None
+            else self._store.sparse_covered_sources(self._sparse_encoder.profile.profile_id)
+        )
+```
+
+and widen the predicate:
+
+```python
+            if (
+                known.get(str(f)) == index_fingerprint
+                and (
+                    shadow_fingerprint is None
+                    or known_shadow.get(str(f)) == shadow_fingerprint
+                )
+                and (self._sparse_encoder is None or str(f) in known_sparse)
+            ):
+                skipped += 1
+                continue
+```
+
+Keep the existing comment block above the predicate and extend it with the sparse case, in the
+same voice: the hook lives past the `continue`, so a predicate blind to the sidecar reports
+success with a skipped count and an empty sidecar, which is the shadow bug wearing a different
+name.
+
+⚠️ `source` here is `str(f)`, the resolved absolute path that `pending_sources` appends and that
+`source_content_hashes()` is keyed by. `sparse_covered_sources` must return those same values, or
+the membership test silently never matches and every file is re-encoded every run.
+
+- [ ] **Step 4c: pin the new store method directly**
+
+Add to `tests/test_learned_sparse_store.py` a test that a source with one of its two chunks
+encoded is NOT reported as covered, and that it becomes covered once the second is written. The
+predicate depends on partial coverage reading as uncovered, and nothing else pins that.
+
 - [ ] **Step 5: Run the tests to verify they pass**
 
 ```bash
