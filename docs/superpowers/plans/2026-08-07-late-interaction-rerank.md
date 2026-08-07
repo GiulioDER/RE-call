@@ -660,6 +660,30 @@ def test_every_arm_checkpoint_is_registered():
 
     for arm in LATE_ARMS:
         assert arm.checkpoint in LATE_INTERACTION_MODELS
+
+
+def test_arm_with_an_unregistered_checkpoint_raises_on_licence():
+    """LATE_ARMS is frozen, so this branch is unreachable today. It is tested because the failure
+    it prevents is a future arm added without a matching registry entry, which would otherwise
+    reach `deployable` and be answered from a licence that does not exist."""
+    with pytest.raises(ValueError, match="unregistered checkpoint"):
+        LateArm("li_future", "some/unrecorded").licence
+
+
+def test_holm_family_returns_every_name_when_handed_a_single_use_iterator():
+    """Reading the argument twice would exhaust the iterator on the `blocked` scan, and the return
+    would then be an empty tuple: silent omission of arms the caller believed were included.
+
+    ⚠️ Every arm here is DEPLOYABLE, and that is the whole point. With a blocked arm in the
+    iterator the function raises during the first read and never reaches the second, so that
+    version of this test passes against the unmaterialised implementation and proves nothing. The
+    first draft of this test made exactly that mistake. Verified by mutation: deleting
+    `arms = list(arms)` fails this test and only this test.
+    """
+    assert holm_family(iter([_by_name("li_colbertv2"), _by_name("li_answerai")])) == (
+        "li_colbertv2",
+        "li_answerai",
+    )
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
