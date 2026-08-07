@@ -16,6 +16,7 @@ from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
 from recall.frontmatter import parse_frontmatter, validity_bounds
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
+from recall.sparse import SparseEncoderProtocol, store_sparse_vectors
 from recall.store import PgVectorStore
 from recall.types import Chunk
 
@@ -359,6 +360,7 @@ class Indexer:
         allow_prune: bool = False,
         context_policy: ContextPolicy = ContextPolicy(),
         shadow: ShadowIndexTarget | None = None,
+        sparse_encoder: "SparseEncoderProtocol | None" = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -374,6 +376,11 @@ class Indexer:
         self._max_prune_fraction = _prune_fraction_from_env()
         self._context_policy = context_policy
         self._shadow = shadow
+        #: Optional learned sparse (SPLADE) sidecar write, driven from `_flush`. Deliberately at
+        #: the same site as the dense write rather than in the file loop: `shadow` sits in that
+        #: loop, past a `continue` whose predicate did not know about it, and wrote nothing for a
+        #: period (b0e74e5, PR #218). A second write hooked into that loop inherits the shape.
+        self._sparse_encoder = sparse_encoder
         # One derivation, in `recall.embedding_registry`. This used to be a third inline copy of
         # the same f-string; a registry that spelled a context version differently from the two
         # copies here would have made every context profile unindexable, and only an integration
@@ -464,6 +471,11 @@ class Indexer:
         known_shadow = (
             {} if self._shadow is None else self._shadow.store.source_content_hashes()
         )
+        known_sparse = (
+            frozenset()
+            if self._sparse_encoder is None
+            else self._store.sparse_covered_sources(self._sparse_encoder.profile.profile_id)
+        )
         # Pruning stays keyed on the ACTIVE generation, deliberately and incompletely.
         #
         # `_prune_vanished` asks which sources have left the DISK, which is a property of the
@@ -534,9 +546,22 @@ class Indexer:
             # make that cheap; a metered one does not. Splitting the flush per generation
             # would buy it back and is a much larger change to a path that writes two tables
             # in one transaction.
-            if known.get(str(f)) == index_fingerprint and (
-                shadow_fingerprint is None
-                or known_shadow.get(str(f)) == shadow_fingerprint
+            #
+            # The learned sparse sidecar is the same bug wearing a different name. Its write
+            # lives in `_write_sparse`, past this same `continue`, hooked from `_flush` rather
+            # than from this loop. A predicate blind to the sidecar would report success with a
+            # skipped count and an empty sidecar, exactly as the shadow did before it gained a
+            # term here. `known_sparse` is a set rather than a fingerprint map because coverage
+            # is a per-source yes/no from `sparse_covered_sources`, not a value to compare for
+            # equality: there is no sparse fingerprint, only "is every chunk of this source in
+            # the sidecar yet".
+            if (
+                known.get(str(f)) == index_fingerprint
+                and (
+                    shadow_fingerprint is None
+                    or known_shadow.get(str(f)) == shadow_fingerprint
+                )
+                and (self._sparse_encoder is None or str(f) in known_sparse)
             ):
                 skipped += 1
                 continue
@@ -676,7 +701,7 @@ class Indexer:
         )
         if self._shadow is None:
             self._store.replace_sources(sources, chunks, embeddings)
-            return len(chunks)
+            return self._write_sparse(chunks)
         if shadow_chunks is None or shadow_embedding_texts is None:
             raise ValueError("shadow chunks and embedding texts are required for shadow indexing")
         shadow_embeddings = embed_with_cache(
@@ -710,6 +735,22 @@ class Indexer:
         self._shadow.control_plane.complete_event(
             self._store.tenant, operation_id, len(shadow_chunks)
         )
+        return self._write_sparse(chunks)
+
+    def _write_sparse(self, chunks: list[Chunk]) -> int:
+        """Write this batch's learned sparse vectors, and return the batch size.
+
+        Returning the count is what makes this hard to forget. Both of `_flush`'s branches end in
+        `return self._write_sparse(chunks)`, so a future branch that returns a bare count is
+        visibly different from the two beside it, and a branch that skips the sparse write cannot
+        also return the number `_flush` is contracted to return.
+        """
+        if self._sparse_encoder is not None and chunks:
+            store_sparse_vectors(
+                self._store,
+                self._sparse_encoder,
+                [(chunk.id, chunk.text) for chunk in chunks],
+            )
         return len(chunks)
 
     def _prune_vanished(self, root: Path, files: list[Path], known: dict[str, str]) -> int:

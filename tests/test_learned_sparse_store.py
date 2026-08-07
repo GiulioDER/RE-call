@@ -112,3 +112,23 @@ def test_a_query_never_returns_rows_encoded_under_a_different_profile(make_store
 
     assert [hit.chunk.id for hit in hits] == []
 
+
+@requires_db
+def test_a_source_is_covered_only_once_every_one_of_its_chunks_is_encoded(make_store) -> None:
+    """Partial coverage reads as NOT covered. `index_path`'s skip predicate depends on this.
+
+    One source, two chunks. Encoding only the first must not mark the source covered: a caller
+    that treated it as covered would skip the second chunk on the next run and leave a permanent
+    hole in the sidecar. Only once both chunks are encoded does the source appear.
+    """
+    store = make_store(64)
+    one = Chunk(id="one", source="/corpus/two-chunks.md", text="first half", metadata={})
+    two = Chunk(id="two", source="/corpus/two-chunks.md", text="second half", metadata={})
+    store.upsert([one, two], [[0.1] * 64, [0.1] * 64])
+
+    store.upsert_sparse(PROFILE.profile_id, {"one": {7: 1.0}})
+    assert store.sparse_covered_sources(PROFILE.profile_id) == set()
+
+    store.upsert_sparse(PROFILE.profile_id, {"two": {11: 1.0}})
+    assert store.sparse_covered_sources(PROFILE.profile_id) == {"/corpus/two-chunks.md"}
+
