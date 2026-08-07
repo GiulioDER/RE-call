@@ -7,7 +7,10 @@ are known and measured, and the upgrade notes that can break a working deploymen
 
 "Enterprise-grade" is not a single property, so here is the itemised version — verified on a real
 host (PostgreSQL 17, pgvector 0.8.2, Python 3.12, connecting as an **unprivileged** role), not only
-on a laptop.
+on a laptop. Unless a row says otherwise, every figure here was measured on the default
+configuration: `bge-small` via fastembed, hybrid dense+sparse, no reranker, nothing leaving the
+machine. See
+[which configuration to run](EVIDENCE.md#so-which-configuration-should-you-actually-run).
 
 | Property | Status | Evidence |
 |---|---|---|

@@ -122,12 +122,16 @@ re-run it and look at whether the numbers moved before claiming they didn't.
 - `ruff check .` and `pytest -v` both pass locally.
 - `uv lock --check` passes if you touched dependencies (or you ran `uv lock` and committed the
   result).
-- New behaviour has a test that would fail without the change — see the README's "Engineering"
-  section for what a *good* regression test in this repo looks like (asserts the invariant a naive
+- New behaviour has a test that would fail without the change — see `docs/ENGINEERING.md`
+  for what a *good* regression test in this repo looks like (asserts the invariant a naive
   fix could satisfy vacuously, not just a final count).
-- If a claim in the README, `results/FINDINGS.md`, or `docs/WRITEUP.md` changes because of your
-  PR — a number moves, a caveat needs updating — update it in the same PR. A stale published number
-  is the failure mode this project exists to catch; don't reintroduce it in its own docs.
+- If a published claim changes because of your PR — a number moves, a caveat needs updating —
+  update it in the same PR. A stale published number is the failure mode this project exists to
+  catch; don't reintroduce it in its own docs. The claims live in `README.md`,
+  `docs/EVIDENCE.md` (the claims table and the withdrawn list), `docs/PRODUCTION.md` (the posture
+  table and the stated limits), `docs/PRIOR_ART.md`, `docs/ENGINEERING.md`, `results/FINDINGS.md`
+  and `docs/WRITEUP.md`. `benchmarks/claim_gate.py`'s `GATED_DOCS` is the authoritative list of
+  the ones a test will hold you to.
 - Commit messages describe *why*, not just *what* — see `git log` for the house style
   (`type(scope): what changed — the reason`, and `fix: N audit fixes from CCA` for batched
   audit-driven fixes).
