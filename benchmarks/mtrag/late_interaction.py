@@ -270,6 +270,20 @@ def cmd_score(args: argparse.Namespace) -> int:
     return 0
 
 
+def _score_delta(offloaded: float, local: float) -> float:
+    """Absolute difference between two scores, treating equal sentinels as agreement.
+
+    `-inf - -inf` is NaN, and NaN silently corrupts `max()`: every comparison against NaN is
+    False, so a NaN produced by a zero-token document's tied `-inf` scores can hide a real,
+    larger mismatch on a DIFFERENT candidate elsewhere in the same sample rather than surfacing
+    it. Equal inputs, including two `-inf`s, are zero delta by definition; only genuinely
+    different scores get subtracted at all.
+    """
+    if offloaded == local:
+        return 0.0
+    return abs(offloaded - local)
+
+
 def validate_sample(
     reranker: Any,
     rows: list[dict],
@@ -320,7 +334,7 @@ def validate_sample(
             c: maxsim_or_last(qtokens, d) for c, d in zip(candidates, dtokens, strict=True)
         }
         worst_delta = max(
-            worst_delta, max(abs(offloaded_scores[c] - local_by_id[c]) for c in candidates)
+            worst_delta, max(_score_delta(offloaded_scores[c], local_by_id[c]) for c in candidates)
         )
 
         local = [h.chunk.id for h in reranker.rerank(row["query"], hits)]
