@@ -167,6 +167,23 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   The documentation now says so. Behaviour is unchanged.
 
 ### Fixed
+- **`recall-enterprise parity` passed vacuously on two empty generations, and a vacuous pass here
+  reads as permission to run `cutover`.** Two empty generations cannot disagree, so every
+  comparison `validate_generation_parity` makes was satisfied, `GenerationParity.valid` was True,
+  and the command printed `parity: OK` and exited 0 over 0 active and 0 shadow chunks. That is the
+  state the reference deployment is in, and it is the one failure mode in the cutover sequence that
+  presents as a **green**, so the runbook's own rule — each step is a gate, do not proceed past a
+  red one — could not catch it. The guard existed, in prose, in `docs/ENTERPRISE_RETRIEVAL.md`;
+  prose is the weakest place to keep a guard, because it lives in the document an operator reads
+  for permission to proceed. `_cmd_parity` now exits 1 with `both generations are empty, so the
+  comparison is vacuous`. **No override flag**, deliberately: `cutover --allow-divergent-corpus` in
+  this same CLI is the cautionary case, a refusal that advertises its own escape hatch at the exact
+  moment the operator is under pressure to get past it. The condition is BOTH empty, so a populated
+  active against an empty shadow still fails on missing sources rather than having that restated as
+  a vacuity error. Proven by execution against the old code, which printed `parity: OK` and exited
+  0, and paired with a negative control asserting a populated matching pair still exits 0, so the
+  refusal cannot be broadened into a blanket one without a test going red. ⚠️ A **partially** filled
+  shadow is still a green and no code guard catches it; the runbook says so at that step.
 - **The `typecheck` CI job was red on `master`, behind a job that was CANCELLED rather than run.**
   `recall/sparse.py` imports `transformers` inside its loader, the same lazy guard every optional
   extra in this repository uses, but `transformers.*` was never added to the mypy override list, so

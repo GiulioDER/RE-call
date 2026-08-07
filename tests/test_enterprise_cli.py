@@ -313,6 +313,59 @@ def test_parity_without_a_shadow_generation_says_so(cli) -> None:
     assert cli.run("parity", cli.tenant) != 0
 
 
+def test_parity_refuses_two_empty_generations_instead_of_passing_vacuously(cli, capsys) -> None:
+    """The one failure mode in the cutover sequence that presents as a GREEN.
+
+    Two empty generations cannot disagree, so every comparison `validate_generation_parity` makes
+    is vacuously satisfied and `GenerationParity.valid` is True. Before this guard the command
+    printed "parity: OK" and exited 0 over 0 active and 0 shadow chunks, which is exactly the
+    state the reference deployment was in -- and "parity: OK" is what an operator reads as
+    permission to run cutover.
+
+    This asserts the REASON, not just the exit code: a non-zero that arrived because the stores
+    failed to open, or because RLS was not forced, would satisfy a bare `!= 0` while leaving the
+    vacuous-green hole open.
+    """
+    cli.run("set-route", cli.tenant, cli.active_id, "--shadow-generation", cli.shadow_id)
+
+    active = cli.store(cli.active_id, cli.active_table)
+    shadow = cli.store(cli.shadow_id, cli.shadow_table)
+    try:
+        assert active.count() == 0 and shadow.count() == 0, "fixture is not the empty state"
+        assert cli.run("parity", cli.tenant) == 1
+    finally:
+        active.close()
+        shadow.close()
+
+    captured = capsys.readouterr()
+    assert "vacuous" in captured.err, captured.err
+    assert "parity: OK" not in captured.out, "the vacuous green survived"
+
+
+def test_parity_still_passes_when_both_generations_hold_the_same_chunks(cli) -> None:
+    """The negative control for the guard above.
+
+    A guard that refuses an empty pair could be satisfied by refusing everything. This is the
+    same populated-and-matching case `test_parity_passes_on_matching_generations_and_fails_on_a_gap`
+    covers, asserted again here so that the emptiness check cannot be broadened into a blanket
+    refusal without a test going red.
+    """
+    embedder = HashingEmbedder(dim=DIM)
+    chunks = [Chunk(id="a#0", source="/corpus/a.md", text="alpha", metadata={})]
+    vectors = [embedder.embed([c.text])[0] for c in chunks]
+    cli.run("set-route", cli.tenant, cli.active_id, "--shadow-generation", cli.shadow_id)
+
+    active = cli.store(cli.active_id, cli.active_table)
+    shadow = cli.store(cli.shadow_id, cli.shadow_table)
+    try:
+        active.upsert(chunks, vectors)
+        shadow.upsert(chunks, vectors)
+        assert cli.run("parity", cli.tenant) == 0
+    finally:
+        active.close()
+        shadow.close()
+
+
 # --------------------------------------------------------------------------------------------
 # readiness
 # --------------------------------------------------------------------------------------------

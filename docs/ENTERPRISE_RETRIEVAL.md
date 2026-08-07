@@ -88,7 +88,7 @@ until a readiness check.
 | 5 | `recall-enterprise mark-ready` | `RECALL_MIGRATION_DSN` | the generation id is unknown. ⚠️ **It does NOT check the counts** |
 | 6 | `recall-enterprise set-route --shadow-generation` | `RECALL_MIGRATION_DSN` | the generation is not servable |
 | 7 | `recall-enterprise replay` | `RECALL_SERVING_DSN` (⚠️ **write path**) | anything is still pending afterwards |
-| 8 | `recall-enterprise parity` | `RECALL_SERVING_DSN` | sources, hashes or counts disagree; an index is invalid; RLS is not forced |
+| 8 | `recall-enterprise parity` | `RECALL_SERVING_DSN` | sources, hashes or counts disagree; an index is invalid; RLS is not forced; **both generations are empty** |
 | 9 | `recall-enterprise readiness` | `RECALL_SERVING_DSN` | any startup check fails. ⚠️ It evaluates the **ACTIVE** generation, not the shadow |
 | 10 | `recall-enterprise cutover` | `RECALL_MIGRATION_DSN` | an event is pending, or the shadow is not ready |
 | 11 | `recall-enterprise retire` | `RECALL_MIGRATION_DSN` | the named tenant still routes at that generation, in **either** slot |
@@ -312,11 +312,20 @@ recall-enterprise parity acme
 recall-enterprise readiness acme
 ```
 
-🛑 **STOP if `shadow chunks` is 0, or if it differs from the `--chunks` you measured at step 5.**
-`parity` on two empty generations exits 0 and prints `parity: OK`: two empty generations cannot
-disagree, so that is a vacuous pass and not a comparison. This is the one place where the rule "each
-step is a gate, do not proceed past a red one" is not enough, because the failure mode here is a
-**green**. Do not run cutover on it.
+🛑 **STOP if `shadow chunks` differs from the `--chunks` you measured at step 5.**
+
+✅ **The both-empty case is now refused by the command itself.** `parity` exits non-zero with
+`both generations are empty, so the comparison is vacuous` when neither generation holds a chunk.
+It used to exit zero and print `parity: OK` — two empty generations cannot disagree, so every
+comparison it makes was vacuously satisfied — and that was the one place in this sequence where the
+rule "each step is a gate, do not proceed past a red one" could not help, because the failure mode
+was a **green**. That guard lived only in this paragraph, which is the weakest place to keep one:
+prose, in the document an operator is reading for permission to proceed. There is **no override
+flag**, and that is deliberate — see `--allow-divergent-corpus` below for why a refusal that
+advertises its own escape hatch is worse than no refusal.
+
+⚠️ **A partially filled shadow is still a green, and no code guard catches it.** The refusal above
+fires only when *both* generations are empty. Compare `shadow chunks` against your own measurement.
 
 `cutover`'s own emptiness check only catches a **totally** empty shadow, so a partially filled one
 passes both. The residual gap that produces one is on the delete path, not the write path:
