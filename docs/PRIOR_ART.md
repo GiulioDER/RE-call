@@ -55,8 +55,8 @@ Two further differences, and one deficit:
 ## Where this comes from
 
 RE-call is extracted from the memory system behind a production trading-research agent whose memory
-outgrew its context window. That corpus is the one the numbers above were measured against:
-**794 hand-written markdown memos → 6,491 chunks**, re-indexed daily.
+outgrew its context window. That corpus is the one the real-corpus numbers throughout these docs
+were measured against: **794 hand-written markdown memos → 6,491 chunks**, re-indexed daily.
 
 Every guard here is a scar from a real failure — re-litigating a falsified experiment, trusting a
 weak hit on an unanswerable question, building on a fact that had been reversed. Running the library

@@ -170,7 +170,8 @@ MARKER_RE = re.compile(
 #: local rule that tells the two cases apart.
 #:
 #: Measure the hole rather than describing it as hypothetical: **21 space-grouped numbers** are
-#: published across the gated documents today (RESULTS 9, FINDINGS 8, README 4) against 47
+#: published across the gated documents today (RESULTS 9, FINDINGS 8, EVIDENCE 4 — they were
+#: README's until the README was shortened on 2026-08-08) against 47
 #: comma-grouped ones — and the SAME figure appears both ways in all three, `1 536` beside
 #: `1,536`. So one published sample size is a single claim in one sentence and `1` + `536` in
 #: another. That is the size of what this branch chose not to solve.
