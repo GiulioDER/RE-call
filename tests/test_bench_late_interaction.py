@@ -6,6 +6,7 @@ import pytest
 from benchmarks.mtrag.late_interaction import (
     LATE_ARMS,
     LateArm,
+    _resolve_arm,
     arm_record,
     assert_complete,
     holm_family,
@@ -332,3 +333,23 @@ def test_validate_reports_the_worst_score_delta():
     scores = {"t1": {"far": 0.0, "mid": 0.6, "multi": 1.0004}}
     report = validate_sample(_live_reranker(_TABLE), _ROWS, _DOCS, scores)
     assert report["max_score_delta"] == pytest.approx(0.0004, abs=1e-9)
+
+
+def test_resolve_arm_refuses_a_noncommercial_arm_without_the_optin():
+    """The containment gate must hold on EVERY entry point. `validate` used to grant itself the
+    waiver by passing `accept_noncommercial_license=not arm.deployable`."""
+    with pytest.raises(SystemExit, match="accept-noncommercial"):
+        _resolve_arm("li_jina", False)
+
+
+def test_resolve_arm_allows_a_noncommercial_arm_with_the_optin():
+    assert _resolve_arm("li_jina", True).name == "li_jina"
+
+
+def test_resolve_arm_allows_a_deployable_arm_without_the_optin():
+    assert _resolve_arm("li_colbertv2", False).name == "li_colbertv2"
+
+
+def test_resolve_arm_refuses_an_unknown_arm():
+    with pytest.raises(SystemExit, match="unknown arm"):
+        _resolve_arm("li_nonexistent", False)
