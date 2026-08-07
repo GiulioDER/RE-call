@@ -49,6 +49,12 @@ def _mem0_installed() -> bool:
     `mem0.embeddings.huggingface` pulls in `sentence_transformers`, which is inside the test body.
     A guard that stops at `mem0` is still answering the wrong question.
 
+    It is checked FIRST, and that order is deliberate. In the failure this exists to catch, mem0
+    imports fine and `sentence_transformers` does not, so checking mem0 first would fully import
+    it, spawning a background daemon thread, purely to then decide to skip the test that would
+    have used it. Importing the module that actually breaks first means the skip path costs
+    nothing.
+
     `Exception`, not `ImportError`: the observed failure is a RuntimeError from an operator
     registration, and narrowing this to import errors would let it through again.
 
@@ -56,7 +62,7 @@ def _mem0_installed() -> bool:
     short-circuits on `OPENROUTER_API_KEY` first, so this runs only for someone who has the key
     set, and they are about to import mem0 in the test body anyway.
     """
-    for module in ("mem0", "sentence_transformers"):
+    for module in ("sentence_transformers", "mem0"):
         try:
             importlib.import_module(module)
         except Exception:
@@ -77,6 +83,12 @@ def test_mem0_guard_reports_an_unimportable_package_as_absent(
     def boom(name: str) -> object:
         raise RuntimeError("operator torchvision::nms does not exist")
 
+    # BOTH are patched, and that is the point. Patching only `import_module` leaves the old
+    # `find_spec` implementation returning False for its own reason wherever mem0 is absent, which
+    # is CI's deliberate state, so the test would pass against the very bug it exists to catch.
+    # Forcing `find_spec` to report the package PRESENT reproduces "findable but unimportable"
+    # deterministically, on any machine.
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(importlib, "import_module", boom)
 
     assert _mem0_installed() is False
