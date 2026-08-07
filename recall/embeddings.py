@@ -366,6 +366,26 @@ def resolve_thread_budget(
     return min(want, ceiling)
 
 
+def _session_providers(model: object) -> list[str]:
+    """The execution providers of fastembed's live ONNX session, or a marker if unreachable.
+
+    fastembed does not expose the session on a stable public attribute, so this walks the couple
+    of places it has lived. It returns a marker rather than raising: failing to introspect is not
+    a reason to fail an embedding run, but it must not be reported as a known-CPU result either.
+    """
+    for outer in ("model", "_model"):
+        inner = getattr(model, outer, None)
+        if inner is None:
+            continue
+        for attr in ("model", "session", "_session"):
+            session = getattr(inner, attr, None)
+            if hasattr(session, "get_providers"):
+                return list(session.get_providers())
+        if hasattr(inner, "get_providers"):
+            return list(inner.get_providers())
+    return ["<session not reachable>"]
+
+
 class FastEmbedEmbedder:
     """Real local embeddings (no API key). Requires `pip install recall[fastembed]`."""
 
@@ -380,6 +400,7 @@ class FastEmbedEmbedder:
         require_local: bool = False,
         context_version: str = "raw-v1",
         identity: EmbeddingProfile | None = None,
+        providers: list[str] | None = None,
     ) -> None:
         """Load a local fastembed model, optionally under a supplied immutable identity.
 
@@ -417,9 +438,20 @@ class FastEmbedEmbedder:
             kwargs["cache_dir"] = local_cache
         if require_local:
             kwargs["local_files_only"] = True
+        if providers is not None:
+            kwargs["providers"] = list(providers)
         self._model = (
             TextEmbedding(**kwargs)
         )
+        #: The providers the ONNX session ACTUALLY resolved, read back from the live session.
+        #:
+        #: NOT `onnxruntime.get_available_providers()`, which reports what the wheel was compiled
+        #: with and stays true even when the session ran on CPU. Measured on an RTX 5090 host:
+        #: requesting `CUDAExecutionProvider` against a CUDA-13 wheel on a CUDA-12.8 box falls
+        #: back to CPU with only a `RuntimeWarning`, so anything trusting availability would
+        #: record a GPU run that never happened. Exposed because an index built on one provider
+        #: and served from another is a provenance fact a benchmark has to be able to state.
+        self.session_providers = _session_providers(self._model)
         self._name = identity.model_name if identity else model_name
         self._query_mode = identity.query_mode if identity else (
             "query_embed" if asymmetric else "embed"
