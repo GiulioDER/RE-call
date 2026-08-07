@@ -356,22 +356,55 @@ What each one means and where it stops: **[results/FINDINGS.md](https://github.c
 ## How it works
 
 ```mermaid
-flowchart LR
-    Q([query]) --> E[embed]
-    E --> D[dense · pgvector cosine]
-    Q --> S[sparse · Postgres full-text]
-    D --> F[Reciprocal Rank Fusion]
-    S --> F
-    F --> R[cross-encoder rerank]
-    R --> G{trust layer}
-    G --> O([verdict + confidence + provenance per hit, or ABSTAIN])
+flowchart TB
+    M([memo · markdown + frontmatter<br/>supersedes · valid_from · valid_until]) --> CH[chunk]
+    CH --> EW[embed · local, no API call]
+    EW -. optional .-> SP[SPLADE encode]
+    EW --> DB
+    SP -. optional .-> DB
+
+    Q([query]) --> EQ[embed · query encoder]
+    EQ --> DB[(PostgreSQL + pgvector<br/>vectors and full-text in one DB)]
+
+    DB --> DN[dense · pgvector cosine]
+    DB --> SL[sparse · Postgres full-text]
+    DB -. optional .-> LS[learned sparse · SPLADE]
+
+    DN --> F[Reciprocal Rank Fusion]
+    SL --> F
+    LS -. optional .-> F
+
+    F -. optional .-> RR[cross-encoder rerank]
+    RR --> GP
+    F --> GP{{gap check · calibrated threshold}}
+    GP --> TR{trust layer<br/>supersession · validity · confidence}
+    CAL[/calibration · fitted per embedder and corpus/] --> TR
+    TR -. optional .-> EJ{{entailment judge}}
+    EJ --> OUT
+    TR --> OUT([verdict + confidence + provenance<br/>or ABSTAIN, with a reason])
+
+    classDef opt stroke:#d29922,color:#d29922,stroke-dasharray:5 4
+    class SP,LS,RR,EJ opt
 ```
 
-Dense semantic search and sparse keyword search each retrieve candidates; **Reciprocal Rank Fusion**
-merges them, a cross-encoder reranks, and the **trust layer** judges every hit — supersession,
-validity window, calibrated confidence — before it reaches the agent. Validity is plain frontmatter
-in the memory itself (`supersedes: old_doc.md`, `valid_until: 2026-06-30`) — *authored, not inferred*,
-because a claim honoured as written is safe and a claim guessed at is not.
+**The solid path is what runs if you change nothing. Everything dashed and amber is opt-in and off
+by default** — the learned-sparse SPLADE leg, the cross-encoder reranker and the entailment judge
+each cost something measurable, and each is enabled by name rather than inferred for you.
+
+**Writing a memory involves no LLM call at all**, which is why it is free at any scale: validity is
+plain frontmatter in the memory itself (`supersedes: old_doc.md`, `valid_until: 2026-06-30`) —
+*authored, not inferred*, because a claim honoured as written is safe and a claim guessed at is not.
+
+On the read path, dense semantic search and sparse keyword search each retrieve candidates,
+**Reciprocal Rank Fusion** merges them, the **gap check** refuses to dress up nearest-noise as an
+answer, and the **trust layer** judges every surviving hit — supersession, validity window,
+calibrated confidence — before it reaches the agent. The threshold it abstains at is **fitted per
+embedder and corpus, never a shipped constant**; the measurement that proves it cannot be one is
+[FINDINGS](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)'s headline negative
+result.
+
+→ Every phase in full, every embedder measured so far, and what each option costs:
+**[docs/pipeline.svg](https://github.com/GiulioDER/RE-call/blob/master/docs/pipeline.svg)**.
 
 ## Prior art — and where this genuinely differs
 
