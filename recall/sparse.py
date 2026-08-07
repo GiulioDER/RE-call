@@ -351,7 +351,13 @@ def store_sparse_vectors(
 
 
 class SparseCoverageError(RuntimeError):
-    """Fewer sidecar rows than chunks. The retrieval leg would answer, thinly and silently."""
+    """The sidecar disagrees with the corpus under a profile, in either direction.
+
+    Fewer sidecar rows than chunks: the retrieval leg would answer, thinly and silently. More
+    sidecar rows than chunks: the sidecar holds rows for chunks that no longer exist, because it
+    keys its parent as a column value rather than a relation, so nothing cascades when a chunk is
+    removed. Both are real faults and both raise; only the message differs.
+    """
 
 
 def assert_sparse_coverage(
@@ -367,19 +373,34 @@ def assert_sparse_coverage(
     `empty_ids` is what `store_sparse_vectors` returned. It does not suppress the refusal, it
     EXPLAINS it: an operator who can see that the missing chunks were term-free can proceed,
     where "1 of 2" alone cannot be told apart from a broken encoder.
+
+    The two counts are separate round trips (`sparse_row_count`, then `count()`), so this assumes
+    indexing has quiesced: a concurrent indexer running between the two queries can make them
+    disagree transiently. No locking is added for that; the caller is responsible for calling
+    this only once writes have settled.
     """
     encoded = store.sparse_row_count(profile_id)
     total = store.count()
     if encoded == total:
         return
-    message = (
-        f"learned sparse sidecar holds {encoded} of {total} chunks under profile "
-        f"{profile_id!r}. A query would retrieve from the encoded fraction and report nothing, "
-        f"so no result from this corpus may be quoted."
+    if encoded < total:
+        message = (
+            f"learned sparse sidecar holds {encoded} of {total} chunks under profile "
+            f"{profile_id!r}. A query would retrieve from the encoded fraction and report "
+            f"nothing, so no result from this corpus may be quoted."
+        )
+        named = list(empty_ids)
+        if named:
+            shown = ", ".join(named[:10])
+            more = f" (and {len(named) - 10} more)" if len(named) > 10 else ""
+            message += f" {len(named)} chunk(s) encoded to an empty vector: {shown}{more}."
+        raise SparseCoverageError(message)
+    raise SparseCoverageError(
+        f"learned sparse sidecar holds {encoded} rows under profile {profile_id!r}, more than "
+        f"the {total} chunks in the corpus. The sidecar keys its parent chunk table as a column "
+        f"value, not a relation, so nothing cascades when a chunk row is removed: these are "
+        f"orphaned rows for chunks that no longer exist. Likely causes are `delete_sources` "
+        f"(which does not clean the sidecar) or a `drop_table` of a table whose name was later "
+        f"reused. This still refuses, because a sidecar that disagrees with the corpus is a "
+        f"real fault, but no chunk in this corpus is unencoded."
     )
-    named = list(empty_ids)
-    if named:
-        shown = ", ".join(named[:10])
-        more = f" (and {len(named) - 10} more)" if len(named) > 10 else ""
-        message += f" {len(named)} chunk(s) encoded to an empty vector: {shown}{more}."
-    raise SparseCoverageError(message)

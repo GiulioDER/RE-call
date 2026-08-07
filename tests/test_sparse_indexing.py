@@ -139,6 +139,41 @@ def test_coverage_refuses_a_half_encoded_corpus(make_store) -> None:
 
 
 @requires_db
+def test_coverage_refuses_an_overcounted_sidecar_and_names_the_cause(make_store) -> None:
+    """More sidecar rows than chunks is an orphan, not a shortfall, and needs its own message.
+
+    The sidecar keys its parent as a column VALUE, not a relation, so nothing cascades: deleting
+    a chunk row leaves its sidecar row behind. The overcount branch must still raise, but the
+    message has to name the mechanism, not print a ratio that reads backwards ("holds 3 of 2").
+    """
+    store = make_store(64)
+    store.upsert(
+        [_chunk("a", "aardvark"), _chunk("b", "beta"), _chunk("c", "gamma")],
+        [[0.1] * 64, [0.1] * 64, [0.1] * 64],
+    )
+    encoder = KeywordSparseEncoder({"aardvark": 7, "beta": 9, "gamma": 11})
+    store_sparse_vectors(
+        store, encoder, [("a", "aardvark"), ("b", "beta"), ("c", "gamma")]
+    )
+    # Orphan the sidecar: remove one chunk row with no sidecar cleanup, exactly as
+    # `delete_sources` does today (a later task fixes that; this test only needs the state).
+    store.delete_sources(["/c/c.md"])
+
+    assert store.sparse_row_count(PROFILE_ID) == 3
+    assert store.count() == 2
+
+    with pytest.raises(SparseCoverageError) as excinfo:
+        assert_sparse_coverage(store, PROFILE_ID)
+
+    message = str(excinfo.value)
+    assert "3 of 2" not in message
+    assert "sidecar" in message
+    assert "nothing cascades" in message
+    assert "delete_sources" in message
+    assert "drop_table" in message
+
+
+@requires_db
 def test_coverage_names_the_empty_chunks_as_the_explanation(make_store) -> None:
     """A shortfall fully explained by term-free passages still refuses, but says WHY.
 
