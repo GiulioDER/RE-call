@@ -481,6 +481,33 @@ Set `RECALL_SERVING_DSN` for application traffic and `RECALL_MIGRATION_DSN` only
 job. See [database migrations and roles](docs/MIGRATIONS.md). `RECALL_DSN` remains a deprecated
 development fallback for the serving DSN.
 
+### Multi-query fusion (`search_fused`)
+
+Fuses the current turn with a concatenation of prior turns, then reranks once. Measured on
+MTRAG-human dev at `candidate_k=100`, with a reranker: **+0.0084 nDCG@5**<!--@ citation-pending: measured in `/var/lib/recall-benchmarks/2026-08-07-mtrag-rerank-conversion/`, an archive outside this repo --> (Holm-significant, cross-encoder/`ms-marco-MiniLM-L-6-v2`) and
+**+0.0842 R@100**<!--@ citation-pending: measured in `/var/lib/recall-benchmarks/2026-08-07-mtrag-rerank-conversion/`, an archive outside this repo --> over single-query `search`. Gains proved significant and directional under BAAI/`bge-reranker-v2-m3` (+0.0117 nDCG@5)<!--@ citation-pending: measured in `/var/lib/recall-benchmarks/2026-08-07-mtrag-rerank-conversion/`, an archive outside this repo -->. The effect is small in absolute terms, and it was measured on one dev split, so treat it as
+directional evidence rather than a guarantee on your corpus.
+
+```python
+result = retriever.search_fused("and what about the deadline?", history=["what is the policy?"])
+```
+
+⚠️ **Requires a reranker, and refuses without one.** Raw, this arm scores **0.0447 nDCG@5 below**<!--@ citation-pending: measured in `/var/lib/recall-benchmarks/2026-08-07-mtrag-rerank-conversion/`, an archive outside this repo -->
+`search()`; the cross-encoder is what repairs the ranking damage a concatenated query does. RE-call
+ships with the reranker off by default (see above), which is exactly why `search_fused` refuses
+rather than merely warns when none is configured.
+
+It also costs roughly **twice the retrieval** of `search()`, plus mandatory reranking (~1,050<!--@ citation-pending: measured in `/var/lib/recall-benchmarks/2026-08-07-mtrag-rerank-conversion/`, an archive outside this repo -->
+ms/query on CPU). Whether that trade is worth it is an operator decision. Fusion is opt-in by
+data: no `history`, no fusion, and every existing `search()` call is unaffected.
+
+Histories whose concatenation exceeds 4,096<!--@ citation-pending: source constant, not a measurement: `FUSED_HISTORY_MAX_CHARS` in recall/retriever.py --> characters are **refused, not truncated**: a truncated
+history is a configuration that was never measured. A result can also carry fewer than `k` hits,
+when a chunk is deleted between retrieval and the final rescore.
+
+`search_fused` is library only for now; it is not exposed as an MCP tool. Adding `history` to a
+public tool surface needs its own auth, limits, and query length contract.
+
 ### Immutable index generations
 
 The generation index path fingerprints the embedder revision, chunker configuration, FTS configuration,

@@ -221,6 +221,62 @@ def test_sparse_search_uses_the_generation_fts_configuration(manager) -> None:
 
 
 @requires_db
+def test_cosines_for_matches_query_dense_on_the_generation_store(manager) -> None:
+    """`GenerationStore` overrides `_cosines_for`; the base implementation selects a column,
+
+    `id`, that `recall_chunks_v1` does not have. Without this override the call raises
+    `UndefinedColumn`, and `RECALL_ENV=production` selects `GenerationStore`.
+    """
+    data = b"alpha generation text"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = _ready(
+        manager, manifest, _pipeline("model-a"), _reader(manifest, data), _Embedder(1)
+    )
+    manager.promote(generation, unsafe_development=True)
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        vec = [1.0] * 64
+        dense = store.query_dense(vec, k=1)
+        chunk_id = dense[0].chunk.id
+
+        rescored = store.cosines_for([chunk_id], vec)
+
+    assert rescored[chunk_id] == pytest.approx(dense[0].score, abs=1e-6)
+
+
+@requires_db
+def test_cosines_for_omits_a_chunk_from_a_generation_that_is_no_longer_active(manager) -> None:
+    """The row for a retired generation's chunk still physically exists in `recall_chunks_v1`
+
+    (`LIVE_MANIFEST_STATES` keeps it until `gc`), so an unscoped query would find it. `cosines_for`
+    must filter by the ACTIVE generation the same way `_query_dense` and `_query_sparse` do, or a
+    rescore could report a cosine for a chunk that is not part of what is being searched.
+    """
+    pipeline = _pipeline("model-a")
+
+    first_data = b"first generation text"
+    first_manifest = _manifest(manager.tenant_id, first_data, version="v1")
+    first = _ready(
+        manager, first_manifest, pipeline, _reader(first_manifest, first_data), _Embedder(1)
+    )
+    manager.promote(first, unsafe_development=True)
+
+    vec = [1.0] * 64
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        retired_chunk_id = store.query_dense(vec, k=1)[0].chunk.id
+
+    second_data = b"second generation text"
+    second_manifest = _manifest(manager.tenant_id, second_data, version="v2")
+    second = _ready(
+        manager, second_manifest, pipeline, _reader(second_manifest, second_data), _Embedder(1)
+    )
+    manager.promote(second, unsafe_development=True)
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        assert store.cosines_for([retired_chunk_id], vec) == {}
+
+
+@requires_db
 def test_forget_survives_rollback_and_tombstone_survives_gc(manager) -> None:
     first_data = b"first revision"
     first_manifest = _manifest(manager.tenant_id, first_data, version="v1")
