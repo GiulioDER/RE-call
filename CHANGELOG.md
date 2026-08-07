@@ -12,8 +12,8 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 - **`HybridRetriever.search_fused(query, history, k, source)`: multi-query fusion of the current
   turn with prior turns.** Fuses retrieval for `query` with retrieval for a concatenation of prior
   turns, then reranks once. Measured on MTRAG-human dev at `candidate_k=100` with a reranker:
-  **+0.0084 nDCG@5** (Holm-significant) and **+0.0842 R@100** over single-query `search`,
-  consistent under two cross-encoders 25x apart in size, on one dev split. The gain is conditional
+  **+0.0084 nDCG@5** (Holm-significant, cross-encoder/ms-marco-MiniLM-L-6-v2) and **+0.0842 R@100** over single-query `search`.
+  Gains proved significant and directional under BAAI/bge-reranker-v2-m3 (+0.0117 nDCG@5), on one dev split. The gain is conditional
   on reranking: raw, this arm is **0.0447 nDCG@5 worse** than `search()`, which is why
   `search_fused` refuses rather than warns when no reranker is configured; RE-call ships with the
   reranker off by default. It costs roughly 2x the retrieval of `search()` plus mandatory

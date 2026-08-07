@@ -484,9 +484,8 @@ development fallback for the serving DSN.
 ### Multi-query fusion (`search_fused`)
 
 Fuses the current turn with a concatenation of prior turns, then reranks once. Measured on
-MTRAG-human dev at `candidate_k=100`, with a reranker: **+0.0084 nDCG@5** (Holm-significant) and
-**+0.0842 R@100** over single-query `search`, consistent under two cross-encoders 25x apart in
-size. The effect is small in absolute terms, and it was measured on one dev split, so treat it as
+MTRAG-human dev at `candidate_k=100`, with a reranker: **+0.0084 nDCG@5** (Holm-significant, cross-encoder/ms-marco-MiniLM-L-6-v2) and
+**+0.0842 R@100** over single-query `search`. Gains proved significant and directional under BAAI/bge-reranker-v2-m3 (+0.0117 nDCG@5). The effect is small in absolute terms, and it was measured on one dev split, so treat it as
 directional evidence rather than a guarantee on your corpus.
 
 ```python
