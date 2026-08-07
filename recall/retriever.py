@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, is_dataclass, replace
 from datetime import datetime, timedelta, timezone
 import os
@@ -45,6 +46,46 @@ DEFAULT_CANDIDATE_K = 20
 #: `both` fuses three legs; it is declared here rather than discovered later so that running it is
 #: a pre-registered arm and not a post-hoc rescue after seeing the scores.
 SPARSE_BACKENDS = frozenset({"lexical", "splade", "both"})
+
+#: The most distinct chunks a fused search hands the cross-encoder.
+#:
+#: 🔑 MEASURED, not chosen for tidiness. Reranking a 547-candidate pool LOST 0.0513 R@100 where
+#: reranking 200 GAINED 0.0226: the cross-encoder degrades as the pool widens, which
+#: `closed-hypothesis-recall-rerank-pool-interaction-2026-08-05` recorded as "not more to select
+#: from, more rope". Fusing two queries roughly doubles the pool, so without this cap the measured
+#: gain reverses.
+FUSED_RERANK_POOL_CAP = 100
+
+#: Longest history CONCATENATION a fused search accepts, in characters.
+#:
+#: Matches `recall_mcp.service.MAX_QUERY_CHARS` so the library and the server agree on what an
+#: over-long query is. Measured against the concatenation, which is built here and therefore never
+#: passes the server's own check on the incoming query.
+#:
+#: ⚠️ The encoder truncates at 512 tokens regardless, so a history past roughly 2,000 characters
+#: is already being clipped by the tokenizer. That clipping was PRESENT IN THE MEASUREMENT, so it
+#: is part of the measured system rather than something introduced here. This budget bounds the
+#: REQUEST, not the encoded query, and the two are different limits.
+FUSED_HISTORY_MAX_CHARS = 4096
+
+
+def build_history_query(history: "Sequence[str]") -> str:
+    """The benchmark's `full` variant: prior turns, newline joined, speaker tags removed.
+
+    Owned here rather than left to callers so that two installations cannot send different
+    concatenations and both call it the measured configuration.
+    """
+    lines = []
+    for turn in history:
+        for line in str(turn).splitlines():
+            stripped = (
+                line.split(":", 1)[1].strip()
+                if line.startswith("|") and ":" in line
+                else line.strip()
+            )
+            if stripped:
+                lines.append(stripped)
+    return "\n".join(lines)
 
 
 def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
