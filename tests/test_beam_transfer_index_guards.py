@@ -389,3 +389,126 @@ def test_the_handed_over_query_survives_a_tenant_id_containing_a_quote(table, tm
     assert returned == {odd}, (
         f"the printed remedy must return exactly the restored tenant; it returned {returned}"
     )
+
+
+@pg
+def test_a_many_tenant_remedy_is_neither_truncated_nor_widened(table, tmp_path) -> None:
+    """The tenant list must match the refusal's scope EXACTLY, at any tenant count.
+
+    An earlier version capped this list at 20 while keeping the sentence "scoped exactly as this
+    refusal is", so past 20 tenants the remedy was narrower than the refusal: follow it, re-run,
+    get refused again. Safe in direction, false as a claim — and the cap branch was reachable by
+    no test, which is how it shipped.
+
+    Executes the printed SQL rather than reading it, and compares the tenant SET both ways.
+    """
+    from recall.store import SPARSE_TABLE
+
+    restored = [f"t-{i:02d}" for i in range(25)] + ["t-o'brien"]
+    src = tmp_path / "m.copy.gz"
+    src.write_bytes(b"")
+    with psycopg.connect(DSN) as _c:
+        real_columns = ti.transferable_columns(_c, TABLE)
+    meta = {
+        "source": {
+            "rows": 1, "digest": "d",
+            "per_tenant": {t: {"rows": 1, "digest": "d"} for t in restored},
+        },
+        "columns": real_columns, "tenants": restored, "files": {t: src.name for t in restored},
+        "path": str(src), "bytes": 0,
+    }
+    src.with_suffix(src.suffix + ".meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    with psycopg.connect(DSN, autocommit=True) as conn:
+        for t in restored:
+            conn.execute(
+                f"INSERT INTO {SPARSE_TABLE} (tenant_id, chunk_table, profile_id, id, vec, nnz) "
+                f"VALUES (%s, %s, %s, %s, '{{1:1}}/30522', 1)",
+                (t, TABLE, "profile-00", f"id-{t}"),
+            )
+        conn.execute(
+            f"INSERT INTO {SPARSE_TABLE} (tenant_id, chunk_table, profile_id, id, vec, nnz) "
+            f"VALUES (%s, %s, %s, %s, '{{1:1}}/30522', 1)",
+            ("z-innocent", TABLE, "profile-00", "id-z"),
+        )
+
+    with pytest.raises(SystemExit) as exc:
+        ti.restore(DSN, TABLE, src)
+    message = str(exc.value)
+
+    printed = message.split("scoped exactly as this refusal is: ", 1)[1]
+    with psycopg.connect(DSN) as conn:
+        returned = {r[0] for r in conn.execute(printed).fetchall()}
+
+    assert returned == set(restored), (
+        f"the remedy must return the refusal's scope exactly; missing "
+        f"{sorted(set(restored) - returned)}, extra {sorted(returned - set(restored))}"
+    )
+
+
+def test_a_tenant_id_with_a_nul_byte_is_refused_by_name(tmp_path) -> None:
+    """A NUL is a legal Python str but not storable in a Postgres text column.
+
+    It passed `isinstance(t, str) and t` and then surfaced as a raw psycopg DataError from
+    whichever statement touched it first — the traceback this validator exists to replace.
+    """
+    src = tmp_path / "n.copy.gz"
+    src.write_bytes(b"")
+    meta = {
+        "source": {"rows": 0, "digest": "d", "per_tenant": {}},
+        "columns": ["tenant_id"], "tenants": ["t-a\x00b"], "files": {"*": src.name},
+        "path": str(src), "bytes": 0,
+    }
+    src.with_suffix(src.suffix + ".meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    # Case-SENSITIVE, and the whole phrase. `(?i)NUL` was satisfied by the word "null" earlier in
+    # the same sentence, so the "by_name" half of this test was vacuous: the message could stop
+    # mentioning NUL entirely and it would still pass.
+    with pytest.raises(SystemExit, match=r"NUL byte"):
+        ti.restore("postgresql://unused/db", TABLE, src)
+
+
+def test_a_tenant_id_that_postgres_cannot_encode_is_refused_by_name(tmp_path) -> None:
+    """A lone surrogate is the NUL check's sibling, and testing for NUL alone left it open.
+
+    `json.dumps` renders it as pure ASCII, so it round-trips through the sidecar untouched and
+    then raised a raw UnicodeEncodeError from the first statement to touch it — the traceback the
+    validator exists to replace. It now asks the ENCODING whether a value is storable rather than
+    enumerating the characters that are not.
+
+    Built with `chr(0xD800)` deliberately: writing the literal escape into this file makes the
+    file itself unencodable, which is the same defect one level up. That is not hypothetical — it
+    truncated this file once while this test was being added.
+    """
+    src = tmp_path / "s.copy.gz"
+    src.write_bytes(b"")
+    meta = {
+        "source": {"rows": 0, "digest": "d", "per_tenant": {}},
+        "columns": ["tenant_id"], "tenants": ["t-a" + chr(0xD800) + "b"],
+        "files": {"*": src.name}, "path": str(src), "bytes": 0,
+    }
+    src.with_suffix(src.suffix + ".meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="(?i)surrogate|can store"):
+        ti.restore("postgresql://unused/db", TABLE, src)
+
+
+def test_an_empty_tenants_list_is_refused_rather_than_read_as_unscoped(tmp_path) -> None:
+    """`[]` silently promoted a SCOPED restore to an UNSCOPED one.
+
+    Every downstream site tests `if tenants:`, so an empty list widened the sparse guard to the
+    whole table and made `--replace` take the bare TRUNCATE instead of the per-tenant DELETE.
+    `dump` never writes `[]`, so it arrives only from a hand-edited or hostile sidecar — which is
+    the input this validator exists for. "No tenants" is spelled `null`.
+    """
+    src = tmp_path / "e.copy.gz"
+    src.write_bytes(b"")
+    meta = {
+        "source": {"rows": 0, "digest": "d", "per_tenant": {}},
+        "columns": ["tenant_id"], "tenants": [], "files": {"*": src.name},
+        "path": str(src), "bytes": 0,
+    }
+    src.with_suffix(src.suffix + ".meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="NON-EMPTY"):
+        ti.restore("postgresql://unused/db", TABLE, src)
