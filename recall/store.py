@@ -1522,6 +1522,41 @@ class PgVectorStore:
 
         return self._with_retry(_op)
 
+    def sparse_covered_sources(self, profile_id: str) -> set[str]:
+        """Sources whose EVERY chunk has a sidecar row under `profile_id`.
+
+        `index_path`'s skip predicate needs a per-SOURCE answer, and the sidecar is keyed by
+        chunk id, so the join has to be made here rather than inferred from a count. Partial
+        coverage of a source is deliberately reported as NOT covered: re-encoding a source that
+        is already half done is cheap, and skipping one that is half done leaves a hole no later
+        run would fill.
+
+        ⚠️ A source containing a chunk that encodes to an EMPTY vector can never reach full
+        coverage, because `store_sparse_vectors` skips those rows by design. Such a source is
+        therefore re-encoded on every run. That is wasted work, not wrong work, and it is rare
+        (a passage with no surviving terms at all); the alternative would be a record of
+        attempts, which is a bigger structure than the saving justifies.
+        """
+        def _op(conn: "psycopg.Connection") -> set[str]:
+            rows = conn.execute(
+                f"""
+                SELECT c.source
+                FROM {self._table} c
+                LEFT JOIN {SPARSE_TABLE} s
+                  ON s.tenant_id = %(tenant)s
+                 AND s.chunk_table = %(chunk_table)s
+                 AND s.profile_id = %(profile)s
+                 AND s.id = c.id
+                WHERE c.tenant_id = %(tenant)s
+                GROUP BY c.source
+                HAVING count(*) FILTER (WHERE s.id IS NULL) = 0
+                """,
+                {"tenant": self._tenant, "chunk_table": self._table, "profile": profile_id},
+            ).fetchall()
+            return {row[0] for row in rows}
+
+        return self._with_retry(_op)
+
     def query_learned_sparse(
         self,
         weights: dict[int, float],
