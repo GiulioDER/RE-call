@@ -464,6 +464,20 @@ def test_the_registry_values_parse_as_floats_matching_their_own_precision() -> N
 #: note applies with unusual force to this document: roughly three fifths of its numeric tokens are
 #: masked and the masked set is the command arguments. Read the coverage note on `GATED_DOCS` in
 #: `benchmarks/claim_gate.py` before treating a green run here as coverage of the runbook.
+#:
+#: 2557 -> 2558 (+1) on 2026-08-08, shortening the README into `docs/EVIDENCE.md`,
+#: `docs/PRODUCTION.md`, `docs/PRIOR_ART.md` and `docs/ENGINEERING.md`, and arming the gate over all
+#: four in the same commit. Almost entirely a MOVE, and the move is the thing to check rather than
+#: the total: `README.md` went 299 -> 21 while the four destinations went 0 -> 279, and the multiset
+#: over those five documents lost nothing at all. The whole +1 is one occurrence of `0`, from the
+#: product name `Mem0` in the README's new "Read next" row.
+#:
+#: ⚠️ State that one in a checkable form, because every hand-maintained total in this log that has
+#: since been checked against git was wrong. The `0` row over those five documents went 17 -> 18;
+#: the NAME `Mem0` accounts for 64 -> 65 unmasked occurrences across the whole gated set. The row
+#: count and the name count are different quantities and the first is the one the +1 comes from.
+#: Either way this is the existing treatment of a name the number regex cannot tell from a figure,
+#: not a new unbacked claim.
 
 
 def test_unmarked_counts_ignores_marked_numbers() -> None:
@@ -506,7 +520,7 @@ def test_the_committed_baseline_has_no_crlf() -> None:
     assert b"\r\n" not in raw
 
 
-# --- The gate, armed over the five published documents -----------------------------------------
+# --- The gate, armed over every document in GATED_DOCS -----------------------------------------
 
 
 @pytest.mark.parametrize("doc", GATED_DOCS)
