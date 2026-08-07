@@ -48,6 +48,28 @@ ruff check .        # or: make lint
 CI runs this as a hard gate (`ci.yml`'s `test` job). Line length is 100 (`pyproject.toml`
 `[tool.ruff]`), target `py311`.
 
+### Formatting is deliberately UNENFORCED — do not run `ruff format`
+
+`ruff check` is this project's only style gate. There is no `[tool.ruff.format]` section, no
+`format` target in the `Makefile`, and no CI job that runs the formatter. **That is a decision, not
+an oversight**, and it is recorded here because two sessions in a row found the tool installed,
+failing, and asked by nothing — a state that reads as a broken gate rather than as an absent one.
+
+`ruff format --check .` currently reports that most of the tree would be reformatted. Adopting the
+formatter now would rewrite hundreds of files in a single diff, which would bury whatever change it
+rode in with and would rewrite the blame of a codebase whose review history is load-bearing (this
+repository's own documents cite commits as evidence). The cost is real and the benefit is style
+only, so the answer is "not now", explicitly.
+
+Two consequences to accept rather than work around:
+
+* **Do not run `ruff format` to "fix" a file you touched.** A partial reformat is worse than none:
+  it makes the next real diff unreadable and spreads the decision one file at a time, which is how
+  an unenforced gate turns into a half-enforced one.
+* **A `ruff format --check` failure is not a red build.** Nothing in `ci.yml` runs it. If you want
+  it enforced, that is a deliberate change: add the CI job and the tree-wide reformat in one PR of
+  their own, with no other content.
+
 ## Keep `uv.lock` in sync
 
 CI's `audit` job runs `uv lock --check` before scanning dependencies with `pip-audit` — a drifted
