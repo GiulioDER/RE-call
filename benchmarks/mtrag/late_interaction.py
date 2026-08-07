@@ -15,8 +15,13 @@ follow-on project. `holm_family` enforces that by refusing it, rather than trust
 
 from __future__ import annotations
 
+import argparse
+import json
+import sys
+import time
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from recall.rerank import LATE_INTERACTION_MODELS, PERMISSIVE_LICENCES, maxsim
@@ -150,3 +155,130 @@ def score_stream(
         if len(batch) >= batch_size:
             yield from _flush()
     yield from _flush()
+
+
+def load_pairs_inverted(path: Path) -> dict[str, set[str]]:
+    """Read `pairs.jsonl` as doc_id -> {qid}, the form `score_stream` needs."""
+    pairs: dict[str, set[str]] = {}
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            pairs.setdefault(str(row["doc_id"]), set()).add(str(row["qid"]))
+    return pairs
+
+
+def assert_complete(pairs: dict[str, set[str]], scored: dict[str, set[str]]) -> None:
+    """G3: every requested pair received a score.
+
+    A missing score does not raise on its own. `rerank_order` raises when it later meets an
+    unscored candidate, but only for candidates in a pool, and a pair dropped before that reaches
+    nothing that checks it. So the count is asserted here, at the point the scorer claims it is
+    done, rather than assumed downstream.
+    """
+    missing = [
+        (doc_id, qid)
+        for doc_id, qids in pairs.items()
+        for qid in qids
+        if qid not in scored.get(doc_id, set())
+    ]
+    if missing:
+        raise ValueError(
+            f"{len(missing)} pair(s) received no score, e.g. {missing[:3]}. A missing score is not "
+            f"a zero: it would sink that document to the bottom of the ranking silently."
+        )
+
+
+def cmd_score(args: argparse.Namespace) -> int:
+    from recall.rerank import LateInteractionReranker
+
+    out = args.output_dir.resolve()
+    arm = next((a for a in LATE_ARMS if a.name == args.arm), None)
+    if arm is None:
+        raise SystemExit(f"unknown arm {args.arm!r}; known arms are {[a.name for a in LATE_ARMS]}")
+    if not arm.deployable and not args.accept_noncommercial:
+        raise SystemExit(
+            f"{arm.name} is licensed {arm.licence} and needs --accept-noncommercial. It is a "
+            f"capacity diagnostic only and may not contribute to a shipping decision."
+        )
+
+    reranker = LateInteractionReranker.from_pretrained(
+        arm.checkpoint, accept_noncommercial_license=args.accept_noncommercial
+    )
+
+    queries: dict[str, str] = {}
+    with (out / "queries.jsonl").open(encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip():
+                row = json.loads(line)
+                queries[str(row["qid"])] = str(row["text"])
+
+    pairs = load_pairs_inverted(out / "pairs.jsonl")
+
+    def _docs():
+        with (out / "docs.jsonl").open(encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    row = json.loads(line)
+                    yield str(row["doc_id"]), str(row["text"])
+
+    import fastembed
+
+    header = {
+        "_header": True,
+        **arm_record(arm),
+        # G4: the artifact records the encoder identity, so a venv change is detectable rather
+        # than silent. The SPLADE run's standing warning is to reverify after any venv change.
+        "fastembed_version": fastembed.__version__,
+        "queries": len(queries),
+        "pairs_requested": sum(len(v) for v in pairs.values()),
+        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+    scored: dict[str, set[str]] = {}
+    started = time.perf_counter()
+    with args.scores.open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(header) + "\n")
+        for n, row in enumerate(
+            score_stream(reranker._encoder, queries, _docs(), pairs, args.batch_size), 1
+        ):
+            scored.setdefault(row["doc_id"], set()).add(row["qid"])
+            fh.write(json.dumps(row) + "\n")
+            if n % 20000 == 0:
+                print(json.dumps({
+                    "event": "progress", "arm": arm.name, "pairs": n,
+                    "elapsed_s": round(time.perf_counter() - started, 1),
+                }), flush=True)
+
+    assert_complete(pairs, scored)
+    print(json.dumps({
+        "event": "score_done", **arm_record(arm),
+        "pairs_scored": sum(len(v) for v in scored.values()),
+        "elapsed_s": round(time.perf_counter() - started, 1),
+    }, indent=2), flush=True)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("score", help="score the dumped pairs with a late-interaction model")
+    p.add_argument("--output-dir", type=Path, required=True, help="the rerank_offload dump dir")
+    p.add_argument("--scores", type=Path, required=True, help="jsonl to write")
+    p.add_argument("--arm", required=True, choices=[a.name for a in LATE_ARMS])
+    p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument(
+        "--accept-noncommercial",
+        action="store_true",
+        help="required for cc-by-nc checkpoints; diagnostic use only",
+    )
+    p.set_defaults(func=cmd_score)
+
+    args = parser.parse_args(argv)
+    return int(args.func(args))
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())
