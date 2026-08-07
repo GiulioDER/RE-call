@@ -77,12 +77,22 @@ RESULTS_ROOT = REPO_ROOT / "results"
 #: delta, which makes a one-number drift read like a six-number one. Merge `origin/master` first,
 #: then regenerate, then verify the only rows that moved are the ones you expect. A gated document
 #: that other pull requests also edit will need this on every rebase.
+#: `docs/EVIDENCE.md`, `docs/PRODUCTION.md`, `docs/PRIOR_ART.md` and `docs/ENGINEERING.md` were
+#: added on 2026-08-08, when the README was shortened and its evidence, posture, prior-art and
+#: engineering sections moved into them VERBATIM. Nothing here is a new claim: every number in the
+#: four files was already gated as part of `README.md`, and leaving them out would have silently
+#: dropped that coverage in a commit whose stated purpose was editorial. That is why the same
+#: commit both moves the prose and arms the gate over its destination.
 GATED_DOCS: tuple[str, ...] = (
     "results/RESULTS.md",
     "results/FINDINGS.md",
     "README.md",
     "benchmarks/SUITE-DESIGN.md",
     "docs/ENTERPRISE_RETRIEVAL.md",
+    "docs/EVIDENCE.md",
+    "docs/PRODUCTION.md",
+    "docs/PRIOR_ART.md",
+    "docs/ENGINEERING.md",
 )
 
 #: Spans masked before numbers are extracted.
@@ -160,7 +170,8 @@ MARKER_RE = re.compile(
 #: local rule that tells the two cases apart.
 #:
 #: Measure the hole rather than describing it as hypothetical: **21 space-grouped numbers** are
-#: published across the gated documents today (RESULTS 9, FINDINGS 8, README 4) against 47
+#: published across the gated documents today (RESULTS 9, FINDINGS 8, EVIDENCE 4 — they were
+#: README's until the README was shortened on 2026-08-08) against 47
 #: comma-grouped ones — and the SAME figure appears both ways in all three, `1 536` beside
 #: `1,536`. So one published sample size is a single claim in one sentence and `1` + `536` in
 #: another. That is the size of what this branch chose not to solve.
