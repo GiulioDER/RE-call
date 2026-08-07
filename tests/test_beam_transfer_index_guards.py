@@ -234,3 +234,105 @@ def test_validation_runs_before_the_sidecar_is_even_read(tmp_path: Path) -> None
     assert "meta.json" not in str(exc.value), (
         "the missing-sidecar error won the race; the identifier check must come first"
     )
+
+
+@pg
+def test_the_sparse_orphan_refusal_names_the_profile_not_just_the_tenant(table, tmp_path) -> None:
+    """The remedy has to be as narrow as the harm.
+
+    `store.sparse_row_count` keys on (tenant_id, chunk_table, profile_id), so the suppression this
+    guard exists to prevent is PER PROFILE. A refusal that says only "clear those tenants' rows"
+    points the operator at a DELETE wide enough to destroy a second profile's encoding — the same
+    harm as the cross-tenant version that was fixed earlier, one key narrower.
+
+    RED before this change: the message carried a bare total and named no profile at all.
+    """
+    from recall.store import SPARSE_TABLE
+
+    src = tmp_path / "x.copy.gz"
+    src.write_bytes(b"")
+    # Real columns, read from the destination. A hand-written list trips the column-mismatch
+    # guard first, and this test would then pass or fail for a reason it is not about.
+    with psycopg.connect(DSN) as _c:
+        real_columns = ti.transferable_columns(_c, TABLE)
+    meta = {
+        "source": {"rows": 1, "digest": "d", "per_tenant": {"t-a": {"rows": 1, "digest": "d"}}},
+        "columns": real_columns, "tenants": ["t-a"], "files": {"t-a": src.name},
+        "path": str(src), "bytes": 0,
+    }
+    src.with_suffix(src.suffix + ".meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    # Two profiles for ONE tenant, plus a second tenant that must not be named in the remedy.
+    with psycopg.connect(DSN, autocommit=True) as conn:
+        for tenant, profile, n in (("t-a", "bge-small-v1", 2), ("t-a", "splade-v3", 1), ("t-b", "bge-small-v1", 5)):
+            for i in range(n):
+                conn.execute(
+                    f"INSERT INTO {SPARSE_TABLE} (tenant_id, chunk_table, profile_id, id, vec, nnz) "
+                    f"VALUES (%s, %s, %s, %s, '{{1:1}}/30522', 1) ON CONFLICT DO NOTHING",
+                    (tenant, TABLE, profile, f"{profile}-{i}"),
+                )
+
+    with pytest.raises(SystemExit) as exc:
+        ti.restore(DSN, TABLE, src)
+    message = str(exc.value)
+
+    assert "bge-small-v1" in message and "splade-v3" in message, (
+        "the refusal must name every profile whose rows the operator is being told to clear"
+    )
+    assert "t-b" not in message, "a tenant that is not being restored must not be in the remedy"
+    # NOT `"3" in message` — that was satisfied by the "3" inside `splade-v3` no matter what total
+    # the guard computed, so it would have passed against `len(stale_rows)` or a constant. Anchor
+    # the number to the phrase only the total can produce.
+    assert "holds 3 learned-sparse rows" in message, (
+        "the total must be the sum across both of the restored tenant's profiles"
+    )
+
+
+@pg
+def test_the_truncated_breakdown_hands_over_a_query_scoped_like_the_refusal(table, tmp_path) -> None:
+    """The overflow branch had no test, which is how it shipped contradicting itself.
+
+    The message tells the operator that "deleting wider than this list destroys another profile's
+    index" and then, past 20 groups, hands them a query to get the rest. An earlier version built
+    that query WITHOUT the tenant predicate the guard itself applied — so following the remedy
+    would have cleared tenants that were never being restored: the precise harm the scoping fixed,
+    printed as the fix.
+    """
+    from recall.store import SPARSE_TABLE
+
+    src = tmp_path / "y.copy.gz"
+    src.write_bytes(b"")
+    with psycopg.connect(DSN) as _c:
+        real_columns = ti.transferable_columns(_c, TABLE)
+    meta = {
+        "source": {"rows": 1, "digest": "d", "per_tenant": {"t-a": {"rows": 1, "digest": "d"}}},
+        "columns": real_columns, "tenants": ["t-a"], "files": {"t-a": src.name},
+        "path": str(src), "bytes": 0,
+    }
+    src.with_suffix(src.suffix + ".meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    # 25 profiles for the restored tenant (past the cap of 20), plus one for a tenant that is not.
+    with psycopg.connect(DSN, autocommit=True) as conn:
+        for i in range(25):
+            conn.execute(
+                f"INSERT INTO {SPARSE_TABLE} (tenant_id, chunk_table, profile_id, id, vec, nnz) "
+                f"VALUES (%s, %s, %s, %s, '{{1:1}}/30522', 1)",
+                ("t-a", TABLE, f"profile-{i:02d}", f"id-{i}"),
+            )
+        conn.execute(
+            f"INSERT INTO {SPARSE_TABLE} (tenant_id, chunk_table, profile_id, id, vec, nnz) "
+            f"VALUES (%s, %s, %s, %s, '{{1:1}}/30522', 1)",
+            ("t-elsewhere", TABLE, "profile-00", "id-x"),
+        )
+
+    with pytest.raises(SystemExit) as exc:
+        ti.restore(DSN, TABLE, src)
+    message = str(exc.value)
+
+    assert "beyond the first 20" in message, "past the cap the message must say it truncated"
+    assert "tenant_id IN ('t-a')" in message, (
+        "the handed-over query must carry the SAME tenant scope as the refusal"
+    )
+    assert "t-elsewhere" not in message, "a tenant not being restored must not appear anywhere"
+    # The total counts every group, not just the 20 rendered.
+    assert "holds 25 learned-sparse rows" in message
