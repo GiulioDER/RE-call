@@ -154,7 +154,9 @@ def test_dev_queries_reach_the_retriever_without_their_speaker_prefix() -> None:
     assert run.query_text(task, "last") == "How many teams are in the NFL?"
 
 
-def _fake_release(root, dev_queries: int, test_queries: int) -> None:
+def _fake_release(
+    root, dev_queries: int, test_queries: int, query_modes: tuple[str, ...] = ("lastturn",)
+) -> None:
     """A minimal MTRAG root carrying BOTH layouts, with deliberately different sizes.
 
     The sizes differ so a validation that reads the wrong split cannot accidentally agree with
@@ -171,13 +173,14 @@ def _fake_release(root, dev_queries: int, test_queries: int) -> None:
 
         dev_dir = root / "mtrag-human" / "retrieval_tasks" / domain
         (dev_dir / "qrels").mkdir(parents=True, exist_ok=True)
-        (dev_dir / f"{domain}_lastturn.jsonl").write_text(
-            "".join(
-                _json.dumps({"_id": f"{domain}-dev-{i}", "text": "q"}) + "\n"
-                for i in range(dev_queries)
-            ),
-            encoding="utf-8",
-        )
+        for mode_file in query_modes:
+            (dev_dir / f"{domain}_{mode_file}.jsonl").write_text(
+                "".join(
+                    _json.dumps({"_id": f"{domain}-dev-{i}", "text": f"q {mode_file}"}) + "\n"
+                    for i in range(dev_queries)
+                ),
+                encoding="utf-8",
+            )
         (dev_dir / "qrels" / "dev.tsv").write_text(
             "query\tcorpus\tscore\n"
             + "".join(f"{domain}-dev-{i}\tc{i}\t1\n" for i in range(dev_queries)),
@@ -225,3 +228,40 @@ def test_validation_describes_the_split_it_was_asked_for(tmp_path) -> None:
     assert test["split"] == "test"
     # The hashes must come from different files, or the block is describing one split for both.
     assert dev["input_sha256"] != test["input_sha256"]
+
+
+def test_dev_validation_hashes_the_query_mode_the_selected_arms_use(tmp_path) -> None:
+    """The provenance must name the files the ARMS open, not a hard-coded default.
+
+    `validate_release` takes a `query_mode`, and on the dev split that argument is what selects
+    WHICH per-domain file gets hashed. `main()` used to omit it, so the hashes were always the
+    `last` files no matter which arms ran. That is the same defect as the split bug one axis over:
+    every declared arm happens to use `last` today, so it was unobservable, but `DEV_QUERY_FILES`
+    also defines `full` and `rewrite`.
+
+    A run whose arms disagree about query mode has no single correct answer for one hash block, so
+    it is refused rather than silently labelled with one of them.
+    """
+    _fake_release(tmp_path, dev_queries=4, test_queries=2, query_modes=("lastturn", "questions"))
+
+    by_last = run.validate_release(tmp_path, "dev", "last")
+    by_full = run.validate_release(tmp_path, "dev", "full")
+
+    assert by_last["query_mode_validated"] == "last"
+    assert by_full["query_mode_validated"] == "full"
+    assert by_last["input_sha256"] != by_full["input_sha256"], (
+        "the two query modes read different files, so their hash blocks must differ; "
+        "equal hashes mean the mode is not reaching the file selection"
+    )
+
+
+def test_a_dev_run_whose_arms_disagree_on_query_mode_is_refused() -> None:
+    """One manifest carries one `input_sha256` block, so it can describe only one query mode."""
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="query mode"):
+        run.dev_query_mode_for(["recall_default_last", "recall_default_recent3"], "dev")
+
+
+def test_the_dev_query_mode_comes_from_the_selected_arms() -> None:
+    assert run.dev_query_mode_for(["hybrid_splade", "hybrid_lexical"], "dev") == "last"
