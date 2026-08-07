@@ -27,13 +27,62 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_ROOT = REPO_ROOT / "results"
 
 #: The documents that carry load-bearing numbers a reader could act on. Process records
-#: (PREREGISTRATION, REVIEW, ARTICLE_DRAFT, CHANGELOG, docs/*.md) are deliberately absent: they are
-#: not published results, and a guard that ships mostly-exempted stays that way.
+#: (PREREGISTRATION, REVIEW, ARTICLE_DRAFT, CHANGELOG) are deliberately absent: they are not
+#: published results, and a guard that ships mostly-exempted stays that way.
+#:
+#: `docs/ENTERPRISE_RETRIEVAL.md` was added on 2026-08-07. It is the OPERATOR RUNBOOK, so a wrong
+#: number in it is a wrong instruction executed against a production database. Three consecutive
+#: audit rounds found factual defects in it, none of which any automated guard could have seen while
+#: it sat outside this tuple.
+#:
+#: ⚠️ MEASURE WHAT THAT BUYS BEFORE TRUSTING IT. Roughly **three fifths** of this document's numeric
+#: tokens never reach the gate: `EXCLUSIONS` below masks them, and the masked set is almost exactly
+#: the operator-facing part. Recompute rather than trusting a figure here — an earlier version of
+#: this comment published exact counts and they were stale in the very commit that wrote them,
+#: because that commit also added the six `<!--@ … -->` markers whose bodies the html-comment row
+#: then masks. (A per-row breakdown does not reconcile either: the exclusion patterns overlap, so
+#: summing their hits double-counts.) One line, against the current file:
+#:
+#:     python -c "import sys;sys.path.insert(0,'benchmarks');from pathlib import Path;import
+#:     claim_gate as c;t=Path('docs/ENTERPRISE_RETRIEVAL.md').read_text(encoding='utf-8');
+#:     print(len(c.NUMBER_RE.findall(t)),len(c.NUMBER_RE.findall(c.mask_excluded(t))))"
+#:
+#: What does NOT drift is the SHAPE, and it is the part that matters. Mutation-tested: changing
+#: `--chunks 1000000` to `100000`, `--dim 384` to `768`, or the pgvector client floor `0.4.0` to
+#: `0.9.0` leaves the gate SILENT, while changing a number written in PROSE fires it. So this gate
+#: catches a drifting prose figure and does NOT catch a wrong command argument, which is the class an
+#: operator actually executes. A real improvement over no coverage, and not coverage of the commands.
+#:
+#: ⚠️ AND THE CHURN ARGUMENT BELOW CUTS BOTH WAYS, measured rather than assumed: this document's
+#: unmarked multiset went 79 → 92 → 95 → 99 across four commits dated 2026-08-07, so each of those
+#: would have forced a regeneration. It is being armed anyway because that churn was one session
+#: rewriting it under audit, not a structural property, and a reference document is expected to
+#: settle. If it does not settle, it belongs out of this tuple for the same reason the status doc is.
+#:
+#: ⚠️ `docs/ENTERPRISE_PROGRAM_STATUS.md` is deliberately NOT here, and the reason is mechanical
+#: rather than editorial. It is a rolling handoff that gains a large entry every session, so its
+#: unmarked-number multiset grows every session BY DESIGN rather than incidentally.
+#: `build_baseline()` regenerates EVERY entry of `CLAIMS_BASELINE.json` in one pass, so gating a
+#: document that forces a regeneration per session would silently re-freeze every document above it
+#: — turning the ratchet into the rubber stamp `scripts/generate_claims_baseline.py` warns about in
+#: its own docstring. Gating the churning document would WEAKEN the gate on the stable ones. Revisit
+#: only if the baseline is split per document, or if the status doc's historical entries are frozen
+#: out of scanning.
+#:
+#: 🔑 REGENERATE THE BASELINE AGAINST THE MERGE RESULT, NOT YOUR BRANCH TIP. CI's `pull_request`
+#: event builds the merge of your branch into `master`, so the gate scans content your checkout may
+#: never have had. This is not hypothetical: arming this tuple went green locally and red in CI on
+#: a single occurrence (`'0': 5 -> 6`) contributed by a concurrent commit to the same document that
+#: had landed on master in the meantime. The failure message reports the CURRENT count, not the
+#: delta, which makes a one-number drift read like a six-number one. Merge `origin/master` first,
+#: then regenerate, then verify the only rows that moved are the ones you expect. A gated document
+#: that other pull requests also edit will need this on every rebase.
 GATED_DOCS: tuple[str, ...] = (
     "results/RESULTS.md",
     "results/FINDINGS.md",
     "README.md",
     "benchmarks/SUITE-DESIGN.md",
+    "docs/ENTERPRISE_RETRIEVAL.md",
 )
 
 #: Spans masked before numbers are extracted.
