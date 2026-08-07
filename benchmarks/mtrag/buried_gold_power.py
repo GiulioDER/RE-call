@@ -28,7 +28,7 @@ def _binom_two_sided_p(b: int, n_discordant: int) -> float:
     if n_discordant == 0:
         return 1.0
     k = min(b, n_discordant - b)
-    tail = sum(comb(n_discordant, i) for i in range(k + 1)) / (2 ** n_discordant)
+    tail: float = sum(comb(n_discordant, i) for i in range(k + 1)) / (2 ** n_discordant)
     return min(1.0, 2.0 * tail)
 
 
