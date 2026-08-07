@@ -84,15 +84,24 @@ def _providers() -> list[str]:
         return []
 
 
-def emit(texts_path: Path, out: Path, model: str) -> dict[str, object]:
-    """Embed `texts` with whatever runtime is installed here, and record what that runtime was."""
+def emit(
+    texts_path: Path, out: Path, model: str, providers: list[str] | None = None
+) -> dict[str, object]:
+    """Embed `texts` here, and record the providers the SESSION actually resolved.
+
+    `providers` is a request, not a guarantee — which is the entire reason this records the
+    session's answer rather than the request. Measured on an RTX 5090 host: asking for
+    `CUDAExecutionProvider` against a CUDA-13 wheel on a CUDA-12.8 box fell back to CPU with a
+    `RuntimeWarning` and nothing else. A run that recorded the request would have claimed a GPU
+    build that never happened.
+    """
     from recall.embeddings import FastEmbedEmbedder
 
     texts: list[str] = json.loads(Path(texts_path).read_text(encoding="utf-8"))
     if not texts:
         raise SystemExit(f"{texts_path} holds no texts")
 
-    embedder = FastEmbedEmbedder(model_name=model)
+    embedder = FastEmbedEmbedder(model_name=model, providers=providers)
     vectors = np.asarray(embedder.embed(texts), dtype=np.float64)
     if vectors.shape[0] != len(texts):
         raise SystemExit(f"embedder returned {vectors.shape[0]} vectors for {len(texts)} texts")
@@ -101,7 +110,11 @@ def emit(texts_path: Path, out: Path, model: str) -> dict[str, object]:
         "model": model,
         "dim": int(vectors.shape[1]),
         "n": int(vectors.shape[0]),
-        "providers": _providers(),
+        # The SESSION's providers. `_providers()` (module-level availability) is kept only as a
+        # diagnostic: it is identical on a box whether or not the session ever touched the GPU.
+        "providers": list(getattr(embedder, "session_providers", [])) or _providers(),
+        "available_providers": _providers(),
+        "providers_requested": providers,
         "platform": platform.platform(),
         "python": platform.python_version(),
     }
@@ -238,6 +251,9 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--texts", type=Path, required=True, help="JSON array of strings")
     e.add_argument("--out", type=Path, required=True)
     e.add_argument("--model", default="BAAI/bge-small-en-v1.5")
+    e.add_argument("--provider", action="append", dest="providers",
+                   help="repeatable, e.g. --provider CUDAExecutionProvider. A REQUEST; the "
+                        "session's actual answer is what gets recorded")
 
     c = sub.add_parser("compare", help="compare two emissions and report a parity verdict")
     c.add_argument("--reference", type=Path, required=True)
@@ -254,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = p.parse_args(argv)
     if args.cmd == "emit":
-        emit(args.texts, args.out, args.model)
+        emit(args.texts, args.out, args.model, args.providers)
         return 0
 
     report = compare(
