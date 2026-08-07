@@ -366,6 +366,81 @@ def resolve_thread_budget(
     return min(want, ceiling)
 
 
+#: What `_session_providers` returns when fastembed's internals do not expose a session. It is a
+#: THIRD state, distinct from both a known CPU run and a known GPU run, and it must never be
+#: allowed to read as either.
+PROVIDERS_UNKNOWN = "<session not reachable>"
+
+
+def _provider_dependencies(providers: Iterable[str]) -> tuple[tuple[str, str], ...]:
+    """The execution provider as fingerprint key material, plus whether it is actually KNOWN.
+
+    Two entries, not one. The provider list alone cannot distinguish "this ran on CPU" from "I
+    could not tell what this ran on", and collapsing those two into one key is the same
+    negative-guard mistake as reporting an unrecorded session as a match: `_session_providers` is
+    documented as observational and must never fail a run, so its failure sentinel reaches here
+    on perfectly healthy deployments. Recording the SOURCE alongside the value keeps an
+    introspection failure legible in the profile instead of silently minting a new identity that
+    looks like a real provider change.
+    """
+    known = [p for p in providers]
+    unknown = not known or known == [PROVIDERS_UNKNOWN]
+    return (
+        ("onnx-providers-source", "unavailable" if unknown else "session"),
+        ("onnx-providers", "unavailable" if unknown else ",".join(known)),
+    )
+
+
+def _with_provider_dependency(
+    identity: EmbeddingProfile, providers: Iterable[str]
+) -> EmbeddingProfile:
+    """Attach the provider entries to a REGISTERED profile without mutating the registry's copy.
+
+    `EmbeddingProfile` is frozen, so this replaces rather than edits. Idempotent: a profile that
+    already carries the entries is returned unchanged, so re-wrapping cannot double them and
+    change the fingerprint a second time.
+    """
+    from dataclasses import replace
+
+    if any(k == "onnx-providers" for k, _ in identity.dependencies):
+        return identity
+    return replace(
+        identity, dependencies=identity.dependencies + _provider_dependencies(providers)
+    )
+
+
+def _session_providers(model: object) -> list[str]:
+    """The execution providers of fastembed's live ONNX session, or a marker if unreachable.
+
+    fastembed does not expose the session on a stable public attribute, so this walks the couple
+    of places it has lived. It returns a marker rather than raising: failing to introspect is not
+    a reason to fail an embedding run, but it must not be reported as a known-CPU result either.
+    """
+    # Wrapped whole. This runs on the CONSTRUCTION path of every FastEmbedEmbedder, including
+    # registered enterprise profiles, and it is purely observational — so no change in fastembed's
+    # or onnxruntime's internals may ever be the reason a deployment cannot build its embedder.
+    # The docstring promised that; nothing enforced it.
+    try:
+        for outer in ("model", "_model"):
+            inner = getattr(model, outer, None)
+            if inner is None:
+                continue
+            for attr in ("model", "session", "_session"):
+                getter = getattr(getattr(inner, attr, None), "get_providers", None)
+                if callable(getter):
+                    return [str(p) for p in getter()]
+            inner_getter = getattr(inner, "get_providers", None)
+            if callable(inner_getter):
+                return [str(p) for p in inner_getter()]
+    except Exception:  # pragma: no cover - defensive; fastembed internals are not a contract
+        return [PROVIDERS_UNKNOWN]
+    # The COMMON path — fastembed simply exposing no session — must return the constant too. It
+    # was left as a bare literal, equal by value today, so `_provider_dependencies` still matched
+    # it. Change the constant's text and this path would have started recording the sentinel as a
+    # provider NAME: exactly the collapse the constant exists to prevent.
+    return [PROVIDERS_UNKNOWN]
+
+
 class FastEmbedEmbedder:
     """Real local embeddings (no API key). Requires `pip install recall[fastembed]`."""
 
@@ -380,6 +455,7 @@ class FastEmbedEmbedder:
         require_local: bool = False,
         context_version: str = "raw-v1",
         identity: EmbeddingProfile | None = None,
+        providers: list[str] | None = None,
     ) -> None:
         """Load a local fastembed model, optionally under a supplied immutable identity.
 
@@ -388,6 +464,13 @@ class FastEmbedEmbedder:
         (``query_mode`` / ``passage_mode``) are the ones actually called. Without it the class
         keeps its previous behaviour and derives a profile from ``asymmetric``, the legacy
         default path, where no artifact is pinned and nothing enterprise depends on the result.
+
+        ``providers`` is an ONNX Runtime execution-provider REQUEST forwarded to fastembed. It is
+        not a guarantee: asking for ``CUDAExecutionProvider`` against a wheel built for a
+        different CUDA major falls back to CPU with only a ``RuntimeWarning``. Read
+        ``self.session_providers`` for what the session actually resolved — never
+        ``onnxruntime.get_available_providers()``, which reports what the wheel was compiled with
+        and stays true while the session sits on CPU.
         """
         # Artifact first, backend second. A deployment whose weights are missing or tampered
         # with gets that error whether or not the optional extra happens to be installed, and
@@ -417,9 +500,20 @@ class FastEmbedEmbedder:
             kwargs["cache_dir"] = local_cache
         if require_local:
             kwargs["local_files_only"] = True
+        if providers is not None:
+            kwargs["providers"] = list(providers)
         self._model = (
             TextEmbedding(**kwargs)
         )
+        #: The providers the ONNX session ACTUALLY resolved, read back from the live session.
+        #:
+        #: NOT `onnxruntime.get_available_providers()`, which reports what the wheel was compiled
+        #: with and stays true even when the session ran on CPU. Measured on an RTX 5090 host:
+        #: requesting `CUDAExecutionProvider` against a CUDA-13 wheel on a CUDA-12.8 box falls
+        #: back to CPU with only a `RuntimeWarning`, so anything trusting availability would
+        #: record a GPU run that never happened. Exposed because an index built on one provider
+        #: and served from another is a provenance fact a benchmark has to be able to state.
+        self.session_providers = _session_providers(self._model)
         self._name = identity.model_name if identity else model_name
         self._query_mode = identity.query_mode if identity else (
             "query_embed" if asymmetric else "embed"
@@ -441,17 +535,46 @@ class FastEmbedEmbedder:
                 f"the provisioned artifact embeds at {self._dim}; this artifact is not that "
                 f"profile"
             )
-        self._profile = identity or EmbeddingProfile(
-            profile_id=profile_id or (
-                "bge-small-asymmetric-v1" if asymmetric else "bge-small-symmetric-v1"
-            ),
-            model_name=model_name,
-            artifact_digest=artifact_sha256 or "legacy-unverified",
-            dimension=self._dim,
-            query_mode=self._query_mode,
-            passage_mode=self._passage_mode,
-            context_version=context_version,
-            dependencies=(("fastembed", _package_version("fastembed")),),
+        # Applied to BOTH branches. `identity or EmbeddingProfile(...)` short-circuits, so building
+        # the provider pair only inside the right-hand side left every REGISTERED profile carrying
+        # fastembed's version and nothing else. A fingerprint fix that skips the registered path
+        # is not a fix.
+        #
+        # ⚠️ SCOPE, stated precisely because an earlier version of this comment overstated it:
+        # what this reaches is the v1 profile-fingerprint binding (`calibration.load_for_profile`)
+        # and the embedding cache key (`recall/cache.py`). It does NOT reach the CERTIFIED v2
+        # binding, which stores `recall.lineage.EmbedderIdentity` — provider, model, dimension,
+        # revision, artifact_digest — and has no `dependencies` field at all. A CPU-fit certified
+        # calibration therefore still binds cleanly to a CUDA-served pipeline. Closing that needs
+        # the providers added to `EmbedderIdentity`, which is a separate change.
+        self._profile = (
+            _with_provider_dependency(identity, self.session_providers)
+            if identity
+            else EmbeddingProfile(
+                profile_id=profile_id or (
+                    "bge-small-asymmetric-v1" if asymmetric else "bge-small-symmetric-v1"
+                ),
+                model_name=model_name,
+                artifact_digest=artifact_sha256 or "legacy-unverified",
+                dimension=self._dim,
+                query_mode=self._query_mode,
+                passage_mode=self._passage_mode,
+                context_version=context_version,
+                dependencies=(
+                    ("fastembed", _package_version("fastembed")),
+                    # The ONNX execution provider is KEY MATERIAL, not metadata. This class's own
+                    # fingerprint docstring gives the reason — "ONNX runtime changes are free to
+                    # move the last bits of a vector and a cache cannot tell" — and a provider
+                    # swap is exactly such a change. Measured on an RTX 5090: CPU and CUDA
+                    # sessions over the same weights moved top-45 SET membership on 2 of 64
+                    # queries. Without this the two provenances share one cache key
+                    # (recall/cache.py) and one calibration binding (recall/calibration.py), so
+                    # CPU vectors would be served for a GPU-configured embedder. fastembed also
+                    # reaches CUDA on its own via `cuda=Device.AUTO` whenever onnxruntime-gpu is
+                    # importable, so this fires without anyone passing `providers=`.
+                    *_provider_dependencies(self.session_providers),
+                ),
+            )
         )
 
     def _encoder(self, mode: str) -> Callable[[list[str]], Iterable[Iterable[float]]]:

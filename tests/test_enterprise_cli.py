@@ -313,6 +313,138 @@ def test_parity_without_a_shadow_generation_says_so(cli) -> None:
     assert cli.run("parity", cli.tenant) != 0
 
 
+def test_parity_refuses_two_empty_generations_instead_of_passing_vacuously(cli, capsys) -> None:
+    """The misleading GREEN at the parity step of the cutover sequence.
+
+    Two empty generations cannot disagree, so every comparison `validate_generation_parity` makes
+    is vacuously satisfied and `GenerationParity.valid` is True. Before this guard the command
+    printed "parity: OK" and exited 0 over 0 active and 0 shadow chunks, which is exactly the
+    state the reference deployment was in -- and "parity: OK" is what an operator reads as
+    permission to run cutover.
+
+    Two limits on what this guard is, both of which an earlier version of this docstring asserted
+    away. It does NOT stand between an operator and a promoted empty index: `ControlPlane.cutover`
+    calls `_require_non_empty_shadow` before its own parity check, deliberately outside the
+    `--allow-divergent-corpus` branch, so an empty shadow was never promotable. And emptiness is
+    not the only vacuous green here: `source_raw_hashes()` coalesces an absent content hash to the
+    empty string, so two generations whose rows all lack one compare equal while certifying
+    nothing. That mode is gated in `benchmarks/check_generation_parity.py`, not here.
+
+    This asserts the REASON, not just the exit code: a non-zero that arrived because the stores
+    failed to open, or because RLS was not forced, would satisfy a bare `!= 0` while leaving the
+    vacuous-green hole open.
+    """
+    cli.run("set-route", cli.tenant, cli.active_id, "--shadow-generation", cli.shadow_id)
+
+    active = cli.store(cli.active_id, cli.active_table)
+    shadow = cli.store(cli.shadow_id, cli.shadow_table)
+    try:
+        assert active.count() == 0 and shadow.count() == 0, "fixture is not the empty state"
+        assert cli.run("parity", cli.tenant) == 1
+    finally:
+        active.close()
+        shadow.close()
+
+    captured = capsys.readouterr()
+    assert "vacuous" in captured.err, captured.err
+    assert "parity: OK" not in captured.out, "the vacuous green survived"
+
+
+def test_parity_reports_a_missing_shadow_as_missing_sources_not_as_vacuity(cli, capsys) -> None:
+    """The discriminating population, and the one the emptiness guard must NOT claim.
+
+    `_cmd_parity`'s emptiness refusal is scoped to BOTH generations being empty. A populated
+    active against an empty shadow is a real divergence and must keep failing on missing sources,
+    with that reason, so an operator is told what is actually wrong.
+
+    Without this test the scoping is asserted only in a comment: every other parity test has
+    either both sides populated or both sides empty, so mutating the guard's `and` to `or`
+    leaves the whole suite green while turning a specific, actionable failure into
+    "the comparison is vacuous". Verified by running that mutation — it survives without this
+    test and is caught by it.
+    """
+    embedder = HashingEmbedder(dim=DIM)
+    chunks = [Chunk(id="a#0", source="/corpus/a.md", text="alpha", metadata={})]
+    vectors = [embedder.embed([c.text])[0] for c in chunks]
+    cli.run("set-route", cli.tenant, cli.active_id, "--shadow-generation", cli.shadow_id)
+
+    active = cli.store(cli.active_id, cli.active_table)
+    shadow = cli.store(cli.shadow_id, cli.shadow_table)
+    try:
+        active.upsert(chunks, vectors)
+        assert active.count() > 0 and shadow.count() == 0, "fixture is not the asymmetric state"
+        assert cli.run("parity", cli.tenant) == 1
+    finally:
+        active.close()
+        shadow.close()
+
+    captured = capsys.readouterr()
+    assert "missing sources" in captured.err, captured.err
+    assert "vacuous" not in captured.err, "a real divergence was restated as a vacuity error"
+
+
+def test_parity_still_reports_catalog_failures_when_both_generations_are_empty(
+    cli, capsys, monkeypatch
+) -> None:
+    """`indexes_valid` and `rls_enabled` are catalog facts, so they can be false on an EMPTY pair.
+
+    An earlier version of the emptiness refusal returned before the failure-printing loop, which
+    made this command silent about a shadow whose row-level security was not forced — and
+    `readiness` evaluates `route.active` only, so this is the sole step that inspects the
+    shadow's RLS at all. The refusal must not suppress the reason.
+
+    The parity result is substituted rather than provoked: forcing a real catalog into that state
+    would mean dropping RLS on a live table mid-test, and what is under test here is the CLI's
+    reporting order, not the validator's derivation.
+    """
+    import recall.enterprise_cli as ecli
+    from recall.migration import GenerationParity
+
+    monkeypatch.setattr(
+        ecli,
+        "validate_generation_parity",
+        lambda active, shadow: GenerationParity(
+            valid=False,
+            active_chunks=0,
+            shadow_chunks=0,
+            missing_sources=(),
+            extra_sources=(),
+            hash_mismatches=(),
+            failures=("row level security is not forced on both generations",),
+        ),
+    )
+    cli.run("set-route", cli.tenant, cli.active_id, "--shadow-generation", cli.shadow_id)
+    assert cli.run("parity", cli.tenant) == 1
+
+    captured = capsys.readouterr()
+    assert "row level security is not forced" in captured.err, captured.err
+    assert "vacuous" in captured.err, "the emptiness refusal itself must still fire"
+
+
+def test_parity_still_passes_when_both_generations_hold_the_same_chunks(cli) -> None:
+    """The negative control for the guard above.
+
+    A guard that refuses an empty pair could be satisfied by refusing everything. This is the
+    same populated-and-matching case `test_parity_passes_on_matching_generations_and_fails_on_a_gap`
+    covers, asserted again here so that the emptiness check cannot be broadened into a blanket
+    refusal without a test going red.
+    """
+    embedder = HashingEmbedder(dim=DIM)
+    chunks = [Chunk(id="a#0", source="/corpus/a.md", text="alpha", metadata={})]
+    vectors = [embedder.embed([c.text])[0] for c in chunks]
+    cli.run("set-route", cli.tenant, cli.active_id, "--shadow-generation", cli.shadow_id)
+
+    active = cli.store(cli.active_id, cli.active_table)
+    shadow = cli.store(cli.shadow_id, cli.shadow_table)
+    try:
+        active.upsert(chunks, vectors)
+        shadow.upsert(chunks, vectors)
+        assert cli.run("parity", cli.tenant) == 0
+    finally:
+        active.close()
+        shadow.close()
+
+
 # --------------------------------------------------------------------------------------------
 # readiness
 # --------------------------------------------------------------------------------------------

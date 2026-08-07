@@ -125,7 +125,9 @@ llamaindex = ["llama-index-core>=0.11"]
 # previously declared only as a MYPY override — i.e. the need was recorded for the type
 # checker and not for the installer, so provisioning a box with `.[bench]` raised
 # ModuleNotFoundError at the first parquet read rather than at install time.
-bench = ["mem0ai==2.0.13", "openai>=1.0", "pyarrow>=15"]
+# numpy is imported at MODULE level by benchmarks/beam/embed_parity.py, so a box
+# provisioned with only this extra fails at first run rather than at install time.
+bench = ["mem0ai==2.0.13", "openai>=1.0", "pyarrow>=15", "numpy>=1.26"]
 # pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
 # failing it — a hung CI job reads as "still running", not as a regression.
 #
@@ -252,6 +254,9 @@ module = [
     # includes `benchmarks`, and the typecheck job installs `.[dev]` only, so without this the job
     # fails on a dependency it deliberately does not install.
     "pyarrow.*",
+    # Imported lazily inside embed_parity._providers(); the module must type-check
+    # without the extra installed, and CI installs only .[dev].
+    "onnxruntime.*",
     # S3 extra. Imported lazily by recall.manifest and absent from the default/dev install.
     "boto3.*",
     # mem-bench: a SEPARATE repo, deliberately NOT a dependency of this one. Its `membench` package

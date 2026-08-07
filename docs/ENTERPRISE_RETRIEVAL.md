@@ -88,7 +88,7 @@ until a readiness check.
 | 5 | `recall-enterprise mark-ready` | `RECALL_MIGRATION_DSN` | the generation id is unknown. ⚠️ **It does NOT check the counts** |
 | 6 | `recall-enterprise set-route --shadow-generation` | `RECALL_MIGRATION_DSN` | the generation is not servable |
 | 7 | `recall-enterprise replay` | `RECALL_SERVING_DSN` (⚠️ **write path**) | anything is still pending afterwards |
-| 8 | `recall-enterprise parity` | `RECALL_SERVING_DSN` | sources, hashes or counts disagree; an index is invalid; RLS is not forced |
+| 8 | `recall-enterprise parity` | `RECALL_SERVING_DSN` | sources, hashes or counts disagree; an index is invalid; RLS is not forced; **both generations are empty** |
 | 9 | `recall-enterprise readiness` | `RECALL_SERVING_DSN` | any startup check fails. ⚠️ It evaluates the **ACTIVE** generation, not the shadow |
 | 10 | `recall-enterprise cutover` | `RECALL_MIGRATION_DSN` | an event is pending, or the shadow is not ready |
 | 11 | `recall-enterprise retire` | `RECALL_MIGRATION_DSN` | the named tenant still routes at that generation, in **either** slot |
@@ -134,6 +134,15 @@ nothing in this repository derives it.
   the default table name `chunks`, leaving every generation table ungranted while the step reads as
   done.
 
+  🛑 **This bullet is filed under "Preconditions" and CANNOT be completed here.** The generator
+  emits grants for tables that do not exist yet: the chunk table is created by `schema apply` and
+  each generation table by `create-generation`. Executed end to end on a clean database, the order
+  that works is **`migrate` → `schema apply` → grants for the chunk table → `create-generation` →
+  grants again for each generation table → index**. Skipping that second grant pass is not a
+  deferred chore, it is a hard stop at the indexing step: building the shadow dies with
+  `InsufficientPrivilege: permission denied for table <generation table>`. Read this bullet now,
+  run it twice later.
+
   Run it **once per chunk table, including every generation table you create at step 3**, and apply
   the output **verbatim** as the object owner. With `--enterprise` it emits six statements covering
   fourteen objects plus one sequence; without it, three. ⚠️ **Do not check your work against a summary, including this one** (that is
@@ -172,6 +181,14 @@ RECALL_MIGRATION_DSN="$RECALL_MIGRATION_DSN" recall-enterprise migrate
 ```
 
 Verify: `recall-enterprise status` prints `control plane ledger is current`.
+
+🛑 **On a FRESH deployment that verify line fails, and it is not a symptom of a failed migration.**
+`status` takes the SERVING credential, and the serving role has no grants on the control-plane
+tables until you apply the generated set. Executed on a clean database: `migrate` exits zero, and
+`status` immediately after raises `InsufficientPrivilege: permission denied for table
+recall_index_generations`. Apply the generated grants first (see the ordering note in the
+preconditions), then this line passes. An operator who reads that refusal as a broken migration
+will go looking in the wrong place, and this document used to send them there.
 
 ### 2. Apply the chunk-table migrations, per table
 
@@ -289,6 +306,12 @@ against `chunks_g2026_08`.
 recall-enterprise mark-ready g2026_08 --chunks 1000000 --sources 120000
 ```
 
+🛑 **And `status` DISPLAYS that unchecked assertion, which is where it will mislead you.** The
+`chunks=` column in `recall-enterprise status` is the declared value from the registry, not a count
+of the table. Executed: a generation holding five rows, marked ready with `--chunks 0`, prints
+`chunks=0` in `status` while `parity` reports five. If you are checking whether a generation is
+populated, read `parity`'s counts, never `status`'s.
+
 ⚠️ **`--chunks` and `--sources` are an operator ASSERTION and nothing ever checks them.**
 `mark-ready` stores the two integers verbatim; `parity` **never compares them** (it reads the
 registry to resolve which physical table each generation names, then compares the two tables
@@ -312,20 +335,60 @@ recall-enterprise parity acme
 recall-enterprise readiness acme
 ```
 
-🛑 **STOP if `shadow chunks` is 0, or if it differs from the `--chunks` you measured at step 5.**
-`parity` on two empty generations exits 0 and prints `parity: OK`: two empty generations cannot
-disagree, so that is a vacuous pass and not a comparison. This is the one place where the rule "each
-step is a gate, do not proceed past a red one" is not enough, because the failure mode here is a
-**green**. Do not run cutover on it.
+🛑 **STOP if `shadow chunks` differs from the `--chunks` you measured at step 5.**
+
+✅ **The both-empty case is now refused by the command itself.** When neither generation holds a
+chunk for the tenant, `parity` exits non-zero with a refusal naming the tenant and both generation
+ids, which says `so the comparison is vacuous and certifies nothing` and then tells you what to do:
+while a shadow route exists, indexing writes both generations, so index the corpus and compare
+again. It also prints any other parity failure **before** that refusal, so an empty pair whose
+row-level security is not forced still says so — for an empty pair this is the only place that
+failure surfaces, since `readiness` evaluates the active generation and `cutover` refuses on
+emptiness before reaching its own parity check. It used to exit zero and print `parity: OK` — two empty generations cannot
+disagree, so every comparison it makes was vacuously satisfied. That guard lived only in this
+paragraph, which is the weakest place to keep one: prose, in the document an operator is reading
+for permission to proceed. There is **no override flag**, and that is deliberate — see
+`--allow-divergent-corpus` below for why a refusal that advertises its own escape hatch is worse
+than no refusal.
+
+⚠️ **What that closes is the misleading green at THIS step, not a path to a promoted empty index.**
+`cutover` calls `_require_non_empty_shadow` before its parity check, deliberately outside it so
+`--allow-divergent-corpus` cannot skip it, and that refusal has always been there. Do not read the
+parity refusal as the thing standing between you and an empty promotion.
+
+⚠️ **A shadow partially filled relative to the ACTIVE generation IS caught** — parity fails on
+`shadow generation is missing sources`, on `shadow generation contains extra sources`, or on
+`chunk counts differ between generations`. What no guard catches is a pair that agrees with each
+other and is short of the **corpus on disk**, because parity compares the two generations to each
+other and to nothing else. That is why the paragraph below tells you to compare the shadow's source
+set against the corpus rather than only against the active generation, and why you should read the
+chunk counts this command prints against the counts you measured at `mark-ready`.
+
+⚠️ **Emptiness is not the only vacuous green.** `source_raw_hashes()` reads
+`coalesce(metadata->>'content_hash', '')`, so two generations whose rows all lack a content hash
+compare an empty string against an empty string and agree perfectly while certifying nothing.
+`parity` does **not** detect that; `benchmarks/check_generation_parity.py` gates it as a separate
+blocking control.
 
 `cutover`'s own emptiness check only catches a **totally** empty shadow, so a partially filled one
-passes both. The residual gap that produces one is on the delete path, not the write path:
-`_prune_vanished` keys its candidate set on the active generation, so a source the shadow holds and
-the active does not survives the prune and rides the cutover into the promoted generation. Compare
-the shadow's source set against the corpus on disk, not only against the active generation.
+passes *that* check. It does not pass `parity`, which compares the two generations and fails on
+missing sources, extra sources or differing chunk counts — and `cutover` runs that comparison too
+unless `--allow-divergent-corpus` is passed. The gap on the delete path is therefore a gap in what
+the comparison can *see*, not a hole it waves through: `_prune_vanished` keys its candidate set on
+the active generation, so a source the shadow holds and the active does not survives the prune, and
+it is reported here as `extra sources` — which an operator under time pressure can mistake for a
+deliberate corpus change and clear with the very flag that then skips the comparison. Compare the
+shadow's source set against the corpus on disk, not only against the active generation.
 
 Run `readiness` with `RECALL_SERVING_DSN` set. Its row level security verdict is about the role it
-connects as, and it prints that role, so the verdict names its own subject. On the migration role a
+connects as, and it prints that role, so the verdict names its own subject.
+
+⚠️ **`readiness` is the one step that requires the MODEL ARTIFACTS to be present.** It builds the
+route's declared embedding profile in order to verify model identity, so on a host without the
+provisioned tree it raises from the embedder rather than reporting a readiness verdict. That is
+consistent with the preconditions, which require the artifacts anyway; it is called out here
+because it is the step where their absence first stops you, and the traceback names the embedder
+rather than the missing precondition. On the migration role a
 green verdict would certify a credential that never serves a request.
 
 ⚠️ **`readiness` names its own ROLE subject and not its own GENERATION subject.** It opens
@@ -461,7 +524,7 @@ recall-enterprise replay acme
 recall-enterprise parity acme
 ```
 
-`replay` opens only the generations the pending events name, resolving each physical table from `recall_index_generations`, and exits non-zero if anything is still pending afterwards. `parity` exits non-zero when the generations disagree on sources, raw content hashes or chunk counts, and also when either generation has an invalid required index or does not have row level security forced. `status` reports generations, the tenant's route and the outbox depth; it never prints a pending event's payload, which holds corpus text and vectors. It also lists any registry row whose `physical_table` the identifier allowlist rejects, rather than failing on it: such a row cannot serve, and the command an operator uses to find it must not be the command that dies on it. Run `recall-enterprise status` before upgrading.
+`replay` opens only the generations the pending events name, resolving each physical table from `recall_index_generations`, and exits non-zero if anything is still pending afterwards. `parity` exits non-zero when the generations disagree on sources, raw content hashes or chunk counts, when either generation has an invalid required index or does not have row level security forced, and when both generations are empty (two empty generations cannot disagree, so the comparison would be vacuous). The step table above is the single authoritative list. `status` reports generations, the tenant's route and the outbox depth; it never prints a pending event's payload, which holds corpus text and vectors. It also lists any registry row whose `physical_table` the identifier allowlist rejects, rather than failing on it: such a row cannot serve, and the command an operator uses to find it must not be the command that dies on it. Run `recall-enterprise status` before upgrading.
 
 `readiness` runs the startup checks for one tenant without starting a server, and exits non-zero when any of them fails. Run it with `RECALL_SERVING_DSN` set: its row level security verdict is about the role it connects as, and it prints that role so the result names its own subject.
 
