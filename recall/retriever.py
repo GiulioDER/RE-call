@@ -439,7 +439,14 @@ class HybridRetriever:
         # lookup, so the extra round trip is small, and hits below the cut are never reported.
         started = time.perf_counter()
         fresh = self._store.cosines_for([h.chunk.id for h in hits], primary.qvec)
-        hits = [_rescored(h, fresh.get(h.chunk.id, h.score)) for h in hits]
+        # `cosines_for` OMITS an id rather than reporting 0.0 when the chunk no longer exists, so
+        # that the caller can tell the difference from a genuinely poor match. A hit missing here
+        # is dropped, not kept at its pre-rescore score: that pre-rescore score can still be a
+        # cosine against the HISTORY (the dense leg has no `report_vec` override, unlike the
+        # sparse legs), so silently keeping it would reopen the exact mixed-basis hazard this
+        # rescore step exists to close, for the one hit that most needs it: a chunk that vanished
+        # between retrieval and rescore.
+        hits = [_rescored(h, fresh[h.chunk.id]) for h in hits if h.chunk.id in fresh]
         rescore_ms = (time.perf_counter() - started) * 1000.0
 
         timings = dict(primary.timings)
