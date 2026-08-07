@@ -191,3 +191,35 @@ def test_score_stream_refuses_an_unknown_query_id():
                 pairs={"d1": {"ghost"}},
             )
         )
+
+
+def test_score_stream_scores_an_unscoreable_document_last_instead_of_aborting():
+    """MUST match `LateInteractionReranker.rerank`. If this path raised, the validate gate would
+    compare a live ranking that places the document last against an offloaded run that has no
+    score for it at all, and `rerank_order` refuses a candidate with no score."""
+    table = {"qa": [[1.0, 0.0]], "empty": [], "d1": [[1.0, 0.0]]}
+    rows = list(
+        score_stream(
+            _FakeEncoder(table),
+            queries={"qa": "qa"},
+            docs=[("empty", "empty"), ("d1", "d1")],
+            pairs={"empty": {"qa"}, "d1": {"qa"}},
+        )
+    )
+    by_doc = {r["doc_id"]: r["score"] for r in rows}
+    assert by_doc["empty"] == float("-inf")
+    assert by_doc["d1"] == pytest.approx(1.0)
+
+
+def test_score_stream_refuses_a_query_with_no_tokens():
+    """Deliberately NOT salvaged, matching `rerank`. With no query tokens nothing can be ranked."""
+    table = {"qa": [], "d1": [[1.0, 0.0]]}
+    with pytest.raises(ValueError, match="has no tokens"):
+        list(
+            score_stream(
+                _FakeEncoder(table),
+                queries={"qa": "qa"},
+                docs=[("d1", "d1")],
+                pairs={"d1": {"qa"}},
+            )
+        )
