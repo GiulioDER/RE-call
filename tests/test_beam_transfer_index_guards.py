@@ -336,3 +336,56 @@ def test_the_truncated_breakdown_hands_over_a_query_scoped_like_the_refusal(tabl
     assert "t-elsewhere" not in message, "a tenant not being restored must not appear anywhere"
     # The total counts every group, not just the 20 rendered.
     assert "holds 25 learned-sparse rows" in message
+
+
+@pg
+def test_the_handed_over_query_survives_a_tenant_id_containing_a_quote(table, tmp_path) -> None:
+    """The remedy must be RUNNABLE and no wider than the refusal, for any legal tenant id.
+
+    The sidecar validator accepts any non-empty string, so a tenant may legitimately contain an
+    apostrophe. Hand-wrapping it in quotes produced either a query that does not parse or — worse
+    — one whose predicate collapsed and returned tenants the refusal never named, printed directly
+    under the promise that it is "scoped exactly as this refusal is".
+
+    This executes the printed SQL and compares its tenants against the refusal's scope, rather
+    than asserting on the text: a message that merely LOOKS right is what shipped last time.
+    """
+    from recall.store import SPARSE_TABLE
+
+    odd = "t-o'brien"
+    src = tmp_path / "q.copy.gz"
+    src.write_bytes(b"")
+    with psycopg.connect(DSN) as _c:
+        real_columns = ti.transferable_columns(_c, TABLE)
+    meta = {
+        "source": {"rows": 1, "digest": "d", "per_tenant": {odd: {"rows": 1, "digest": "d"}}},
+        "columns": real_columns, "tenants": [odd], "files": {odd: src.name},
+        "path": str(src), "bytes": 0,
+    }
+    src.with_suffix(src.suffix + ".meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    # Past the cap, so the operator query is emitted, plus a tenant that must stay out of it.
+    with psycopg.connect(DSN, autocommit=True) as conn:
+        for i in range(22):
+            conn.execute(
+                f"INSERT INTO {SPARSE_TABLE} (tenant_id, chunk_table, profile_id, id, vec, nnz) "
+                f"VALUES (%s, %s, %s, %s, '{{1:1}}/30522', 1)",
+                (odd, TABLE, f"profile-{i:02d}", f"id-{i}"),
+            )
+        conn.execute(
+            f"INSERT INTO {SPARSE_TABLE} (tenant_id, chunk_table, profile_id, id, vec, nnz) "
+            f"VALUES (%s, %s, %s, %s, '{{1:1}}/30522', 1)",
+            ("z-innocent", TABLE, "profile-00", "id-z"),
+        )
+
+    with pytest.raises(SystemExit) as exc:
+        ti.restore(DSN, TABLE, src)
+    message = str(exc.value)
+
+    printed = message.split("scoped exactly as this refusal is: ", 1)[1]
+    with psycopg.connect(DSN) as conn:
+        returned = {r[0] for r in conn.execute(printed).fetchall()}
+
+    assert returned == {odd}, (
+        f"the printed remedy must return exactly the restored tenant; it returned {returned}"
+    )
