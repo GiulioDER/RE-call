@@ -67,17 +67,27 @@ def test_indexing_with_a_sparse_encoder_fills_the_sidecar(make_store, tmp_path) 
 def test_attaching_a_sparse_encoder_to_an_indexed_corpus_fills_the_sidecar(
     make_store, tmp_path
 ) -> None:
-    """The exact sequence the shadow dual-write got wrong.
+    """The exact sequence the shadow dual-write got wrong, pinned in both directions.
 
     Index the corpus with no encoder, then attach one and re-index. Every dense fingerprint still
     matches, so every file is a candidate for `continue`, and a sparse write placed past that
     `continue` would leave the sidecar empty while the run reported success with a skipped count.
+
+    A third `index_path` call, once the corpus is fully covered, pins the other direction: a
+    covered corpus must actually be SKIPPED. Without this, a silent regression in the sparse
+    membership check (`str(f) in known_sparse` no longer matching) would show up only as every
+    run re-embedding the whole corpus through the active embedder, a cost with no failing test
+    to catch it.
     """
     store = make_store(64)
     root = _corpus(tmp_path)
     Indexer(store, StubEmbedder()).index_path(root)
     assert store.sparse_row_count(PROFILE_ID) == 0
 
-    Indexer(store, StubEmbedder(), sparse_encoder=KeywordSparseEncoder(VOCAB)).index_path(root)
-
+    encoder = KeywordSparseEncoder(VOCAB)
+    Indexer(store, StubEmbedder(), sparse_encoder=encoder).index_path(root)
     assert store.sparse_row_count(PROFILE_ID) == store.count()
+
+    stats = Indexer(store, StubEmbedder(), sparse_encoder=encoder).index_path(root)
+    assert stats.skipped == 2
+    assert stats.chunks == 0
