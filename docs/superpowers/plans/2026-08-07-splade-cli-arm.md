@@ -15,7 +15,19 @@
 - **Worktree:** `C:/Users/gde00/Documents/recall-spladecli`, branch `feat/splade-cli-arm`, based on `origin/master` `4983f44`. Do not work in `/Documents/recall`, `/Documents/recall-splade`, or any `/opt/recall-*` tree on VPS2: those belong to other lanes.
 - **Test interpreter:** `.venv/Scripts/python.exe`, the worktree's **own** venv, invoked as `python -m pytest` **from the worktree root**. Created by Task 0. Deliberately not `/Documents/recall/.venv`: that one is shared with other lanes, and anything installed into it changes their runs too.
 - **Local GPU: decided, do not re-open.** The box has a GTX 1070 Ti (Pascal, `sm_61`, 8 GB), and PyTorch dropped Pascal kernels from its CUDA wheels around 2.8 while this project is on 2.13. Rather than spend roughly 3 GB of download to find out, the decision on 2026-08-07 was to **stay on CPU locally** and ship `--sparse-device` with its checks intact (Task 8b). So `torch` here stays a `+cpu` build, `--sparse-device cuda` refuses on this box by design, and that refusal is a fixture of the local environment rather than a fault to be fixed. VPS2 has no GPU either way, so no measured artifact is affected.
-- **Test database:** `RECALL_TEST_DSN`, defaulting to the local dev DSN on `localhost:5432`. Tests marked `@requires_db` skip when it is unreachable. That container is shared with other sessions; every test here uses the `make_store` fixture, which creates and drops a uuid-named table.
+- **Test database:** this worktree has its own container, `recall-spladecli-db`, on **port 5443**, isolated from the other lanes for the same reason the venv is. **Every** command that runs tests must export it first:
+
+  ```bash
+  export RECALL_TEST_DSN="postgresql://recall:recall@localhost:5443/recall"
+  ```
+
+  Start it if `docker ps` does not list it:
+
+  ```bash
+  docker start recall-spladecli-db || docker run -d --name recall-spladecli-db -e POSTGRES_USER=recall -e POSTGRES_PASSWORD=recall -e POSTGRES_DB=recall -p 5443:5432 pgvector/pgvector:pg16
+  ```
+
+  ⚠️ **A skipped test proves nothing, and `@requires_db` skips SILENTLY when the DSN is unreachable.** Task 1 was first reported DONE on a run where every database test skipped because Docker Desktop had stopped, and the report's GREEN evidence was a hand-run mock rather than the tests. Before believing any result here, confirm the count: `3 passed` and `3 skipped` are not the same answer. Every test in this plan uses the `make_store` fixture, which creates and drops a uuid-named table.
 - **`torch` and `transformers` are imported inside functions, never at module scope** in `recall/sparse.py`, so a lexical-only install never needs the `sparse` extra. Tests use a hand-written deterministic encoder, not a checkpoint: no 500 MB download, no network.
 - **`SPARSE_TABLE = "recall_sparse_v1"`**, `SPARSE_DIM = 30522`, `SPARSE_MAX_NONZERO = 1000`, all in `recall/store.py`.
 - **No dash as punctuation** in any prose written to this repository by this plan (comments, docstrings, markdown). Hyphens inside identifiers and inside verbatim quotations are fine.
