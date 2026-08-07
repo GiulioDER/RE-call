@@ -62,10 +62,13 @@ Three regimes this refuses rather than scores, each found by audit after shippin
   evidence of a different runtime.
 
 ⚠️ The noise table that used to sit here was measured against the PRE-FIX code and has been
-removed rather than left to describe behaviour that no longer exists. Current calibration, on
-uniform random vectors at n=200/queries=64/k=45: noise <= 1e-7 passes, >= 1e-5 fails on set
-disagreement. The stable sort made the set statistic MORE sensitive, not less, because tie-flip
-noise no longer masks real movement.
+removed rather than left to describe behaviour that no longer exists. It is NOT replaced with a
+flat threshold, because the replacement measurement is seed-dependent: on uniform random vectors
+at n=200/queries=64/k=45, noise of 1e-5 fails on only 2 of 12 seeds at dim=384 and 0 of 12 at
+dim=16, while ~1e-4 is the first level that fails reliably. Stating "1e-5 fails" as a property
+would be a seed-dependent result dressed as a constant — the class of claim this module exists to
+stop. What IS established: noise at or below 1e-7 passes everywhere tested, and the stable sort
+made the set statistic more sensitive rather than less.
 """
 from __future__ import annotations
 
@@ -288,19 +291,18 @@ def compare(
     # by the guard against it. `_check_resume_config` in run.py states the principle this now
     # follows: "cannot check" and "checked and fine" have to land differently.
     for label, meta in (("reference", ref_meta), ("candidate", cand_meta)):
-        providers = list(meta.get("providers") or [])
-        if not providers or any(str(p).startswith("<") for p in providers):
+        # POSITIVE requirement. The first attempt at this fix refused a sentinel and refused
+        # `providers_source == "availability"` — a value `emit` never writes, so that branch could
+        # not fire, and an emission from BEFORE this field existed (no `providers_source` at all)
+        # still sailed through with PARITY OK. Refusing known-bad values is the same shape as the
+        # defect being repaired; requiring a known-good one is not.
+        if meta.get("providers_source") != "session":
             raise SystemExit(
-                f"{label} did not record which providers its ONNX session resolved "
-                f"({providers or 'empty'}). Parity cannot be certified from an unknown runtime: "
-                f"an unrecorded session is not evidence of a different one. Re-emit with a build "
-                f"whose session can be introspected."
-            )
-        if meta.get("providers_source") == "availability":
-            raise SystemExit(
-                f"{label} recorded module-level provider AVAILABILITY, not its session's "
-                f"resolved providers. Availability lists CUDAExecutionProvider on a GPU box even "
-                f"after a silent CPU fallback, so it cannot distinguish the two."
+                f"{label} does not carry a session-recorded provider list "
+                f"(providers_source={meta.get('providers_source')!r}, "
+                f"providers={meta.get('providers')!r}). Parity cannot be certified from an "
+                f"unknown runtime, and an emission predating this field is unknown, not "
+                f"different. Re-emit both sides with the current tool."
             )
 
     same_provider = ref_meta.get("providers") == cand_meta.get("providers")

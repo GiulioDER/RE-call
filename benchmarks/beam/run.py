@@ -46,7 +46,6 @@ import os
 import re
 import statistics
 import threading
-import urllib.parse
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -172,7 +171,10 @@ def score_question(
         # deliverable whose whole purpose is to be scored later by something else. `judged: false`
         # and `judgment: "UNJUDGED"` already carry the state. Verified: allow_nan=False rejects it.
         mean, nuggets, errors = None, [], 0
-    mean_number: float | None = mean if isinstance(mean, float) and mean == mean else None
+    # `mean is not None and mean == mean` rather than an isinstance test: the question is "is
+    # there a number", and a type check would silently reclassify an int mean (which
+    # statistics.mean can return) from PASS to ERROR.
+    mean_number = mean if (mean is not None and mean == mean) else None
     if not judged:
         # NOT "ERROR". An unjudged row and a row whose judge failed are different states, and
         # `aggregate` counts every non-numeric score as an error — so reusing ERROR here would
@@ -336,17 +338,32 @@ def _writer(path: Path) -> tuple[Callable[[dict[str, Any]], None], TextIO]:
 
 
 def _redacted_database(dsn: str) -> str:
-    """`host:port/dbname` from a DSN, with every credential component discarded.
+    """`host:port/dbname`, with every credential component discarded — or a marker.
 
-    The raw DSN must never reach the sidecar or the artifact — `recall/store.py` keeps a
-    `redacted_dsn` helper for the same reason — but the database identity has to be compared, or
-    "same table name, different host" passes the resume guard.
+    FAILS CLOSED. This value is persisted to the config sidecar AND to the results artifact, so a
+    parse that does not understand the DSN must not fall through to the raw string. The first
+    version used `urlsplit` alone, which silently returns the WHOLE libpq keyword form as `path`:
+
+        host=10.0.0.1 dbname=recall password=sup3rs3cret  ->  ':/host=… password=sup3rs3cret'
+
+    psycopg accepts that form, so the password would have been written verbatim into two files.
+    `conninfo_to_dict` parses both the URL and the keyword form; anything it cannot parse becomes
+    `<unparsed>`, matching the guard `recall/store.py:redacted_dsn` already carries.
     """
-    try:
-        parsed = urllib.parse.urlsplit(dsn)
-        return f"{parsed.hostname or ''}:{parsed.port or ''}/{(parsed.path or '').lstrip('/')}"
-    except ValueError:
+    if not dsn:
         return ""
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+
+        parts = conninfo_to_dict(dsn)
+    except Exception:
+        return "<unparsed>"
+    host = str(parts.get("host") or "")
+    port = str(parts.get("port") or "")
+    name = str(parts.get("dbname") or "")
+    if not (host or name):
+        return "<unparsed>"
+    return f"{host}:{port}/{name}"
 
 
 def _run_config(args: argparse.Namespace, system: Any) -> dict[str, Any]:
@@ -385,7 +402,9 @@ def _run_config(args: argparse.Namespace, system: Any) -> dict[str, Any]:
         # scenario transfer_index.py exists to create — distinguishable.
         "calibration_threshold": (described.get("calibration") or {}).get("threshold"),
         "calibration_certified": (described.get("calibration") or {}).get("certified"),
-        "data": str(getattr(args, "data", None) or ""),
+        # Resolved: a relative --data compared across two working directories is a false
+        # mismatch, and a guard that refuses spuriously teaches the operator to pass the override.
+        "data": str(Path(getattr(args, "data", None) or ".").resolve()),
         "database": _redacted_database(getattr(args, "dsn", "")),
     }
 
