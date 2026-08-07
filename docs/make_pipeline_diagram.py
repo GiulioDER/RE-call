@@ -19,10 +19,22 @@ The SVG is the artefact; the PNG exists only because a raster embeds inline in t
 a linked SVG does not. Regenerate it whenever the SVG changes, or the two disagree silently:
 
     "C:/Program Files/Inkscape/bin/inkscape.com" docs/pipeline.svg \
-        --export-type=png --export-filename=docs/pipeline.png --export-width=2100
+        --export-type=png --export-filename=docs/pipeline.png --export-width=1400
+    python -c "from PIL import Image; Image.open('docs/pipeline.png').convert('RGB').save(
+        'docs/pipeline.png', optimize=True)"
 
-2100 is 1.5x the 1400 viewBox — sharp on a retina display at the ~900px GitHub renders it at,
-without the 4MB a 2x export costs for a diagram this tall.
+Two choices in there worth not re-deriving:
+
+* **1400, i.e. 1x the viewBox.** A supersampled export buys nothing: at the ~900px GitHub renders
+  the README embed at, 11.6-unit body text lands at 7.5 CSS px and is unreadable at ANY export
+  resolution. The PNG's job is the inline embed; anyone who wants to read it opens the SVG, which
+  zooms forever. Paying 1.6MB for zoom headroom in the format that is not the zoomable one is
+  paying twice for nothing.
+* **Alpha dropped, palette NOT quantised.** The canvas has an opaque background rect, so the alpha
+  channel is 0.9MB of nothing and RGB is free. Quantising to 256 colours would take this to 0.55MB
+  and was rejected: it drags the light-blue "best measured" chip #79c0ff to #b1bcc6 (grey), the
+  cloud blue #1f6feb to #3b72b4 and the rejected red #f85149 to #de4941. The whole diagram is a
+  colour-coded claim, so a lossy palette is not a compression choice, it is a content change.
 """
 from __future__ import annotations
 
