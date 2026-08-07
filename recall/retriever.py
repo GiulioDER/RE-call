@@ -350,7 +350,7 @@ class HybridRetriever:
         `search()`. That is why a missing reranker is refused instead of warned about.
         """
         if k < 1:
-            raise ValueError("k must be >= 1")
+            raise ValueError(f"k must be >= 1, got {k}")
         if self._reranker is None:
             raise ValueError(
                 "search_fused requires a reranker: the fused arm was measured at +0.0084 nDCG@5 "
