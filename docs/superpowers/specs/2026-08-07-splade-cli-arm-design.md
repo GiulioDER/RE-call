@@ -204,8 +204,11 @@ seventy percent of cores free. It is not derived from a measurement, and the spe
 than dressing it up as one.
 
 **The guard cannot fire on Windows.** `os.getloadavg` is Unix only. On Windows the provenance field
-records JSON `null` and the run warns, rather than refusing, because refusing would break every
-local dev run of this benchmark. This is stated rather than hidden: the artifact that gets published
+records JSON `null`, silently: `AttributeError` is a documented and accepted platform limit, not a
+failure, so nothing is logged. The warning is reserved for the OTHER path to `null`, an `OSError`
+reading `/proc` on a platform that does support `getloadavg` but hit a transient read failure there;
+that case is a real signal and is logged as one. Refusing outright on Windows would break every local
+dev run of this benchmark, so this is stated rather than hidden: the artifact that gets published
 comes from Linux.
 
 ## Two defects fixed in passing

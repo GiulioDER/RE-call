@@ -59,6 +59,12 @@ class SparseProfile:
 
         Fields are NUL-terminated before hashing. The terminators are what make the
         concatenation unambiguous; without them ``("ab", "c")`` and ``("a", "bc")`` hash alike.
+
+        ⚠️ This stability guarantee covers the CACHE KEY, not sidecar coverage. The sparse
+        sidecar (`recall.store.PgVectorStore.sparse_covered_sources`) is keyed on `profile_id`
+        alone, which is not this fingerprint: `top_k` and the checkpoint's pinned `revision`
+        (folded into `artifact_digest`) can both change without `profile_id` changing, and the
+        sidecar has no way to notice. See that method's docstring for what that costs.
         """
         digest = hashlib.sha256()
         parts = [
@@ -440,12 +446,14 @@ def assert_sparse_coverage(
         f"learned sparse sidecar holds {encoded} rows under profile {profile_id!r}, more than "
         f"the {total} chunks in the corpus. The sidecar keys its parent chunk table as a column "
         f"value, not a relation, so nothing cascades when a chunk row is removed: these are "
-        f"orphaned rows for chunks that no longer exist. Likely causes are `delete_sources` "
-        f"(which does not clean the sidecar) or a `drop_table` of a table whose name was later "
-        f"reused. This still refuses, because a sidecar that disagrees with the corpus is a "
-        f"real fault: at least {encoded - total} sidecar row(s) are orphaned. This compares "
-        f"counts, not id sets, so an overcount is not evidence that coverage is complete: a "
-        f"separately unencoded chunk can still be hiding inside it."
+        f"orphaned rows for chunks that no longer exist. Likely causes are `replace_sources` "
+        f"re-chunking a source into fewer chunks, which leaves the tail's old sidecar rows "
+        f"behind, or `_prune_vanished` removing a source that left the corpus through "
+        f"`delete_sources`, which also does not clean the sidecar. This still refuses, because "
+        f"a sidecar that disagrees with the corpus is a real fault: at least {encoded - total} "
+        f"sidecar row(s) are orphaned. This compares counts, not id sets, so an overcount is "
+        f"not evidence that coverage is complete: a separately unencoded chunk can still be "
+        f"hiding inside it."
     )
 
 
@@ -484,6 +492,16 @@ def backfill_learned_sparse(
     the stack. `closing` forces the generator's own cleanup (rolling back the transaction and
     releasing the connection) on the way out, success or failure, so this function owns the
     resource it created instead of leaving that to its caller.
+
+    On the connection mode `PgVectorStore` itself recommends as the default (no `pool_size`, no
+    `shared_pool`), that held connection is the SAME one `store.upsert_sparse` writes through:
+    `_with_retry` runs each write directly on `self._direct`, which is the very connection
+    `iter_chunks()` is holding inside its open `conn.transaction()`. So on that path the writes do
+    not commit independently, they JOIN the reader's transaction: this whole function, the read
+    cursor and every write it drives, is ONE all-or-nothing transaction held open for the duration
+    of the encode. A failure on chunk 900 of 1000 rolls back chunks 1 through 899 as well, not
+    only the batch that failed. (Pooled and shared-pool stores borrow a SEPARATE connection per
+    `upsert_sparse` call, so this does not apply there.)
     """
     batch_size = _validated_batch_size(batch_size)
     with closing(store.iter_chunks(batch_size=batch_size)) as chunks:

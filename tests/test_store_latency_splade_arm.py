@@ -300,3 +300,44 @@ def test_main_reads_the_sparse_device_exactly_once(tmp_path, monkeypatch) -> Non
         main()
 
     assert calls["n"] == 1
+
+
+def test_splade_arm_under_recall_env_production_refuses_before_generating_a_corpus(
+    tmp_path, monkeypatch
+) -> None:
+    """`HybridRetriever.__init__` refuses the learned sparse leg under `RECALL_ENV=production`,
+    but only when `measure()` finally builds one — hours into a detached run, after the host
+    wait, the checkpoint load, the corpus build and the full CPU backfill are already paid for.
+    `main()`'s pre-flight has to make the same refusal before any of that runs.
+
+    No checkpoint is patched in on purpose: if the pre-flight did not fire before the `if
+    wants_learned:` block, this test would instead hang or crash trying to download a real SPLADE
+    checkpoint, which fails this test too, but for the wrong reason and far too slowly.
+    `_throwaway_store` is patched to refuse immediately as a second, independent trip wire:
+    reaching the store at all is already a failure of the pre-flight, corpus or no corpus.
+    """
+    monkeypatch.setenv("RECALL_ENV", "production")
+
+    def _refuse_the_db(*args, **kwargs):
+        raise RuntimeError("this test's subject is the pre-flight, not the store")
+
+    monkeypatch.setattr(store_latency_share, "_throwaway_store", _refuse_the_db)
+
+    out = tmp_path / "out"
+    argv = [
+        "store_latency_share",
+        "--dsn", "postgresql://unused:unused@127.0.0.1/unused",
+        "--embedder", "hashing",
+        "--queries", "1",
+        "--repeats", "1",
+        "--sparse-backend", "splade",
+        "--allow-busy-host",
+        "--out", str(out),
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(RuntimeError, match="RECALL_ENV=production"):
+        main()
+
+    # Refused before `out.mkdir()`, let alone before `generate()` wrote a corpus under it.
+    assert not out.exists()
