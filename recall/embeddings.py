@@ -498,7 +498,20 @@ class FastEmbedEmbedder:
             query_mode=self._query_mode,
             passage_mode=self._passage_mode,
             context_version=context_version,
-            dependencies=(("fastembed", _package_version("fastembed")),),
+            dependencies=(
+                ("fastembed", _package_version("fastembed")),
+                # The ONNX execution provider is KEY MATERIAL, not metadata. This class's own
+                # fingerprint docstring gives the reason — "ONNX runtime changes are free to move
+                # the last bits of a vector and a cache cannot tell" — and a provider swap is
+                # exactly such a change. Measured on an RTX 5090: CPU and CUDA sessions over the
+                # same weights moved top-45 SET membership on 2 of 64 queries. Without this the
+                # two provenances share one cache key (recall/cache.py) and one calibration
+                # binding (recall/calibration.py), so CPU vectors would be served for a
+                # GPU-configured embedder. fastembed also reaches CUDA on its own via
+                # `cuda=Device.AUTO` whenever onnxruntime-gpu is importable, so this fires
+                # without anyone passing `providers=`.
+                ("onnx-providers", ",".join(self.session_providers)),
+            ),
         )
 
     def _encoder(self, mode: str) -> Callable[[list[str]], Iterable[Iterable[float]]]:

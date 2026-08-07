@@ -45,9 +45,14 @@ The checksum is the point
 -------------------------
 An RLS-forced table read by a role without `BYPASSRLS` returns ZERO rows rather than erroring, so a
 transfer can "succeed" and move nothing. Row counts alone would not catch a vector that lost
-precision in transit either. `checksum` therefore digests the ordered
-`(tenant_id, id, embedding)` triples, so source and destination must agree exactly or the transfer
-is not accepted.
+precision in transit either. `checksum` therefore digests the ordered `(tenant_id, id, embedding)` triples, so source and
+destination must agree on those or the transfer is not accepted.
+
+⚠️ SCOPE, stated because "the checksum is the point" invites over-reading: the digest proves the
+VECTORS and their (tenant, id) keys survived. COPY moves every non-generated column, so `text`,
+`source`, `metadata`, `indexed_at` and `first_indexed_at` are transferred but NOT digested — a
+corruption confined to those verifies clean. It also proves TRANSIT, not tampering: the source
+digest travels in the same unsigned sidecar as the data it certifies.
 """
 from __future__ import annotations
 
@@ -64,6 +69,22 @@ import psycopg
 _GENERATED = "a.attgenerated <> ''"
 
 
+def _validated_table(table: str) -> str:
+    """Reject anything that is not a plain identifier, BEFORE it reaches an interpolated statement.
+
+    `{table}` is f-string interpolated into TRUNCATE, DELETE, COPY and the digest. Today that is
+    not exploitable, but only because every entry point happens to call `transferable_columns`
+    first, which binds the name as `%s::regclass` and so rejects a payload — a side effect of
+    column discovery that nothing names as validation and no test covers. Reordering one call, or
+    adding a fourth subcommand, would silently turn it into TRUNCATE injection. The repo already
+    owns the right control: `recall/control_plane.validate_table_name`, whose own comment reads
+    "Physical table identifiers are interpolated into SQL, so this is an allowlist, not a filter".
+    """
+    from recall.control_plane import validate_table_name
+
+    return str(validate_table_name(table))
+
+
 def transferable_columns(conn: psycopg.Connection, table: str) -> list[str]:
     """The column names a COPY may write: every real column that is not generated.
 
@@ -78,6 +99,21 @@ def transferable_columns(conn: psycopg.Connection, table: str) -> list[str]:
     if not rows:
         raise SystemExit(f"table {table!r} has no transferable columns (does it exist?)")
     return [r[0] for r in rows]
+
+
+def _pin_copy_gucs(conn: psycopg.Connection) -> None:
+    """Pin the session settings that decide how COPY TEXT renders non-vector columns.
+
+    `pg_dump` pins these for the same reason. `timestamptz` renders per the session's DateStyle, so
+    a source host set to `SQL, DMY` writes `06/08/2026` where a destination on `ISO, MDY` reads
+    8 June — both valid, silently different, and invisible because the digest covers only
+    (tenant, id, embedding). The vector column is NOT at risk: pgvector's `vector_out` uses
+    shortest-round-trip decimal and ignores `extra_float_digits`.
+    """
+    conn.execute("SET datestyle = 'ISO, YMD'")
+    conn.execute("SET intervalstyle = 'iso_8601'")
+    conn.execute("SET extra_float_digits = 3")
+    conn.execute("SET timezone = 'UTC'")
 
 
 def _tenant_key(conn: psycopg.Connection, table: str) -> str:
@@ -150,6 +186,7 @@ def checksum(dsn: str, table: str, tenants: list[str] | None = None) -> dict[str
     table holding 108,015. A per-tenant digest map is also strictly more useful than one global
     digest: a mismatch names the tenant instead of just existing.
     """
+    table = _validated_table(table)
     with psycopg.connect(dsn) as conn:
         key = _tenant_key(conn, table)
         pgv = conn.execute(
@@ -200,6 +237,7 @@ def checksum(dsn: str, table: str, tenants: list[str] | None = None) -> dict[str
 
 
 def dump(dsn: str, table: str, out: Path, tenants: list[str] | None = None) -> dict[str, object]:
+    table = _validated_table(table)
     tenants = list(dict.fromkeys(tenants)) if tenants else None
     before = checksum(dsn, table, tenants)
     # Per SLICE, not just in total. The refusal below tested the SUM while the restore's DELETE
@@ -226,12 +264,22 @@ def dump(dsn: str, table: str, out: Path, tenants: list[str] | None = None) -> d
         cols = transferable_columns(conn, table)
         collist = ", ".join(f'"{c}"' for c in cols)
         key = _tenant_key(conn, table)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        # ONE FILE PER TENANT when scoped. A single concatenated stream cannot be restored under
-        # row-level security: `COPY ... FROM` is checked row by row against the policy's WITH
-        # CHECK, only one tenant can be in scope at a time, and the first row belonging to any
-        # other tenant aborts the load. Separate files also make a partial restore resumable.
+        # 0700/0600: this file holds the corpus VERBATIM (the `text` column travels with the
+        # vectors) and the documented workflow writes it on a rented third-party host. SECURITY.md
+        # calls the corpus the asset and notes it may contain "a secret pasted into prose".
+        out.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # ONE FILE PER TENANT when scoped, for the reason that actually holds: a reader WITHOUT
+        # RLS bypass can only see one tenant at a time, so per-tenant is the only dump such a role
+        # can produce, and a per-tenant digest names which tenant mismatched instead of merely
+        # reporting that something did.
+        #
+        # ⚠️ An earlier version of this comment justified the split by row-by-row `WITH CHECK`
+        # evaluation during `COPY FROM`, and claimed the files make a partial restore resumable.
+        # Both were wrong: Postgres refuses `COPY FROM` under RLS outright (see `restore`), and
+        # the restore is a single transaction with no subset option, so there is no partial state
+        # to resume from.
         written: dict[str, str] = {}
+        _pin_copy_gucs(conn)
         scoped: list[str | None] = list(tenants) if tenants else [None]
         for tenant in scoped:
             _scope(conn, tenant)
@@ -239,6 +287,7 @@ def dump(dsn: str, table: str, out: Path, tenants: list[str] | None = None) -> d
             where = f" WHERE {key} = %(t)s" if tenant is not None else ""
             stmt = f"COPY (SELECT {collist} FROM {table}{where}) TO STDOUT"
             params = {"t": tenant} if tenant is not None else None
+            target.touch(mode=0o600, exist_ok=True)
             with gzip.open(target, "wb") as fh, conn.cursor().copy(stmt, params) as copy:
                 for block in copy:
                     fh.write(bytes(block))
@@ -311,6 +360,28 @@ def restore(dsn: str, table: str, src: Path, *, truncate: bool = False) -> dict[
         key = _tenant_key(conn, table)
         tenants = meta.get("tenants")
         files = meta.get("files") or {"*": src.name}
+        # The chunk table is not the whole index. `recall_sparse_v1` is keyed on
+        # (tenant_id, chunk_table, profile_id, id) with NO foreign key by design (migration 0012:
+        # "the parent table is a COLUMN VALUE, not a schema reference"), so nothing cascades. A
+        # truncating restore therefore leaves stale sparse rows whose ids no longer match the
+        # chunks, and `store.sparse_row_count()` stays > 0 — which is precisely the condition that
+        # SUPPRESSES the guard for an unencoded corpus. The digest cannot see any of it.
+        sparse = conn.execute(
+            "SELECT to_regclass('recall_sparse_v1') IS NOT NULL"
+        ).fetchone()
+        if sparse and sparse[0]:
+            stale = conn.execute(
+                "SELECT count(*) FROM recall_sparse_v1 WHERE chunk_table = %s", (table,)
+            ).fetchone()
+            if stale and stale[0]:
+                raise SystemExit(
+                    f"the destination holds {stale[0]} learned-sparse rows for {table!r} in "
+                    f"recall_sparse_v1, which this transfer does not move and cannot verify. "
+                    f"Restoring would leave them orphaned against the new chunk ids while "
+                    f"sparse_row_count() stays non-zero, suppressing the very guard that exists "
+                    f"to catch an unencoded corpus. Clear them first, or re-encode after."
+                )
+
         if truncate:
             # A scoped restore must replace only the tenants it was given. TRUNCATE cannot express
             # that (it is not row-filtered at all), and neither can an unqualified DELETE here —
