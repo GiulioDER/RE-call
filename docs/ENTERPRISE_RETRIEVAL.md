@@ -134,6 +134,15 @@ nothing in this repository derives it.
   the default table name `chunks`, leaving every generation table ungranted while the step reads as
   done.
 
+  🛑 **This bullet is filed under "Preconditions" and CANNOT be completed here.** The generator
+  emits grants for tables that do not exist yet: the chunk table is created by `schema apply` and
+  each generation table by `create-generation`. Executed end to end on a clean database, the order
+  that works is **`migrate` → `schema apply` → grants for the chunk table → `create-generation` →
+  grants again for each generation table → index**. Skipping that second grant pass is not a
+  deferred chore, it is a hard stop at the indexing step: building the shadow dies with
+  `InsufficientPrivilege: permission denied for table <generation table>`. Read this bullet now,
+  run it twice later.
+
   Run it **once per chunk table, including every generation table you create at step 3**, and apply
   the output **verbatim** as the object owner. With `--enterprise` it emits six statements covering
   fourteen objects plus one sequence; without it, three. ⚠️ **Do not check your work against a summary, including this one** (that is
@@ -172,6 +181,14 @@ RECALL_MIGRATION_DSN="$RECALL_MIGRATION_DSN" recall-enterprise migrate
 ```
 
 Verify: `recall-enterprise status` prints `control plane ledger is current`.
+
+🛑 **On a FRESH deployment that verify line fails, and it is not a symptom of a failed migration.**
+`status` takes the SERVING credential, and the serving role has no grants on the control-plane
+tables until you apply the generated set. Executed on a clean database: `migrate` exits zero, and
+`status` immediately after raises `InsufficientPrivilege: permission denied for table
+recall_index_generations`. Apply the generated grants first (see the ordering note in the
+preconditions), then this line passes. An operator who reads that refusal as a broken migration
+will go looking in the wrong place, and this document used to send them there.
 
 ### 2. Apply the chunk-table migrations, per table
 
@@ -289,6 +306,12 @@ against `chunks_g2026_08`.
 recall-enterprise mark-ready g2026_08 --chunks 1000000 --sources 120000
 ```
 
+🛑 **And `status` DISPLAYS that unchecked assertion, which is where it will mislead you.** The
+`chunks=` column in `recall-enterprise status` is the declared value from the registry, not a count
+of the table. Executed: a generation holding five rows, marked ready with `--chunks 0`, prints
+`chunks=0` in `status` while `parity` reports five. If you are checking whether a generation is
+populated, read `parity`'s counts, never `status`'s.
+
 ⚠️ **`--chunks` and `--sources` are an operator ASSERTION and nothing ever checks them.**
 `mark-ready` stores the two integers verbatim; `parity` **never compares them** (it reads the
 registry to resolve which physical table each generation names, then compares the two tables
@@ -358,7 +381,14 @@ deliberate corpus change and clear with the very flag that then skips the compar
 shadow's source set against the corpus on disk, not only against the active generation.
 
 Run `readiness` with `RECALL_SERVING_DSN` set. Its row level security verdict is about the role it
-connects as, and it prints that role, so the verdict names its own subject. On the migration role a
+connects as, and it prints that role, so the verdict names its own subject.
+
+⚠️ **`readiness` is the one step that requires the MODEL ARTIFACTS to be present.** It builds the
+route's declared embedding profile in order to verify model identity, so on a host without the
+provisioned tree it raises from the embedder rather than reporting a readiness verdict. That is
+consistent with the preconditions, which require the artifacts anyway; it is called out here
+because it is the step where their absence first stops you, and the traceback names the embedder
+rather than the missing precondition. On the migration role a
 green verdict would certify a credential that never serves a request.
 
 ⚠️ **`readiness` names its own ROLE subject and not its own GENERATION subject.** It opens

@@ -258,6 +258,62 @@ and it changes semantics for two other consumers — that belongs in its own cha
 tests, not folded into this one. Today the invariant holds by ordering in `control_plane.py`, which
 is recorded rather than relied on silently.
 
+### The runbook had never been EXECUTED, so I executed it, and it broke twice
+
+Every session of this program has *documented* the eleven-step sequence. None has run it. I ran the
+whole thing end to end against a clean PostgreSQL 16 with pgvector, with the two roles provisioned
+exactly as `MIGRATIONS.md` specifies (`LOGIN NOINHERIT NOBYPASSRLS`, no superuser), the real
+in-repo `corpus/`, and the offline `hashing` embedder so nothing touched the network.
+
+**This is a VALIDATION environment, not a production rollout.** It has no production corpus and no
+production tenant, it fabricates neither, and no promotion decision was produced or implied. What it
+tests is whether the document works.
+
+| Step | Result |
+|---|---|
+| 1 `migrate` | exit 0 |
+| 1 verify (`status`) | 🛑 **exit 1**, `InsufficientPrivilege: permission denied for table recall_index_generations` |
+| 2 `schema apply` / `status` on the chunk table | exit 0 / exit 0, ledger through `0013` |
+| grants, generated | exit 0. All three documented forms reproduce: `--table` before the subcommand works; **after** it exits 2 with `unrecognized arguments`; omitting it silently grants the DEFAULT table |
+| 3 `create-generation` x2 | exit 0 |
+| 4 index the shadow | 🛑 **exit 1**, `permission denied for table chunks_g_blue` |
+| 4 index, after the second grant pass | exit 0, five chunks from five files, into each generation |
+| `parity`, active populated + shadow empty | **exit 1**, `shadow generation is missing sources` and `chunk counts differ` |
+| `parity`, both populated | **exit 0**, `parity: OK` over five and five |
+| 5 `mark-ready` / 7 `replay` | exit 0 / exit 0 (`no pending migration events`) |
+| 9 `readiness` | could not run offline: it builds the route's real embedding profile |
+| 10 `cutover` | exit 0, silent, and it **swapped** the slots as documented |
+| R rollback, short form | exit 0 and **silently NULLed the shadow route**, detaching the generation that was serving seconds earlier |
+| R rollback, with `--shadow-generation` | exit 0, route restored |
+| 11 `retire` while routed | **exit 1**, refused, naming the shadow slot |
+| 11 `retire` after detaching | exit 0. Re-routing the retired generation then **exit 1** |
+| un-retire via `mark-ready` | exit 0, state back to `ready`, **`retired_at` left set**, and `set-route` accepts it again |
+
+**Two of those are runbook defects and both are ORDERING.** The grants bullet is filed under
+"Preconditions" and cannot be completed there: it generates grants for tables that step 2 and step 3
+create. That is not a cosmetic filing error, it is a hard stop at step 4 and a misleading refusal at
+step 1's own verify line, where an operator reads `permission denied ... recall_index_generations`
+and goes looking for a broken migration. The working order is
+**1 → 2 → grants → 3 → grants again → 4**, and the runbook now says so in both places.
+
+**One is a display trap I had not known about.** `status` prints the *declared* `--chunks` from
+`mark-ready`, not a count. A generation holding five rows, marked ready with `--chunks 0`, prints
+`chunks=0` while `parity` reports five. The runbook already said the declared count is unchecked; it
+did not say `status` is where you would read it and be misled.
+
+**Everything else held exactly as written**, including four claims that had only ever been read
+rather than run: the three `--table` grant forms, the slot swap at cutover, the short-form rollback
+NULLing the shadow, and the un-retire path leaving `retired_at` set.
+
+✅ **And it settles a question two entries left open.** `create-generation` **does** write the
+per-table ledger rows: both new generation tables came out with `0001`–`0007` present. The previous
+entry inferred that from reading `ensure_schema` and could not explain the deployment's missing
+rows. The inference is now confirmed by execution, which narrows the unexplained state to the older
+build that provisioned those tables, exactly as that entry suspected.
+
+⚠️ **This does not certify the deployment.** It certifies the document, on a clean database, with
+an offline embedder. `readiness` is unexercised here by construction, and latency remains PENDING.
+
 ### The latency blocker, measured better than last time
 
 VPS2 reported load average **19.58, 15.58, 16.72** on **12 cores**, up 11:54 — a steady-state
