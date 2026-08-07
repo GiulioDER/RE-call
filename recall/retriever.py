@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import is_dataclass, replace
+from dataclasses import dataclass, is_dataclass, replace
 from datetime import datetime, timedelta, timezone
 import os
 import time
@@ -61,6 +61,22 @@ def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
         for rank, cid in enumerate(ranking):
             scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank + 1)
     return scores
+
+
+@dataclass(frozen=True)
+class _Legs:
+    """One query's retrieval legs, before any fusion.
+
+    The seam `search` and `search_fused` share. Extracted rather than duplicated because two
+    copies of this pipeline would drift, and the drift would be invisible: both would still
+    return plausible hits.
+    """
+
+    qvec: list[float]
+    dense: list[ScoredChunk]
+    sparse: list[ScoredChunk]
+    learned: list[ScoredChunk]
+    timings: dict[str, float]
 
 
 class HybridRetriever:
@@ -138,6 +154,64 @@ class HybridRetriever:
         self._retrieval_profile = retrieval_profile
         self._index_generation = index_generation
 
+    def _retrieve_legs(
+        self, query: str, source: str | None, report_vec: list[float] | None = None
+    ) -> _Legs:
+        """Run every enabled leg for one query.
+
+        `report_vec` overrides which vector the SPARSE legs report their cosine against, without
+        changing what they rank by. `search` leaves it None and gets the pre-existing behaviour.
+        `search_fused` passes the QUERY's vector when retrieving for the HISTORY variant, so that
+        every returned hit's score is on one basis: `trust.py` feeds `hit.score` to a calibrated
+        confidence, and a cosine against a different string would silently mean something else.
+        """
+        timings: dict[str, float] = {}
+        started = time.perf_counter()
+        qvec = embed_query(self._embedder, query)
+        timings["query_embedding"] = (time.perf_counter() - started) * 1000.0
+        reporting = qvec if report_vec is None else report_vec
+
+        started = time.perf_counter()
+        dense = (
+            self._store.query_dense(qvec, k=self._candidate_k, source=source)
+            if self._use_dense
+            else []
+        )
+        timings["dense_retrieval"] = (time.perf_counter() - started) * 1000.0
+
+        started = time.perf_counter()
+        # `lexical` and `both` include the ts_rank leg; `splade` REPLACES it. That replacement is
+        # the point of the arm — MTRAGEval's rank 1 reports that adding retrievers HURT once the
+        # strong one worked, because unique documents from the weak leg land at ranks 37-54 and
+        # inject fusion noise. So this is a swap by default, not an addition.
+        wants_lexical = self._use_sparse and self._sparse_backend in ("lexical", "both")
+        sparse = (
+            self._store.query_sparse(query, k=self._candidate_k, source=source, vec=reporting)
+            if wants_lexical
+            else []
+        )
+        timings["sparse_retrieval"] = (time.perf_counter() - started) * 1000.0
+
+        started = time.perf_counter()
+        learned: list[ScoredChunk] = []
+        if self._use_sparse and self._sparse_backend in ("splade", "both"):
+            encoder = self._sparse_encoder
+            assert encoder is not None  # guaranteed by __init__; re-stated for the type checker
+            weights = encoder.encode([query])[0]  # type: ignore[attr-defined]
+            if weights:
+                learned = self._store.query_learned_sparse(
+                    weights,
+                    k=self._candidate_k,
+                    profile_id=encoder.profile.profile_id,  # type: ignore[attr-defined]
+                    source=source,
+                    vec=reporting,
+                )
+            # An empty query encoding is NOT an error here, unlike in the store: a query of pure
+            # stopwords legitimately produces no terms. The leg contributes nothing and says so
+            # by way of `learned_sparse_terms` below, rather than by raising on a valid question.
+        timings["learned_sparse_retrieval"] = (time.perf_counter() - started) * 1000.0
+        return _Legs(qvec=qvec, dense=dense, sparse=sparse, learned=learned, timings=timings)
+
     def search(self, query: str, k: int = 5, source: str | None = None) -> RetrievalResult:
         """Retrieve the top-`k` chunks for `query` (optionally filtered to one `source`).
 
@@ -150,48 +224,9 @@ class HybridRetriever:
         """
         if k < 1:
             raise ValueError("k must be >= 1")
-        timings: dict[str, float] = {}
-        started = time.perf_counter()
-        qvec = embed_query(self._embedder, query)
-        timings["query_embedding"] = (time.perf_counter() - started) * 1000.0
-        started = time.perf_counter()
-        dense = (
-            self._store.query_dense(qvec, k=self._candidate_k, source=source)
-            if self._use_dense
-            else []
-        )
-        timings["dense_retrieval"] = (time.perf_counter() - started) * 1000.0
-        started = time.perf_counter()
-        # `lexical` and `both` include the ts_rank leg; `splade` REPLACES it. That replacement is
-        # the point of the arm — MTRAGEval's rank 1 reports that adding retrievers HURT once the
-        # strong one worked, because unique documents from the weak leg land at ranks 37-54 and
-        # inject fusion noise. So this is a swap by default, not an addition.
-        wants_lexical = self._use_sparse and self._sparse_backend in ("lexical", "both")
-        sparse = (
-            self._store.query_sparse(query, k=self._candidate_k, source=source, vec=qvec)
-            if wants_lexical
-            else []
-        )
-        timings["sparse_retrieval"] = (time.perf_counter() - started) * 1000.0
-
-        started = time.perf_counter()
-        learned: list = []
-        if self._use_sparse and self._sparse_backend in ("splade", "both"):
-            encoder = self._sparse_encoder
-            assert encoder is not None  # guaranteed by __init__; re-stated for the type checker
-            weights = encoder.encode([query])[0]  # type: ignore[attr-defined]
-            if weights:
-                learned = self._store.query_learned_sparse(
-                    weights,
-                    k=self._candidate_k,
-                    profile_id=encoder.profile.profile_id,  # type: ignore[attr-defined]
-                    source=source,
-                    vec=qvec,
-                )
-            # An empty query encoding is NOT an error here, unlike in the store: a query of pure
-            # stopwords legitimately produces no terms. The leg contributes nothing and says so
-            # by way of `learned_sparse_terms` below, rather than by raising on a valid question.
-        timings["learned_sparse_retrieval"] = (time.perf_counter() - started) * 1000.0
+        legs = self._retrieve_legs(query, source)
+        timings = dict(legs.timings)
+        dense, sparse, learned = legs.dense, legs.sparse, legs.learned
 
         started = time.perf_counter()
         fused = _rrf(
