@@ -1,3 +1,5 @@
+import json
+
 from benchmarks.mtrag import run
 from benchmarks.mtrag.run import ndcg_at, query_text, recall_at, score_predictions
 
@@ -265,3 +267,41 @@ def test_a_dev_run_whose_arms_disagree_on_query_mode_is_refused() -> None:
 
 def test_the_dev_query_mode_comes_from_the_selected_arms() -> None:
     assert run.dev_query_mode_for(["hybrid_splade", "hybrid_lexical"], "dev") == "last"
+
+
+def test_dev_tasks_carry_the_fields_the_prediction_writer_reads(tmp_path) -> None:
+    """`run.py --split dev` had never completed a run: the writer reads fields dev lacked.
+
+    `run_arm` builds each prediction from `task["conversation_id"]`, `task["Collection"]` and
+    `task["input"]`. `load_dev_tasks` normalised only `task_id`, `_domain` and `_text`, so the
+    first arm died with KeyError: 'conversation_id' after validation had already passed. The dev
+    baseline recorded in memory (nDCG@5 0.2849 / R@100 0.6865) came from a separate probe script,
+    which is why nothing had noticed.
+
+    The missing fields are DERIVABLE, not absent. MTRAG uses one id convention across both splits:
+    the sealed release ships `conversation_id` "18ef26..." beside `task_id` "18ef26...<::>7", and
+    a dev `_id` reads "dd6b6f...<::>2". The conversation id is the part before the separator.
+    """
+    domain = run.DOMAINS[0]
+    dev_dir = tmp_path / "mtrag-human" / "retrieval_tasks" / domain
+    dev_dir.mkdir(parents=True, exist_ok=True)
+    for other in run.DOMAINS:
+        d = tmp_path / "mtrag-human" / "retrieval_tasks" / other
+        d.mkdir(parents=True, exist_ok=True)
+        rows = ""
+        if other == domain:
+            rows = json.dumps(
+                {"_id": "conv123<::>4", "text": "|user|: Do the Cardinals play outside the US?"}
+            ) + "\n"
+        (d / f"{other}_lastturn.jsonl").write_text(rows, encoding="utf-8")
+
+    tasks = run.load_dev_tasks(tmp_path, "last")
+
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task["task_id"] == "conv123<::>4"
+    assert task["conversation_id"] == "conv123"
+    assert task["Collection"] == domain
+    assert task["input"] == [
+        {"speaker": "user", "text": "Do the Cardinals play outside the US?"}
+    ], "input must be the turn WITHOUT the speaker prefix the release ships"

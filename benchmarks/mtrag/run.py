@@ -295,6 +295,12 @@ def load_tasks(root: Path, split: str = "test", query_mode: str = "last") -> lis
     return tasks
 
 
+#: Separates the conversation id from the turn number in every MTRAG task id, on both splits.
+#: Verified against the released files rather than assumed: sealed `task_id` "18ef26...<::>7"
+#: sits beside `conversation_id` "18ef26...", and a dev `_id` reads "dd6b6f...<::>2".
+CONVERSATION_SEPARATOR = "<::>"
+
+
 def load_dev_tasks(root: Path, query_mode: str) -> list[dict[str, Any]]:
     """MTRAG-human tasks, normalised to the shape the evaluation loop already consumes.
 
@@ -313,8 +319,25 @@ def load_dev_tasks(root: Path, query_mode: str) -> list[dict[str, Any]]:
                 item = json.loads(line)
                 if "_id" not in item or "text" not in item:
                     raise RuntimeError(f"{path}:{line_no} is missing _id or text")
+                task_id = str(item["_id"])
+                # MTRAG uses ONE id convention across both splits: the sealed release ships
+                # `conversation_id` "18ef26..." beside `task_id` "18ef26...<::>7", and a dev
+                # `_id` reads "dd6b6f...<::>2". So the conversation id is the part before the
+                # separator, derived rather than invented. `run_arm` reads `conversation_id`,
+                # `Collection` and `input` off every task to build a prediction, and dev used to
+                # carry none of them, so the first arm died with KeyError after validation had
+                # already passed. Normalising here keeps the writer identical across splits,
+                # which is the same reason this function normalises the other fields.
+                text = str(item["text"])
                 tasks.append(
-                    {"task_id": str(item["_id"]), "_domain": domain, "_text": str(item["text"])}
+                    {
+                        "task_id": task_id,
+                        "conversation_id": task_id.split(CONVERSATION_SEPARATOR, 1)[0],
+                        "Collection": domain,
+                        "input": [{"speaker": "user", "text": strip_speaker(text)}],
+                        "_domain": domain,
+                        "_text": text,
+                    }
                 )
     return tasks
 
