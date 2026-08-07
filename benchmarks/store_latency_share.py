@@ -31,15 +31,18 @@ leg actually returns rows (issue #81 had ts_rank returning rows for 0 of 150 rea
 the metric ring truncated, because a mean over a retained suffix and a mean over the run are
 different statistics.
 
-**The learned sparse arm.** `measure(sparse_backend=...)` accepts `splade` / `both`. Each guard
-here has a learned-leg counterpart: the per-query denominator, the nesting cross-check, the fire
-rate floor, and the attribution itself. The CLI below cannot yet select the arm, because `splade`
-needs a `sparse_encoder` and this file has no flag to build one. The one committed artifact under
-`results/store_latency/` PREDATES the learned arm and carries none of its fields, so nothing was
-asserted about the learned leg when it was produced; a `lexical` run under current code publishes
-those fields with the leg asserted idle and its fire rate `null`. Note that `splade` REPLACES the
-ts_rank leg rather than adding to it, so under it the LEXICAL leg is the one asserted idle, and
-its fire rate reads `n/a` rather than 0%.
+**The learned sparse arm.** `--sparse-backend` selects it, and is repeatable: every value listed
+is swept against the SAME store and the same corpus encode, so two arms differ only in the leg
+under test rather than in the machine, the corpus or the hour. Each guard here has a learned-leg
+counterpart: the per-query denominator, the nesting cross-check, the fire rate floor, and the
+attribution itself. Selecting `splade` encodes the corpus into the learned sparse sidecar first
+(`recall.sparse.backfill_learned_sparse`) and refuses to measure a corpus that did not fully
+encode. Note that `splade` REPLACES the ts_rank leg rather than adding to it, so under it the
+LEXICAL leg is the one asserted idle, and its fire rate reads `n/a` rather than 0%.
+
+⚠️ Artifacts under `results/store_latency/` generated before 2026-08-07 predate the learned arm
+and carry none of its fields. Nothing was asserted about the learned leg when they were produced,
+and they were produced on a different host, so they must not be read beside a learned-arm row.
 
 **Measurement hygiene.** Every configuration gets a discarded warm-up pass through the FULL
 pipeline, so no leg is measured warm against another measured cold, and each configuration is
@@ -67,7 +70,8 @@ covers it; every hit was about retrieval QUALITY. The 9a5165b figure came from g
 
 Usage:
     python benchmarks/store_latency_share.py --embedder fastembed --filler 20000 \
-        --candidate-k 20 --candidate-k 250 --rerank --repeats 3
+        --candidate-k 20 --candidate-k 250 --repeats 3 \
+        --sparse-backend lexical --sparse-backend splade
 """
 from __future__ import annotations
 
@@ -80,12 +84,14 @@ from statistics import mean
 
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.eval.harness import _throwaway_store
+from recall.eval.hostload import DEFAULT_MAX_LOAD_PER_CORE, assert_host_quiet, read_load_per_core
 from recall.eval.provenance import generated_at, model_stack
 from recall.eval.scale import DEFAULT_DSN, _make_embedder
 from recall.eval.synthetic import generate
 from recall.observability import HISTOGRAM_CAPACITY, METRICS, percentile
 from recall.rerank import CrossEncoderReranker, Reranker
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
+from recall.sparse import assert_sparse_coverage, backfill_learned_sparse
 from recall.store import (
     LEG_DENSE,
     LEG_LEARNED_SPARSE,
@@ -122,6 +128,10 @@ class LegSplit:
 
     candidate_k: int
     reranked: bool
+    #: Which sparse backend this row measured: `lexical`, `splade` or `both`. Present because one
+    #: invocation now sweeps several, and two rows that differ only in this would otherwise be
+    #: indistinguishable in `splits.json` while measuring different pipelines.
+    sparse_backend: str
     repeats: int
     n_queries: int
     n_chunks: int
@@ -509,6 +519,7 @@ def measure(
     return LegSplit(
         candidate_k=candidate_k,
         reranked=reranker is not None,
+        sparse_backend=sparse_backend,
         repeats=repeats,
         n_queries=len(queries),
         n_chunks=n_chunks,
@@ -546,15 +557,16 @@ def to_markdown(splits: list[LegSplit], ctx: str) -> str:
         return "n/a" if value is None else f"{value:.0%}"
 
     rows = [
-        "| chunks | cand_k | rerank | total | embed | dense | sparse | learned | splade enc | "
-        "meta | fusion | rerank | **store** | resid | **store share** | sparse fire | "
-        "learned fire |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| chunks | cand_k | backend | rerank | total | embed | dense | sparse | learned | "
+        "splade enc | meta | fusion | rerank | **store** | resid | **store share** | "
+        "sparse fire | learned fire |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for s in splits:
         share = "truncated" if s.truncated else f"{s.store_share:.1%}"
         rows.append(
-            f"| {s.n_chunks} | {s.candidate_k} | {'yes' if s.reranked else 'no'} | "
+            f"| {s.n_chunks} | {s.candidate_k} | {s.sparse_backend} | "
+            f"{'yes' if s.reranked else 'no'} | "
             f"{s.total_ms_mean:.1f} | {s.embed_ms_mean:.1f} | {s.dense_ms_mean:.1f} | "
             f"{s.sparse_ms_mean:.1f} | {s.learned_sparse_ms_mean:.1f} | "
             f"{s.learned_sparse_encode_ms_mean:.1f} | {s.meta_ms_mean:.1f} | "
@@ -609,6 +621,31 @@ def main() -> int:
     ap.add_argument("--filler", type=int, default=0, help="filler chunks (index pressure)")
     ap.add_argument("--candidate-k", type=int, action="append", dest="candidate_ks")
     ap.add_argument("--rerank", action="store_true")
+    ap.add_argument(
+        "--sparse-backend", action="append", dest="sparse_backends",
+        choices=["lexical", "splade", "both"],
+        help="repeatable; each value is swept against the SAME store and the same encode "
+             "(default: lexical). `splade` REPLACES the ts_rank leg rather than adding to it.",
+    )
+    ap.add_argument("--sparse-model", default=None, help="learned sparse checkpoint")
+    ap.add_argument(
+        "--sparse-revision", default=None,
+        help="pin the checkpoint revision. Without it artifact_digest can silently fall back to "
+             "'unpinned' and the run is not reproducible.",
+    )
+    ap.add_argument("--sparse-top-k", type=int, default=None, help="prune budget; pgvector caps at 1000")
+    ap.add_argument(
+        "--accept-noncommercial-license", action="store_true",
+        help="required for the naver checkpoints (cc-by-nc-sa-4.0); RE-call itself is MIT",
+    )
+    ap.add_argument(
+        "--max-load-per-core", type=float, default=DEFAULT_MAX_LOAD_PER_CORE,
+        help="refuse to measure above this 1-minute load average per core",
+    )
+    ap.add_argument(
+        "--allow-busy-host", action="store_true",
+        help="measure anyway, and stamp the artifact with the load it was measured under",
+    )
     ap.add_argument("--queries", type=int, default=100)
     ap.add_argument("--repeats", type=int, default=3, help="repetitions per config")
     ap.add_argument("--seed", type=int, default=1234)
@@ -628,11 +665,30 @@ def main() -> int:
             f"--queries x --repeats = {args.queries * args.repeats} exceeds the metric ring "
             f"({HISTOGRAM_CAPACITY}); leg means would be over a truncated suffix"
         )
+    sparse_backends = args.sparse_backends or ["lexical"]
+    wants_learned = any(b in ("splade", "both") for b in sparse_backends)
+    # Before the corpus build, not after: the operator should not pay for indexing and a CPU
+    # encode to be told the host was never quiet enough to publish from.
+    load_before = assert_host_quiet(args.max_load_per_core, allow_busy=args.allow_busy_host)
     warn_if_insecure_dsn(args.dsn)
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     emb = _make_embedder(args.embedder)
+
+    sparse_encoder = None
+    if wants_learned:
+        # Imported HERE, not at module scope: torch and transformers are the `sparse` extra, and
+        # a lexical-only run must not require them to be installed at all.
+        from recall.sparse import DEFAULT_MODEL, HNSW_MAX_NONZERO, SpladeEncoder
+
+        sparse_encoder = SpladeEncoder.from_pretrained(
+            args.sparse_model or DEFAULT_MODEL,
+            top_k=args.sparse_top_k or HNSW_MAX_NONZERO,
+            revision=args.sparse_revision,
+            accept_noncommercial_license=args.accept_noncommercial_license,
+        )
+        print(f"learned sparse encoder: {sparse_encoder.profile.fingerprint()}")
 
     print(f"generating corpus (filler={args.filler}) ...")
     corpus = generate(
@@ -655,14 +711,48 @@ def main() -> int:
     with _throwaway_store(args.dsn, emb, corpus.root, "storelat_") as store:
         n_chunks = store.count()  # invariant across the sweep; one count, not one per config
         print(f"  indexed {n_chunks} chunks in {time.perf_counter() - t0:.1f}s")
-        configs = [(ck, rr) for ck in candidate_ks for rr in ([None, reranker] if reranker else [None])]
-        for ck, rr in configs:
-            print(f"  measuring candidate_k={ck} rerank={'yes' if rr else 'no'} ...")
+        if sparse_encoder is not None:
+            print(f"  encoding {n_chunks} chunks to the learned sparse sidecar ...")
+            t_sparse = time.perf_counter()
+            sparse_result = backfill_learned_sparse(
+                store, sparse_encoder,
+                progress=lambda done: print(f"    {done}/{n_chunks}", flush=True),
+            )
+            assert_sparse_coverage(
+                store, sparse_encoder.profile.profile_id, empty_ids=sparse_result.empty_ids
+            )
+            print(f"  encoded in {time.perf_counter() - t_sparse:.1f}s")
+        configs = [
+            (backend, ck, rr)
+            for backend in sparse_backends
+            for ck in candidate_ks
+            for rr in ([None, reranker] if reranker else [None])
+        ]
+        for backend, ck, rr in configs:
+            print(f"  measuring backend={backend} candidate_k={ck} rerank={'yes' if rr else 'no'} ...")
             splits.append(
                 measure(
                     store, emb, queries, candidate_k=ck, reranker=rr,
                     n_chunks=n_chunks, repeats=args.repeats,
+                    sparse_backend=backend,
+                    sparse_encoder=sparse_encoder if backend in ("splade", "both") else None,
                 )
+            )
+
+    # Sampled AFTER the timed phase as well. A box that was quiet at the start can be busy by the
+    # end of a forty minute run, and a pre-run reading alone would certify a window that closed.
+    # This one cannot un-measure the run, so it is a note rather than a refusal, and `notes`
+    # already drives the exit code.
+    load_after = read_load_per_core()
+    if (
+        not args.allow_busy_host
+        and load_after is not None
+        and load_after > args.max_load_per_core
+    ):
+        for split in splits:
+            split.notes.append(
+                f"host load rose to {load_after:.2f} per core during the run (ceiling "
+                f"{args.max_load_per_core:.2f}); these figures include contention"
             )
 
     # Provenance is EMITTED, not stamped on afterwards. Latency is the most host- and
@@ -684,6 +774,10 @@ def main() -> int:
                         "real 72k-chunk corpus where this run measures single-digit ms. Do not "
                         "generalise the sparse figure in either direction."
                     ),
+                    "host_load_per_core_before": load_before,
+                    "host_load_per_core_after": load_after,
+                    "host_load_ceiling_per_core": args.max_load_per_core,
+                    "host_load_override": args.allow_busy_host,
                 },
                 "artifact": "per-leg latency attribution behind the store-share figure",
                 "generated_at": generated_at(),
@@ -694,6 +788,17 @@ def main() -> int:
                 "seed": args.seed,
                 "queries": len(queries),
                 "repeats": args.repeats,
+                "sparse_backends": sparse_backends,
+                "sparse_profile": (
+                    None if sparse_encoder is None
+                    else {
+                        "profile_id": sparse_encoder.profile.profile_id,
+                        "model_name": sparse_encoder.profile.model_name,
+                        "artifact_digest": sparse_encoder.profile.artifact_digest,
+                        "top_k": sparse_encoder.profile.top_k,
+                        "fingerprint": sparse_encoder.profile.fingerprint(),
+                    }
+                ),
                 "stack": model_stack(),
                 "splits": [asdict(s) for s in splits],
             },
