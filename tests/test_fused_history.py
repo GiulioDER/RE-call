@@ -30,6 +30,16 @@ def test_a_colon_inside_a_turn_survives() -> None:
     assert build_history_query(["note: this matters"]) == "note: this matters"
 
 
+def test_a_leading_pipe_without_a_real_speaker_tag_survives() -> None:
+    """A line starting with a pipe and containing a later colon is not automatically a speaker tag.
+
+    Only `|speaker|: ` (a pipe, non-pipe characters, a closing pipe, a colon) is a speaker tag.
+    `|agent| said: hello` starts with a pipe and has a colon, but the text between the pipes is not
+    the whole tag, so the old "starts with | and contains :" rule wrongly ate `|agent| said`.
+    """
+    assert build_history_query(["|agent| said: hello"]) == "|agent| said: hello"
+
+
 def test_blank_turns_are_dropped_not_joined_as_empty_lines() -> None:
     assert build_history_query(["a", "   ", "b"]) == "a\nb"
 
