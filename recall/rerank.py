@@ -161,3 +161,60 @@ def late_interaction_licence(
             f"decision), or keep the default {DEFAULT_LATE_INTERACTION_MODEL}."
         )
     return licence
+
+
+class LateInteractionReranker:
+    """Reorder hits by ColBERT style MaxSim. Requires `pip install recall[fastembed]`.
+
+    The encoder is INJECTED rather than loaded in `__init__`, mirroring `SpladeEncoder`, so the
+    scoring path is testable against fake token matrices without a 0.44 GB download.
+    `from_pretrained` is the production constructor.
+
+    Queries go through `query_embed` and documents through `passage_embed`. ColBERT prepends
+    distinct `[Q]`/`[D]` markers and pads the query side with `[MASK]` tokens, so using one method
+    for both sides yields wrong scores that still look like plausible numbers.
+    """
+
+    def __init__(self, encoder: object, *, model_name: str) -> None:
+        # Validates the checkpoint even on the injected path: a test or a benchmark that fakes the
+        # encoder must not be able to fake its way past the licence registry.
+        self.licence = late_interaction_licence(model_name, accept_noncommercial_license=True)
+        self.model_name = model_name
+        self._encoder = encoder
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_name: str = DEFAULT_LATE_INTERACTION_MODEL,
+        *,
+        accept_noncommercial_license: bool = False,
+        cache_dir: str | None = None,
+        threads: int | None = None,
+    ) -> "LateInteractionReranker":
+        """Load `model_name`, refusing an unknown or non-permissive checkpoint."""
+        late_interaction_licence(
+            model_name, accept_noncommercial_license=accept_noncommercial_license
+        )
+        try:
+            from fastembed import LateInteractionTextEmbedding
+        except ImportError as exc:  # pragma: no cover - exercised only without the extra
+            raise ImportError(
+                "LateInteractionReranker requires: pip install recall[fastembed]"
+            ) from exc
+        encoder = LateInteractionTextEmbedding(
+            model_name=model_name, cache_dir=cache_dir, threads=threads
+        )
+        return cls(encoder, model_name=model_name)
+
+    def rerank(self, query: str, hits: list[ScoredChunk]) -> list[ScoredChunk]:
+        if not hits:
+            return hits
+        qtokens = list(self._encoder.query_embed([query]))[0]  # type: ignore[attr-defined]
+        texts = [h.chunk.text for h in hits]
+        dtokens = list(self._encoder.passage_embed(texts))  # type: ignore[attr-defined]
+        scores = [maxsim(qtokens, d) for d in dtokens]
+        order = sorted(range(len(hits)), key=lambda i: scores[i], reverse=True)
+        # Reorder ONLY, each hit keeps its dense cosine `score`, `indexed_at` and
+        # `first_indexed_at`. Identical to CrossEncoderReranker.rerank and for the identical
+        # reason: `recall.trust` reads `score` as a cosine.
+        return [hits[i] for i in order]

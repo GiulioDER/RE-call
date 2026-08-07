@@ -86,3 +86,128 @@ def test_unknown_checkpoint_refused_even_with_optin():
     """The opt-in waives the LICENCE check, not the REGISTRY check."""
     with pytest.raises(ValueError, match="unknown late-interaction model"):
         late_interaction_licence("some/unrecorded-colbert", accept_noncommercial_license=True)
+
+
+from recall.rerank import LateInteractionReranker, Reranker
+from recall.types import Chunk, ScoredChunk
+
+
+class _FakeEncoder:
+    """Returns pre-set token matrices by text. Records which method each text went through, so a
+    test can prove queries use `query_embed` and documents use `passage_embed`."""
+
+    def __init__(self, table: dict[str, list[list[float]]]) -> None:
+        self._table = table
+        self.query_calls: list[str] = []
+        self.passage_calls: list[str] = []
+
+    def query_embed(self, texts):
+        texts = list(texts)
+        self.query_calls.extend(texts)
+        return [np.array(self._table[t]) for t in texts]
+
+    def passage_embed(self, texts):
+        texts = list(texts)
+        self.passage_calls.extend(texts)
+        return [np.array(self._table[t]) for t in texts]
+
+
+def _hit(cid: str, text: str, score: float) -> ScoredChunk:
+    return ScoredChunk(chunk=Chunk(id=cid, source="f", text=text), score=score)
+
+
+def _reranker(table):
+    return LateInteractionReranker(_FakeEncoder(table), model_name="colbert-ir/colbertv2.0")
+
+
+def test_satisfies_the_reranker_protocol():
+    assert isinstance(_reranker({}), Reranker)
+
+
+def test_reorders_by_maxsim():
+    table = {
+        "q": [[1.0, 0.0]],
+        "far": [[0.0, 1.0]],   # maxsim 0.0
+        "near": [[1.0, 0.0]],  # maxsim 1.0
+    }
+    hits = [_hit("far", "far", 0.9), _hit("near", "near", 0.1)]
+    out = _reranker(table).rerank("q", hits)
+    assert [h.chunk.id for h in out] == ["near", "far"]
+
+
+def test_preserves_dense_cosine_score():
+    """THE load-bearing invariant. trust.py:292 thresholds on `score` and trust.py:536 feeds it to
+    cal.confidence(). A MaxSim value is an unbounded sum in different units; leaking it into
+    `score` would corrupt calibrated confidence for every hit. Same hazard rerank.py:84 documents
+    for the cross-encoder."""
+    table = {
+        "q": [[1.0, 0.0]],
+        "far": [[0.0, 1.0]],
+        "near": [[1.0, 0.0]],
+    }
+    hits = [_hit("far", "far", 0.9), _hit("near", "near", 0.1)]
+    out = _reranker(table).rerank("q", hits)
+    by_id = {h.chunk.id: h.score for h in out}
+    assert by_id == {"far": 0.9, "near": 0.1}
+    assert sorted(h.score for h in out) == sorted(h.score for h in hits)
+
+
+def test_preserves_indexed_at_and_first_indexed_at():
+    from datetime import datetime, timezone
+
+    stamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    first = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    table = {"q": [[1.0, 0.0]], "a": [[1.0, 0.0]]}
+    hits = [
+        ScoredChunk(
+            chunk=Chunk(id="a", source="f", text="a"),
+            score=0.5,
+            indexed_at=stamp,
+            first_indexed_at=first,
+        )
+    ]
+    out = _reranker(table).rerank("q", hits)
+    assert out[0].indexed_at == stamp
+    assert out[0].first_indexed_at == first
+
+
+def test_uses_query_embed_for_query_and_passage_embed_for_documents():
+    """ColBERT prepends distinct [Q]/[D] markers and pads queries with [MASK]. Using `embed` for
+    both sides produces wrong scores that still look like plausible numbers."""
+    table = {"q": [[1.0, 0.0]], "a": [[1.0, 0.0]]}
+    encoder = _FakeEncoder(table)
+    LateInteractionReranker(encoder, model_name="colbert-ir/colbertv2.0").rerank(
+        "q", [_hit("a", "a", 0.5)]
+    )
+    assert encoder.query_calls == ["q"]
+    assert encoder.passage_calls == ["a"]
+
+
+def test_empty_hits_returns_empty():
+    assert _reranker({}).rerank("q", []) == []
+
+
+def test_ties_preserve_input_order():
+    table = {"q": [[1.0, 0.0]], "a": [[1.0, 0.0]], "b": [[1.0, 0.0]]}
+    hits = [_hit("a", "a", 0.1), _hit("b", "b", 0.2)]
+    out = _reranker(table).rerank("q", hits)
+    assert [h.chunk.id for h in out] == ["a", "b"]
+
+
+def test_output_is_a_permutation_of_input():
+    table = {"q": [[1.0, 0.0]], "a": [[0.0, 1.0]], "b": [[1.0, 0.0]]}
+    hits = [_hit("a", "a", 0.1), _hit("b", "b", 0.2)]
+    out = _reranker(table).rerank("q", hits)
+    assert len(out) == len(hits)
+    assert {h.chunk.id for h in out} == {"a", "b"}
+
+
+def test_records_its_licence():
+    rr = _reranker({})
+    assert rr.model_name == "colbert-ir/colbertv2.0"
+    assert rr.licence == "mit"
+
+
+def test_construction_refuses_an_unregistered_checkpoint():
+    with pytest.raises(ValueError, match="unknown late-interaction model"):
+        LateInteractionReranker(_FakeEncoder({}), model_name="some/unrecorded")
