@@ -460,26 +460,74 @@ def restore(dsn: str, table: str, src: Path, *, truncate: bool = False) -> dict[
             # them anyway made a scoped restore of tenant A refuse because tenant B was encoded,
             # and the remedy in the message ("clear them first") would have destroyed B's index.
             # An unscoped dump still checks the whole table, which is the correct width for it.
+            #
+            # Broken down by PROFILE as well as tenant. The suppression this guard protects
+            # against is `sparse_row_count(tenant_id, chunk_table, profile_id)` — per profile —
+            # so a refusal that says only "clear those tenants' rows" points the operator at a
+            # DELETE wide enough to destroy an unrelated profile's encoding, which is the same
+            # harm as the cross-tenant version fixed earlier. The dump carries no profile id, so
+            # the guard cannot narrow WHAT it refuses on; it can and must narrow what it tells
+            # you to remove.
+            # The scope predicate is built ONCE and reused for the total, the breakdown and the
+            # SQL handed to the operator, so the three cannot disagree about which rows they are
+            # talking about. An earlier version rebuilt the operator's query without the tenant
+            # clause: the message told them "deleting wider than this list destroys another
+            # profile's index" and then supplied a query that WAS wider, which is the
+            # cross-tenant harm this guard exists to avoid, printed as the remedy.
+            where: str
+            params: tuple[object, ...]
             if tenants:
-                stale = conn.execute(
-                    f"SELECT count(*) FROM {SPARSE_TABLE} "
-                    f"WHERE chunk_table = %s AND tenant_id = ANY(%s)",
-                    (table, list(tenants)),
-                ).fetchone()
+                where, params = "chunk_table = %s AND tenant_id = ANY(%s)", (table, list(tenants))
                 scope = f"for {len(tenants)} restored tenant(s)"
+                tenant_list = ", ".join(f"'{t}'" for t in tenants)
+                operator_sql = (
+                    f"SELECT tenant_id, profile_id, count(*) FROM {SPARSE_TABLE} "
+                    f"WHERE chunk_table = '{table}' AND tenant_id IN ({tenant_list}) GROUP BY 1, 2"
+                )
             else:
-                stale = conn.execute(
-                    f"SELECT count(*) FROM {SPARSE_TABLE} WHERE chunk_table = %s", (table,)
-                ).fetchone()
+                where, params = "chunk_table = %s", (table,)
                 scope = "across all tenants"
-            if stale and stale[0]:
+                operator_sql = (
+                    f"SELECT tenant_id, profile_id, count(*) FROM {SPARSE_TABLE} "
+                    f"WHERE chunk_table = '{table}' GROUP BY 1, 2"
+                )
+            # The total is an AGGREGATE the server computes; only the breakdown needs rows. The
+            # previous version capped the rendered string but still `fetchall()`ed one tuple per
+            # group — bounding the symptom on the same unbounded group count the cap's own
+            # comment says the code cannot bound. LIMIT 21 fetches one row past the cap, which is
+            # also how the overflow is detected without counting the tail.
+            _SHOWN = 20
+            total_row = conn.execute(
+                f"SELECT count(*) FROM {SPARSE_TABLE} WHERE {where}", params
+            ).fetchone()
+            total = int(total_row[0]) if total_row else 0
+            if total:
+                stale_rows = conn.execute(
+                    f"SELECT tenant_id, profile_id, count(*) FROM {SPARSE_TABLE} "
+                    f"WHERE {where} GROUP BY tenant_id, profile_id "
+                    # `COLLATE "C"` for the same reason the digest uses it (see `_digest_one`):
+                    # this was the module's only text ORDER BY that lacked it, so the same
+                    # destination listed its groups differently per server `lc_collate`.
+                    f'ORDER BY tenant_id COLLATE "C", profile_id COLLATE "C" '
+                    f"LIMIT {_SHOWN + 1}",
+                    params,
+                ).fetchall()
+                breakdown = "; ".join(
+                    f"tenant_id={r[0]!r} profile_id={r[1]!r}: {r[2]} rows"
+                    for r in stale_rows[:_SHOWN]
+                )
+                if len(stale_rows) > _SHOWN:
+                    breakdown += (
+                        f"; ... and more group(s) beyond the first {_SHOWN} — for the full list, "
+                        f"scoped exactly as this refusal is: {operator_sql}"
+                    )
                 raise SystemExit(
-                    f"the destination holds {stale[0]} learned-sparse rows {scope} for "
+                    f"the destination holds {total} learned-sparse rows {scope} for "
                     f"{table!r} in {SPARSE_TABLE}, which this transfer does not move and cannot "
                     f"verify. Restoring would leave them orphaned against the new chunk ids while "
                     f"sparse_row_count() stays non-zero, suppressing the very guard that exists "
-                    f"to catch an unencoded corpus. Clear those tenants' rows first, or re-encode "
-                    f"after."
+                    f"to catch an unencoded corpus. Clear exactly these, or re-encode after — "
+                    f"deleting wider than this list destroys another profile's index: {breakdown}"
                 )
 
         if truncate:
