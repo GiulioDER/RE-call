@@ -438,6 +438,39 @@ def test_records_its_licence():
 def test_construction_refuses_an_unregistered_checkpoint():
     with pytest.raises(ValueError, match="unknown late-interaction model"):
         LateInteractionReranker(_FakeEncoder({}), model_name="some/unrecorded")
+
+
+def test_unscoreable_document_sorts_last_instead_of_aborting_the_batch():
+    """`maxsim` refuses a zero-token document, and for one document that is right. For a BATCH it
+    is not: raising would break reranking for every hit in the request over one malformed chunk.
+    Last is not mid-pool, so the original objection to scoring 0.0 is still honoured."""
+    table = {"q": [[1.0, 0.0]], "empty": [], "ok": [[1.0, 0.0]], "weak": [[0.0, 1.0]]}
+    hits = [_hit("empty", "empty", 0.9), _hit("weak", "weak", 0.5), _hit("ok", "ok", 0.1)]
+    out = _reranker(table).rerank("q", hits)
+    assert [h.chunk.id for h in out] == ["ok", "weak", "empty"]
+
+
+def test_unscoreable_documents_keep_their_input_order_among_themselves():
+    table = {"q": [[1.0, 0.0]], "e1": [], "e2": [], "ok": [[1.0, 0.0]]}
+    hits = [_hit("e1", "e1", 0.9), _hit("e2", "e2", 0.5), _hit("ok", "ok", 0.1)]
+    out = _reranker(table).rerank("q", hits)
+    assert [h.chunk.id for h in out] == ["ok", "e1", "e2"]
+
+
+def test_unscoreable_document_still_keeps_its_dense_cosine():
+    """The reorder-only invariant must hold for the salvaged case too."""
+    table = {"q": [[1.0, 0.0]], "empty": [], "ok": [[1.0, 0.0]]}
+    hits = [_hit("empty", "empty", 0.9), _hit("ok", "ok", 0.1)]
+    out = _reranker(table).rerank("q", hits)
+    assert {h.chunk.id: h.score for h in out} == {"empty": 0.9, "ok": 0.1}
+
+
+def test_empty_query_still_raises():
+    """Deliberately NOT salvaged. With no query tokens there is no evidence to rank anything by,
+    so unlike a single bad document there is no partial ordering worth returning."""
+    table = {"q": [], "ok": [[1.0, 0.0]]}
+    with pytest.raises(ValueError, match="query has no tokens"):
+        _reranker(table).rerank("q", [_hit("ok", "ok", 0.1)])
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -497,8 +530,20 @@ class LateInteractionReranker:
         if not hits:
             return hits
         qtokens = list(self._encoder.query_embed([query]))[0]  # type: ignore[attr-defined]
-        dtokens = list(self._encoder.passage_embed([h.chunk.text for h in hits]))  # type: ignore[attr-defined]
-        scores = [maxsim(qtokens, d) for d in dtokens]
+        texts = [h.chunk.text for h in hits]
+        dtokens = list(self._encoder.passage_embed(texts))  # type: ignore[attr-defined]
+        # A document that encodes to zero tokens cannot be scored, and `maxsim` refuses it. That
+        # refusal is right for ONE document, because 0.0 is not a neutral score, it lands the item
+        # mid-pool. It is wrong for a BATCH: raising here would abort reranking for every hit in
+        # the request over one malformed chunk, which is worse than the outcome the refusal exists
+        # to prevent. Ranking such a document LAST satisfies the original objection (last is not
+        # mid) without letting one bad chunk break every query that retrieves it.
+        #
+        # The QUERY side deliberately still raises, via `maxsim`: if the query encodes to nothing
+        # there is no evidence to rank ANY document by, so there is no salvageable ordering.
+        scores = [
+            float("-inf") if d.shape[0] == 0 else maxsim(qtokens, d) for d in dtokens
+        ]
         order = sorted(range(len(hits)), key=lambda i: scores[i], reverse=True)
         # Reorder ONLY — each hit keeps its dense cosine `score`, `indexed_at` and
         # `first_indexed_at`. Identical to CrossEncoderReranker.rerank and for the identical
@@ -509,7 +554,7 @@ class LateInteractionReranker:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_late_interaction_rerank.py -v`
-Expected: PASS, 22 passed
+Expected: PASS, 26 passed
 
 - [ ] **Step 5: Verify the whole suite is still green**
 
