@@ -59,6 +59,15 @@ RESULTS_ROOT = REPO_ROOT / "results"
 #: its own docstring. Gating the churning document would WEAKEN the gate on the stable ones. Revisit
 #: only if the baseline is split per document, or if the status doc's historical entries are frozen
 #: out of scanning.
+#:
+#: 🔑 REGENERATE THE BASELINE AGAINST THE MERGE RESULT, NOT YOUR BRANCH TIP. CI's `pull_request`
+#: event builds the merge of your branch into `master`, so the gate scans content your checkout may
+#: never have had. This is not hypothetical: arming this tuple went green locally and red in CI on
+#: a single occurrence (`'0': 5 -> 6`) contributed by a concurrent commit to the same document that
+#: had landed on master in the meantime. The failure message reports the CURRENT count, not the
+#: delta, which makes a one-number drift read like a six-number one. Merge `origin/master` first,
+#: then regenerate, then verify the only rows that moved are the ones you expect. A gated document
+#: that other pull requests also edit will need this on every rebase.
 GATED_DOCS: tuple[str, ...] = (
     "results/RESULTS.md",
     "results/FINDINGS.md",
