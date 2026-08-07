@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from recall.types import ScoredChunk
+
+if TYPE_CHECKING:  # pragma: no cover - numpy arrives with the fastembed extra
+    import numpy as np
 
 
 @runtime_checkable
@@ -51,3 +54,26 @@ class CrossEncoderReranker:
         # into `score` would corrupt every downstream consumer that reads it as a cosine
         # (the trust layer's thresholds and calibrated confidence in particular).
         return [hits[i] for i in order]
+
+
+def maxsim(query_tokens: "np.ndarray", doc_tokens: "np.ndarray") -> float:
+    """ColBERT late-interaction score: sum over query tokens of the best-matching doc token.
+
+    Both arrays are `(n_tokens, dim)` and L2-normalised by the encoder, so a dot product is a
+    cosine. The `max` is the whole point: it keeps per-token evidence instead of pooling the
+    pair into one representation, which is the deficiency this experiment exists to test.
+
+    Empty inputs RAISE rather than scoring 0.0, for the reason `rerank_order` raises on a
+    missing score: a zero is not a neutral value in a ranking, it silently places the item
+    mid-pool.
+    """
+    if query_tokens.shape[0] == 0:
+        raise ValueError("query has no tokens")
+    if doc_tokens.shape[0] == 0:
+        raise ValueError("document has no tokens")
+    if query_tokens.shape[1] != doc_tokens.shape[1]:
+        raise ValueError(
+            f"dimension mismatch: query is {query_tokens.shape[1]}-d, "
+            f"document is {doc_tokens.shape[1]}-d"
+        )
+    return float((query_tokens @ doc_tokens.T).max(axis=1).sum())
