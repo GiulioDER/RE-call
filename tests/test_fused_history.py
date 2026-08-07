@@ -7,8 +7,6 @@ is one specific rule and this reproduces it.
 
 from __future__ import annotations
 
-import pytest
-
 from recall.retriever import FUSED_HISTORY_MAX_CHARS, build_history_query
 
 

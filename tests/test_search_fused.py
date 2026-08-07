@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import pytest
 
+from recall.embeddings import embed_query
 from recall.retriever import HybridRetriever
-from tests.fakes import FakeEmbedder, FakeStore
+from tests.fakes import FakeEmbedder, FakeStore, VectorKeyedFakeStore
 
 
 class _StubReranker:
@@ -106,11 +107,11 @@ def test_the_pool_is_capped_before_reranking() -> None:
     Fusion roughly doubles the pool, so an absent cap is a measured regression, not an
     inefficiency.
     """
-    seen: dict[str, int] = {}
+    calls: list[int] = []
 
     class _CountingReranker:
         def rerank(self, query, hits):
-            seen["count"] = len(hits)
+            calls.append(len(hits))
             return list(hits)
 
     rows = [(f"d{i}", 0.5) for i in range(150)]
@@ -122,7 +123,63 @@ def test_the_pool_is_capped_before_reranking() -> None:
 
     retriever.search_fused("q", ["earlier"], k=5)
 
-    assert seen["count"] == 100
+    # `calls` records every invocation rather than being overwritten on each one: a reranker
+    # invoked twice, for instance as `rerank(query, rerank(query, hits))`, would still leave a
+    # LAST recorded size of 100 (the cap was already applied before the first call), so checking
+    # only the size would not catch a double call. Asserting the full call list catches both the
+    # pool size and the call count in one assertion.
+    assert calls == [100]
+
+
+def test_reranker_receives_the_users_query_not_the_history_concatenation() -> None:
+    """The cross-encoder must score candidates against the USER'S QUESTION, not the concatenated
+    history: that is the mechanism the whole feature's measured gain rests on. Raw (no reranking),
+    this arm scores 0.0447 nDCG@5 below `search()`; reranking against the wrong text would not
+    repair that damage the way reranking against the query does.
+
+    Every stub reranker elsewhere in this suite ignores its `query` argument, so a mutation
+    swapping the call to `reranker.rerank(history_query, hits)` would leave the rest of the suite
+    green. This one records what it was actually given.
+    """
+    from recall.retriever import build_history_query
+
+    calls: list[str] = []
+
+    class _QueryRecordingReranker:
+        def rerank(self, query, hits):
+            calls.append(query)
+            return list(hits)
+
+    store = FakeStore(dense=[("a", 0.9)], sparse=[("b", 0.4)])
+    retriever = HybridRetriever(
+        store, FakeEmbedder(), reranker=_QueryRecordingReranker(), sparse_backend="lexical"
+    )
+
+    query = "the actual question"
+    history = ["an earlier turn, worded very differently from the question"]
+    retriever.search_fused(query, history, k=5)
+
+    assert calls == [query]
+    assert calls != [build_history_query(history)]
+
+
+def test_source_reaches_both_the_query_leg_and_the_history_leg() -> None:
+    """A caller who scopes retrieval to one source must have that scope honoured on the HISTORY
+    leg too, not just the query leg.
+
+    `FakeStore` ignores `source` by default, so nothing else in this suite would catch a history
+    leg that retrieved unscoped: out-of-scope chunks would enter the fused pool silently. Dense is
+    queried on every leg regardless of `sparse_backend`, so recording its `source` argument on
+    each call is enough to see both legs.
+    """
+    store = FakeStore(dense=[("a", 0.9)], sparse=[("b", 0.4)])
+    retriever = HybridRetriever(
+        store, FakeEmbedder(), reranker=_StubReranker(), sparse_backend="lexical"
+    )
+
+    retriever.search_fused("q", ["earlier"], k=5, source="tenant-1")
+
+    assert store.dense_sources == ["tenant-1", "tenant-1"]
 
 
 def test_gap_warning_uses_the_query_not_the_history() -> None:
@@ -130,14 +187,28 @@ def test_gap_warning_uses_the_query_not_the_history() -> None:
 
     Letting a strong match on stale earlier context suppress the warning is the guard failing in
     the dangerous direction.
+
+    `FakeStore.query_dense` ignores its `vector` argument, so the query leg and the history leg
+    would return identical rows and this test could not tell "computed from the query" apart from
+    "computed from the history". `VectorKeyedFakeStore` scripts the two legs to genuinely differ:
+    the QUERY vector resolves to a weak dense hit (0.01, below `gap_threshold`) and the HISTORY
+    vector resolves to a strong one (0.99, above it). If `search_fused` ever fed the history leg
+    into the gap computation instead of the query leg, this would read the strong history score and
+    wrongly report no gap.
     """
-    store = FakeStore(dense=[("a", 0.01)], sparse=[])
+    embedder = FakeEmbedder()
+    query, history_turn = "q", "an earlier turn of very different length from the query"
+    qvec = tuple(embed_query(embedder, query))
+    hvec = tuple(embed_query(embedder, history_turn))
+    assert qvec != hvec, "the fixture needs two distinguishable query vectors"
+
+    store = VectorKeyedFakeStore({qvec: [("a", 0.01)], hvec: [("h", 0.99)]})
     retriever = HybridRetriever(
-        store, FakeEmbedder(), reranker=_StubReranker(), sparse_backend="lexical",
+        store, embedder, reranker=_StubReranker(), sparse_backend="lexical",
         gap_threshold=0.5,
     )
 
-    assert retriever.search_fused("q", ["earlier"], k=5).gap_warning is True
+    assert retriever.search_fused(query, [history_turn], k=5).gap_warning is True
 
 
 def test_the_result_carries_the_query_not_the_concatenation() -> None:

@@ -27,6 +27,10 @@ class FakeStore:
         self.sparse_vec_used: list[float] | None = None
         self.learned_vec_used: list[float] | None = None
         self.cosines_calls: list[tuple[tuple[str, ...], tuple[float, ...]]] = []
+        #: `source` as received on each `query_dense` call, in call order. Dense is queried on
+        #: every leg regardless of `sparse_backend`, so this is the one place a caller scoped to
+        #: one source can check that BOTH the query leg and the history leg honoured that scope.
+        self.dense_sources: list[str | None] = []
 
     @staticmethod
     def _hits(rows: list[tuple[str, float]]) -> list[ScoredChunk]:
@@ -39,6 +43,7 @@ class FakeStore:
         ]
 
     def query_dense(self, vector, k, source=None):
+        self.dense_sources.append(source)
         return self._hits(self._dense[:k])
 
     def query_sparse(self, text, k, source=None, vec=None):
@@ -55,3 +60,30 @@ class FakeStore:
 
     def newest_indexed_at(self):
         return datetime.now(UTC)
+
+
+class VectorKeyedFakeStore(FakeStore):
+    """A `FakeStore` whose dense leg varies BY QUERY VECTOR, unlike the base class, which returns
+    the same fixed rows no matter what vector it is asked to search.
+
+    Needed to build a scenario where the query's dense leg and the history's dense leg must return
+    genuinely different rows, for example to pin `gap_warning` to the query leg specifically: with
+    `FakeStore`'s fixed dense leg, the query and history variants are indistinguishable, so a
+    mutation that fed the history leg into the gap computation would still pass.
+
+    A vector with no entry in `dense_by_vector` reads as no dense hits, matching the base class's
+    behaviour for any leg the caller did not script.
+    """
+
+    def __init__(
+        self,
+        dense_by_vector: dict[tuple[float, ...], list[tuple[str, float]]],
+        sparse: list[tuple[str, float]] | None = None,
+        learned: list[tuple[str, float]] | None = None,
+    ) -> None:
+        super().__init__(sparse=sparse, learned=learned)
+        self._dense_by_vector = dense_by_vector
+
+    def query_dense(self, vector, k, source=None):
+        self.dense_sources.append(source)
+        return self._hits(self._dense_by_vector.get(tuple(vector), [])[:k])
