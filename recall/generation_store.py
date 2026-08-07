@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
@@ -304,6 +304,28 @@ class GenerationStore(PgVectorStore):
             ).fetchone()
         )
         return row[0] if row else None
+
+    def _cosines_for(self, ids: Sequence[str], vec: list[float]) -> dict[str, float]:
+        """Generation-scoped rescore. PRIVATE for the same reason as `_newest_indexed_at`.
+
+        The base implementation selects `id` from `self._table`, but `recall_chunks_v1`'s
+        identifier column is `chunk_id`, not `id`, and it holds rows from every generation the
+        tenant has in `LIVE_MANIFEST_STATES` at once, so an unscoped query would raise
+        `UndefinedColumn` and, once the column name were fixed, could still return a cosine for a
+        chunk from a retired or not yet active generation, not the one being searched.
+        """
+        wanted = list(dict.fromkeys(str(i) for i in ids))
+        generation_id = self._generation_id()
+
+        def _op(conn: psycopg.Connection) -> list[tuple[Any, ...]]:
+            return conn.execute(
+                "SELECT chunk_id, 1 - (embedding <=> %s) FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s AND chunk_id = ANY(%s)",
+                (Vector(vec), self._tenant, generation_id, wanted),
+            ).fetchall()
+
+        rows = self._with_retry(_op)
+        return {str(row[0]): float(row[1]) for row in rows}
 
     def count(self) -> int:
         generation_id = self._generation_id()
