@@ -7,6 +7,7 @@ from benchmarks.mtrag.late_interaction import (
     LATE_ARMS,
     LateArm,
     _resolve_arm,
+    _score_delta,
     arm_record,
     assert_complete,
     holm_family,
@@ -333,6 +334,37 @@ def test_validate_reports_the_worst_score_delta():
     scores = {"t1": {"far": 0.0, "mid": 0.6, "multi": 1.0004}}
     report = validate_sample(_live_reranker(_TABLE), _ROWS, _DOCS, scores)
     assert report["max_score_delta"] == pytest.approx(0.0004, abs=1e-9)
+
+
+def test_score_delta_treats_tied_infinities_as_zero_rather_than_nan():
+    """`-inf - -inf` is NaN in plain float arithmetic, and NaN silently corrupts `max()`: every
+    comparison against it is False. Two zero-token documents (or the same one scored both ways)
+    agreeing at `-inf` is agreement, not an undefined delta."""
+    delta = _score_delta(float("-inf"), float("-inf"))
+    assert delta == 0.0
+    assert delta == delta  # not NaN, which would fail this
+
+
+def test_score_delta_computes_the_absolute_difference_otherwise():
+    assert _score_delta(1.0, 0.6) == pytest.approx(0.4)
+    assert _score_delta(float("-inf"), 0.6) == float("inf")
+
+
+def test_validate_does_not_mask_a_real_mismatch_behind_a_tied_unscoreable_candidate():
+    """The regression this guards: a zero-token candidate now scores `-inf` on both sides
+    instead of raising, and NAIVELY subtracting two `-inf`s gives NaN. `max()` treats every
+    comparison against NaN as False, so if that NaN is produced FIRST it silently freezes
+    `worst_delta` and every later, real mismatch in the same sample is hidden rather than
+    reported. This table puts the tied `-inf` candidate first in `candidates` to pin that
+    ordering specifically."""
+    table = {**_TABLE, "empty": []}
+    docs = {**_DOCS, "empty": "empty"}
+    rows = [{"task_id": "t1", "query": "q", "candidates": ["empty", "far", "mid", "multi"]}]
+    # `multi` is genuinely mismatched: offloaded says 9.0, the live reranker computes 1.0.
+    scores = {"t1": {"empty": float("-inf"), "far": 0.0, "mid": 0.6, "multi": 9.0}}
+    report = validate_sample(_live_reranker(table), rows, docs, scores)
+    assert report["max_score_delta"] == pytest.approx(8.0)
+    assert report["verdict"] == "MISMATCH"
 
 
 def test_resolve_arm_refuses_a_noncommercial_arm_without_the_optin():
