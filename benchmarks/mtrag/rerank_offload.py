@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -94,6 +95,32 @@ ORDER_EXACT_K = 10
 #: are cut, and the top-100 SET is exact so Recall@100 is unaffected -- and reports deeper
 #: tie-swaps as information rather than failure.
 SCORE_TOLERANCE = 1e-3
+
+
+def score_delta(offloaded: float, local: float) -> float:
+    """Absolute difference between two scores, treating equal sentinels as agreement.
+
+    `-inf - -inf` is NaN, and NaN silently corrupts `max()`: every comparison against NaN is
+    False, so a NaN produced by a zero-token document's tied `-inf` scores can hide a real,
+    larger mismatch on a DIFFERENT candidate elsewhere in the same sample rather than surfacing
+    it. Equal inputs, including two `-inf`s, are zero delta by definition; only genuinely
+    different scores get subtracted at all.
+
+    A score that is ALREADY NaN (a hand-edited or corrupted scores file: bare `NaN` is valid
+    JSON to `json.loads`, or a NaN-valued token embedding reaching `maxsim`) is not equal to
+    anything, including itself, so it would slip past the check above and reproduce the exact
+    corruption this function exists to prevent. That is refused explicitly rather than silently
+    subtracted.
+
+    Shared by the cross-encoder validate gate here and `late_interaction.validate_sample`. Two
+    definitions of "how far apart are these scores" would drift exactly as
+    `compare_orderings` warns above.
+    """
+    if math.isnan(offloaded) or math.isnan(local):
+        raise ValueError(f"NaN score cannot be compared: offloaded={offloaded}, local={local}")
+    if offloaded == local:
+        return 0.0
+    return abs(offloaded - local)
 
 
 def rerank_order(candidates: list[str], scores: dict[str, float]) -> list[str]:
@@ -270,6 +297,31 @@ def cmd_apply(args: argparse.Namespace) -> int:
     return 0
 
 
+def compare_orderings(
+    local: list[str],
+    offloaded: list[str],
+    local_by_id: dict[str, float],
+    task_id: str,
+) -> tuple[dict | None, bool]:
+    """Compare one query's local ordering against its offloaded one.
+
+    Returns `(failure_or_None, is_deep_tie)`. Shared by the cross-encoder and late-interaction
+    validate gates: they differ in how `local_by_id` is computed, not in what counts as a
+    mismatch, and two copies of that definition would drift apart.
+
+    What this guarantees, and deliberately no more: order is exact where metrics are cut, and the
+    top-`EVAL_K` SET is exact so Recall@100 is unaffected. Deeper swaps are near-ties, reported as
+    information, see SCORE_TOLERANCE above for why demanding more is a gate that cannot pass.
+    """
+    if local[:ORDER_EXACT_K] != offloaded[:ORDER_EXACT_K]:
+        return {"task_id": task_id, "why": f"top-{ORDER_EXACT_K} order differs"}, False
+    if set(local[:EVAL_K]) != set(offloaded[:EVAL_K]):
+        return {"task_id": task_id, "why": f"top-{EVAL_K} set differs"}, False
+    if local != offloaded:
+        return None, True
+    return None, False
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     """Require the offloaded ordering to match the real reranker EXACTLY on a sample.
 
@@ -320,21 +372,18 @@ def cmd_validate(args: argparse.Namespace) -> int:
         local_scores = reranker._model.predict([(row["query"], h.chunk.text) for h in hits])
         local_by_id = {c: float(v) for c, v in zip(candidates, local_scores, strict=True)}
         worst_delta = max(
-            worst_delta, max(abs(offloaded_scores[c] - local_by_id[c]) for c in candidates)
+            worst_delta, max(score_delta(offloaded_scores[c], local_by_id[c]) for c in candidates)
         )
 
         local = [h.chunk.id for h in reranker.rerank(row["query"], hits)]
         offloaded = rerank_order(candidates, offloaded_scores)
 
-        # (a) top-of-ranking ORDER, where every reported metric is cut.
-        if local[:ORDER_EXACT_K] != offloaded[:ORDER_EXACT_K]:
-            failures.append({"task_id": row["task_id"], "why": f"top-{ORDER_EXACT_K} order differs"})
-        # (b) top-100 SET, which is what Recall@100 counts (order within it does not matter).
-        elif set(local[:EVAL_K]) != set(offloaded[:EVAL_K]):
-            failures.append({"task_id": row["task_id"], "why": f"top-{EVAL_K} set differs"})
-        elif local != offloaded:
+        failure, is_tie = compare_orderings(local, offloaded, local_by_id, row["task_id"])
+        if failure is not None:
+            failures.append(failure)
+        elif is_tie:
             rank = next(i for i, (a, b) in enumerate(zip(local, offloaded, strict=True)) if a != b)
-            gap = abs(local_by_id[local[rank]] - local_by_id[offloaded[rank]])
+            gap = score_delta(local_by_id[local[rank]], local_by_id[offloaded[rank]])
             ties.append({"task_id": row["task_id"], "rank": rank, "score_gap": gap})
 
     verdict = "MATCH" if not failures else "MISMATCH"

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from benchmarks.mtrag.rerank_offload import rerank_order
+from benchmarks.mtrag.rerank_offload import compare_orderings, rerank_order
 
 
 def test_candidates_are_ordered_by_descending_score() -> None:
@@ -49,3 +49,41 @@ def test_negative_scores_order_correctly() -> None:
     scores = {"a": -8.0, "b": -1.0, "c": -11.0}
 
     assert rerank_order(candidates, scores) == ["b", "a", "c"]
+
+
+def test_compare_orderings_reports_no_failure_when_orders_match():
+    failure, tie = compare_orderings(
+        local=["a", "b", "c"],
+        offloaded=["a", "b", "c"],
+        local_by_id={"a": 3.0, "b": 2.0, "c": 1.0},
+        task_id="t1",
+    )
+    assert failure is None
+    assert tie is False
+
+
+def test_compare_orderings_flags_a_top_k_order_difference():
+    failure, tie = compare_orderings(
+        local=["a", "b", "c"],
+        offloaded=["b", "a", "c"],
+        local_by_id={"a": 3.0, "b": 2.0, "c": 1.0},
+        task_id="t1",
+    )
+    assert failure == {"task_id": "t1", "why": "top-10 order differs"}
+    assert tie is False
+
+
+def test_compare_orderings_reports_a_deep_tie_rather_than_a_failure():
+    """Past the metric cutoffs a swap is a near-tie and is information, not failure. The first
+    version of this gate demanded exact ordering over the whole pool and COULD NOT PASS: CUDA and
+    CPU do not produce bit-identical floats."""
+    local = [f"d{i}" for i in range(120)]
+    offloaded = local[:100] + [local[101], local[100]] + local[102:]
+    failure, tie = compare_orderings(
+        local=local,
+        offloaded=offloaded,
+        local_by_id={c: float(1000 - i) for i, c in enumerate(local)},
+        task_id="t1",
+    )
+    assert failure is None
+    assert tie is True
