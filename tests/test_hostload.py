@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import os
+
 import pytest
 
 from recall.eval import hostload
@@ -47,3 +50,33 @@ def test_read_load_per_core_is_none_or_a_positive_float() -> None:
     value = read_load_per_core()
 
     assert value is None or (isinstance(value, float) and value >= 0.0)
+
+
+def test_a_getloadavg_read_failure_returns_none_and_logs_a_warning(monkeypatch, caplog) -> None:
+    """`OSError` from `os.getloadavg` means the read failed on a platform that supports it, on
+    the Linux host this guard exists to protect. That must not pass silently the way the Windows
+    `AttributeError` case does: it is logged, because the caller still gets `None` and would
+    otherwise have no way to know the guard just went dark."""
+
+    def raise_oserror() -> list[float]:
+        raise OSError("could not read /proc/loadavg")
+
+    monkeypatch.setattr(os, "getloadavg", raise_oserror, raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="recall.eval.hostload"):
+        result = read_load_per_core()
+
+    assert result is None
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+def test_a_refused_host_carries_the_exact_load_on_the_exception(monkeypatch) -> None:
+    """The message is a human sentence rounded to two decimals; a caller wanting the exact
+    reading must not have to parse it back out. `2.8149` has more than two decimals, so a
+    rounded `.load` would fail this."""
+    monkeypatch.setattr(hostload, "read_load_per_core", lambda: 2.8149)
+
+    with pytest.raises(HostTooBusyError) as excinfo:
+        assert_host_quiet(0.30, allow_busy=False)
+
+    assert excinfo.value.load == 2.8149
