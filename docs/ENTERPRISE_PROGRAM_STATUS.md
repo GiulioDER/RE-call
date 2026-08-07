@@ -351,24 +351,60 @@ must enumerate nine raise sites is a guard that goes stale the next time one is 
 
 | Other round 3 findings | Correction |
 |---|---|
-| **My `applied_by` fix was itself wrong.** I claimed restore-then-re-apply preserves the original applier under a new timestamp. It cannot: `apply_migrations` compares the restored checksum and **raises before `_mark_running` runs**, so it refuses rather than mis-attributing. I inferred the hazard from the `DO UPDATE SET` column list without tracing the control flow that reaches it | Stated as it is: delete-then-re-apply overwrites the trail irrecoverably; restore-then-re-apply refuses |
+| **My `applied_by` fix was itself wrong** — and ⚠️ **round 4 then showed this correction was wrong too.** Round 2 said restore-then-re-apply preserves the original applier; round 3 said it refuses; **both are one branch of the same `if`.** `apply_migrations` raises only when the restored checksum DIFFERS from the package. A restored row whose checksum MATCHES, in state `running` or `failed`, falls through to `_mark_running`, whose `DO UPDATE SET` omits `applied_by` — so it preserves the original applier under a new timestamp, exactly as round 2 said | Round 4's fix stopped narrating the mechanism. The bullet now states only what holds on **both** branches (after any re-apply, `applied_by` no longer answers who applied the version in the ledger) and points at the source for an incident |
 | **The unconditional imperative "Both columns are required" was deleted** when the section split by version range, leaving "a version-only DELETE happens to hit only it" as the last words before the SQL. That licenses omitting the predicate for exactly the versions whose re-application takes ACCESS EXCLUSIVE | Imperative restored above the split; the 0008+ observation demoted to explaining why `0012` was the wrong example |
 | **Round 2's own yield was published as both 9 and 6**, 32 lines apart, and the 6 silently dropped the anti-regression half containing the sharpest finding | Both now 9, with the split named |
 | The round 2 record said "twelve of seventeen SAFE" and named three, accounting for 15 of 17 | The two SCOPE_CREEP hunks are now named |
 | `pg_indexes_size` + heap does not sum to `pg_total_relation_size` | The 57,344-byte remainder is named as TOAST and the free space map |
 | `ci.yml`'s comment still asserted the unconditional `uv export` rewrite that round 2 corrected in `CONTRIBUTING.md`, so the repository contradicted itself across two committed files | Both now state the conditional, and each points at the other |
 
-**The systemic finding, which both auditors reached independently and which outlives this session:**
-`claim_gate.py`'s `GATED_DOCS` covers `results/RESULTS.md`, `results/FINDINGS.md`, `README.md` and
-`benchmarks/SUITE-DESIGN.md`. It does **not** cover `docs/ENTERPRISE_RETRIEVAL.md` or this file.
-Three rounds of numeric and factual claims have now accumulated in the two documents the only
-automated claim guard in this repository does not read, which is why every defect above had to be
-found by a human-directed audit rather than by a gate. That is the thing to fix next, and it is
-worth more than any individual correction in the three tables above.
+**The systemic finding, which both auditors reached independently:** `claim_gate.py`'s `GATED_DOCS`
+covered `results/RESULTS.md`, `results/FINDINGS.md`, `README.md` and `benchmarks/SUITE-DESIGN.md`,
+and **not** `docs/ENTERPRISE_RETRIEVAL.md` or this file. Three rounds of numeric and factual claims
+had accumulated in the two documents the only automated claim guard in this repository does not
+read, which is why every defect above had to be found by a human-directed audit rather than by a
+gate.
 
-⚠️ **Round 4 has not been run.** The rate is falling (41 → 9 → 6) but it has not reached zero, and
-each round's defects were in prose written to fix the previous round's. Do not read the trend as
-convergence achieved.
+✅ **Closed for the runbook in `3509256`**, with a red-state proof and six figures marked rather than
+frozen. ⛔ **Deliberately NOT closed for this file**: it gains an entry every session, and
+`build_baseline()` regenerates every entry in one pass, so gating it would re-freeze the other four
+each time. See the comment on `GATED_DOCS`. Round 4 then found the gate's own comment overstated its
+coverage, which is recorded there.
+
+### Round 4: the convergence assumption is FALSIFIED
+
+Round 3 predicted convergence on this project's recorded pattern. **Round 4 found 12, against round
+3's 6.** The series is **41 → 9 → 6 → 12**. It is not converging, and after four rounds that is a
+more important result than any individual correction above.
+
+**The mechanism is legible in the data.** Every round's defects were in prose written to fix the
+previous round's, and the two rounds that added the most explanatory prose produced the most new
+defects. Three claims have been rewritten three or four times each, and every rewrite asserted a
+*narrower* mechanism than the code implements:
+
+| Claim | Round 2 said | Round 3 said | Round 4 found |
+|---|---|---|---|
+| `applied_by` after a re-apply | preserves the original applier | **cannot**, it refuses | **both are one branch of the same `if`**; the refusal fires only on checksum drift |
+| The `MigrationChecksumMismatch` discriminator | match the message shape | match the raising **function** | the document invalidated its own rule twelve lines later, and round 3 deleted a message rule that was true for the rows it named |
+| Step 11's un-retire path | descriptive: "there is a path, know it" | normative: "you may use it", on a premise the same section falsifies | **phantom fix** — mapped to no finding, and `retire` has no state precondition, so a `failed` generation can reach `retired` |
+
+**So round 4 changed method: reduce rather than elaborate.** The `applied_by` bullet now states only
+what holds on both branches and points at the source. The discriminator gives the two-step procedure
+instead of one rule that cannot decide. The step 11 paragraph was reverted, not patched. The coverage
+census in `claim_gate.py` no longer publishes exact token counts, since those were stale in the
+commit that wrote them and would go stale on the next edit; it publishes the invariant shape and a
+one-line recompute.
+
+**Two findings are the stalest kind and both were mine.** The ratchet log asserted a total (`2481`)
+that appears at **no commit** in git history, inside the entry whose stated purpose was to reconcile
+the log with the committed file; it is now reconstructed by summing the committed file at every
+commit that touched it. And the coverage census, the gate's own honesty statement, was measured
+before the six markers the same commit added.
+
+⚠️ **Round 5 has not been run, and the trend gives no reason to expect it dry.** The honest read
+after four rounds: dense cross-referential prose about code is a medium this process does not
+converge in. The next session should consider whether the runbook wants *less* explanation rather
+than more careful explanation.
 
 ⚠️ **Round 2's anti-regression reviewer saw only 10 of the 41 round-1 findings**, because only two
 auditors wrote trail files and the rest returned their findings in-band. Four of its hunk mappings
