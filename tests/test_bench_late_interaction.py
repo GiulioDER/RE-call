@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from benchmarks.mtrag.late_interaction import (
@@ -5,6 +6,7 @@ from benchmarks.mtrag.late_interaction import (
     LateArm,
     arm_record,
     holm_family,
+    score_stream,
 )
 
 
@@ -88,3 +90,104 @@ def test_holm_family_returns_every_name_when_handed_a_single_use_iterator():
         "li_colbertv2",
         "li_answerai",
     )
+
+
+class _FakeEncoder:
+    def __init__(self, table):
+        self._table = table
+        self.passage_batches: list[list[str]] = []
+
+    def query_embed(self, texts):
+        return [np.array(self._table[t]) for t in texts]
+
+    def passage_embed(self, texts):
+        texts = list(texts)
+        self.passage_batches.append(texts)
+        return [np.array(self._table[t]) for t in texts]
+
+
+def test_score_stream_emits_only_requested_pairs():
+    table = {"qa": [[1.0, 0.0]], "qb": [[0.0, 1.0]], "d1": [[1.0, 0.0]], "d2": [[0.0, 1.0]]}
+    rows = list(
+        score_stream(
+            _FakeEncoder(table),
+            queries={"qa": "qa", "qb": "qb"},
+            docs=[("d1", "d1"), ("d2", "d2")],
+            pairs={"d1": {"qa"}, "d2": {"qa", "qb"}},
+        )
+    )
+    assert {(r["qid"], r["doc_id"]) for r in rows} == {("qa", "d1"), ("qa", "d2"), ("qb", "d2")}
+
+
+def test_score_stream_computes_maxsim():
+    table = {"qa": [[1.0, 0.0]], "d1": [[1.0, 0.0]]}
+    rows = list(
+        score_stream(
+            _FakeEncoder(table),
+            queries={"qa": "qa"},
+            docs=[("d1", "d1")],
+            pairs={"d1": {"qa"}},
+        )
+    )
+    assert rows == [{"qid": "qa", "doc_id": "d1", "score": pytest.approx(1.0)}]
+
+
+def test_score_stream_encodes_each_document_exactly_once():
+    """The point of streaming. A document referenced by many queries is encoded once, not once
+    per pair, which is what makes this cheaper than 241,270 cross-encoder forward passes."""
+    table = {"qa": [[1.0, 0.0]], "qb": [[0.0, 1.0]], "d1": [[1.0, 0.0]]}
+    encoder = _FakeEncoder(table)
+    list(
+        score_stream(
+            encoder,
+            queries={"qa": "qa", "qb": "qb"},
+            docs=[("d1", "d1")],
+            pairs={"d1": {"qa", "qb"}},
+        )
+    )
+    assert [t for batch in encoder.passage_batches for t in batch] == ["d1"]
+
+
+def test_score_stream_batches_documents():
+    table = {"qa": [[1.0, 0.0]], **{f"d{i}": [[1.0, 0.0]] for i in range(5)}}
+    encoder = _FakeEncoder(table)
+    list(
+        score_stream(
+            encoder,
+            queries={"qa": "qa"},
+            docs=[(f"d{i}", f"d{i}") for i in range(5)],
+            pairs={f"d{i}": {"qa"} for i in range(5)},
+            batch_size=2,
+        )
+    )
+    assert [len(b) for b in encoder.passage_batches] == [2, 2, 1]
+
+
+def test_score_stream_skips_documents_with_no_pairs():
+    table = {"qa": [[1.0, 0.0]], "d1": [[1.0, 0.0]], "unused": [[1.0, 0.0]]}
+    encoder = _FakeEncoder(table)
+    rows = list(
+        score_stream(
+            encoder,
+            queries={"qa": "qa"},
+            docs=[("d1", "d1"), ("unused", "unused")],
+            pairs={"d1": {"qa"}},
+        )
+    )
+    assert [r["doc_id"] for r in rows] == ["d1"]
+    assert [t for batch in encoder.passage_batches for t in batch] == ["d1"]
+
+
+def test_score_stream_refuses_an_unknown_query_id():
+    """A pair naming a query the caller did not supply is a dump/scorer mismatch, and scoring it
+    as anything at all would fabricate a number. G3 depends on this raising."""
+    table = {"qa": [[1.0, 0.0]], "d1": [[1.0, 0.0]]}
+    with pytest.raises(KeyError, match="ghost"):
+        list(
+            score_stream(
+                _FakeEncoder(table),
+                queries={"qa": "qa"},
+                docs=[("d1", "d1")],
+                pairs={"d1": {"ghost"}},
+            )
+        )
