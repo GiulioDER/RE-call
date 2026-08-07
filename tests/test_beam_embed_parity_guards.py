@@ -81,6 +81,21 @@ def test_an_unknown_provider_is_refused_not_treated_as_different(tmp: Path) -> N
                    n_queries=32, k=45, allow_same_provider=False)
 
 
+def test_an_emission_predating_the_provenance_field_is_refused(tmp: Path) -> None:
+    """The first fix refused known-BAD values, so an artifact with no `providers_source` passed.
+
+    That is the same shape as the defect being repaired: refusing a marker is a negative check,
+    and anything the producer never emits — or predates — slips through it. The guard now
+    requires a positively recorded session.
+    """
+    v = np.random.default_rng(0).random((200, DIM))
+    ref = _emit(tmp / "ref", v, ["CPUExecutionProvider"])            # no providers_source at all
+    cand = _emit(tmp / "cand", v, ["CUDAExecutionProvider", "CPUExecutionProvider"])
+    with pytest.raises(SystemExit, match="(?i)session-recorded|unknown, not different"):
+        ep.compare(ref, cand, min_cosine=0.9999, max_rank_disagreement=0.0,
+                   n_queries=32, k=45, allow_same_provider=False)
+
+
 def test_availability_masquerading_as_a_session_is_refused(tmp: Path) -> None:
     """STAKES-001: availability lists CUDA on a GPU box even after a silent CPU fallback."""
     v = np.random.default_rng(0).random((200, DIM))

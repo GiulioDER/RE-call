@@ -267,10 +267,12 @@ class BeamRecallSystem:
         # not on the `PgVectorStore` this system hands it — so the lookup silently misses, the
         # status falls to "missing", and every query runs on the 0.50 constant. That constant is
         # not comparable across embedders: measured on voyage-4-large it starves 14 of 60 questions
-        # (23.3%) to empty retrieval against 7% on text-embedding-3-small and 0% on bge-small, and
-        # an empty context makes the vendored prompt emit its refusal string. Left unset on this
-        # embedder, roughly a quarter of the run would score as false abstentions produced by the
-        # harness rather than by the retriever.
+        # (23.3%) to empty retrieval against 7% on text-embedding-3-small and 0% on bge-small.
+        #
+        # ⚠️ That figure comes from a DIFFERENT code path. Measured on this one, 2026-08-07: 54 of
+        # 300 scored questions sit below the 0.50 default and NONE was withheld, because
+        # `research_search` runs development mode. But it culls as soon as a calibration IS
+        # supplied — see `describe()`'s trust_policy note, which derives from both facts.
         # Resolved HERE because this is the only place that knows the embedding PROFILE ID, and
         # that is the key a calibration file is written under. run.py used to call
         # `load_for(args.embedder, path)` with the CLI string, which never matches: `fastembed`

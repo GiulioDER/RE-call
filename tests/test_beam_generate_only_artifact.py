@@ -256,3 +256,21 @@ def test_override_downgrades_the_refusal_to_a_warning(tmp_path: Path, capsys) ->
     _check_resume_config([sidecar], _run_config(_Args(), _system("t", 0)), allow=True)
 
     assert "WARNING" in capsys.readouterr().out
+
+
+def test_redacted_database_never_leaks_a_credential() -> None:
+    """The value is persisted to the sidecar AND the artifact, so it must fail CLOSED.
+
+    The first version used `urlsplit` alone, which returns the whole libpq KEYWORD form as `path`
+    — so `password=...` was written verbatim into two files. psycopg accepts that form, so it is
+    not a hypothetical input.
+    """
+    from benchmarks.beam.run import _redacted_database
+
+    keyword = "host=10.0.0.1 port=5432 dbname=recall user=u password=sup3rs3cret"
+    assert "sup3rs3cret" not in _redacted_database(keyword)
+    assert _redacted_database(keyword) == "10.0.0.1:5432/recall"
+    assert "pw" not in _redacted_database("postgresql://u:pw@h:5432/db")
+    # Anything unparseable becomes a marker, never the raw string.
+    assert _redacted_database("not a dsn at all") == "<unparsed>"
+    assert _redacted_database("") == ""
