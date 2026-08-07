@@ -967,7 +967,10 @@ def test_load_pairs_inverted_ignores_blank_lines(tmp_path: Path):
 
 
 def test_assert_complete_passes_when_every_pair_is_scored():
-    assert_complete({"d1": {"q1"}}, {"d1": {"q1"}}) is None
+    # No assert: `assert_complete` returns None and signals success by NOT raising, so the call
+    # completing IS the assertion. `assert f(...) is None` would read as a test that checks
+    # nothing, which is worse than no assert at all.
+    assert_complete({"d1": {"q1"}}, {"d1": {"q1"}})
 
 
 def test_assert_complete_raises_on_a_missing_score():
@@ -1159,9 +1162,141 @@ A gate that cannot fail is exactly as useless as one that cannot fire, and this 
 
 **Interfaces:**
 - Consumes: `score_stream`, `LATE_ARMS` (Tasks 4-5); `rerank_order`, `ORDER_EXACT_K`, `EVAL_K`, `SCORE_TOLERANCE` from `benchmarks.mtrag.rerank_offload`.
-- Produces: `validate_sample(reranker, rows: list[dict], docs: dict[str, str], scores: dict[str, dict[str, float]]) -> dict` returning `{"verdict", "sampled", "max_score_delta", "failures", "deep_tie_count"}`; a `validate` subcommand on `main`.
+- Produces: `compare_orderings(local: list[str], offloaded: list[str], local_by_id: dict[str, float], task_id: str) -> tuple[dict | None, bool]` in `rerank_offload.py`; `validate_sample(reranker, rows: list[dict], docs: dict[str, str], scores: dict[str, dict[str, float]]) -> dict` returning `{"verdict", "sampled", "max_score_delta", "failures", "deep_tie_count"}`; a `validate` subcommand on `main`.
 
-- [ ] **Step 1: Write the failing test**
+**⚠️ Steps 1-5 refactor EXISTING code before any new code is written.** Without it `validate_sample` would be a near-copy of `rerank_offload.cmd_validate`'s three-branch comparison cascade, and the two definitions of "mismatch" would drift. Only the cascade is shared. Each caller still computes its own local scores and still drives the REAL reranker, which is what the gate exists to check.
+
+The refactor touches `cmd_validate` only, never `cmd_dump` or `cmd_apply`, so the G1 reproduction path in Task 10 is untouched.
+
+- [ ] **Step 1: Write the failing test for the extracted helper**
+
+Append to `tests/test_rerank_offload.py`:
+
+```python
+from benchmarks.mtrag.rerank_offload import compare_orderings
+
+
+def test_compare_orderings_reports_no_failure_when_orders_match():
+    failure, tie = compare_orderings(
+        local=["a", "b", "c"],
+        offloaded=["a", "b", "c"],
+        local_by_id={"a": 3.0, "b": 2.0, "c": 1.0},
+        task_id="t1",
+    )
+    assert failure is None
+    assert tie is False
+
+
+def test_compare_orderings_flags_a_top_k_order_difference():
+    failure, tie = compare_orderings(
+        local=["a", "b", "c"],
+        offloaded=["b", "a", "c"],
+        local_by_id={"a": 3.0, "b": 2.0, "c": 1.0},
+        task_id="t1",
+    )
+    assert failure == {"task_id": "t1", "why": "top-10 order differs"}
+    assert tie is False
+
+
+def test_compare_orderings_reports_a_deep_tie_rather_than_a_failure():
+    """Past the metric cutoffs a swap is a near-tie and is information, not failure. The first
+    version of this gate demanded exact ordering over the whole pool and COULD NOT PASS: CUDA and
+    CPU do not produce bit-identical floats."""
+    local = [f"d{i}" for i in range(120)]
+    offloaded = local[:100] + [local[101], local[100]] + local[102:]
+    failure, tie = compare_orderings(
+        local=local,
+        offloaded=offloaded,
+        local_by_id={c: float(1000 - i) for i, c in enumerate(local)},
+        task_id="t1",
+    )
+    assert failure is None
+    assert tie is True
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_rerank_offload.py -v -k compare_orderings`
+Expected: FAIL, `ImportError: cannot import name 'compare_orderings'`
+
+- [ ] **Step 3: Extract the helper and route `cmd_validate` through it**
+
+Add to `benchmarks/mtrag/rerank_offload.py`, immediately above `cmd_validate`:
+
+```python
+def compare_orderings(
+    local: list[str],
+    offloaded: list[str],
+    local_by_id: dict[str, float],
+    task_id: str,
+) -> tuple[dict | None, bool]:
+    """Compare one query's local ordering against its offloaded one.
+
+    Returns `(failure_or_None, is_deep_tie)`. Shared by the cross-encoder and late-interaction
+    validate gates: they differ in how `local_by_id` is computed, not in what counts as a
+    mismatch, and two copies of that definition would drift apart.
+
+    What this guarantees, and deliberately no more: order is exact where metrics are cut, and the
+    top-`EVAL_K` SET is exact so Recall@100 is unaffected. Deeper swaps are near-ties, reported as
+    information — see SCORE_TOLERANCE above for why demanding more is a gate that cannot pass.
+    """
+    if local[:ORDER_EXACT_K] != offloaded[:ORDER_EXACT_K]:
+        return {"task_id": task_id, "why": f"top-{ORDER_EXACT_K} order differs"}, False
+    if set(local[:EVAL_K]) != set(offloaded[:EVAL_K]):
+        return {"task_id": task_id, "why": f"top-{EVAL_K} set differs"}, False
+    if local != offloaded:
+        return None, True
+    return None, False
+```
+
+Then replace the three-branch cascade inside `cmd_validate`'s loop. It currently reads:
+
+```python
+        # (a) top-of-ranking ORDER, where every reported metric is cut.
+        if local[:ORDER_EXACT_K] != offloaded[:ORDER_EXACT_K]:
+            failures.append({"task_id": row["task_id"], "why": f"top-{ORDER_EXACT_K} order differs"})
+        # (b) top-100 SET, which is what Recall@100 counts (order within it does not matter).
+        elif set(local[:EVAL_K]) != set(offloaded[:EVAL_K]):
+            failures.append({"task_id": row["task_id"], "why": f"top-{EVAL_K} set differs"})
+        elif local != offloaded:
+            rank = next(i for i, (a, b) in enumerate(zip(local, offloaded, strict=True)) if a != b)
+            gap = abs(local_by_id[local[rank]] - local_by_id[offloaded[rank]])
+            ties.append({"task_id": row["task_id"], "rank": rank, "score_gap": gap})
+```
+
+Replace with:
+
+```python
+        failure, is_tie = compare_orderings(local, offloaded, local_by_id, row["task_id"])
+        if failure is not None:
+            failures.append(failure)
+        elif is_tie:
+            rank = next(i for i, (a, b) in enumerate(zip(local, offloaded, strict=True)) if a != b)
+            gap = abs(local_by_id[local[rank]] - local_by_id[offloaded[rank]])
+            ties.append({"task_id": row["task_id"], "rank": rank, "score_gap": gap})
+```
+
+The rank/gap detail stays at this call site: it is this command's reporting, not part of the shared decision.
+
+- [ ] **Step 4: Run the existing offload tests to prove the refactor changed no behaviour**
+
+Run: `python -m pytest tests/test_rerank_offload.py -v`
+Expected: PASS, the three new `compare_orderings` tests plus every pre-existing test.
+
+**If a pre-existing test fails, the refactor is wrong. Revert and redo it. Do not adjust the test.**
+
+- [ ] **Step 5: Commit the refactor on its own**
+
+```bash
+git add benchmarks/mtrag/rerank_offload.py tests/test_rerank_offload.py
+git commit -m "refactor(mtrag): extract the ordering comparison both validate gates need
+
+Behaviour-preserving; the pre-existing offload tests pass unchanged. The
+late-interaction gate needs the same cascade over different local scores, and
+two copies would drift."
+```
+
+- [ ] **Step 6: Write the failing test for validate_sample**
 
 Append to `tests/test_bench_late_interaction.py`:
 
@@ -1245,20 +1380,19 @@ def test_validate_reports_the_worst_score_delta():
     assert report["max_score_delta"] == pytest.approx(0.0004, abs=1e-9)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 7: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_bench_late_interaction.py -v`
 Expected: FAIL, `ImportError: cannot import name 'validate_sample'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **Step 8: Write minimal implementation**
 
 Append to `benchmarks/mtrag/late_interaction.py`:
 
 ```python
 from benchmarks.mtrag.rerank_offload import (
-    EVAL_K,
-    ORDER_EXACT_K,
     SCORE_TOLERANCE,
+    compare_orderings,
     rerank_order,
 )
 
@@ -1271,12 +1405,12 @@ def validate_sample(
 ) -> dict:
     """G2: require the offloaded ordering to match the real reranker on a sample.
 
-    The tolerances are `rerank_offload`'s and are reused rather than re-derived: it already
-    learned that demanding exact ordering over a whole pool is a gate that CANNOT PASS, because
-    CUDA and CPU do not produce bit-identical floats and near-ties swap for reasons unrelated to
-    correctness. What is guaranteed is what that module guarantees: scores agree as arithmetic,
-    order is exact where metrics are cut, and the top-`EVAL_K` SET is exact so Recall is
-    unaffected. Deeper tie-swaps are reported as information.
+    The comparison cascade and the tolerance are `rerank_offload`'s, shared rather than
+    re-derived. That module already learned that demanding exact ordering over a whole pool is a
+    gate that CANNOT PASS, because CUDA and CPU do not produce bit-identical floats and near-ties
+    swap for reasons unrelated to correctness. Only the LOCAL SCORING differs here: MaxSim over
+    independently encoded sides, rather than a cross-encoder's joint forward pass. The definition
+    of a mismatch is identical, and two copies of it would drift.
     """
     from recall.types import Chunk, ScoredChunk
 
@@ -1303,11 +1437,10 @@ def validate_sample(
         local = [h.chunk.id for h in reranker.rerank(row["query"], hits)]
         offloaded = rerank_order(candidates, offloaded_scores)
 
-        if local[:ORDER_EXACT_K] != offloaded[:ORDER_EXACT_K]:
-            failures.append({"task_id": row["task_id"], "why": f"top-{ORDER_EXACT_K} order differs"})
-        elif set(local[:EVAL_K]) != set(offloaded[:EVAL_K]):
-            failures.append({"task_id": row["task_id"], "why": f"top-{EVAL_K} set differs"})
-        elif local != offloaded:
+        failure, is_tie = compare_orderings(local, offloaded, local_by_id, row["task_id"])
+        if failure is not None:
+            failures.append(failure)
+        elif is_tie:
             ties += 1
 
     within = worst_delta < SCORE_TOLERANCE
@@ -1372,17 +1505,17 @@ Register the subcommand inside `main`, immediately before `args = parser.parse_a
     v.set_defaults(func=cmd_validate)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 9: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_bench_late_interaction.py -v`
-Expected: PASS, 23 passed
+Expected: PASS, 24 passed
 
-- [ ] **Step 5: Run the full suite for regressions**
+- [ ] **Step 10: Run the full suite for regressions**
 
 Run: `python -m pytest tests/test_rerank.py tests/test_rerank_offload.py tests/test_late_interaction_rerank.py tests/test_bench_late_interaction.py -q`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add benchmarks/mtrag/late_interaction.py tests/test_bench_late_interaction.py
