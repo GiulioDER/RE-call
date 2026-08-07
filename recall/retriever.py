@@ -331,3 +331,46 @@ class HybridRetriever:
                 stage_ms={key: round(value, 3) for key, value in timings.items()},
             ),
         )
+
+    def search_fused(
+        self,
+        query: str,
+        history: "Sequence[str]",
+        k: int = 5,
+        source: str | None = None,
+    ) -> RetrievalResult:
+        """Retrieve for `query` fused with a concatenation of `history`, then rerank once.
+
+        Reproduces the `mq_nested2_nogold` arm measured on 2026-08-06/07: +0.0084 nDCG@5
+        (MiniLM, Holm-significant) and +0.0842 R@100 over single-query search, measured at
+        `candidate_k=100` with a reranker on MTRAG-human dev. Other settings are untested rather
+        than merely different.
+
+        ⚠️ The gain is CONDITIONAL on reranking. Raw, this arm scores 0.0447 nDCG@5 BELOW
+        `search()`. That is why a missing reranker is refused instead of warned about.
+        """
+        if k < 1:
+            raise ValueError("k must be >= 1")
+        if self._reranker is None:
+            raise ValueError(
+                "search_fused requires a reranker: the fused arm was measured at +0.0084 nDCG@5 "
+                "WITH one and at -0.0447 WITHOUT one, so serving it unreranked would be a "
+                "measurably worse system than search(). Pass a reranker, or call search()."
+            )
+        if not history:
+            raise ValueError(
+                "search_fused requires a non-empty history; call search() for single-query "
+                "retrieval rather than passing an empty history and getting it implicitly"
+            )
+        history_query = build_history_query(history)
+        if len(history_query) > FUSED_HISTORY_MAX_CHARS:
+            raise ValueError(
+                f"history concatenation is {len(history_query)} characters, over the "
+                f"{FUSED_HISTORY_MAX_CHARS} budget. It is refused rather than truncated: a "
+                f"truncated history is a configuration that was never measured. Send fewer turns."
+            )
+        if not history_query:
+            raise ValueError(
+                "history contained no usable text after stripping speaker tags and blank turns"
+            )
+        raise NotImplementedError("fusion lands in Task 5")
