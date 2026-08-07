@@ -9,7 +9,7 @@ resolve the effect it is looking for produces a null that means nothing.
 
 The design is PAIRED: the same 123 gold documents are ranked by the control (MiniLM buries 90) and
 by the treatment, so the relevant test is McNemar's on the discordant pairs. `rho` is the
-tetrachoric style association between the two rankers' bury decisions. It is NOT a free parameter
+tetrachoric-style association between the two rankers' bury decisions. It is NOT a free parameter
 to tune until the answer is pleasant: it is estimated from the MiniLM/BGE agreement in the
 2026-08-07 archive (90 and 91 of the same 123), and reported alongside the result.
 
@@ -24,7 +24,7 @@ from math import comb
 
 
 def _binom_two_sided_p(b: int, n_discordant: int) -> float:
-    """Exact two sided binomial p at p=0.5, which is McNemar's exact test."""
+    """Exact two-sided binomial p at p=0.5, which is McNemar's exact test."""
     if n_discordant == 0:
         return 1.0
     k = min(b, n_discordant - b)

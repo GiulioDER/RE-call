@@ -87,9 +87,11 @@ Four gates, all in `benchmarks/mtrag/late_interaction.py`:
    gate. The verdict that gates the follow-on project is computed from a family `li_jina` cannot
    mechanically enter. Enforced by refusal, not by a docstring, for the reason `search_fused` gives
    for its own refusals.
-3. **Every emitted record carries `checkpoint`, `licence`, `deployable`.** Numbers do get lifted
-   out of these archives into later documents. A lifted number arrives with its taint attached
-   rather than as a bare float.
+3. **The header of every scores file carries `checkpoint`, `licence` and `deployable`, and every
+   row carries its `arm`.** Numbers do get lifted out of these archives into later documents. A
+   lifted row names the arm it came from, and the arm resolves to a licence through the registry,
+   so a bare float cannot arrive anonymous. Per-row `licence` and `deployable` were considered and
+   rejected: they would triple the file to repeat what the header states once.
 4. **Runtime opt-in.** `li_jina` requires `--accept-noncommercial` or it refuses to run, mirroring
    `accept_noncommercial_license=True` in `sparse.py:195`.
 
