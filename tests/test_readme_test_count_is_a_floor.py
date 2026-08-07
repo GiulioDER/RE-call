@@ -1,4 +1,4 @@
-"""The README's advertised test count must be a floor the suite actually clears.
+"""Every advertised test count must be a floor the suite actually clears.
 
 It said **890** while the suite collected **1,339** — stale by half, in two places (the badge and
 the Engineering section). Nothing reported it, because a number in prose has no CI.
@@ -19,7 +19,15 @@ from pathlib import Path
 
 import pytest
 
-README = Path(__file__).resolve().parent.parent / "README.md"
+#: The badge lives in `README.md` and the prose count in `docs/ENGINEERING.md`, which is where the
+#: Engineering section moved on 2026-08-08 when the README was shortened. Both files are scanned for
+#: both shapes rather than each being pinned to its current home: the guarantee this suite exists to
+#: give is "every advertised count is a floor the suite clears", and pinning a shape to a file would
+#: let the next move silently drop one from the check.
+ADVERTISING_DOCS = (
+    Path(__file__).resolve().parent.parent / "README.md",
+    Path(__file__).resolve().parent.parent / "docs" / "ENGINEERING.md",
+)
 
 #: Below this, the run is a subset (`-k`, a single file) and its count says nothing about the
 #: suite. Well under a full collection, well over any plausible targeted run.
@@ -30,9 +38,11 @@ _PROSE = re.compile(r"\*\*([\d,]+)\+ tests")
 
 
 def _advertised() -> list[tuple[str, int]]:
-    text = README.read_text(encoding="utf-8")
-    found = [("badge", int(m.group(1))) for m in _BADGE.finditer(text)]
-    found += [("prose", int(m.group(1).replace(",", ""))) for m in _PROSE.finditer(text)]
+    found: list[tuple[str, int]] = []
+    for doc in ADVERTISING_DOCS:
+        text = doc.read_text(encoding="utf-8")
+        found += [("badge", int(m.group(1))) for m in _BADGE.finditer(text)]
+        found += [("prose", int(m.group(1).replace(",", ""))) for m in _PROSE.finditer(text)]
     return found
 
 

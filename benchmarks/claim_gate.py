@@ -77,12 +77,22 @@ RESULTS_ROOT = REPO_ROOT / "results"
 #: delta, which makes a one-number drift read like a six-number one. Merge `origin/master` first,
 #: then regenerate, then verify the only rows that moved are the ones you expect. A gated document
 #: that other pull requests also edit will need this on every rebase.
+#: `docs/EVIDENCE.md`, `docs/PRODUCTION.md`, `docs/PRIOR_ART.md` and `docs/ENGINEERING.md` were
+#: added on 2026-08-08, when the README was shortened and its evidence, posture, prior-art and
+#: engineering sections moved into them VERBATIM. Nothing here is a new claim: every number in the
+#: four files was already gated as part of `README.md`, and leaving them out would have silently
+#: dropped that coverage in a commit whose stated purpose was editorial. That is why the same
+#: commit both moves the prose and arms the gate over its destination.
 GATED_DOCS: tuple[str, ...] = (
     "results/RESULTS.md",
     "results/FINDINGS.md",
     "README.md",
     "benchmarks/SUITE-DESIGN.md",
     "docs/ENTERPRISE_RETRIEVAL.md",
+    "docs/EVIDENCE.md",
+    "docs/PRODUCTION.md",
+    "docs/PRIOR_ART.md",
+    "docs/ENGINEERING.md",
 )
 
 #: Spans masked before numbers are extracted.
