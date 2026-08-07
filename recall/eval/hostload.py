@@ -20,6 +20,18 @@ _log = logging.getLogger(__name__)
 #: leaves roughly seventy percent of cores free, which is where queueing stops being visible in
 #: wall-clock in my experience of this box. It is exposed as a flag precisely because it is not
 #: derived from anything, and a caller with a measurement should override it.
+#:
+#: ⚠️ It is also UNREACHABLE on at least one real host, which is worth knowing before you treat a
+#: refusal as a reason to wait. VPS2, the box this guard was written for, was sampled six times
+#: over a minute on 2026-08-07 and read 12.85, 12.03, 12.39, 11.82, 12.41 and 15.94 on 12 cores.
+#: Its FLOOR is about 1.0 per core, because it runs 64 services and 170 timers continuously. A
+#: 0.30 ceiling there is not a bar the host clears when it is quiet, it is a bar the host never
+#: clears, and a guard that can only refuse tells you about itself rather than about the run.
+#:
+#: So a caller measuring on a busy production host should pass a ceiling derived from THAT host's
+#: floor and publish the readings, rather than waiting for a number that is not coming. What the
+#: guard still buys in that case is the honest label: the artifact records what the load was, and
+#: a figure taken at a host's floor may not be read as a quiet-machine measurement.
 DEFAULT_MAX_LOAD_PER_CORE = 0.30
 
 
