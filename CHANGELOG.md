@@ -8,6 +8,20 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Changed (action required)
+- **FastEmbed profile fingerprints change, so profile-bound calibrations must be re-fitted.**
+  The resolved ONNX execution provider is now part of `EmbeddingProfile.dependencies`, which is
+  fingerprint key material. A calibration bound by profile fingerprint before this release no
+  longer matches: `calibration.load_for_profile` logs a warning and returns `None`, so a run
+  CONTINUES UNCALIBRATED rather than refusing — re-fit before trusting an abstention threshold.
+  This affects the v1 profile-fingerprint binding and the embedding cache only; the CERTIFIED v2
+  binding stores `EmbedderIdentity`, which carries no dependencies and is still provider-blind,
+  so a CPU-fit certified calibration continues to bind to a CUDA-served pipeline. Cached
+  vectors simply miss and re-embed, at the cost of one full re-encode. Only FastEmbed-derived
+  profiles are affected; the global fingerprint domain tag is deliberately NOT bumped, since that
+  would also invalidate Voyage and every other profile whose vectors this change cannot have
+  moved.
+
 ### Added
 - **`FastEmbedEmbedder(providers=...)` and `.session_providers`.** `providers` forwards an ONNX
   Runtime execution-provider REQUEST to fastembed; it is not a guarantee, because asking for
@@ -15,8 +29,11 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   only a `RuntimeWarning`. `.session_providers` reports what the live `InferenceSession` actually
   resolved — never `onnxruntime.get_available_providers()`, which reports what the wheel was
   compiled with and stays true while the session sits on CPU. The resolved providers are now part
-  of the embedding profile's `dependencies`, so a CPU-built and a CUDA-built vector no longer
-  share a cache key or a calibration binding.
+  of the embedding profile's `dependencies` on BOTH the legacy and the registered-profile path,
+  so a CPU-built and a CUDA-built vector no longer share a cache key or a calibration binding.
+  When fastembed's internals do not expose a session, this is recorded as
+  `onnx-providers-source: unavailable` rather than as a provider name — "could not tell" is a
+  third state and must not read as a CPU run.
 - **`benchmarks/check_profile_encoder_distinctness.py`, and the finding it exists to record.**
   `bge-small-symmetric-v1` and `bge-small-asymmetric-v1` differ in two registry fields
   (`query_mode`, `passage_mode`) and share every other identity field and one provisioned artifact
