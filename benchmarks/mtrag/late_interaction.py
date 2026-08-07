@@ -58,6 +58,11 @@ def holm_family(arms: Sequence[LateArm]) -> tuple[str, ...]:
     computable from a family containing a non-commercial checkpoint, so the impossibility is
     mechanical rather than editorial.
     """
+    # Materialised before it is read twice. A single-use iterator would be exhausted by the
+    # blocked scan below and the return would then be an empty tuple, which is silent omission:
+    # exactly what this gate exists to prevent. The annotation says Sequence, but a gate that
+    # degrades to "quietly pass" on a type violation is not a gate.
+    arms = list(arms)
     blocked = [a.name for a in arms if not a.deployable]
     if blocked:
         raise ValueError(

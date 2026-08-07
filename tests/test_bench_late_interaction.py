@@ -65,3 +65,19 @@ def test_every_arm_checkpoint_is_registered():
 
     for arm in LATE_ARMS:
         assert arm.checkpoint in LATE_INTERACTION_MODELS
+
+
+def test_arm_with_an_unregistered_checkpoint_raises_on_licence():
+    """LATE_ARMS is frozen, so this branch is unreachable today. It is tested because the failure
+    it prevents is a future arm added without a matching registry entry, which would otherwise
+    reach `deployable` and be answered from a licence that does not exist."""
+    with pytest.raises(ValueError, match="unregistered checkpoint"):
+        LateArm("li_future", "some/unrecorded").licence
+
+
+def test_holm_family_raises_even_when_handed_a_single_use_iterator():
+    """The gate must not degrade to silent omission on a type violation. Iterating the argument
+    twice without materialising it would return an empty tuple here instead of raising."""
+    arms = iter([_by_name("li_colbertv2"), _by_name("li_jina")])
+    with pytest.raises(ValueError, match="li_jina"):
+        holm_family(arms)
