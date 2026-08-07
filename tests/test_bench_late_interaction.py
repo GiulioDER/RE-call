@@ -11,7 +11,9 @@ from benchmarks.mtrag.late_interaction import (
     holm_family,
     load_pairs_inverted,
     score_stream,
+    validate_sample,
 )
+from recall.rerank import LateInteractionReranker
 
 
 def _by_name(name: str) -> LateArm:
@@ -264,3 +266,69 @@ def test_assert_complete_raises_on_a_missing_score():
 def test_assert_complete_raises_on_a_wholly_unscored_document():
     with pytest.raises(ValueError, match="1 pair"):
         assert_complete({"d1": {"q1"}, "d2": {"q1"}}, {"d1": {"q1"}})
+
+
+def _live_reranker(table):
+    return LateInteractionReranker(_FakeEncoder(table), model_name="colbert-ir/colbertv2.0")
+
+
+# Multi-token documents are load-bearing in the fixture below. With one token per document, `mean`
+# and `max` coincide, the G5 mutation becomes invisible, and the test that proves the gate can fail
+# would itself fail. `multi` carries two tokens precisely so the mutation flips the ORDER, which is
+# what `validate_sample` compares. Verified numerically before this plan was written.
+_TABLE = {
+    "q": [[1.0, 0.0]],
+    "multi": [[1.0, 0.0], [0.0, 1.0]],  # maxsim 1.0, but MEAN 0.5
+    "mid": [[0.6, 0.8]],                # maxsim 0.6, and mean 0.6
+    "far": [[0.0, 1.0]],                # maxsim 0.0
+}
+_ROWS = [{"task_id": "t1", "query": "q", "candidates": ["far", "mid", "multi"]}]
+_DOCS = {"far": "far", "mid": "mid", "multi": "multi"}
+
+
+def test_validate_matches_when_offloaded_scores_agree():
+    scores = {"t1": {"far": 0.0, "mid": 0.6, "multi": 1.0}}
+    report = validate_sample(_live_reranker(_TABLE), _ROWS, _DOCS, scores)
+    assert report["verdict"] == "MATCH"
+    assert report["max_score_delta"] < 1e-9
+
+
+def test_validate_mismatches_when_the_offloaded_order_is_wrong():
+    """G2's whole purpose. An offloaded ordering that merely looks reasonable produces a
+    publishable nDCG that RE-call itself would never compute."""
+    scores = {"t1": {"far": 9.0, "mid": 0.6, "multi": 1.0}}
+    report = validate_sample(_live_reranker(_TABLE), _ROWS, _DOCS, scores)
+    assert report["verdict"] == "MISMATCH"
+    assert report["failures"]
+
+
+def test_the_mutation_fixture_actually_mutates():
+    """Guards the guard below. If mean and max ever coincide on this fixture, the G5 test passes
+    vacuously and proves nothing, which is the exact failure mode G5 exists to prevent."""
+    query = np.array(_TABLE["q"])
+    for doc in ("far", "mid", "multi"):
+        tokens = np.array(_TABLE[doc])
+        assert float((query @ tokens.T).max(axis=1).sum()) == pytest.approx(
+            {"far": 0.0, "mid": 0.6, "multi": 1.0}[doc]
+        )
+    assert float((query @ np.array(_TABLE["multi"]).T).mean(axis=1).sum()) == pytest.approx(0.5)
+
+
+def test_validate_detects_the_mean_for_max_mutation():
+    """G5, as an automated test rather than a manual ritual. Scores computed with `mean` instead
+    of `max` must make the gate go RED. If this passes, the gate is vacuous."""
+    query = np.array(_TABLE["q"])
+    mutated = {
+        "t1": {
+            doc: float((query @ np.array(_TABLE[doc]).T).mean(axis=1).sum())
+            for doc in ("far", "mid", "multi")
+        }
+    }
+    report = validate_sample(_live_reranker(_TABLE), _ROWS, _DOCS, mutated)
+    assert report["verdict"] == "MISMATCH"
+
+
+def test_validate_reports_the_worst_score_delta():
+    scores = {"t1": {"far": 0.0, "mid": 0.6, "multi": 1.0004}}
+    report = validate_sample(_live_reranker(_TABLE), _ROWS, _DOCS, scores)
+    assert report["max_score_delta"] == pytest.approx(0.0004, abs=1e-9)

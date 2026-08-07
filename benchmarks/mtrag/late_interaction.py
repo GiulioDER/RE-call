@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from benchmarks.mtrag.rerank_offload import SCORE_TOLERANCE, compare_orderings, rerank_order
 from recall.rerank import LATE_INTERACTION_MODELS, PERMISSIVE_LICENCES, maxsim
 
 
@@ -260,6 +261,103 @@ def cmd_score(args: argparse.Namespace) -> int:
     return 0
 
 
+def validate_sample(
+    reranker: Any,
+    rows: list[dict],
+    docs: dict[str, str],
+    scores: dict[str, dict[str, float]],
+) -> dict:
+    """G2: require the offloaded ordering to match the real reranker on a sample.
+
+    The comparison cascade and the tolerance are `rerank_offload`'s, shared rather than
+    re-derived. That module already learned that demanding exact ordering over a whole pool is a
+    gate that CANNOT PASS, because CUDA and CPU do not produce bit-identical floats and near-ties
+    swap for reasons unrelated to correctness. Only the LOCAL SCORING differs here: MaxSim over
+    independently encoded sides, rather than a cross-encoder's joint forward pass. The definition
+    of a mismatch is identical, and two copies of it would drift.
+    """
+    from recall.types import Chunk, ScoredChunk
+
+    failures: list[dict] = []
+    ties = 0
+    worst_delta = 0.0
+    for row in rows:
+        candidates = row["candidates"]
+        hits = [
+            ScoredChunk(chunk=Chunk(id=c, source="s", text=docs[c], metadata={}), score=0.0)
+            for c in candidates
+        ]
+        offloaded_scores = scores[row["task_id"]]
+
+        qtokens = list(reranker._encoder.query_embed([row["query"]]))[0]
+        dtokens = list(reranker._encoder.passage_embed([h.chunk.text for h in hits]))
+        local_by_id = {
+            c: maxsim(qtokens, d) for c, d in zip(candidates, dtokens, strict=True)
+        }
+        worst_delta = max(
+            worst_delta, max(abs(offloaded_scores[c] - local_by_id[c]) for c in candidates)
+        )
+
+        local = [h.chunk.id for h in reranker.rerank(row["query"], hits)]
+        offloaded = rerank_order(candidates, offloaded_scores)
+
+        failure, is_tie = compare_orderings(local, offloaded, local_by_id, row["task_id"])
+        if failure is not None:
+            failures.append(failure)
+        elif is_tie:
+            ties += 1
+
+    within = worst_delta < SCORE_TOLERANCE
+    return {
+        "verdict": "MATCH" if not failures and within else "MISMATCH",
+        "sampled": len(rows),
+        "max_score_delta": worst_delta,
+        "score_tolerance": SCORE_TOLERANCE,
+        "scores_within_tolerance": within,
+        "failures": failures[:5],
+        "deep_tie_count": ties,
+    }
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    from recall.rerank import LateInteractionReranker
+
+    out = args.output_dir.resolve()
+    arm = next(a for a in LATE_ARMS if a.name == args.arm)
+    reranker = LateInteractionReranker.from_pretrained(
+        arm.checkpoint, accept_noncommercial_license=not arm.deployable
+    )
+
+    docs: dict[str, str] = {}
+    with (out / "docs.jsonl").open(encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip():
+                row = json.loads(line)
+                docs[str(row["doc_id"])] = str(row["text"])
+
+    scores: dict[str, dict[str, float]] = {}
+    with args.scores.open(encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("_header"):
+                print(json.dumps({"event": "scores_header", **row}), flush=True)
+                continue
+            scores.setdefault(str(row["qid"]), {})[str(row["doc_id"])] = float(row["score"])
+
+    pool_path = next(iter(sorted((out / "pools").glob("*.jsonl"))))
+    rows = []
+    with pool_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip():
+                rows.append(json.loads(line))
+
+    report = validate_sample(reranker, rows[: args.sample], docs, scores)
+    print(json.dumps({"event": "validate", "arm": arm.name, **report}, indent=2), flush=True)
+    return 0 if report["verdict"] == "MATCH" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -275,6 +373,13 @@ def main(argv: list[str] | None = None) -> int:
         help="required for cc-by-nc checkpoints; diagnostic use only",
     )
     p.set_defaults(func=cmd_score)
+
+    v = sub.add_parser("validate", help="require the offloaded ordering to match the real reranker")
+    v.add_argument("--output-dir", type=Path, required=True)
+    v.add_argument("--scores", type=Path, required=True)
+    v.add_argument("--arm", required=True, choices=[a.name for a in LATE_ARMS])
+    v.add_argument("--sample", type=int, default=20)
+    v.set_defaults(func=cmd_validate)
 
     args = parser.parse_args(argv)
     return int(args.func(args))
