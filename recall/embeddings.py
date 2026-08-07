@@ -373,16 +373,24 @@ def _session_providers(model: object) -> list[str]:
     of places it has lived. It returns a marker rather than raising: failing to introspect is not
     a reason to fail an embedding run, but it must not be reported as a known-CPU result either.
     """
-    for outer in ("model", "_model"):
-        inner = getattr(model, outer, None)
-        if inner is None:
-            continue
-        for attr in ("model", "session", "_session"):
-            session = getattr(inner, attr, None)
-            if hasattr(session, "get_providers"):
-                return list(session.get_providers())
-        if hasattr(inner, "get_providers"):
-            return list(inner.get_providers())
+    # Wrapped whole. This runs on the CONSTRUCTION path of every FastEmbedEmbedder, including
+    # registered enterprise profiles, and it is purely observational — so no change in fastembed's
+    # or onnxruntime's internals may ever be the reason a deployment cannot build its embedder.
+    # The docstring promised that; nothing enforced it.
+    try:
+        for outer in ("model", "_model"):
+            inner = getattr(model, outer, None)
+            if inner is None:
+                continue
+            for attr in ("model", "session", "_session"):
+                getter = getattr(getattr(inner, attr, None), "get_providers", None)
+                if callable(getter):
+                    return [str(p) for p in getter()]
+            inner_getter = getattr(inner, "get_providers", None)
+            if callable(inner_getter):
+                return [str(p) for p in inner_getter()]
+    except Exception:  # pragma: no cover - defensive; fastembed internals are not a contract
+        return ["<session not reachable>"]
     return ["<session not reachable>"]
 
 
@@ -409,6 +417,13 @@ class FastEmbedEmbedder:
         (``query_mode`` / ``passage_mode``) are the ones actually called. Without it the class
         keeps its previous behaviour and derives a profile from ``asymmetric``, the legacy
         default path, where no artifact is pinned and nothing enterprise depends on the result.
+
+        ``providers`` is an ONNX Runtime execution-provider REQUEST forwarded to fastembed. It is
+        not a guarantee: asking for ``CUDAExecutionProvider`` against a wheel built for a
+        different CUDA major falls back to CPU with only a ``RuntimeWarning``. Read
+        ``self.session_providers`` for what the session actually resolved — never
+        ``onnxruntime.get_available_providers()``, which reports what the wheel was compiled with
+        and stays true while the session sits on CPU.
         """
         # Artifact first, backend second. A deployment whose weights are missing or tampered
         # with gets that error whether or not the optional extra happens to be installed, and

@@ -41,37 +41,50 @@ Thresholds — BOTH are enforced, and they catch different things
 ---------------------------------------------------------------
 A run passes only if it clears both. They are not redundant:
 
-- `--min-cosine` (default 0.9999) is a numeric floor on the worst per-row cosine between the two
-  vector sets. It catches gross divergence even where the top-k happens to survive it.
-- `--max-rank-disagreement` (default 0.0) is gated on the top-k **SET**, not its order.
-  `get_beam_answer_generation_prompt` re-sorts retrieved memories chronologically before rendering
-  them, so retrieval order is discarded and never reaches the model. Only membership matters, and
-  gating on order would fail runs over tie-flips this benchmark cannot see.
+- `--min-cosine` (default 0.9999) is a numeric floor on the worst per-row cosine. It catches gross
+  divergence even where the top-k happens to survive it.
+- `--max-rank-disagreement` (default 0.0) gates on the top-k **SET**, not its order, with a tie
+  band at the k boundary (`TIE_RTOL`).
 
-Measured on a 200-vector sample of bge-small, injecting noise into a CPU emission:
+Why the SET and not the order: `get_beam_answer_generation_prompt` re-sorts retrieved memories
+chronologically before rendering them. ⚠️ It also TRUNCATES to `top_k` FIRST, in retrieval order —
+so this reasoning holds only while `--cutoff >= --k`. Where the answerer's cutoff is below the
+retrieval budget, retrieval order decides which memories survive and the order statistic would
+need gating too. The BEAM arm runs k=45/cutoff=45, where the slice is a no-op.
 
-    noise   min_cosine     set_disagree   order_disagree   verdict
-    1e-7    1.000000000    0.000          0.000            OK
-    1e-6    1.000000000    0.000          0.000            OK
-    1e-5    0.999999977    0.000          0.031            OK
-    1e-4    0.999997736    0.000          0.094            OK
-    1e-3    0.999774151    0.000          0.438            FAILED  (on cosine)
-    1e-2    0.978413459    0.688          1.000            FAILED  (on both)
+Three regimes this refuses rather than scores, each found by audit after shipping:
 
-Two things that table settles. Cosine alone is the wrong instrument: at 1e-5 the worst cosine is
-0.99999998 while 3.1% of queries already reorder. And order alone is too strict: membership holds
-to 1e-4 while ordering has been moving for two decades of noise. Set membership is what the
-benchmark consumes, and the cosine floor is what stops a numerically broken build sneaking through
-on a corpus too small to reshuffle.
+- **k >= the document count.** The top-k set is then the whole corpus and `set_disagreement` is 0
+  by construction. Measured: two INDEPENDENT random matrices at n=100 reported 0.000 with the
+  shipped defaults. A gate with a silent regime where it cannot fail is worse than no gate.
+- **k < 1 or queries < 1.** `k=0` compared two empty sets and passed; `queries=0` divided by zero.
+- **An unrecorded execution provider.** "Could not observe what ran" is refused, not treated as
+  evidence of a different runtime.
+
+⚠️ The noise table that used to sit here was measured against the PRE-FIX code and has been
+removed rather than left to describe behaviour that no longer exists. Current calibration, on
+uniform random vectors at n=200/queries=64/k=45: noise <= 1e-7 passes, >= 1e-5 fails on set
+disagreement. The stable sort made the set statistic MORE sensitive, not less, because tie-flip
+noise no longer masks real movement.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import platform
 from pathlib import Path
+from typing import cast
 
 import numpy as np
+
+
+#: Similarity tolerance for calling two documents tied at the top-k boundary. Chosen well ABOVE
+#: fp32 jitter (~1e-7 on a cosine) and well BELOW any divergence that matters: the measured
+#: CPU-vs-CUDA run moved similarities by ~1e-4, four orders of magnitude outside this band, so a
+#: genuine runtime difference still fails the gate.
+TIE_RTOL = 1e-9
+TIE_ATOL = 1e-12
 
 
 def _providers() -> list[str]:
@@ -102,7 +115,11 @@ def emit(
         raise SystemExit(f"{texts_path} holds no texts")
 
     embedder = FastEmbedEmbedder(model_name=model, providers=providers)
-    vectors = np.asarray(embedder.embed(texts), dtype=np.float64)
+    session_providers = [
+        p for p in list(getattr(embedder, "session_providers", []) or [])
+        if not str(p).startswith("<")
+    ]
+    vectors: np.ndarray = np.asarray(embedder.embed(texts), dtype=np.float64)
     if vectors.shape[0] != len(texts):
         raise SystemExit(f"embedder returned {vectors.shape[0]} vectors for {len(texts)} texts")
 
@@ -110,11 +127,19 @@ def emit(
         "model": model,
         "dim": int(vectors.shape[1]),
         "n": int(vectors.shape[0]),
-        # The SESSION's providers. `_providers()` (module-level availability) is kept only as a
-        # diagnostic: it is identical on a box whether or not the session ever touched the GPU.
-        "providers": list(getattr(embedder, "session_providers", [])) or _providers(),
+        # The SESSION's providers, and — critically — WHERE that list came from. The previous
+        # version silently fell back to module-level availability (`or _providers()`), which is
+        # identical on a box whether or not the session touched the GPU; `compare` could not tell
+        # the two apart and passed the fallback as evidence of a different runtime.
+        "providers": session_providers or ["<session not reachable>"],
+        "providers_source": "session" if session_providers else "unavailable",
         "available_providers": _providers(),
         "providers_requested": providers,
+        # Binds this emission to its input. Without it two emissions over DIFFERENT samples of the
+        # same length compare as a runtime difference.
+        "texts_sha256": hashlib.sha256(
+            json.dumps(texts, ensure_ascii=False).encode("utf-8")
+        ).hexdigest(),
         "platform": platform.platform(),
         "python": platform.python_version(),
     }
@@ -134,7 +159,8 @@ def _load(path: Path) -> tuple[np.ndarray, dict]:
 def _unit(v: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(v, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
-    return v / norms
+    unit: np.ndarray = v / norms
+    return unit
 
 
 def rank_disagreement(
@@ -153,20 +179,66 @@ def rank_disagreement(
     """
     if ref.shape != cand.shape:
         raise SystemExit(f"shape mismatch: reference {ref.shape} vs candidate {cand.shape}")
+    if k < 1:
+        raise SystemExit(f"k must be >= 1, got {k}: a top-0 set is empty on both sides and would "
+                         f"report perfect agreement, and a negative k silently means drop-last")
+    if n_queries < 1:
+        raise SystemExit(f"queries must be >= 1, got {n_queries}: it is the denominator of both "
+                         f"reported rates")
     if ref.shape[0] <= n_queries:
         raise SystemExit(f"need more than {n_queries} rows to split queries from documents")
 
     rq, rd = _unit(ref[:n_queries]), _unit(ref[n_queries:])
     cq, cd = _unit(cand[:n_queries]), _unit(cand[n_queries:])
-    k = min(k, rd.shape[0])
+    # REFUSE rather than clamp. `k = min(k, n_docs)` looks harmless and is not: once k reaches the
+    # document count the top-k SET is the whole corpus for every query, so `set(a) == set(b)` holds
+    # by construction and `set_disagreement` — the only GATED statistic — is 0.0 for arbitrarily
+    # unrelated vectors. Measured: two INDEPENDENT random matrices at n=100 with the shipped
+    # defaults reported set_disagreement 0.000 (k clamped 45 -> 36); at n=110 the same pair
+    # reported 0.984. A gate with a silent regime where it cannot fail is worse than no gate,
+    # because it reports PARITY OK.
+    if rd.shape[0] <= k:
+        raise SystemExit(
+            f"only {rd.shape[0]} documents for k={k}: the top-k set would be the entire corpus and "
+            f"set_disagreement would be 0 by construction, not by agreement. Supply at least "
+            f"{n_queries + k + 1} texts, or lower --k."
+        )
 
-    ref_top = np.argsort(-(rq @ rd.T), axis=1)[:, :k]
-    cand_top = np.argsort(-(cq @ cd.T), axis=1)[:, :k]
+    # `kind="stable"` so equal similarities break ties by index identically on BOTH sides. Under
+    # the default (unstable) quicksort an EXACT tie straddling the k boundary resolves arbitrarily
+    # per array, so a candidate identical to ~15 significant digits fails a zero-tolerance gate:
+    # measured, 22 of 80 seed/noise configurations rejected a numerically identical build. Exact
+    # ties are routine here — two identical turns in a conversation embed identically.
+    ref_scores = rq @ rd.T
+    cand_scores = cq @ cd.T
+    ref_top = np.argsort(-ref_scores, axis=1, kind="stable")[:, :k]
+    cand_top = np.argsort(-cand_scores, axis=1, kind="stable")[:, :k]
 
     order_diff = int(np.sum(np.any(ref_top != cand_top, axis=1)))
-    set_diff = sum(
-        1 for i in range(n_queries) if set(ref_top[i].tolist()) != set(cand_top[i].tolist())
-    )
+
+    # A set difference counts ONLY when the documents that moved sit meaningfully away from the
+    # k-th-place similarity on both sides. A stable sort fixes ties that are exact on BOTH sides,
+    # but the realistic case is a near-tie: two documents separated by ~1e-12 straddle rank k, and
+    # which one lands inside is decided by noise far below the divergence being measured. Counting
+    # that rejects a build identical to ~15 significant digits, which is the failure this module's
+    # own history warns about — a gate demanding equality floating point cannot deliver.
+    #
+    # The band is on the SIMILARITY, not on the vectors, and it is tight: a real divergence moves
+    # similarities by orders of magnitude more than TIE_RTOL, so it still fails.
+    set_diff = 0
+    for i in range(n_queries):
+        ref_set, cand_set = set(ref_top[i].tolist()), set(cand_top[i].tolist())
+        if ref_set == cand_set:
+            continue
+        ref_boundary = float(ref_scores[i, ref_top[i, -1]])
+        cand_boundary = float(cand_scores[i, cand_top[i, -1]])
+        moved_at_the_boundary = all(
+            np.isclose(ref_scores[i, d], ref_boundary, rtol=TIE_RTOL, atol=TIE_ATOL)
+            and np.isclose(cand_scores[i, d], cand_boundary, rtol=TIE_RTOL, atol=TIE_ATOL)
+            for d in ref_set ^ cand_set
+        )
+        if not moved_at_the_boundary:
+            set_diff += 1
     return {
         "queries": n_queries,
         "k": k,
@@ -190,11 +262,46 @@ def compare(
     ref, ref_meta = _load(reference)
     cand, cand_meta = _load(candidate)
 
+    # Before ANY arithmetic. `cos = ...` below broadcasts, so a (200,384) vs (200,768) pair raised
+    # a raw numpy ValueError from the subtraction instead of the readable message the shape guard
+    # inside rank_disagreement was written to produce — and a broadcast-compatible mismatch such
+    # as (200,384) vs (1,384) produced a full-length cosine array before anything checked.
+    if ref.shape != cand.shape:
+        raise SystemExit(
+            f"shape mismatch: reference {ref.shape} vs candidate {cand.shape}. The two emissions "
+            f"must cover the same texts with the same model."
+        )
+
     if ref_meta["model"] != cand_meta["model"]:
         raise SystemExit(
             f"different models: {ref_meta['model']} vs {cand_meta['model']}. This check answers "
             f"'same model, different runtime'; a model swap is a different arm, not a parity risk."
         )
+
+    # POSITIVE verification, not a difference test. The original check was
+    # `ref["providers"] != cand["providers"]`, which answers "are these lists unequal" and NOT "do
+    # I know what the candidate ran on". An unrecorded session (`<session not reachable>`) or a
+    # fallback to module-level availability compares unequal to a real CPU reference, so the
+    # refusal never fired: measured, byte-identical vectors with a candidate provider of
+    # `["<session not reachable>"]` returned PARITY OK. That is the module's own stated failure
+    # mode — "it passes, proves nothing, and certifies a run that never happened" — reintroduced
+    # by the guard against it. `_check_resume_config` in run.py states the principle this now
+    # follows: "cannot check" and "checked and fine" have to land differently.
+    for label, meta in (("reference", ref_meta), ("candidate", cand_meta)):
+        providers = list(meta.get("providers") or [])
+        if not providers or any(str(p).startswith("<") for p in providers):
+            raise SystemExit(
+                f"{label} did not record which providers its ONNX session resolved "
+                f"({providers or 'empty'}). Parity cannot be certified from an unknown runtime: "
+                f"an unrecorded session is not evidence of a different one. Re-emit with a build "
+                f"whose session can be introspected."
+            )
+        if meta.get("providers_source") == "availability":
+            raise SystemExit(
+                f"{label} recorded module-level provider AVAILABILITY, not its session's "
+                f"resolved providers. Availability lists CUDAExecutionProvider on a GPU box even "
+                f"after a silent CPU fallback, so it cannot distinguish the two."
+            )
 
     same_provider = ref_meta.get("providers") == cand_meta.get("providers")
     if same_provider and not allow_same_provider:
@@ -205,6 +312,17 @@ def compare(
             "would pass while proving nothing about the GPU build. Install onnxruntime-gpu on the "
             "candidate host, or pass --allow-same-provider if comparing two CPU runs is genuinely "
             "what you meant."
+        )
+
+    # Bind both sides to the SAME sample. Nothing else does: the documented workflow copies
+    # sample.json between hosts by hand, so a regenerated or reordered sample of the same length
+    # would compare as a runtime difference and be reported as one.
+    ref_texts, cand_texts = ref_meta.get("texts_sha256"), cand_meta.get("texts_sha256")
+    if ref_texts and cand_texts and ref_texts != cand_texts:
+        raise SystemExit(
+            f"the two emissions embedded DIFFERENT texts (sha256 {ref_texts[:12]}… vs "
+            f"{cand_texts[:12]}…). This compares runtimes over one sample; a different sample is "
+            f"a different measurement, not a parity failure."
         )
 
     cos = np.sum(_unit(ref) * _unit(cand), axis=1)
@@ -221,7 +339,7 @@ def compare(
     # noise the minimum cosine is 0.999999977, far above any sane cosine bar, while 3.1% of
     # queries already return a DIFFERENT top-10 order. Cosine alone is the wrong instrument;
     # order alone is too strict; membership is what the benchmark actually consumes.
-    ranking_ok = float(ranks["set_disagreement"]) <= max_rank_disagreement
+    ranking_ok = float(cast(float, ranks["set_disagreement"])) <= max_rank_disagreement
     return {
         "reference": {"path": str(reference), **ref_meta},
         "candidate": {"path": str(candidate), **cand_meta},

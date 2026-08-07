@@ -97,23 +97,44 @@ def _scope(conn: psycopg.Connection, tenant: str | None) -> None:
 
 def _digest_one(
     conn: psycopg.Connection, table: str, key: str, tenant: str | None = None
-) -> tuple[int, str]:
-    """Rows and digest, filtered by an EXPLICIT predicate rather than by row-level security.
+) -> tuple[int, int, str]:
+    """Rows, embedded rows, and a digest over the ordered (tenant, id, embedding) triples.
 
-    Relying on RLS to do this filtering is a trap, and it bit this tool during its own round-trip
-    test: `set_config` is a no-op for a role that BYPASSES RLS, so a "per-tenant" read through a
-    superuser silently returned the WHOLE table for every tenant and the totals came back at 3x
-    the truth. RLS is a containment boundary, not a WHERE clause — where the filtering is
-    load-bearing, the query has to say so itself.
+    Three things here are deliberate and each one fixes a defect this tool shipped with.
+
+    **Per-row md5, then aggregate.** The original hashed one `string_agg` of every row's full
+    vector text. At the 108,015-row table this module was written for that is ~0.5 GB at 384
+    dimensions and ~1.37 GB at 1024 — past PostgreSQL's 1 GB limit on a single value, so the
+    verification raised `out of memory` instead of verifying, at exactly the scale it exists for.
+    Hashing each row first bounds the aggregate at 33 bytes per row (~3.5 MB) with the same
+    collision properties.
+
+    **NULL is a value, not an annihilator.** `x || NULL` is NULL and `string_agg` SKIPS NULL
+    inputs, so a row whose embedding was never written contributed NOTHING: two tables differing
+    only in their unembedded rows digested identically, and a wholly unembedded table digested to
+    md5(''). `rows_embedded` is returned alongside so a partially-encoded corpus is a number the
+    operator sees rather than an absence.
+
+    **`COLLATE "C"`.** The ordering ran under each server's `lc_collate`, and this tool compares
+    two independent installs by design, so byte-identical data could digest differently and be
+    reported as corruption. A false alarm on the tool's only guarantee is what teaches an operator
+    to bypass it.
+
+    Filtering is an EXPLICIT predicate, never row-level security: `set_config` is a no-op for a
+    role that bypasses RLS, which once made a per-tenant read return the whole table and report 3x
+    the true row count.
     """
     where = f" WHERE {key} = %(t)s" if tenant is not None else ""
     row = conn.execute(
-        f"SELECT count(*), md5(coalesce(string_agg({key} || '|' || id || '|' || "
-        f"embedding::text, E'\\n' ORDER BY {key}, id), '')) FROM {table}{where}",
+        f"SELECT count(*), count(embedding), "
+        f"md5(coalesce(string_agg("
+        f"  md5({key} || '|' || id || '|' || coalesce(embedding::text, '<NULL>')), "
+        f"  ',' ORDER BY {key} COLLATE \"C\", id COLLATE \"C\"), '')) "
+        f"FROM {table}{where}",
         {"t": tenant} if tenant is not None else None,
     ).fetchone()
     assert row is not None
-    return int(row[0]), str(row[1])
+    return int(row[0]), int(row[1]), str(row[2])
 
 
 def checksum(dsn: str, table: str, tenants: list[str] | None = None) -> dict[str, object]:
@@ -140,13 +161,19 @@ def checksum(dsn: str, table: str, tenants: list[str] | None = None) -> dict[str
         bypass = bool(bypass_row and bypass_row[0])
 
         per_tenant: dict[str, dict[str, object]] = {}
+        embedded = 0
         if tenants:
+            # Deduplicated ONCE, order preserved. `total` used to sum the raw list while
+            # `per_tenant` overwrote by key, so `--tenant a --tenant a` reported twice the rows
+            # it held and the meta claimed twice what its single file contained.
+            tenants = list(dict.fromkeys(tenants))
             total = 0
             for tenant in tenants:
                 _scope(conn, tenant)
-                n, digest = _digest_one(conn, table, key, tenant)
-                per_tenant[tenant] = {"rows": n, "digest": digest}
+                n, n_emb, digest = _digest_one(conn, table, key, tenant)
+                per_tenant[tenant] = {"rows": n, "rows_embedded": n_emb, "digest": digest}
                 total += n
+                embedded += n_emb
             rows, n_tenants = total, len([t for t in tenants if per_tenant[t]["rows"]])
             # Order-independent roll-up of the per-tenant digests, so the top-level number does not
             # depend on the order tenants happened to be listed in.
@@ -155,13 +182,14 @@ def checksum(dsn: str, table: str, tenants: list[str] | None = None) -> dict[str
             ).hexdigest()
         else:
             _scope(conn, None)
-            rows, combined = _digest_one(conn, table, key)
+            rows, embedded, combined = _digest_one(conn, table, key)
             n_row = conn.execute(f"SELECT count(DISTINCT {key}) FROM {table}").fetchone()
             n_tenants = int(n_row[0]) if n_row else 0
 
     return {
         "table": table,
         "rows": rows,
+        "rows_embedded": embedded,
         "tenants": n_tenants,
         "digest": combined,
         "per_tenant": per_tenant or None,
@@ -172,7 +200,20 @@ def checksum(dsn: str, table: str, tenants: list[str] | None = None) -> dict[str
 
 
 def dump(dsn: str, table: str, out: Path, tenants: list[str] | None = None) -> dict[str, object]:
+    tenants = list(dict.fromkeys(tenants)) if tenants else None
     before = checksum(dsn, table, tenants)
+    # Per SLICE, not just in total. The refusal below tested the SUM while the restore's DELETE
+    # operates per tenant, so one empty slice (a crashed ingest, a mistyped --tenant) passed the
+    # guard, deleted that tenant at the destination, loaded nothing back, and still VERIFIED —
+    # md5('') equals md5('') on both sides. A guard has to sit at the granularity of the damage.
+    _per_tenant: dict[str, dict[str, object]] = before.get("per_tenant") or {}  # type: ignore[assignment]
+    empty = [t for t, v in _per_tenant.items() if not v.get("rows")]
+    if empty:
+        raise SystemExit(
+            f"refusing to dump empty tenant slice(s) {empty}: restoring them would DELETE those "
+            f"tenants at the destination, load nothing back, and still report verified. Check the "
+            f"spelling, or drop them from --tenant."
+        )
     if before["rows"] == 0:
         raise SystemExit(
             f"refusing to dump an EMPTY {table!r}. If the table is not really empty, the reader "
@@ -191,7 +232,8 @@ def dump(dsn: str, table: str, out: Path, tenants: list[str] | None = None) -> d
         # CHECK, only one tenant can be in scope at a time, and the first row belonging to any
         # other tenant aborts the load. Separate files also make a partial restore resumable.
         written: dict[str, str] = {}
-        for tenant in (tenants or [None]):
+        scoped: list[str | None] = list(tenants) if tenants else [None]
+        for tenant in scoped:
             _scope(conn, tenant)
             target = out if tenant is None else out.with_name(f"{out.name}.{tenant}")
             where = f" WHERE {key} = %(t)s" if tenant is not None else ""
@@ -204,7 +246,7 @@ def dump(dsn: str, table: str, out: Path, tenants: list[str] | None = None) -> d
     total_bytes = sum(
         (out.parent / name).stat().st_size for name in written.values()
     )
-    meta = {
+    meta: dict[str, object] = {
         "source": before,
         "columns": cols,
         "tenants": tenants,
@@ -218,7 +260,7 @@ def dump(dsn: str, table: str, out: Path, tenants: list[str] | None = None) -> d
     return meta
 
 
-def restore(dsn: str, table: str, src: Path, *, truncate: bool = True) -> dict[str, object]:
+def restore(dsn: str, table: str, src: Path, *, truncate: bool = False) -> dict[str, object]:
     meta_path = src.with_suffix(src.suffix + ".meta.json")
     if not meta_path.exists():
         raise SystemExit(
@@ -226,6 +268,19 @@ def restore(dsn: str, table: str, src: Path, *, truncate: bool = True) -> dict[s
             f"cannot be verified — only assumed."
         )
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+    # Validate the untrusted sidecar BEFORE opening anything. The documented workflow produces it
+    # on a rented third-party box, and it supplies both the DELETE targets and the filenames that
+    # get joined to the dump directory. Verified in this checkout: `Path(base) / "/etc/shadow"`
+    # discards the base entirely, and `../` walks out. Checking after connecting would mean the
+    # first thing a hostile sidecar meets is a live database handle.
+    for _name in (meta.get("files") or {}).values():
+        if Path(str(_name)).name != str(_name):
+            raise SystemExit(
+                f"the dump names a file with a path separator or an absolute path ({_name!r}). "
+                f"A restore reads only plain filenames beside the archive it was given."
+            )
+
     with psycopg.connect(dsn) as conn:
         # Postgres refuses `COPY FROM` outright for a role subject to row-level security
         # ("COPY FROM not supported with row-level security. HINT: Use INSERT statements
@@ -237,7 +292,8 @@ def restore(dsn: str, table: str, src: Path, *, truncate: bool = True) -> dict[s
             "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"
         ).fetchone()
         if not (bypass_row and bypass_row[0]):
-            user = conn.execute("SELECT current_user").fetchone()
+            user_row = conn.execute("SELECT current_user").fetchone()
+            user = (user_row[0] if user_row else "<unknown>",)
             raise SystemExit(
                 f"restore needs a role that bypasses row-level security; {user[0]!r} does not. "
                 f"Postgres does not allow COPY FROM under RLS at all. Re-run the restore as a "
@@ -270,6 +326,14 @@ def restore(dsn: str, table: str, src: Path, *, truncate: bool = True) -> dict[s
             name = files.get(tenant or "*")
             if name is None:
                 raise SystemExit(f"dump has no file for tenant {tenant!r}")
+            # The sidecar is the LEAST trusted input here: the documented workflow produces it
+            # on a rented third-party box. `Path(base) / "/etc/shadow"` discards the base
+            # entirely and `../` walks out of the dump directory — both verified in this checkout.
+            if Path(name).name != name:
+                raise SystemExit(
+                    f"the dump names a file with a path separator or an absolute path ({name!r}). "
+                    f"A restore reads only plain filenames beside the archive it was given."
+                )
             path = src.parent / name
             if not path.exists():
                 raise SystemExit(f"{path} is missing — the dump is incomplete")
@@ -278,20 +342,46 @@ def restore(dsn: str, table: str, src: Path, *, truncate: bool = True) -> dict[s
             ) as copy:
                 while chunk := fh.read(1 << 20):
                     copy.write(chunk)
+        # Verify INSIDE the transaction, BEFORE the commit. Previously the commit happened first
+        # and the check ran afterwards on a fresh connection, so a mismatch — including a spurious
+        # one from a collation or pgvector-version difference — left the destination with its old
+        # rows destroyed and the new rows unverified, in a table `check_schema` accepts as a
+        # normal index. Nothing in this module takes a backup, so that state was unrecoverable.
+        # Raising here lets psycopg's context manager roll the whole load back.
+        source = meta["source"]
+        after_rows = 0
+        after_digest = ""
+        per_tenant_after: dict[str, dict[str, object]] = {}
+        for tenant in (tenants or [None]):
+            _scope(conn, tenant)
+            n, n_emb, digest = _digest_one(conn, table, key, tenant)
+            after_rows += n
+            if tenant is None:
+                after_digest = digest
+            else:
+                per_tenant_after[tenant] = {"rows": n, "rows_embedded": n_emb, "digest": digest}
+        if tenants:
+            after_digest = hashlib.md5(
+                "\n".join(
+                    f"{t}:{per_tenant_after[t]['digest']}" for t in sorted(per_tenant_after)
+                ).encode()
+            ).hexdigest()
+        if after_digest != source["digest"] or after_rows != source["rows"]:
+            raise SystemExit(
+                "TRANSFER NOT VERIFIED — the destination does not match the source, so the load "
+                "was ROLLED BACK and the destination is unchanged.\n"
+                f"  rows   : {source['rows']} -> {after_rows}\n"
+                f"  digest : {source['digest']} -> {after_digest}\n"
+                f"  source pgvector: {source.get('pgvector')} — a version or collation difference "
+                f"produces this too, so rule those out before assuming data loss."
+            )
         conn.commit()
 
-    after = checksum(dsn, table, meta.get("tenants"))
-    source = meta["source"]
-    ok = after["digest"] == source["digest"] and after["rows"] == source["rows"]
-    result = {"source": source, "destination": after, "verified": ok}
-    if not ok:
-        raise SystemExit(
-            "TRANSFER NOT VERIFIED — the destination does not match the source.\n"
-            f"  rows   : {source['rows']} -> {after['rows']}\n"
-            f"  digest : {source['digest']} -> {after['digest']}\n"
-            "The rows are in place but must not be used as if they were the encoded corpus."
-        )
-    return result
+    return {
+        "source": meta["source"],
+        "destination": checksum(dsn, table, tenants),
+        "verified": True,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -314,7 +404,11 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--dsn", required=True)
     r.add_argument("--table", required=True)
     r.add_argument("--in", dest="src", type=Path, required=True)
-    r.add_argument("--append", action="store_true", help="do NOT truncate first")
+    r.add_argument("--replace", action="store_true",
+                   help="DELETE the rows this dump covers before loading. OFF by default: every "
+                        "other unsafe path in this package is an explicit opt-in, and an unscoped "
+                        "replace is a bare TRUNCATE touching every tenant, not only those being "
+                        "restored.")
 
     args = p.parse_args(argv)
     if args.cmd == "checksum":
@@ -322,7 +416,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "dump":
         print(json.dumps(dump(args.dsn, args.table, args.out, args.tenants), indent=2))
     else:
-        print(json.dumps(restore(args.dsn, args.table, args.src, truncate=not args.append), indent=2))
+        print(json.dumps(restore(args.dsn, args.table, args.src, truncate=args.replace), indent=2))
     return 0
 
 
