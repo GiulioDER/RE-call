@@ -5,9 +5,10 @@ See `docs/superpowers/specs/2026-08-06-learned-sparse-splade-design.md`.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 import hashlib
 
 
@@ -264,3 +265,86 @@ class SpladeEncoder:
             logits = self._model(**encoded).logits
         weights = splade_weights(logits, encoded["attention_mask"])
         return [prune_to_top_k(row, self._profile.top_k) for row in weights]
+
+
+class SparseEncoderProtocol(Protocol):
+    """What the indexing helpers actually need from an encoder.
+
+    Stated as a protocol rather than as `SpladeEncoder`, because the tests drive these helpers
+    with a deterministic keyword encoder and that is a feature: it keeps the corpus path testable
+    without a 500 MB download, and it keeps `torch` out of a lexical-only install.
+    """
+
+    @property
+    def profile(self) -> SparseProfile: ...
+
+    def encode(self, texts: list[str]) -> list[dict[int, float]]: ...
+
+
+@dataclass(frozen=True)
+class SparseIndexResult:
+    """What one indexing pass wrote, and what it could not write.
+
+    `empty_ids` is not a warning to be discarded. It is the ONLY explanation an operator will get
+    for `assert_sparse_coverage` finding fewer sidecar rows than chunks, so it is returned rather
+    than logged.
+    """
+
+    written: int
+    empty_ids: list[str]
+
+
+def store_sparse_vectors(
+    store: Any,
+    encoder: SparseEncoderProtocol,
+    items: Iterable[tuple[str, str]],
+    *,
+    batch_size: int = 32,
+    progress: Callable[[int], None] | None = None,
+) -> SparseIndexResult:
+    """Encode `(chunk_id, text)` pairs and write them to the learned sparse sidecar.
+
+    The profile id is read off `encoder.profile`, never taken as a separate argument. Vectors
+    filed under a name a different model produced score plausibly instead of failing, which is
+    precisely what the profile column exists to prevent, so the caller is not given the chance.
+
+    A chunk that encodes to an EMPTY vector is skipped and its id returned. `upsert_sparse`
+    refuses an empty mapping (the table's CHECK requires nnz > 0), and it is right to, but that
+    refusal belongs at the corpus level where an operator can act on it: see
+    `assert_sparse_coverage`. One term-free passage must not kill a whole index.
+
+    `progress` receives the running written count after each batch, so a caller can print
+    something during a CPU encode that takes tens of minutes.
+    """
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}; nothing would be encoded")
+
+    profile_id = encoder.profile.profile_id
+    written = 0
+    empty_ids: list[str] = []
+    batch: list[tuple[str, str]] = []
+
+    def _flush_batch() -> None:
+        nonlocal written
+        if not batch:
+            return
+        vectors = encoder.encode([text for _, text in batch])
+        payload: dict[str, dict[int, float]] = {}
+        for (chunk_id, _text), weights in zip(batch, vectors, strict=True):
+            if weights:
+                payload[chunk_id] = weights
+            else:
+                empty_ids.append(chunk_id)
+        if payload:
+            written += store.upsert_sparse(profile_id, payload)
+        batch.clear()
+        if progress is not None:
+            progress(written)
+
+    for item in items:
+        batch.append(item)
+        if len(batch) >= batch_size:
+            _flush_batch()
+    _flush_batch()
+
+    return SparseIndexResult(written=written, empty_ids=empty_ids)
