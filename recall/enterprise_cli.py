@@ -222,6 +222,26 @@ def _cmd_parity(control: ControlPlane, dsn: str, tenant: str) -> int:
     ):
         if values:
             print(f"{label}: {len(values)}")
+    # Two empty generations cannot disagree, so every comparison above is vacuously satisfied and
+    # `parity.valid` is True. That is the one failure mode in this sequence which presents as a
+    # GREEN, so the runbook's own rule -- each step is a gate, do not proceed past a red one --
+    # cannot catch it. It was carried in prose in ENTERPRISE_RETRIEVAL.md, and prose is the
+    # weakest place to keep a guard against a document an operator is reading for permission to
+    # proceed.
+    #
+    # No override flag, deliberately. `cutover --allow-divergent-corpus` is the cautionary case in
+    # this same CLI: the refusal advertises its own escape hatch at the exact moment the operator
+    # is under pressure to get past it. An operator with nothing to compare has nothing to promote.
+    #
+    # The condition is BOTH empty. A populated active against an empty shadow already fails on
+    # missing sources, and this must not restate that as a vacuity error.
+    if parity.active_chunks == 0 and parity.shadow_chunks == 0:
+        print(
+            "parity FAILED: both generations are empty, so the comparison is vacuous and "
+            "certifies nothing. Index the shadow generation before comparing.",
+            file=sys.stderr,
+        )
+        return 1
     if parity.valid:
         print("parity: OK")
         return 0
