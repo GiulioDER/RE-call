@@ -396,6 +396,14 @@ def _run_config(args: argparse.Namespace, system: Any) -> dict[str, Any]:
         "entailment_top_n": entailment.get("top_n"),
         "table": described.get("table"),
         "question_types": args.question_types or "all",
+        # `--conversations` selects which conversations are indexed AND questioned, so it decides
+        # which rows exist. It was added to the mem0 arm's config in the same batch and missed
+        # here — on the arm whose artifacts carry the published numbers. Resuming across a change
+        # to it merges the previous selection's rows via `_already_done`, while `_coverage`
+        # measures only the SHORTFALL (`expected - scored`) against the current selection: the
+        # extra rows are invisible to it, so the artifact reports `complete: true` while
+        # `aggregate` and `n` cover the union of both selections.
+        "conversations": args.conversations or "all",
         # Added after six auditors independently found them missing. The calibration changes which
         # memories reach the answerer; `--data` is the corpus the docstring already claimed to
         # cover; and the database is what makes "same table name, different host" — the exact
@@ -813,6 +821,51 @@ def _main() -> None:
                 for qid, row in published.items()
                 if int(qid.split("_")[1]) in indices
             }
+        # These flags are about SPENDING, and this arm ignored them: --no-judge was accepted and
+        # the judge ran anyway. A flag whose entire purpose is to avoid cost must never be
+        # silently dropped.
+        if args.no_judge:
+            raise SystemExit(
+                "--no-judge is meaningless with --rejudge-mem0: this arm ONLY judges, scoring "
+                "Mem0's already-published answers. Drop one of the two flags."
+            )
+
+        # The resume guard covered only the RE-call arm. Both arms write `*.partial.jsonl` into
+        # the same --out-dir and BEAM question ids are IDENTICAL across them, so
+        # `--resume out/*.partial.jsonl` — the invocation `_already_done`'s own docstring
+        # recommends — silently absorbed RE-call rows, dropped those questions from `pending`, and
+        # then died on `KeyError: published_score` AFTER the judge budget had been spent.
+        mem0_config = {
+            "arm": "mem0-rejudged",
+            "chat_size": args.chat_size,
+            "judge_model": args.judge_model or args.model,
+            "cutoff": args.cutoff,
+            # RESOLVED, for the reason `_run_config` already states about `--data`: a relative
+            # path compared across two working directories is a false mismatch, and a guard that
+            # refuses spuriously teaches the operator to reach for
+            # --allow-config-change-on-resume, which disables the check for every other key too.
+            "source_artifact": str(Path(args.rejudge_mem0).resolve()),
+            # `--conversations` IS recorded: it is the only flag that selects which rows this arm
+            # produces, so it is precisely what the guard has to compare on. Resuming a run scored
+            # over conversations 0-9 with `--conversations 10-19` previously passed, merged the
+            # old rows in via `_already_done`, and wrote an artifact whose `coverage` described
+            # only 10-19 while `aggregate` mixed both.
+            "conversations": args.conversations or "all",
+            # `question_types` is deliberately NOT recorded here. This arm filters `published` by
+            # `indices` only and never reads that flag (its single use site sits in the RE-call
+            # arm, past this branch's return), so two re-judges differing only in
+            # --question-types produce identical rows. Recording it would make the guard refuse
+            # over a difference that cannot have changed the work.
+            #
+            # Dropping a key IS a difference under `_check_resume_config`'s union-of-keys diff, so
+            # a sidecar written by the immediately preceding commit will refuse to resume. That
+            # commit is unreleased and on this branch, so no such sidecar exists outside a working
+            # tree; the alternative — freezing a key the arm ignores — would keep the guard
+            # firing on a difference that cannot change the work.
+        }
+        _check_resume_config(args.resume, mem0_config, allow=args.allow_config_change_on_resume)
+        _write_run_config(out_base.with_suffix(".partial.config.jsonl"), mem0_config)
+
         rows, done = _already_done(args.resume)
         pending_published = [(qid, row) for qid, row in published.items() if qid not in done]
         print(
@@ -863,7 +916,9 @@ def _main() -> None:
         published_scores = [r["published_score"] for r in rows if r["published_score"] is not None]
         summary = {
             "arm": "mem0-platform-rejudged",
-            "source_artifact": str(args.rejudge_mem0),
+            # Read back from `mem0_config` rather than re-derived, so the finished artifact and
+            # the crash-recovery sidecar cannot disagree about which file they describe.
+            "source_artifact": mem0_config["source_artifact"],
             "judge_model": args.judge_model or args.model,
             "chat_size": args.chat_size,
             # The retrieval budget this arm's answers were taken at. Recorded so `pair.compare`

@@ -184,6 +184,11 @@ class _Args:
     k = 45
     cutoff = 45
     question_types = None
+    # `_run_config` reads this UNGUARDED, deliberately. `getattr(args, "conversations", None)`
+    # would let an args object that never carried the flag record "all" and sail through the
+    # resume comparison — the silent cross-selection merge the key exists to catch. So the double
+    # carries it, and an AttributeError here is the correct failure rather than a defaulted pass.
+    conversations = None
 
 
 def _system(tenant: str, judged: int) -> _FakeSystem:
@@ -209,6 +214,10 @@ def test_run_config_ignores_state_that_changes_within_a_run() -> None:
     assert first["embedder_model"] == "voyage-4-large"
     assert first["candidate_k"] == 250
     assert first["no_judge"] is True
+    # Covered, not merely tolerated. `--conversations` decides WHICH rows a run produces, so its
+    # absence from this config let a resume across a changed selection merge two populations
+    # while `coverage` — which measures only the shortfall — still reported complete.
+    assert first["conversations"] == "all"
 
 
 def test_resume_refuses_when_the_configuration_differs(tmp_path: Path) -> None:
