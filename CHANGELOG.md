@@ -8,6 +8,20 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Changed (action required)
+- **FastEmbed profile fingerprints change, so profile-bound calibrations must be re-fitted.**
+  The resolved ONNX execution provider is now part of `EmbeddingProfile.dependencies`, which is
+  fingerprint key material. A calibration bound by profile fingerprint before this release no
+  longer matches: `calibration.load_for_profile` logs a warning and returns `None`, so a run
+  CONTINUES UNCALIBRATED rather than refusing — re-fit before trusting an abstention threshold.
+  This affects the v1 profile-fingerprint binding and the embedding cache only; the CERTIFIED v2
+  binding stores `EmbedderIdentity`, which carries no dependencies and is still provider-blind,
+  so a CPU-fit certified calibration continues to bind to a CUDA-served pipeline. Cached
+  vectors simply miss and re-embed, at the cost of one full re-encode. Only FastEmbed-derived
+  profiles are affected; the global fingerprint domain tag is deliberately NOT bumped, since that
+  would also invalidate Voyage and every other profile whose vectors this change cannot have
+  moved.
+
 ### Added
 - **`HybridRetriever.search_fused(query, history, k, source)`: multi-query fusion of the current
   turn with prior turns.** Fuses retrieval for `query` with retrieval for a concatenation of prior
@@ -26,6 +40,17 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   score, so `search_fused` can return fewer than `k` hits. Library only for now: not exposed as an
   MCP tool.
 
+- **`FastEmbedEmbedder(providers=...)` and `.session_providers`.** `providers` forwards an ONNX
+  Runtime execution-provider REQUEST to fastembed; it is not a guarantee, because asking for
+  `CUDAExecutionProvider` against a wheel built for a different CUDA major falls back to CPU with
+  only a `RuntimeWarning`. `.session_providers` reports what the live `InferenceSession` actually
+  resolved — never `onnxruntime.get_available_providers()`, which reports what the wheel was
+  compiled with and stays true while the session sits on CPU. The resolved providers are now part
+  of the embedding profile's `dependencies` on BOTH the legacy and the registered-profile path,
+  so a CPU-built and a CUDA-built vector no longer share a cache key or a calibration binding.
+  When fastembed's internals do not expose a session, this is recorded as
+  `onnx-providers-source: unavailable` rather than as a provider name — "could not tell" is a
+  third state and must not read as a CPU run.
 - **`benchmarks/check_profile_encoder_distinctness.py`, and the finding it exists to record.**
   `bge-small-symmetric-v1` and `bge-small-asymmetric-v1` differ in two registry fields
   (`query_mode`, `passage_mode`) and share every other identity field and one provisioned artifact
@@ -184,6 +209,39 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   The documentation now says so. Behaviour is unchanged.
 
 ### Fixed
+- **`recall-enterprise parity` passed vacuously on two empty generations, and a vacuous pass here
+  reads as permission to run `cutover`.** Two empty generations cannot disagree, so every
+  comparison `validate_generation_parity` makes was satisfied, `GenerationParity.valid` was True,
+  and the command printed `parity: OK` and exited 0 over 0 active and 0 shadow chunks. That is the
+  state the reference deployment is in, and at this step it presents as a **green**, so the
+  runbook's own rule — each step is a gate, do not proceed past a red one — could not catch it.
+  ⚠️ **What this closes is the misleading green at step 8, not a path to a promoted empty index:**
+  `ControlPlane.cutover` calls `_require_non_empty_shadow` before its parity check, deliberately
+  outside it so `--allow-divergent-corpus` cannot skip it, so an empty shadow was never
+  promotable. The guard existed, in prose, in `docs/ENTERPRISE_RETRIEVAL.md`;
+  prose is the weakest place to keep a guard, because it lives in the document an operator reads
+  for permission to proceed. `_cmd_parity` now exits 1 with a refusal naming the tenant and both
+  generation ids: `... holds no chunks in either generation (...), so the comparison is vacuous and
+  certifies nothing`. It also now prints any `parity.failures` **before** that refusal, because
+  `indexes_valid` and `rls_enabled` are catalog facts that can be false of an EMPTY pair, and for
+  an empty pair this is the only place such a failure surfaces at all: `readiness` evaluates
+  `route.active`, and `cutover` — which does check the shadow's RLS on its default path — refuses
+  at `_require_non_empty_shadow` before it ever reaches that check. **No override flag**,
+  deliberately: `cutover --allow-divergent-corpus` in
+  this same CLI is the cautionary case, a refusal that advertises its own escape hatch at the exact
+  moment the operator is under pressure to get past it. The condition is BOTH empty, so a populated
+  active against an empty shadow still fails on missing sources rather than having that restated as
+  a vacuity error. Proven by execution against the old code, which printed `parity: OK` and exited
+  0, and paired with a negative control asserting a populated matching pair still exits 0, so the
+  refusal cannot be broadened into a blanket one without a test going red, and by a third test
+  pinning the BOTH-empty scoping itself: a populated active against an empty shadow must keep
+  failing on `missing sources` rather than being restated as a vacuity error. That one was written
+  because mutating the guard's `and` to `or` left the entire suite green — the scoping was asserted
+  only in a code comment, which is the same defect this bullet repairs, one level down.
+  ⚠️ A shadow partially filled relative to the active **is** caught, on missing sources or
+  differing chunk counts. What nothing catches is a pair that agrees with each other while both are
+  short of the corpus on disk, or two generations whose rows all lack a content hash and so compare
+  `''` against `''`. Neither is new, and `parity` does not detect either.
 - **The `typecheck` CI job was red on `master`, behind a job that was CANCELLED rather than run.**
   `recall/sparse.py` imports `transformers` inside its loader, the same lazy guard every optional
   extra in this repository uses, but `transformers.*` was never added to the mypy override list, so
