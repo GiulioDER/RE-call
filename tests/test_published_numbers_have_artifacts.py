@@ -418,6 +418,29 @@ def test_the_registry_values_parse_as_floats_matching_their_own_precision() -> N
 #:
 #: 2481, unchanged, when `derived:` was deleted 2026-07-29 (deferred second pass): `derived:` had
 #: zero occurrences in any gated document, so removing it could not move a single baseline row.
+#:
+#: 2481 -> 2463 (-18) between 2026-07-29 and 2026-08-07, unlogged at the time. Recorded here rather
+#: than reconstructed: a SHRINK is the direction the ratchet permits, so it needs no justification,
+#: but the gap is noted so this log's totals reconcile with the committed file.
+#:
+#: 2463 -> 2556 (+93) on 2026-08-07, arming the gate over `docs/ENTERPRISE_RETRIEVAL.md`. Largest
+#: single growth event in the ratchet's history, and the ONLY one that is not "numbers that predate
+#: the gate": the document is new and the same session that wrote it armed the gate over it. That
+#: distinction matters, so what is frozen is stated here rather than inheriting the earlier
+#: rationale.
+#:
+#: SIX figures were MARKED instead of baselined, because freezing them would have been the gate
+#: certifying its own author's unbacked numbers: the five Qwen3 latency measurements the document
+#: uses to justify a rejection verdict (query p50/p95, passage batch of 20, model load, peak RSS —
+#: taken on VPS2 on 2026-08-03, before this repository's artifact convention, with no committed
+#: `results/*.json` retaining them) and the `2.2x` disk-headroom figure, which the document's own
+#: prose already calls a policy rule of thumb. That is why this entry is +93 and not +99.
+#:
+#: The remaining 93 are frozen deliberately and are overwhelmingly structural (migration numbers,
+#: page counts, dimensions appearing in prose beside their code-span twins). The `EXCLUSIONS`
+#: soft-spot note applies with unusual force to this document: 61% of its numeric tokens are masked
+#: and the masked set is the command arguments. Read the measured coverage note on `GATED_DOCS` in
+#: `benchmarks/claim_gate.py` before treating a green run here as coverage of the runbook.
 
 
 def test_unmarked_counts_ignores_marked_numbers() -> None:
