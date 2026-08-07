@@ -111,6 +111,9 @@ def score_stream(
     """
     qids = list(queries)
     qmatrices = dict(zip(qids, encoder.query_embed([queries[q] for q in qids]), strict=True))
+    for qid, matrix in qmatrices.items():
+        if matrix.shape[0] == 0:
+            raise ValueError(f"query {qid!r} has no tokens")
 
     batch: list[tuple[str, str]] = []
 
@@ -125,7 +128,19 @@ def score_stream(
                         f"pair references unknown query {qid!r} for document {doc_id!r}; the dump "
                         f"and the scorer disagree, and any score emitted here would be fabricated"
                     )
-                yield {"qid": qid, "doc_id": doc_id, "score": maxsim(qmatrices[qid], dmatrix)}
+                # `-inf`, not a raise, and this MUST match `LateInteractionReranker.rerank`.
+                # A zero-token document sorts last there rather than aborting the batch, and the
+                # validate gate reranks a pool locally and compares it against these offloaded
+                # scores. If this path raised instead, the gate would find the live reranker
+                # ranking a document that has no offloaded score at all, and `rerank_order`
+                # refuses a candidate with no score. The two paths agree or the offload is not a
+                # substitute for the real reranker.
+                score = (
+                    float("-inf")
+                    if dmatrix.shape[0] == 0
+                    else maxsim(qmatrices[qid], dmatrix)
+                )
+                yield {"qid": qid, "doc_id": doc_id, "score": score}
         batch.clear()
 
     for doc_id, text in docs:
