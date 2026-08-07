@@ -270,6 +270,31 @@ def cmd_apply(args: argparse.Namespace) -> int:
     return 0
 
 
+def compare_orderings(
+    local: list[str],
+    offloaded: list[str],
+    local_by_id: dict[str, float],
+    task_id: str,
+) -> tuple[dict | None, bool]:
+    """Compare one query's local ordering against its offloaded one.
+
+    Returns `(failure_or_None, is_deep_tie)`. Shared by the cross-encoder and late-interaction
+    validate gates: they differ in how `local_by_id` is computed, not in what counts as a
+    mismatch, and two copies of that definition would drift apart.
+
+    What this guarantees, and deliberately no more: order is exact where metrics are cut, and the
+    top-`EVAL_K` SET is exact so Recall@100 is unaffected. Deeper swaps are near-ties, reported as
+    information, see SCORE_TOLERANCE above for why demanding more is a gate that cannot pass.
+    """
+    if local[:ORDER_EXACT_K] != offloaded[:ORDER_EXACT_K]:
+        return {"task_id": task_id, "why": f"top-{ORDER_EXACT_K} order differs"}, False
+    if set(local[:EVAL_K]) != set(offloaded[:EVAL_K]):
+        return {"task_id": task_id, "why": f"top-{EVAL_K} set differs"}, False
+    if local != offloaded:
+        return None, True
+    return None, False
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     """Require the offloaded ordering to match the real reranker EXACTLY on a sample.
 
@@ -326,13 +351,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
         local = [h.chunk.id for h in reranker.rerank(row["query"], hits)]
         offloaded = rerank_order(candidates, offloaded_scores)
 
-        # (a) top-of-ranking ORDER, where every reported metric is cut.
-        if local[:ORDER_EXACT_K] != offloaded[:ORDER_EXACT_K]:
-            failures.append({"task_id": row["task_id"], "why": f"top-{ORDER_EXACT_K} order differs"})
-        # (b) top-100 SET, which is what Recall@100 counts (order within it does not matter).
-        elif set(local[:EVAL_K]) != set(offloaded[:EVAL_K]):
-            failures.append({"task_id": row["task_id"], "why": f"top-{EVAL_K} set differs"})
-        elif local != offloaded:
+        failure, is_tie = compare_orderings(local, offloaded, local_by_id, row["task_id"])
+        if failure is not None:
+            failures.append(failure)
+        elif is_tie:
             rank = next(i for i, (a, b) in enumerate(zip(local, offloaded, strict=True)) if a != b)
             gap = abs(local_by_id[local[rank]] - local_by_id[offloaded[rank]])
             ties.append({"task_id": row["task_id"], "rank": rank, "score_gap": gap})
