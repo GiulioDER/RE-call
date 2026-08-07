@@ -34,8 +34,14 @@ def test_fused_search_without_a_reranker_is_refused() -> None:
 
 
 def test_empty_history_is_refused_rather_than_silently_becoming_a_single_query() -> None:
-    """A caller wanting single-query behaviour should call `search`, not get it by accident."""
-    with pytest.raises(ValueError, match="history"):
+    """A caller wanting single-query behaviour should call `search`, not get it by accident.
+
+    Matched on "non-empty history", text unique to this guard's message. A later guard's message
+    also contains the word "history" (it fires on a history that stripped to no usable text), so
+    matching on that word alone would still pass if this guard were deleted and execution fell
+    through to the later one.
+    """
+    with pytest.raises(ValueError, match="non-empty history"):
         _retriever(_StubReranker()).search_fused("q", [])
 
 
@@ -51,8 +57,14 @@ def test_an_over_budget_history_is_refused_and_names_both_lengths() -> None:
 
 
 def test_k_below_one_is_refused() -> None:
-    with pytest.raises(ValueError, match="k must be"):
+    """The message must name the actual value, not just the expected one, so a caller passing
+
+    `k=-3` and a caller passing `k=0` get distinguishable text rather than identical, ungreppable
+    ones.
+    """
+    with pytest.raises(ValueError, match="k must be >= 1") as exc_info:
         _retriever(_StubReranker()).search_fused("q", ["earlier"], k=0)
+    assert "got 0" in str(exc_info.value)
 
 
 def test_a_bare_string_history_is_refused_rather_than_iterated_character_by_character() -> None:
