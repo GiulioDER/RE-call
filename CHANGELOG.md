@@ -167,6 +167,39 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   The documentation now says so. Behaviour is unchanged.
 
 ### Fixed
+- **`recall-enterprise parity` passed vacuously on two empty generations, and a vacuous pass here
+  reads as permission to run `cutover`.** Two empty generations cannot disagree, so every
+  comparison `validate_generation_parity` makes was satisfied, `GenerationParity.valid` was True,
+  and the command printed `parity: OK` and exited 0 over 0 active and 0 shadow chunks. That is the
+  state the reference deployment is in, and at this step it presents as a **green**, so the
+  runbook's own rule — each step is a gate, do not proceed past a red one — could not catch it.
+  ⚠️ **What this closes is the misleading green at step 8, not a path to a promoted empty index:**
+  `ControlPlane.cutover` calls `_require_non_empty_shadow` before its parity check, deliberately
+  outside it so `--allow-divergent-corpus` cannot skip it, so an empty shadow was never
+  promotable. The guard existed, in prose, in `docs/ENTERPRISE_RETRIEVAL.md`;
+  prose is the weakest place to keep a guard, because it lives in the document an operator reads
+  for permission to proceed. `_cmd_parity` now exits 1 with a refusal naming the tenant and both
+  generation ids: `... holds no chunks in either generation (...), so the comparison is vacuous and
+  certifies nothing`. It also now prints any `parity.failures` **before** that refusal, because
+  `indexes_valid` and `rls_enabled` are catalog facts that can be false of an EMPTY pair, and for
+  an empty pair this is the only place such a failure surfaces at all: `readiness` evaluates
+  `route.active`, and `cutover` — which does check the shadow's RLS on its default path — refuses
+  at `_require_non_empty_shadow` before it ever reaches that check. **No override flag**,
+  deliberately: `cutover --allow-divergent-corpus` in
+  this same CLI is the cautionary case, a refusal that advertises its own escape hatch at the exact
+  moment the operator is under pressure to get past it. The condition is BOTH empty, so a populated
+  active against an empty shadow still fails on missing sources rather than having that restated as
+  a vacuity error. Proven by execution against the old code, which printed `parity: OK` and exited
+  0, and paired with a negative control asserting a populated matching pair still exits 0, so the
+  refusal cannot be broadened into a blanket one without a test going red, and by a third test
+  pinning the BOTH-empty scoping itself: a populated active against an empty shadow must keep
+  failing on `missing sources` rather than being restated as a vacuity error. That one was written
+  because mutating the guard's `and` to `or` left the entire suite green — the scoping was asserted
+  only in a code comment, which is the same defect this bullet repairs, one level down.
+  ⚠️ A shadow partially filled relative to the active **is** caught, on missing sources or
+  differing chunk counts. What nothing catches is a pair that agrees with each other while both are
+  short of the corpus on disk, or two generations whose rows all lack a content hash and so compare
+  `''` against `''`. Neither is new, and `parity` does not detect either.
 - **The `typecheck` CI job was red on `master`, behind a job that was CANCELLED rather than run.**
   `recall/sparse.py` imports `transformers` inside its loader, the same lazy guard every optional
   extra in this repository uses, but `transformers.*` was never added to the mypy override list, so
