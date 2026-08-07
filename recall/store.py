@@ -955,6 +955,15 @@ class PgVectorStore:
             # is applied and the next explicit ensure_schema() correctly skips all SQL, leaving
             # the requested table absent.
             with conn.transaction():
+                # The learned sparse sidecar cannot cascade: its parent is a column VALUE
+                # (`chunk_table`), not a relation, so there is no foreign key to fire. Without
+                # this DELETE every throwaway store leaves a uuid-named row set addressable by a
+                # name that no longer resolves, and nothing ever looks for them again.
+                sidecar = conn.execute(f"SELECT to_regclass('{SPARSE_TABLE}')").fetchone()
+                if sidecar and sidecar[0]:
+                    conn.execute(
+                        f"DELETE FROM {SPARSE_TABLE} WHERE chunk_table = %s", (self._table,)
+                    )
                 conn.execute(f"DROP TABLE IF EXISTS {self._table}")
                 ledger = conn.execute(
                     "SELECT to_regclass('recall_schema_migrations')"
