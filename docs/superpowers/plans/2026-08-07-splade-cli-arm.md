@@ -981,16 +981,29 @@ In `recall/store.py`, inside `drop_table`'s `_drop` function, add the DELETE ins
 
 Leave the rest of `_drop` unchanged.
 
-⚠️ **Corrected 2026-08-07, after implementation.** This step originally said the DELETE
-deliberately omits a `tenant_id` filter, because `drop_table` removes the table for every tenant
-and scoping the cleanup would strand other tenants' rows. The intent was right and the mechanism
-does not deliver it: `recall_sparse_v1` carries `FORCE ROW LEVEL SECURITY` and a tenant isolation
-policy (`recall/migrations/sql/0012_learned_sparse.sql:40-43`), so the database scopes this DELETE
-to the current tenant whether or not the SQL asks it to, while `DROP TABLE` is DDL and is not
-scoped at all. So on a table shared across tenants, the drop still orphans every other tenant's
-sidecar rows. That is latent today, since no caller drops a shared multi-tenant table, but the
-code comment must say what actually happens rather than what was intended. Found by the Task 5
-implementer, who kept the specified implementation and reported it rather than deviating.
+The DELETE carries no `tenant_id` filter, deliberately: `drop_table` removes the table for every
+tenant, so a cleanup scoped to one would strand the rest.
+
+⚠️ **This was briefly "corrected" the wrong way on 2026-08-07, and then measured.** The sidecar
+carries `FORCE ROW LEVEL SECURITY` with a tenant isolation policy
+(`recall/migrations/sql/0012_learned_sparse.sql:40-43`), which looks like it must narrow this
+statement to one tenant regardless of what the SQL asks. That reading was written into the plan
+and into a code comment as fact. It is wrong for the role this repository actually uses: `FORCE`
+binds the table OWNER, while a superuser or a `BYPASSRLS` role is not subject to RLS at all, and
+the `recall` role in local dev, CI and the test container is both.
+
+Measured, not reasoned: two tenants were given a sidecar row on one chunk table, one tenant's
+store called `drop_table()`, and both rows were gone. The cleanup is global, as originally
+intended.
+
+🔑 The lesson is the one already in `CLAUDE-lessons.md`: a capability claim is a claim, so execute
+it rather than reading it. Caught by the Task 5 reviewer, which checked the role the code connects
+as instead of stopping at the migration SQL.
+
+**The residual condition, which is real.** Under a role that is neither superuser nor `BYPASSRLS`,
+the policy would engage, this DELETE would silently narrow to the current tenant, and the drop
+would strand every other tenant's sidecar rows. Nothing detects that; it is a property of the
+connecting role, and it is recorded in the code comment rather than guarded.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
