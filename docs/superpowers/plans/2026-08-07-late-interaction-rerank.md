@@ -1130,18 +1130,31 @@ def assert_complete(pairs: dict[str, set[str]], scored: dict[str, set[str]]) -> 
         )
 
 
-def cmd_score(args: argparse.Namespace) -> int:
-    from recall.rerank import LateInteractionReranker
+def _resolve_arm(name: str, accept_noncommercial: bool) -> LateArm:
+    """The named arm, refusing a non-deployable one without an explicit opt-in.
 
-    out = args.output_dir.resolve()
-    arm = next((a for a in LATE_ARMS if a.name == args.arm), None)
+    Shared by `score` and `validate`. `validate` used to pass
+    `accept_noncommercial_license=not arm.deployable`, which handed itself the waiver precisely
+    for the arms the gate exists to withhold it from. The preregistration's containment gate
+    requires an EXPLICIT opt-in on every entry point, not only the convenient one, so the check
+    lives in one place that both commands must go through.
+    """
+    arm = next((a for a in LATE_ARMS if a.name == name), None)
     if arm is None:
-        raise SystemExit(f"unknown arm {args.arm!r}; known arms are {[a.name for a in LATE_ARMS]}")
-    if not arm.deployable and not args.accept_noncommercial:
+        raise SystemExit(f"unknown arm {name!r}; known arms are {[a.name for a in LATE_ARMS]}")
+    if not arm.deployable and not accept_noncommercial:
         raise SystemExit(
             f"{arm.name} is licensed {arm.licence} and needs --accept-noncommercial. It is a "
             f"capacity diagnostic only and may not contribute to a shipping decision."
         )
+    return arm
+
+
+def cmd_score(args: argparse.Namespace) -> int:
+    from recall.rerank import LateInteractionReranker
+
+    out = args.output_dir.resolve()
+    arm = _resolve_arm(args.arm, args.accept_noncommercial)
 
     reranker = LateInteractionReranker.from_pretrained(
         arm.checkpoint, accept_noncommercial_license=args.accept_noncommercial
@@ -1227,7 +1240,7 @@ if __name__ == "__main__":  # pragma: no cover
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_bench_late_interaction.py -v`
-Expected: PASS, 19 passed
+Expected: PASS, 32 passed
 
 - [ ] **Step 5: Check for unused imports**
 
@@ -1553,9 +1566,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
     from recall.rerank import LateInteractionReranker
 
     out = args.output_dir.resolve()
-    arm = next(a for a in LATE_ARMS if a.name == args.arm)
+    arm = _resolve_arm(args.arm, args.accept_noncommercial)
     reranker = LateInteractionReranker.from_pretrained(
-        arm.checkpoint, accept_noncommercial_license=not arm.deployable
+        arm.checkpoint, accept_noncommercial_license=args.accept_noncommercial
     )
 
     docs: dict[str, str] = {}
@@ -1596,13 +1609,18 @@ Register the subcommand inside `main`, immediately before `args = parser.parse_a
     v.add_argument("--scores", type=Path, required=True)
     v.add_argument("--arm", required=True, choices=[a.name for a in LATE_ARMS])
     v.add_argument("--sample", type=int, default=20)
+    v.add_argument(
+        "--accept-noncommercial",
+        action="store_true",
+        help="required for cc-by-nc checkpoints; diagnostic use only",
+    )
     v.set_defaults(func=cmd_validate)
 ```
 
 - [ ] **Step 9: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_bench_late_interaction.py -v`
-Expected: PASS, 24 passed
+Expected: PASS, 32 passed
 
 - [ ] **Step 10: Run the full suite for regressions**
 
