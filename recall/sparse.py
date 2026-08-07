@@ -625,7 +625,10 @@ def inspect_sparse_device(
 
 
 def resolve_sparse_device(
-    requested: str = "auto", required_vram_mb: int = DEFAULT_REQUIRED_VRAM_MB
+    requested: str = "auto",
+    required_vram_mb: int = DEFAULT_REQUIRED_VRAM_MB,
+    *,
+    report: DeviceReport | None = None,
 ) -> str:
     """The device string for `SpladeEncoder.from_pretrained`, refusing a named GPU it cannot use.
 
@@ -633,10 +636,19 @@ def resolve_sparse_device(
     `cuda` is a STATEMENT about the run, and answering `cpu` to it would make that statement false
     while producing correct vectors roughly a hundred times more slowly, with nothing to show for
     it. See the note on `SpladeEncoder.device`.
+
+    `report`, when given, is used AS IS instead of calling `inspect_sparse_device` again. Without
+    this, a caller that also wants the report for its own provenance (as `store_latency_share.py`
+    does) ends up taking two separate live `torch.cuda` readings: one to build the report it
+    stamps into the artifact, one taken here to decide. Near a VRAM threshold on a real GPU those
+    two reads are not guaranteed to agree, so the reading that drove the decision and the reading
+    that gets published could describe two different moments. Passing the report through makes
+    them the SAME reading. Omitted, behaviour is unchanged: one fresh read, exactly as before.
     """
     if requested not in SPARSE_DEVICES:
         raise ValueError(f"device must be one of {SPARSE_DEVICES}, got {requested!r}")
-    report = inspect_sparse_device(requested, required_vram_mb=required_vram_mb)
+    if report is None:
+        report = inspect_sparse_device(requested, required_vram_mb=required_vram_mb)
     if requested == "cuda" and report.refusal:
         raise SparseDeviceError(f"--sparse-device cuda was requested but {report.refusal}")
     return report.resolved
