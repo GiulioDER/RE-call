@@ -112,6 +112,14 @@ def _pin_copy_gucs(conn: psycopg.Connection) -> None:
     (tenant, id, embedding). The vector column is NOT at risk: pgvector's `vector_out` uses
     shortest-round-trip decimal and ignores `extra_float_digits`.
     """
+    # `client_encoding` belongs here for BOTH reasons this function exists. It decides the bytes
+    # `COPY ... TO/FROM STDOUT` produces and parses, so a dump written under UTF8 and restored
+    # under LATIN1 has its text reinterpreted — the same "both sides, or neither" argument the
+    # docstring makes for DateStyle. It is also what psycopg encodes bound parameters with, which
+    # is what makes `restore`'s pre-connect `_storable()` check honest: that check asks UTF-8
+    # whether a tenant id is storable, and without this pin the driver might be asked to encode
+    # it as something else and raise the very traceback the check exists to replace.
+    conn.execute("SET client_encoding = 'UTF8'")
     conn.execute("SET datestyle = 'ISO, YMD'")
     conn.execute("SET intervalstyle = 'iso_8601'")
     conn.execute("SET extra_float_digits = 3")
@@ -396,14 +404,39 @@ def restore(dsn: str, table: str, src: Path, *, truncate: bool = False) -> dict[
     # and the unscoped file is restored with the guard never having checked anything. A mixed
     # list raises a raw psycopg DataError instead of this module's usual refusal, and a bare
     # string would be silently exploded into its characters by `list()`.
+    # The property required is not "no NUL" — it is "the server can actually store this". Testing
+    # for NUL specifically closed one instance and left its siblings open: a lone surrogate
+    # (`"t-a\ud800b"`) is a legal Python str that `json.dumps` writes as pure ASCII, so it
+    # round-trips through the sidecar untouched and then raised a raw UnicodeEncodeError from the
+    # first statement to touch it — the traceback this validator exists to replace with a named
+    # refusal. Ask the encoding, rather than enumerating the characters that fail it.
+    def _storable(t: object) -> bool:
+        if not isinstance(t, str) or not t or "\x00" in t:
+            return False
+        try:
+            t.encode("utf-8")
+        except UnicodeEncodeError:
+            return False
+        return True
+
+    # `[]` is refused rather than treated as "no tenants". Every downstream site tests `if
+    # tenants:`, so an empty list silently turned a SCOPED restore into an UNSCOPED one: the
+    # sparse guard widened to the whole table and `--replace` took the bare `TRUNCATE` instead of
+    # the per-tenant DELETE. `dump` never writes `[]` (argparse gives None or a non-empty list),
+    # so this shape only arrives from a hand-edited or hostile sidecar — which is the input this
+    # validator exists for. "No tenants" is spelled `null`.
     _tenants = meta.get("tenants")
     if _tenants is not None and (
         not isinstance(_tenants, list)
-        or not all(isinstance(t, str) and t for t in _tenants)
+        or not _tenants
+        or not all(_storable(t) for t in _tenants)
     ):
         raise SystemExit(
-            f"the dump's 'tenants' must be null or a list of non-empty strings, got "
-            f"{_tenants!r}. A restore scopes DELETE and the sparse-orphan guard by these values."
+            f"the dump's 'tenants' must be null or a NON-EMPTY list of non-empty strings that "
+            f"PostgreSQL can store (no NUL bytes, no unpaired surrogates), got {_tenants!r}. An "
+            f"unscoped restore is spelled null, not []: with [] every downstream check reads as "
+            f"unscoped, so the guard widens to the whole table and --replace TRUNCATEs it. A "
+            f"restore scopes DELETE and the sparse-orphan guard by these values."
         )
 
     with psycopg.connect(dsn) as conn:
@@ -489,20 +522,22 @@ def restore(dsn: str, table: str, src: Path, *, truncate: bool = False) -> dict[
                 # printed for a human), so the risk is a wrong remedy rather than injection, which
                 # is precisely the failure this guard exists to prevent.
                 #
-                # Capped like the groups are: the branch that fires past 20 groups is the one that
-                # tends to have many tenants (groups = tenants x profiles, and BEAM provisions one
-                # tenant per conversation), so inlining all of them would leave the message bounded
-                # on one axis and unbounded on the other.
-                _TENANTS_SHOWN = 20
-                quoted = [
-                    sql.Literal(t).as_string(conn) for t in tenants[:_TENANTS_SHOWN]
-                ]
-                tenant_list = ", ".join(quoted)
-                if len(tenants) > _TENANTS_SHOWN:
-                    tenant_list += (
-                        f" /* + {len(tenants) - _TENANTS_SHOWN} more; full list in the dump's "
-                        f"sidecar under 'tenants' */"
-                    )
+                # NOT capped, deliberately, unlike the group breakdown. A previous version
+                # truncated this list at 20 and kept the sentence "scoped exactly as this refusal
+                # is" — so past 20 tenants the remedy was NARROWER than the refusal, and an
+                # operator who followed it would clear part of the problem, re-run, and be refused
+                # again. Safe in direction, false as a claim.
+                #
+                # The reason the cap bought nothing is NOT "these are the operator's own --tenant
+                # arguments, so the list is small". That premise contradicts this same function,
+                # which twice calls the sidecar the least trusted input it has; a hostile sidecar
+                # can carry any list at all. The real reason is that the list is ALREADY unbounded
+                # everywhere that matters — `tenant_id = ANY(%s)`, the per-tenant DELETE loop, the
+                # COPY loop and the digest loop each iterate it in full — so capping only the
+                # printed copy bounded the message and nothing else, while costing the remedy the
+                # one property it has to have. The group breakdown still needs its cap: groups are
+                # tenants x profiles and the unscoped branch spans the whole table.
+                tenant_list = ", ".join(sql.Literal(t).as_string(conn) for t in tenants)
                 operator_sql = (
                     f"SELECT tenant_id, profile_id, count(*) FROM {SPARSE_TABLE} "
                     f"WHERE chunk_table = {sql.Literal(table).as_string(conn)} "
