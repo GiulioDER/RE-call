@@ -14,6 +14,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -579,6 +580,35 @@ def run_arm(
     return summary
 
 
+def dev_query_mode_for(arm_names: "Sequence[str]", split: str) -> str:
+    """The single query mode a run's manifest can honestly describe.
+
+    On the dev split, `query_mode` selects WHICH per-domain file an arm reads, so it also selects
+    which file the provenance should hash. One manifest carries one `input_sha256` block, so it
+    can describe exactly one mode. Arms that disagree are refused rather than silently labelled
+    with whichever one happened to be the default.
+
+    This exists because threading `split` alone left the same defect one axis over: `main()` called
+    `validate_release(root, args.split)` and the hashes stayed pinned to `last` regardless of the
+    arms. Every arm declared today uses `last` (or `recent3`, which has no dev file and raises), so
+    it was unobservable, but `DEV_QUERY_FILES` also defines `full` and `rewrite`.
+
+    The test split has a single tasks file, so the mode does not change what is hashed and any
+    value is accurate; `last` is returned for a stable record.
+    """
+    if split != "dev":
+        return "last"
+    modes = {arm.query_mode for arm in ALL_ARMS if arm.name in set(arm_names)}
+    if len(modes) > 1:
+        raise ValueError(
+            f"selected dev arms disagree on query mode ({sorted(modes)}). One manifest carries "
+            f"one input_sha256 block and can describe only one of them, so this refuses rather "
+            f"than recording provenance for files half the arms never open. Run them as separate "
+            f"invocations, one per query mode."
+        )
+    return modes.pop() if modes else "last"
+
+
 def validate_release(
     root: Path, split: str = "test", query_mode: str = "last"
 ) -> dict[str, Any]:
@@ -673,7 +703,9 @@ def main(argv: list[str] | None = None) -> int:
     root = args.mtrag_root.resolve()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    release = validate_release(root, args.split)
+    selected_arm_names = args.arms or [arm.name for arm in ARMS]
+    query_mode = dev_query_mode_for(selected_arm_names, args.split)
+    release = validate_release(root, args.split, query_mode)
     manifest = {
         "benchmark": "MTRAG-UN / MTRAGEval Task A (four-domain public release)",
         "started_at": utc_now(),
