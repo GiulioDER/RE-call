@@ -201,10 +201,16 @@ jobs:
       #      rather than on a finding, the red read as a broken build rather than an absent control.
       #
       #   2. Moving the scan first (#89) fixed that and broke the other half: `uv export` WITHOUT
-      #      `--frozen` re-resolves and REWRITES uv.lock in the workspace, so the `uv lock --check`
-      #      that followed inspected a lock the previous step had just repaired and always passed.
-      #      Verified directly — introduce a version drift, run the export, and the check goes
-      #      green with the drift still committed.
+      #      `--frozen` re-resolves and, WHEN THE LOCK IS OUT OF DATE, rewrites uv.lock in the
+      #      workspace, so the `uv lock --check` that followed inspected a lock the previous step
+      #      had just repaired and always passed. Verified directly — introduce a version drift,
+      #      run the export, and the check goes green with the drift still committed.
+      #      The conditional is load-bearing and an earlier version of this comment stated it
+      #      unconditionally: against a CURRENT lock the export leaves the file byte-identical
+      #      (measured — same sha256, same size). So the hazard is invisible in the normal case
+      #      and appears exactly when there is drift to hide, which is what makes the ordering
+      #      below a control rather than a precaution. See CONTRIBUTING.md, "Reproducing the CVE
+      #      scan locally", which must stay in step with this.
       #
       # So the check runs FIRST, before anything can mutate the lock, but `continue-on-error`
       # keeps it from gating anything. The scan then always runs. The job fails at the END on the
@@ -216,8 +222,9 @@ jobs:
         run: uv lock --check
 
       # No `--frozen`: it resolves from pyproject.toml, so a drifted lock cannot stop the scan.
-      # The side effect that makes this safe only in THIS position is that it rewrites uv.lock —
-      # harmless on a throwaway runner checkout, fatal to the check above if it ran first.
+      # The side effect that makes this safe only in THIS position is that it rewrites uv.lock when
+      # the lock is drifted (against a current lock it is a no-op on the file) — harmless on a
+      # throwaway runner checkout, fatal to the check above if it ran first.
       - name: Export dependencies for scanning
         run: uv export --all-extras --no-emit-project --format requirements-txt -o requirements.lock.txt
 
