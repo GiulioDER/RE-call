@@ -417,6 +417,50 @@ def _run_config(args: argparse.Namespace, system: Any) -> dict[str, Any]:
     }
 
 
+def _refuse_flags_this_arm_ignores(args: Any) -> None:
+    """Refuse flags `--rejudge-mem0` cannot honour, instead of accepting and ignoring them.
+
+    Both of these are about SPENDING, and both were silently swallowed. `--no-judge` was accepted
+    and the judge ran anyway. `--question-types` still is: its only consumer sits in the RE-call
+    arm past this branch's return, so `--rejudge-mem0 --question-types temporal-reasoning` judges
+    every published answer at full price while looking like a subset.
+
+    Refused rather than applied. This arm scores rows Mem0 published; inventing a filter over
+    someone else's artifact would silently change what the comparison covers. If narrowing is
+    ever wanted it belongs in `_load_published`, with the key recorded in `mem0_config` because
+    it would then select rows.
+    """
+    if args.no_judge:
+        raise SystemExit(
+            "--no-judge is meaningless with --rejudge-mem0: this arm ONLY judges, scoring "
+            "Mem0's already-published answers. Drop one of the two flags."
+        )
+    if args.question_types:
+        raise SystemExit(
+            "--question-types is not applied by --rejudge-mem0: this arm scores every published "
+            "answer that survives --conversations, so the flag would cost you the full judge run "
+            "while looking like a subset. Drop it, or narrow with --conversations instead."
+        )
+    # `--dry-run` is the STRONGEST member of this class and was the one still missing. Its help
+    # promises "make NO LLM call and spend nothing", and its only read sits in the RE-call arm,
+    # past this branch's return — so `--rejudge-mem0 --dry-run` exited 0 having judged every
+    # published answer at full price. That is the operator's most explicit possible statement of
+    # intent, silently inverted. Naming two of the three spending flags and stopping there is
+    # exactly how the original gap shipped.
+    # `args.dry_run`, NOT `getattr(args, "dry_run", False)`. This file's own tests record the
+    # standard (the `conversations` note in test_beam_generate_only_artifact.py): a defaulted read
+    # lets an args object that never carried the flag sail through, and this is the strongest of
+    # the three spending refusals — it must not be the only one that fails OPEN. If `--dry-run`'s
+    # dest is ever renamed, an AttributeError here is the correct outcome; silently resuming
+    # full-price judging is not. The test double carries the attribute instead of the production
+    # code carrying a default for it.
+    if args.dry_run:
+        raise SystemExit(
+            "--dry-run is not honoured by --rejudge-mem0: this arm has no retrieval to rehearse, "
+            "so there is nothing for it to do without paying the judge. Drop one of the two flags."
+        )
+
+
 def _write_run_config(path: Path, config: dict[str, Any]) -> None:
     """Write the run's configuration beside its sidecar, before any paid call."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -808,6 +852,12 @@ def _main() -> None:
 
     # ---- The Mem0 arm: re-score published answers, no retrieval, no dataset needed. ----
     if args.rejudge_mem0:
+        # BEFORE the key, the meter and the artifact read. These refusals are about the flags
+        # alone, so requiring an API key and a readable artifact to deliver them was backwards:
+        # the operator got "OPENROUTER_API_KEY is not set" for a command that was never going to
+        # run regardless. Hoisting them also makes them unit-testable without a key or a file,
+        # which is why neither had a test.
+        _refuse_flags_this_arm_ignores(args)
         key = os.environ.get("OPENROUTER_API_KEY")
         if not key:
             raise SystemExit("OPENROUTER_API_KEY is not set")
@@ -821,14 +871,6 @@ def _main() -> None:
                 for qid, row in published.items()
                 if int(qid.split("_")[1]) in indices
             }
-        # These flags are about SPENDING, and this arm ignored them: --no-judge was accepted and
-        # the judge ran anyway. A flag whose entire purpose is to avoid cost must never be
-        # silently dropped.
-        if args.no_judge:
-            raise SystemExit(
-                "--no-judge is meaningless with --rejudge-mem0: this arm ONLY judges, scoring "
-                "Mem0's already-published answers. Drop one of the two flags."
-            )
 
         # The resume guard covered only the RE-call arm. Both arms write `*.partial.jsonl` into
         # the same --out-dir and BEAM question ids are IDENTICAL across them, so
@@ -851,11 +893,11 @@ def _main() -> None:
             # old rows in via `_already_done`, and wrote an artifact whose `coverage` described
             # only 10-19 while `aggregate` mixed both.
             "conversations": args.conversations or "all",
-            # `question_types` is deliberately NOT recorded here. This arm filters `published` by
-            # `indices` only and never reads that flag (its single use site sits in the RE-call
-            # arm, past this branch's return), so two re-judges differing only in
-            # --question-types produce identical rows. Recording it would make the guard refuse
-            # over a difference that cannot have changed the work.
+            # `question_types` is deliberately NOT recorded here, and now cannot vary either:
+            # this arm REFUSES the flag outright (above), so every run that reaches this line
+            # had it unset. Recording a constant would make the guard refuse over a difference
+            # that cannot exist. If the flag is ever applied here, it becomes row-selecting and
+            # must be added to this dict in the same change.
             #
             # Dropping a key IS a difference under `_check_resume_config`'s union-of-keys diff, so
             # a sidecar written by the immediately preceding commit will refuse to resume. That

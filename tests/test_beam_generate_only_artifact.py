@@ -283,3 +283,93 @@ def test_redacted_database_never_leaks_a_credential() -> None:
     # Anything unparseable becomes a marker, never the raw string.
     assert _redacted_database("not a dsn at all") == "<unparsed>"
     assert _redacted_database("") == ""
+
+
+# ---------------------------------------------------------------------------
+# Flags the mem0 arm cannot honour. Neither refusal had a test — including the
+# `--no-judge` one, which shipped earlier on exactly this reasoning.
+# ---------------------------------------------------------------------------
+
+
+class _Mem0Args:
+    """Only the fields the refusal reads. Deliberately minimal: the check must not need a key,
+    an artifact, or a populated namespace to deliver a verdict about the flags alone."""
+
+    no_judge = False
+    question_types = None
+    # Carried so production can read `args.dry_run` UNGUARDED, like its two siblings. Omitting it
+    # is what forced a `getattr(..., False)` into the guard — the one accessor that fails OPEN, on
+    # the strongest of the three spending refusals. The double adapts to the standard; the
+    # standard does not bend to the double.
+    dry_run = False
+
+
+def test_the_mem0_arm_refuses_no_judge_rather_than_judging_anyway() -> None:
+    from benchmarks.beam.run import _refuse_flags_this_arm_ignores
+
+    args = _Mem0Args()
+    args.no_judge = True
+    with pytest.raises(SystemExit, match="(?i)no-judge is meaningless"):
+        _refuse_flags_this_arm_ignores(args)
+
+
+def test_the_mem0_arm_refuses_question_types_rather_than_charging_for_the_full_run() -> None:
+    """RED before this change: the flag was accepted and every published answer was judged.
+
+    The cost is the point. `--question-types temporal-reasoning` reads as "judge a subset", and
+    the arm has no filter for it, so the operator paid for ~700 judgements believing they had
+    asked for a fraction of that.
+    """
+    from benchmarks.beam.run import _refuse_flags_this_arm_ignores
+
+    args = _Mem0Args()
+    args.question_types = "temporal-reasoning"
+    with pytest.raises(SystemExit, match="(?i)question-types is not applied"):
+        _refuse_flags_this_arm_ignores(args)
+
+
+def test_the_refusal_is_silent_when_neither_flag_is_set() -> None:
+    """A guard that refuses a legitimate invocation is worse than the gap it closes."""
+    from benchmarks.beam.run import _refuse_flags_this_arm_ignores
+
+    _refuse_flags_this_arm_ignores(_Mem0Args())
+
+
+def test_the_mem0_arm_refuses_dry_run_rather_than_paying_the_full_judge() -> None:
+    """`--dry-run` promises "make NO LLM call and spend nothing" and this arm never read it.
+
+    RED before this change: its only consumer sits in the RE-call arm past the mem0 branch's
+    return, so `--rejudge-mem0 --dry-run` exited 0 having judged every published answer at full
+    price. The strongest possible statement of "spend nothing", silently inverted.
+    """
+    from benchmarks.beam.run import _refuse_flags_this_arm_ignores
+
+    args = _Mem0Args()
+    args.dry_run = True
+    with pytest.raises(SystemExit, match="(?i)dry-run is not honoured"):
+        _refuse_flags_this_arm_ignores(args)
+
+
+def test_the_refusal_is_delivered_before_the_api_key_is_demanded(monkeypatch, tmp_path) -> None:
+    """WHERE the call sits is the change; the three unit tests above cannot see it.
+
+    Moving the call back below the key check restores the original defect and leaves every
+    direct-call test green, so this drives the real entry point instead: no key in the
+    environment, a nonexistent artifact, and the flag conflict must still be what surfaces.
+    """
+    import sys
+
+    from benchmarks.beam import run as beam_run
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["run", "--rejudge-mem0", str(tmp_path / "nope.json"), "--no-judge"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        beam_run._main()
+
+    assert "no-judge is meaningless" in str(exc.value), (
+        f"the flag conflict must win over the key check and the missing file; got {exc.value!r}"
+    )
