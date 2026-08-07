@@ -204,7 +204,7 @@ def test_coverage_refuses_an_overcounted_sidecar_and_names_the_cause(make_store)
     assert "sidecar" in message
     assert "nothing cascades" in message
     assert "delete_sources" in message
-    assert "drop_table" in message
+    assert "replace_sources" in message
 
 
 @requires_db

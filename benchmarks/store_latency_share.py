@@ -32,10 +32,16 @@ the metric ring truncated, because a mean over a retained suffix and a mean over
 different statistics.
 
 **The learned sparse arm.** `--sparse-backend` selects it, and is repeatable: every value listed
-is swept against the SAME store and the same corpus encode, so two arms differ only in the leg
-under test rather than in the machine, the corpus or the hour. Each guard here has a learned-leg
-counterpart: the per-query denominator, the nesting cross-check, the fire rate floor, and the
-attribution itself. Selecting `splade` encodes the corpus into the learned sparse sidecar first
+is swept against the SAME store, the same corpus and the same encode. That is NOT the same claim
+as "the two arms differ only in the leg under test": `main()` builds `configs` with `backend` as
+the OUTER loop, so every `lexical` configuration is measured, in full, before the first `splade`
+one begins. The backend dimension is therefore swept sequentially, not interleaved, and it
+inherits the same ordering confound the Measurement hygiene note below already admits for
+repetitions, just one level up: whatever a run's clock walks into over its length is confounded
+with WHICH BACKEND was being measured, not spread evenly across both. Same machine, same corpus,
+same store, same encode; not the same hour. Each guard here has a learned-leg counterpart: the
+per-query denominator, the nesting cross-check, the fire rate floor, and the attribution itself.
+Selecting `splade` encodes the corpus into the learned sparse sidecar first
 (`recall.sparse.backfill_learned_sparse`) and refuses to measure a corpus that did not fully
 encode. Note that `splade` REPLACES the ts_rank leg rather than adding to it, so under it the
 LEXICAL leg is the one asserted idle, and its fire rate reads `n/a` rather than 0%.
@@ -77,6 +83,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -594,7 +601,13 @@ def to_markdown(splits: list[LegSplit], ctx: str) -> str:
         "also carries one `sparse_row_count` "
         "round trip per query that the ts_rank leg does not pay, so the two sparse columns are "
         "not exactly like-for-like. `store share` is the ceiling on any store swap: a "
-        "replacement that cost nothing would remove exactly this fraction."
+        "replacement that cost nothing would remove exactly this fraction. That ceiling is a "
+        "PER ROW quantity and must NOT be read across rows: under `splade` the denominator "
+        "(`total`) grows by the SPLADE query encode while the numerator (`store`) correctly "
+        "excludes it, so the share falls for a reason that has nothing to do with the store "
+        "getting cheaper. One run already measured this: 96.8% for `lexical` against 4.6% for "
+        "`splade`, on the SAME store. A lower share on the `splade` row is not evidence that "
+        "the store matters less under that backend."
     )
     rows.append("")
     # The caveats travel WITH the numbers. A reader opens this file, not the module docstring or
@@ -699,6 +712,19 @@ def main() -> int:
         )
     sparse_backends = args.sparse_backends or ["lexical"]
     wants_learned = any(b in ("splade", "both") for b in sparse_backends)
+    # `HybridRetriever.__init__` makes this exact refusal (recall/retriever.py), but only when
+    # first reached inside `measure()`. By then the host wait, the checkpoint load, the corpus
+    # build, the index and the full CPU backfill are already paid for, and under a detached run
+    # that is discovered hours later. Refuse here instead, in seconds. This mirrors the
+    # retriever's condition minimally rather than duplicating its policy, so the two cannot drift
+    # on WHETHER to refuse, only on when.
+    if wants_learned and os.environ.get("RECALL_ENV") == "production":
+        raise RuntimeError(
+            "refusing before anything is paid for: the learned sparse leg is not available "
+            "under RECALL_ENV=production (see HybridRetriever.__init__ in recall/retriever.py "
+            "for why). This would fail the same way once measure() reaches HybridRetriever, "
+            "but only after the corpus build and the CPU backfill already ran."
+        )
     # Before the corpus build, not after: the operator should not pay for indexing and a CPU
     # encode to be told the host was never quiet enough to publish from.
     load_before = assert_host_quiet(args.max_load_per_core, allow_busy=args.allow_busy_host)
@@ -728,8 +754,8 @@ def main() -> int:
         if sparse_device_report.refusal:
             print(f"  GPU not used: {sparse_device_report.refusal}")
         sparse_encoder = SpladeEncoder.from_pretrained(
-            args.sparse_model or DEFAULT_MODEL,
-            top_k=args.sparse_top_k or HNSW_MAX_NONZERO,
+            DEFAULT_MODEL if args.sparse_model is None else args.sparse_model,
+            top_k=HNSW_MAX_NONZERO if args.sparse_top_k is None else args.sparse_top_k,
             revision=args.sparse_revision,
             accept_noncommercial_license=args.accept_noncommercial_license,
             device=device,

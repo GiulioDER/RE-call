@@ -1555,9 +1555,22 @@ class PgVectorStore:
 
         ⚠️ A source containing a chunk that encodes to an EMPTY vector can never reach full
         coverage, because `store_sparse_vectors` skips those rows by design. Such a source is
-        therefore re-encoded on every run. That is wasted work, not wrong work, and it is rare
-        (a passage with no surviving terms at all); the alternative would be a record of
-        attempts, which is a bigger structure than the saving justifies.
+        therefore treated as not-yet-covered on every run, and `Indexer.index_path`'s skip
+        predicate re-runs the WHOLE index path for it: re-read, re-parse, re-chunk, re-embed
+        through `embed_with_cache`, and a full `replace_sources` delete and insert. The SPLADE
+        encode this recurs is cheap; the recurring cost that actually matters is the DENSE
+        embed, which on a metered embedder is a bill, not the sparse encode. That is wasted
+        work, not wrong work, and it is rare (a passage with no surviving terms at all); the
+        alternative would be a record of attempts, which is a bigger structure than the saving
+        justifies.
+
+        ⚠️ Coverage is keyed on `profile_id` ALONE, not on `SparseProfile.fingerprint()`. Two
+        encodings of the SAME model under different `top_k` or a different pinned `revision`
+        (folded into `artifact_digest`) share one `profile_id`, so changing either without
+        re-encoding reads here as fully covered: the corpus encoded at the OLD budget or
+        revision is reported covered under the NEW one, and `Indexer`'s skip predicate leaves
+        the stale vectors in place rather than re-encoding them. Re-keying the sidecar on the
+        full fingerprint would fix this; nothing does that today.
         """
         def _op(conn: "psycopg.Connection") -> set[str]:
             rows = conn.execute(
