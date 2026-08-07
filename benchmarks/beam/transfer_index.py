@@ -316,14 +316,27 @@ def dump(dsn: str, table: str, out: Path, tenants: list[str] | None = None) -> d
             # bytes on disk at the point `stat().st_size` reads it below, and the dump was correct
             # only because CPython refcounting finalised an unnamed temporary. That is not a
             # guarantee — it is an implementation detail of one interpreter.
-            raw = os.fdopen(fd, "wb")
+            # `os.fdopen` inside its own try: if it raises, `fd` is open with nothing referencing
+            # it, so the `finally` below could never close it. Measured — after a patched
+            # `os.fdopen` raised, `os.fstat(fd)` still succeeded — and the per-tenant loop would
+            # leak one descriptor per failed iteration. Fixing the leak after a SUCCESSFUL write
+            # while leaving the construction window open is half a fix.
+            try:
+                raw = os.fdopen(fd, "wb")
+            except BaseException:
+                os.close(fd)
+                raise
             try:
                 # The open mode covers only a file this call CREATES (umask can only clear bits,
                 # so 0600 is an upper bound there). An EXISTING file keeps the permissions it
                 # already had — the re-run case, and the reason the `touch(mode=…)` this replaced
-                # was a no-op. chmod through the fd we now own, so there is no path race.
+                # was a no-op. Through the FD, not the path: the previous version's comment
+                # claimed "no path race" while calling `os.chmod(target, …)`, which re-resolves
+                # the name and follows symlinks — so on the shared rented host this workflow
+                # documents, the mode could land on a different inode than the fd writes to. The
+                # claim was right; the code did not implement it.
                 if os.name != "nt":
-                    os.chmod(target, 0o600)
+                    os.fchmod(raw.fileno(), 0o600)  # type: ignore[attr-defined,unused-ignore]
                 with gzip.GzipFile(fileobj=raw, mode="wb") as fh, conn.cursor().copy(
                     stmt, params
                 ) as copy:
@@ -375,6 +388,22 @@ def restore(dsn: str, table: str, src: Path, *, truncate: bool = False) -> dict[
                 f"the dump names a file with a path separator or an absolute path ({_name!r}). "
                 f"A restore reads only plain filenames beside the archive it was given."
             )
+    # `tenants` is the OTHER half of that untrusted payload and was unchecked, while it feeds
+    # `tenant_id = ANY(%s)`, the per-tenant DELETE and `_scope`. Measured with this checkout's
+    # psycopg: `[None]` dumps to `{NULL}`, and `tenant_id = ANY('{NULL}')` is NULL for every row —
+    # so the sparse-orphan guard counts 0 and SUPPRESSES itself, then the DELETE matches nothing
+    # and the unscoped file is restored with the guard never having checked anything. A mixed
+    # list raises a raw psycopg DataError instead of this module's usual refusal, and a bare
+    # string would be silently exploded into its characters by `list()`.
+    _tenants = meta.get("tenants")
+    if _tenants is not None and (
+        not isinstance(_tenants, list)
+        or not all(isinstance(t, str) and t for t in _tenants)
+    ):
+        raise SystemExit(
+            f"the dump's 'tenants' must be null or a list of non-empty strings, got "
+            f"{_tenants!r}. A restore scopes DELETE and the sparse-orphan guard by these values."
+        )
 
     with psycopg.connect(dsn) as conn:
         # The PARSE side of COPY TEXT. `COPY ... FROM STDIN` interprets the incoming text under

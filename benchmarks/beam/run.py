@@ -396,6 +396,14 @@ def _run_config(args: argparse.Namespace, system: Any) -> dict[str, Any]:
         "entailment_top_n": entailment.get("top_n"),
         "table": described.get("table"),
         "question_types": args.question_types or "all",
+        # `--conversations` selects which conversations are indexed AND questioned, so it decides
+        # which rows exist. It was added to the mem0 arm's config in the same batch and missed
+        # here — on the arm whose artifacts carry the published numbers. Resuming across a change
+        # to it merges the previous selection's rows via `_already_done`, while `_coverage`
+        # measures only the SHORTFALL (`expected - scored`) against the current selection: the
+        # extra rows are invisible to it, so the artifact reports `complete: true` while
+        # `aggregate` and `n` cover the union of both selections.
+        "conversations": args.conversations or "all",
         # Added after six auditors independently found them missing. The calibration changes which
         # memories reach the answerer; `--data` is the corpus the docstring already claimed to
         # cover; and the database is what makes "same table name, different host" — the exact
