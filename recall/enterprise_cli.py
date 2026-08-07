@@ -222,31 +222,55 @@ def _cmd_parity(control: ControlPlane, dsn: str, tenant: str) -> int:
     ):
         if values:
             print(f"{label}: {len(values)}")
+    # Reported BEFORE the emptiness refusal below, because two of these failures are catalog
+    # facts -- `indexes_valid` and `rls_enabled` -- which `validate_generation_parity` derives
+    # from `readiness_facts()` independently of how many rows a table holds. They can therefore
+    # be true of an EMPTY pair, and an earlier version of this function returned above them, so a
+    # shadow whose RLS was not forced was reported nowhere.
+    #
+    # Scoped carefully, because the obvious wider claim is false: `cutover` DOES check the shadow's
+    # RLS on its default path, via `_require_parity` -> `validate_generation_parity`. But for a
+    # BOTH-EMPTY pair it never gets there -- `_require_non_empty_shadow` refuses first -- and
+    # `readiness` evaluates `route.active` only. So for an empty pair this command is the only
+    # place a shadow RLS failure is reported at all, which is exactly the pair this branch handles.
+    for failure in parity.failures:
+        print(f"parity FAILED: {failure}", file=sys.stderr)
     # Two empty generations cannot disagree, so every comparison above is vacuously satisfied and
-    # `parity.valid` is True. That is the one failure mode in this sequence which presents as a
-    # GREEN, so the runbook's own rule -- each step is a gate, do not proceed past a red one --
-    # cannot catch it. It was carried in prose in ENTERPRISE_RETRIEVAL.md, and prose is the
-    # weakest place to keep a guard against a document an operator is reading for permission to
-    # proceed.
+    # `parity.valid` is True. This step then reports a GREEN, and the runbook's own rule -- each
+    # step is a gate, do not proceed past a red one -- cannot catch it. The guard was carried in
+    # prose in ENTERPRISE_RETRIEVAL.md, which is the weakest place to keep one: it lives in the
+    # document an operator is reading for permission to proceed.
+    #
+    # ⚠️ What this closes is the misleading GREEN at this step, NOT a path to a promoted empty
+    # index. `ControlPlane.cutover` calls `_require_non_empty_shadow` BEFORE `_require_parity`,
+    # deliberately outside it so `--allow-divergent-corpus` cannot skip it, so an empty shadow was
+    # never promotable. Do not restate this guard as the thing that prevents that.
+    #
+    # ⚠️ Nor is emptiness the only vacuous green here. `source_raw_hashes()` reads
+    # `coalesce(metadata->>'content_hash', '')`, so two generations whose rows all LACK a content
+    # hash compare '' against '' and agree perfectly while certifying nothing. That mode is not
+    # detected here; `benchmarks/check_generation_parity.py` gates it as a separate control.
     #
     # No override flag, deliberately. `cutover --allow-divergent-corpus` is the cautionary case in
     # this same CLI: the refusal advertises its own escape hatch at the exact moment the operator
     # is under pressure to get past it. An operator with nothing to compare has nothing to promote.
     #
     # The condition is BOTH empty. A populated active against an empty shadow already fails on
-    # missing sources, and this must not restate that as a vacuity error.
+    # missing sources, and this must not restate that as a vacuity error --
+    # `test_parity_reports_a_missing_shadow_as_missing_sources_not_as_vacuity` pins that, and
+    # fails if this `and` becomes an `or`.
     if parity.active_chunks == 0 and parity.shadow_chunks == 0:
         print(
-            "parity FAILED: both generations are empty, so the comparison is vacuous and "
-            "certifies nothing. Index the shadow generation before comparing.",
+            f"parity FAILED: tenant {tenant!r} holds no chunks in either generation "
+            f"({route.active.generation_id} and {route.shadow.generation_id}), so the comparison "
+            "is vacuous and certifies nothing. While a shadow route exists, indexing writes both "
+            "generations: index the corpus, then compare again.",
             file=sys.stderr,
         )
         return 1
     if parity.valid:
         print("parity: OK")
         return 0
-    for failure in parity.failures:
-        print(f"parity FAILED: {failure}", file=sys.stderr)
     return 1
 
 
