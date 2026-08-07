@@ -1269,7 +1269,7 @@ A gate that cannot fail is exactly as useless as one that cannot fire, and this 
 
 **Interfaces:**
 - Consumes: `score_stream`, `LATE_ARMS` (Tasks 4-5); `rerank_order`, `ORDER_EXACT_K`, `EVAL_K`, `SCORE_TOLERANCE` from `benchmarks.mtrag.rerank_offload`.
-- Produces: `compare_orderings(local: list[str], offloaded: list[str], local_by_id: dict[str, float], task_id: str) -> tuple[dict | None, bool]` in `rerank_offload.py`; `validate_sample(reranker, rows: list[dict], docs: dict[str, str], scores: dict[str, dict[str, float]]) -> dict` returning `{"verdict", "sampled", "max_score_delta", "failures", "deep_tie_count"}`; a `validate` subcommand on `main`.
+- Produces: `compare_orderings(local: list[str], offloaded: list[str], local_by_id: dict[str, float], task_id: str) -> tuple[dict | None, bool]` in `rerank_offload.py`; `validate_sample(reranker, rows: list[dict], docs: dict[str, str], scores: dict[str, dict[str, float]]) -> dict` returning `{"verdict", "sampled", "max_score_delta", "score_tolerance", "scores_within_tolerance", "failures", "deep_tie_count"}`; a `validate` subcommand on `main`.
 
 **⚠️ Steps 1-5 refactor EXISTING code before any new code is written.** Without it `validate_sample` would be a near-copy of `rerank_offload.cmd_validate`'s three-branch comparison cascade, and the two definitions of "mismatch" would drift. Only the cascade is shared. Each caller still computes its own local scores and still drives the REAL reranker, which is what the gate exists to check.
 
@@ -1679,7 +1679,7 @@ work already shipped unable to fire."
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces: `mcnemar_power(n: int, p_control: float, p_treatment: float, rho: float, alpha: float = 0.05, trials: int = 20000, seed: int = 0) -> float`; `minimum_detectable_shift(n: int, p_control: float, rho: float, target_power: float = 0.80, alpha: float = 0.05) -> float | None` returning the smallest treatment rate reaching `target_power`, or `None` if no rate in `[0, p_control]` does.
+- Produces: `mcnemar_power(n: int, p_control: float, p_treatment: float, rho: float, alpha: float = 0.05, trials: int = 20000, seed: int = 0) -> float`; `minimum_detectable_shift(n: int, p_control: float, rho: float, target_power: float = 0.80, alpha: float = 0.05) -> float | None` returning the largest treatment bury-rate still detectable reaching `target_power`, or `None` if no rate in `[0, p_control]` does.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1977,6 +1977,11 @@ Then validate it the same way. Its numbers are diagnostic only and may not enter
 Run `benchmarks/mtrag/analyse_contrasts.py` unchanged for Family A (C1, C2, C3), and separately for Family C (V1) on the `mq_nested2_nogold` pools at the width recovered in Task 9.
 
 Report every figure with its CI. A point estimate is not a result.
+
+⚠️ **The Holm family MUST be built by `benchmarks.mtrag.late_interaction.holm_family`, not by
+hand.** It is the gate that makes `li_jina` mechanically unable to enter a shipping-relevant
+family, and until this step calls it, it is protecting nothing. Passing the arm list to it is the
+precondition for reporting any Holm-corrected contrast, not a stylistic preference.
 
 - [ ] **Step 7: Apply the decision rule**
 

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.mtrag.rerank_offload import SCORE_TOLERANCE, compare_orderings, rerank_order
-from recall.rerank import LATE_INTERACTION_MODELS, PERMISSIVE_LICENCES, maxsim
+from recall.rerank import LATE_INTERACTION_MODELS, PERMISSIVE_LICENCES, maxsim_or_last
 
 
 @dataclass(frozen=True)
@@ -141,11 +141,7 @@ def score_stream(
                 # ranking a document that has no offloaded score at all, and `rerank_order`
                 # refuses a candidate with no score. The two paths agree or the offload is not a
                 # substitute for the real reranker.
-                score = (
-                    float("-inf")
-                    if dmatrix.shape[0] == 0
-                    else maxsim(qmatrices[qid], dmatrix)
-                )
+                score = maxsim_or_last(qmatrices[qid], dmatrix)
                 yield {"qid": qid, "doc_id": doc_id, "score": score}
         batch.clear()
 
@@ -258,7 +254,7 @@ def cmd_score(args: argparse.Namespace) -> int:
             score_stream(reranker._encoder, queries, _docs(), pairs, args.batch_size), 1
         ):
             scored.setdefault(row["doc_id"], set()).add(row["qid"])
-            fh.write(json.dumps(row) + "\n")
+            fh.write(json.dumps({**row, "arm": arm.name}) + "\n")
             if n % 20000 == 0:
                 print(json.dumps({
                     "event": "progress", "arm": arm.name, "pairs": n,
@@ -321,7 +317,7 @@ def validate_sample(
         qtokens = list(reranker._encoder.query_embed([row["query"]]))[0]
         dtokens = list(reranker._encoder.passage_embed([h.chunk.text for h in hits]))
         local_by_id = {
-            c: maxsim(qtokens, d) for c, d in zip(candidates, dtokens, strict=True)
+            c: maxsim_or_last(qtokens, d) for c, d in zip(candidates, dtokens, strict=True)
         }
         worst_delta = max(
             worst_delta, max(abs(offloaded_scores[c] - local_by_id[c]) for c in candidates)

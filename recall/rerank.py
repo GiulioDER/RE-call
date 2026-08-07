@@ -114,6 +114,24 @@ def maxsim(query_tokens: "np.ndarray", doc_tokens: "np.ndarray") -> float:
     return float((query_tokens @ doc_tokens.T).max(axis=1).sum())
 
 
+def maxsim_or_last(query_tokens: "np.ndarray", doc_tokens: "np.ndarray") -> float:
+    """`maxsim`, or `-inf` for a document that encodes to no tokens so it sorts LAST.
+
+    THE single definition of that rule. It was written out three times (the live reranker, the
+    offloaded scorer, the validate gate) and those three MUST agree: the gate compares a live
+    ranking against offloaded scores, and `rerank_order` refuses a candidate with no score, so a
+    divergence there does not degrade the comparison, it crashes it. Three copies kept in step by
+    comment are a convention. One function is a guarantee.
+
+    `maxsim` itself still refuses an empty document, and still refuses an empty QUERY through
+    this path too: a query with no tokens carries no evidence to rank anything by, so unlike one
+    bad document there is no partial ordering worth returning.
+    """
+    if doc_tokens.shape[0] == 0:
+        return float("-inf")
+    return maxsim(query_tokens, doc_tokens)
+
+
 #: Licence per late-interaction checkpoint, mirroring `recall.sparse.KNOWN_MODELS`.
 #:
 #: An unrecorded checkpoint RAISES rather than defaulting to permissive, an unrecorded licence is
@@ -226,9 +244,7 @@ class LateInteractionReranker:
         #
         # The QUERY side deliberately still raises, in the guard above: if the query encodes to
         # nothing there is no evidence to rank ANY document by, so no ordering is salvageable.
-        scores = [
-            float("-inf") if d.shape[0] == 0 else maxsim(qtokens, d) for d in dtokens
-        ]
+        scores = [maxsim_or_last(qtokens, d) for d in dtokens]
         order = sorted(range(len(hits)), key=lambda i: scores[i], reverse=True)
         # Reorder ONLY, each hit keeps its dense cosine `score`, `indexed_at` and
         # `first_indexed_at`. Identical to CrossEncoderReranker.rerank and for the identical

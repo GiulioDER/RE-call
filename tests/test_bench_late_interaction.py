@@ -366,3 +366,31 @@ def test_validate_sample_names_the_candidates_it_is_missing():
     partial = {"t1": {"far": 0.0}}
     with pytest.raises(ValueError, match="missing offloaded scores for 2 of 3"):
         validate_sample(_live_reranker(_TABLE), _ROWS, _DOCS, partial)
+
+
+def test_all_three_scoring_paths_agree_on_an_unscoreable_document():
+    """The live reranker, the offloaded scorer and the validate gate must produce the SAME
+    ordering, including for a document that encodes to nothing. They now share one function; this
+    pins the property that function exists to guarantee."""
+    from recall.rerank import LateInteractionReranker
+    from recall.types import Chunk, ScoredChunk
+    from benchmarks.mtrag.rerank_offload import rerank_order
+
+    table = {"q": [[1.0, 0.0]], "empty": [], "mid": [[0.6, 0.8]], "top": [[1.0, 0.0]]}
+    cands = ["empty", "mid", "top"]
+    reranker = LateInteractionReranker(_FakeEncoder(table), model_name="colbert-ir/colbertv2.0")
+    hits = [ScoredChunk(chunk=Chunk(id=c, source="s", text=c), score=0.5) for c in cands]
+    live = [h.chunk.id for h in reranker.rerank("q", hits)]
+
+    rows = list(
+        score_stream(
+            _FakeEncoder(table),
+            queries={"q": "q"},
+            docs=[(c, c) for c in cands],
+            pairs={c: {"q"} for c in cands},
+        )
+    )
+    offloaded = rerank_order(cands, {r["doc_id"]: r["score"] for r in rows})
+
+    assert live == ["top", "mid", "empty"]
+    assert offloaded == live
