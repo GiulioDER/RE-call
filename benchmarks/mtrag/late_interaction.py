@@ -15,10 +15,11 @@ follow-on project. `holm_family` enforces that by refusing it, rather than trust
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
+from typing import Any
 
-from recall.rerank import LATE_INTERACTION_MODELS, PERMISSIVE_LICENCES
+from recall.rerank import LATE_INTERACTION_MODELS, PERMISSIVE_LICENCES, maxsim
 
 
 @dataclass(frozen=True)
@@ -82,3 +83,55 @@ def arm_record(arm: LateArm) -> dict[str, object]:
         "licence": arm.licence,
         "deployable": arm.deployable,
     }
+
+
+def score_stream(
+    encoder: Any,
+    queries: dict[str, str],
+    docs: Iterable[tuple[str, str]],
+    pairs: dict[str, set[str]],
+    batch_size: int = 32,
+) -> Iterator[dict]:
+    """Score every requested `(qid, doc_id)` pair, streaming the documents.
+
+    This is the design decision that removes the GPU rental. A cross encoder runs one forward
+    pass PER PAIR (241,270 of them on 2026-08-07). Late interaction encodes the two sides
+    independently, so each document is encoded ONCE and MaxSim'd against only the queries that
+    reference it.
+
+    Document token matrices are discarded after each batch. Materialising them would cost roughly
+    7 GB at 128 dims (unique docs x ~180 tokens x 128 floats), and holding them buys nothing: peak
+    memory here is independent of corpus size.
+
+    `pairs` maps doc_id to {qid}, the INVERTED form of `pairs.jsonl`. Inverting it is what makes a
+    single pass over documents possible.
+
+    A pair naming an unknown query raises: it means the dump and the scorer disagree, and any
+    score emitted for it would be fabricated.
+    """
+    qids = list(queries)
+    qmatrices = dict(zip(qids, encoder.query_embed([queries[q] for q in qids]), strict=True))
+
+    batch: list[tuple[str, str]] = []
+
+    def _flush() -> Iterator[dict]:
+        if not batch:
+            return
+        matrices = list(encoder.passage_embed([text for _, text in batch]))
+        for (doc_id, _), dmatrix in zip(batch, matrices, strict=True):
+            for qid in sorted(pairs[doc_id]):
+                if qid not in qmatrices:
+                    raise KeyError(
+                        f"pair references unknown query {qid!r} for document {doc_id!r}; the dump "
+                        f"and the scorer disagree, and any score emitted here would be fabricated"
+                    )
+                yield {"qid": qid, "doc_id": doc_id, "score": maxsim(qmatrices[qid], dmatrix)}
+        batch.clear()
+
+    for doc_id, text in docs:
+        if doc_id not in pairs:
+            continue  # no query asked for this document; encoding it would be wasted work
+        batch.append((doc_id, text))
+        if len(batch) >= batch_size:
+            yield from _flush()
+    yield from _flush()
