@@ -981,7 +981,16 @@ In `recall/store.py`, inside `drop_table`'s `_drop` function, add the DELETE ins
 
 Leave the rest of `_drop` unchanged.
 
-Note the deliberate absence of a `tenant_id` filter: `drop_table` removes the table for every tenant, so scoping the sidecar cleanup to the current tenant would leave other tenants' rows orphaned by the same drop.
+⚠️ **Corrected 2026-08-07, after implementation.** This step originally said the DELETE
+deliberately omits a `tenant_id` filter, because `drop_table` removes the table for every tenant
+and scoping the cleanup would strand other tenants' rows. The intent was right and the mechanism
+does not deliver it: `recall_sparse_v1` carries `FORCE ROW LEVEL SECURITY` and a tenant isolation
+policy (`recall/migrations/sql/0012_learned_sparse.sql:40-43`), so the database scopes this DELETE
+to the current tenant whether or not the SQL asks it to, while `DROP TABLE` is DDL and is not
+scoped at all. So on a table shared across tenants, the drop still orphans every other tenant's
+sidecar rows. That is latent today, since no caller drops a shared multi-tenant table, but the
+code comment must say what actually happens rather than what was intended. Found by the Task 5
+implementer, who kept the specified implementation and reported it rather than deviating.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
