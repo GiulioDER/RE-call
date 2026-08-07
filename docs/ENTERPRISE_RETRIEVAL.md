@@ -135,8 +135,8 @@ nothing in this repository derives it.
   done.
 
   Run it **once per chunk table, including every generation table you create at step 3**, and apply
-  the output **verbatim** as the object owner. It emits six statements covering fourteen objects
-  plus one sequence. ⚠️ **Do not check your work against a summary, including this one** (that is
+  the output **verbatim** as the object owner. With `--enterprise` it emits six statements covering
+  fourteen objects plus one sequence; without it, three. ⚠️ **Do not check your work against a summary, including this one** (that is
   the failure this bullet exists to prevent): diff what you applied against what the command
   printed. For orientation only, the six statements are the migration ledger, the chunk table, the
   eight generation and calibration tables, three read-only control-plane tables, the outbox, and the
@@ -200,34 +200,48 @@ Verify: `schema status` exits non-zero when the table is not current, and every 
 > `MigrationChecksumMismatch` rather than migrating forward. There is no flag for this and there
 > should not be.
 >
-> **First, read which mismatch it is, and read it carefully: two of the four wordings differ by one
-> word.** `MigrationChecksumMismatch` is raised from four places, and the message is the only thing
-> that tells them apart.
+> **First work out which mismatch it is, and do NOT do it by pattern-matching the wording.**
+> `MigrationChecksumMismatch` has **nine** raise sites across four functions, and several wordings
+> are near-identical while meaning opposite things. Discriminate by **which function raised it**,
+> which you know from which command you ran, and use the message only to confirm.
 >
-> | Message | Source | Meaning |
-> |---|---|---|
-> | `migration <name> checksum drift: committed X, actual Y` | `load_migrations`, before any ledger read | **working tree corrupt** |
-> | `migration checksum manifest must be a JSON object` / `duplicate migration version` / a mode-declaration error | `load_migrations`, same | **working tree corrupt** |
-> | `applied migration <file> has checksum X, package has Y` | `schema_status` | **ledger** |
-> | `applied migration <file> checksum drift` | `apply_migrations` | **ledger** |
+> | Raised by | Reached from | Wording | Meaning |
+> |---|---|---|---|
+> | `load_migrations` (6 sites) | **any** command, before the database is touched | `migration <name> checksum drift: committed X, actual Y` · `migration manifest/file mismatch (unlisted=…, missing_files=…)` · `migration checksum manifest must be a JSON object` · `duplicate migration version <v>` · `migration <name> must declare exactly one execution mode` · `no packaged migrations found` | **working tree corrupt** |
+> | `schema_status` | `schema status`, `schema plan` | `applied migration <file> has checksum X, package has Y` | **ledger** |
+> | `apply_migrations` | `schema apply` (step 2) | `applied migration <file> checksum drift` | **ledger** |
+> | `check_schema` | **`readiness` (step 9)**, and serving startup | `migration <file> checksum does not match the running package` | **ledger** |
 >
-> ⚠️ Rows one and four both say "checksum drift" and mean opposite things. Row one names the
-> migration and prints two digests; row four begins `applied migration`. **Row four is what step 2's
-> `schema apply` raises**, so an operator running the documented command hits the ledger case with
-> the wording that most resembles the working-tree case. A working-tree diagnosis means restore the
-> files and touch nothing in the database.
+> ⚠️ **`load_migrations` runs first inside every one of the others**, so a working-tree fault
+> pre-empts the ledger check on all four paths. That is why the function you called does not settle
+> it on its own: it bounds which ledger wording you *could* see, and a `load_migrations` wording can
+> appear from any command.
+>
+> ⚠️ Two traps in the wordings, both of which have caught a previous version of this document. Row
+> one and the `apply_migrations` row **both say "checksum drift"** and mean opposite things. And the
+> `check_schema` row, the one an operator meets at **step 9**, says neither "checksum drift" nor
+> "applied migration": it resembles the working-tree wording most and is a **ledger** error. An
+> earlier version of this table listed four wordings, omitted this one, and offered a shape-matching
+> rule that sent it to the wrong branch.
+>
+> A working-tree diagnosis means restore the files and touch nothing in the database.
 >
 > **The default remedy is to ship the change as a NEW migration version, or to restore from backup.**
 > Clearing a ledger row is the exception, not the procedure.
 >
 > If you do clear it, know exactly what you are doing. The table is `recall_schema_migrations` and
-> its primary key is `(target_table, version)`. **Which rows exist depends on the version number**:
+> its primary key is `(target_table, version)`. **Name both columns, always.** Which rows exist
+> depends on the version number, and that is a fact about the schema, not a licence to omit the
+> predicate:
 >
+> * **0001 to 0007** are recorded **per chunk table**. A `DELETE ... WHERE version = '0003'` strips
+>   the row for *every* chunk table in the database, and every serving process then refuses on
+>   restart with `SchemaTooOld`.
 > * **0008 and above** are recorded once, under `target_table = '__global__'`, and re-apply
->   database-wide. There is exactly one row, so a version-only `DELETE` happens to hit only it.
-> * **0001 to 0007** are recorded **per chunk table**. Here a `DELETE ... WHERE version = '0003'`
->   strips the row for *every* chunk table in the database, and every serving process then refuses on
->   restart with `SchemaTooOld`. Name both columns.
+>   database-wide. Only one row exists today, which is why an earlier version of this section used
+>   `0012` to argue that both columns are needed and thereby chose the one case that cannot
+>   demonstrate it. Do not read that as permission: it is an inference about database state, on a
+>   deployment whose ledger contents current code already cannot explain.
 >
 > ```sql
 > -- global (0008+): one row
@@ -241,13 +255,13 @@ Verify: `schema status` exits non-zero when the table is not current, and every 
 > * The real question is not "are the two versions equivalent" but **"is re-application safe against
 >   the tables as they stand"**. Equivalence says nothing about what re-running does.
 > * Take a **restorable backup first**. Recording the deleted row is *not* a rollback: restoring the
->   row does not undo DDL the re-apply already executed. It also corrupts the audit trail in the
->   direction people do not expect. `applied_by` is written by **no statement in the codebase**; it
->   exists only as the column default `DEFAULT current_user`, and the upsert's `DO UPDATE SET` list
->   deliberately omits it. So delete-then-re-apply records the new applier correctly (the fresh
->   INSERT takes the default), while **restore-then-re-apply preserves the ORIGINAL `applied_by`
->   and stamps a new `applied_at`**, attributing the re-application to someone who did not perform
->   it. If you restore the row, do not then re-apply on top of it.
+>   row does not undo DDL the re-apply already executed, and **delete-then-re-apply overwrites the
+>   audit trail**. `applied_by` is written by no statement in the codebase; it exists only as the
+>   column default `DEFAULT current_user`, so the fresh INSERT stamps whoever re-applied and the
+>   original applier is unrecoverable. Restoring the row instead does **not** silently mis-attribute
+>   it: `apply_migrations` compares the restored checksum against the package and raises
+>   `MigrationChecksumMismatch` before writing anything, so re-applying on top of a restored row
+>   refuses rather than corrupting it. If you restore the row, do not then re-apply on top of it.
 > * Re-applying takes **ACCESS EXCLUSIVE** on the target chunk table, and `apply_migrations` sets
 >   `statement_timeout = 0` deliberately, so there is no automatic escape. Re-running 0008 also does
 >   `ALTER TABLE ... NO FORCE ROW LEVEL SECURITY` and a full scan of the corpus under that lock.
@@ -352,6 +366,12 @@ order a restore: `mark-ready` has no state guard (step 5), so
 `recall-enterprise mark-ready <retired-generation> --chunks N --sources M` writes it back to `ready`
 and `set-route` will then accept it. Treat that as an incident procedure, not a rollback step:
 nothing re-validates the table, `retired_at` is left set, and the counts you pass are unchecked.
+
+⚠️ Step 5 says never to use `mark-ready` to clear a `failed` state, and this says you may use it to
+clear a `retired` one. The reason they differ is the table, not the command: a `failed` generation is
+one whose DDL did not finish, so its table may be half-built and forcing `ready` hides that. A
+retired generation's table was complete and serving minutes ago. In both cases nothing re-validates
+it, which is why this is an incident procedure in one case and forbidden in the other.
 
 ```console
 recall-enterprise retire g2026_07 --tenant acme

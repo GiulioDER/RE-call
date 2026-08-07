@@ -139,7 +139,7 @@ precondition and aborts rather than proceeding if it fails, recorded the ledger 
 |---|---|
 | Preconditions: rows across chunk, generation and tenant_state tables | 0, asserted before acting |
 | Preconditions: pending outbox events | 0 |
-| Preconditions: disk headroom vs the active index | 578,933,866,496 bytes free against a 131,072-byte active index, **4,416,914.9x**, requirement 2.2x. ⚠️ **PASSED VACUOUSLY.** Measured per index rather than asserted: 131,072 bytes is 16 pages of 8 KiB across **seven** indexes (2 pages each for the five btrees, 3 each for the GIN and HNSW), which is the empty-index floor, so the ratio bounds nothing about a real build. The same vacuity warning this entry gives `parity` applies here and I did not give it. The 2.2x factor is also unsourced: nothing in the repository derives it, and it is applied to `pg_indexes_size`, which **excludes the heap**: on this table `pg_total_relation_size` is 196,608 against a heap of 8,192, and on a populated chunk table carrying text and vectors the heap is what dominates |
+| Preconditions: disk headroom vs the active index | 578,933,866,496 bytes free against a 131,072-byte active index, **4,416,914.9x**, requirement 2.2x. ⚠️ **PASSED VACUOUSLY.** Measured per index rather than asserted: 131,072 bytes is 16 pages of 8 KiB across **seven** indexes (2 pages each for the five btrees, 3 each for the GIN and HNSW), which is the empty-index floor, so the ratio bounds nothing about a real build. The same vacuity warning this entry gives `parity` applies here and I did not give it. The 2.2x factor is also unsourced: nothing in the repository derives it, and it is applied to `pg_indexes_size`, which **excludes the heap**: on this table `pg_total_relation_size` is 196,608 against a heap of 8,192, and on a populated chunk table carrying text and vectors the heap is what dominates. The three figures do not sum (131,072 + 8,192 = 139,264, not 196,608): the 57,344-byte remainder is TOAST and the free space map |
 | Global migrations applied as `recall_migrator` | 0008 (re-applied), **0011, 0012, 0013**. 0009 and 0010 are also global and were already applied on 2026-08-03; they were untouched |
 | Per-table migrations applied as `recall_migrator` | 0001 to 0007 for **both** generation tables |
 | Schema state after | `current=0013 required=0013 compatible=True` on every target |
@@ -312,8 +312,10 @@ repaired.
 The last one is the sharpest, and it is the same shape as the guard-that-cannot-fire class: a
 discriminator that misclassifies the exact case the document tells the reader to produce.
 
-**The anti-regression half of round 2 found three more, and the shape is identical.** Twelve of
-seventeen hunks were SAFE, the CHANGELOG restructure verified as a **pure restore** (201 bullets
+**The anti-regression half of round 2 found three more, and the shape is identical.** Of seventeen
+hunks, twelve were SAFE, three carried the regressions below, and two were **SCOPE_CREEP**: a
+backlog item and a disclosure that rode along with a fix rather than being asked for by one. The
+CHANGELOG restructure verified as a **pure restore** (201 bullets
 before and after, and every one of the 197 bullets predating the stray heading back under the
 heading it had then), and the untouched sections verified byte-identical by digest rather than by
 reading. The three that were not:
@@ -328,9 +330,45 @@ The middle one is the sharpest thing in round 2: **a fix that reintroduces its o
 below itself**, and that passes on any machine with a warm cache. That is a guard whose failure is
 invisible in the environment where it is written and live in the environment where it is used.
 
-⚠️ **Round 3 has not been run.** These corrections are round 2's output. By this project's recorded
-convergence, round 3 is where it should come back dry, and until it does the runbook's newest
-paragraphs carry the same status as round 1's did. Counts so far: **41 → 9 → ?**
+### Round 3 did NOT come back dry, and the recurrence is the same defect a third time
+
+The expectation going in was convergence. It did not converge. **41 → 9 → 6**, and the headline
+defect is the one round 2 had just fixed, reproduced at a different call site by the fix for it.
+
+**The `MigrationChecksumMismatch` table misrouted a LEDGER error into the working-tree branch,
+again.** Round 1's prose named one wording. Round 2 replaced it with a table of four and called that
+exhaustive. There are **nine raise sites across four functions**, and the omitted one is
+`check_schema`'s `migration <file> checksum does not match the running package` — a ledger
+comparison, reached from `readiness.py:257`, which is **step 9 of this runbook**. Apply round 2's own
+tie-breaker to it (row one names the migration, row four begins `applied migration`) and it lands on
+row one: *working tree corrupt, restore the files, touch nothing in the database.* Wrong branch,
+wrong action, on a production database, produced by the document's own diagnostic procedure. Both
+round 3 auditors found it independently.
+
+Rewritten to discriminate by **which function raised it**, which the operator knows from the command
+they ran, with the message demoted to confirmation. The exhaustiveness claim is gone: a table that
+must enumerate nine raise sites is a guard that goes stale the next time one is added.
+
+| Other round 3 findings | Correction |
+|---|---|
+| **My `applied_by` fix was itself wrong.** I claimed restore-then-re-apply preserves the original applier under a new timestamp. It cannot: `apply_migrations` compares the restored checksum and **raises before `_mark_running` runs**, so it refuses rather than mis-attributing. I inferred the hazard from the `DO UPDATE SET` column list without tracing the control flow that reaches it | Stated as it is: delete-then-re-apply overwrites the trail irrecoverably; restore-then-re-apply refuses |
+| **The unconditional imperative "Both columns are required" was deleted** when the section split by version range, leaving "a version-only DELETE happens to hit only it" as the last words before the SQL. That licenses omitting the predicate for exactly the versions whose re-application takes ACCESS EXCLUSIVE | Imperative restored above the split; the 0008+ observation demoted to explaining why `0012` was the wrong example |
+| **Round 2's own yield was published as both 9 and 6**, 32 lines apart, and the 6 silently dropped the anti-regression half containing the sharpest finding | Both now 9, with the split named |
+| The round 2 record said "twelve of seventeen SAFE" and named three, accounting for 15 of 17 | The two SCOPE_CREEP hunks are now named |
+| `pg_indexes_size` + heap does not sum to `pg_total_relation_size` | The 57,344-byte remainder is named as TOAST and the free space map |
+| `ci.yml`'s comment still asserted the unconditional `uv export` rewrite that round 2 corrected in `CONTRIBUTING.md`, so the repository contradicted itself across two committed files | Both now state the conditional, and each points at the other |
+
+**The systemic finding, which both auditors reached independently and which outlives this session:**
+`claim_gate.py`'s `GATED_DOCS` covers `results/RESULTS.md`, `results/FINDINGS.md`, `README.md` and
+`benchmarks/SUITE-DESIGN.md`. It does **not** cover `docs/ENTERPRISE_RETRIEVAL.md` or this file.
+Three rounds of numeric and factual claims have now accumulated in the two documents the only
+automated claim guard in this repository does not read, which is why every defect above had to be
+found by a human-directed audit rather than by a gate. That is the thing to fix next, and it is
+worth more than any individual correction in the three tables above.
+
+⚠️ **Round 4 has not been run.** The rate is falling (41 → 9 → 6) but it has not reached zero, and
+each round's defects were in prose written to fix the previous round's. Do not read the trend as
+convergence achieved.
 
 ⚠️ **Round 2's anti-regression reviewer saw only 10 of the 41 round-1 findings**, because only two
 auditors wrote trail files and the rest returned their findings in-band. Four of its hunk mappings
@@ -362,11 +400,12 @@ independently sourced to code and execution, so this weakens the MAPPING, not th
    teaches "do not proceed past a red one", and this failure mode is a green. The code is where it
    belongs.
 
-2c. **Run audit round 3.** Round 1 found 41, round 2 found 6 more in round 1's own fixes, and the
+2c. **Run audit round 3.** Round 1 found 41, round 2 found 9 more in round 1's own fixes (6 in claim
+   re-verification plus 3 in anti-regression), and the
    corrections above are round 2's output. This project's recorded pattern is convergence at round
    three, so round 3 is the one that should come back dry. Until it does, treat the runbook's newest
    paragraphs as unverified. The rounds are converging on the numbers this pattern predicts
-   (41 → 6 → ?), and every defect in round 2 was in prose I wrote to fix a defect in round 1.
+   (41 → 9 → ?), and every defect in round 2 was in prose I wrote to fix a defect in round 1.
 3. **A CI job that runs `ruff format --check`, or a decision that formatting is unenforced.** Right
    now the answer is neither: the tool is installed, it fails, and nothing asks it.
 4. The four performance items from the 2026-08-05 evidence-boundary entry, still untouched.
