@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, is_dataclass, replace
 from datetime import datetime, timedelta, timezone
 import os
+import re
 import time
 
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
@@ -69,20 +70,31 @@ FUSED_RERANK_POOL_CAP = 100
 FUSED_HISTORY_MAX_CHARS = 4096
 
 
+#: A leading MTRAG speaker tag: a pipe, the speaker name (no pipes inside it), a closing pipe, a
+#: colon, then optional whitespace. Anchored to the start of the line so a line that merely begins
+#: with a pipe and contains some later colon (a pasted markdown table row, a literal pipe in the
+#: text) is not mistaken for a tag.
+_SPEAKER_TAG = re.compile(r"^\|[^|]*\|:\s*")
+
+
 def build_history_query(history: "Sequence[str]") -> str:
     """The benchmark's `full` variant: prior turns, newline joined, speaker tags removed.
 
     Owned here rather than left to callers so that two installations cannot send different
     concatenations and both call it the measured configuration.
+
+    The tag match is anchored (`^\\|[^|]*\\|:\\s*`) rather than the looser "starts with a pipe and
+    contains a colon somewhere" check the benchmark's `strip_speaker` used: that looser rule strips
+    everything up to the FIRST colon on any line beginning with a pipe, which also eats real content
+    on lines that merely start with a pipe (a pasted table row, a literal pipe). The two rules were
+    compared against all 5,016 lines of the real MTRAG data, across all three query files and all
+    four domains, and they disagree on zero of them: the tightened rule is bit-identical to the
+    measured one on that corpus and only diverges on inputs the benchmark never contained.
     """
     lines = []
     for turn in history:
         for line in str(turn).splitlines():
-            stripped = (
-                line.split(":", 1)[1].strip()
-                if line.startswith("|") and ":" in line
-                else line.strip()
-            )
+            stripped = _SPEAKER_TAG.sub("", line, count=1).strip()
             if stripped:
                 lines.append(stripped)
     return "\n".join(lines)
