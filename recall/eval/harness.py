@@ -36,7 +36,13 @@ from recall.index import Indexer
 from recall.observability import METRICS
 from recall.rerank import CrossEncoderReranker, Reranker
 from recall.retriever import HybridRetriever
-from recall.store import LEG_DENSE, LEG_META, LEG_SPARSE, STORE_QUERY_METRIC, PgVectorStore
+from recall.store import (
+    LEG_DENSE,
+    LEG_SPARSE,
+    STORE_QUERY_LEGS,
+    STORE_QUERY_METRIC,
+    PgVectorStore,
+)
 from recall.timing import TimedEmbedder, TimedReranker, TimingStats, timed_call
 from recall.eval._research_trust import research_search
 from recall.types import ScoredChunk, TrustedHit, TrustedResult
@@ -135,9 +141,12 @@ def _score_config(
     )
     # Drain first: `METRICS` is process-wide, so without this the previous configuration's
     # samples are still in the ring and would be averaged into this one's.
-    # LEG_META included: `search()` records one per query too, and a series left undrained
-    # accumulates across every configuration — the exact contamination this drain prevents.
-    for leg in (LEG_DENSE, LEG_META, LEG_SPARSE):
+    # EVERY leg, from `STORE_QUERY_LEGS` rather than a tuple written out here: `LEG_META` is
+    # included because `search()` records one per query too, and this list omitted the learned
+    # sparse leg from the moment that leg landed. A series left undrained accumulates across
+    # every configuration — the exact contamination this drain prevents — and it does so
+    # silently, which is why the tuple lives in one place with a test behind it.
+    for leg in STORE_QUERY_LEGS:
         METRICS.drain_histogram(STORE_QUERY_METRIC, leg=leg)
     ps, rs, ms, ns, unans_gaps = [], [], [], [], []
     for q in queries:
