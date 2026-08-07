@@ -1,9 +1,20 @@
 """The BEAM arm's calibration must REACH the retrieval call, not merely be accepted.
 
 Prior work: searched with ``docs_search(source_type="memory", ...)``.
-[[project-recall-beam-bestconfig-blocked-2026-07-28]] measured the failure this guards: the shipped
-0.50 cosine floor starves **14 of 60 questions (23.3%)** on voyage-4-large, against 7% on
-text-embedding-3-small and 0% on bge-small. No prior test covered the wiring.
+[[project-recall-beam-bestconfig-blocked-2026-07-28]] recorded that the shipped 0.50 cosine floor
+starves **14 of 60 questions (23.3%)** on voyage-4-large. No prior test covered the wiring.
+
+⚠️ **That starvation figure does NOT transfer to this code path, and this file must not be read as
+evidence for it.** Measured 2026-08-07 on the 300 scored BEAM questions with the index built here:
+54 (18.0%) have a top cosine below 0.50 and **none was withheld**; a 0.30 arm and a 0.50 arm
+returned identical memory counts on all 300, every question receiving the full k=45. So the cosines
+DO fall below the floor and the floor does not act. The reason is
+``TrustPolicy.development()``, which degrades instead of refusing — see
+``test_describe_records_that_the_gate_could_not_fire``.
+
+The wiring below is still correct and is what a strict-policy run would need. It is simply not
+load-bearing on the research path, and the artifact now says so rather than implying a control that
+never operated.
 
 Why a test and not an inspection
 --------------------------------
@@ -115,3 +126,35 @@ def test_the_other_retrieval_knobs_still_arrive(captured) -> None:
     assert captured["candidate_k"] == 250
     assert captured["reranker"] is None
     assert captured["entailment"] is None
+
+
+def test_describe_records_that_the_gate_could_not_fire(captured) -> None:
+    """The label must name what actually happened, not a control that never operated.
+
+    Measured on the 300 scored questions: 54 (18.0%) have a top cosine below the 0.50 default and
+    none was withheld, because `research_search` runs `TrustPolicy.development()`, which degrades
+    rather than refusing. An artifact reporting only a threshold would invite its false-abstention
+    rate to be read as evidence about a gate that never fired.
+    """
+    described = _system(calibration=_Calibration()).describe()
+    policy = described["trust_policy"]
+
+    assert policy["mode"] == "development"
+    assert policy["enforced"] is False, "development mode does not enforce the threshold"
+    assert "does NOT cull" in policy["note"]
+
+
+def test_the_policy_flag_is_derived_not_asserted(captured) -> None:
+    """If the harness switches to strict, the artifact must follow on its own."""
+    import benchmarks.beam.systems as systems_mod
+    from recall.trust_policy import TrustPolicy
+
+    strict = TrustPolicy.strict_policy()
+    original = systems_mod.RESEARCH_POLICY
+    try:
+        systems_mod.RESEARCH_POLICY = strict
+        policy = _system().describe()["trust_policy"]
+        assert policy["mode"] == "strict"
+        assert policy["enforced"] is True
+    finally:
+        systems_mod.RESEARCH_POLICY = original
