@@ -402,5 +402,7 @@ def assert_sparse_coverage(
         f"orphaned rows for chunks that no longer exist. Likely causes are `delete_sources` "
         f"(which does not clean the sidecar) or a `drop_table` of a table whose name was later "
         f"reused. This still refuses, because a sidecar that disagrees with the corpus is a "
-        f"real fault, but no chunk in this corpus is unencoded."
+        f"real fault: at least {encoded - total} sidecar row(s) are orphaned. This compares "
+        f"counts, not id sets, so an overcount is not evidence that coverage is complete: a "
+        f"separately unencoded chunk can still be hiding inside it."
     )
