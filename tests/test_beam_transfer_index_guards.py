@@ -194,3 +194,43 @@ def test_restore_is_non_destructive_by_default() -> None:
     import inspect
 
     assert inspect.signature(ti.restore).parameters["truncate"].default is False
+
+
+def test_restore_validates_the_table_name_before_it_can_reach_truncate(tmp_path: Path) -> None:
+    """BUG-001: the identifier fix reached `checksum` and `dump` but skipped `restore`.
+
+    `restore` is the ONLY subcommand that runs TRUNCATE and DELETE, so it was the one call site
+    where interpolation actually matters. It was protected solely by the `%s::regclass` bind
+    inside `transferable_columns` — a side effect of column discovery that `_validated_table`'s
+    own docstring names as the thing not to rely on.
+
+    RED before the fix: validation happened nowhere on this path, so the call got as far as
+    opening a connection and failed on the DSN instead of on the identifier.
+    """
+    out = tmp_path / "x.copy.gz"
+    out.write_bytes(b"")
+    meta = {
+        "source": {"rows": 0, "digest": "d", "per_tenant": {}},
+        "columns": ["tenant_id"], "tenants": None, "files": {"*": out.name},
+        "path": str(out), "bytes": 0,
+    }
+    out.with_suffix(out.suffix + ".meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    # An unreachable DSN on purpose: if validation is correctly FIRST, the identifier is refused
+    # before any connection is attempted, so the DSN never gets a chance to produce the error.
+    with pytest.raises(ValueError) as exc:
+        ti.restore("postgresql://unused/db", 'evil"; TRUNCATE users; --', out)
+    assert "connect" not in str(exc.value).lower(), (
+        "reached the database before validating the identifier"
+    )
+
+
+def test_validation_runs_before_the_sidecar_is_even_read(tmp_path: Path) -> None:
+    """Ordering is the property: a bad identifier must not depend on a well-formed sidecar."""
+    missing = tmp_path / "does-not-exist.copy.gz"
+
+    with pytest.raises(ValueError) as exc:
+        ti.restore("postgresql://unused/db", "bad-name-with-dashes", missing)
+    assert "meta.json" not in str(exc.value), (
+        "the missing-sidecar error won the race; the identifier check must come first"
+    )
