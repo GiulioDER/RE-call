@@ -62,12 +62,327 @@ Runtime model downloads are prohibited. Startup is proven to complete with every
 
 Tenant routes never accept a physical table from a client. The runtime resolves table names only from validated control plane rows. Chunk tables, tenant routes, and migration events use row level security. The runtime database role must be neither superuser nor `BYPASSRLS`.
 
-## Operator sequence
+## Operator runbook
+
+The whole sequence, in order, with the credential each step takes, what it refuses, and how to
+verify that it did what it says. Every command exits non-zero on failure, so each step is a gate:
+do not proceed past a red one.
+
+⚠️ **A generation table can exist, fully indexed, with no per-table migration ledger rows, and
+`readiness` reports `SchemaTooOld` for it.** That is the state both generation tables on the
+reference deployment were found in: table present, every index valid, RLS forced, and not one row in
+`recall_schema_migrations` for either of them. **The route that produced it is not known.**
+`create-generation` on current code does write those rows (it calls `PgVectorStore.ensure_schema()`,
+which is `apply_migrations(table=…)`), so this is not a property of that command, and the tables in
+question were provisioned by an older build. Run step 2 for every chunk table, including each
+generation table, as a cheap precaution: it is idempotent, and the failure it prevents is invisible
+until a readiness check.
+
+| # | Step | Credential | Exits non-zero when |
+|---|---|---|---|
+| 0 | Preconditions | operator | see below; these are checks, not commands |
+| 1 | `recall-enterprise migrate` | `RECALL_MIGRATION_DSN` | control-plane DDL fails |
+| 2 | `recall schema apply` per chunk table | `RECALL_MIGRATION_DSN` | a migration fails, drifted, or is unknown |
+| 3 | `recall-enterprise create-generation` | `RECALL_MIGRATION_DSN` | pgvector absent, or table DDL fails |
+| 4 | index the shadow corpus | serving | (application step) |
+| 5 | `recall-enterprise mark-ready` | `RECALL_MIGRATION_DSN` | the generation id is unknown. ⚠️ **It does NOT check the counts** |
+| 6 | `recall-enterprise set-route --shadow-generation` | `RECALL_MIGRATION_DSN` | the generation is not servable |
+| 7 | `recall-enterprise replay` | `RECALL_SERVING_DSN` (⚠️ **write path**) | anything is still pending afterwards |
+| 8 | `recall-enterprise parity` | `RECALL_SERVING_DSN` | sources, hashes or counts disagree; an index is invalid; RLS is not forced |
+| 9 | `recall-enterprise readiness` | `RECALL_SERVING_DSN` | any startup check fails. ⚠️ It evaluates the **ACTIVE** generation, not the shadow |
+| 10 | `recall-enterprise cutover` | `RECALL_MIGRATION_DSN` | an event is pending, or the shadow is not ready |
+| 11 | `recall-enterprise retire` | `RECALL_MIGRATION_DSN` | the named tenant still routes at that generation, in **either** slot |
+| R | rollback: `recall-enterprise set-route` | `RECALL_MIGRATION_DSN` | the previous generation is not servable |
+
+⚠️ **"Takes the serving credential" is a credential statement, not a read/write one.** `replay` is a
+**write path**: it calls `replace_sources` into both the active and the shadow generation and
+updates the outbox. Do not run it speculatively against a production tenant because a table above
+groups it with the read-only commands.
+
+### 0. Preconditions
+
+Check these before step 1. **Three have been actual failures on the reference deployment**: the
+missing grant, the unrecorded licences, and the unblocked egress boundary. The rest passed there and
+are cheap to repeat. ⚠️ The 2.2x headroom figure is a policy rule of thumb, not a measurement:
+nothing in this repository derives it.
+
+* **Roles.** A migration role and a runtime role, both `NOINHERIT` and neither `SUPERUSER` nor
+  `BYPASSRLS`; the runtime role must not own the chunk tables and must not hold `CREATE` on the
+  schema. [MIGRATIONS.md](MIGRATIONS.md) is the authoritative recipe; do not restate a subset of it
+  here. Attribute columns alone are **not** a sufficient check: a role that is merely a *member* of
+  a `BYPASSRLS` role can `SET ROLE` to it, and `pg_roles` does not show membership, so read
+  `pg_auth_members` too.
+
+  ```sql
+  SELECT r.rolname, r.rolsuper, r.rolbypassrls, r.rolinherit, m.roleid::regrole AS member_of
+    FROM pg_roles r LEFT JOIN pg_auth_members m ON m.member = r.oid
+   WHERE r.rolname IN ('recall_migrator', 'recall_runtime');
+  ```
+
+* **GENERATE the runtime role's grants; never hand-write them.** The package ships the generator and
+  [MIGRATIONS.md](MIGRATIONS.md) says why: a copied list drifts out of step with the tables the code
+  actually creates, and an earlier hand-written list in that very document omitted four control-plane
+  tables and a sequence, so an operator who followed it exactly got `permission denied` at startup.
+
+  ```console
+  recall --table <each chunk table> schema grants --role <runtime role> --enterprise
+  ```
+
+  ⚠️ **`--table` is a top-level argument and must precede `schema`.** Putting it after the
+  subcommand exits 2 with `unrecognized arguments`, and the obvious repair, dropping the flag, is
+  the dangerous one: `recall schema grants --role R --enterprise` **succeeds** and grants against
+  the default table name `chunks`, leaving every generation table ungranted while the step reads as
+  done.
+
+  Run it **once per chunk table, including every generation table you create at step 3**, and apply
+  the output **verbatim** as the object owner. It emits six statements covering fourteen objects
+  plus one sequence. ⚠️ **Do not check your work against a summary, including this one** (that is
+  the failure this bullet exists to prevent): diff what you applied against what the command
+  printed. For orientation only, the six statements are the migration ledger, the chunk table, the
+  eight generation and calibration tables, three read-only control-plane tables, the outbox, and the
+  outbox sequence. A `permission denied` at step 8 or 9 means the generated set was
+  not applied in full. It never means a broader grant is needed: do not answer it with `GRANT ALL`,
+  and do not make the runtime role the table owner. The symptom this deployment actually produced,
+  `InsufficientPrivilege: permission denied for table recall_schema_versions`, reads like a database
+  outage and is a missing grant.
+* **The pgvector EXTENSION**, installed once by a database operator: `CREATE EXTENSION vector;`. The
+  migration role must not be elevated to do this. `sparsevec`, which migration 0012 needs, requires
+  **extension** version 0.7 or later; check with
+  `select count(*) from pg_type where typname = 'sparsevec'`. ⚠️ Do not confuse this with the
+  `pgvector` **Python client**, whose declared floor is 0.4.0: two independent version series share
+  one name.
+* **Model artifacts present and verified locally**, with their digests recorded. Recompute rather
+  than trust the record: a tree that agrees with its own manifest proves nothing, so hash it with an
+  independent implementation of `artifact_tree_sha256` and compare against the value pinned in the
+  package.
+* **Licence recorded for every artifact.** A digest says which bytes; it does not say whether you
+  may ship them.
+* **Outbound network blocked at the workload boundary.** Runtime model downloads are prohibited and
+  startup is proven to complete with every socket entry point blocked, but the package cannot
+  enforce the boundary. `ufw` defaulting to `allow (outgoing)` satisfies nothing here.
+* **Disk headroom at least 2.2x the active index size** before any build, since the shadow is built
+  alongside the active generation rather than in place. Measure with
+  `pg_indexes_size('<active table>')` against the free bytes on the data directory's mount, not
+  against total capacity.
+
+### 1. Migrate the control plane
+
+```console
+RECALL_MIGRATION_DSN="$RECALL_MIGRATION_DSN" recall-enterprise migrate
+```
+
+Verify: `recall-enterprise status` prints `control plane ledger is current`.
+
+### 2. Apply the chunk-table migrations, per table
+
+Run this for the legacy chunk table and for **every** generation table. It is the step that writes
+the per-table ledger rows, and `readiness` reports `SchemaTooOld` for the ACTIVE generation if it is
+missing them.
+
+```console
+recall --migration-dsn "$RECALL_MIGRATION_DSN" --table chunks_g2026_08 schema --dim 384 apply
+recall --table chunks_g2026_08 schema --dim 384 status
+```
+
+⚠️ **Pass `--dim` explicitly on BOTH lines, `status` included.** It defaults to the dimension
+inferred from `--embedder`, which defaults to `fastembed`, and that resolution happens **before** the
+subcommand branches, so even the read-only `status` **constructs an embedder and fetches a model**
+without it. On a host with the egress boundary closed (as the preconditions require) the step then
+fails on a network fetch that has nothing to do with the schema, and on a host where the model is
+already cached it appears to work, which is worse. Note the flag positions: `--migration-dsn` and
+`--table` are top-level and precede `schema`; `--dim` follows it.
+
+Verify: `schema status` exits non-zero when the table is not current, and every index on it is still
+`indisvalid`.
+
+> ⚠️ **A migration whose bytes changed after you applied it is a hard stop, by design.** The ledger
+> stores the checksum of what was applied, and any schema call then raises
+> `MigrationChecksumMismatch` rather than migrating forward. There is no flag for this and there
+> should not be.
+>
+> **First, read which mismatch it is, and read it carefully: two of the four wordings differ by one
+> word.** `MigrationChecksumMismatch` is raised from four places, and the message is the only thing
+> that tells them apart.
+>
+> | Message | Source | Meaning |
+> |---|---|---|
+> | `migration <name> checksum drift: committed X, actual Y` | `load_migrations`, before any ledger read | **working tree corrupt** |
+> | `migration checksum manifest must be a JSON object` / `duplicate migration version` / a mode-declaration error | `load_migrations`, same | **working tree corrupt** |
+> | `applied migration <file> has checksum X, package has Y` | `schema_status` | **ledger** |
+> | `applied migration <file> checksum drift` | `apply_migrations` | **ledger** |
+>
+> ⚠️ Rows one and four both say "checksum drift" and mean opposite things. Row one names the
+> migration and prints two digests; row four begins `applied migration`. **Row four is what step 2's
+> `schema apply` raises**, so an operator running the documented command hits the ledger case with
+> the wording that most resembles the working-tree case. A working-tree diagnosis means restore the
+> files and touch nothing in the database.
+>
+> **The default remedy is to ship the change as a NEW migration version, or to restore from backup.**
+> Clearing a ledger row is the exception, not the procedure.
+>
+> If you do clear it, know exactly what you are doing. The table is `recall_schema_migrations` and
+> its primary key is `(target_table, version)`. **Which rows exist depends on the version number**:
+>
+> * **0008 and above** are recorded once, under `target_table = '__global__'`, and re-apply
+>   database-wide. There is exactly one row, so a version-only `DELETE` happens to hit only it.
+> * **0001 to 0007** are recorded **per chunk table**. Here a `DELETE ... WHERE version = '0003'`
+>   strips the row for *every* chunk table in the database, and every serving process then refuses on
+>   restart with `SchemaTooOld`. Name both columns.
+>
+> ```sql
+> -- global (0008+): one row
+> DELETE FROM recall_schema_migrations WHERE target_table = '__global__' AND version = '0008';
+> -- per-table (0001-0007): one row PER TABLE, so name the table
+> DELETE FROM recall_schema_migrations WHERE target_table = 'chunks' AND version = '0003';
+> ```
+>
+> Preconditions, and the first one is the one people get wrong:
+>
+> * The real question is not "are the two versions equivalent" but **"is re-application safe against
+>   the tables as they stand"**. Equivalence says nothing about what re-running does.
+> * Take a **restorable backup first**. Recording the deleted row is *not* a rollback: restoring the
+>   row does not undo DDL the re-apply already executed. It also corrupts the audit trail in the
+>   direction people do not expect. `applied_by` is written by **no statement in the codebase**; it
+>   exists only as the column default `DEFAULT current_user`, and the upsert's `DO UPDATE SET` list
+>   deliberately omits it. So delete-then-re-apply records the new applier correctly (the fresh
+>   INSERT takes the default), while **restore-then-re-apply preserves the ORIGINAL `applied_by`
+>   and stamps a new `applied_at`**, attributing the re-application to someone who did not perform
+>   it. If you restore the row, do not then re-apply on top of it.
+> * Re-applying takes **ACCESS EXCLUSIVE** on the target chunk table, and `apply_migrations` sets
+>   `statement_timeout = 0` deliberately, so there is no automatic escape. Re-running 0008 also does
+>   `ALTER TABLE ... NO FORCE ROW LEVEL SECURITY` and a full scan of the corpus under that lock.
+>   Maintenance window only, with an abort procedure agreed before you start.
+> * Afterwards the ledger asserts that the **new** bytes were applied, so `schema_status`,
+>   `readiness` and `parity` all pass on a premise nobody verified. That is the guarantee you are
+>   spending. Get the equivalence argument reviewed by a second person.
+
+### 3. Create the shadow generation
+
+```console
+recall-enterprise create-generation g2026_08 chunks_g2026_08 bge-small-asymmetric-v1 384
+```
+
+The declared dimension is checked against the artifact at startup, so a generation registered at the
+wrong width refuses to serve rather than writing vectors nothing can interpret. Then run step 2
+against `chunks_g2026_08`.
+
+### 4 and 5. Build, then mark ready with measured counts
+
+```console
+recall-enterprise mark-ready g2026_08 --chunks 1000000 --sources 120000
+```
+
+⚠️ **`--chunks` and `--sources` are an operator ASSERTION and nothing ever checks them.**
+`mark-ready` stores the two integers verbatim; `parity` **never compares them** (it reads the
+registry to resolve which physical table each generation names, then compares the two tables
+themselves), and `cutover` quotes the declared count only inside a refusal message. Measure
+them anyway, for your own audit trail, but do not treat the step as a gate: a fabricated
+`--chunks 1000000` on an empty generation exits 0. `mark-ready` also has no state guard, so it will
+move a `failed` generation to `ready`. Never use it to clear a failed state.
+
+### 6. Attach the shadow route
+
+```console
+recall-enterprise set-route acme g2026_07 --shadow-generation g2026_08
+```
+
+### 7 to 9. Drain, compare, then check readiness
+
+```console
+recall-enterprise status --tenant acme
+recall-enterprise replay acme
+recall-enterprise parity acme
+recall-enterprise readiness acme
+```
+
+🛑 **STOP if `shadow chunks` is 0, or if it differs from the `--chunks` you measured at step 5.**
+`parity` on two empty generations exits 0 and prints `parity: OK`: two empty generations cannot
+disagree, so that is a vacuous pass and not a comparison. This is the one place where the rule "each
+step is a gate, do not proceed past a red one" is not enough, because the failure mode here is a
+**green**. Do not run cutover on it.
+
+`cutover`'s own emptiness check only catches a **totally** empty shadow, so a partially filled one
+passes both. The residual gap that produces one is on the delete path, not the write path:
+`_prune_vanished` keys its candidate set on the active generation, so a source the shadow holds and
+the active does not survives the prune and rides the cutover into the promoted generation. Compare
+the shadow's source set against the corpus on disk, not only against the active generation.
+
+Run `readiness` with `RECALL_SERVING_DSN` set. Its row level security verdict is about the role it
+connects as, and it prints that role, so the verdict names its own subject. On the migration role a
+green verdict would certify a credential that never serves a request.
+
+⚠️ **`readiness` names its own ROLE subject and not its own GENERATION subject.** It opens
+`route.active`, so run before cutover it certifies the **outgoing** generation, not the shadow you
+are about to promote. Nothing in steps 7 to 9 runs the startup checks against the incoming one.
+
+### 10. Cutover, then verify
+
+```console
+recall-enterprise cutover acme
+recall-enterprise status --tenant acme      # confirm the swap
+recall-enterprise readiness acme            # NOW evaluates the promoted generation
+```
+
+`cutover` prints nothing on success, so the two verify lines are how you learn it worked. The second
+one is the real gate: it is the first time the startup checks run against the generation now serving
+traffic. A red verdict here is what section R exists for.
+
+⚠️ **`--allow-divergent-corpus` skips the parity comparison entirely.** The parity refusal advertises
+it in its own message, which puts the flag in front of an operator at the exact moment they are
+under pressure. It is permitted **only** when the source-set difference has been enumerated and
+matches a deliberate corpus change (documents genuinely added or removed). It is forbidden as a
+response to any parity failure whose cause is unknown, and a half-filled shadow produces a failure
+indistinguishable from an intended change. It does not skip the pending-event, ready, or emptiness
+checks.
+
+### 11. Retire, after the rollback window
+
+⚠️ **Not immediately after step 10.** `cutover` SWAPS the slots: the old generation becomes the
+tenant's **shadow**, and `retire` refuses while the named tenant routes at that generation in
+*either* slot. Detach it from the shadow slot first, then retire.
+
+⚠️ **Retirement is DATABASE-GLOBAL.** `recall_index_generations` has no tenant column: `retire`
+checks one tenant's route and then sets `state='retired'` for the whole database, so every other
+tenant still routed at that generation is refused by the serving path immediately. Enumerate every
+tenant routed at the generation before retiring. Afterwards `set-route` rejects it as an active
+generation, so **section R no longer works as written**.
+
+There is no un-retire *command*, but there is an un-retire *path*, and you should know it before you
+order a restore: `mark-ready` has no state guard (step 5), so
+`recall-enterprise mark-ready <retired-generation> --chunks N --sources M` writes it back to `ready`
+and `set-route` will then accept it. Treat that as an incident procedure, not a rollback step:
+nothing re-validates the table, `retired_at` is left set, and the counts you pass are unchecked.
+
+```console
+recall-enterprise retire g2026_07 --tenant acme
+```
+
+Keep the old table for seven days and two successful backup cycles before retiring.
+
+### R. Rollback
+
+Cutover swaps the previous active generation into the shadow slot, so rolling back means naming it
+active again. **Pass `--shadow-generation` explicitly**: it defaults to `None` and is written
+straight through, so the obvious short form silently NULLs the shadow route and detaches the
+generation that was serving seconds ago.
+
+```console
+recall-enterprise set-route acme g2026_07 --shadow-generation g2026_08
+recall-enterprise status --tenant acme      # expect active=g2026_07 shadow=g2026_08
+```
+
+The serving path independently refuses a retired or failed generation, per request, so a retired
+table cannot be reached even if a route still names it. This works only before step 11.
+
+### Credentials by subcommand
 
 `recall-enterprise` picks its credential by subcommand, so the operator no longer has to.
 `migrate` and `create-generation` perform DDL and read `RECALL_MIGRATION_DSN`; `readiness`,
-`status`, `parity` and `replay` only read and take `RECALL_SERVING_DSN`; `mark-ready`, `set-route`,
+`status`, `parity` and `replay` take `RECALL_SERVING_DSN`; `mark-ready`, `set-route`,
 `cutover` and `retire` are DML against the control-plane tables and take the migration credential.
+⚠️ Of that middle group only `readiness`, `status` and `parity` are read-only. **`replay` writes**,
+into both generations; it takes the serving credential because that is the credential the drain
+needs, not because it is a read.
 All of them fall back to `RECALL_DSN`, so a single-variable deployment keeps working.
 
 The split matters most for `readiness`, which reports whether row level security constrains "the
@@ -176,7 +491,7 @@ And the digest is a hash of a whole provisioned **tree**, path names included, s
 
 ### What every result reports
 
-Every search response carries, additively: the embedding profile identity, the retrieval profile, the index generation, the candidate pool size, whether reranking ran, `total_ms`, `latency_budget_ms`, `budget_exceeded`, and per-stage wall time for `admission_wait`, `query_embedding`, `dense_retrieval`, `sparse_retrieval`, `fusion`, `reranking`, `trust_evaluation` and `evidence_assembly`. The same stage timings are observed into `METRICS` under `recall_retrieval_stage_ms`, labelled by profile and stage, so per-stage percentiles exist across a population of queries rather than only per response. `recall_retrieval_total_ms` is observed on failures as well as successes, because a timer that only records on success hides the slow path worth finding. It deliberately excludes requests that were **shed**: those did no work by construction, so booking them would make healthy load shedding indistinguishable from an outage and would contaminate the served-latency population with rejections in exactly the overload regime where a p95 matters most. A shed request appears in `recall_retrieval_rejected_total{profile,reason}` and nowhere else.
+Every search response carries, additively: the embedding profile identity, the retrieval profile, the index generation, the candidate pool size, whether reranking ran, `total_ms`, `latency_budget_ms`, `budget_exceeded`, and per-stage wall time for `admission_wait`, `query_embedding`, `dense_retrieval`, `sparse_retrieval`, `learned_sparse_retrieval`, `fusion`, `reranking`, `trust_evaluation` and `evidence_assembly`. Every one of those keys is present on every response, including for a retrieval leg the configuration switched off: `sparse_retrieval` on a SPLADE-only pipeline, or `learned_sparse_retrieval` on a pipeline with no learned sparse arm, reports ~0 rather than dropping its key. That is deliberate, so that an absent series is unambiguously a missing instrument rather than possibly a disabled leg. The same stage timings are observed into `METRICS` under `recall_retrieval_stage_ms`, labelled by profile and stage, so per-stage percentiles exist across a population of queries rather than only per response. `recall_retrieval_total_ms` is observed on failures as well as successes, because a timer that only records on success hides the slow path worth finding. It deliberately excludes requests that were **shed**: those did no work by construction, so booking them would make healthy load shedding indistinguishable from an outage and would contaminate the served-latency population with rejections in exactly the overload regime where a p95 matters most. A shed request appears in `recall_retrieval_rejected_total{profile,reason}` and nowhere else.
 
 Every hit's `score` is its dense cosine, including hits that arrived through the sparse leg and hits the reranker moved. Reranking reorders and never rewrites the score, because calibration thresholds are stated in cosine units and a cross-encoder logit is not one.
 
