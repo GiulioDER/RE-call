@@ -960,15 +960,18 @@ class PgVectorStore:
                 # this DELETE every throwaway store leaves a uuid-named row set addressable by a
                 # name that no longer resolves, and nothing ever looks for them again.
                 #
-                # ⚠️ This DELETE is tenant-scoped and the SQL does not say so. The sidecar
-                # carries FORCE ROW LEVEL SECURITY with a tenant isolation policy (migration
-                # 0012), so the database applies the current tenant whether or not the statement
-                # asks. `DROP TABLE` below is DDL and is NOT scoped that way. So for a table
-                # shared across tenants, this removes the table for everyone and the sidecar
-                # rows for one, which is the very orphan this DELETE exists to prevent. Latent
-                # today because no caller drops a shared multi-tenant table; written down
-                # because the next reader would otherwise take the absent tenant filter as
-                # evidence the cleanup is global, and it is not.
+                # The absent tenant filter is deliberate, and it works: `DROP TABLE` below is
+                # DDL and removes the table for every tenant, so a cleanup scoped to one would
+                # strand the rest. MEASURED rather than reasoned, because the sidecar does carry
+                # FORCE ROW LEVEL SECURITY with a tenant isolation policy (migration 0012) and
+                # that looks like it should narrow this statement: two tenants were given a
+                # sidecar row on one chunk table, one tenant's store dropped it, and both rows
+                # were gone. The roles this code runs under (local dev, CI, the test container)
+                # are superuser and BYPASSRLS, and RLS does not apply to them, FORCE or not.
+                # ⚠️ That is the CONDITION to watch. Under a role that is neither superuser nor
+                # BYPASSRLS the policy would engage, this DELETE would silently narrow to one
+                # tenant, and the drop would strand every other tenant's rows. Nothing here
+                # detects that; it is a property of the connecting role.
                 sidecar = conn.execute(f"SELECT to_regclass('{SPARSE_TABLE}')").fetchone()
                 if sidecar and sidecar[0]:
                     conn.execute(
