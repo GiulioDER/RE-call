@@ -406,3 +406,30 @@ def assert_sparse_coverage(
         f"counts, not id sets, so an overcount is not evidence that coverage is complete: a "
         f"separately unencoded chunk can still be hiding inside it."
     )
+
+
+def backfill_learned_sparse(
+    store: Any,
+    encoder: SparseEncoderProtocol,
+    *,
+    batch_size: int = 32,
+    progress: Callable[[int], None] | None = None,
+) -> SparseIndexResult:
+    """Encode every chunk already in `store` into the learned sparse sidecar.
+
+    This is the path that reaches corpora indexed before `Indexer` could write the sidecar, which
+    is every corpus that exists today. It streams `store.iter_chunks()`, a server-side cursor
+    that excludes the dense vector, so a corpus larger than memory is fine.
+
+    IDEMPOTENT, not resumable. `upsert_sparse` is ON CONFLICT DO UPDATE, so re-invoking simply
+    re-encodes. Skipping ids already present would need a `store.sparse_ids(profile_id)` this
+    store does not have, and at the corpus sizes this serves it would buy nothing. That is a
+    decision, not an oversight.
+    """
+    return store_sparse_vectors(
+        store,
+        encoder,
+        ((chunk.id, chunk.text) for chunk in store.iter_chunks(batch_size=max(batch_size, 1))),
+        batch_size=batch_size,
+        progress=progress,
+    )
