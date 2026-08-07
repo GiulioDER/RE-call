@@ -112,3 +112,52 @@ def maxsim(query_tokens: "np.ndarray", doc_tokens: "np.ndarray") -> float:
             f"document is {doc_tokens.shape[1]}-d"
         )
     return float((query_tokens @ doc_tokens.T).max(axis=1).sum())
+
+
+#: Licence per late-interaction checkpoint, mirroring `recall.sparse.KNOWN_MODELS`.
+#:
+#: An unrecorded checkpoint RAISES rather than defaulting to permissive, an unrecorded licence is
+#: exactly what this check exists to prevent.
+LATE_INTERACTION_MODELS: dict[str, str] = {
+    "colbert-ir/colbertv2.0": "mit",
+    "answerdotai/answerai-colbert-small-v1": "apache-2.0",
+    # Capacity diagnostic ONLY (~560M against the 110M default). Non-commercial, so it is refused
+    # without an explicit opt-in and it may never contribute to a shipping decision. See the
+    # preregistration's monotonicity rule.
+    "jinaai/jina-colbert-v2": "cc-by-nc-4.0",
+}
+
+#: Licences compatible with RE-call's own MIT distribution for commercial use.
+#:
+#: A SET, not an equality test. `recall/sparse.py:195` gates on `license_id != "apache-2.0"`,
+#: which would refuse an MIT checkpoint. That is latent there (no MIT entry in `KNOWN_MODELS`) and
+#: would be fatal here, because the DEFAULT model below is MIT and would be refused by its own
+#: guard. `sparse.py` is deliberately left alone, its defect cannot fire.
+PERMISSIVE_LICENCES = frozenset({"mit", "apache-2.0"})
+
+DEFAULT_LATE_INTERACTION_MODEL = "colbert-ir/colbertv2.0"
+
+
+def late_interaction_licence(
+    model_name: str, *, accept_noncommercial_license: bool = False
+) -> str:
+    """The checkpoint's licence, refusing unknown or non-permissive ones.
+
+    The opt-in waives the LICENCE check only. An unrecorded checkpoint raises either way, because
+    the point of the registry is that no licence goes unrecorded.
+    """
+    licence = LATE_INTERACTION_MODELS.get(model_name)
+    if licence is None:
+        raise ValueError(
+            f"unknown late-interaction model {model_name!r}; known models are "
+            f"{sorted(LATE_INTERACTION_MODELS)}. Record it in LATE_INTERACTION_MODELS with its "
+            f"licence first — an unrecorded licence is exactly what this check exists to prevent."
+        )
+    if licence not in PERMISSIVE_LICENCES and not accept_noncommercial_license:
+        raise ValueError(
+            f"{model_name} is licensed {licence}, which is not compatible with RE-call's MIT "
+            f"distribution for commercial use. Pass accept_noncommercial_license=True to use it "
+            f"anyway (benchmark reproduction only — it may not contribute to a shipping "
+            f"decision), or keep the default {DEFAULT_LATE_INTERACTION_MODEL}."
+        )
+    return licence
