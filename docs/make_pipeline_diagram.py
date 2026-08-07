@@ -607,12 +607,25 @@ def main() -> None:
     for name, kind, tag, note in EMBEDDERS:
         lines = wrap(note, row_text_w, 11.0)
         rows.append((name, kind, tag, lines, 22 + len(lines) * 15.2 + 12))
+    # The intro goes through `wrap` like every other body string. It was the one literal in the
+    # file drawn as a single unwrapped run, and at 143 characters it overshot the card's right
+    # edge — the exact failure the generated-not-typed approach exists to make impossible, so the
+    # exception is removed rather than the string shortened.
+    intro_lines = wrap(
+        "Every input that can change a stored vector — model, dimension, query/passage mode, "
+        "normalisation, chunker, context — is one declared identity, so a change to any of them "
+        "is a NEW identity rather than a silent disagreement with vectors already stored.",
+        MAIN_W - 2 * PAD - 26,
+        11.4,
+    )
+    intro_h = len(intro_lines) * 16.0
     foot_lines = wrap(EMBEDDER_FOOTNOTE, MAIN_W - 2 * PAD - 12, 10.8)
     emb_h = (
         PAD
         + 18
         + 8
-        + 34
+        + 18
+        + intro_h
         + sum(r[4] + row_gap for r in rows)
         + 10
         + len(foot_lines) * 14.6
@@ -620,7 +633,10 @@ def main() -> None:
         - 6
     )
 
-    fill, stroke, chip = STYLES["standard"]
+    # Only the chip: this card is a CONTAINER of ten classed rows, not itself one step, so it
+    # takes the neutral card fill rather than the shipped-default green — otherwise the cell would
+    # colour-claim "standard" over rows that are explicitly rejected or cloud-only.
+    chip = STYLES["standard"][2]
     c.add(
         f'<rect x="{MAIN_X}" y="{y:.1f}" width="{MAIN_W}" height="{emb_h:.1f}" rx="10" '
         f'fill="#0f1620" stroke="{CARD_STROKE}"/>'
@@ -636,16 +652,12 @@ def main() -> None:
         mono=True,
         anchor="end",
     )
-    c.text(
-        MAIN_X + PAD + 6,
-        y + PAD + 34,
-        "Every input that can change a stored vector — model, dimension, query/passage mode, "
-        "normalisation, chunker, context — is one declared identity.",
-        size=11.4,
-        fill=INK_3,
-    )
+    iy = y + PAD + 34
+    for line in intro_lines:
+        c.text(MAIN_X + PAD + 6, iy, line, size=11.4, fill=INK_3)
+        iy += 16.0
 
-    ry = y + PAD + 50
+    ry = y + PAD + 34 + intro_h
     for name, kind, tag, lines, rh in rows:
         rfill, rstroke, rchip = STYLES[kind]
         c.add(
@@ -727,9 +739,11 @@ def main() -> None:
         y += h + GAP
 
     # ---- three legs, side by side ------------------------------------------------------------
-    leg_w = (MAIN_W - 2 * 14) / 3
+    # Divisor from len(LEGS), not a literal 3: the column width and the loop that fills it must
+    # not be able to drift apart when a leg is added.
+    leg_w = (MAIN_W - (len(LEGS) - 1) * 14) / len(LEGS)
     leg_bodies = [wrap(note, leg_w - 2 * 14, 11.0) for _, _, note in LEGS]
-    legs_h = 20 + 16 + 8 + max(len(b) for b in leg_bodies) * 15.2 + 16
+    legs_h = 20 + 16 + 8 + max((len(b) for b in leg_bodies), default=1) * 15.2 + 16
     c.text(MAIN_X, y - 12, "9 · Retrieval legs — run in parallel", size=12.4, fill=INK_2, weight="700")
     for i, ((name, kind, _), lines) in enumerate(zip(LEGS, leg_bodies)):
         lx = MAIN_X + i * (leg_w + 14)
@@ -759,7 +773,10 @@ def main() -> None:
 
     # ---- everything after fusion -------------------------------------------------------------
     cal_drawn = False
-    for title, body, kind, tag in POST:
+    # Enumerate rather than compare against POST[-1]: two cells with identical text would make a
+    # value comparison drop the arrow off the EARLIER one, breaking the chain mid-column, and the
+    # SVG would still be valid.
+    for i, (title, body, kind, tag) in enumerate(POST):
         h = draw_cell(c, MAIN_X, y, MAIN_W, title, body, kind, tag=tag)
         if title.startswith("13") and not cal_drawn:
             cal_h = cell_height(CALIBRATION[0], CALIBRATION[1], SIDE_W, CALIBRATION[3])
@@ -778,7 +795,7 @@ def main() -> None:
                 head="left",
             )
             cal_drawn = True
-        if (title, body, kind, tag) != POST[-1]:
+        if i < len(POST) - 1:
             arrow(c, cx_main, y + h, y + h + GAP)
         y += h + GAP
 
@@ -816,5 +833,11 @@ if __name__ == "__main__":
     # The diagram is full of arrows, multiplication signs and curly quotes. On a console whose
     # default encoding is cp1252 (Windows) the whole run dies at the first one, having printed
     # nothing, so the encoding is set here rather than left to the environment.
-    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    #
+    # Guarded, because the guard IS the point: a build harness that captures stdout hands us a
+    # StringIO with no `reconfigure`, and an unguarded call would raise AttributeError with zero
+    # bytes written — the same empty-output failure this line exists to prevent.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8")
     main()
