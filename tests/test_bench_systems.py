@@ -8,6 +8,7 @@ back.
 """
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import json
 import os
@@ -34,7 +35,51 @@ from benchmarks.systems import (
 
 
 def _mem0_installed() -> bool:
-    return importlib.util.find_spec("mem0") is not None
+    """True only if mem0 can actually be IMPORTED, not merely found on disk.
+
+    `find_spec` answers "is the package present", which is not the question a skip guard needs to
+    answer. mem0 drags in transformers, and transformers imports torchvision opportunistically, so
+    a torchvision built against a different torch raises `RuntimeError: operator torchvision::nms
+    does not exist` at import time. That leaves mem0 findable and unimportable: the guard passed,
+    and the test then failed on exactly the environment problem the guard exists to skip, wearing
+    a misleading `ModuleNotFoundError: Could not import module 'PreTrainedModel'`.
+
+    `sentence_transformers` is checked as well as `mem0`, because mem0 imports its embedding
+    backends LAZILY: `import mem0` succeeds and the break only surfaces when
+    `mem0.embeddings.huggingface` pulls in `sentence_transformers`, which is inside the test body.
+    A guard that stops at `mem0` is still answering the wrong question.
+
+    `Exception`, not `ImportError`: the observed failure is a RuntimeError from an operator
+    registration, and narrowing this to import errors would let it through again.
+
+    The ~100s cost of importing mem0 is not paid by the default suite. The only caller
+    short-circuits on `OPENROUTER_API_KEY` first, so this runs only for someone who has the key
+    set, and they are about to import mem0 in the test body anyway.
+    """
+    for module in ("mem0", "sentence_transformers"):
+        try:
+            importlib.import_module(module)
+        except Exception:
+            return False
+    return True
+
+
+def test_mem0_guard_reports_an_unimportable_package_as_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A skip guard must answer "can this test run", not "is the package on disk".
+
+    `find_spec` said yes for a mem0 whose transformers could not import, so the guard passed and
+    the test failed on the environment problem it existed to skip. The observed failure was a
+    RuntimeError from torchvision operator registration, so a guard catching only ImportError
+    would let it through: this test fails against that narrower version.
+    """
+    def boom(name: str) -> object:
+        raise RuntimeError("operator torchvision::nms does not exist")
+
+    monkeypatch.setattr(importlib, "import_module", boom)
+
+    assert _mem0_installed() is False
 
 
 class _FakeSystem:
