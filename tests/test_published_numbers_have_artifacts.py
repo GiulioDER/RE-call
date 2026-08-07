@@ -419,27 +419,50 @@ def test_the_registry_values_parse_as_floats_matching_their_own_precision() -> N
 #: 2481, unchanged, when `derived:` was deleted 2026-07-29 (deferred second pass): `derived:` had
 #: zero occurrences in any gated document, so removing it could not move a single baseline row.
 #:
-#: 2481 -> 2463 (-18) between 2026-07-29 and 2026-08-07, unlogged at the time. Recorded here rather
-#: than reconstructed: a SHRINK is the direction the ratchet permits, so it needs no justification,
-#: but the gap is noted so this log's totals reconcile with the committed file.
+#: ⚠️ THE PROSE TOTALS ABOVE ARE NOT DERIVED FROM GIT, and at least one of them never existed. An
+#: entry added on 2026-08-07 claimed a shrink "2481 -> 2463"; git holds no commit of this file
+#: totalling 2481. Reconstructed by summing the committed file at every commit that has ever touched
+#: it, which is the only source that cannot drift:
+#:
+#:     3d3c905  2026-08-02  2484   (file added)
+#:     0341c15  2026-08-04  2480
+#:     274bf73  2026-08-06  2463
+#:     3509256  2026-08-07  2556   arming the gate over docs/ENTERPRISE_RETRIEVAL.md
+#:     2c892f1  2026-08-07  2557   +1, see below
+#:
+#: ⚠️ That table is current only as far as the commit that last edited this comment, and it will be
+#: stale the moment the baseline moves again — including on the commit that added it. Do not patch it
+#: by hand; every hand-maintained total in this log that has been checked against git has been wrong.
+#: Regenerate it, and treat the output as the record:
+#:
+#:     for r in $(git log --format=%H --all -- results/CLAIMS_BASELINE.json); do \
+#:       python -c "import json,subprocess,sys;b=json.loads(subprocess.run(
+#:       ['git','show','$r:results/CLAIMS_BASELINE.json'],capture_output=True,text=True).stdout);
+#:       print(sum(sum(v.values()) for k,v in b.items() if k!='_note'))"; done
 #:
 #: 2463 -> 2556 (+93) on 2026-08-07, arming the gate over `docs/ENTERPRISE_RETRIEVAL.md`. Largest
 #: single growth event in the ratchet's history, and the ONLY one that is not "numbers that predate
-#: the gate": the document is new and the same session that wrote it armed the gate over it. That
-#: distinction matters, so what is frozen is stated here rather than inheriting the earlier
-#: rationale.
+#: the gate": the document is new and the same session that wrote it armed the gate over it.
 #:
-#: SIX figures were MARKED instead of baselined, because freezing them would have been the gate
+#: 2556 -> 2557 (+1) immediately after, and the +1 is the lesson. CI's `pull_request` event scans
+#: the MERGE of the branch into master, not the branch tip, and a concurrent commit had added one
+#: `~0` to the runbook. The baseline was regenerated against the tip and went red in CI. See the
+#: note on `GATED_DOCS` in `benchmarks/claim_gate.py`.
+#:
+#: SIX OCCURRENCES were MARKED instead of baselined, because freezing them would have been the gate
 #: certifying its own author's unbacked numbers: the five Qwen3 latency measurements the document
-#: uses to justify a rejection verdict (query p50/p95, passage batch of 20, model load, peak RSS —
-#: taken on VPS2 on 2026-08-03, before this repository's artifact convention, with no committed
-#: `results/*.json` retaining them) and the `2.2x` disk-headroom figure, which the document's own
-#: prose already calls a policy rule of thumb. That is why this entry is +93 and not +99.
+#: uses to justify a rejection verdict (taken on VPS2 on 2026-08-03, before this repository's
+#: artifact convention, with no committed `results/*.json` retaining them) and the `2.2x`
+#: disk-headroom figure the document's own prose calls a policy rule of thumb.
 #:
-#: The remaining 93 are frozen deliberately and are overwhelmingly structural (migration numbers,
-#: page counts, dimensions appearing in prose beside their code-span twins). The `EXCLUSIONS`
-#: soft-spot note applies with unusual force to this document: 61% of its numeric tokens are masked
-#: and the masked set is the command arguments. Read the measured coverage note on `GATED_DOCS` in
+#: ⚠️ Occurrences, NOT figures. Three further occurrences of those same unbacked numbers ARE frozen
+#: unmarked: `2.2` where the preconditions restate it, and `5.8` and `41` where the prose restates
+#: the Qwen3 latencies. So the claim "those numbers are not baselined" is false at the figure level
+#: and true only at the six marked sites. Known gap, recorded rather than quietly narrowed.
+#:
+#: The rest are frozen deliberately and are overwhelmingly structural. The `EXCLUSIONS` soft-spot
+#: note applies with unusual force to this document: roughly three fifths of its numeric tokens are
+#: masked and the masked set is the command arguments. Read the coverage note on `GATED_DOCS` in
 #: `benchmarks/claim_gate.py` before treating a green run here as coverage of the runbook.
 
 
@@ -483,7 +506,7 @@ def test_the_committed_baseline_has_no_crlf() -> None:
     assert b"\r\n" not in raw
 
 
-# --- The gate, armed over the four published documents -----------------------------------------
+# --- The gate, armed over the five published documents -----------------------------------------
 
 
 @pytest.mark.parametrize("doc", GATED_DOCS)

@@ -160,7 +160,7 @@ nothing in this repository derives it.
 * **Outbound network blocked at the workload boundary.** Runtime model downloads are prohibited and
   startup is proven to complete with every socket entry point blocked, but the package cannot
   enforce the boundary. `ufw` defaulting to `allow (outgoing)` satisfies nothing here.
-* **Disk headroom at least 2.2x <!--@ citation-pending: a policy rule of thumb, not a measurement -- nothing in this repository derives it --> the active index size** before any build, since the shadow is built
+* **Disk headroom at least 2.2x <!--@ citation-pending: a policy rule of thumb, not a measurement; nothing in this repository derives it --> the active index size** before any build, since the shadow is built
   alongside the active generation rather than in place. Measure with
   `pg_indexes_size('<active table>')` against the free bytes on the data directory's mount, not
   against total capacity.
@@ -200,10 +200,16 @@ Verify: `schema status` exits non-zero when the table is not current, and every 
 > `MigrationChecksumMismatch` rather than migrating forward. There is no flag for this and there
 > should not be.
 >
-> **First work out which mismatch it is, and do NOT do it by pattern-matching the wording.**
-> `MigrationChecksumMismatch` has **nine** raise sites across four functions, and several wordings
-> are near-identical while meaning opposite things. Discriminate by **which function raised it**,
-> which you know from which command you ran, and use the message only to confirm.
+> **First work out which mismatch it is. It takes both the command and the message, and neither
+> alone.** `MigrationChecksumMismatch` has **nine** raise sites across four functions, and several
+> wordings are near-identical while meaning opposite things. The procedure, in order:
+>
+> 1. **The command bounds which LEDGER wording is possible** (the table's second column).
+> 2. **The message decides whether you are in that ledger case at all**, because `load_migrations`
+>    runs first inside all four functions and its six wordings can surface from any command.
+> 3. Concretely: a message naming the migration and printing **two digests** is `load_migrations`;
+>    one beginning **`applied migration`** is `schema_status` or `apply_migrations`; one ending
+>    **`does not match the running package`** is `check_schema`. The last three are all ledger.
 >
 > | Raised by | Reached from | Wording | Meaning |
 > |---|---|---|---|
@@ -211,11 +217,6 @@ Verify: `schema status` exits non-zero when the table is not current, and every 
 > | `schema_status` | `schema status`, `schema plan` | `applied migration <file> has checksum X, package has Y` | **ledger** |
 > | `apply_migrations` | `schema apply` (step 2) | `applied migration <file> checksum drift` | **ledger** |
 > | `check_schema` | **`readiness` (step 9)**, and serving startup | `migration <file> checksum does not match the running package` | **ledger** |
->
-> ⚠️ **`load_migrations` runs first inside every one of the others**, so a working-tree fault
-> pre-empts the ledger check on all four paths. That is why the function you called does not settle
-> it on its own: it bounds which ledger wording you *could* see, and a `load_migrations` wording can
-> appear from any command.
 >
 > ⚠️ Two traps in the wordings, both of which have caught a previous version of this document. Row
 > one and the `apply_migrations` row **both say "checksum drift"** and mean opposite things. And the
@@ -254,14 +255,16 @@ Verify: `schema status` exits non-zero when the table is not current, and every 
 >
 > * The real question is not "are the two versions equivalent" but **"is re-application safe against
 >   the tables as they stand"**. Equivalence says nothing about what re-running does.
-> * Take a **restorable backup first**. Recording the deleted row is *not* a rollback: restoring the
->   row does not undo DDL the re-apply already executed, and **delete-then-re-apply overwrites the
->   audit trail**. `applied_by` is written by no statement in the codebase; it exists only as the
->   column default `DEFAULT current_user`, so the fresh INSERT stamps whoever re-applied and the
->   original applier is unrecoverable. Restoring the row instead does **not** silently mis-attribute
->   it: `apply_migrations` compares the restored checksum against the package and raises
->   `MigrationChecksumMismatch` before writing anything, so re-applying on top of a restored row
->   refuses rather than corrupting it. If you restore the row, do not then re-apply on top of it.
+> * Take a **restorable backup first**, and do not treat the recorded row as a rollback. Restoring it
+>   does not undo DDL the re-apply already executed, and **after any re-apply the ledger's
+>   `applied_by` no longer answers "who applied the version that is in the ledger now"**: nothing in
+>   the codebase writes that column, so it is set by its `DEFAULT current_user` on a fresh INSERT and
+>   left untouched by the upsert. Which of those you get depends on the path taken, so do not rely on
+>   it either way. **If you restore the row, do not re-apply on top of it.**
+>
+>   ⚠️ This bullet has been rewritten three times, and each rewrite asserted a different single
+>   branch of `apply_migrations` as though it were the whole behaviour. If you need the exact
+>   attribution for an incident, read `recall/schema.py` rather than trusting this paragraph.
 > * Re-applying takes **ACCESS EXCLUSIVE** on the target chunk table, and `apply_migrations` sets
 >   `statement_timeout = 0` deliberately, so there is no automatic escape. Re-running 0008 also does
 >   `ALTER TABLE ... NO FORCE ROW LEVEL SECURITY` and a full scan of the corpus under that lock.
@@ -367,11 +370,10 @@ order a restore: `mark-ready` has no state guard (step 5), so
 and `set-route` will then accept it. Treat that as an incident procedure, not a rollback step:
 nothing re-validates the table, `retired_at` is left set, and the counts you pass are unchecked.
 
-⚠️ Step 5 says never to use `mark-ready` to clear a `failed` state, and this says you may use it to
-clear a `retired` one. The reason they differ is the table, not the command: a `failed` generation is
-one whose DDL did not finish, so its table may be half-built and forcing `ready` hides that. A
-retired generation's table was complete and serving minutes ago. In both cases nothing re-validates
-it, which is why this is an incident procedure in one case and forbidden in the other.
+⚠️ `retire` has **no state precondition**: it checks only the named tenant's two route slots, so a
+`failed` or `building` generation, which is never routed, can be retired too. Do not read the
+un-retire path above as safe for any generation that happens to be in state `retired` — it says
+nothing about whether that table was ever complete.
 
 ```console
 recall-enterprise retire g2026_07 --tenant acme

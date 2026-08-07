@@ -35,14 +35,23 @@ RESULTS_ROOT = REPO_ROOT / "results"
 #: audit rounds found factual defects in it, none of which any automated guard could have seen while
 #: it sat outside this tuple.
 #:
-#: ⚠️ MEASURE WHAT THAT BUYS BEFORE TRUSTING IT. 61% of the document's numeric tokens are masked by
-#: `EXCLUSIONS` below, and the masked set is almost exactly the operator-facing part: 255 raw tokens,
-#: 99 survive masking, and the losses are 98 inline-code, 51 fenced-code, 4 semver, 3 ISO date.
-#: Mutation-tested against this baseline — changing `--chunks 1000000` to `100000`, `--dim 384` to
-#: `768`, or the pgvector client floor `0.4.0` to `0.9.0` leaves the gate SILENT, while changing a
-#: number written in PROSE fires it. So this gate catches a drifting prose figure and does NOT catch
-#: a wrong command argument, which is the class an operator actually executes. It is a real
-#: improvement over no coverage and it is not coverage of the runbook's commands.
+#: ⚠️ MEASURE WHAT THAT BUYS BEFORE TRUSTING IT. Roughly **three fifths** of this document's numeric
+#: tokens never reach the gate: `EXCLUSIONS` below masks them, and the masked set is almost exactly
+#: the operator-facing part. Recompute rather than trusting a figure here — an earlier version of
+#: this comment published exact counts and they were stale in the very commit that wrote them,
+#: because that commit also added the six `<!--@ … -->` markers whose bodies the html-comment row
+#: then masks. (A per-row breakdown does not reconcile either: the exclusion patterns overlap, so
+#: summing their hits double-counts.) One line, against the current file:
+#:
+#:     python -c "import sys;sys.path.insert(0,'benchmarks');from pathlib import Path;import
+#:     claim_gate as c;t=Path('docs/ENTERPRISE_RETRIEVAL.md').read_text(encoding='utf-8');
+#:     print(len(c.NUMBER_RE.findall(t)),len(c.NUMBER_RE.findall(c.mask_excluded(t))))"
+#:
+#: What does NOT drift is the SHAPE, and it is the part that matters. Mutation-tested: changing
+#: `--chunks 1000000` to `100000`, `--dim 384` to `768`, or the pgvector client floor `0.4.0` to
+#: `0.9.0` leaves the gate SILENT, while changing a number written in PROSE fires it. So this gate
+#: catches a drifting prose figure and does NOT catch a wrong command argument, which is the class an
+#: operator actually executes. A real improvement over no coverage, and not coverage of the commands.
 #:
 #: ⚠️ AND THE CHURN ARGUMENT BELOW CUTS BOTH WAYS, measured rather than assumed: this document's
 #: unmarked multiset went 79 → 92 → 95 → 99 across four commits dated 2026-08-07, so each of those
