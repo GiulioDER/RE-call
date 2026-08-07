@@ -813,6 +813,31 @@ def _main() -> None:
                 for qid, row in published.items()
                 if int(qid.split("_")[1]) in indices
             }
+        # These flags are about SPENDING, and this arm ignored them: --no-judge was accepted and
+        # the judge ran anyway. A flag whose entire purpose is to avoid cost must never be
+        # silently dropped.
+        if args.no_judge:
+            raise SystemExit(
+                "--no-judge is meaningless with --rejudge-mem0: this arm ONLY judges, scoring "
+                "Mem0's already-published answers. Drop one of the two flags."
+            )
+
+        # The resume guard covered only the RE-call arm. Both arms write `*.partial.jsonl` into
+        # the same --out-dir and BEAM question ids are IDENTICAL across them, so
+        # `--resume out/*.partial.jsonl` — the invocation `_already_done`'s own docstring
+        # recommends — silently absorbed RE-call rows, dropped those questions from `pending`, and
+        # then died on `KeyError: published_score` AFTER the judge budget had been spent.
+        mem0_config = {
+            "arm": "mem0-rejudged",
+            "chat_size": args.chat_size,
+            "judge_model": args.judge_model or args.model,
+            "cutoff": args.cutoff,
+            "source_artifact": str(args.rejudge_mem0),
+            "question_types": args.question_types or "all",
+        }
+        _check_resume_config(args.resume, mem0_config, allow=args.allow_config_change_on_resume)
+        _write_run_config(out_base.with_suffix(".partial.config.jsonl"), mem0_config)
+
         rows, done = _already_done(args.resume)
         pending_published = [(qid, row) for qid, row in published.items() if qid not in done]
         print(

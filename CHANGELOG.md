@@ -9,6 +9,14 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 ## [Unreleased]
 
 ### Added
+- **`FastEmbedEmbedder(providers=...)` and `.session_providers`.** `providers` forwards an ONNX
+  Runtime execution-provider REQUEST to fastembed; it is not a guarantee, because asking for
+  `CUDAExecutionProvider` against a wheel built for a different CUDA major falls back to CPU with
+  only a `RuntimeWarning`. `.session_providers` reports what the live `InferenceSession` actually
+  resolved — never `onnxruntime.get_available_providers()`, which reports what the wheel was
+  compiled with and stays true while the session sits on CPU. The resolved providers are now part
+  of the embedding profile's `dependencies`, so a CPU-built and a CUDA-built vector no longer
+  share a cache key or a calibration binding.
 - **`benchmarks/check_profile_encoder_distinctness.py`, and the finding it exists to record.**
   `bge-small-symmetric-v1` and `bge-small-asymmetric-v1` differ in two registry fields
   (`query_mode`, `passage_mode`) and share every other identity field and one provisioned artifact
