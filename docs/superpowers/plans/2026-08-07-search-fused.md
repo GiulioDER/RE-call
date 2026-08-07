@@ -834,8 +834,12 @@ Replace `raise NotImplementedError("fusion lands in Task 5")` with:
         outer_ms = (time.perf_counter() - started) * 1000.0
 
         started = time.perf_counter()
-        reranker = self._reranker  # bound locally: the refusal above narrows it, mypy keeps it
-        assert reranker is not None
+        # Bound locally so mypy keeps the narrowing from the refusal above. Deliberately NOT an
+        # `assert`: asserts are stripped under `python -O`, which would turn the guaranteed
+        # ValueError into an AttributeError exactly when optimisation is on.
+        reranker = self._reranker
+        if reranker is None:  # pragma: no cover - the refusal above already returned
+            raise ValueError("search_fused requires a reranker")
         hits = reranker.rerank(query, hits)
         rerank_ms = (time.perf_counter() - started) * 1000.0
         hits = hits[:k]
