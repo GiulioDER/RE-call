@@ -16,6 +16,10 @@ from typing import Any
 
 from benchmarks.beam.dataset import Conversation
 from recall.embeddings import embedding_profile_id
+# The same object `research_search` defaults to. Imported so `describe()` reports the policy this
+# arm ACTUALLY runs under rather than a hand-written claim about it: if the harness ever switches
+# to strict, the artifact follows automatically instead of going quietly stale.
+from recall.eval._research_trust import RESEARCH_POLICY
 
 #: Benchmark-only table, isolated from the LOCOMO arm's `bench_locomo_chunks` so a BEAM run cannot
 #: contaminate — or be contaminated by — an accuracy run in flight.
@@ -276,10 +280,20 @@ class BeamRecallSystem:
             "system": self.name,
             "k": self._k,
             "candidate_k": self._candidate_k,
-            # WHICH abstention gate produced these numbers. Recorded because the alternative is an
-            # artifact whose false-abstention rate cannot be interpreted: the same retriever scores
-            # very differently under a starving threshold and a fitted one, and "uncalibrated" is a
-            # fact about the run, not a footnote about the library.
+            # WHICH abstention gate produced these numbers, and whether it could fire at all.
+            #
+            # Recording the threshold alone is not enough, and reporting it alone was actively
+            # misleading. This arm retrieves through `research_search`, which runs
+            # `TrustPolicy.development()`: that mode DEGRADES instead of refusing, so the threshold
+            # never culls a hit. Measured on the 300 scored questions, 54 (18.0%) have a top cosine
+            # below the 0.50 default and NONE was withheld; a 0.30 and a 0.50 arm returned
+            # byte-identical memory counts on all 300. An artifact that said only
+            # "threshold: library default 0.50" would name a control that never operated, and its
+            # false-abstention rate would be read as evidence about a gate rather than about the
+            # answerer — which is where BEAM's abstentions actually come from.
+            #
+            # `enforced` is DERIVED from the policy object rather than written by hand, so it
+            # cannot drift away from the behaviour it describes if the harness switches modes.
             "calibration": (
                 {
                     "source": "explicit",
@@ -289,6 +303,15 @@ class BeamRecallSystem:
                 if self._calibration is not None
                 else {"source": "none", "threshold": "library default 0.50", "certified": False}
             ),
+            "trust_policy": {
+                "mode": RESEARCH_POLICY.mode.value,
+                "enforced": RESEARCH_POLICY.strict,
+                "note": (
+                    "development mode degrades instead of refusing: the abstention threshold "
+                    "above does NOT cull hits, so any abstention in this run came from the "
+                    "answerer emitting its refusal string, not from the trust layer"
+                ),
+            },
             "embedder": {
                 "name": self._embedder_name,
                 "model": embedding_profile_id(self._embedder),
