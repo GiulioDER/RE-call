@@ -160,7 +160,7 @@ nothing in this repository derives it.
 * **Outbound network blocked at the workload boundary.** Runtime model downloads are prohibited and
   startup is proven to complete with every socket entry point blocked, but the package cannot
   enforce the boundary. `ufw` defaulting to `allow (outgoing)` satisfies nothing here.
-* **Disk headroom at least 2.2x the active index size** before any build, since the shadow is built
+* **Disk headroom at least 2.2x <!--@ citation-pending: a policy rule of thumb, not a measurement -- nothing in this repository derives it --> the active index size** before any build, since the shadow is built
   alongside the active generation rather than in place. Measure with
   `pg_indexes_size('<active table>')` against the free bytes on the data directory's mount, not
   against total capacity.
@@ -603,11 +603,11 @@ Measured offline on the provisioned artifact at a four thread budget:
 
 | Measurement | Value |
 |---|---|
-| Query p50 | 4638.83 ms |
-| Query p95 | 5816.34 ms |
-| Passage batch of 20, p50 | 41016.64 ms |
-| Model load | 24558.4 ms |
-| Peak RSS | 1739.47 MB |
+| Query p50 | 4638.83 ms <!--@ citation-pending: measured 2026-08-03 on the VPS2 provisioned artifact at a four-thread budget; the run predates this repository's artifact convention and no committed results/*.json retains it --> |
+| Query p95 | 5816.34 ms <!--@ citation-pending: measured 2026-08-03 on the VPS2 provisioned artifact at a four-thread budget; the run predates this repository's artifact convention and no committed results/*.json retains it --> |
+| Passage batch of 20, p50 | 41016.64 ms <!--@ citation-pending: measured 2026-08-03 on the VPS2 provisioned artifact at a four-thread budget; the run predates this repository's artifact convention and no committed results/*.json retains it --> |
+| Model load | 24558.4 ms <!--@ citation-pending: measured 2026-08-03 on the VPS2 provisioned artifact at a four-thread budget; the run predates this repository's artifact convention and no committed results/*.json retains it --> |
+| Peak RSS | 1739.47 MB <!--@ citation-pending: measured 2026-08-03 on the VPS2 provisioned artifact at a four-thread budget; the run predates this repository's artifact convention and no committed results/*.json retains it --> |
 
 The fast retrieval profile budgets 250 ms and the quality profile 1500 ms. A query p95 of 5.8 seconds is more than three times the quality budget for the embedding step alone, before any store or reranker cost, and a 41 second batch of twenty passages makes bulk indexing impractical on the same hardware.
 
