@@ -53,7 +53,10 @@ class _ScriptedStore(FakeStore):
         return self._rows(self._by_text[text]["splade"][:k])
 
 
-@pytest.mark.parametrize("index", range(4))
+_FIXTURE_CASE_COUNT = len(json.loads(FIXTURE.read_text(encoding="utf-8"))["cases"])
+
+
+@pytest.mark.parametrize("index", range(_FIXTURE_CASE_COUNT))
 def test_serving_fusion_reproduces_the_benchmark_arm(index: int) -> None:
     data = json.loads(FIXTURE.read_text(encoding="utf-8"))
     case = data["cases"][index]
@@ -76,4 +79,13 @@ def test_serving_fusion_reproduces_the_benchmark_arm(index: int) -> None:
 
     result = retriever.search_fused(query, [history_turn], k=100)
 
-    assert [h.chunk.id for h in result.hits] == case["expected"][: len(result.hits)]
+    # Full-length comparison, not a prefix: slicing `expected` to `len(result.hits)` would let a
+    # regression that quietly drops trailing hits pass on a matching prefix, which is precisely
+    # the drift this gate exists to catch.
+    actual = [h.chunk.id for h in result.hits]
+    assert len(actual) == len(case["expected"]), (
+        f"search_fused returned {len(actual)} hits, the benchmark arm produced "
+        f"{len(case['expected'])}; a shortfall here is a regression even where the shared "
+        f"prefix still matches"
+    )
+    assert actual == case["expected"]
