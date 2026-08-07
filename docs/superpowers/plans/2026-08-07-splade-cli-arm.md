@@ -19,6 +19,7 @@
 - **`torch` and `transformers` are imported inside functions, never at module scope** in `recall/sparse.py`, so a lexical-only install never needs the `sparse` extra. Tests use a hand-written deterministic encoder, not a checkpoint: no 500 MB download, no network.
 - **`SPARSE_TABLE = "recall_sparse_v1"`**, `SPARSE_DIM = 30522`, `SPARSE_MAX_NONZERO = 1000`, all in `recall/store.py`.
 - **No dash as punctuation** in any prose written to this repository by this plan (comments, docstrings, markdown). Hyphens inside identifiers and inside verbatim quotations are fine.
+- **Test fakes are per-file, by this repo's convention.** `KeywordSparseEncoder` and `StubEmbedder` are written out in each test file that needs them rather than shared. `tests/` has no helper module beyond `conftest.py`, and `tests/test_learned_sparse_retriever.py` and `tests/test_promotion_context_profiles.py` already each carry their own copies. Decided by the user on 2026-08-07, weighed against extracting a shared helper.
 - **Every new guard is shown failing before it is shown passing.** A test written after the change and never run red is a hypothesis, not a guard.
 
 ---
@@ -99,13 +100,7 @@ from __future__ import annotations
 
 import pytest
 
-from recall.sparse import (
-    SparseIndexResult,
-    SparseProfile,
-    assert_sparse_coverage,
-    backfill_learned_sparse,
-    store_sparse_vectors,
-)
+from recall.sparse import SparseIndexResult, SparseProfile, store_sparse_vectors
 from recall.types import Chunk
 from tests.conftest import requires_db
 
@@ -307,7 +302,9 @@ def store_sparse_vectors(
 cd /c/Users/gde00/Documents/recall-spladecli && .venv/Scripts/python.exe -m pytest tests/test_sparse_indexing.py -v -k "store_sparse_vectors or term_free or progress"
 ```
 
-Expected: 3 passed. (The other tests in the file still fail on import until Tasks 2 and 3 land; if collection blocks, comment out the `assert_sparse_coverage` and `backfill_learned_sparse` imports for this step and restore them in Task 2.)
+Expected: 3 passed.
+
+The import line above names only what Task 1 delivers. Tasks 2 and 3 each **widen** it as they add their own tests. Do not import a name before the task that creates it: a file that cannot be collected fails every test in it, including the ones that were passing, and no commit on this branch should contain a commented-out import as a workaround.
 
 - [ ] **Step 5: Commit**
 
@@ -390,7 +387,7 @@ def test_coverage_names_the_empty_chunks_as_the_explanation(make_store) -> None:
         assert_sparse_coverage(store, PROFILE_ID, empty_ids=result.empty_ids)
 ```
 
-Add `SparseCoverageError` to the imports at the top of the file.
+Widen the import at the top of the file to `from recall.sparse import SparseCoverageError, SparseIndexResult, SparseProfile, assert_sparse_coverage, store_sparse_vectors`.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -475,7 +472,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `tests/test_sparse_indexing.py`:
+Widen the import at the top of `tests/test_sparse_indexing.py` to add `backfill_learned_sparse`, then append:
 
 ```python
 @requires_db
