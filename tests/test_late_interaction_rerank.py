@@ -1,7 +1,16 @@
 import numpy as np
 import pytest
 
-from recall.rerank import maxsim
+from recall.rerank import (
+    DEFAULT_LATE_INTERACTION_MODEL,
+    LATE_INTERACTION_MODELS,
+    PERMISSIVE_LICENCES,
+    LateInteractionReranker,
+    Reranker,
+    late_interaction_licence,
+    maxsim,
+)
+from recall.types import Chunk, ScoredChunk
 
 
 def test_maxsim_matches_hand_computed_value():
@@ -39,14 +48,6 @@ def test_maxsim_refuses_empty_query():
 def test_maxsim_refuses_dimension_mismatch():
     with pytest.raises(ValueError, match="dimension"):
         maxsim(np.array([[1.0, 0.0]]), np.array([[1.0, 0.0, 0.0]]))
-
-
-from recall.rerank import (
-    DEFAULT_LATE_INTERACTION_MODEL,
-    LATE_INTERACTION_MODELS,
-    PERMISSIVE_LICENCES,
-    late_interaction_licence,
-)
 
 
 def test_mit_is_permissive():
@@ -88,8 +89,6 @@ def test_unknown_checkpoint_refused_even_with_optin():
         late_interaction_licence("some/unrecorded-colbert", accept_noncommercial_license=True)
 
 
-from recall.rerank import LateInteractionReranker, Reranker
-from recall.types import Chunk, ScoredChunk
 
 
 class _FakeEncoder:

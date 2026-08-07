@@ -231,7 +231,7 @@ def cmd_score(args: argparse.Namespace) -> int:
 
     pairs = load_pairs_inverted(out / "pairs.jsonl")
 
-    def _docs():
+    def _docs() -> Iterator[tuple[str, str]]:
         with (out / "docs.jsonl").open(encoding="utf-8") as fh:
             for line in fh:
                 if line.strip():

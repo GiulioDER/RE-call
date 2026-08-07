@@ -22,7 +22,8 @@ Every task's requirements implicitly include this section.
 - **Use `query_embed` for queries and `passage_embed` for documents.** Never `embed` for both. ColBERT prepends distinct `[Q]`/`[D]` markers and pads queries with `[MASK]`; using one method for both sides silently produces wrong scores that still look like numbers.
 - **Do NOT score on MTRAG-UN.** Sealed held-out set. `--split dev` only.
 - **Statistics reuse `benchmarks/mtrag/analyse_contrasts.py` unchanged.** Paired bootstrap n>=2000, sign-flip permutation n=5000, Holm at 0.05.
-- **Line length 100**, matching the repo. Run `pyflakes` before each commit (`ruff` does not launch on this machine; CI gates lint).
+- **Line length 100**, matching the repo. Run **`ruff check .`** before each commit, exactly as CI does, plus **`mypy`** (bare, it reads `pyproject.toml`). `pyflakes` alone is NOT sufficient and this plan proved it: ruff and mypy both went red on a branch pyflakes called clean. Ruff DOES launch on this machine; the note claiming otherwise was stale.
+- ⚠️ **This plan's own shape generates `E402`, and every task below inherits the hazard.** Tasks 2, 3, 5, 6 and 7 each say "append to the existing test file", and appending an import block after the first test function is a module-level import not at top of file. Ruff rejects it, and CI's `test` job dies at the **lint step before pytest ever runs**, so a green local pytest tells you nothing about whether CI will pass. When a task says "append": append the TESTS at the bottom, but MERGE the imports into the block at the top.
 
 ## Deliberate deviation from the spec, and why it is stronger
 
