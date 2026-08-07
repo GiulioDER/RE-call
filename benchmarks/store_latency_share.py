@@ -718,8 +718,12 @@ def main() -> int:
             inspect_sparse_device, resolve_sparse_device,
         )
 
+        # One report serves both the decision and the provenance. Calling `inspect_sparse_device`
+        # a second time inside `resolve_sparse_device` would be a SEPARATE live torch.cuda query,
+        # and near a VRAM threshold the two reads are not guaranteed to agree; the artifact would
+        # then describe a decision that was not the one actually made.
         sparse_device_report = inspect_sparse_device(args.sparse_device)
-        device = resolve_sparse_device(args.sparse_device)
+        device = resolve_sparse_device(args.sparse_device, report=sparse_device_report)
         print(f"learned sparse device: {device} (requested {args.sparse_device})")
         if sparse_device_report.refusal:
             print(f"  GPU not used: {sparse_device_report.refusal}")
