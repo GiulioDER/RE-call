@@ -152,3 +152,53 @@ Written before scoring.
 The most consequential outcome is **C1 null**: it would mean the predecessor run's headline is a
 coverage number that a reader never sees, and the next lever is ranking rather than more recall.
 I am recording that now so the interpretation is not chosen after the fact.
+
+---
+
+# RESULTS (appended 2026-08-07, after the run)
+
+Nothing above this line was edited after scores were observed. Full write-up:
+`/var/lib/recall-benchmarks/2026-08-07-mtrag-rerank-conversion/NOTE.md`.
+
+**Verdict: DOES_NOT_CONVERT**, on the deciding model.
+
+| contrast | MiniLM (deciding) | BGE-v2-m3 (secondary) |
+|---|---|---|
+| **C1** nested3 − last | +0.0054, p=0.057, Holm ❌ | +0.009998, p=0.001, Holm ✅ |
+| **C2** nogold − last | **+0.0084**, p=0.0002, Holm ✅ | **+0.0117**, p=0.0002, Holm ✅ |
+| **C3** nested3 − nogold | −0.0030, ns | −0.0017, ns |
+| verdict | `DOES_NOT_CONVERT` | `CONVERTS_BUT_BELOW_BAR` |
+
+A +0.1236 R@100 gain converts to +0.005 to +0.010 nDCG@5: 4% to 8% of the coverage reaches the
+top 5.
+
+⚠️ BGE's C1 is **0.009998** against the **0.010** bar, missing by two millionths. The rule is `>=`
+so the verdict stands, but the CI is [+0.0045, +0.0158] and the data cannot separate "just below"
+from "just above". The estimate and the bar are indistinguishable.
+
+The two models disagreeing on C1 is the case this document anticipated: the shipped model decides,
+and the disagreement is itself the finding.
+
+**Both models agree on the two findings that matter.** `mq_nested2_nogold` (last+full, no gold, no
+LLM) has the best reranked nDCG@5 of every arm under both rerankers while keeping +0.0842 R@100,
+having been raw-blocked by a −0.0447 regression that the cross-encoder fully repairs. And C3 is
+null: the gold rewrite, worth +0.0529 nDCG@5 raw, contributes nothing once reranked.
+
+**The equal-width design was vindicated by its own secondary.** Whole-pool, reranking DESTROYS
+coverage in proportion to pool depth: `mq_last` (200) gains +0.0226 R@100, `mq_nested2_nogold`
+(383) loses 0.0199, `mq_nested3` (547) loses **0.0513**. A naive whole-pool comparison would have
+penalised the widest arm hardest and reported it as an arm effect; every contrast collapses to
+non-significant there.
+
+**Independent reproduction.** The whole-pool control reproduces the archived reranked baseline to
+four figures on different hardware through a different code path: MiniLM 0.7603 / 0.3769, BGE
+0.7599 / 0.3931. That also resolves a discrepancy the predecessor NOTE flagged as irreconcilable:
+0.7599 and 0.7603 are the same quantity under two different rerankers.
+
+Predictions: 1 of 3 correct. C1 was predicted small and possibly null (✅). C2 was predicted to
+stay negative (❌ it flipped positive and significant) and C3 positive (❌ null). Both misses ran
+the same way: I underestimated how much a cross-encoder repairs a noisy query's ranking.
+
+⚠️ The BGE validation gate had not completed at write-up. MiniLM's passed (max score delta
+1.34e-05 against a 1e-3 tolerance) and MiniLM is the deciding model, so the primary verdict does
+not depend on it.
