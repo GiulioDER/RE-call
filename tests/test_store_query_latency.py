@@ -9,6 +9,7 @@ not evidence of a fast store.
 """
 from __future__ import annotations
 
+import ast
 import time
 
 import pytest
@@ -22,6 +23,24 @@ DIM = 8
 
 def _vec(seed: float = 0.1) -> list[float]:
     return [seed] * DIM
+
+
+def _on_store_metric(call: ast.Call) -> bool:
+    """Does this `.timer(...)` call open a timer on `STORE_QUERY_METRIC`?
+
+    `Metrics.timer(self, name, **labels)`, so the metric can arrive positionally OR by keyword.
+    Matching only positional args would skip `timer(name=STORE_QUERY_METRIC, ...)` in silence,
+    which is the failure both source-parsing guards below exist to prevent, one level along.
+
+    Shared by both of them deliberately: two copies of this predicate is the same hand-maintained
+    duplication that put `STORE_QUERY_LEGS` in `recall/store.py` in the first place.
+    """
+    return any(
+        isinstance(a, ast.Name) and a.id == "STORE_QUERY_METRIC" for a in call.args
+    ) or any(
+        kw.arg == "name" and isinstance(kw.value, ast.Name) and kw.value.id == "STORE_QUERY_METRIC"
+        for kw in call.keywords
+    )
 
 
 def _chunks(n: int) -> list[Chunk]:
@@ -208,7 +227,6 @@ def test_timed_public_methods_matches_the_actual_timer_call_sites():
     exactly how this defect recurred twice. So derive the set from the source — every method whose
     body opens `METRICS.timer(STORE_QUERY_METRIC, ...)` — and require the declaration to match it.
     """
-    import ast
     import inspect
 
     import recall.store as store_mod
@@ -216,20 +234,77 @@ def test_timed_public_methods_matches_the_actual_timer_call_sites():
     tree = ast.parse(inspect.getsource(store_mod))
     timed: set[str] = set()
     for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
-        for fn in (n for n in cls.body if isinstance(n, ast.FunctionDef)):
+        # `AsyncFunctionDef` too: it is a sibling node type, not a subclass, so matching only
+        # `FunctionDef` would let an async timed method sit outside the declaration unseen.
+        for fn in (n for n in cls.body if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)):
             for call in (n for n in ast.walk(fn) if isinstance(n, ast.Call)):
                 func = call.func
                 if not (isinstance(func, ast.Attribute) and func.attr == "timer"):
                     continue
-                if any(
-                    isinstance(a, ast.Name) and a.id == "STORE_QUERY_METRIC" for a in call.args
-                ):
+                if _on_store_metric(call):
                     timed.add(fn.name)
 
     assert timed, "found no METRICS.timer(STORE_QUERY_METRIC, ...) call sites; the parse is wrong"
     assert timed == set(store_mod.TIMED_PUBLIC_METHODS), (
         f"TIMED_PUBLIC_METHODS is {sorted(store_mod.TIMED_PUBLIC_METHODS)} but the timers are "
         f"actually on {sorted(timed)}. Update the tuple: the subclass guard is only as wide as it."
+    )
+
+
+def test_store_query_legs_matches_the_actual_timer_labels():
+    """`STORE_QUERY_LEGS` must equal the `leg=` labels the code actually emits.
+
+    Callers that must drain EVERY leg — `recall/eval/harness.py` between ablation configurations,
+    `benchmarks/store_latency_share.py` between probes — used to hand-maintain their own tuple of
+    legs. Both drifted when the SPLADE leg was added, and neither could fail: an undrained series
+    does not raise, it silently accumulates across configurations and contaminates the next one's
+    mean. That is the same defect as `TIMED_PUBLIC_METHODS` drifting, one level along, so it gets
+    the same treatment: derive the truth from the source and require the declaration to match.
+    """
+    import inspect
+
+    import recall.store as store_mod
+
+    tree = ast.parse(inspect.getsource(store_mod))
+    labels: set[str] = set()
+    for call in (n for n in ast.walk(tree) if isinstance(n, ast.Call)):
+        func = call.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "timer"):
+            continue
+        if not _on_store_metric(call):
+            continue
+        # SKIPPING a label this walk cannot read would be the same defect one level further
+        # along: the guard would stay green while a real leg went undeclared and undrained. So
+        # every form that cannot be resolved fails HERE, naming the line, rather than being
+        # quietly dropped from the comparison.
+        assert not any(kw.arg is None for kw in call.keywords), (
+            f"the timer at line {call.lineno} passes **kwargs, so its leg label is invisible to "
+            "this guard. Pass leg= explicitly, or STORE_QUERY_LEGS cannot be checked."
+        )
+        legs = [kw.value for kw in call.keywords if kw.arg == "leg"]
+        assert len(legs) == 1, (
+            f"the timer at line {call.lineno} has {len(legs)} leg= arguments, expected exactly 1"
+        )
+        leg = legs[0]
+        if isinstance(leg, ast.Constant):
+            labels.add(leg.value)
+        elif isinstance(leg, ast.Name):
+            resolved = getattr(store_mod, leg.id, None)
+            assert isinstance(resolved, str), (
+                f"leg={leg.id} at line {leg.lineno} is not a module-level string constant, so "
+                "this guard cannot resolve it. Make it one, or STORE_QUERY_LEGS goes unchecked."
+            )
+            labels.add(resolved)
+        else:
+            raise AssertionError(
+                f"leg= at line {leg.lineno} is a {type(leg).__name__}, which this guard cannot "
+                "resolve. Use a module-level constant, or widen the guard to read this form."
+            )
+
+    assert labels, "found no leg= labels on STORE_QUERY_METRIC timers; the parse is wrong"
+    assert labels == set(store_mod.STORE_QUERY_LEGS), (
+        f"STORE_QUERY_LEGS is {sorted(store_mod.STORE_QUERY_LEGS)} but the timers actually emit "
+        f"{sorted(labels)}. A drain that misses a leg leaks it into the next configuration."
     )
 
 

@@ -188,3 +188,44 @@ The committed artifacts are records of specific configurations. **Do not point `
 the harness docstrings deliberately no longer suggest a path that would overwrite a retained record.
 Write new runs to a new filename, and if the run is meant to replace a published table, stamp its
 `_provenance` and update the superseded row here in the same change.
+
+## `results/promotion/generation-parity.json`
+
+**What it measured:** that a context mode changes the text EMBEDDED and never the raw chunk content
+or raw content hash STORED. Four generations built over the PEPs corpus (746 sources, 21,924 chunks
+each) under `bge-small-symmetric-v1` and the three `bge-small-context-*-v1` profiles, compared
+pairwise against the baseline with the shipped `recall.migration.validate_generation_parity`.
+
+Result: parity holds on all three, 0 missing sources, 0 extra, 0 hash mismatches, equal chunk
+counts, 746/746 coverage, 0 degenerate hashes, and a positive control that fired on exactly one
+changed file.
+
+⚠️ **These are NOT the 2026-08-06 promotion campaign's own generations.** That harness indexes into
+a `promo_<uuid8>` table and drops it in a `finally`, so its generations no longer exist. This is a
+rebuild over the same corpus with the same embedder and pinned artifact tree, and the file says so
+in its `reconstruction_note`.
+
+⚠️ **Its `_provenance` block was STAMPED AFTER THE FACT, and the block says so.** This artifact was
+produced before `benchmarks/check_generation_parity.py` emitted one. Rather than leave it outside
+the convention, the block was added by hand from the run's own driver log and the versions installed
+on the host that ran it. It carries `stamped_after_the_fact: true`, `measured_at` (the run) kept
+separate from `provenance_stamped_at` (the edit), and the digest of the archived original.
+
+**The block is the only difference, and that was ENFORCED rather than asserted.** The stamping tool
+refused to write until a round trip through `json.dumps` reproduced the file byte for byte, so
+re-serialisation could not smuggle in a change, then compared all nine pre-existing keys before and
+after. `git diff` records **24 insertions, 0 deletions**. (Its first version was refused by its own
+guard over a single trailing newline, which is the guard working on the tool rather than on the
+artifact.)
+
+The archive is the run record and was deliberately **not** modified, so the two copies differ by
+exactly this key:
+
+| copy | sha256 |
+|---|---|
+| archived original, covered by that directory's `MANIFEST.sha256` | `073628143b35299e…a2b50147` |
+| this committed copy, with the stamp | `d2ee470e5da874b5…c84d7e3e` |
+
+Full run record: `/var/lib/recall-benchmarks/2026-08-06-context-mode-generation-parity/`.
+⚠️ Regenerating a natively-stamped artifact now needs a **full four-arm re-index**, not a compare
+re-run: the generations were dropped once this work merged.

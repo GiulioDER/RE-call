@@ -4,6 +4,12 @@ on:
   push:
     branches: [master]
   pull_request:
+  # Manual trigger. Added 2026-08-06 during a GitHub Actions outage in which webhook delivery was
+  # throttled to ~15%: three merges landed on master with no run created for any of them, and
+  # there was no way to ASK for one. A dropped push event is gone -- it is never replayed -- so
+  # without this the only route to a verdict on master is another push, which is a poor reason to
+  # commit something. `gh workflow run CI --ref master` now works.
+  workflow_dispatch:
 
 jobs:
   schema-migrations:

@@ -229,6 +229,14 @@ module = [
     "tokenizers.*",
     "voyageai.*",
     "sentence_transformers.*",
+    # `sparse` extra. `recall/sparse.py` imports `transformers` inside the loader, the same lazy
+    # guard as every entry here — but the entry itself was never added. The SPLADE merge (d12ebf0)
+    # landed while the `typecheck` job was CANCELLED rather than run, so nothing reported it, and
+    # the follow-up that fixed the other three breakages recorded "mypy clean" from a venv where
+    # the extra happened to be installed. That is precisely the dependence this block's
+    # `follow_imports = skip` exists to remove: a gate whose verdict changes with the local
+    # install is advisory, and a cancelled job must not read like a passing one.
+    "transformers.*",
     # `finetune` extra. `benchmarks/rerank_finetune.py` imports torch inside main() only, so the
     # module imports and type-checks without it — the same guard as every entry above.
     "torch.*",
@@ -252,6 +260,11 @@ module = [
     # submitter-side adapters, which import it. Same shape as every entry above: the module must
     # type-check without the thing it optionally talks to.
     "membench.*",
+    # benchmarks/mtrag/multiquery.py is a benchmark module carrying no py.typed marker, and it is
+    # imported by `deployable_fusion_weight` so the follow-on arm reuses its frozen fusion rather
+    # than restating it. Same shape as every entry above: the importing module must type-check
+    # whether or not the imported one is present, which also keeps the two mergeable in any order.
+    "benchmarks.mtrag.multiquery",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
