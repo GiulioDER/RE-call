@@ -291,7 +291,19 @@ cited for anything; the only values taken off it are checksums, counts, sizes an
 3. **`readiness` still only evaluates the ACTIVE generation**, so a shadow with a missing per-table
    ledger is invisible until it is promoted. Unchanged from the entry below, and still worth
    deciding.
-4. **The audit ran, and the trend still has not converged.** The entry below concluded after four
+4. **The evidence-boundary performance backlog, carried from 2026-08-05 and still open.** ⚠️ An
+   earlier draft of *this* list dropped it, which is how a carried item dies: not by being closed
+   but by falling out of one handoff. The five that remain, in that entry's own order:
+   `render_evidence_prompt` is `asdict`-dominated (12.4 to 14.6x slower than an explicit dict, on a
+   per-request path); `EvidenceResult` ships every evidence byte twice, so dropping `items[].text`
+   would save 32 to 36% but is a design decision about what `items[]` is for; the budget loop is
+   quadratic and inert only because no shipped caller sets `max_tokens`; there is no memoisation
+   between the two retrieval tools; and assembly exceptions are invisible to the retrieval metrics
+   on both tools. ✅ The sixth item on that list, `recall_evidence` having no test of its
+   authorization scope or rate-limit debit, is **CLOSED** — `tests/test_mcp_tool_authorization.py`
+   now covers it with a parametrised case, a wrong-scope refusal and a coverage guard, 43 passed.
+   I verified that by running it rather than by reading the entry.
+5. **The audit ran, and the trend still has not converged.** The entry below concluded after four
    rounds that dense cross-referential prose about code is a medium this process does not converge
    in (41 → 9 → 6 → 12). This session's diff went through the tiered CCA pipeline at DEEP and came
    back with **27 raw findings across six auditors**, and the important thing about them is *where*
