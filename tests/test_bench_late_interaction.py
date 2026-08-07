@@ -7,7 +7,6 @@ from benchmarks.mtrag.late_interaction import (
     LATE_ARMS,
     LateArm,
     _resolve_arm,
-    _score_delta,
     arm_record,
     assert_complete,
     holm_family,
@@ -15,6 +14,7 @@ from benchmarks.mtrag.late_interaction import (
     score_stream,
     validate_sample,
 )
+from benchmarks.mtrag.rerank_offload import score_delta
 from recall.rerank import LateInteractionReranker
 
 
@@ -340,14 +340,25 @@ def test_score_delta_treats_tied_infinities_as_zero_rather_than_nan():
     """`-inf - -inf` is NaN in plain float arithmetic, and NaN silently corrupts `max()`: every
     comparison against it is False. Two zero-token documents (or the same one scored both ways)
     agreeing at `-inf` is agreement, not an undefined delta."""
-    delta = _score_delta(float("-inf"), float("-inf"))
+    delta = score_delta(float("-inf"), float("-inf"))
     assert delta == 0.0
     assert delta == delta  # not NaN, which would fail this
 
 
 def test_score_delta_computes_the_absolute_difference_otherwise():
-    assert _score_delta(1.0, 0.6) == pytest.approx(0.4)
-    assert _score_delta(float("-inf"), 0.6) == float("inf")
+    assert score_delta(1.0, 0.6) == pytest.approx(0.4)
+    assert score_delta(float("-inf"), 0.6) == float("inf")
+
+
+def test_score_delta_refuses_a_nan_input_rather_than_silently_propagating_it():
+    """NaN is not equal to anything, including itself, so it would slip past the equality
+    short-circuit and reproduce the exact `max()` corruption this function exists to prevent. A
+    corrupted scores file (bare `NaN` is valid JSON) or a NaN-valued embedding must fail loudly
+    here rather than silently zero out or hide a real mismatch."""
+    with pytest.raises(ValueError, match="NaN score"):
+        score_delta(float("nan"), 0.6)
+    with pytest.raises(ValueError, match="NaN score"):
+        score_delta(0.6, float("nan"))
 
 
 def test_validate_does_not_mask_a_real_mismatch_behind_a_tied_unscoreable_candidate():
