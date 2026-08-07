@@ -959,6 +959,16 @@ class PgVectorStore:
                 # (`chunk_table`), not a relation, so there is no foreign key to fire. Without
                 # this DELETE every throwaway store leaves a uuid-named row set addressable by a
                 # name that no longer resolves, and nothing ever looks for them again.
+                #
+                # ⚠️ This DELETE is tenant-scoped and the SQL does not say so. The sidecar
+                # carries FORCE ROW LEVEL SECURITY with a tenant isolation policy (migration
+                # 0012), so the database applies the current tenant whether or not the statement
+                # asks. `DROP TABLE` below is DDL and is NOT scoped that way. So for a table
+                # shared across tenants, this removes the table for everyone and the sidecar
+                # rows for one, which is the very orphan this DELETE exists to prevent. Latent
+                # today because no caller drops a shared multi-tenant table; written down
+                # because the next reader would otherwise take the absent tenant filter as
+                # evidence the cleanup is global, and it is not.
                 sidecar = conn.execute(f"SELECT to_regclass('{SPARSE_TABLE}')").fetchone()
                 if sidecar and sidecar[0]:
                     conn.execute(
