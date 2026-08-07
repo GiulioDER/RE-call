@@ -743,7 +743,11 @@ def main() -> None:
     # not be able to drift apart when a leg is added.
     leg_w = (MAIN_W - (len(LEGS) - 1) * 14) / len(LEGS)
     leg_bodies = [wrap(note, leg_w - 2 * 14, 11.0) for _, _, note in LEGS]
-    legs_h = 20 + 16 + 8 + max((len(b) for b in leg_bodies), default=1) * 15.2 + 16
+    # No `default=` on this max. An empty LEGS already dies one line up on the divisor, so a
+    # default here would be a guard whose failure path is shadowed by an earlier crash: it reads
+    # as protection and delivers none. A diagram with no retrieval legs is not a thing to render
+    # gracefully, so the ZeroDivisionError is the honest outcome.
+    legs_h = 20 + 16 + 8 + max(len(b) for b in leg_bodies) * 15.2 + 16
     c.text(MAIN_X, y - 12, "9 · Retrieval legs — run in parallel", size=12.4, fill=INK_2, weight="700")
     for i, ((name, kind, _), lines) in enumerate(zip(LEGS, leg_bodies)):
         lx = MAIN_X + i * (leg_w + 14)
