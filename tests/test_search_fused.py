@@ -53,3 +53,14 @@ def test_an_over_budget_history_is_refused_and_names_both_lengths() -> None:
 def test_k_below_one_is_refused() -> None:
     with pytest.raises(ValueError, match="k must be"):
         _retriever(_StubReranker()).search_fused("q", ["earlier"], k=0)
+
+
+def test_a_bare_string_history_is_refused_rather_than_iterated_character_by_character() -> None:
+    """A bare `str` satisfies `Sequence[str]` at runtime, so the type annotation alone does not
+
+    stop a caller from passing one turn as a string instead of a one-element list. Without a
+    guard, `build_history_query` would iterate it character by character and join each character
+    with a newline, and retrieval would silently proceed on that garbage.
+    """
+    with pytest.raises(ValueError, match="list|sequence"):
+        _retriever(_StubReranker()).search_fused("q", "an earlier turn")
