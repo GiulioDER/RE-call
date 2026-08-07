@@ -152,3 +152,76 @@ def test_dev_queries_reach_the_retriever_without_their_speaker_prefix() -> None:
     task = {"task_id": "q1", "_domain": "clapnq", "_text": "|user|: How many teams are in the NFL?"}
 
     assert run.query_text(task, "last") == "How many teams are in the NFL?"
+
+
+def _fake_release(root, dev_queries: int, test_queries: int) -> None:
+    """A minimal MTRAG root carrying BOTH layouts, with deliberately different sizes.
+
+    The sizes differ so a validation that reads the wrong split cannot accidentally agree with
+    one that reads the right one. Equal fixtures are how a split bug hides.
+    """
+    import json as _json
+    import zipfile
+
+    for domain in run.DOMAINS:
+        corpus = root / "corpora" / "passage_level" / f"{domain}.jsonl.zip"
+        corpus.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(corpus, "w") as zf:
+            zf.writestr(f"{domain}.jsonl", "")
+
+        dev_dir = root / "mtrag-human" / "retrieval_tasks" / domain
+        (dev_dir / "qrels").mkdir(parents=True, exist_ok=True)
+        (dev_dir / f"{domain}_lastturn.jsonl").write_text(
+            "".join(
+                _json.dumps({"_id": f"{domain}-dev-{i}", "text": "q"}) + "\n"
+                for i in range(dev_queries)
+            ),
+            encoding="utf-8",
+        )
+        (dev_dir / "qrels" / "dev.tsv").write_text(
+            "query\tcorpus\tscore\n"
+            + "".join(f"{domain}-dev-{i}\tc{i}\t1\n" for i in range(dev_queries)),
+            encoding="utf-8",
+        )
+
+    sealed_qrels = root / "mtragun-human" / "retrieval_tasks" / "qrels"
+    sealed_qrels.mkdir(parents=True, exist_ok=True)
+    sealed_tasks = root / "mtragun-human" / "generation_tasks"
+    sealed_tasks.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for domain in run.DOMAINS:
+        (sealed_qrels / f"{domain}.tsv").write_text(
+            "query\tcorpus\tscore\n"
+            + "".join(f"{domain}-test-{i}\tc{i}\t1\n" for i in range(test_queries)),
+            encoding="utf-8",
+        )
+        rows += [
+            _json.dumps({"task_id": f"{domain}-test-{i}", "Collection": domain})
+            for i in range(test_queries)
+        ]
+    (sealed_tasks / "reference.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def test_validation_describes_the_split_it_was_asked_for(tmp_path) -> None:
+    """The manifest's `release` block must describe the split the run actually scores.
+
+    `main()` writes `{"split": args.split, "release": validate_release(...)}` into one manifest.
+    If validation ignores the split, those two fields contradict each other inside a single
+    object: the run says `dev` and the provenance describes the SEALED set, down to the sha256 of
+    files the run never opened. The scores would be right and the record of what they are would
+    be wrong, which is the harder error to catch later.
+
+    The pre-existing guard asserts `args.split == "dev"`, the argparse DEFAULT. The flag was never
+    the problem; nothing downstream read it.
+    """
+    _fake_release(tmp_path, dev_queries=7, test_queries=3)
+
+    dev = run.validate_release(tmp_path, "dev")
+    test = run.validate_release(tmp_path, "test")
+
+    assert dev["scored_query_count"] == 7 * len(run.DOMAINS)
+    assert test["scored_query_count"] == 3 * len(run.DOMAINS)
+    assert dev["split"] == "dev"
+    assert test["split"] == "test"
+    # The hashes must come from different files, or the block is describing one split for both.
+    assert dev["input_sha256"] != test["input_sha256"]

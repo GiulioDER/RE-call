@@ -579,18 +579,39 @@ def run_arm(
     return summary
 
 
-def validate_release(root: Path) -> dict[str, Any]:
+def validate_release(
+    root: Path, split: str = "test", query_mode: str = "last"
+) -> dict[str, Any]:
+    """Describe and hash the release files for THIS split.
+
+    ⚠️ This used to take only `root`, so every path helper it called fell back to its `"test"`
+    default and it read the SEALED MTRAG-UN files no matter what `--split` said. `main()` writes
+    `{"split": args.split, "release": validate_release(...)}` into one manifest, so a dev run
+    emitted a manifest that said `dev` beside a provenance block describing the held-out set,
+    down to the sha256 of files the run never opened. The SCORES were right the whole time
+    (`run_arm` passes `split` to `load_qrels`); what was wrong was the record of what they were,
+    which is the half nobody re-derives later.
+
+    The pre-existing guard asserted `args.split == "dev"`, the argparse default. The flag was
+    never the problem. Nothing downstream read it.
+    """
+    if split == "dev":
+        task_files = {
+            f"tasks_{domain}": dev_tasks_path(root, domain, query_mode) for domain in DOMAINS
+        }
+    else:
+        task_files = {"tasks": tasks_path(root)}
     missing = [
         path for path in
-        [tasks_path(root), *(corpus_zip(root, d) for d in DOMAINS),
-         *(qrels_path(root, d) for d in DOMAINS)]
+        [*task_files.values(), *(corpus_zip(root, d) for d in DOMAINS),
+         *(qrels_path(root, d, split) for d in DOMAINS)]
         if not path.exists()
     ]
     if missing:
         raise FileNotFoundError(f"missing MTRAG release files: {missing}")
-    tasks = load_tasks(root)
+    tasks = load_tasks(root, split, query_mode)
     task_ids = {task["task_id"] for task in tasks}
-    qrels = load_qrels(root)
+    qrels = load_qrels(root, split)
     qrel_ids = {query_id for rows in qrels.values() for query_id in rows}
     unknown = qrel_ids - task_ids
     if unknown:
@@ -599,14 +620,19 @@ def validate_release(root: Path) -> dict[str, Any]:
     for task in tasks:
         by_domain[task_domain(task)] += 1
     return {
+        "split": split,
+        "query_mode_validated": query_mode,
         "task_count": len(tasks),
         "tasks_by_domain": by_domain,
         "scored_query_count": len(qrel_ids),
         "unscored_query_count": len(task_ids - qrel_ids),
         "qrels_by_domain": {domain: len(rows) for domain, rows in qrels.items()},
         "input_sha256": {
-            "tasks": sha256_file(tasks_path(root)),
-            **{f"qrels_{domain}": sha256_file(qrels_path(root, domain)) for domain in DOMAINS},
+            **{name: sha256_file(path) for name, path in task_files.items()},
+            **{
+                f"qrels_{domain}": sha256_file(qrels_path(root, domain, split))
+                for domain in DOMAINS
+            },
             **{f"corpus_{domain}": sha256_file(corpus_zip(root, domain)) for domain in DOMAINS},
         },
     }
@@ -647,7 +673,7 @@ def main(argv: list[str] | None = None) -> int:
     root = args.mtrag_root.resolve()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    release = validate_release(root)
+    release = validate_release(root, args.split)
     manifest = {
         "benchmark": "MTRAG-UN / MTRAGEval Task A (four-domain public release)",
         "started_at": utc_now(),
