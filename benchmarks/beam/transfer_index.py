@@ -60,6 +60,7 @@ import argparse
 import gzip
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import psycopg
@@ -188,6 +189,13 @@ def checksum(dsn: str, table: str, tenants: list[str] | None = None) -> dict[str
     """
     table = _validated_table(table)
     with psycopg.connect(dsn) as conn:
+        # Defence in depth, and NOT a fix for a live defect — an earlier version of this comment
+        # claimed it was. The digest covers `tenant_id`, `id` and `embedding` only: the first two
+        # are TEXT, and `_pin_copy_gucs`'s own docstring records that pgvector's `vector_out`
+        # ignores `extra_float_digits`. None of these GUCs can move any of them, and the one thing
+        # that WAS host-dependent — ordering — is handled by `COLLATE "C"`, which is not a GUC.
+        # The pin earns its place only if a future column enters the digest.
+        _pin_copy_gucs(conn)
         key = _tenant_key(conn, table)
         pgv = conn.execute(
             "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
@@ -267,6 +275,14 @@ def dump(dsn: str, table: str, out: Path, tenants: list[str] | None = None) -> d
         # 0700/0600: this file holds the corpus VERBATIM (the `text` column travels with the
         # vectors) and the documented workflow writes it on a rented third-party host. SECURITY.md
         # calls the corpus the asset and notes it may contain "a secret pasted into prose".
+        # The confidentiality guarantee is on the FILE (0600, below), not on the directory.
+        #
+        # An earlier version of this chmod'd `out.parent` unconditionally to 0700, which was worse
+        # than the no-op it replaced: `--out dump.gz` resolves the parent to `.`, so it re-moded
+        # the process's working directory, and `--out /tmp/x.gz` would have stripped /tmp's sticky
+        # bit. It also raises PermissionError on a directory owned by someone else, turning a
+        # working dump into a crash. A tool does not get to re-permission a directory it did not
+        # create. `mode=` here still applies on creation, and is simply inert otherwise.
         out.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         # ONE FILE PER TENANT when scoped, for the reason that actually holds: a reader WITHOUT
         # RLS bypass can only see one tenant at a time, so per-tenant is the only dump such a role
@@ -287,10 +303,34 @@ def dump(dsn: str, table: str, out: Path, tenants: list[str] | None = None) -> d
             where = f" WHERE {key} = %(t)s" if tenant is not None else ""
             stmt = f"COPY (SELECT {collist} FROM {table}{where}) TO STDOUT"
             params = {"t": tenant} if tenant is not None else None
-            target.touch(mode=0o600, exist_ok=True)
-            with gzip.open(target, "wb") as fh, conn.cursor().copy(stmt, params) as copy:
-                for block in copy:
-                    fh.write(bytes(block))
+            # NOT `touch(mode=0o600, exist_ok=True)`: when the file already exists — a re-run, or
+            # a dump written before this fix — pathlib's `os.utime` succeeds and the function
+            # returns BEFORE reaching the `os.open` that would apply the mode, and `gzip.open`
+            # then truncates in place and inherits the old permissions. Open the fd ourselves so
+            # the mode is enforced on every run, not only on first creation, and before any bytes
+            # are written rather than after.
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            # `raw` is BOUND and closed in a finally. `gzip.GzipFile` closes a fileobj only when
+            # it opened the path itself, so `gzip.open(os.fdopen(fd, "wb"))` left the underlying
+            # handle open with the compressed tail still buffered: measured, the target was 0
+            # bytes on disk at the point `stat().st_size` reads it below, and the dump was correct
+            # only because CPython refcounting finalised an unnamed temporary. That is not a
+            # guarantee — it is an implementation detail of one interpreter.
+            raw = os.fdopen(fd, "wb")
+            try:
+                # The open mode covers only a file this call CREATES (umask can only clear bits,
+                # so 0600 is an upper bound there). An EXISTING file keeps the permissions it
+                # already had — the re-run case, and the reason the `touch(mode=…)` this replaced
+                # was a no-op. chmod through the fd we now own, so there is no path race.
+                if os.name != "nt":
+                    os.chmod(target, 0o600)
+                with gzip.GzipFile(fileobj=raw, mode="wb") as fh, conn.cursor().copy(
+                    stmt, params
+                ) as copy:
+                    for block in copy:
+                        fh.write(bytes(block))
+            finally:
+                raw.close()
             written[tenant or "*"] = target.name
     total_bytes = sum(
         (out.parent / name).stat().st_size for name in written.values()
@@ -310,6 +350,12 @@ def dump(dsn: str, table: str, out: Path, tenants: list[str] | None = None) -> d
 
 
 def restore(dsn: str, table: str, src: Path, *, truncate: bool = False) -> dict[str, object]:
+    # FIRST statement, matching `checksum` and `dump`. This is the subcommand `_validated_table`'s
+    # own docstring is about: `restore` is the only path that runs TRUNCATE and DELETE, and it was
+    # the one call site the validation fix skipped. Relying on the `%s::regclass` bind inside
+    # `transferable_columns` is precisely the incidental protection that docstring says not to
+    # trust. It also keeps dump and restore agreeing on what a legal table name is.
+    table = _validated_table(table)
     meta_path = src.with_suffix(src.suffix + ".meta.json")
     if not meta_path.exists():
         raise SystemExit(
@@ -331,6 +377,11 @@ def restore(dsn: str, table: str, src: Path, *, truncate: bool = False) -> dict[
             )
 
     with psycopg.connect(dsn) as conn:
+        # The PARSE side of COPY TEXT. `COPY ... FROM STDIN` interprets the incoming text under
+        # the destination's DateStyle/IntervalStyle/timezone, so pinning only the writer converts
+        # a formatting mismatch into a silently different stored value rather than preventing it.
+        # Both sides, or neither: this is the half that was missing.
+        _pin_copy_gucs(conn)
         # Postgres refuses `COPY FROM` outright for a role subject to row-level security
         # ("COPY FROM not supported with row-level security. HINT: Use INSERT statements
         # instead"). That is a server limitation, not a policy this tool can scope around: unlike
@@ -366,20 +417,40 @@ def restore(dsn: str, table: str, src: Path, *, truncate: bool = False) -> dict[
         # truncating restore therefore leaves stale sparse rows whose ids no longer match the
         # chunks, and `store.sparse_row_count()` stays > 0 — which is precisely the condition that
         # SUPPRESSES the guard for an unencoded corpus. The digest cannot see any of it.
-        sparse = conn.execute(
-            "SELECT to_regclass('recall_sparse_v1') IS NOT NULL"
-        ).fetchone()
+        # Named from the store rather than duplicated as a literal, so the guard and the writer
+        # can never drift apart on WHICH table this is (`store.sparse_row_count` reads the same
+        # constant). Resolution is deliberately left to `search_path`, matching the store: the
+        # guard has to look where the writer writes, not at a schema of its own choosing.
+        from recall.store import SPARSE_TABLE
+
+        sparse = conn.execute("SELECT to_regclass(%s) IS NOT NULL", (SPARSE_TABLE,)).fetchone()
         if sparse and sparse[0]:
-            stale = conn.execute(
-                "SELECT count(*) FROM recall_sparse_v1 WHERE chunk_table = %s", (table,)
-            ).fetchone()
+            # Scoped to the tenants BEING RESTORED. `store.sparse_row_count` filters on
+            # (tenant_id, chunk_table, profile_id), so another tenant's sparse rows cannot
+            # suppress the guard for this one and are therefore not a reason to refuse. Counting
+            # them anyway made a scoped restore of tenant A refuse because tenant B was encoded,
+            # and the remedy in the message ("clear them first") would have destroyed B's index.
+            # An unscoped dump still checks the whole table, which is the correct width for it.
+            if tenants:
+                stale = conn.execute(
+                    f"SELECT count(*) FROM {SPARSE_TABLE} "
+                    f"WHERE chunk_table = %s AND tenant_id = ANY(%s)",
+                    (table, list(tenants)),
+                ).fetchone()
+                scope = f"for {len(tenants)} restored tenant(s)"
+            else:
+                stale = conn.execute(
+                    f"SELECT count(*) FROM {SPARSE_TABLE} WHERE chunk_table = %s", (table,)
+                ).fetchone()
+                scope = "across all tenants"
             if stale and stale[0]:
                 raise SystemExit(
-                    f"the destination holds {stale[0]} learned-sparse rows for {table!r} in "
-                    f"recall_sparse_v1, which this transfer does not move and cannot verify. "
-                    f"Restoring would leave them orphaned against the new chunk ids while "
+                    f"the destination holds {stale[0]} learned-sparse rows {scope} for "
+                    f"{table!r} in {SPARSE_TABLE}, which this transfer does not move and cannot "
+                    f"verify. Restoring would leave them orphaned against the new chunk ids while "
                     f"sparse_row_count() stays non-zero, suppressing the very guard that exists "
-                    f"to catch an unencoded corpus. Clear them first, or re-encode after."
+                    f"to catch an unencoded corpus. Clear those tenants' rows first, or re-encode "
+                    f"after."
                 )
 
         if truncate:

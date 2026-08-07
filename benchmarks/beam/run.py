@@ -832,8 +832,28 @@ def _main() -> None:
             "chat_size": args.chat_size,
             "judge_model": args.judge_model or args.model,
             "cutoff": args.cutoff,
-            "source_artifact": str(args.rejudge_mem0),
-            "question_types": args.question_types or "all",
+            # RESOLVED, for the reason `_run_config` already states about `--data`: a relative
+            # path compared across two working directories is a false mismatch, and a guard that
+            # refuses spuriously teaches the operator to reach for
+            # --allow-config-change-on-resume, which disables the check for every other key too.
+            "source_artifact": str(Path(args.rejudge_mem0).resolve()),
+            # `--conversations` IS recorded: it is the only flag that selects which rows this arm
+            # produces, so it is precisely what the guard has to compare on. Resuming a run scored
+            # over conversations 0-9 with `--conversations 10-19` previously passed, merged the
+            # old rows in via `_already_done`, and wrote an artifact whose `coverage` described
+            # only 10-19 while `aggregate` mixed both.
+            "conversations": args.conversations or "all",
+            # `question_types` is deliberately NOT recorded here. This arm filters `published` by
+            # `indices` only and never reads that flag (its single use site sits in the RE-call
+            # arm, past this branch's return), so two re-judges differing only in
+            # --question-types produce identical rows. Recording it would make the guard refuse
+            # over a difference that cannot have changed the work.
+            #
+            # Dropping a key IS a difference under `_check_resume_config`'s union-of-keys diff, so
+            # a sidecar written by the immediately preceding commit will refuse to resume. That
+            # commit is unreleased and on this branch, so no such sidecar exists outside a working
+            # tree; the alternative — freezing a key the arm ignores — would keep the guard
+            # firing on a difference that cannot change the work.
         }
         _check_resume_config(args.resume, mem0_config, allow=args.allow_config_change_on_resume)
         _write_run_config(out_base.with_suffix(".partial.config.jsonl"), mem0_config)
@@ -888,7 +908,9 @@ def _main() -> None:
         published_scores = [r["published_score"] for r in rows if r["published_score"] is not None]
         summary = {
             "arm": "mem0-platform-rejudged",
-            "source_artifact": str(args.rejudge_mem0),
+            # Read back from `mem0_config` rather than re-derived, so the finished artifact and
+            # the crash-recovery sidecar cannot disagree about which file they describe.
+            "source_artifact": mem0_config["source_artifact"],
             "judge_model": args.judge_model or args.model,
             "chat_size": args.chat_size,
             # The retrieval budget this arm's answers were taken at. Recorded so `pair.compare`
