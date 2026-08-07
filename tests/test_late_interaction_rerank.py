@@ -244,3 +244,12 @@ def test_empty_query_still_raises():
     table = {"q": [], "ok": [[1.0, 0.0]]}
     with pytest.raises(ValueError, match="query has no tokens"):
         _reranker(table).rerank("q", [_hit("ok", "ok", 0.1)])
+
+
+def test_empty_query_raises_even_when_every_document_is_also_unscoreable():
+    """The empty-query guarantee must not depend on the document mix. `maxsim` runs only for
+    documents that have tokens, so with every document unscoreable it would never be reached and
+    a query carrying no evidence would return an order rather than raising."""
+    table = {"q": [], "e1": [], "e2": []}
+    with pytest.raises(ValueError, match="query has no tokens"):
+        _reranker(table).rerank("q", [_hit("e1", "e1", 0.9), _hit("e2", "e2", 0.5)])

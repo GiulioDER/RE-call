@@ -210,6 +210,11 @@ class LateInteractionReranker:
         if not hits:
             return hits
         qtokens = list(self._encoder.query_embed([query]))[0]  # type: ignore[attr-defined]
+        # Validated UP FRONT, not left to `maxsim`. `maxsim` only runs for documents that have
+        # tokens, so a batch in which every document is unscoreable would skip the query check
+        # entirely and return an unranked order for a query carrying no evidence at all.
+        if qtokens.shape[0] == 0:
+            raise ValueError("query has no tokens")
         texts = [h.chunk.text for h in hits]
         dtokens = list(self._encoder.passage_embed(texts))  # type: ignore[attr-defined]
         # A document that encodes to zero tokens cannot be scored, and `maxsim` refuses it. That
