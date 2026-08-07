@@ -209,3 +209,42 @@ def test_splade_backend_reports_the_learned_leg_against_the_query_not_the_histor
     retriever.search_fused("q", ["earlier turn"], k=5)
 
     assert store.learned_vec_used == retriever._retrieve_legs("q", source=None).qvec
+
+
+class _VanishingStore(FakeStore):
+    """Like `FakeStore`, but `cosines_for` omits one id, simulating a chunk deleted between
+    retrieval and the final rescore.
+
+    `cosines_for`'s own docstring (`recall/store.py`) says ids that no longer exist are OMITTED
+    rather than reported as 0.0 cosine, "so the caller can tell". This fake makes that omission
+    reproducible without a real database race.
+    """
+
+    def __init__(self, *args, missing_id: str, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._missing_id = missing_id
+
+    def cosines_for(self, ids, vec):
+        self.cosines_calls.append((tuple(ids), tuple(vec)))
+        return {cid: 0.77 for cid in ids if cid != self._missing_id}
+
+
+def test_a_hit_missing_from_the_final_rescore_is_dropped_not_served_stale() -> None:
+    """`cosines_for` omits ids for chunks gone by rescore time so the caller can tell and act.
+
+    Falling back to the hit's pre-rescore score on a miss would silently defeat that: the
+    pre-rescore score can still be a cosine against the HISTORY, since the dense leg (unlike the
+    sparse legs) has no `report_vec` override and always reports against its own leg's vector. A
+    hit whose id vanished between retrieval and rescore must be dropped, not served with a score
+    that might be on the wrong basis.
+    """
+    store = _VanishingStore(dense=[("a", 0.9)], sparse=[("b", 0.4)], missing_id="b")
+    retriever = HybridRetriever(
+        store, FakeEmbedder(), reranker=_StubReranker(), sparse_backend="lexical"
+    )
+
+    result = retriever.search_fused("q", ["earlier turn"], k=5)
+
+    ids = {hit.chunk.id for hit in result.hits}
+    assert "b" not in ids
+    assert "a" in ids
