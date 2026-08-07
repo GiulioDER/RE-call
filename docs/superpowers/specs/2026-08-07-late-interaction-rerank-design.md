@@ -290,6 +290,60 @@ detectable rescue shift under a paired binary test, and record it in this file b
 and the verdict rests on Family A alone. That consequence is fixed now so it cannot be argued after
 seeing the counts.
 
+### Precondition result, computed 2026-08-07 before the arms ran
+
+| | |
+|---|---|
+| n | 123 |
+| control bury rate (MiniLM) | 90/123 = 0.7317 |
+| joint table (both / only MiniLM / only BGE / neither) | 78 / 12 / 13 / 20 |
+| rho, estimated from MiniLM/BGE agreement | 0.7967 (98/123 concordant) |
+| minimum detectable bury rate at 0.80 power | 0.2917 |
+| **Family B status** | **DEMOTED TO DESCRIPTIVE** |
+
+Family C's V1 width, read from the archive: confirmed. `2026-08-07-mtrag-rerank-conversion/NOTE.md`
+states "Equal-width: every arm capped at 100, invariance guaranteed by depth, `r@100_delta` 0.0 for
+all three," and its whole-pool secondary table lists `mq_nested2_nogold`'s pool depth as 383 in the
+column explicitly labelled "pool depth" for the whole-pool (not equal-width) comparison. Both parts
+of the prior reading are correct: the equal-width protocol capped every arm, including
+`mq_nested2_nogold`, at 100 candidates, and 383 is that arm's whole-pool size, a different and
+larger number belonging to the confounded secondary analysis, not to V1's contrast.
+
+The 123 documents were re-derived exactly: loading `dev` qrels for the four domains and the frozen
+`hybrid_splade` / `hybrid_lexical` pools from
+`2026-08-06-mtrag-splade-learned-sparse/results/pools/`, then taking, per query, the gold documents
+present in `hybrid_splade`'s candidates and absent from `hybrid_lexical`'s. This reproduced 103
+queries and 123 documents, matching NOTE.md line 113 exactly.
+
+MiniLM's raw per-pair scores were not persisted in the 2026-08-06 archive (only aggregate metrics
+were), so its post-rerank rank for each of the 123 documents could not be read off that run
+directly. They were recovered instead from `2026-08-07-mtrag-rerank-conversion/results/scores_minilm.jsonl`,
+whose 241,270 scored pairs (same model, same revision `c5ee24cb16019beea0893ab7796b1df96625c6b8`,
+same query and passage texts) turned out to be a superset covering all 17,834 (qid, doc_id) pairs
+needed to re-rank every one of the 103 queries' full `hybrid_splade` candidate pools. Re-ranking
+those pools by score, with ties broken by original candidate order (matching
+`CrossEncoderReranker.rerank`'s stable sort), reproduced MiniLM's aggregate stats exactly: 90/123
+buried below rank 10, top-5 18, top-10 33, min rank 2, median 30, max 152, all consistent with the
+archived NOTE.md figures. BGE's ranks came the same way from the archived
+`2026-08-06-mtrag-splade-learned-sparse/results/scores_bge.jsonl` (179,403 pairs, same pool),
+reproducing 91/123 buried and top-10 32, also matching the archive. Nothing was assumed or
+substituted; every rank used to build the joint table came from a real scored pair for the
+document's own query against its own candidate pool.
+
+The concordance rate rho = 0.7967 says the two rerankers agree on 98 of 123 bury decisions (78
+both-bury, 20 both-rescue), which is high, as expected from two cross-encoders that the 2026-08-06
+addendum already showed bury nearly the same set. High concordance leaves few discordant pairs for
+McNemar's test to work with (25 discordant here: 12 + 13), so the minimum detectable shift is harsh:
+`minimum_detectable_shift(n=123, p_control=0.7317, rho=0.7967)` returns **0.2917**, confirmed with a
+second seed (999 instead of the default 7's downstream `mcnemar_power` call) giving power 0.8033
+against 0.8066 at seed 123, so the result is not a lucky draw. A shift from 0.7317 to 0.2917 means
+the treatment would have to rescue more than half of the 90 currently-buried documents (cutting the
+bury count from 90 to roughly 36) before Family B's paired test could resolve it at 80% power. BGE,
+a 25x larger cross-encoder than MiniLM, rescued essentially none of them (91 buried, actually one
+more). An implausibly large rescue is therefore the only thing this cell could detect, so **Family B
+is demoted to a descriptive diagnostic with no p-value**, per the rule fixed above. Family A carries
+the verdict.
+
 ## Validation gates, run before any contrast is computed
 
 **G1. Reproduction.** `rr_minilm` recomputed through the new code path must reproduce the archived
