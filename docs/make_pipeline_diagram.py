@@ -14,6 +14,15 @@ The colour semantics are one rule applied to every cell, not decoration:
     red           measured and rejected, or refused outright
 
     python docs/make_pipeline_diagram.py > docs/pipeline.svg
+
+The SVG is the artefact; the PNG exists only because a raster embeds inline in the README where
+a linked SVG does not. Regenerate it whenever the SVG changes, or the two disagree silently:
+
+    "C:/Program Files/Inkscape/bin/inkscape.com" docs/pipeline.svg \
+        --export-type=png --export-filename=docs/pipeline.png --export-width=2100
+
+2100 is 1.5x the 1400 viewBox — sharp on a retina display at the ~900px GitHub renders it at,
+without the 4MB a 2x export costs for a diagram this tall.
 """
 from __future__ import annotations
 

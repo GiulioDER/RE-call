@@ -31,6 +31,14 @@
   <a href="#what-this-does-not-do">Limits</a>
 </p>
 
+<details>
+<summary><b>📐 The full pipeline, corpus to answer</b> — every phase in one diagram (click to expand)</summary>
+<br>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/pipeline.png" alt="The RE-call pipeline, top to bottom: lint, chunking, contextualisation, embedding, the optional SPLADE sidecar, the Postgres store, then query embedding, three retrieval legs, RRF fusion, optional rerank, gap warning, the trust layer, an optional entailment judge, abstention, evidence construction and the MCP surface. Colour encodes what an option costs: shipped default, best measured, free and local, cloud egress, opt-in, or rejected." width="900">
+</p>
+</details>
+
 ---
 
 ## Why RE-call
