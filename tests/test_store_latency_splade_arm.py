@@ -6,12 +6,18 @@ this asserts the ARM is selectable and its guards hold, at a size a test suite c
 
 from __future__ import annotations
 
+import io
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from benchmarks.store_latency_share import measure  # noqa: E402
+from benchmarks.store_latency_share import (  # noqa: E402
+    LegSplit,
+    _print_report,
+    measure,
+    to_markdown,
+)
 from recall.sparse import SparseProfile, backfill_learned_sparse  # noqa: E402
 from recall.types import Chunk  # noqa: E402
 from tests.conftest import requires_db  # noqa: E402
@@ -92,3 +98,37 @@ def test_the_lexical_arm_still_reports_a_null_learned_fire_rate(make_store) -> N
     assert split.sparse_backend == "lexical"
     assert split.learned_sparse_fire_rate is None
     assert split.sparse_fire_rate is not None
+
+
+def _a_split() -> LegSplit:
+    """A minimal, self-consistent `LegSplit`. No DB: this pins a pure string-formatting bug."""
+    return LegSplit(
+        candidate_k=10, reranked=False, sparse_backend="splade", repeats=1, n_queries=1,
+        n_chunks=4, embedder="stub",
+        total_ms_mean=1.0, total_ms_p50=1.0, total_ms_p95=1.0,
+        embed_ms_mean=0.1, dense_ms_mean=0.1, sparse_ms_mean=0.0,
+        learned_sparse_ms_mean=0.5, learned_sparse_encode_ms_mean=0.3,
+        fusion_ms_mean=0.05, rerank_ms_mean=0.0, meta_ms_mean=0.05, residual_ms_mean=0.0,
+        store_ms_mean=0.5, store_ms_p50=0.5, store_share=0.5, total_ms_if_store_were_free=0.5,
+        sparse_fire_rate=None, learned_sparse_fire_rate=1.0, truncated=False,
+    )
+
+
+def test_print_report_survives_a_console_that_cannot_encode_the_markdown() -> None:
+    """Pin the traceback observed running this benchmark against a real SPLADE checkpoint.
+
+    `to_markdown`'s scope caveat always carries a warning glyph, and Windows' default console
+    codec is cp1252, which cannot encode it. The run had already written `splits.json` and
+    `SPLIT.md` correctly (as UTF-8) before this final print raised, so the crash must not
+    reach the caller: a successful measurement must still exit with its intended status.
+    """
+    md = to_markdown([_a_split()], "4 chunks, embedder `stub`, seed 0, 1 query x 1 repeat")
+    buffer = io.BytesIO()
+    stream = io.TextIOWrapper(buffer, encoding="cp1252")
+
+    _print_report(md, stream)
+    stream.flush()
+
+    rendered = buffer.getvalue().decode("cp1252")
+    assert "store share" in rendered
+    assert "splade" in rendered

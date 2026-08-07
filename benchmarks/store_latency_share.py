@@ -77,10 +77,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from statistics import mean
+from typing import TextIO
 
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.eval.harness import _throwaway_store
@@ -614,6 +616,31 @@ def to_markdown(splits: list[LegSplit], ctx: str) -> str:
     return "\n".join(rows)
 
 
+def _print_report(md: str, stream: TextIO | None = None) -> None:
+    """Echo the markdown report to the console.
+
+    `to_markdown`'s caveat text carries non-ASCII (a warning glyph) on purpose: it travels with
+    the published numbers and `SPLIT.md` keeps it, written as UTF-8 by the caller before this
+    runs. But Windows' default console codec is cp1252, which cannot encode it, and by the time
+    this print fires the artifacts are already correctly on disk: a `UnicodeEncodeError` here
+    would abort BEFORE `main()` reaches its `return`, so a fully successful measurement would
+    exit via traceback instead of via the exit code that `notes` computes, and a caller could no
+    longer tell a tripped guard from a console encoding problem.
+    """
+    # This is a try/except around ONE write, not a global stdout reconfiguration: the process's
+    # `sys.stdout` encoding is untouched, so nothing else this module prints is affected. On the
+    # fallback path, characters the stream cannot encode become a literal `?` (`str.encode`'s
+    # `errors="replace"`) rather than being dropped, so the table and its structure still reach
+    # the console; only the unencodable glyphs degrade.
+    target = sys.stdout if stream is None else stream
+    text = "\n" + md
+    try:
+        print(text, file=target)
+    except UnicodeEncodeError:
+        encoding = getattr(target, "encoding", None) or "ascii"
+        print(text.encode(encoding, errors="replace").decode(encoding), file=target)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="store_latency_share")
     ap.add_argument("--dsn", default=DEFAULT_DSN)
@@ -812,7 +839,7 @@ def main() -> int:
         f"{len(queries)} queries x {args.repeats} repeats",
     )
     (out / "SPLIT.md").write_text(md + "\n", encoding="utf-8")
-    print("\n" + md)
+    _print_report(md)
     # `notes` is built from the unrounded violation, so the exit code reads `notes` rather
     # than the rounded field: otherwise a sub-microsecond violation prints a warning and
     # exits 0, and the warning and the exit status disagree about the same run.
