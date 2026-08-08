@@ -152,7 +152,34 @@ DEFAULT_MODEL = "openai/gpt-4o"
 #: `neutral` states the task and stops. It does NOT instruct the model to answer regardless, which
 #: would be the same error with the sign flipped; what to do when the passages fall short is left
 #: to the model, which is the behaviour being measured.
+#: ✅ `official` is the BASELINES' OWN PROMPT, quoted from the MTRAG paper (arXiv 2501.03468),
+#: Appendix D.2 "Model invocation": "To evaluate LLMs on MTRAG, for each task we sent to the LLM
+#: the following information: question, preceding turns, passages, and instruction."
+#:
+#:     Given one or more documents and a user query, generate a response to the query using less
+#:     than 150 words that is grounded in the provided documents. If no answer can be found in the
+#:     documents, say, "I do not have specific information"
+#:     PASSAGE 1 ... PASSAGE M
+#:     User turn 1 / Agent Turn 1 / ... / User Turn N
+#:
+#: ⛔ Do NOT substitute the prompt in `mtrag-human/conversations/conversations.json`
+#: (`generator.prompt.system_instruction`). That one built the conversation DATASET with
+#: mixtral-8x7b and has NO length limit; D.2 is the evaluation prompt and does. Reaching for the
+#: first prompt found in the repo would be a quieter version of the same mistake documented below.
+#:
+#: My `abstain` differs from D.2 in THREE ways, not the one I first diagnosed:
+#:   1. no 150-word limit (our mean Length 323; RB_alg is built from BertKPrec and RougeL against
+#:      the target, both of which a verbose answer depresses);
+#:   2. "say that you do not know rather than guessing" instead of the exact string "I do not have
+#:      specific information" — far easier to trigger, and worth 83 false abstentions on 709
+#:      ANSWERABLE tasks;
+#:   3. different ordering and passage framing.
 PROMPTS = {
+    "official": (
+        "Given one or more documents and a user query, generate a response to the query using "
+        "less than 150 words that is grounded in the provided documents. If no answer can be "
+        'found in the documents, say, "I do not have specific information"'
+    ),
     "abstain": (
         "You are answering the last user turn in a conversation, using only the passages provided. "
         "If the passages do not contain the answer, say that you do not know rather than guessing. "
@@ -163,6 +190,10 @@ PROMPTS = {
         "Answer directly and concisely."
     ),
 }
+
+#: Prompts whose USER-message layout follows D.2 (instruction, PASSAGE 1..M, then the turns)
+#: rather than this module's original "Passages:/Conversation:" framing.
+OFFICIAL_LAYOUT = {"official"}
 
 #: Default stays `abstain` so every artifact produced before this flag existed is still
 #: reproducible from the committed code. New runs pass `--prompt` explicitly.
@@ -280,8 +311,30 @@ def conversation_text(task: dict[str, Any]) -> str:
 
 
 def build_messages(
-    task: dict[str, Any], contexts: list[dict[str, Any]], system: str = SYSTEM_PROMPT
+    task: dict[str, Any],
+    contexts: list[dict[str, Any]],
+    system: str = SYSTEM_PROMPT,
+    layout: str = "recall",
 ) -> list[dict[str, str]]:
+    """The prompt for one task.
+
+    `layout="official"` reproduces the paper's Appendix D.2 ordering — instruction, then
+    `PASSAGE 1..M`, then the turns — because that is how the baselines saw it and the comparison is
+    against them. D.2 says the pieces were "composed into the prompt below, adapted to different
+    models using HuggingFace's ChatTemplate", so the split between system and user message is an
+    adaptation choice rather than something the paper fixes; the instruction goes in the system
+    role, which is the ordinary chat rendering, and the CONTENT and ORDER match D.2 exactly.
+    """
+    if layout == "official":
+        blocks = [
+            f"PASSAGE {i + 1}\n{ctx['text']}" for i, ctx in enumerate(contexts) if ctx["text"]
+        ]
+        body = "\n".join(blocks)
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"{body}\n{conversation_text(task)}" if body
+             else conversation_text(task)},
+        ]
     passages = "\n\n".join(
         f"[{i + 1}] {ctx['text']}" for i, ctx in enumerate(contexts) if ctx["text"]
     ) or "(no passages were retrieved)"
@@ -293,6 +346,33 @@ def build_messages(
                        f"Answer the last user turn.",
         },
     ]
+
+
+def run_manifest_path(out: Path) -> Path:
+    return out.with_suffix(out.suffix + ".manifest.json")
+
+
+def write_run_manifest(out: Path, **fields: Any) -> None:
+    """Persist what produced this artifact, NEXT TO the artifact.
+
+    The prompt id changes the number — `abstain` cost 0.07 harmonic mean — and printing it to
+    stdout only means an artifact whose console output was not captured cannot say which prompt
+    made it. `benchmarks/mtrag/run.py` already learned this for git revisions and fixed it the same
+    way, with a file rather than a print. It goes in a SIBLING file, not into the submission rows,
+    because the official `format_checker.py` validates a fixed per-mode field set and an extra key
+    is not worth the risk.
+    """
+    run_manifest_path(out).write_text(json.dumps(fields, indent=2), encoding="utf-8")
+
+
+def previous_prompt(out: Path) -> str | None:
+    path = run_manifest_path(out)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("prompt")
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def already_done(path: Path) -> set[str]:
@@ -426,6 +506,18 @@ def main(argv: list[str] | None = None) -> int:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     done = already_done(args.out)
+    layout = "official" if args.prompt in OFFICIAL_LAYOUT else "recall"
+
+    # ⛔ Resume dedupes on task_id alone, so pointing a DIFFERENT prompt at a partially written
+    # file would append new-prompt rows beside old-prompt ones and score the mixture as one arm.
+    # Nothing in the submission rows could tell them apart afterwards.
+    prior = previous_prompt(args.out)
+    if done and prior is not None and prior != args.prompt:
+        raise RuntimeError(
+            f"{args.out} already holds {len(done)} rows generated with --prompt {prior!r}, and "
+            f"this run asks for {args.prompt!r}. Resuming would mix two prompts in one file. "
+            f"Write to a new --out, or delete the existing one."
+        )
     pending = [t for t in tasks if str(t["task_id"]) not in done]
     print(
         json.dumps({
@@ -440,13 +532,22 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
 
+    # To DISK, not only to stdout. A console line does not survive a lost terminal, and the prompt
+    # is the difference between two artifacts that are otherwise indistinguishable.
+    write_run_manifest(
+        args.out, prompt=args.prompt, layout=layout, model=args.model, task=args.task,
+        contexts_from=args.contexts_from if args.task == "c" else "reference",
+        max_tokens=args.max_tokens, tasks=len(tasks),
+    )
+
     if args.dry_run:
         chars = missing = 0
         for task in pending:
             contexts = contexts_for(task, recall_contexts)
             if not contexts:
                 missing += 1
-            chars += sum(len(m["content"]) for m in build_messages(task, contexts, PROMPTS[args.prompt]))
+            chars += sum(len(m["content"]) for m in build_messages(
+                task, contexts, PROMPTS[args.prompt], layout))
         print(
             json.dumps({
                 "event": "dry_run", "prompt_chars": chars,
@@ -479,7 +580,9 @@ def main(argv: list[str] | None = None) -> int:
                 # contexts are well-formed, but `--contexts-from` reads a file we do not control.
                 contexts = contexts_for(task, recall_contexts)
                 answer = generate_one(
-                    client, args.model, build_messages(task, contexts, PROMPTS[args.prompt]), args.max_tokens
+                    client, args.model,
+                    build_messages(task, contexts, PROMPTS[args.prompt], layout),
+                    args.max_tokens
                 )
             except MemoryError:
                 # Not quarantinable. `MemoryError` is an `Exception`, so the handler below would

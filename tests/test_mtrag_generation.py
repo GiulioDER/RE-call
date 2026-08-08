@@ -521,3 +521,64 @@ def test_a_context_score_of_zero_and_an_id_of_zero_survive_normalisation() -> No
     assert gen.normalise_context({"id": "d", "score": True, "text": "t"}, 1, 5)["score"] == 4.0, (
         "a boolean is not a score; it must fall through to the rank-derived value"
     )
+
+
+def test_the_official_prompt_is_the_one_the_baselines_actually_got() -> None:
+    """Quoted from the MTRAG paper, arXiv 2501.03468 Appendix D.2 "Model invocation".
+
+    Not paraphrased. Comparing our number against theirs while feeding the model a different
+    instruction measures our prompt, and the three differences that mattered were a missing 150
+    word limit, a vaguer abstention trigger, and a different passage layout.
+
+    ⛔ NOT the prompt in `conversations/conversations.json`: that one built the conversation
+    DATASET with mixtral-8x7b and carries no length limit. Reaching for the first prompt found in
+    the repo would be the same mistake one level quieter.
+    """
+    official = gen.PROMPTS["official"]
+
+    assert "less than 150 words" in official, "the length limit is load-bearing for RB_alg"
+    assert '"I do not have specific information"' in official, "the exact abstention string"
+    assert "grounded in the provided documents" in official
+
+
+def test_the_official_layout_follows_appendix_d2_ordering() -> None:
+    """Instruction, then PASSAGE 1..M, then the turns. Order is part of the prompt."""
+    task = _task()
+    contexts = gen.contexts_for(task, None)
+
+    msgs = gen.build_messages(task, contexts, gen.PROMPTS["official"], layout="official")
+    user = msgs[1]["content"]
+
+    assert msgs[0]["content"] == gen.PROMPTS["official"]
+    assert user.startswith("PASSAGE 1\n"), "passages lead the user message, per D.2"
+    assert "PASSAGE 10" in user and "PASSAGE 11" not in user, "trimmed to MAX_CONTEXTS"
+    assert user.index("PASSAGE 1\n") < user.index("do they play outside the US?"), (
+        "passages precede the conversation"
+    )
+    # The leak guard must hold for this layout too, not only the original one.
+    _assert_no_withheld_metadata(json.dumps(msgs))
+
+
+def test_resuming_with_a_different_prompt_is_refused(tmp_path, monkeypatch) -> None:
+    """Resume dedupes on task_id alone, so a prompt change would silently mix two arms in one file.
+
+    Nothing in a submission row records the prompt, so the mixture would be undetectable
+    afterwards — and the prompt is worth 0.07 harmonic mean, which is larger than most of the
+    differences the file exists to measure.
+    """
+    tasks = [_task(task_id=f"c{i}<::>1") for i in range(3)]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+    monkeypatch.setattr(gen, "generate_one", lambda *a, **k: "an answer")
+
+    rc = gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out),
+                   "--prompt", "abstain"])
+    assert rc == 0
+    manifest = json.loads(gen.run_manifest_path(out).read_text(encoding="utf-8"))
+    assert manifest["prompt"] == "abstain", "the artifact must name its own prompt, on disk"
+
+    with pytest.raises(RuntimeError, match="would mix two prompts"):
+        gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out),
+                  "--prompt", "official"])
