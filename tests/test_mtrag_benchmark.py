@@ -531,3 +531,29 @@ def test_the_failure_message_says_the_partial_is_not_resumed(monkeypatch) -> Non
     arm = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
     with _pytest.raises(RuntimeError, match="NOT resumed from"):
         run.search_with_retry(Dead(), "q", arm)
+
+
+def test_two_runs_into_one_directory_do_not_overwrite_each_others_manifest() -> None:
+    """The manifest is the only record of which commit produced an arm's numbers.
+
+    This is not hypothetical. Five dev arms completed 2026-08-07/08 and a later arm reused their
+    output directory; because every run wrote `preregistered_manifest.json`, the record of what
+    produced those five was destroyed, and the per-arm metrics carried no revision to fall back
+    on. Their numbers survived review only because `retriever.py` happened to be byte-identical
+    across the range, which is luck standing in for evidence.
+    """
+    from benchmarks.mtrag.run import manifest_filename
+
+    a = manifest_filename("235666324ea534ff77ac05264aab40e3bc353e68", "2026-08-08T10:04:37+00:00")
+    b = manifest_filename("c6f99b5aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "2026-08-08T13:11:02+00:00")
+    assert a != b
+    assert "2356663" in a, "the revision must be legible in the name, not only inside the file"
+
+    # Same commit, different run: re-running one commit is normal, so the timestamp must separate
+    # them too. Keying on revision alone would still overwrite.
+    c = manifest_filename("235666324ea534ff77ac05264aab40e3bc353e68", "2026-08-08T18:30:00+00:00")
+    assert a != c
+
+    # A missing revision must still yield a usable, unique name rather than raising.
+    d = manifest_filename(None, "2026-08-08T10:04:37+00:00")
+    assert d.startswith("manifest_norev_") and d.endswith(".json")
