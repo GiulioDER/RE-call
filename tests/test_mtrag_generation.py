@@ -582,3 +582,67 @@ def test_resuming_with_a_different_prompt_is_refused(tmp_path, monkeypatch) -> N
     with pytest.raises(RuntimeError, match="would mix two prompts"):
         gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out),
                   "--prompt", "official"])
+
+
+def test_passage_numbering_has_no_gaps_when_a_context_is_empty() -> None:
+    """D.2 numbers passages 1..M continuously. Filtering after enumerating leaves holes.
+
+    `normalise_context` deliberately tolerates an empty `text`, so this is reachable with release
+    data rather than hypothetical, and it changes the prompt the model actually reads.
+    """
+    task = _task()
+    contexts = [
+        {"document_id": "a", "score": 3.0, "text": "first"},
+        {"document_id": "b", "score": 2.0, "text": ""},
+        {"document_id": "c", "score": 1.0, "text": "third"},
+    ]
+
+    user = gen.build_messages(task, contexts, gen.PROMPTS["official"], layout="official")[1]
+
+    assert "PASSAGE 1\nfirst" in user["content"]
+    assert "PASSAGE 2\nthird" in user["content"], "numbering must close the gap, not skip to 3"
+    assert "PASSAGE 3" not in user["content"]
+
+
+def test_resume_refuses_when_the_existing_rows_have_UNKNOWN_provenance(tmp_path, monkeypatch) -> None:
+    """The hole the first version of this guard left, and the one that mattered.
+
+    It only fired when a manifest recorded a DIFFERENT prompt, so it could not fire for any file
+    written before manifests existed — which was every artifact generated up to that point, i.e.
+    exactly the population it was added to protect.
+    """
+    tasks = [_task(task_id=f"c{i}<::>1") for i in range(3)]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+    # A file from before manifests: rows present, no manifest beside it.
+    out.write_text(json.dumps({"task_id": "c0<::>1", "predictions": [{"text": "hi"}]}) + "\n",
+                   encoding="utf-8")
+    assert not gen.run_manifest_path(out).exists()
+
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+    monkeypatch.setattr(gen, "generate_one", lambda *a, **k: "an answer")
+
+    with pytest.raises(RuntimeError, match="UNKNOWN prompt"):
+        gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out),
+                  "--prompt", "official"])
+
+
+def test_a_dry_run_does_not_overwrite_a_real_runs_manifest(tmp_path, monkeypatch) -> None:
+    """A preview must not rewrite the provenance of the run it is previewing.
+
+    `tasks` in the manifest is post-`--limit`, so a limited dry run would otherwise stamp a partial
+    count onto a manifest describing a full run that actually wrote rows.
+    """
+    tasks = [_task(task_id=f"c{i}<::>1") for i in range(3)]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+    monkeypatch.setattr(gen, "generate_one", lambda *a, **k: "an answer")
+    gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out), "--prompt", "official"])
+    before = gen.run_manifest_path(out).read_text(encoding="utf-8")
+
+    gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out),
+              "--prompt", "official", "--limit", "1", "--dry-run"])
+
+    assert gen.run_manifest_path(out).read_text(encoding="utf-8") == before
