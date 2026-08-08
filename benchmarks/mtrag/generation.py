@@ -326,9 +326,12 @@ def build_messages(
     role, which is the ordinary chat rendering, and the CONTENT and ORDER match D.2 exactly.
     """
     if layout == "official":
-        blocks = [
-            f"PASSAGE {i + 1}\n{ctx['text']}" for i, ctx in enumerate(contexts) if ctx["text"]
-        ]
+        # Filter FIRST, number second. Enumerating the unfiltered list and dropping empties inside
+        # the comprehension leaves gaps — "PASSAGE 1, PASSAGE 3" — which D.2 does not have and
+        # which this docstring claims not to produce. `normalise_context` tolerates an empty
+        # `text`, so the case is reachable rather than theoretical.
+        texts = [ctx["text"] for ctx in contexts if ctx["text"]]
+        blocks = [f"PASSAGE {i + 1}\n{text}" for i, text in enumerate(texts)]
         body = "\n".join(blocks)
         return [
             {"role": "system", "content": system},
@@ -511,12 +514,23 @@ def main(argv: list[str] | None = None) -> int:
     # ⛔ Resume dedupes on task_id alone, so pointing a DIFFERENT prompt at a partially written
     # file would append new-prompt rows beside old-prompt ones and score the mixture as one arm.
     # Nothing in the submission rows could tell them apart afterwards.
+    #
+    # 🔑 UNKNOWN provenance is refused too, not just known-different. The first version only fired
+    # when a manifest recorded a DIFFERENT prompt, so it could not fire for any file written before
+    # manifests existed — which is every artifact generated so far, i.e. exactly the population the
+    # guard was added to protect. A guard that is disarmed precisely where it is needed is not a
+    # guard. A corrupt manifest reads as unknown and lands here as well, which is the safe side.
     prior = previous_prompt(args.out)
-    if done and prior is not None and prior != args.prompt:
+    if done and prior != args.prompt:
+        detail = (
+            f"generated with --prompt {prior!r}" if prior is not None
+            else "of UNKNOWN prompt (no readable manifest beside it)"
+        )
         raise RuntimeError(
-            f"{args.out} already holds {len(done)} rows generated with --prompt {prior!r}, and "
-            f"this run asks for {args.prompt!r}. Resuming would mix two prompts in one file. "
-            f"Write to a new --out, or delete the existing one."
+            f"{args.out} already holds {len(done)} rows {detail}, and this run asks for "
+            f"{args.prompt!r}. Resuming would mix two prompts in one file. Write to a new --out, "
+            f"or delete the existing one. If you know the existing rows used {args.prompt!r}, "
+            f"write that into {run_manifest_path(args.out).name} to record it."
         )
     pending = [t for t in tasks if str(t["task_id"]) not in done]
     print(
@@ -534,11 +548,15 @@ def main(argv: list[str] | None = None) -> int:
 
     # To DISK, not only to stdout. A console line does not survive a lost terminal, and the prompt
     # is the difference between two artifacts that are otherwise indistinguishable.
-    write_run_manifest(
-        args.out, prompt=args.prompt, layout=layout, model=args.model, task=args.task,
-        contexts_from=args.contexts_from if args.task == "c" else "reference",
-        max_tokens=args.max_tokens, tasks=len(tasks),
-    )
+    # NOT on a dry run. A dry run writes no rows, and `tasks` here is post-`--limit`, so a
+    # limited preview against an in-progress output would overwrite a real run's manifest with a
+    # partial count and a description of a run that produced nothing.
+    if not args.dry_run:
+        write_run_manifest(
+            args.out, prompt=args.prompt, layout=layout, model=args.model, task=args.task,
+            contexts_from=args.contexts_from if args.task == "c" else "reference",
+            max_tokens=args.max_tokens, tasks=len(tasks), limit=args.limit,
+        )
 
     if args.dry_run:
         chars = missing = 0
