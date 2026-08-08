@@ -30,7 +30,7 @@
 </p>
 
 <p align="center">
-  <b>📐 <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/pipeline.svg">THE FULL PIPELINE, CORPUS TO ANSWER</a></b><br>
+  <b>📐 <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/pipeline.png">THE FULL PIPELINE, CORPUS TO ANSWER</a></b><br>
   <i>every phase in one diagram, with what each option costs</i>
 </p>
 
