@@ -85,7 +85,8 @@ def hit_vector(report: dict, arm: str, ids: list[str]) -> list[int]:
     return [0 if qid in missed else 1 for qid in ids]
 
 
-def paired_delta_ci(a: list[int], b: list[int], reps: int = REPS, seed: int = SEED):
+def paired_delta_ci(a: list[int], b: list[int], reps: int = REPS,
+                    seed: int = SEED) -> tuple[float, float, float]:
     """Bootstrap rate(b) - rate(a) by resampling QUESTIONS, preserving the pairing.
 
     ⚠️ The percentile convention here is the plain 0-based percentile index
@@ -107,7 +108,7 @@ def paired_delta_ci(a: list[int], b: list[int], reps: int = REPS, seed: int = SE
     return rate(b) - rate(a), deltas[int(0.025 * reps)], deltas[int(0.975 * reps) - 1]
 
 
-def mcnemar(a: list[int], b: list[int]):
+def mcnemar(a: list[int], b: list[int]) -> tuple[int, int, float]:
     """(a-only hits, b-only hits, exact two-sided p) -- i.e. (broke, fixed) when b adds rerank."""
     only_a = sum(1 for x, y in zip(a, b) if x == 1 and y == 0)
     only_b = sum(1 for x, y in zip(a, b) if x == 0 and y == 1)
@@ -118,7 +119,7 @@ def mcnemar(a: list[int], b: list[int]):
     return only_a, only_b, min(1.0, 2 * sum(comb(n, i) for i in range(k + 1)) / 2 ** n)
 
 
-def load(n: int):
+def load(n: int) -> tuple[dict, dict, list[str]]:
     """Return (ck20_report, ck250_report, scored_ids) for the n=88 or n=44 pair."""
     questions = json.loads(QUESTIONS.read_text(encoding="utf-8"))
     if n == 88:
@@ -150,9 +151,9 @@ def score(n: int, strict: bool) -> list[str]:
                 failures.append(f"n={n} {lbl.strip()} apparatus invariant")
 
     print("\n-- I1 one index / I4 candidate_k echoed --")
-    for lbl, r, want in (("ck20 ", r20, 20), ("ck250", r250, 250)):
+    for lbl, r, want_k in (("ck20 ", r20, 20), ("ck250", r250, 250)):
         c = r["corpus"]
-        ok = r["candidate_k"] == want
+        ok = r["candidate_k"] == want_k
         print(f"   {lbl}: table={c['table']} sources={c['sources_indexed']} chunks={c['chunks']} "
               f"candidate_k={r['candidate_k']} -> {'PASS' if ok else 'FAIL'}")
         if not ok:
@@ -167,12 +168,12 @@ def score(n: int, strict: bool) -> list[str]:
 
     print("\n-- arms (reconstructed from `misses`; must match the published rate) --")
     for arm in sorted(vec):
-        got, want = rate(vec[arm]), PUBLISHED[n][arm]
-        ok = abs(got - want) < 5e-4
-        print(f"   {arm}: {sum(vec[arm])}/{len(ids)} = {got:.4f}  published {want:.4f} "
+        got, want_rate = rate(vec[arm]), PUBLISHED[n][arm]
+        ok = abs(got - want_rate) < 5e-4
+        print(f"   {arm}: {sum(vec[arm])}/{len(ids)} = {got:.4f}  published {want_rate:.4f} "
               f"-> {'ok' if ok else 'MISMATCH'}")
         if not ok:
-            failures.append(f"n={n} {arm} hit@5 {got:.4f} != published {want:.4f}")
+            failures.append(f"n={n} {arm} hit@5 {got:.4f} != published {want_rate:.4f}")
 
     print("\n-- I2 reranker live? --")
     for pool, a, b in (("20", "A1", "A2"), ("250", "A3", "A4")):
@@ -182,9 +183,10 @@ def score(n: int, strict: bool) -> list[str]:
               f"-> {'PASS' if moved else 'VOID (inert)'}")
         if not moved:
             failures.append(f"n={n} pool {pool} I2 inert")
-        want = PUBLISHED_MCNEMAR.get((pool, n))
-        if want and (broke, fixed) != want:
-            failures.append(f"n={n} pool {pool} McNemar {(broke, fixed)} != published {want}")
+        want_counts = PUBLISHED_MCNEMAR.get((pool, n))
+        if want_counts and (broke, fixed) != want_counts:
+            failures.append(
+                f"n={n} pool {pool} McNemar {(broke, fixed)} != published {want_counts}")
 
     print("\n-- predictions (paired bootstrap 20k, 95% percentile CI) --")
     for name, a, b, op, thr, why in PREDICTIONS:
