@@ -44,6 +44,15 @@ class Arm:
     use_dense: bool = True
     use_sparse: bool = True
     rerank: bool = False
+    #: WHICH reranker, when `rerank` is True. Named per arm rather than fixed globally because
+    #: the two are not interchangeable and the difference is the point: a five-way measurement on
+    #: 2026-07-29 put `voyage:rerank-2.5` significantly ahead of the local MiniLM (mean rank
+    #: +0.177, CI95 [+0.038, +0.323]), and pool-level Voyage lifted hit@5 0.640 to 0.870 on the
+    #: ladder. ⚠️ Every one of those measurements is on LOCOMO, PEPs or the bilingual memo corpus,
+    #: NONE on MTRAG, and the local MiniLM's effect changes SIGN across them (+0.145, -0.068,
+    #: -0.400). So neither is assumed better here; both are run.
+    #: ⛔ Do not stack them: RRF(voyage+MiniLM) scored 0.808 against voyage alone at 0.846.
+    reranker: str = "minilm"
     role: str = "ablation"
     sparse_backend: str = "lexical"
 
@@ -100,7 +109,13 @@ SPARSE_ARMS = (
     # dev, so their combination is where RE-call's maximum most likely sits. Choosing a
     # configuration on dev is what dev is FOR; the sin would be choosing it on the held-out set.
     Arm("hybrid_splade_rerank", "last", 100, sparse_backend="splade", rerank=True,
-        role="best-known"),
+        reranker="minilm", role="best-known-local"),
+    # The hosted counterpart. Kept a SEPARATE arm rather than a flag on the one above so both are
+    # reported, because they are different product claims: the local arm needs no network egress
+    # and no paid API, which is the property the published RE-call article is about, and this one
+    # trades that away for whatever the cross-encoder buys.
+    Arm("hybrid_splade_voyage", "last", 100, sparse_backend="splade", rerank=True,
+        reranker="voyage", role="best-known-hosted"),
 )
 
 ALL_ARMS = ARMS + SPARSE_ARMS
@@ -517,7 +532,7 @@ def run_arm(
         flush=True,
     )
     started = time.perf_counter()
-    reranker = CrossEncoderReranker() if arm.rerank else None
+    reranker = build_reranker(arm) if arm.rerank else None
     sparse_encoder = None
     if arm.sparse_backend in ("splade", "both"):
         # Imported HERE, not at module scope: torch and transformers are an optional extra, and a
@@ -656,6 +671,25 @@ def select_arm_names(requested: "Sequence[str] | None", split: str) -> list[str]
     if requested:
         return list(requested)
     return [arm.name for arm in ARMS if arm_runs_on(arm, split)]
+
+
+def build_reranker(arm: "Arm") -> Any:
+    """The reranker this arm names.
+
+    `voyageai` is imported inside the branch, so an arm that does not ask for it needs neither the
+    package nor a key. `VoyageReranker` resolves `VOYAGE_API_KEY` eagerly and raises at
+    construction rather than partway through a run, which is the behaviour worth having here.
+    """
+    if arm.reranker == "voyage":
+        from benchmarks.voyage_rerank import VoyageReranker
+
+        return VoyageReranker()
+    if arm.reranker == "minilm":
+        return CrossEncoderReranker()
+    raise ValueError(
+        f"arm {arm.name!r} names reranker {arm.reranker!r}, which is not built. "
+        f"Known: 'minilm' (local cross-encoder, no network) and 'voyage' (hosted rerank-2.5)."
+    )
 
 
 def dev_query_mode_for(arm_names: "Sequence[str]", split: str) -> str:
