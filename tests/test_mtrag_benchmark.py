@@ -582,11 +582,15 @@ def test_two_runs_in_the_same_second_still_get_distinct_manifests() -> None:
     assert str(_os.getpid()) in zero, "uniqueness must not rest on the wall clock alone"
     assert zero != a
 
-    # A negative UTC offset must not silently glue its digits onto the microseconds. Unreachable
-    # via utc_now() today, but the function is general and a rule with an exception for one sign
-    # is a rule waiting to be wrong.
-    neg = manifest_filename(rev, "2026-08-08T14:46:14.505185-05:00")
-    assert neg != a and neg.endswith(".json") and ":" not in neg
+    # Opposite offsets of EQUAL magnitude are the case that catches a stamp which drops the sign.
+    # The previous version of this assertion compared a `-05:00` stamp against a `+00:00` one, so
+    # it passed on a coincidence of digits and kept passing when the behaviour was reverted: a test
+    # that named the property without testing it.
+    plus = manifest_filename(rev, "2026-08-08T14:46:14.505185+05:00")
+    minus = manifest_filename(rev, "2026-08-08T14:46:14.505185-05:00")
+    assert plus != minus, "a stamp that drops the offset sign maps +05:00 and -05:00 to one name"
+    for name in (plus, minus):
+        assert ":" not in name and "/" not in name and name.endswith(".json")
 
 
 def test_a_dirty_tree_is_recorded_rather_than_passed_off_as_its_commit(tmp_path) -> None:
