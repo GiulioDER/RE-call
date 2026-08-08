@@ -572,7 +572,7 @@ def run_arm(
             # Depth 100, not 10. The top-10 ordering is unchanged (reranking happens over the
             # fused pool BEFORE truncation), so every previously reported metric at k<=10 is
             # unaffected; what this buys is Recall@100 for free on the same pass.
-            result = retrievers[domain].search(query, k=RETRIEVAL_DEPTH)
+            result = search_with_retry(retrievers[domain], query, arm)
             latencies_ms.append((time.perf_counter() - query_started) * 1000.0)
             gap_count += int(result.gap_warning)
             contexts = []
@@ -609,6 +609,23 @@ def run_arm(
                     ),
                     flush=True,
                 )
+    except BaseException:
+        # Flush what was already produced, before re-raising. For an arm whose reranker is a PAID
+        # hosted API this is the difference between losing a transient network blip and losing
+        # every billed call the arm has made: `predictions` used to be written only after the loop
+        # completed, so a failure at query 500 discarded 499 paid reranks and restarted at one.
+        # Named `.partial.jsonl` deliberately, so nothing globbing `*.predictions.jsonl` can
+        # mistake an aborted arm for a complete one.
+        partial = output_dir / f"{arm.name}.partial.jsonl"
+        with partial.open("w", encoding="utf-8") as handle:
+            for item in predictions:
+                handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+        print(
+            json.dumps({"event": "arm_failed", "arm": arm.name, "completed": len(predictions),
+                        "partial": str(partial), "at": utc_now()}),
+            flush=True,
+        )
+        raise
     finally:
         for store in stores.values():
             store.close()
@@ -673,6 +690,44 @@ def select_arm_names(requested: "Sequence[str] | None", split: str) -> list[str]
     return [arm.name for arm in ARMS if arm_runs_on(arm, split)]
 
 
+#: Attempts per query before an arm gives up, and the base delay for exponential backoff. A hosted
+#: reranker turns one transient 429 or connection reset into a dead arm, and for a PAID one it also
+#: throws away every call already billed.
+RETRIEVAL_ATTEMPTS = 4
+RETRIEVAL_BACKOFF_S = 2.0
+
+
+def search_with_retry(retriever: Any, query: str, arm: "Arm") -> Any:
+    """`retriever.search` with backoff, because a reranked arm depends on a remote service.
+
+    Retries the WHOLE search, which is safe because `search` is a pure read: it re-runs the dense
+    and sparse legs and the rerank, and writes nothing. Retrying a write would need idempotence
+    reasoning; this needs none.
+
+    An arm with no reranker, or with the local one, has nothing here that fails transiently, so
+    the first attempt either succeeds or the error is real and still propagates on the last.
+    """
+    last: Exception | None = None
+    for attempt in range(1, RETRIEVAL_ATTEMPTS + 1):
+        try:
+            return retriever.search(query, k=RETRIEVAL_DEPTH)
+        except Exception as exc:  # noqa: BLE001 - re-raised below once attempts are exhausted
+            last = exc
+            if attempt == RETRIEVAL_ATTEMPTS:
+                break
+            delay = RETRIEVAL_BACKOFF_S * (2 ** (attempt - 1))
+            print(
+                json.dumps({"event": "retrieval_retry", "arm": arm.name, "attempt": attempt,
+                            "sleeping_s": delay, "error": type(exc).__name__, "at": utc_now()}),
+                flush=True,
+            )
+            time.sleep(delay)
+    raise RuntimeError(
+        f"arm {arm.name!r} failed {RETRIEVAL_ATTEMPTS} consecutive retrieval attempts; "
+        f"predictions produced so far are flushed to {arm.name}.partial.jsonl"
+    ) from last
+
+
 def build_reranker(arm: "Arm") -> Any:
     """The reranker this arm names.
 
@@ -680,6 +735,12 @@ def build_reranker(arm: "Arm") -> Any:
     package nor a key. `VoyageReranker` resolves `VOYAGE_API_KEY` eagerly and raises at
     construction rather than partway through a run, which is the behaviour worth having here.
     """
+    if not arm.rerank:
+        raise ValueError(
+            f"build_reranker called for arm {arm.name!r}, which has rerank=False. The caller is "
+            f"expected to check that first. Building one anyway would demand VOYAGE_API_KEY and "
+            f"construct a PAID client for an arm that never reranks."
+        )
     if arm.reranker == "voyage":
         from benchmarks.voyage_rerank import VoyageReranker
 
