@@ -392,3 +392,43 @@ def test_an_explicit_arm_request_is_still_honoured_into_the_refusal() -> None:
     assert run.select_arm_names(explicit, "dev") == explicit
     with _pytest.raises(ValueError, match="query mode"):
         run.dev_query_mode_for(run.select_arm_names(explicit, "dev"), "dev")
+
+
+def test_the_two_reranked_arms_vary_only_the_reranker() -> None:
+    """Local against hosted, with nothing else moving.
+
+    If they also differed in candidate_k or backend, the measured gap would not be attributable to
+    the reranker, and the article's two rows would be comparing two different systems.
+    """
+    local = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_rerank")
+    hosted = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
+    differing = {
+        f for f in ("query_mode", "candidate_k", "use_dense", "use_sparse", "rerank",
+                    "sparse_backend")
+        if getattr(local, f) != getattr(hosted, f)
+    }
+
+    assert differing == set()
+    assert (local.reranker, hosted.reranker) == ("minilm", "voyage")
+
+
+def test_an_unknown_reranker_name_is_refused() -> None:
+    """A typo must not silently fall back to the local model and be reported as the hosted one."""
+    import pytest as _pytest
+
+    bogus = run.Arm("x", "last", 100, rerank=True, reranker="nope")
+    with _pytest.raises(ValueError, match="not built"):
+        run.build_reranker(bogus)
+
+
+def test_the_unreranked_primary_is_the_matched_control_for_both() -> None:
+    """hybrid_splade must differ from each reranked arm ONLY in `rerank`."""
+    base = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade")
+    for name in ("hybrid_splade_rerank", "hybrid_splade_voyage"):
+        arm = next(a for a in run.SPARSE_ARMS if a.name == name)
+        differing = {
+            f for f in ("query_mode", "candidate_k", "use_dense", "use_sparse", "sparse_backend")
+            if getattr(base, f) != getattr(arm, f)
+        }
+        assert differing == set(), name
+        assert base.rerank is False and arm.rerank is True
