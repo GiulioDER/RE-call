@@ -17,17 +17,24 @@ GOLD_ANSWER = "No, the Cardinals play only within the United States."
 def _task(task_id: str = "conv1<::>2", answerability: str = "UNANSWERABLE") -> dict:
     """A task shaped like the REAL release, including every field that must not leak.
 
-    Verified against `mtrag-human/generation_tasks/reference.jsonl` and `RAG.jsonl` (842 rows
-    each): `Answerability`, `targets`, `Question Type` and `Multi-Turn` are TOP-LEVEL keys on the
-    task, siblings of `input`; turns carry `metadata`, and **zero** turns in either file carry an
-    `enrichments` key.
+    MTRAG ships the label in **two different shapes**, and this fixture carries both, because a
+    guard that only knows one is a guard for half the corpus. Counted, not assumed:
 
-    An earlier version of this fixture invented `enrichments.answerability` nested inside each
-    turn. That shape does not exist in the release, so the leak test guarded a path the producer
-    never emits while leaving the two real ones unguarded, and it would have stayed green through
-    a genuine leak. Fabricating an input the producer does not emit does not test the guard.
+      `mtrag-human/generation_tasks/reference.jsonl` and `RAG.jsonl`, 842 rows each
+        `Answerability` (capitalised) TOP-LEVEL, 842/842. `targets` TOP-LEVEL, 842/842.
+        Turns carry `metadata`. `enrichments`: 0 of 6684 turns.
 
-    `targets` is the more dangerous of the two: `Answerability` reveals whether to abstain, but
+      `scripts/evaluation/sample_data/responses-10.jsonl`, 10 rows
+        `answerability` (lower case) TOP-LEVEL, and `enrichments.answerability` nested INSIDE
+        turns, 39 of them.
+
+    The generation runs read the first pair, so that is the shape that governs our leak risk. The
+    second is why the assertions are case-insensitive and why turns here carry `enrichments`: an
+    earlier fixture had only the nested lower-case form and the assertions only the capitalised
+    top-level name, so each covered what the other tested. Either alone stays green through a real
+    leak of the other.
+
+    `targets` is the most dangerous of all of them: `Answerability` reveals whether to abstain,
     `targets` is the answer itself.
     """
     return {
@@ -35,6 +42,7 @@ def _task(task_id: str = "conv1<::>2", answerability: str = "UNANSWERABLE") -> d
         "conversation_id": task_id.split("<::>")[0],
         "Collection": "clapnq",
         "Answerability": [answerability],
+        "answerability": [answerability],
         "Question Type": ["Factoid"],
         "Multi-Turn": ["Follow-up"],
         "targets": [{"text": GOLD_ANSWER}],
@@ -43,6 +51,7 @@ def _task(task_id: str = "conv1<::>2", answerability: str = "UNANSWERABLE") -> d
                 "speaker": "user",
                 "text": "where do the arizona cardinals play",
                 "metadata": {"author_type": "human", "created_at": "2024-01-01T00:00:00Z"},
+                "enrichments": {"Question Type": ["Factoid"], "answerability": [answerability]},
             },
             {
                 "speaker": "agent",
@@ -53,6 +62,7 @@ def _task(task_id: str = "conv1<::>2", answerability: str = "UNANSWERABLE") -> d
                 "speaker": "user",
                 "text": "do they play outside the US?",
                 "metadata": {"author_type": "human", "created_at": "2024-01-01T00:00:02Z"},
+                "enrichments": {"answerability": [answerability]},
             },
         ],
         "contexts": [
@@ -68,12 +78,14 @@ def _assert_no_withheld_metadata(blob: str) -> None:
     If the mutation test re-implemented the assertions it would only prove that a copy of them
     fails, which says nothing about the copy that guards the real run.
     """
-    assert "UNANSWERABLE" not in blob, "the abstention label leaked into the prompt"
-    assert "Answerability" not in blob
+    lowered = blob.lower()
+    assert "unanswerable" not in lowered, "the abstention label leaked into the prompt"
     assert GOLD_ANSWER not in blob, "the gold answer leaked into the prompt"
-    assert "targets" not in blob
-    assert "Question Type" not in blob
-    assert "Multi-Turn" not in blob
+    # Case-insensitive on the key names: the release spells it `Answerability`, the official
+    # sample data spells it `answerability`, and a guard that knows one shape is a guard for half
+    # the corpus. `enrichments` is checked because the sample nests the label inside turns.
+    for field in ("answerability", "targets", "question type", "multi-turn", "enrichments"):
+        assert field not in lowered, f"withheld field {field!r} leaked into the prompt"
 
 
 def test_no_withheld_task_metadata_reaches_the_prompt() -> None:
@@ -99,10 +111,29 @@ def test_no_withheld_task_metadata_reaches_the_prompt() -> None:
     assert "where do the arizona cardinals play" in blob
 
 
+def test_the_leak_guard_fires_on_the_nested_lowercase_shape(monkeypatch) -> None:
+    """The sample-data shape: the label nested inside a turn's `enrichments`, lower case.
+
+    A leak here is the most plausible of all of them, because it needs no new field access at all:
+    `conversation_text` reads each turn, and one careless edit that serialises the turn dict
+    instead of picking `speaker`/`text` out of it leaks the label with no code that names it.
+    """
+    task = _task(answerability="UNANSWERABLE")
+
+    # Exactly that careless edit: dump the whole turn rather than the two fields wanted.
+    monkeypatch.setattr(
+        gen, "conversation_text", lambda t: "\n".join(json.dumps(x) for x in t["input"])
+    )
+    blob = json.dumps(gen.build_messages(task, gen.contexts_for(task, None)))
+
+    with pytest.raises(AssertionError):
+        _assert_no_withheld_metadata(blob)
+
+
 @pytest.mark.parametrize(
     "field",
-    ["Answerability", "targets", "Question Type", "Multi-Turn"],
-    ids=["answerability", "gold_answer", "question_type", "multi_turn"],
+    ["Answerability", "answerability", "targets", "Question Type", "Multi-Turn"],
+    ids=["answerability_upper", "answerability_lower", "gold_answer", "question_type", "multi_turn"],
 )
 def test_the_leak_guard_fires_on_a_build_messages_that_leaks(monkeypatch, field: str) -> None:
     """The guard above only means something if it can fail. This is that proof.
