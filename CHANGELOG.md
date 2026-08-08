@@ -209,6 +209,58 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   The documentation now says so. Behaviour is unchanged.
 
 ### Fixed
+- **The other three benchmark arms refused every question too.** The follow-up to the entry below:
+  `benchmarks/ladder/systems/recall_system.py`, `benchmarks/membench/recall_isolation.py` and
+  `benchmarks/membench/recall_temporal.py` all called `trusted_search` with no policy, so each
+  raised `TrustRefusal: INDEX_NOT_READY` before retrieval ran, exactly as the LOCOMO arm did.
+
+  The policy alone would have been silently worse on two of them, in opposite directions. Both
+  `recall_temporal` and the ladder adapter filter hits on `verdict == "ok"`, and development mode
+  without a calibration rewrites every verdict to `unverified`: nothing clears the filter, so
+  `covering_selection_rate` reads 0.0000 across the board — indistinguishable from a validity
+  layer that does not work, which is the exact failure `recall_temporal` was previously fixed for.
+  `recall_isolation` derives `answered` from `result.abstained`, which development mode forces to
+  False, collapsing it to "did retrieval return anything" — a leak axis pinned near 1.0 cannot
+  tell correct isolation from an adapter answering out of the wrong tenant.
+
+  All four arms now retrieve through a single new seam, `benchmarks._trust.bench_search`
+  (`research_search` plus an explicit `Calibration` at the library's `DEFAULT_GAP_THRESHOLD`), so
+  the two-part decision is made once rather than at four call sites. For the ladder arm this
+  restores exactly the configuration `benchmarks/ladder/report.py` already discloses its published
+  numbers ran with (`UNCALIBRATED_BGE_SMALL_FLOOR = 0.50`); its "shipped defaults, no overrides"
+  rule is now explicit that the shipped TRUST policy is the one exception, because read literally
+  that rule made the arm refuse every question instead of scoring at defaults.
+
+  The audit of that change found two more modules with the calibration half of the same defect,
+  both now routed through the shared seam. `benchmarks/check_temporal_live.py` is the worse one:
+  it is a PRE-REGISTERED end-to-end check whose P2 predicate and P3 control are both read off
+  `hit.verdict`, so with every verdict blanked to `unverified` its P2 was structurally
+  unreachable, its P3 passed vacuously, and it printed "NOT live" and exited 1 whatever the
+  validity layer did — the control that exists to prove the reference time reached the trust layer
+  had become the thing certifying that nothing was wrong. `benchmarks/beam/ksweep.py` reads only
+  hit text, so nothing it measures changes; it is routed through the seam anyway, so that "arms
+  that happen not to read verdicts" is not a category anyone has to re-decide per module.
+
+  ⚠️ **The new guard is a source scan, not a behavioural test, and that is deliberate.** Every one
+  of these adapters is unreachable from CI: the two mem-bench ones import `membench`, a separate
+  repo `pyproject.toml` deliberately does not depend on, and the LOCOMO one's integration tests
+  need `fastembed`, which is not in `[dev]` either. A behavioural test for any of them would be a
+  test CI skips, which is the failure mode being closed, reproduced inside the guard meant to
+  close it. `tests/test_bench_trust_policy.py` parses every module under `benchmarks/` and
+  enforces BOTH halves — no module may reach `recall.trust.trusted_search` (by any of the five
+  import spellings that bind it), and no module may call `research_search` without a calibration,
+  where a literal `calibration=None` counts as missing rather than supplied, because that is the
+  defect written in the spelling that looks like compliance. It needs no import, no database and
+  no optional extra, and it covers arms that do not exist yet.
+
+  ⚠️ **A green scan is not proof that every arm's threshold is live.** A calibration passed as a
+  variable cannot be judged from the source: `benchmarks/beam/systems.py` writes
+  `calibration=self._calibration`, which is None on any run without `--calibration`, so the rule
+  reports it as compliant. That arm's uncalibrated default is pre-existing and disclosed in its
+  own `describe()`, but one consequence is worth stating plainly, because BEAM's own docstring
+  calls abstention "the single design decision this benchmark exists to price": on a default run
+  its `if result.abstained: return []` is unreachable, so that category currently measures
+  nothing. Not changed here — it is a deliberate, documented arm and its own decision to make.
 - **The RE-call arm of the LOCOMO head-to-head benchmark refused every question, and CI could not
   see it.** `benchmarks.systems.RecallSystem.retrieve` called `trusted_search` without a policy.
   When retrieval began failing closed, that default became strict, and a freshly-ingested bench

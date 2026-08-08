@@ -33,10 +33,10 @@ from collections.abc import Iterable
 
 from membench.axes.isolation.adapter import TenantDocument, TenantResponse
 
+from benchmarks._trust import bench_search
 from benchmarks.membench import _env
 from recall.index import Indexer
 from recall.store import PgVectorStore
-from recall.trust import trusted_search
 
 DSN = os.environ.get("MEMBENCH_DSN", "postgresql:///membench_iso")
 TABLE = os.environ.get("MEMBENCH_TABLE", "iso_chunks")
@@ -91,7 +91,17 @@ class RecallIsolation:
         return frozenset(out)
 
     def query(self, question: str, *, tenant: str) -> TenantResponse:
-        result = trusted_search(
+        # `bench_search`, not `trusted_search`: the latter's default policy is STRICT, and this
+        # corpus has no generation and no published calibration, so every query would refuse with
+        # INDEX_NOT_READY before retrieval ran. See `benchmarks/_trust.py`.
+        #
+        # The calibration half is what keeps `answered` below meaningful. Without it the trust
+        # layer forces `abstained=False`, so `answered` would collapse to `bool(result.hits)` —
+        # "did retrieval return anything", which on this axis is nearly always true. A leak test
+        # whose answered-rate is pinned near 1.0 cannot distinguish correct isolation from an
+        # adapter that answers out of the wrong tenant, so the axis would report the system as
+        # confidently correct precisely where it had stopped measuring.
+        result = bench_search(
             self._store(tenant), self._embedder, question,
             k=self._k, candidate_k=self._ck, reranker=self._rr,
         )

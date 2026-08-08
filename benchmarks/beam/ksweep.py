@@ -78,9 +78,9 @@ def sweep(
     depths: list[int],
     reranker_name: str = "local",
 ) -> dict[str, Any]:
+    from benchmarks._trust import bench_search
     from benchmarks.systems import resolve_embedder, resolve_reranker
     from recall.store import PgVectorStore
-    from recall.eval._research_trust import research_search
 
     embedder = resolve_embedder(embedder_name)
     reranker = resolve_reranker(reranker_name)
@@ -95,7 +95,13 @@ def sweep(
             continue
         tenant = f"beam-1m-{row['conversation_idx']}"
         with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table=table) as store:
-            result = research_search(
+            # This sweep reads only `h.chunk.text`, never a verdict or `abstained`, so the
+            # calibration `bench_search` supplies changes nothing it measures: the threshold
+            # reaches the retriever as `gap_threshold`, which sets a warning flag and culls no
+            # hit, and it is the same 0.50 the uncalibrated fallback would have used anyway. It is
+            # routed through the shared seam regardless, so that "arms that happen not to read
+            # verdicts" is not a category anyone has to keep re-deciding a module at a time.
+            result = bench_search(
                 store, embedder, row["question"], k=MAX_POOL,
                 candidate_k=MAX_POOL, reranker=reranker,
             )

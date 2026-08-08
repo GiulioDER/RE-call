@@ -14,11 +14,12 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from recall.embeddings import embedding_profile_id
-from recall.guards import DEFAULT_GAP_THRESHOLD
 # The same object `research_search` defaults to. Imported so `describe()` reports the policy this
 # arm ACTUALLY runs under rather than a hand-written claim about it: if the harness ever switches
 # to strict, the artifact follows automatically instead of going quietly stale.
 from recall.eval._research_trust import RESEARCH_POLICY
+
+from benchmarks._trust import uncalibrated_floor
 
 #: Retrieval budget shared by every arm unless ``--k`` overrides it. 5 is the value the harness was
 #: originally written with and the number every early result was measured at; it is kept as the
@@ -209,8 +210,6 @@ class RecallSystem:
         reranker_name: str = "none",
         table: str = BENCH_TABLE,
     ) -> None:
-        from recall.calibration import Calibration
-
         self._dsn = dsn
         self._k = k
         self._embedder_name = embedder_name
@@ -231,13 +230,11 @@ class RecallSystem:
         # knob arrives with the artifact field and the sweep that justify it. `describe()`
         # publishes the constant meanwhile, so a reader can see which gate produced the numbers.
         #
-        # Keyed to the embedding PROFILE id rather than to `embedder_name`: the profile is what a
-        # fitted calibration file is written under (`fastembed` resolves to
-        # `bge-small-symmetric-v1`), so a threshold recorded against the CLI string would name a
-        # key no calibration ever uses.
-        self._calibration = Calibration(
-            embedder=embedding_profile_id(self._embedder), threshold=DEFAULT_GAP_THRESHOLD
-        )
+        # Built by `benchmarks._trust`, which is where the sibling arms get theirs too, so "which
+        # threshold, keyed how" is decided in ONE place. This arm keeps the object rather than
+        # calling `bench_search`: `describe()` has to report the gate it ran under, and a helper
+        # that injects the calibration internally would leave nothing for the artifact to read.
+        self._calibration = uncalibrated_floor(self._embedder)
         # Overridable so a side experiment (e.g. the latency benchmark) can use its own table at a
         # different embedder width without colliding with the accuracy runs' `bench_locomo_chunks`.
         self._table = table
