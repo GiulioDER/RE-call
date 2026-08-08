@@ -158,9 +158,14 @@ def git_is_dirty(path: Path) -> bool | None:
     that is always True is exactly as useless as one that is always False, and worse than absent,
     because it trains a reader to skip past it.
 
-    The cost of that choice, stated rather than hidden: a NEW untracked `.py` that gets imported
-    does change what ran, and this will not catch it. Modified tracked files are the load-bearing
-    case and the one that stays meaningful.
+    The costs of that choice, stated rather than hidden, because a guard's blind spots belong next
+    to the guard:
+      · a NEW untracked `.py` that gets imported does change what ran, and this will not catch it;
+      · a tracked file carrying the `assume-unchanged` or `skip-worktree` index bit is invisible to
+        `git status` by design, so a real modification to it reports clean. Both need a deliberate,
+        unusual git operation, and no reasonable check catches them.
+    Modified tracked files are the load-bearing case and the one that stays meaningful. Deletions,
+    renames and dirty submodule pointers ARE caught (verified, not assumed).
     """
     try:
         out = subprocess.check_output(
@@ -185,14 +190,21 @@ def manifest_filename(revision: str | None, started_at: str) -> str:
     `isoformat()` omits the fractional part entirely when it is zero. The pid does not depend on
     clock resolution, so uniqueness stops resting on luck.
 
-    The stamp strips every non-alphanumeric rather than translating separators one at a time. The
-    earlier version replaced `+` but not `-`, so a negative UTC offset had its sign deleted and the
-    offset digits glued onto the microseconds with no delimiter. Only `utc_now()` calls this today,
-    so that was unreachable, but the function is general and unit-tested, and a rule with an
-    exception for one sign is a rule waiting to be wrong. The name only needs to be unique and
-    legible; the exact timestamp lives inside the manifest.
+    The UTC offset is split off BEFORE the rest is squashed, and its sign becomes a letter. No rule
+    simple enough to apply to the whole string works here, because a DATE contains `-` as well: strip
+    every non-alphanumeric and `+05:00` and `-05:00` collapse to one identical stamp; strip nothing
+    and the name is not a legal filename. Two earlier versions got this wrong in opposite
+    directions, and the test meant to pin it compared two values that merely happened to differ, so
+    it passed against both. The exact timestamp lives inside the manifest; the name only has to be
+    unique and legible.
     """
-    stamp = re.sub(r"[^0-9A-Za-z]", "", started_at)
+    m = re.search(r"([+-])(\d{2}):?(\d{2})$", started_at)
+    if m:
+        sign = "p" if m.group(1) == "+" else "n"
+        body, tz = started_at[: m.start()], f"_{sign}{m.group(2)}{m.group(3)}"
+    else:
+        body, tz = started_at, ""
+    stamp = re.sub(r"[^0-9A-Za-z]", "", body) + tz
     return f"manifest_{(revision or 'norev')[:7]}_{stamp}_{os.getpid()}.json"
 
 
