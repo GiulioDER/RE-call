@@ -178,7 +178,17 @@ def _refuses_without_a_database(fn: AnyFunc) -> bool:
             )
             if not calls_probe:
                 return False
-            return any(isinstance(stmt, ast.Return) for stmt in node.body)
+            # The branch's own contents matter, not just that a `Return` is somewhere in it. The
+            # same ordering rule applied one level in: `if not _db_available(): conn =
+            # psycopg.connect(...); return` bails, but connects first, which is the defect this
+            # whole file is about. A generator fixture must yield before returning, or pytest
+            # reports "did not yield a value" for every test that uses it.
+            shape = [type(stmt) for stmt in node.body]
+            if any(isinstance(n, ast.Yield) for n in ast.walk(fn)):
+                return shape == [ast.Expr, ast.Return] and isinstance(
+                    node.body[0].value, ast.Yield
+                )
+            return shape == [ast.Return]
         return False  # the first thing this fixture does is something other than refusing
     return False
 
@@ -213,9 +223,13 @@ def test_every_db_fixture_refuses_without_a_database() -> None:
     """
     unguarded = [name for name, (fn, _) in _db_fixtures().items() if not _refuses_without_a_database(fn)]
     assert not unguarded, (
-        f"{unguarded} reach the database without first checking `_db_available()`. A test that "
-        "requests one of these on a machine with no Postgres will spend the psycopg connect "
-        "timeout failing instead of skipping, whether or not it carries `@requires_db`."
+        f"{unguarded} do not refuse a missing database in the one shape this guard accepts. The "
+        "rule is deliberately narrow: `require_db()` must be the FIRST statement after the "
+        "docstring, with nothing before it, or (for the autouse fixture, which cannot skip) "
+        "`if not _db_available():` as the first statement with a bare bail as its whole body. "
+        "If your refusal is present but lower down, move it to the top: a fixture that connects "
+        "and then refuses has already paid the psycopg connect timeout, which is the entire "
+        "defect this file exists to prevent."
     )
 
 
@@ -294,6 +308,18 @@ def _only(source: str) -> AnyFunc:
             "refuses only inside a nested helper that nothing calls",
             "def f():\n    def unused():\n        require_db()\n"
             "    return psycopg.connect(TEST_DSN)\n",
+            False,
+        ),
+        (
+            "connects inside the guarded branch before returning",
+            "def f():\n    if not _db_available():\n        conn = psycopg.connect(TEST_DSN)\n"
+            "        return\n    yield 't'\n",
+            False,
+        ),
+        (
+            "a generator whose guard returns without yielding, which errors every test using it",
+            "def f():\n    if not _db_available():\n        return\n"
+            "    yield psycopg.connect(TEST_DSN)\n",
             False,
         ),
         (
