@@ -26,11 +26,48 @@ ANCHORED LIFT. None of these numbers may be quoted against the published leaderb
 | run | contexts | prompt | RL_F | RB_llm | RB_alg | **harmonic** |
 |---|---|---|---|---|---|---|
 | Task B | gold | `abstain` | 0.7011 | 0.6283 | 0.4117 | **0.5508** |
+| **Task B** | **gold** | **`official`** | **0.7756** | **0.7696** | **0.4432** | **0.6192** |
 | Task C | benchmark | `abstain` | 0.7369 | 0.6024 | 0.3999 | **0.5437** |
 
-Task B's RL_F is over 830 rows, not 842: 12 RAGAS `TimeoutError`s. Complete-case (n=830) gives
-0.5502 against 0.5508 for all rows, a difference of 0.0006, so they are missing at random and are
-not moving the number.
+The `abstain` Task B RL_F is over 830 rows, not 842: 12 RAGAS `TimeoutError`s. Complete-case gives
+0.5502 against 0.5508, a difference of 0.0006, so they are missing at random. The `official` run
+has **842 on every metric**, no timeouts, no caveat.
+
+### 🎯 The official prompt closed the gap almost entirely
+
+| Task B, gold contexts | harmonic | vs their gpt-4o (0.6208) |
+|---|---|---|
+| ours, `abstain` | 0.5508 | −0.0700 |
+| **ours, `official`** | **0.6192** | **−0.0016** |
+
+That moves us from **9th of 10 to 3rd** in the recomputed Task B table, behind only
+`llama-3.1-405b` (0.6277) and their `gpt-4o` (0.6208). The entire deficit was the prompt.
+
+🔑 **What this buys for Task C**: our generation is now demonstrably at parity with the baselines,
+so a Task C result reads as a statement about RETRIEVAL rather than about harness quality. It also
+removes the excuse — if RE-call's contexts do not beat the benchmark's, there is no prompt to blame.
+
+### Pre-registration scored: 2 of 4 correct
+
+Registered in `PREREGISTRATION-official-prompt-2026-08-08.md` before any scored output existed.
+
+| prediction | registered | actual | verdict |
+|---|---|---|---|
+| harmonic mean | 0.57 – 0.62 (point 0.595) | **0.6192** | ✅ in band, at the top |
+| RL_F | 0.75 – 0.79 | 0.7756 | ✅ |
+| RB_alg | 0.43 – 0.46 | 0.4432 | ✅ |
+| RB_llm | 0.66 – 0.70 | **0.7696** | ❌ above band |
+| false abstentions | < 40 / 709 | **61 / 709** | ❌ |
+| ordering: largest gain RL_F | RL_F > RB_llm > RB_alg | **RB_llm +0.1413** > RL_F +0.0745 > RB_alg +0.0315 | ❌ |
+
+🔑 **The diagnosis was right about what was broken and wrong about how it would repair.** I reasoned
+that fixing false abstentions would mainly lift faithfulness (RL_F). It mainly lifted RB_llm, which
+in hindsight follows: RB_llm carried the largest deficit (−0.133) and judges appropriateness and
+completeness, which is precisely what a refusal destroys. The ordering prediction was chosen as the
+one hardest to hit by luck, and it is the one that failed.
+
+⚠️ This also retires the alarm I raised when correct abstentions fell 89.1% → 63.6%: the net was
+strongly positive regardless, and I over-weighted that signal when I saw it in isolation.
 
 ### Recomputed baselines — Task B (gold contexts)
 
@@ -45,8 +82,12 @@ not moving the number.
 | qwen-2.5-7b-instruct | 0.6787 | 0.7189 | 0.4358 | 0.5815 |
 | llama-3.1-70b-instruct | 0.6962 | 0.6632 | 0.4422 | 0.5763 |
 | mixtral_8x22b_instruct | 0.6174 | 0.6978 | 0.4202 | 0.5522 |
-| **ours (`abstain`)** | 0.7011 | 0.6283 | 0.4117 | **0.5508** |
 | llama-3.1-8b-instruct | 0.5539 | 0.5936 | 0.3706 | 0.4848 |
+
+**Our two rows placed in that table:** `official` **0.6192** sits 3rd, between their `gpt-4o`
+(0.6208) and `qwen-2.5-72b` (0.6031). `abstain` **0.5508** sat 9th, between `mixtral_8x22b`
+(0.5522) and `llama-3.1-8b` (0.4848). Same model, same contexts, same tasks — six places apart on
+the prompt alone.
 
 ### Recomputed baselines — Task C (retrieved contexts)
 
@@ -97,26 +138,31 @@ from it in three ways, not the one I first diagnosed:
 dataset with mixtral-8x7b and has no length limit. Taking the first prompt found in the repo would
 have been the same error one level quieter.
 
-### Pre-registration: the mechanism prediction FAILED
+### The behavioural mechanism, measured
 
-Registered in `PREREGISTRATION-official-prompt-2026-08-08.md` before any scored output existed.
-Predicted false abstentions would fall from 83 to **under 40**. Measured, with a single consistent
-detector across both files:
+Scored above; this is the behaviour underneath it, with a single consistent detector across both
+files:
 
 | | false-abstain on ANSWERABLE | UNANSWERABLE abstain | mean words |
 |---|---|---|---|
 | `abstain` | 89 / 709 (12.6%) | 49 / 55 (89.1%) | 51.6 |
 | `official` | **61 / 709 (8.6%)** | **35 / 55 (63.6%)** | **79.9** |
 
-Direction right, magnitude wrong, and an effect I did not predict cuts the other way: **correct
-abstentions collapsed too**, 89.1% → 63.6%. The official prompt abstains less *everywhere*, and a
-correct IDK scores exactly 1.0 on all three metrics, so losing 14 of them is expensive. Answers also
-got longer, because `abstain` said "concisely" and D.2 does not.
+The official prompt abstains **less everywhere** — it did not learn to abstain better, it became
+less willing to abstain at all. Correct abstentions fell alongside false ones. When I saw this
+before the scores I called it expensive, because a correct IDK is worth exactly 1.0 on all three
+metrics; the scores say the trade was strongly positive anyway. 🔑 **A mechanism moving the wrong
+way on one sub-population does not predict the aggregate**, and I should not have raised it as a
+concern before the number existed.
+
+Answers also got longer (51.6 → 79.9 words) because `abstain` said "concisely" and D.2 does not,
+despite D.2 carrying a 150-word cap that binds on only 2.1% of answers.
 
 ⚠️ The detector here also matches "I do not have specific information", so it reads the old file as
-89 where the pre-registered figure said 83. The old-vs-new comparison is internally consistent; the
-registered threshold was anchored to a narrower detector. That is a measurement-definition slip on
-my side and the third time today that string-matching abstention has misled.
+89 where the pre-registered figure said 83. Old-vs-new is internally consistent; the registered
+threshold was anchored to a narrower detector. A measurement-definition slip, and the third time in
+one session that string-matching abstention misled me. ⛔ **Never quote a regex-derived abstention
+rate** — every conclusion above rests on the official judge instead.
 
 ## MTRAGEval compliance
 
