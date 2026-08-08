@@ -150,7 +150,12 @@ pods.
 ## Failure recovery
 
 - `another RE-call schema migrator is already running`: wait for the active migration job. Do not
-  run multiple jobs against the same database.
+  run multiple jobs against the same database. The migrator keeps trying for
+  `MIGRATION_LOCK_WAIT_SECONDS` (2s) before reporting this, because the advisory lock is released
+  when PostgreSQL reaps the holding backend rather than when the holding process exits: a migrator
+  restarted straight after a kill, a Ctrl-C or a container restart would otherwise be refused on
+  account of its own predecessor. Seeing the error after that wait means a migrator really is
+  holding the lock.
 - `checksum drift`: restore the released migration bytes. Never edit an applied SQL file; add a new
   ordered migration. One pre-release exception has already been taken: `0008_generation_foundation.sql`
   was corrected in place before v1 shipped, because the bug it carried aborted the migration on any
