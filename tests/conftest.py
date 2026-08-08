@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import uuid
+from typing import TYPE_CHECKING, Any
 
 # ─── Import-time environment neutralisation ──────────────────────────────────────────────────────
 # This block runs BEFORE the `recall.*` imports below, and that ordering is load-bearing — see
@@ -85,6 +86,15 @@ import pytest  # noqa: E402
 from recall.store import PgVectorStore  # noqa: E402
 from recall.schema import LEDGER_TABLE, apply_migrations  # noqa: E402
 
+if TYPE_CHECKING:
+    # Annotation-only, and deliberately not imported at runtime: the `dev_search*` helpers below
+    # defer their own imports, and this block must not undo that by pulling the same modules in at
+    # conftest import time. `from __future__ import annotations` above makes the names strings.
+    from collections.abc import Callable, Iterator
+
+    from recall.trust import TrustedResult
+    from recall_mcp.service import SearchResult
+
 #: The local dev database from docker-compose.yml — the same one the README quickstart uses.
 _LOCAL_DEV_DSN = "postgresql://recall:recall@localhost:5432/recall"
 
@@ -136,10 +146,37 @@ def _db_available() -> bool:
         return False
 
 
-requires_db = pytest.mark.skipif(
-    not _db_available(),
-    reason="pgvector DB not reachable (run `docker compose up -d`)",
-)
+#: One wording, used by the collection-time mark and by every fixture that refuses at setup, so a
+#: DB-less run reports the same reason however the test was skipped.
+DB_UNREACHABLE = "pgvector DB not reachable (run `docker compose up -d`)"
+
+requires_db = pytest.mark.skipif(not _db_available(), reason=DB_UNREACHABLE)
+
+
+def require_db() -> None:
+    """Skip the calling test unless the database is reachable.
+
+    The single refusal site. `@requires_db` is a collection-time optimisation and only protects
+    tests whose author remembered it: `test_store_cosines_for.py` and `test_store_query_latency.py`
+    both reached this database without it and spent 213 s collecting `ConnectionTimeout` failures
+    instead of skipping. Anything here that can touch the database calls this FIRST, so the
+    refusal does not depend on anyone remembering.
+
+    Exported deliberately. A module-local fixture that opens its own connection, and there are 22
+    of them, is outside this file's reach; calling `require_db()` at the top of one buys it the
+    same protection.
+    """
+    if not _db_available():
+        pytest.skip(DB_UNREACHABLE)
+
+#: Fixtures below that hand a test access to the database. Each one REFUSES to run without a
+#: reachable DB, which is what makes `@requires_db` an optimisation (skip at collection, before the
+#: fixture is ever set up) rather than the thing standing between a missing mark and a 213 s red.
+#:
+#: Hand-maintained, so `test_requires_db_coverage.py` derives the same set from this file's source
+#: and requires both the membership and the refusal to match. A new DB fixture added here without
+#: the refusal is exactly the hole this pair exists to close.
+DB_BACKED_FIXTURES = ("cli_table", "make_store", "unprivileged_dsn")
 
 #: Role provisioned by `unprivileged_dsn` when `TEST_DSN` turns out to be privileged.
 UNPRIVILEGED_ROLE = "recall_rls_probe"
@@ -154,6 +191,9 @@ def role_is_unprivileged(dsn: str) -> bool:
     job is to prove a negative capability. Every RLS assertion in the suite rests on this answer,
     so an unknown privilege must never be the safe one.
     """
+    # Tests import and call this directly, not only through `unprivileged_dsn`, so the refusal
+    # belongs here too rather than only at the fixture that happens to be the usual caller.
+    require_db()
     with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as conn:
         row = conn.execute(
             "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"
@@ -187,15 +227,17 @@ def unprivileged_dsn() -> str:
     Every test that uses this fixture still asserts the property itself. A fixture named
     "unprivileged" is a claim; `SELECT rolsuper OR rolbypassrls` is evidence.
     """
-    if not _db_available():
-        pytest.skip("pgvector DB not reachable")
+    require_db()
     if role_is_unprivileged(TEST_DSN):
         return TEST_DSN
 
     from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-        owner = conn.execute("SELECT current_user").fetchone()[0]
+        owner_row = conn.execute("SELECT current_user").fetchone()
+        if owner_row is None:  # pragma: no cover - SELECT current_user always returns a row
+            raise RuntimeError("could not determine the connected role")
+        owner = owner_row[0]
         may_provision = conn.execute(
             "SELECT rolsuper OR rolcreaterole FROM pg_roles WHERE rolname = current_user"
         ).fetchone()
@@ -233,7 +275,7 @@ def unprivileged_dsn() -> str:
             )
         conn.execute(f"GRANT USAGE, CREATE ON SCHEMA public TO {UNPRIVILEGED_ROLE}")
 
-    parts = conninfo_to_dict(TEST_DSN)
+    parts: dict[str, Any] = dict(conninfo_to_dict(TEST_DSN))
     parts["user"] = UNPRIVILEGED_ROLE
     parts["password"] = _UNPRIVILEGED_PASSWORD
     dsn = make_conninfo(**parts)
@@ -243,14 +285,15 @@ def unprivileged_dsn() -> str:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _bootstrap_default_test_schema():
+def _bootstrap_default_test_schema() -> Iterator[None]:
     """Provision the default MCP table explicitly for subprocess/server integration tests."""
     if not _db_available():
         yield
         return
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute("DROP TABLE IF EXISTS chunks CASCADE")
-        if conn.execute("SELECT to_regclass(%s)", (LEDGER_TABLE,)).fetchone()[0]:
+        ledger = conn.execute("SELECT to_regclass(%s)", (LEDGER_TABLE,)).fetchone()
+        if ledger is not None and ledger[0]:
             conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = 'chunks'")
     apply_migrations(TEST_DSN, table="chunks", dim=64)
     yield
@@ -275,7 +318,7 @@ requires_fastembed = pytest.mark.skipif(
 
 
 @pytest.fixture(autouse=True)
-def _isolate_recall_logger():
+def _isolate_recall_logger() -> Iterator[None]:
     """Restore the `recall` logger around every test.
 
     `configure_logging()` is an entry-point function: it attaches a handler and sets
@@ -302,7 +345,17 @@ def _isolate_recall_logger():
 
 
 @pytest.fixture
-def make_store():
+def make_store() -> Iterator[Callable[[int], PgVectorStore]]:
+    """Hands out throwaway tables, and REFUSES to run at all when there is no database.
+
+    The refusal is the point. `@requires_db` is the convention, but a convention only protects the
+    tests whose author remembered it: `test_store_cosines_for.py` and `test_store_query_latency.py`
+    both requested this fixture without the mark, and instead of skipping they spent 213 s
+    collecting `psycopg.errors.ConnectionTimeout` failures. Skipping HERE makes that impossible
+    rather than merely discouraged, because every test that reaches this database through conftest
+    must come through this line, whether or not anyone marked it.
+    """
+    require_db()
     created: list[PgVectorStore] = []
 
     def _factory(dim: int) -> PgVectorStore:
@@ -332,7 +385,7 @@ def make_store():
 
 
 @pytest.fixture
-def cli_table():
+def cli_table() -> Iterator[str]:
     """A uuid-named table for CLI end-to-end tests, dropped afterwards.
 
     The CLI tests used to run against the default `chunks` table and `DROP TABLE IF EXISTS
@@ -340,6 +393,7 @@ def cli_table():
     database was configured. A throwaway table per test isolates without dropping anything a
     user owns.
     """
+    require_db()  # see `make_store`: the refusal is what makes the mark optional
     name = "cli_" + uuid.uuid4().hex[:8]
     apply_migrations(TEST_DSN, table=name, dim=64)
     yield name
@@ -348,7 +402,7 @@ def cli_table():
         conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = %s", (name,))
 
 
-def dev_search(*args, **kwargs):
+def dev_search(*args: Any, **kwargs: Any) -> TrustedResult:
     """`trusted_search` in development mode, for tests that exercise UNCALIBRATED retrieval.
 
     Strict is the library's production default as of the strict-trust work, so a plain
@@ -384,7 +438,7 @@ def dev_search(*args, **kwargs):
     return trusted_search(*args, **kwargs)
 
 
-def dev_search_memory(*args, **kwargs):
+def dev_search_memory(*args: Any, **kwargs: Any) -> SearchResult:
     """`recall_mcp.service.search_memory` in development mode with an explicit threshold.
 
     The MCP service defaults to strict for the same reason the library does, so these tests have
@@ -403,7 +457,7 @@ def dev_search_memory(*args, **kwargs):
     return search_memory(*args, **kwargs)
 
 
-def dev_search_uncalibrated(*args, **kwargs):
+def dev_search_uncalibrated(*args: Any, **kwargs: Any) -> TrustedResult:
     """`trusted_search` in development mode with NO threshold: every hit comes back unverified.
 
     For tests whose subject is the absence of a calibration, rather than tests that merely need
