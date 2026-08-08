@@ -603,7 +603,7 @@ def test_composition_check_withdrawn_and_resolve_must_both_run_over_the_same_cla
 
 
 def test_the_year_row_does_not_eat_a_four_digit_quantity_with_decimals() -> None:
-    """`results/RESULTS.md:72` publishes `1922.1` ms of rerank latency.
+    r"""`results/RESULTS.md:72` publishes `1922.1` ms of rerank latency.
 
     `\b` is satisfied by the `.`, so the old `\b(?:19|20)\d{2}\b` matched INSIDE `1922.1`,
     masking the leading digits and leaving `.1`. The orphan was not harmless: NUMBER_RE read the

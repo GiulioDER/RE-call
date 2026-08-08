@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import uuid
+from typing import TYPE_CHECKING, Any
 
 # ─── Import-time environment neutralisation ──────────────────────────────────────────────────────
 # This block runs BEFORE the `recall.*` imports below, and that ordering is load-bearing — see
@@ -85,6 +86,15 @@ import pytest  # noqa: E402
 from recall.store import PgVectorStore  # noqa: E402
 from recall.schema import LEDGER_TABLE, apply_migrations  # noqa: E402
 
+if TYPE_CHECKING:
+    # Annotation-only, and deliberately not imported at runtime: the `dev_search*` helpers below
+    # defer their own imports, and this block must not undo that by pulling the same modules in at
+    # conftest import time. `from __future__ import annotations` above makes the names strings.
+    from collections.abc import Callable, Iterator
+
+    from recall.trust import TrustedResult
+    from recall_mcp.service import SearchResult
+
 #: The local dev database from docker-compose.yml — the same one the README quickstart uses.
 _LOCAL_DEV_DSN = "postgresql://recall:recall@localhost:5432/recall"
 
@@ -141,6 +151,15 @@ requires_db = pytest.mark.skipif(
     reason="pgvector DB not reachable (run `docker compose up -d`)",
 )
 
+#: Fixtures below that a test must REQUEST to reach the database, and which therefore oblige it to
+#: carry `@requires_db`. Autouse fixtures are deliberately absent: they cannot be requested, so they
+#: cannot mark anything, and the one that exists self-guards on `_db_available()` instead.
+#:
+#: Hand-maintained, so `test_requires_db_coverage.py` derives the same set from this file's source
+#: and requires the two to match. Without that, a new DB fixture added here and forgotten there
+#: would silently exempt every test using it from the coverage guard.
+DB_BACKED_FIXTURES = ("cli_table", "make_store", "unprivileged_dsn")
+
 #: Role provisioned by `unprivileged_dsn` when `TEST_DSN` turns out to be privileged.
 UNPRIVILEGED_ROLE = "recall_rls_probe"
 _UNPRIVILEGED_PASSWORD = "recall_rls_probe"  # noqa: S105 - throwaway local test role
@@ -195,7 +214,10 @@ def unprivileged_dsn() -> str:
     from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-        owner = conn.execute("SELECT current_user").fetchone()[0]
+        owner_row = conn.execute("SELECT current_user").fetchone()
+        if owner_row is None:  # pragma: no cover - SELECT current_user always returns a row
+            raise RuntimeError("could not determine the connected role")
+        owner = owner_row[0]
         may_provision = conn.execute(
             "SELECT rolsuper OR rolcreaterole FROM pg_roles WHERE rolname = current_user"
         ).fetchone()
@@ -233,7 +255,7 @@ def unprivileged_dsn() -> str:
             )
         conn.execute(f"GRANT USAGE, CREATE ON SCHEMA public TO {UNPRIVILEGED_ROLE}")
 
-    parts = conninfo_to_dict(TEST_DSN)
+    parts: dict[str, Any] = dict(conninfo_to_dict(TEST_DSN))
     parts["user"] = UNPRIVILEGED_ROLE
     parts["password"] = _UNPRIVILEGED_PASSWORD
     dsn = make_conninfo(**parts)
@@ -243,14 +265,15 @@ def unprivileged_dsn() -> str:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _bootstrap_default_test_schema():
+def _bootstrap_default_test_schema() -> Iterator[None]:
     """Provision the default MCP table explicitly for subprocess/server integration tests."""
     if not _db_available():
         yield
         return
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute("DROP TABLE IF EXISTS chunks CASCADE")
-        if conn.execute("SELECT to_regclass(%s)", (LEDGER_TABLE,)).fetchone()[0]:
+        ledger = conn.execute("SELECT to_regclass(%s)", (LEDGER_TABLE,)).fetchone()
+        if ledger is not None and ledger[0]:
             conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = 'chunks'")
     apply_migrations(TEST_DSN, table="chunks", dim=64)
     yield
@@ -275,7 +298,7 @@ requires_fastembed = pytest.mark.skipif(
 
 
 @pytest.fixture(autouse=True)
-def _isolate_recall_logger():
+def _isolate_recall_logger() -> Iterator[None]:
     """Restore the `recall` logger around every test.
 
     `configure_logging()` is an entry-point function: it attaches a handler and sets
@@ -302,7 +325,7 @@ def _isolate_recall_logger():
 
 
 @pytest.fixture
-def make_store():
+def make_store() -> Iterator[Callable[[int], PgVectorStore]]:
     created: list[PgVectorStore] = []
 
     def _factory(dim: int) -> PgVectorStore:
@@ -332,7 +355,7 @@ def make_store():
 
 
 @pytest.fixture
-def cli_table():
+def cli_table() -> Iterator[str]:
     """A uuid-named table for CLI end-to-end tests, dropped afterwards.
 
     The CLI tests used to run against the default `chunks` table and `DROP TABLE IF EXISTS
@@ -348,7 +371,7 @@ def cli_table():
         conn.execute(f"DELETE FROM {LEDGER_TABLE} WHERE target_table = %s", (name,))
 
 
-def dev_search(*args, **kwargs):
+def dev_search(*args: Any, **kwargs: Any) -> TrustedResult:
     """`trusted_search` in development mode, for tests that exercise UNCALIBRATED retrieval.
 
     Strict is the library's production default as of the strict-trust work, so a plain
@@ -384,7 +407,7 @@ def dev_search(*args, **kwargs):
     return trusted_search(*args, **kwargs)
 
 
-def dev_search_memory(*args, **kwargs):
+def dev_search_memory(*args: Any, **kwargs: Any) -> SearchResult:
     """`recall_mcp.service.search_memory` in development mode with an explicit threshold.
 
     The MCP service defaults to strict for the same reason the library does, so these tests have
@@ -403,7 +426,7 @@ def dev_search_memory(*args, **kwargs):
     return search_memory(*args, **kwargs)
 
 
-def dev_search_uncalibrated(*args, **kwargs):
+def dev_search_uncalibrated(*args: Any, **kwargs: Any) -> TrustedResult:
     """`trusted_search` in development mode with NO threshold: every hit comes back unverified.
 
     For tests whose subject is the absence of a calibration, rather than tests that merely need

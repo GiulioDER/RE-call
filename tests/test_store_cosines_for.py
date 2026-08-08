@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from recall.store import STORE_QUERY_LEGS, TIMED_PUBLIC_METHODS
+from tests.conftest import requires_db
 
 DIM = 8
 
@@ -25,6 +26,7 @@ def test_cosines_for_is_registered_in_the_timing_surface() -> None:
     assert "rescore" in STORE_QUERY_LEGS
 
 
+@requires_db
 def test_cosines_for_returns_the_cosine_against_the_given_vector(make_store) -> None:
     """The value must match what `query_dense` reports for the same chunk and vector."""
     from recall.types import Chunk
@@ -40,6 +42,7 @@ def test_cosines_for_returns_the_cosine_against_the_given_vector(make_store) -> 
     assert rescored["c1"] == pytest.approx(dense[0].score, abs=1e-6)
 
 
+@requires_db
 def test_cosines_for_omits_ids_that_do_not_exist(make_store) -> None:
     """An absent id is not a zero. Zero is a real cosine and would look like a poor match."""
     store = make_store(DIM)
@@ -48,6 +51,7 @@ def test_cosines_for_omits_ids_that_do_not_exist(make_store) -> None:
     assert store.cosines_for(["nope"], vec) == {}
 
 
+@requires_db
 def test_cosines_for_returns_empty_for_no_ids(make_store) -> None:
     """No round trip for an empty request."""
     store = make_store(DIM)
