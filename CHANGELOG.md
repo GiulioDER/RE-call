@@ -209,6 +209,43 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   The documentation now says so. Behaviour is unchanged.
 
 ### Fixed
+- **The RE-call arm of the LOCOMO head-to-head benchmark refused every question, and CI could not
+  see it.** `benchmarks.systems.RecallSystem.retrieve` called `trusted_search` without a policy.
+  When retrieval began failing closed, that default became strict, and a freshly-ingested bench
+  tenant has no generation and no published calibration, so every query raised
+  `TrustRefusal: INDEX_NOT_READY` before retrieval ran. The arm could not score a single question.
+  Every other research harness — `recall.eval.locomo`, `benchmarks.beam.systems`,
+  `recall.eval.harness` — had already moved to `recall.eval._research_trust.research_search`,
+  which exists precisely because a benchmark scores corpora nobody has certified yet; this adapter
+  was missed. It went unnoticed for four days because its three integration tests are
+  `@requires_fastembed` and the `[dev]` extra CI installs does not include `fastembed`, so CI
+  skipped them and stayed green.
+
+  ⚠️ **The policy alone would have been the worse bug.** Development mode with `calibration=None`
+  means "no threshold exists at all", so `recall.trust` blanks every verdict to `unverified` and
+  forces `abstained=False`. `retrieve` would then never return `""`, and the abstention rate this
+  benchmark exists to publish would have read as a flat zero rather than as a dead gate. `retrieve`
+  therefore also passes an explicit `Calibration`, taking the branch the trust layer itself calls
+  "the path every abstention benchmark measures". The threshold is the library's
+  `DEFAULT_GAP_THRESHOLD`, the same constant `evaluate` fell back to before the trust gate existed,
+  so the arm measures the gate it always did, now stated rather than inherited.
+
+  `describe()` now publishes a `trust` block, read off the same arguments `retrieve` sends, so a
+  results artifact names the gate behind its headline abstention number instead of leaving a
+  reader to assume a fitted one. ⚠️ **That threshold is untuned and this arm cannot vary it**: 0.50
+  sits at the 0th percentile of five of six measured top-1 distributions and the 16th of the
+  sixth, so it barely fires on most embedders and starves a sixth of queries on one, and
+  `--embedder` can select any of them. Published abstention rates from this arm should be read
+  with that in mind; a `--threshold` flag should arrive with the sweep that needs it rather than
+  as an unreachable constructor argument. **The trust default is unchanged and was not weakened.**
+  Two new tests pin the wiring without Postgres or fastembed, so the next such omission fails on
+  the pull request rather than four days later.
+
+  Not fixed here, and carrying the identical defect:
+  `benchmarks/ladder/systems/recall_system.py`, `benchmarks/membench/recall_isolation.py` and
+  `benchmarks/membench/recall_temporal.py` all still call `trusted_search` with no policy. Each
+  needs its own decision on the calibration half rather than a mechanical swap, because
+  `recall_isolation` derives `answered` from `result.abstained`.
 - **`recall-enterprise parity` passed vacuously on two empty generations, and a vacuous pass here
   reads as permission to run `cutover`.** Two empty generations cannot disagree, so every
   comparison `validate_generation_parity` makes was satisfied, `GenerationParity.valid` was True,
