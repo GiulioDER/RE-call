@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 import uuid
 from contextlib import contextmanager
 from urllib.parse import urlsplit, urlunsplit
@@ -18,6 +20,7 @@ from recall.schema import (
     GLOBAL_MIGRATION_TARGET,
     LEDGER_TABLE,
     MIGRATION_LOCK_NAME,
+    MIGRATION_LOCK_WAIT_SECONDS,
     ConcurrentMigrator,
     MigrationChecksumMismatch,
     SchemaTooNew,
@@ -243,12 +246,68 @@ def test_checksum_drift_and_unknown_future_versions_fail_closed():
 
 @requires_db
 def test_advisory_lock_refuses_a_concurrent_migrator():
+    """Take the migration lock for real, then hand it back explicitly rather than by closing.
+
+    A session advisory lock is released when the *server-side* backend exits, and closing the
+    connection only schedules that. Leaving the release to `with` therefore handed the rest of
+    the suite a lock that was, for a moment, still held. Measured against this container: on an
+    idle database another session never once observed the stale lock in 400 rounds, but with 16
+    connections churning it observed it in 101 of 400, needing 2 to 4 further attempts before the
+    lock cleared. A full run is the loaded case, so a test scheduled next by pytest-randomly could
+    lose that race and error with `ConcurrentMigrator` from `apply_migrations`, which is what was
+    seen about once in four full runs.
+
+    `pg_advisory_unlock` returning true is the assertion that matters: it is true only when this
+    session did hold the lock and has now released it, so it fails if the lock was never taken and
+    it cannot pass while the release is still pending. Do not replace it with a check from a second
+    connection that the lock is free. That check passes on an idle database whether or not the
+    release is explicit, which makes it a guard that cannot fail on the machine you run it on.
+    """
+    lock_sql = "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))"
+    unlock_sql = "SELECT pg_advisory_unlock(hashtextextended(%s, 0))"
     with _target() as table, psycopg.connect(TEST_DSN, autocommit=True) as blocker:
-        assert blocker.execute(
-            "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (MIGRATION_LOCK_NAME,)
-        ).fetchone() == (True,)
+        assert blocker.execute(lock_sql, (MIGRATION_LOCK_NAME,)).fetchone() == (True,)
         with pytest.raises(ConcurrentMigrator):
             apply_migrations(TEST_DSN, table=table, dim=DIM)
+        assert blocker.execute(unlock_sql, (MIGRATION_LOCK_NAME,)).fetchone() == (True,)
+
+
+@requires_db
+def test_migration_lock_waits_out_a_lock_that_is_merely_being_reaped():
+    """`ConcurrentMigrator` reports a migrator that is running, not one that has just stopped.
+
+    A session advisory lock outlives the exit of the process holding it, until the server reaps
+    the backend. A migrator restarted straight after a kill, a Ctrl-C or a container restart
+    therefore raced its own predecessor's lock and was refused for a condition that had already
+    passed. The two cases are told apart by how long the lock is held: a real migrator holds for
+    seconds to minutes, a lock awaiting reaping clears in milliseconds.
+
+    The lock is genuinely held when `apply_migrations` is called and is only released part way
+    through, so returning at all is the whole assertion: refusing on the first failed attempt
+    raises here instead. Do not add a check that the call took at least `hold_for`. It cannot
+    acquire the lock before the release, so that check passes however the code behaves.
+
+    The companion is `test_advisory_lock_refuses_a_concurrent_migrator`, where the lock is never
+    released and the refusal must still arrive. Together they pin the wait as bounded.
+    """
+    lock_sql = "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))"
+    unlock_sql = "SELECT pg_advisory_unlock(hashtextextended(%s, 0))"
+    hold_for = 0.3
+    assert hold_for < MIGRATION_LOCK_WAIT_SECONDS, "the lock must clear inside the migrator's wait"
+    with _target() as table, psycopg.connect(TEST_DSN, autocommit=True) as blocker:
+        assert blocker.execute(lock_sql, (MIGRATION_LOCK_NAME,)).fetchone() == (True,)
+
+        def release_shortly() -> None:
+            time.sleep(hold_for)
+            blocker.execute(unlock_sql, (MIGRATION_LOCK_NAME,))
+
+        releaser = threading.Thread(target=release_shortly)
+        releaser.start()
+        try:
+            applied = apply_migrations(TEST_DSN, table=table, dim=DIM)
+        finally:
+            releaser.join(timeout=30)
+    assert applied
 
 
 @requires_db

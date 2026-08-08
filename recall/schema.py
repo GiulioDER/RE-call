@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from importlib import resources
 from typing import TYPE_CHECKING, Literal
@@ -22,6 +23,14 @@ from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, TENANT_GUC, _schema_lock
 
 LEDGER_TABLE = "recall_schema_migrations"
 MIGRATION_LOCK_NAME = "recall-schema-migrations-v1"
+#: How long to keep trying for the migration lock before calling it contention. A session
+#: advisory lock is released when the server reaps the backend holding it, not when that process
+#: exits, so a migrator restarted immediately after a kill or a Ctrl-C can meet its predecessor's
+#: lock for a few milliseconds. That is not the condition `ConcurrentMigrator` exists to report.
+#: A migrator that really is running holds the lock for seconds to minutes, so waiting this long
+#: separates the two while delaying a true report by at most this much.
+MIGRATION_LOCK_WAIT_SECONDS = 2.0
+_MIGRATION_LOCK_POLL_SECONDS = 0.05
 GENERATION_TABLES = (
     "recall_generations",
     "recall_tenant_state",
@@ -263,6 +272,24 @@ def _render(migration: Migration, table: str, dim: int) -> tuple[str, str | None
 
 def _connect(dsn: str) -> Connection:
     return psycopg.connect(dsn, autocommit=True, connect_timeout=10)
+
+
+def _take_migration_lock(conn: Connection) -> bool:
+    """Hold out for the migration advisory lock until `MIGRATION_LOCK_WAIT_SECONDS` has passed.
+
+    Polls rather than blocking in `pg_advisory_lock`, so the wait stays bounded without having to
+    set and restore `lock_timeout` before the caller has read the values it means to restore.
+    """
+    deadline = time.monotonic() + MIGRATION_LOCK_WAIT_SECONDS
+    while True:
+        row = conn.execute(
+            "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (MIGRATION_LOCK_NAME,)
+        ).fetchone()
+        if row and row[0]:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_MIGRATION_LOCK_POLL_SECONDS)
 
 
 def _ledger_exists(conn: Connection) -> bool:
@@ -580,11 +607,11 @@ def apply_migrations(
     applied_now: list[MigrationState] = []
     with _connect(migration_dsn) as conn:
         _require_migration_privileges(conn)
-        lock = conn.execute(
-            "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (MIGRATION_LOCK_NAME,)
-        ).fetchone()
-        if not lock or not lock[0]:
-            raise ConcurrentMigrator("another RE-call schema migrator is already running")
+        if not _take_migration_lock(conn):
+            raise ConcurrentMigrator(
+                "another RE-call schema migrator is already running (the lock stayed held for "
+                f"{MIGRATION_LOCK_WAIT_SECONDS:g}s)"
+            )
         lock_row = conn.execute("SHOW lock_timeout").fetchone()
         statement_row = conn.execute("SHOW statement_timeout").fetchone()
         prior_lock_timeout = str(lock_row[0]) if lock_row else "0"
