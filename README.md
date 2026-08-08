@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml"><img src="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://pypi.org/project/recall-rag/"><img src="https://img.shields.io/pypi/v/recall-rag.svg" alt="PyPI"></a>
+  <a href="https://pypi.org/project/recall-rag/"><img src="https://img.shields.io/pypi/v/recall-rag.svg?color=blue" alt="PyPI"></a>
   <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
@@ -97,18 +97,18 @@ forcing one shape on every deployment.
 
 ```mermaid
 flowchart TB
-    M([memo · markdown + frontmatter<br/>supersedes · valid_from · valid_until]) --> CH[chunk]
-    CH --> EW[embed · local, no API call]
+    M(["memo · markdown + frontmatter<br/>supersedes · valid_from · valid_until"]) --> CH[chunk]
+    CH --> EW["embed · local, no API call"]
     EW -. optional .-> SP[SPLADE encode]
     EW --> DB
     SP -. optional .-> DB
 
-    Q([query]) --> EQ[embed · query encoder]
-    EQ --> DB[(PostgreSQL + pgvector<br/>vectors and full-text in one DB)]
+    Q([query]) --> EQ["embed · query encoder"]
+    EQ --> DB[("PostgreSQL + pgvector<br/>vectors and full-text in one DB")]
 
-    DB --> DN[dense · pgvector cosine]
-    DB --> SL[sparse · Postgres full-text]
-    DB -. optional .-> LS[learned sparse · SPLADE]
+    DB --> DN["dense · pgvector cosine"]
+    DB --> SL["sparse · Postgres full-text"]
+    DB -. optional .-> LS["learned sparse · SPLADE"]
 
     DN --> F[Reciprocal Rank Fusion]
     SL --> F
@@ -116,12 +116,12 @@ flowchart TB
 
     F -. optional .-> RR[cross-encoder rerank]
     RR --> GP
-    F --> GP{{gap check · calibrated threshold}}
-    GP --> TR{trust layer<br/>supersession · validity · confidence}
-    CAL[/calibration · fitted per embedder and corpus/] --> TR
+    F --> GP{{"gap check · calibrated threshold"}}
+    GP --> TR{"trust layer<br/>supersession · validity · confidence"}
+    CAL[/"calibration · fitted per embedder and corpus"/] --> TR
     TR -. optional .-> EJ{{entailment judge}}
     EJ --> OUT
-    TR --> OUT([verdict + confidence + provenance<br/>or ABSTAIN, with a reason])
+    TR --> OUT(["verdict + confidence + provenance<br/>or ABSTAIN, with a reason"])
 
     classDef opt stroke:#d29922,color:#d29922,stroke-dasharray:5 4
     class SP,LS,RR,EJ opt
