@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, TypeVar
@@ -12,7 +12,7 @@ from ipaddress import ip_address
 from urllib.parse import unquote, urlsplit
 
 import psycopg
-from pgvector import Vector
+from pgvector import SparseVector, Vector
 from pgvector.psycopg import register_vector
 
 from recall.frontmatter import supersedes_key
@@ -77,6 +77,56 @@ _T = TypeVar("_T")
 STORE_QUERY_METRIC = "recall_store_query_ms"
 LEG_DENSE = "dense"
 LEG_SPARSE = "sparse"
+#: The LEARNED sparse leg (SPLADE), distinct from `LEG_SPARSE` (Postgres full-text / ts_rank).
+#: Two different retrievers that are both "sparse"; collapsing them into one metric label would
+#: make a latency or error-rate regression in either one unattributable.
+LEG_LEARNED_SPARSE = "learned_sparse"
+
+#: Global sidecar holding learned sparse vectors for every chunk table. See migration 0012 for why
+#: it is global rather than per-target, and `docs/superpowers/specs/2026-08-06-learned-sparse-
+#: splade-design.md` for the erasure consequence that follows from having no foreign key.
+SPARSE_TABLE = "recall_sparse_v1"
+
+#: Vocabulary width of both supported checkpoints (bert-base-uncased). Fixed in the `sparsevec`
+#: column type, so a model with a different vocabulary needs its own table, not a wider column.
+SPARSE_DIM = 30522
+
+#: How far past `k` the learned sparse HNSW walk is widened.
+#:
+#: MEASURED on the real index (183,408 clapnq rows inside a 366,479-row sidecar shared by four
+#: corpora), asking for k=100:
+#:
+#:     ef_search   40 (pgvector default) ->   6 candidates
+#:     ef_search  100                    ->  19
+#:     ef_search  400                    ->  72
+#:     ef_search 1000                    -> 100
+#:
+#: 10x, not the dense leg's 4x, because this index is shared: the tenant/chunk_table/profile_id
+#: predicates and the strictly-positive-overlap filter discard most of what the walk visits, so
+#: the scan runs out of budget long before it has k survivors. The dense leg scans a table that
+#: is already one corpus, and needs less.
+#:
+#: ⚠️ Without this the leg silently returns a TWENTIETH of the candidates it was asked for. It
+#: does not error; it reads on a benchmark as "learned sparse does not help", which is a wrong
+#: conclusion manufactured by an index setting.
+SPARSE_EF_SEARCH_MULTIPLIER = 10
+
+
+def sparse_ef_search(k: int) -> int:
+    """`hnsw.ef_search` for a learned sparse query returning `k` rows.
+
+    Raise-only: never below pgvector's own default, and capped at what pgvector accepts rather
+    than raising on a `k` that is otherwise legal.
+    """
+    widened = k * SPARSE_EF_SEARCH_MULTIPLIER
+    return max(_PGVECTOR_DEFAULT_EF_SEARCH, min(widened, _HNSW_EF_SEARCH_MAX))
+
+
+#: pgvector's HNSW ceiling on non-zero elements. Duplicated from `recall.sparse.HNSW_MAX_NONZERO`
+#: ON PURPOSE: `recall.store` must not import `recall.sparse`, which would drag torch into the
+#: import graph of every store user. The migration's CHECK constraint is the third copy and the
+#: authoritative one — it is the only place the database itself enforces.
+SPARSE_MAX_NONZERO = 1000
 #: The THIRD store round trip on the search path, and the one an attribution silently misses.
 #: `HybridRetriever.search` calls `newest_indexed_at()` once per query for its staleness report,
 #: and that is an uncached `SELECT max(indexed_at)`. It is store work, and it is inside end-to-end
@@ -89,6 +139,28 @@ LEG_SPARSE = "sparse"
 #: correspond one-to-one with queries and would break the per-query denominator that lets a
 #: caller assert "one sample per leg per query".
 LEG_META = "meta"
+
+#: Re-scoring specific ids against a query vector. Its own leg rather than folded into
+#: `LEG_META`: it is on the query path only for fused searches, so an operator comparing
+#: `search` against `search_fused` needs to see it separately to know what fusion costs.
+LEG_RESCORE = "rescore"
+
+#: EVERY leg label `STORE_QUERY_METRIC` is emitted under, for callers that must drain all of them.
+#:
+#: `METRICS` is process-wide, so a caller measuring one configuration after another has to clear
+#: the ring between them or the previous configuration's samples are averaged into the next one's.
+#: Two callers did that against their own hand-written tuple of legs (`recall/eval/harness.py`
+#: between ablation configurations, `benchmarks/store_latency_share.py` between its probes and the
+#: measured run), and BOTH drifted when the learned sparse leg was added.
+#:
+#: Neither could fail loudly, which is why this is a constant rather than a convention: an
+#: undrained series does not raise, it silently accumulates and contaminates a published mean. A
+#: missing leg is invisible in exactly the direction that looks like a healthy run.
+#:
+#: Hand-maintained like `TIMED_PUBLIC_METHODS` and checked the same way —
+#: `test_store_query_legs_matches_the_actual_timer_labels` parses this module and requires this
+#: tuple to EQUAL the set of `leg=` labels the timers actually emit.
+STORE_QUERY_LEGS = (LEG_DENSE, LEG_SPARSE, LEG_LEARNED_SPARSE, LEG_META, LEG_RESCORE)
 
 #: Public methods that carry a `METRICS.timer` and delegate to a private twin. A subclass MUST
 #: override the `_`-prefixed twin, NEVER the name listed here — overriding the public method
@@ -104,7 +176,13 @@ LEG_META = "meta"
 #: this recurred twice already. `test_timed_public_methods_matches_the_actual_timer_call_sites`
 #: parses this module and requires this tuple to EQUAL the set of methods that actually open a
 #: `METRICS.timer` on `STORE_QUERY_METRIC`.
-TIMED_PUBLIC_METHODS = ("query_dense", "query_sparse", "newest_indexed_at")
+TIMED_PUBLIC_METHODS = (
+    "query_dense",
+    "query_sparse",
+    "query_learned_sparse",
+    "newest_indexed_at",
+    "cosines_for",
+)
 
 #: How long schema DDL may WAIT FOR A LOCK before giving up (ms). Not a bound on the work — the
 #: HNSW build is deliberately unbounded, see `ensure_schema` — only on queueing. Short on purpose:
@@ -1376,6 +1454,187 @@ class PgVectorStore:
         rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._rows_to_hits(rows)
 
+    # ── Learned sparse (SPLADE) sidecar ──────────────────────────────────────────────────────
+
+    def upsert_sparse(self, profile_id: str, vectors: dict[str, dict[int, float]]) -> int:
+        """Write learned sparse vectors for `vectors`' chunk ids under `profile_id`.
+
+        Keys are chunk ids; values are ``{term_id: weight}`` with term ids as the model emits
+        them (0-based). `pgvector.SparseVector` performs the 0-based to 1-based conversion that
+        pgvector's wire format needs — verified against the database, not assumed.
+
+        Over-budget vectors are refused HERE rather than left to the INSERT. pgvector raises past
+        the HNSW ceiling, so relying on the database means a 366k-passage load dies partway
+        through with an arbitrary prefix already committed.
+        """
+        if not vectors:
+            return 0
+        for chunk_id, weights in vectors.items():
+            if len(weights) > SPARSE_MAX_NONZERO:
+                raise ValueError(
+                    f"chunk {chunk_id!r} has {len(weights)} non-zero terms, above pgvector's "
+                    f"HNSW limit of {SPARSE_MAX_NONZERO}; prune before storing"
+                )
+            if not weights:
+                raise ValueError(
+                    f"chunk {chunk_id!r} encoded to an EMPTY sparse vector. That is not a valid "
+                    f"row (the CHECK requires nnz > 0) and it is far more likely to be a broken "
+                    f"encoder than a genuinely term-free passage, so it fails loudly."
+                )
+
+        rows = [
+            (self._tenant, self._table, profile_id, chunk_id,
+             SparseVector(weights, SPARSE_DIM), len(weights))
+            for chunk_id, weights in vectors.items()
+        ]
+
+        def _op(conn: "psycopg.Connection") -> int:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    f"""
+                    INSERT INTO {SPARSE_TABLE}
+                        (tenant_id, chunk_table, profile_id, id, vec, nnz)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (tenant_id, chunk_table, profile_id, id)
+                    DO UPDATE SET vec = EXCLUDED.vec,
+                                  nnz = EXCLUDED.nnz,
+                                  indexed_at = clock_timestamp()
+                    """,
+                    rows,
+                )
+            return len(rows)
+
+        return self._with_retry(_op)
+
+    def sparse_row_count(self, profile_id: str) -> int:
+        """How many chunks of THIS table are encoded under `profile_id`.
+
+        A number, not a boolean, because "the corpus is half encoded" is a state that exists and
+        that a caller comparing it against the chunk count can detect. Under RLS this counts only
+        the current tenant's rows, which is the intended scope.
+        """
+        def _op(conn: "psycopg.Connection") -> int:
+            row = conn.execute(
+                f"SELECT count(*) FROM {SPARSE_TABLE} "
+                f"WHERE tenant_id = %s AND chunk_table = %s AND profile_id = %s",
+                (self._tenant, self._table, profile_id),
+            ).fetchone()
+            # `count(*)` always returns a row, so the None branch is unreachable in practice. It
+            # is still written, because the ONE caller uses this number to decide whether to
+            # REFUSE, and an unchecked `[0]` would turn an impossible state into a TypeError
+            # raised from inside a retry wrapper. 0 is the fail-CLOSED answer: it makes the query
+            # refuse rather than proceed on a count nobody established.
+            return int(row[0]) if row is not None else 0
+
+        return self._with_retry(_op)
+
+    def query_learned_sparse(
+        self,
+        weights: dict[int, float],
+        k: int,
+        profile_id: str,
+        source: str | None = None,
+        vec: list[float] | None = None,
+    ) -> list[ScoredChunk]:
+        """Learned sparse search, ranked by INNER PRODUCT against the query's term weights.
+
+        `<#>` returns the NEGATIVE inner product, so ascending order is best-first and the score
+        is negated back to a real dot product. As with `query_sparse`, passing `vec` makes each
+        hit carry its true dense cosine instead, so hits from this leg stay comparable with dense
+        hits after fusion.
+
+        ⛔ Raises `LookupError` when this corpus has no rows under `profile_id`. It does NOT
+        return an empty list. An unencoded corpus and a corpus with no matches are different
+        facts, and this project has already shipped the bug where they were the same one: the
+        conjunctive tsquery matched nothing on every real question, fusion silently saw a single
+        list, and the hybrid retriever degraded to dense-only with the suite green throughout.
+
+        Timed under `STORE_QUERY_METRIC{leg=learned_sparse}`.
+        """
+        if k <= 0:
+            raise ValueError("k must be a positive int")
+        if not weights:
+            raise ValueError(
+                "query encoded to an empty sparse vector; it would match nothing and the caller "
+                "should know that the QUERY is degenerate, not the corpus"
+            )
+        with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_LEARNED_SPARSE):
+            return self._query_learned_sparse(weights, k, profile_id, source, vec)
+
+    def _query_learned_sparse(
+        self,
+        weights: dict[int, float],
+        k: int,
+        profile_id: str,
+        source: str | None = None,
+        vec: list[float] | None = None,
+    ) -> list[ScoredChunk]:
+        if self.sparse_row_count(profile_id) == 0:
+            raise LookupError(
+                f"table {self._table!r} is not indexed for learned sparse profile "
+                f"{profile_id!r} (0 rows in {SPARSE_TABLE}). Encode the corpus first; refusing "
+                f"to answer, because an empty result here is indistinguishable from a corpus "
+                f"that simply had no match."
+            )
+        t = self._table
+        where = (
+            "AND (c.metadata->>'file' = %(source)s OR c.source = %(source)s)" if source else ""
+        )
+        score_expr = (
+            "1 - (c.embedding <=> %(dense)s)" if vec is not None else "-(s.vec <#> %(qvec)s)"
+        )
+        sql = f"""
+            SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.first_indexed_at,
+                   {score_expr} AS score
+            FROM {SPARSE_TABLE} s
+            JOIN {t} c ON c.tenant_id = s.tenant_id AND c.id = s.id
+            WHERE s.tenant_id = %(tenant)s
+              AND s.chunk_table = %(chunk_table)s
+              AND s.profile_id = %(profile)s
+              -- Zero-overlap documents are NOT results. `<#>` is the negative inner product, so
+              -- this keeps only a strictly positive dot product. Without it the JOIN returns
+              -- every encoded chunk and `LIMIT k` pads the tail with documents sharing no term
+              -- with the query — which then collect reciprocal-rank credit in RRF purely for
+              -- having been returned. That is the fusion noise the MTRAGEval rank-1 team
+              -- reported from ensembling weak retrievers, except manufactured by our own leg.
+              AND (s.vec <#> %(qvec)s) < 0
+            {where}
+            ORDER BY s.vec <#> %(qvec)s
+            LIMIT %(k)s
+        """
+        params: dict = {
+            "qvec": SparseVector(weights, SPARSE_DIM),
+            "k": k,
+            "tenant": self._tenant,
+            "chunk_table": self._table,
+            "profile": profile_id,
+        }
+        if vec is not None:
+            params["dense"] = Vector(vec)
+        if source:
+            params["source"] = source
+
+        # Widen the HNSW walk, exactly as `_query_dense` does and for the same reason. See
+        # SPARSE_EF_SEARCH_MULTIPLIER: at pgvector's default this leg returned 6 of 100.
+        # `SET LOCAL` only survives inside a transaction, and this store's connections are
+        # autocommit, so the transaction is opened explicitly. `set_config(..., is_local => true)`
+        # rather than a literal SET so the value can be GREATEST(current, wanted): an operator who
+        # already raised ef_search must not have it LOWERED here.
+        ef_search = sparse_ef_search(k)
+        widen = (
+            "SELECT set_config('hnsw.ef_search', GREATEST("
+            "COALESCE(NULLIF(current_setting('hnsw.ef_search', true), ''), %(default_ef)s)"
+            "::int, %(want_ef)s)::text, true)"
+        )
+        widen_params = {"default_ef": str(_PGVECTOR_DEFAULT_EF_SEARCH), "want_ef": ef_search}
+
+        def _op(conn: "psycopg.Connection") -> list[tuple]:
+            with conn.transaction():
+                conn.execute(widen, widen_params)
+                return conn.execute(sql, params).fetchall()
+
+        rows = self._with_retry(_op)
+        return self._rows_to_hits(rows)
 
     def replace_sources(
         self, sources: list[str], chunks: list[Chunk], embeddings: list[list[float]]
@@ -1770,6 +2029,40 @@ class PgVectorStore:
             ).fetchone()
         )
         return row[0] if row else None
+
+    def cosines_for(self, ids: Sequence[str], vec: list[float]) -> dict[str, float]:
+        """Cosine similarity between `vec` and each of `ids`, for ids that exist.
+
+        `search_fused` retrieves with two query embeddings, so a hit surfaced only by the history
+        variant carries a cosine against the HISTORY, not the query. `hit.score` is not
+        decorative: `trust.py` thresholds on it and feeds it to `cal.confidence()`, a calibration
+        fitted on cosines against the query. This puts every returned hit back on that one basis.
+
+        Ids that do not exist are OMITTED rather than returned as 0.0. Zero is a real cosine and
+        would read as a genuine poor match; absence is a different fact and the caller can tell.
+
+        Subclasses override `_cosines_for`, not this; see `TIMED_PUBLIC_METHODS`.
+        """
+        if not ids:
+            return {}
+        with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_RESCORE):
+            return self._cosines_for(ids, vec)
+
+    def _cosines_for(self, ids: Sequence[str], vec: list[float]) -> dict[str, float]:
+        # De-duplicated but order-preserving: a repeated id would not change the answer, only
+        # the round trip's payload size, and `dict.fromkeys` is the standard way to do that
+        # without reaching for a set (which would make the query non-deterministic to read).
+        wanted = list(dict.fromkeys(str(i) for i in ids))
+
+        def _op(conn: "psycopg.Connection") -> list[tuple]:
+            return conn.execute(
+                f"SELECT id, 1 - (embedding <=> %s) FROM {self._table} "
+                f"WHERE tenant_id = %s AND id = ANY(%s)",
+                (Vector(vec), self._tenant, wanted),
+            ).fetchall()
+
+        rows = self._with_retry(_op)
+        return {str(row[0]): float(row[1]) for row in rows}
 
     def count(self) -> int:
         row = self._with_retry(

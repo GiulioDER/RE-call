@@ -45,6 +45,64 @@ when it meant "the older one".
 | `wrrf/arm_A_rrf_pool20.json` | §9a's apparatus check — reproduces the published pool-20 column to Δ 0.0000 |
 | `store_latency/chunks_20k/splits.json` | the per-leg latency split behind the store-share figure — embed / dense / sparse / meta / fusion / rerank at 20,050 chunks, the evidence for whether a store backend swap could pay for itself. ⚠️ **SYNTHETIC corpus**, so the sparse leg does NOT generalise: `9a5165b` measured sparse median 496 ms on a real 72k-chunk corpus where this measures single-digit ms. Latency is the most host-dependent quantity here — read `stack` and `generated_at` before comparing it to anything. **Supersedes an earlier UNSTAMPED run of the same configuration**, whose figures (271.6 ms dense, 91.3%, 2.9%) appear in commit `66459ae`'s message and are reproducible from no file in the tree; superseded, not retracted — the shares agree to within 0.31 points |
 
+### The Mem0 head-to-head — the table that had no artifact until 2026-08-06
+
+This section is the one this file was missing. §9d, the five-row paired comparison against Mem0, is
+the loudest claim in the README, and until 2026-08-06 it was the **only** published figure with
+nothing in `results/` behind it: no `mem0` path in the tree, no `9d` entry here. The raw runs
+(~123 MB of generated answers and retrieved contexts) were never committable, and nothing derived
+from them was committed instead, so the gap was invisible rather than declared.
+
+Its first consequence was immediate: the first verified build found row 4's `paired p` published as
+`0.00018` when it is `0.00017` — row 2's value, copied down. Two weeks, and no mechanism existed
+that could have caught it.
+
+| artifact | backs |
+|---|---|
+| `head_to_head/paired_accuracy.json` | §9d's five-row table, the Holm maximum, and the `text-embedding-3-small` as-shipped paragraph. Derived by `benchmarks/h2h_artifact.py` **through `benchmarks/analyze.py`** — the same code that produced the published table, not a second implementation of McNemar. Carries the sha256 of both raw runs per row, so a re-scored run cannot be substituted silently |
+| `head_to_head/outcomes/*.jsonl` | one line per paired question, `{q, recall, mem0}`. This is what makes the paired test **recomputable by a reader** without the raw runs, an API key, or trust. 1,540 lines per row, ~60 KB each |
+| ⚠️ `head_to_head/outcomes/as_shipped__*.jsonl` | **two replicates of one configuration**, 25 seconds apart, byte-identical configs, 0.4117 and 0.4221. The README's `0.42` was the higher one. Keyed by the run FILENAME's stem, and a repeated key is an error rather than a last-writer-wins — the loss of a replicate is how a measured spread silently becomes a point estimate. `write_artifact` also prunes any vector this build did not write, so the directory is a function of the build and cannot accumulate files that back nothing |
+
+`tests/test_h2h_artifact_backs_findings.py` asserts the committed artifact and the §9d table agree,
+so the two cannot drift apart again. The raw runs stay out of the repository; what the claim rests
+on does not.
+
+### Promotion decisions — what the gate was asked, and what it answered
+
+`recall/promotion.py`'s gate had no producer until `recall/eval/promotion/`. These are its first
+real inputs and its first real output. The directory holds three kinds of file, and only one of
+them is an artifact in this file's sense:
+
+| file | kind | |
+|---|---|---|
+| `promotion/labelled.manifest.jsonl` | **input**, frozen | question ids and input hashes, fixed BEFORE either arm ran. Carries its own digest and refuses an edited body. No `_provenance`, deliberately: a timestamp inside a digest-covered body makes the digest a function of the clock |
+| `promotion/{baseline,candidate}.*.jsonl` | **raw rows** | one record per question per arm. The filename carries the arm label, the embedding profile id, and the first 16 hex of the profile FINGERPRINT, so two arms sharing a profile id and differing in artifact digest cannot land in one ledger |
+| `promotion/decision.null-difference.json` | **artifact** | the decision, with `_provenance` |
+
+| artifact | backs |
+|---|---|
+| `promotion/decision.null-difference.json` | the end-to-end proof that the producer works and that the gate refuses a null difference. Baseline and candidate are the SAME configuration; all 25 rows share an `output_hash` across the two arms, so the delta is zero by construction rather than by measurement. `promoted: false` on **five** counts: the bootstrap interval does not clear zero, no corpus reaches Holm-corrected significance, the superseded trust rate was NOT MEASURED, security is not green (unverified is not green), and **latency is PENDING** |
+
+⚠️ **This run is DEGRADED, and the artifact says so twice.** `trust_verdicts` reads
+`{"unverified": 25}` for both arms: a plain store has no generation-bound certified calibration,
+so it ran under `--trust-policy development`. `recall/trust.py` overwrites **every** verdict with
+`unverified` in that mode, *after* the trust layer has computed the real one, so a superseded hit
+and a clean one leave identical rows. That is why `superseded_trust_rate` is `null` rather than
+`0.0`: a rate of zero would have satisfied the gate's zero-tolerance check by never having
+measured it. The same reason makes `false_confidence: 1.00` a fact about a degraded system and
+**not** a measurement of this library's abstention. The two arms stay comparable to each other;
+neither is comparable to a trusted run. A strict-mode run needs a generation-bound certified
+calibration, which no session has wired end to end yet.
+
+`n_manifest_questions: 25` beside `n_paired_questions: 14` is the other thing to read: the gate
+tested the 14 answerable questions and the digest covers all 25, and both numbers are recorded so
+a reader never has to assume they are the same.
+
+⚠️ **`latency` is PENDING, not measured.** `gate_input_p95_ms` is `null`, and that BLOCKS
+promotion. The figures under `observed_diagnostic_only` come from a developer laptop and describe
+it, not a reference environment; the program has no idle 16-vCPU reference host (see
+`docs/ENTERPRISE_PROGRAM_STATUS.md`'s standing blockers).
+
 ### Deliberately contaminated — evidence for the §9a retraction, never results
 
 These two exist to be *wrong in a known way*. A doubled corpus reproduces the withdrawn pool-100
@@ -130,3 +188,44 @@ The committed artifacts are records of specific configurations. **Do not point `
 the harness docstrings deliberately no longer suggest a path that would overwrite a retained record.
 Write new runs to a new filename, and if the run is meant to replace a published table, stamp its
 `_provenance` and update the superseded row here in the same change.
+
+## `results/promotion/generation-parity.json`
+
+**What it measured:** that a context mode changes the text EMBEDDED and never the raw chunk content
+or raw content hash STORED. Four generations built over the PEPs corpus (746 sources, 21,924 chunks
+each) under `bge-small-symmetric-v1` and the three `bge-small-context-*-v1` profiles, compared
+pairwise against the baseline with the shipped `recall.migration.validate_generation_parity`.
+
+Result: parity holds on all three, 0 missing sources, 0 extra, 0 hash mismatches, equal chunk
+counts, 746/746 coverage, 0 degenerate hashes, and a positive control that fired on exactly one
+changed file.
+
+⚠️ **These are NOT the 2026-08-06 promotion campaign's own generations.** That harness indexes into
+a `promo_<uuid8>` table and drops it in a `finally`, so its generations no longer exist. This is a
+rebuild over the same corpus with the same embedder and pinned artifact tree, and the file says so
+in its `reconstruction_note`.
+
+⚠️ **Its `_provenance` block was STAMPED AFTER THE FACT, and the block says so.** This artifact was
+produced before `benchmarks/check_generation_parity.py` emitted one. Rather than leave it outside
+the convention, the block was added by hand from the run's own driver log and the versions installed
+on the host that ran it. It carries `stamped_after_the_fact: true`, `measured_at` (the run) kept
+separate from `provenance_stamped_at` (the edit), and the digest of the archived original.
+
+**The block is the only difference, and that was ENFORCED rather than asserted.** The stamping tool
+refused to write until a round trip through `json.dumps` reproduced the file byte for byte, so
+re-serialisation could not smuggle in a change, then compared all nine pre-existing keys before and
+after. `git diff` records **24 insertions, 0 deletions**. (Its first version was refused by its own
+guard over a single trailing newline, which is the guard working on the tool rather than on the
+artifact.)
+
+The archive is the run record and was deliberately **not** modified, so the two copies differ by
+exactly this key:
+
+| copy | sha256 |
+|---|---|
+| archived original, covered by that directory's `MANIFEST.sha256` | `073628143b35299e…a2b50147` |
+| this committed copy, with the stamp | `d2ee470e5da874b5…c84d7e3e` |
+
+Full run record: `/var/lib/recall-benchmarks/2026-08-06-context-mode-generation-parity/`.
+⚠️ Regenerating a natively-stamped artifact now needs a **full four-arm re-index**, not a compare
+re-run: the generations were dropped once this work merged.

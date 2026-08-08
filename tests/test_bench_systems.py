@@ -11,6 +11,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
+import warnings
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -536,6 +539,399 @@ def test_mem0_retrieve_before_ingest_is_an_error() -> None:
         system.retrieve("q")
 
 
+class _FakeVectorStore:
+    def __init__(self, client: Any) -> None:
+        self.client = client
+
+
+class _RecordingClient:
+    """Stands in for the `QdrantClient` that `mem0.Memory` holds under `vector_store.client`."""
+
+    def __init__(self, explode: bool = False) -> None:
+        self.closed = 0
+        self._explode = explode
+
+    def close(self) -> None:
+        self.closed += 1
+        if self._explode:
+            raise RuntimeError("client refused to close")
+
+
+class _RecordingMemory:
+    """A `mem0.Memory` stand-in that records which handles were released.
+
+    Carries all three stores a real `Memory` can own, because the leak is per-CLIENT and the three
+    do not map one-to-one onto clients: `_telemetry_vector_store` is a genuinely separate Qdrant
+    client on a machine-global path, while `_entity_store` deliberately SHARES the primary one.
+    """
+
+    def __init__(
+        self,
+        client: Any | None = None,
+        explode: bool = False,
+        telemetry_client: Any | None = None,
+        share_entity_client: bool = False,
+    ) -> None:
+        primary = client if client is not None else _RecordingClient()
+        self.vector_store = _FakeVectorStore(primary)
+        self._telemetry_vector_store = (
+            _FakeVectorStore(telemetry_client) if telemetry_client is not None else None
+        )
+        self._entity_store = _FakeVectorStore(primary) if share_entity_client else None
+        self.closed = 0
+        self._explode = explode
+        self.entity_store_touched = False
+
+    @property
+    def entity_store(self) -> Any:
+        """The PUBLIC name, which teardown must never read.
+
+        On a real `mem0.Memory` this is a lazy property that CONSTRUCTS the entity store on first
+        access — so reading it during `close()` would build a vector store, and take a lock, in the
+        middle of releasing them. Raising here would be swallowed by `close()`'s total `_read`, so
+        the flag is what the test actually asserts on.
+        """
+        self.entity_store_touched = True
+        raise AssertionError("close() must not read the lazily-constructing `entity_store`")
+
+    def close(self) -> None:
+        self.closed += 1
+        if self._explode:
+            raise RuntimeError("memory refused to close")
+
+
+def test_close_releases_the_telemetry_store_client_too() -> None:
+    """`mem0.Memory` opens a SECOND Qdrant client, and missing it reproduces the whole defect.
+
+    With `MEM0_TELEMETRY` on (its default, and this repo never turns it off), `Memory.__init__`
+    builds `_telemetry_vector_store` at `~/.mem0/migrations_qdrant`. That path is derived from the
+    mem0 home directory, NOT from `run_id`, so unlike the bench store every run and every
+    concurrent process shares it — which makes it a worse collision than the one that started this,
+    not a lesser one. Verified against a real `Memory`: closing only `vector_store.client` left
+    `Storage folder C:\\Users\\...\\.mem0\\migrations_qdrant is already accessed` on the next build.
+    """
+    from benchmarks.systems import Mem0System
+
+    primary, telemetry = _RecordingClient(), _RecordingClient()
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    system._mem = _RecordingMemory(client=primary, telemetry_client=telemetry)
+
+    system.close()
+
+    assert primary.closed == 1
+    assert telemetry.closed == 1
+
+
+def test_close_does_not_double_close_a_shared_client() -> None:
+    """For Qdrant, mem0 hands the entity store the SAME client "to avoid RocksDB lock contention".
+
+    So the stores must be deduped by identity: closing per store rather than per client would call
+    `close()` twice on one handle. Harmless with qdrant-client today, which guards on an
+    already-closed lock file, but it is not a property this code should be relying on.
+    """
+    from benchmarks.systems import Mem0System
+
+    primary = _RecordingClient()
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    system._mem = _RecordingMemory(client=primary, share_entity_client=True)
+
+    system.close()
+
+    assert primary.closed == 1
+
+
+@pytest.mark.parametrize("call", ["ingest", "retrieve"])
+def test_using_a_closed_system_is_an_error_rather_than_a_silent_relock(call: str) -> None:
+    """After `close()`, `_memory()` must refuse rather than lazily rebuild.
+
+    `_memory()` is lazy and `close()` only nulls `_mem`, so without this a call after `close()`
+    would silently construct a NEW `Memory`, re-acquire the exclusive lock, and leave it held with
+    no `__exit__` remaining to release it — the original defect, restored through a silent path.
+    The context-manager shape is what makes that reachable, so the guard ships with it.
+    """
+    from benchmarks.systems import Mem0System
+
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    system._mem = _RecordingMemory()
+    system._user = "bench-c1"  # so `retrieve` gets past its own before-ingest guard
+    system.close()
+
+    with pytest.raises(RuntimeError, match="after close"):
+        if call == "ingest":
+            system.ingest({"sample_id": "c1", "conversation": PARITY_CONVERSATION})
+        else:
+            system.retrieve("q")
+
+
+def test_close_reads_the_private_entity_store_not_the_lazy_property() -> None:
+    """`_entity_store`, deliberately, and this pins the choice against a tidy-up.
+
+    `Memory.entity_store` is a lazy property that constructs the store on first access, so
+    "use the public API" would make teardown ACQUIRE a vector store while it is releasing them —
+    the same hazard `_closed` guards at the other end. The private attribute is the correct read.
+    """
+    from benchmarks.systems import Mem0System
+
+    memory = _RecordingMemory()
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    system._mem = memory
+
+    system.close()
+
+    assert not memory.entity_store_touched
+
+
+def test_a_handle_whose_repr_also_raises_still_warns_and_does_not_propagate() -> None:
+    """The diagnostic must not become the failure.
+
+    `repr()` of a bound method embeds `repr(__self__)`, so warning with `{release!r}` handed an
+    arbitrary object's `__repr__` a path straight out of `close()` — from inside a `finally`,
+    where it would replace the exception that explains the run. And the two conditions correlate:
+    a handle that refuses to close is a handle in a broken state, which is exactly when a
+    `__repr__` that reads that state raises too.
+    """
+    from benchmarks.systems import Mem0System
+
+    class _Unprintable:
+        def close(self) -> None:
+            raise RuntimeError("handle refused to close")
+
+        def __repr__(self) -> str:
+            raise ValueError("repr exploded")
+
+    memory = _RecordingMemory(client=_Unprintable())
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    system._mem = memory
+
+    with pytest.warns(UserWarning, match="vector_store.client"):
+        system.close()  # must not propagate
+
+    assert memory.closed == 1  # and the other handle was still released
+
+
+def test_close_stays_total_under_warnings_as_errors() -> None:
+    """`-W error` must not let the diagnostic abort the thing it was added to protect.
+
+    `warnings.warn` raises under warnings-as-errors. Sitting unguarded inside the release loop, it
+    turned the FIRST failed handle into an abort of every later one, so a wedged primary client
+    left the machine-global telemetry lock and the SQLite handle both open — precisely inverting
+    "letting go of one must never be conditional on another closing cleanly". It also escaped
+    `latency.py`'s `finally` and `__exit__`, replacing the error that explains the run.
+
+    Not hypothetical: `-W error` and `PYTHONWARNINGS=error` are ordinary CI settings, and this
+    suite already emits live warnings from mem0.
+    """
+    from benchmarks.systems import Mem0System
+
+    class _Wedged:
+        def close(self) -> None:
+            raise RuntimeError("handle wedged")
+
+    telemetry = _RecordingClient()
+    memory = _RecordingMemory(client=_Wedged(), telemetry_client=telemetry)
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    system._mem = memory
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        system.close()  # must not raise, even though the report cannot be delivered
+
+    # The handles after the wedged one were still released. That is the whole invariant.
+    assert telemetry.closed == 1
+    assert memory.closed == 1
+
+
+def test_an_exception_whose_own_repr_raises_still_warns() -> None:
+    """The other half of the same hazard: `BaseException.__repr__` formats `args`.
+
+    So an exception carrying an object with a hostile `__repr__` re-opens the escape path even
+    though the handle itself is printable. Naming the handle is not sufficient on its own —
+    building the *detail* has to be total too.
+    """
+    from benchmarks.systems import Mem0System
+
+    class _HostileArg:
+        def __repr__(self) -> str:
+            raise ValueError("arg repr exploded")
+
+    class _RaisesUnprintable:
+        def close(self) -> None:
+            raise RuntimeError(_HostileArg())
+
+    memory = _RecordingMemory(client=_RaisesUnprintable())
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    system._mem = memory
+
+    with pytest.warns(UserWarning, match="unprintable RuntimeError"):
+        system.close()  # must not propagate
+
+    assert memory.closed == 1
+
+
+def test_a_store_whose_attributes_raise_does_not_break_close() -> None:
+    """A probe that raises must mean "nothing there", not a new exception.
+
+    `close()` runs inside `finally` blocks and `__exit__`, so an escaping `getattr` would replace
+    the exception that actually explains the run — the same failure this method exists to prevent,
+    arriving by a different route. And the other handles must still be released: one unreadable
+    store cannot be allowed to strand the locks belonging to the others.
+    """
+    from benchmarks.systems import Mem0System
+
+    class _HostileStore:
+        @property
+        def client(self) -> Any:
+            raise ValueError("store exploded")
+
+    good = _RecordingClient()
+    memory = _RecordingMemory(client=good)
+    memory._telemetry_vector_store = _HostileStore()  # type: ignore[assignment]
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    system._mem = memory
+
+    system.close()  # must not propagate
+
+    assert good.closed == 1
+    assert memory.closed == 1
+
+
+def test_the_attribute_path_close_walks_still_exists_in_mem0() -> None:
+    """Pin `close()`'s attribute chain against the real package, not against our own stand-in.
+
+    Every other close test injects `_RecordingMemory`, whose shape is asserted by nothing but
+    itself. If mem0 renamed `vector_store`, `_telemetry_vector_store` or `.client`, the `getattr`
+    chain would quietly yield `None`, `close()` would return cleanly, and all of them would still
+    pass while the lock leaked exactly as before.
+
+    Reads mem0's SOURCE rather than importing it. `import mem0` costs ~100s here (it drags in
+    torch), which is not a price the default suite should pay, and the attribute NAMES are the
+    whole contract under test — text pins them just as well as a code object would.
+    """
+    spec = importlib.util.find_spec("mem0")
+    if spec is None or not spec.origin:
+        pytest.skip("needs the bench extra (pip install recall[bench])")
+
+    root = Path(spec.origin).parent
+    main = (root / "memory" / "main.py").read_text(encoding="utf-8", errors="ignore")
+    qdrant = (root / "vector_stores" / "qdrant.py").read_text(encoding="utf-8", errors="ignore")
+
+    for attribute in ("vector_store", "_telemetry_vector_store", "_entity_store"):
+        assert re.search(rf"self\.{attribute}\s*=", main), f"mem0 no longer sets Memory.{attribute}"
+    assert re.search(r"self\.client\s*=", qdrant), "mem0's Qdrant store no longer exposes `client`"
+
+
+@pytest.mark.filterwarnings(r"ignore:unclosed file.*\.lock:ResourceWarning")
+def test_close_releases_the_real_qdrant_storage_lock(tmp_path: Path) -> None:
+    """The end-to-end proof, against the real lock rather than a mock of it.
+
+    This is the defect that produced `RuntimeError: Storage folder ... is already accessed by
+    another instance of Qdrant client` on 2026-08-05 and was misread as a billing failure: the
+    embedded Qdrant client holds an exclusive `portalocker` lock for as long as it lives, and
+    `Mem0System` had no way to let go of it.
+
+    Uses a real `QdrantClient` but NOT a real `mem0.Memory`, deliberately: building one loads the
+    HuggingFace embedder (~56s here). The lock is the thing under test, and it is real.
+
+    The `ResourceWarning` filter is for an UPSTREAM leak, not ours. It is matched on the `.lock`
+    message rather than on the category, and scoped to this one test rather than the module, so a
+    leak of any OTHER handle here still fails a `-W error` run: a blanket `ignore::ResourceWarning`
+    would have made this test the one place a real leak could hide. qdrant-client opens the `.lock`
+    file and only then attempts to lock it, so the constructor that loses the race below raises
+    without closing its own handle. Verified in isolation: a plain open/close cycle is clean under
+    `-W error`, and the warning appears exactly at the contention assertion.
+    """
+    qdrant_client = pytest.importorskip("qdrant_client")
+    from benchmarks.systems import Mem0System
+
+    path = tmp_path / "qdrant"
+    path.mkdir()
+    held = _RecordingMemory(client=qdrant_client.QdrantClient(path=str(path)))
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    system._mem = held
+
+    # Precondition: the lock really is held, so the assertion after `close()` means something.
+    with pytest.raises(RuntimeError, match="already accessed"):
+        qdrant_client.QdrantClient(path=str(path))
+
+    system.close()
+
+    reopened = qdrant_client.QdrantClient(path=str(path))  # must not raise
+    reopened.close()
+    assert held.closed == 1  # and the SQLite history handle was released too
+
+
+def test_close_releases_both_handles_not_just_the_memory() -> None:
+    """`mem0.Memory.close()` closes its SQLite history db and NOTHING else — it does not touch the
+    vector store. A `close()` that only forwarded to it would look right and leak the lock."""
+    from benchmarks.systems import Mem0System
+
+    client = _RecordingClient()
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    system._mem = _RecordingMemory(client=client)
+
+    system.close()
+
+    assert client.closed == 1
+    assert system._mem is None
+
+
+def test_close_is_idempotent_and_harmless_before_any_memory_exists() -> None:
+    """Teardown runs in `finally` blocks, after failures, and sometimes twice. None of that may
+    raise: a teardown error would replace the exception that actually explains the run."""
+    from benchmarks.systems import Mem0System
+
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    system.close()  # never ingested, so `_mem` was never built
+
+    memory = _RecordingMemory()
+    system._mem = memory
+    system.close()
+    system.close()
+    assert memory.closed == 1  # the second call is a no-op, not a double close
+
+
+@pytest.mark.parametrize("broken", ["client", "memory"])
+def test_one_handle_refusing_to_close_does_not_strand_the_other(broken: str) -> None:
+    """The lock is the handle that causes cross-test damage, so releasing it must not be
+    conditional on the SQLite handle closing cleanly, or the other way round."""
+    from benchmarks.systems import Mem0System
+
+    client = _RecordingClient(explode=broken == "client")
+    memory = _RecordingMemory(client=client, explode=broken == "memory")
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    system._mem = memory
+
+    # Must not propagate — but must not be silent either. A release that fails leaves the next run
+    # facing the same baffling "already accessed" error, so the warning is the breadcrumb that
+    # keeps a second incident from being investigated from scratch, as this one was.
+    with pytest.warns(UserWarning, match="Mem0System.close"):
+        system.close()
+
+    assert client.closed == 1
+    assert memory.closed == 1
+    assert system._mem is None
+
+
+def test_the_context_manager_closes_even_when_the_body_raises() -> None:
+    """`with Mem0System(...) as system:` is the shape that makes the leak hard to reintroduce.
+
+    The 2026-08-05 leak happened on the failure path specifically — `ingest()` raised, and the
+    handle stayed open — so the exception case is the one worth pinning.
+    """
+    from benchmarks.systems import Mem0System
+
+    memory = _RecordingMemory()
+    system = Mem0System("sk-x", model="openai/gpt-4o-mini")
+    with pytest.raises(ValueError, match="boom"):
+        with system as entered:
+            assert entered is system
+            entered._mem = memory
+            raise ValueError("boom")
+
+    assert memory.closed == 1
+    assert system._mem is None
+
+
 #: A 402 says the ACCOUNT is out of credit. It says nothing about the code under test, so failing
 #: on it reports a billing state as a regression — the same shape as the DeepSeek PR-review job
 #: that was disabled for returning a red check when its credits ran out: infrastructure dressed as
@@ -544,7 +940,114 @@ def test_mem0_retrieve_before_ingest_is_an_error() -> None:
 #: Deliberately narrow. Skipping on any exception would turn a real `Mem0System` regression into
 #: silence, which is worse than the noise it removes. Only "the account cannot pay" qualifies —
 #: a rate limit, a bad response, or a changed API still fail.
-_CANNOT_PAY = ("insufficient credits", "error code: 402", "'code': 402")
+#:
+#: The evidence below is a WIRE FACT, not a sentence: the HTTP status and OpenRouter's own
+#: `limit_source` taxonomy. Provider prose gets rewritten without notice, so a matcher keyed on
+#: the sentence is a matcher with an expiry date. `"insufficient credits"` survives only as a
+#: fallback for a layer that stringifies the human message and drops the status with it.
+#:
+#: Narrowness is now enforced in THREE places, and all three must be read before judging this
+#: guard's blast radius: this tuple (message text), `_402_IN_TEXT` (a 402 spelled out in a
+#: message), and `_carries_a_402_status` (attribute names, walked over the `__cause__` chain by
+#: `_the_billing_evidence_in`).
+_CANNOT_PAY = (
+    "openrouter_credits",    # `metadata.limit_source` — outlives any rewording of `message`
+    "insufficient credits",  # today's prose; the fallback, not the primary evidence
+)
+
+#: A 402 written into a message rather than left on an attribute. One anchored pattern instead of
+#: a hand-maintained list of spellings, for two reasons. It is the difference between a marker
+#: list that grows by one entry per provider punctuation change, and a rule; and the substring
+#: form was actively WRONG — `"'code': 402"` matches `{'code': 4029}`, so an unrelated upstream
+#: failure carrying a four-digit vendor code was skipped as a billing refusal. `(?!\d)` is the
+#: whole fix, and the `{'code': 4029}` / `Error code: 4020` cases in `test_everything_else_still_fails`
+#: pin it.
+_402_IN_TEXT = re.compile(
+    r"""(?:
+            error[ ]code:[ ]*          # openai builds this in `_base_client._make_status_error`,
+                                       # and mem0 folds it into its `LLMError` message
+          | status[ _]code[=: ][ ]*    # requests-/urllib-flavoured stringifications, and the
+                                       # plain-English "status code 402" a wrapper may write
+          | ['"]code['"]:[ ]*          # OpenRouter's JSON error body, repr'd into a message
+        )402(?!\d)""",
+    re.VERBOSE,
+)
+
+
+def _is_402(value: object) -> bool:
+    # Bools are ints in Python. `True == 402` is already False, so this guard changes no outcome
+    # today; it is here so that a future change from `== 402` to anything truthiness-shaped cannot
+    # silently reinterpret a flag named `code` as a payment refusal.
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value == 402
+    return isinstance(value, str) and value.strip() == "402"
+
+
+def _read(obj: object, name: str) -> object:
+    """`getattr` that cannot itself raise.
+
+    `getattr(x, name, None)` swallows only `AttributeError`, but the thing being probed is an
+    arbitrary exception from an arbitrary library, and a property is free to raise anything
+    (`aiohttp.ClientResponseError.code` is deprecated, so it raises under `-W error`). If that
+    escaped, it would do so from inside the smoke test's `except` block, replacing the real
+    diagnostic with a red herring. Unreadable must mean "no evidence", never "new exception".
+    """
+    try:
+        return getattr(obj, name, None)
+    except Exception:  # noqa: BLE001 - a probe that raises has told us nothing, not something
+        return None
+
+
+def _carries_a_402_status(exc: BaseException) -> bool:
+    """True if `exc` exposes an HTTP 402 as a STATUS, on itself or on its `response`.
+
+    `openai.APIStatusError` sets both `status_code` and `response.status_code`; `urllib`'s
+    `HTTPError` spells it `code`. Reading the attribute rather than the message is the whole point:
+    a wrapper is free to re-word, truncate, or discard the text, but it cannot re-word a 402.
+    """
+    candidates = [_read(exc, "status_code"), _read(exc, "http_status")]
+    response = _read(exc, "response")
+    if response is not None:
+        candidates.append(_read(response, "status_code"))
+    # `code` is read ONLY off a `headers`-bearing carrier, which is the `urllib.error.HTTPError`
+    # shape — the sole reason `code` is probed at all. Unqualified it is the loosest name of the
+    # three and means different things elsewhere: `SystemExit(402).code` is an exit status. And
+    # qualifying on `response` instead would readmit exactly the family this exists to exclude,
+    # since openai puts the response BODY's error code in `code`, not the transport status — a
+    # 500 whose body carries `code: 402` would then skip as a billing refusal.
+    if _read(exc, "headers") is not None:
+        candidates.append(_read(exc, "code"))
+    return any(_is_402(candidate) for candidate in candidates)
+
+
+def _the_billing_evidence_in(exc: BaseException) -> str | None:
+    """The first proof that `exc` — or something it was explicitly raised FROM — is a 402.
+
+    Walks `__cause__` only, never `__context__`. `raise X from Y` is a claim that Y caused X;
+    `__context__` is merely "Y happened to be in flight when X was raised", which is a coincidence
+    of timing. Following it would mean any failure occurring inside an `except` block handling a
+    402 gets reported as a billing skip — turning this guard into the catch-all it exists not to
+    be.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))  # a hand-built `__cause__` chain can be cyclic; do not loop forever
+        if _carries_a_402_status(current):
+            return "HTTP 402"
+        try:
+            text = str(current).lower()
+        except Exception:  # noqa: BLE001 - same rule as `_read`: unreadable means no evidence
+            text = ""
+        if _402_IN_TEXT.search(text):
+            return "402 in the message"
+        for marker in _CANNOT_PAY:
+            if marker in text:
+                return marker
+        current = current.__cause__
+    return None
 
 
 def _skip_if_the_account_cannot_pay(exc: BaseException) -> None:
@@ -552,10 +1055,15 @@ def _skip_if_the_account_cannot_pay(exc: BaseException) -> None:
 
     The skip is loud on purpose: `pytest -rs` names it, and the reason says to top up rather than
     to debug. A silent pass would let this smoke test rot unnoticed the day the balance runs out.
+    The matched evidence goes in the reason too, so a future widening can be judged from the skip
+    line alone rather than by re-reading this function.
     """
-    text = str(exc).lower()
-    if any(marker in text for marker in _CANNOT_PAY):
-        pytest.skip(f"OpenRouter account is out of credit, not a code failure: {exc}")
+    evidence = _the_billing_evidence_in(exc)
+    if evidence is not None:
+        pytest.skip(
+            f"OpenRouter account is out of credit, not a code failure "
+            f"(matched {evidence}): {exc}"
+        )
 
 
 @pytest.mark.skipif(
@@ -593,13 +1101,18 @@ def test_mem0_system_smoke() -> None:
             ],
         },
     }
-    system = Mem0System(os.environ["OPENROUTER_API_KEY"], model="openai/gpt-4o-mini")
-    try:
-        system.ingest(conv)
-        ctx = system.retrieve("What is the name of the new monitoring code?")
-    except Exception as exc:  # noqa: BLE001 - re-raised below unless it is a billing refusal
-        _skip_if_the_account_cannot_pay(exc)
-        raise
+    # `with`, not a bare constructor: this test is the site that leaked the Qdrant storage lock on
+    # 2026-08-05. It builds with the DEFAULT `run_id="adhoc"`, so the lock it holds is on the one
+    # path every ad-hoc `Mem0System` shares — and it held it on BOTH failure paths, the raise and
+    # the billing skip. `pytest.skip` raises a `BaseException`, so only `__exit__` (not `except
+    # Exception`) is guaranteed to run on the skip path.
+    with Mem0System(os.environ["OPENROUTER_API_KEY"], model="openai/gpt-4o-mini") as system:
+        try:
+            system.ingest(conv)
+            ctx = system.retrieve("What is the name of the new monitoring code?")
+        except Exception as exc:  # noqa: BLE001 - re-raised below unless it is a billing refusal
+            _skip_if_the_account_cannot_pay(exc)
+            raise
     assert "quokka-telemetry-4417" in ctx
 
 
@@ -623,11 +1136,315 @@ def test_a_billing_refusal_skips_rather_than_fails(message: str) -> None:
         "Error code: 500 - upstream exploded",
         "KeyError: 'results'",                     # a real Mem0System regression
         "assertion failed: quokka-telemetry-4417 not in context",
+        # The RuntimeError that actually surfaced on 2026-08-05 and was misread as a second
+        # billing shape. It is qdrant-client's storage lock: `Mem0System` never releases the
+        # embedded Qdrant client, and every instance built WITHOUT an explicit `run_id` shares the
+        # one `adhoc` path — which is what this smoke test does, and what ad-hoc/REPL use does.
+        # (The benchmark arms are fine: `benchmarks/run.py` stamps a unique `run_id` per run.)
+        # So it is a REAL defect and must stay red: skipping here would trade a resource leak for
+        # silence. Reproduced verbatim from `qdrant_client/local/qdrant_local.py`.
+        "Storage folder /tmp/recall-bench-mem0/adhoc/qdrant is already accessed by another "
+        "instance of Qdrant client. If you require concurrent access, use Qdrant server instead.",
+        # Anchoring. A four-digit vendor code beginning 402 is not a 402: OpenRouter forwards
+        # upstream provider bodies, and `{'code': 4029}` used to match the substring `'code': 402`
+        # and skip. This case is the difference between a rule and a coincidence.
+        "upstream error {'code': 4029, 'msg': 'model overloaded'}",
+        "Error code: 4020 - vendor bad request",
     ],
 )
 def test_everything_else_still_fails(message: str) -> None:
     """The guard must not become a catch-all: that trades noise for silence."""
-    _skip_if_the_account_cannot_pay(RuntimeError(message))  # returns, so the caller re-raises
+    _the_guard_must_not_skip(RuntimeError(message))
+
+
+def _the_guard_must_not_skip(exc: BaseException) -> None:
+    """Assert the guard leaves `exc` alone, so a real failure keeps propagating.
+
+    Calling `_skip_if_the_account_cannot_pay(exc)` bare does NOT assert this, which is the trap
+    every negative test here originally fell into: a WRONG skip raises `pytest.skip.Exception`,
+    and pytest reports that as SKIPPED, not FAILED. The whole anti-catch-all net was therefore
+    unarmed — a widening that swallowed the Qdrant lock error left the suite at exit code 0. A
+    test whose failure mode is "gets skipped" cannot fail, so assert on the matcher instead, and
+    convert a stray skip into an explicit failure.
+    """
+    # `{exc!r}`, not `{exc}`: `BaseException.__repr__` reads `args`, so it still works on a carrier
+    # whose `__str__` raises — the very shape `_read`'s totality exists for. `{exc}` would replace
+    # this assertion's message with a `TypeError` from formatting it.
+    evidence = _the_billing_evidence_in(exc)
+    assert evidence is None, f"guard matched {evidence!r} on a NON-billing failure: {exc!r}"
+    try:
+        _skip_if_the_account_cannot_pay(exc)
+    except pytest.skip.Exception as skipped:  # pragma: no cover - the assert above gets there first
+        pytest.fail(f"guard skipped a non-billing failure: {skipped}")
+
+
+class _StubResponse:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+class _StubAPIStatusError(Exception):
+    """Duck-types the attributes the matcher reads off `openai.APIStatusError`.
+
+    A stub rather than the real class so this file keeps working without the `bench` extra
+    (`openai` is not a core dependency). `test_a_real_openai_402_is_recognised` pins it against
+    the genuine article, but only where the bench extra is installed — CI installs `.[dev]`, so
+    that pin catches drift locally and NOT in CI. Do not read it as an unconditional guarantee.
+    """
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.response = _StubResponse(status_code)
+
+
+class _StubWrappedError(Exception):
+    """A carrier that exposes the status ONLY nested under `response`, as httpx-shaped errors do.
+
+    Separate from `_StubAPIStatusError` because that one sets `status_code` too, and `any()`
+    short-circuits: with only that stub, the `response.status_code` branch could be deleted and
+    no test would notice.
+    """
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.response = _StubResponse(status_code)
+
+
+class _StubStatusOnlyError(Exception):
+    """A carrier with ONLY a top-level `status_code` and no `response`."""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _StubOldSdkError(Exception):
+    """A carrier that spells the status `http_status`, as openai 0.x and its contemporaries did."""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.http_status = status_code
+
+
+def _the_shape_that_skipped() -> BaseException:
+    """Shape A: mem0 2.x's `LLMError` text, as seen skipping correctly on 2026-08-05.
+
+    `mem0/memory/main.py` does `raise LLMError(f"LLM extraction failed: {e}") from e`, so the
+    openai message ("Error code: 402 - {...}", composed in `openai/_base_client.py` rather than by
+    any `__str__` on the exception class) lands inside the text.
+    """
+    return RuntimeError(
+        "LLM extraction failed: Error code: 402 - {'error': {'message': 'Insufficient credits. "
+        "Add more using https://openrouter.ai/settings/credits', 'code': 402, 'metadata': "
+        "{'limit_source': 'openrouter_credits'}}}"
+    )
+
+
+def _a_status_only_shape() -> BaseException:
+    """Shape B: the SAME billing condition behind a wrapper that kept none of the prose.
+
+    This is the shape the prose-only matcher could not see. Nothing in the wrapper's message says
+    "credits", "402", or anything else quotable — but the 402 is still on the chained cause,
+    because `raise ... from ...` preserves it. Matching the STATUS rather than the sentence is
+    what makes the guard survive a provider (or a wrapper) rewording its text.
+
+    Constructed, not observed. The unrecognised error of 2026-08-05 was NOT this: it was the
+    Qdrant storage lock, which is not billing at all and is pinned as a must-stay-red case above.
+    This shape is the insurance the incident argued for, not a transcript of it.
+    """
+    wrapper = RuntimeError("Stopped: the memory backend refused the request")
+    wrapper.__cause__ = _StubAPIStatusError("Payment Required", status_code=402)
+    return wrapper
+
+
+def _a_nested_status_only_shape() -> BaseException:
+    """Shape B again, with the status reachable only via `response.status_code`."""
+    wrapper = RuntimeError("Stopped: the memory backend refused the request")
+    wrapper.__cause__ = _StubWrappedError("Payment Required", status_code=402)
+    return wrapper
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(_the_shape_that_skipped, id="prose"),
+        pytest.param(_a_status_only_shape, id="status-only"),
+        pytest.param(_a_nested_status_only_shape, id="status-only-nested"),
+    ],
+)
+def test_both_shapes_of_one_billing_condition_skip(build: Callable[[], BaseException]) -> None:
+    """One condition, two shapes. The guard's whole promise is that BOTH skip, not just the one
+    whose wording happened to be in the marker list on the day it was written."""
+    with pytest.raises(pytest.skip.Exception):
+        _skip_if_the_account_cannot_pay(build())
+
+
+def test_a_real_openai_402_is_recognised() -> None:
+    """Pin `_StubAPIStatusError` against the genuine `openai.APIStatusError`.
+
+    Without this, the stub could keep passing long after openai renamed the attribute the matcher
+    reads — a test that proves only that the stub matches itself. Both duck-typed attributes are
+    asserted, since the matcher short-circuits on the first and would otherwise hide a rename of
+    the second.
+    """
+    openai = pytest.importorskip("openai", reason="needs the bench extra (pip install recall[bench])")
+    httpx = pytest.importorskip("httpx", reason="openai's transport dep; only missing if it drops it")
+
+    body = {"error": {"message": "Insufficient credits.", "code": 402}}
+    response = httpx.Response(
+        402,
+        request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+        json=body,
+    )
+    real = openai.APIStatusError("Error code: 402", response=response, body=body)
+    wrapper = RuntimeError("Stopped: the memory backend refused the request")
+    wrapper.__cause__ = real
+
+    assert real.status_code == 402                 # what `_StubAPIStatusError` duck-types
+    assert real.response.status_code == 402        # what `_StubWrappedError` duck-types
+    with pytest.raises(pytest.skip.Exception):
+        _skip_if_the_account_cannot_pay(wrapper)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # One case per marker, each carrying ONLY that marker, so none of them can be deleted
+        # without a test going red. The status walk does NOT cover these: a wrapper that folds
+        # `str(e)` into its own message keeps no attribute for the walk to read.
+        "backend returned status code 402 from upstream",
+        "HTTPError(status_code=402, detail='no funds')",
+        'upstream said {"code": 402}',
+        "upstream refused: {'metadata': {'limit_source': 'openrouter_credits'}}",
+        "the account has insufficient credits",
+    ],
+)
+def test_each_message_only_marker_earns_its_place(message: str) -> None:
+    """`metadata.limit_source` is OpenRouter's own taxonomy, so it outlives any rewording of
+    `message` — the reason it is a marker even though no human ever reads it. The same argument
+    applies to each 402 spelling: untested markers get deleted by the next reader as redundant."""
+    with pytest.raises(pytest.skip.Exception):
+        _skip_if_the_account_cannot_pay(RuntimeError(message))
+
+
+@pytest.mark.parametrize(
+    "carrier",
+    [
+        pytest.param(_StubStatusOnlyError, id="status_code"),
+        pytest.param(_StubOldSdkError, id="http_status"),
+        pytest.param(_StubWrappedError, id="response.status_code"),
+    ],
+)
+def test_each_probed_attribute_name_earns_its_place(
+    carrier: Callable[..., BaseException],
+) -> None:
+    """One minimal carrier per probed name, each exposing ONLY that name.
+
+    `_StubAPIStatusError` sets `status_code` AND `response.status_code`, and `any()`
+    short-circuits, so on its own it lets either probe be deleted unnoticed. The argument that
+    gives every message marker its own case applies just as much to every attribute name.
+    """
+    with pytest.raises(pytest.skip.Exception):
+        _skip_if_the_account_cannot_pay(carrier("Payment Required", status_code=402))
+
+
+def test_a_body_error_code_does_not_override_the_transport_status() -> None:
+    """A 500 whose BODY carries `code: 402` is an upstream failure, not a billing refusal.
+
+    This is the case that decides the qualifier in `_carries_a_402_status`: reading `code` off
+    anything with a `response` would readmit the openai family, where `code` is the body's error
+    code. Reading it only off a `headers`-bearing carrier keeps the urllib case and drops this one.
+    """
+
+    class _BodyCode(Exception):
+        def __init__(self) -> None:
+            super().__init__("upstream exploded")
+            self.response = _StubResponse(500)
+            self.code = 402
+
+    _the_guard_must_not_skip(_BodyCode())
+
+
+def test_a_bare_code_attribute_is_not_an_http_status() -> None:
+    """`code` means too many things to read unqualified. `SystemExit(402).code` is an exit status.
+
+    Not reachable from the smoke test today (`except Exception` does not catch `SystemExit`), but
+    the matcher is the thing under test here, not its current caller.
+    """
+    _the_guard_must_not_skip(SystemExit(402))
+
+
+def test_a_urllib_style_http_error_still_matches_on_code() -> None:
+    """The qualifier must not cost the case `code` was probed for: `urllib.error.HTTPError` spells
+    the status `code` and carries `headers`, which is what marks it as an HTTP carrier."""
+    import urllib.error
+
+    error = urllib.error.HTTPError(
+        "https://openrouter.ai/api/v1/chat/completions", 402, "Payment Required", {}, None
+    )
+    # `HTTPError` is file-like (it subclasses `addinfourl`), so an un-closed one emits a
+    # `ResourceWarning` on collection — a real leak in this test, not a third-party wart, and it
+    # fails the suite under `-W error`.
+    try:
+        assert error.code == 402
+        with pytest.raises(pytest.skip.Exception):
+            _skip_if_the_account_cannot_pay(error)
+    finally:
+        error.close()
+
+
+def test_a_probe_that_raises_is_treated_as_no_evidence() -> None:
+    """A raising property or `__str__` must not escape the guard.
+
+    It would do so from inside the smoke test's `except` block, so the `raise` on the next line
+    would never run and the real diagnostic would survive only as `__context__`.
+    """
+
+    class _Hostile(Exception):
+        # `status_code`, not `code`: `code` is only read off an HTTP-shaped carrier, so a probe
+        # that explodes there is never reached and would pin nothing. This is the name the walk
+        # reads first and unconditionally.
+        @property
+        def status_code(self) -> int:
+            raise ValueError("property exploded")
+
+        def __str__(self) -> str:
+            raise TypeError("str exploded")
+
+    _the_guard_must_not_skip(_Hostile())
+
+
+def test_a_cyclic_cause_chain_terminates() -> None:
+    """The `seen` set is the only thing standing between a hand-built cycle and a hung suite."""
+    first = RuntimeError("first")
+    second = RuntimeError("second")
+    first.__cause__ = second
+    second.__cause__ = first
+    _the_guard_must_not_skip(first)
+
+
+def test_a_non_402_status_on_the_chain_still_fails() -> None:
+    """The walk reads the status, not merely the presence of one. 429 is environmental too, but it
+    is not a billing refusal and must stay red."""
+    wrapper = RuntimeError("Stopped: the memory backend refused the request")
+    wrapper.__cause__ = _StubAPIStatusError("Too Many Requests", status_code=429)
+    _the_guard_must_not_skip(wrapper)
+
+
+def test_an_unrelated_failure_raised_while_a_402_was_in_flight_still_fails() -> None:
+    """`__cause__` is a claim ("this caused that"); `__context__` is a coincidence of timing.
+
+    Only the claim counts. Following `__context__` would mean that ANY failure occurring inside an
+    `except` block that is handling a 402 gets reported as a billing skip — which is exactly how
+    the leaked Qdrant lock would have been buried had the guard been widened to swallow it.
+    """
+    unrelated = RuntimeError(
+        "Storage folder /tmp/recall-bench-mem0/adhoc/qdrant is already accessed by another "
+        "instance of Qdrant client."
+    )
+    unrelated.__context__ = _StubAPIStatusError("Insufficient credits", status_code=402)
+    _the_guard_must_not_skip(unrelated)
 
 
 def test_resolve_embedder_routes_fastembed_prefix_to_a_named_model(monkeypatch: pytest.MonkeyPatch) -> None:

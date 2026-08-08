@@ -127,8 +127,8 @@ def test_the_two_harnesses_declare_the_same_flag_and_the_same_default() -> None:
 def test_the_cli_default_is_held_in_both_harnesses(module, monkeypatch, tmp_path) -> None:
     """The signature is not the leg the published reproduce commands go through. No database.
 
-    `README.md` and `results/RESULTS.md` both ship a `python -m recall.eval.…` line, which reaches
-    `evaluate` via argparse. Pinning only the Python default left `default="all"` in either
+    `docs/EVIDENCE.md` and `results/RESULTS.md` both ship a `python -m recall.eval.…` line, which
+    reaches `evaluate` via argparse. Pinning only the Python default left `default="all"` in either
     `add_argument` shipping green on the one setting that decides what a published `hit_at_k`
     counts — a guard that reads as protection over the whole flag while covering half of it.
     """

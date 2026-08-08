@@ -406,7 +406,7 @@ two sets are **not** a clean before/after and are never differenced.
 
 Every retrieval figure before this section was measured on a corpus this repo ships or generates —
 or, for the real corpus, with document **headings** as queries. That is *known-item retrieval*:
-finding a document you can already name. It scored **recall@5 0.945**. <!--@ withdrawn: README.md 'Claims that were withdrawn' -->
+finding a document you can already name. It scored **recall@5 0.945**. <!--@ withdrawn: docs/EVIDENCE.md 'Claims that were withdrawn' -->
 
 Re-asked as **110 hand-labelled questions** phrased the way a person actually asks (half fit the
 threshold, half score), the same corpus and pipeline scored:
@@ -418,10 +418,10 @@ threshold, half score), the same corpus and pipeline scored:
 | abstention accuracy | 0.89 | [0.57, 0.98] | 9 |
 | false-abstain | 0.04 | [0.01, 0.15] | 46 |
 
-**0.945<!--@ withdrawn: README.md 'Claims that were withdrawn' --> → 0.33.** Eight sampled misses were inspected rather than assumed: one was a *labelling*
+**0.945<!--@ withdrawn: docs/EVIDENCE.md 'Claims that were withdrawn' --> → 0.33.** Eight sampled misses were inspected rather than assumed: one was a *labelling*
 error (two memos answer the question; the label named one file) and seven were genuine, several
 landing in the right topic family but the wrong document. So 0.33 is a mild under-estimate — call
-it ~0.35–0.40 once labels are widened — and nowhere near 0.945 <!--@ withdrawn: README.md 'Claims that were withdrawn' -->. The abstention layer was never the
+it ~0.35–0.40 once labels are widened — and nowhere near 0.945 <!--@ withdrawn: docs/EVIDENCE.md 'Claims that were withdrawn' -->. The abstention layer was never the
 bottleneck: 89% of unanswerable questions correctly refused, 4% of answerable ones wrongly refused.
 
 ### Four levers tested; one moved it
@@ -609,7 +609,7 @@ lexical leg is worth **+0.05 at k=5** and **+0.06 at k=20**; the post-fix 0.671 
 configuration*, not a better sample of the same one. §10 (LongMemEval) remains pre-fix — see its
 configuration note.
 
-> An earlier revision of this paragraph also cited a **0.615**<!--@ withdrawn: README.md 'Claims that were withdrawn'; results/FINDINGS.md 9a --> from a still-earlier build and read
+> An earlier revision of this paragraph also cited a **0.615**<!--@ withdrawn: docs/EVIDENCE.md 'Claims that were withdrawn'; results/FINDINGS.md 9a --> from a still-earlier build and read
 > the spread against 0.624 as HNSW build noise. The figure stays withdrawn; the *reason* has
 > changed. It was removed because its result artifact had never been retained — that artifact was
 > committed in [#111](https://github.com/GiulioDER/RE-call/pull/111) and records **0.6152** at k=5
@@ -739,7 +739,7 @@ Three findings, one of them a correction of this repo's own first guess:
 **The residual is architectural, not a tuning failure.** Separating "what did Caroline realize" from
 "what did Melanie realize" when both turns are in the corpus and both score high is entity-level
 reasoning — and this library states plainly that it does none: no LLM, no graph, no entity linking
-in the retrieval path (README, "Prior art"). LOCOMO cat5 stresses exactly the axis the architecture
+in the retrieval path (docs/PRIOR_ART.md, "Prior art"). LOCOMO cat5 stresses exactly the axis the architecture
 excludes by design.
 
 ### 9c. A stronger entailment judge: it shifts the curve, it does not cross the line
@@ -800,15 +800,50 @@ is the memory. Paired **McNemar** over per-question outcomes, full **n=1,540** a
 
 | generator | budget | judge | RE-call | Mem0 | paired p |
 |---|---|---|---|---|---|
-| gpt-4o-mini | item (k=10/10) | gpt-4o-mini | **0.416** | 0.378 | 0.0059 |
-| gpt-4o-mini | item | gpt-4o | **0.466** | 0.412 | 0.00018 |
-| gpt-4o-mini | token (k=10/20) | gpt-4o-mini | **0.416** | 0.370 | 0.00077 |
-| gpt-4o-mini | token | gpt-4o | **0.466** | 0.411 | 0.00018 |
-| gpt-4o | token | gpt-4o | **0.484** | 0.444 | 0.0065 |
+| gpt-4o-mini | item (k=10/10) | gpt-4o-mini | **0.416**<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_item_judge-mini.recall.accuracy --> | 0.378<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_item_judge-mini.mem0.accuracy --> | 0.0059<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_item_judge-mini.mcnemar.p_value --> |
+| gpt-4o-mini | item | gpt-4o | **0.466**<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_item_judge-4o.recall.accuracy --> | 0.412<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_item_judge-4o.mem0.accuracy --> | 0.00018<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_item_judge-4o.mcnemar.p_value --> |
+| gpt-4o-mini | token (k=10/20) | gpt-4o-mini | **0.416**<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_token_judge-mini.recall.accuracy --> | 0.369<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_token_judge-mini.mem0.accuracy --> | 0.00077<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_token_judge-mini.mcnemar.p_value --> |
+| gpt-4o-mini | token | gpt-4o | **0.466**<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_token_judge-4o.recall.accuracy --> | 0.411<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_token_judge-4o.mem0.accuracy --> | 0.00017<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_token_judge-4o.mcnemar.p_value --> |
+| gpt-4o | token | gpt-4o | **0.484**<!--@ head_to_head/paired_accuracy.json#rows.gpt4o_token_judge-4o.recall.accuracy --> | 0.444<!--@ head_to_head/paired_accuracy.json#rows.gpt4o_token_judge-4o.mem0.accuracy --> | 0.0065<!--@ head_to_head/paired_accuracy.json#rows.gpt4o_token_judge-4o.mcnemar.p_value --> |
+
+> **Corrections 2026-08-06 — two cells, neither of which moves a conclusion.**
+>
+> *The `token` / `gpt-4o` row's p read `0.00018` and is `0.00017`.* The value is
+> 0.00017484<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_token_judge-4o.mcnemar.p_value -->, while
+> 0.00018261<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_item_judge-4o.mcnemar.p_value --> is the `item` / `gpt-4o` row
+> directly above it — evidently copied down.
+>
+> *The `token` / `gpt-4o-mini` row's incumbent-accuracy cell read `0.370` and is `0.369`.* Double
+> rounding: that run's own `aggregate` field stores the rate pre-rounded to `0.3695`, and the
+> table rounded *that* again. From the per-question outcomes the value is
+> 0.369<!--@ head_to_head/paired_accuracy.json#rows.gpt4o-mini_token_judge-mini.mem0.accuracy -->. The same mechanism moved the
+> as-shipped margin below. 🔑 **Quote a figure from the per-question outcomes, never from a
+> summary field that has already been rounded once** — the second rounding is invisible, and it
+> always rounds away from the data.
+>
+> Both stood because this table was the one published result in the repository with **no
+> committed artifact to be checked against**: `ARTIFACTS.md` had no §9d entry, and no file under
+> `results/` named the comparison. Both were found within minutes of one existing — the first by
+> `benchmarks/h2h_artifact.py`, the second by the test that guards it.
+
+Every figure in this table is now derived, checkable and committed:
+[`results/head_to_head/paired_accuracy.json`](head_to_head/paired_accuracy.json), with the
+per-question outcome vectors in `head_to_head/outcomes/` so the paired test is recomputable
+without the raw runs (far too large to commit), an API key, or trust. `tests/test_h2h_artifact_backs_findings.py`
+fails if this table and that artifact ever disagree again.
 
 RE-call is the more accurate of the two on every row, and the margin survives **Holm–Bonferroni**
 across all five (largest adjusted p = **0.012**). It also holds on the 1,369 questions where the two
 judges agree (0.440 vs 0.399, p=0.006), so it is not a judge-noise artifact.
+
+⚠️ **None of the five rows was replicated, and the one configuration that was run twice did
+not land on the same number.** The two `text-embedding-3-small` RE-call runs below share a byte-identical config,
+ran seconds apart, and scored 0.41169<!--@ head_to_head/paired_accuracy.json#as_shipped_embedder.replicate_low_accuracy --> and
+0.42208<!--@ head_to_head/paired_accuracy.json#as_shipped_embedder.replicate_high_accuracy -->. A temperature of zero does not make a hosted generator and
+judge deterministic. The margins here (+0.038<!--@ head_to_head/paired_accuracy.json#margin_min --> to +0.055<!--@ head_to_head/paired_accuracy.json#margin_max -->) are larger
+than that spread and every row is paired, which is what makes them survive it; but a reader should
+treat each single cell as carrying at least a point of run-to-run noise: these two differ by
+1.04<!--@ head_to_head/paired_accuracy.json#as_shipped_embedder.replicate_spread_points --> accuracy points.
 
 **Reader-tier caveat — the lead is a property of the reader, not a universal fact.** At the gpt-4o
 judge the margin runs +0.055 (gpt-4o-mini generator) → +0.041 (gpt-4o) and **reverses on Claude
@@ -817,8 +852,18 @@ mechanism is measurable: Mem0 returns LLM-compressed facts a stronger reader can
 returns raw turns. The claim is for the OpenAI reader tier the field benchmarks with, not beyond.
 
 **Mem0 as-shipped.** On Mem0's own documented default embedder (`text-embedding-3-small`, both arms,
-full n=1,540): RE-call **0.42** vs Mem0 **0.366** (+0.046 to +0.057, p ≤ 0.0014). Its shipped
+full n=1,540): RE-call **0.412<!--@ head_to_head/paired_accuracy.json#as_shipped_embedder.replicate_low_accuracy --> /
+0.422<!--@ head_to_head/paired_accuracy.json#as_shipped_embedder.replicate_high_accuracy -->** vs Mem0 **0.366** (+0.046<!--@ head_to_head/paired_accuracy.json#as_shipped_embedder.margin_min --> to
++0.056<!--@ head_to_head/paired_accuracy.json#as_shipped_embedder.margin_max -->, p ≤ 0.0014). Its shipped
 embedder did not close the gap — it widened it slightly (Mem0 scored *below* its own bge-small).
+
+> Two RE-call numbers because RE-call was **run twice here**, and the pair is the reason the margin
+> is quoted as a range rather than a point. Earlier revisions of this paragraph and of the README
+> quoted the single figure **0.42**, which is the higher replicate; the range beside it was correct
+> and its origin was not stated, so a reader could not tell a replicate existed. Both runs are in
+> [`head_to_head/paired_accuracy.json`](head_to_head/paired_accuracy.json) under
+> `as_shipped_embedder.recall_replicates`, with their outcome vectors, and the point estimate is
+> now given as both.
 
 **Cost.** Metered memory-layer LLM usage building the full benchmark's memory: RE-call **0 calls /
 $0**; Mem0 **272 calls / 2.6M tokens / $7.29** (gpt-4o extraction). RE-call's write path calls no

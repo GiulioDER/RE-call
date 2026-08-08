@@ -5,9 +5,2657 @@ Rolling handoff between sessions of the enterprise retrieval program described i
 landed, what was measured, and what is blocked, so the next session can start without
 re-deriving state.
 
-`docs/*.md` is deliberately outside `claim_gate.py`'s `GATED_DOCS`, so figures here carry no
-evidence markers. If this file is ever promoted into the gate, every number below needs a marker
-before that change can go green.
+**This file** is deliberately outside `claim_gate.py`'s `GATED_DOCS`, so figures here carry no
+evidence markers. If it is ever promoted into the gate, every number below needs a marker before
+that change can go green.
+
+⚠️ Do not read that as "`docs/*.md` is outside the gate", which is what this paragraph said until
+2026-08-07 and which has been false since `3509256`: **`docs/ENTERPRISE_RETRIEVAL.md` IS gated**,
+and an edit to the runbook that adds an unmarked number fails
+`test_no_new_unmarked_numbers[docs/ENTERPRISE_RETRIEVAL.md]`.
+
+Nor is the mirror image true. **The REASONED exemption recorded on `GATED_DOCS` is this file's
+alone** — it gains an entry every session and `build_baseline()` regenerates every entry in one
+pass. Every *other* `docs/*.md` (`AUTH.md`, `CALIBRATION.md`, `MIGRATIONS.md`, `MODEL_LICENSES.md`
+and the rest) is simply **not gated yet**, which is not the same thing: a number added to one of
+those is unchecked, and nothing will say so.
+
+---
+
+
+## 2026-08-07 (second entry), closing the program: the two "gates" I was asked to run cannot fail as invoked
+
+Briefed with the same four-part close as the entry below, which had already executed it and merged
+as PR #230. So this session's job was **reverification against the current tip**, not repetition,
+plus the open items that entry handed forward. The headline is that two of the things this program
+has been reporting as gates are **library modules with no `__main__`**: running them as scripts
+exits zero unconditionally, and one of them appears as a passing row in the sweep table below this
+entry.
+
+### Session ledger
+
+| # | Part | Outcome |
+|---|---|---|
+| 1 | Generation campaign, conditional on an approved local generator | **NOT RUN**, correctly. Re-verified from the repository and the deployment rather than carried forward. The one gate in its list that does not need a generator **was** run |
+| 2 | Full verification sweep, local reproductions of the CI job set | done, **every job green**. One failure was mine and is recorded rather than quietly re-run |
+| 3 | Operator runbook, README posture, artifact provenance | done; the claim gate fired on my own runbook edit, twice, in both directions |
+| 4 | Deployment readiness on VPS2, stopping at shadow smoke | done as far as credentials allow; **one precondition found unmet**, and one command I declined to run |
+
+### The finding: two gates that cannot fail as invoked
+
+`benchmarks/claim_gate.py` appears in the sweep table of the entry below as a gate that ran clean.
+It has **no `__main__` block, no `sys.exit`, and no argparse**, and it is referenced by
+`pyproject.toml`, the `Makefile` and `.github/` **not at all**. `python benchmarks/claim_gate.py`
+therefore imports a module, defines some functions and exits zero — on any repository state
+whatsoever.
+
+Verified by mutation rather than by reading: I appended two plainly unmarked numbers to
+`docs/ENTERPRISE_RETRIEVAL.md`, which **is** a gated document, and the script still exited zero. The
+same edit is caught immediately by `pytest tests/test_published_numbers_have_artifacts.py`.
+
+`benchmarks/evidence_injection.py` has the same shape, and it matters more: it is the **frozen
+adversarial suite** the generation campaign's last gate names. The quantifier differs, though, and
+the difference is worth keeping straight: `claim_gate.py` imports stdlib only, so it exits zero on
+any repository state whatsoever; `evidence_injection.py` imports `recall.evidence` at module scope,
+so as a script it either exits zero having asserted nothing or dies on an import error. Neither
+outcome is a gate verdict, which is the point, but "exits zero unconditionally" is only literally
+true of the first. Its real gate is
+`tests/test_evidence_injection.py`, which pins `suite_digest`, refuses an increase in
+`injection_success_rate`, carries a positive control against the renderer it replaced and a negative
+control against a renderer that ships no evidence at all.
+
+Neither module is broken. Both are pytest-consumed libraries, and the guard is real when reached
+through pytest. What was wrong is the **invocation** a previous entry recorded as evidence. This is
+the repository's own recorded defect class — a guard that reads as protection and cannot fire — and
+it was sitting inside the verification table written to demonstrate that the guards had been run.
+
+⚠️ **So "ran the claim gate" is not a checkable claim; "ran `tests/test_published_numbers_have_artifacts.py`" is.** The sweep table below states the latter.
+
+### Part 1: still false, re-verified from both sides, and its one generator-free gate was run
+
+**Repository.** `generate_from_evidence(result, generator: Callable[[str, str], …])` takes its
+generator as a parameter. No `RECALL_*GEN*` environment selector exists; no `ollama`, `llama_cpp`,
+`vllm`, `GPT4All`, `AutoModelForCausalLM` or `transformers.pipeline` import appears anywhere in
+`recall/`, `recall_mcp/` or `recall_interop/`.
+
+**Deployment.** `/opt/recall-enterprise/manifest.json` records three artifacts: two embedders and
+one cross-encoder reranker. No causal-LM weights.
+
+So the three paired arms were not run and nothing was invented, downloaded or selected. Of that
+part's seven gates, six need a generator. **The seventh does not**: "no increase in prompt injection
+success on the frozen adversarial suite from Session 6" is a property of the prompt boundary, and it
+was executed — `tests/test_evidence_injection.py`, 16 passed, against the committed baseline whose
+`injection_success_rate` is `0.0` over 52 trials with a pinned `suite_digest`. No increase.
+
+### Part 2: the sweep, on the current tip
+
+⚠️ **These are LOCAL REPRODUCTIONS of the CI job configurations, not CI runs.** Every exit code was
+captured directly into a variable from the command, never read through a pipe. Timings are single
+observations on Windows and are not reproducible from the repository; counts, versions and exit
+codes are.
+
+| Job / check | Command as CI runs it | Result |
+|---|---|---|
+| `test` lint | `ruff check .` | **exit 0**, "All checks passed!" |
+| — | `ruff format --check .` | **exit 1**, 334 files would be reformatted, 52 already formatted. **Resolved by decision, not by reformatting** — see below |
+| `typecheck` | `mypy` | **exit 0**, no issues in 168 source files |
+| `schema-migrations` (pg16) | the three named test files | **exit 0**, 60 passed, 59.85 s |
+| `schema-migrations` (pg17) | same | **exit 0**, 60 passed, 48.96 s |
+| `test` | `pytest --cov-fail-under=70` on pg16 | **exit 0**, **3047 passed, 44 skipped**, 1089.59 s. Coverage **83.29%** of the shipped packages, floor 70 |
+| `floor` | py3.11 + `--resolution lowest-direct`, **on pg16** | **exit 0**, **3047 passed, 44 skipped**, 844.96 s. Python 3.11.15; resolved to the declared minimums exactly: mcp 1.27.2, pgvector 0.4.0, psycopg 3.3.4, PyJWT 2.10.1, pytest 8.0.0 |
+| `audit` | `uv lock --check` | **exit 0**, 189 packages |
+| `audit` | `uvx pip-audit --no-deps` | **exit 0**, "No known vulnerabilities found" |
+| packaging | `python -m build` + `twine check` | **exit 0** / **exit 0**, both artifacts PASSED |
+| claim gate | `pytest tests/test_published_numbers_have_artifacts.py tests/test_results_artifact_provenance.py` | **exit 0**, 106 passed |
+
+Two deltas from the entry below, both improvements: `floor` ran on **pg16**, which is what `ci.yml`
+pins (that entry ran it on pg17 and said so), and each job ran against its **own** PostgreSQL
+container.
+
+**The one red I produced, recorded rather than re-run into silence.** My first `test` run exited 1
+with `ConcurrentMigrator: another RE-call schema migrator is already running` at fixture setup. The
+cause was mine: I had run the provenance tests against the *same* database while the suite held the
+migration advisory lock. Not a repository defect, and the proof is that the affected file passes in
+isolation (40 passed, 1 skipped) and the clean full re-run above is green. It is written down
+because a failure silently re-run until green is indistinguishable from one that was understood.
+
+**`ruff format` is now DECIDED rather than left ambiguous.** The entry below left it "neither: the
+tool is installed, it fails, and nothing asks it", and listed resolving that as a next-session item.
+`CONTRIBUTING.md` now states that formatting is **deliberately unenforced**, that `ruff check` is
+the only style gate, that a `ruff format --check` failure is not a red build, and that contributors
+should **not** run `ruff format` on files they touch, because a partial reformat spreads the decision
+one file at a time. Adopting it is a separate PR of its own, with the CI job and the tree-wide
+reformat and nothing else.
+
+### Part 3: the runbook, and the gate firing on me in both directions
+
+**Item 2b from the entry below is closed in code.** That entry's own words: *"a guard in prose is
+the weakest place to keep one: the same document teaches 'do not proceed past a red one', and this
+failure mode is a green. The code is where it belongs."* `_cmd_parity` now exits non-zero when both
+generations are empty, with no override flag — `cutover --allow-divergent-corpus` in the same CLI is
+the cautionary case for refusals that advertise their own escape hatch.
+
+Proven against the old code, not merely alongside it: with the fix stashed, the new test fails and
+the CLI prints `active chunks: 0 / shadow chunks: 0 / parity: OK` and exits 0, which is the exact
+state the reference deployment is in. A negative control asserts a populated matching pair still
+exits 0, so the refusal cannot be broadened into a blanket one without a test going red.
+
+**The claim gate then fired on my own runbook edit, twice, in opposite directions.** First for
+growth: 9 new unmarked `0`s and 6 new `1`s. The available escape was a code span, and the gate's own
+comment names that as its soft spot, so taking it would have been gaming the guard — the entry below
+declined the same escape for the same reason. Instead the digits came out, using the idiom the
+document already uses everywhere ("exits non-zero", "empty"). Then it fired for **shrinkage**,
+because the deleted paragraph had carried two unmarked `0`s of its own; `CLAIMS_BASELINE.json` moved
+`"0": 6 → 4`, which is the direction its own `_note` permits ("may only SHRINK").
+
+`README.md`'s posture row for index generations **said something my fix made false** — "`parity` on
+two empty generations succeeds and prints `OK`". Updated in the same PR, as `CONTRIBUTING.md`
+requires. The residual hazards it names were re-verified against source rather than copied:
+`_prune_vanished` still keys its candidate set on the active generation (its own comment says so),
+and the skip predicate does now read both generations, confirming that entry's correction.
+
+### Part 4: the deployment, and the command I did not run
+
+All VPS2 work used **root SSH, not qwen-mcp** — a stated deviation, because this program lives in
+`/opt/recall-enterprise` and `/var/tmp`, outside qwen-mcp's four file roots. Nothing was installed,
+nothing was written to the deployment, and no migration was applied: there were none to apply.
+
+| Check | Result |
+|---|---|
+| Model artifact digests | **All three reproduce.** Recomputed with a standalone transcription of `artifact_tree_sha256` that does not import the deployed wheel. Reranker matches `manifest.json` **and** `PINNED_RERANKER_SHA256` in `recall/rerank.py`; BGE cache and Qwen3 match `manifest.json` |
+| Licence records | **Still incomplete.** No `LICENSE`/`LICENCE`/`COPYING` in any of the three trees; `manifest.json` records a `license` key for one model of three |
+| Outbound egress | **Still unblocked.** `ufw` active, default `allow (outgoing)`. No `recall*` systemd units exist, so nothing runs there to egress, but the control is absent |
+| Migration roles | `recall_migrator`, `recall_runtime`: `rolsuper=f`, `rolbypassrls=f` ✅ — but **`rolinherit=t`, and the runbook's precondition says NOINHERIT** ❌. `pg_auth_members` is empty, so there is nothing to inherit and the gap is inert today. Both halves checked, because attribute columns alone are not sufficient |
+| New migrations to apply | **None.** The package ships 13 (max `0013`); the deployment's `__global__` ledger is at `0013`, and both generation tables carry `0001`–`0007` — the per-table rows the entry below repaired are still there |
+| Pending outbox events | **Zero.** Four events, all `complete`. The "replay until pending is zero" precondition is already satisfied |
+| Indexes | **Zero invalid** database-wide; 7 on each generation table |
+| RLS | Forced on both generation tables, `recall_tenant_routes`, `recall_migration_events`, `recall_calibrations`, `recall_calibration_query_sets`, `recall_sparse_v1`. Not on `recall_index_generations`, which is consistent: it has no tenant column, which is the same fact that makes `retire` database-global |
+| Source sets, hashes, counts | Both generations: 0 chunks, 0 sources, 0 distinct hashes, **0 degenerate hashes** |
+| Calibration | `recall_calibrations` holds 0 rows |
+| Shadow generation for a winning profile | **None to register.** All four committed decisions read `promoted=false` with `latency_p95_ms=None` — re-read from the artifacts, not quoted |
+| Disk headroom | 572,794,634,240 bytes free against a 131,072-byte active index: **4,370,076.2x**, requirement 2.2x. ⚠️ **PASSES VACUOUSLY**, and the per-index breakdown is why: five btrees at 16,384 and two at 24,576 sum to exactly 131,072, the empty-index floor. It bounds nothing about a real build. The 2.2x factor remains unsourced and is applied to a base that excludes the heap |
+
+**The command I did not run, and why.** Neither documented role has a usable credential path from
+this session: connecting the enterprise CLI **as those roles** would have meant provisioning
+credentials on a host that also runs a live money path, which is not a change to make
+unilaterally. (The specifics are an operations detail and are deliberately not written down in a
+public repository; they are in the private ops notes.) So `readiness`, `status` and `parity` were
+**not** re-obtained as the serving role this session.
+
+Running them as `postgres` instead was available and was **refused**: a superuser bypasses RLS, so
+`readiness`'s row-level-security verdict would have been green and meaningless — the exact vacuous
+verdict the runbook warns about two paragraphs from where it prints the role it evaluated. Every
+deployment row above is therefore labelled as a **state observation read as `postgres`**, not as a
+readiness verdict. Recorded as a new external dependency.
+
+The parity guard's evidence does not depend on that: it was proven red-against-old-code against real
+PostgreSQL in the suite, which is stronger than a single host invocation would have been.
+
+### The audit: 27 findings, and the prose I wrote to fix a prose defect was where they were
+
+The diff went through the tiered CCA pipeline at **DEEP** (`RUN_STAKES` fires: this CLI gates
+`cutover` and `retire`). **27 raw findings from six auditors**, and because a bare total is not
+checkable, the split: `security-auditor` 2, `bug-auditor` 3, high-stakes 4, `numeric-auditor` 3,
+data-integrity 4, `doc-auditor` 11. A seventh pass (`differential-review`) then reviewed the fix
+batch itself and returned 12 SAFE, 1 SCOPE_CREEP, 2 REGRESSION_RISK over 15 hunks. ✅ Unlike the entry below, deterministic
+coverage was **available** this run: `cca_checks capabilities` reports `definedness, nullability,
+type, taint, clock_leak` for Python. ⚠️ `numeric` is **not** among them, so the DEEP tier's rule
+that a `NUM-*` P1 must carry a `hypothesis` artifact could not be satisfied mechanically — the two
+NUM findings were settled by **mutation** instead, which is stronger than the LLM re-read it
+replaces.
+
+**The one P1 was mine, and it was false.** My new runbook line said *"a partially filled shadow is
+still a green, and no code guard catches it."* Three auditors falsified it independently, and the
+repository already owned the test that does: `test_parity_passes_on_matching_generations_and_fails_on_a_gap`
+deletes one source from the shadow and asserts exit 1. A shadow partial **relative to the active**
+fails on missing sources and on differing chunk counts. What is genuinely unguarded is a pair that
+agrees with each other while both are short of the corpus on disk — a narrower claim, and the one
+the adjacent paragraph was already making. My version also contradicted its own document 31 lines
+later. The wrong action it invites is concrete: an operator who hits a parity failure, having read
+that partial fills are never caught, concludes the failure must be an intended corpus change and
+reaches for `--allow-divergent-corpus`, which that same page forbids for exactly this case.
+
+**The sharpest finding, found by two auditors independently: the guard's scoping had no guard.**
+My code comment said the condition is BOTH empty and that "this must not restate [a real
+divergence] as a vacuity error". **Mutating `and` to `or` left all 18 tests green** — verified by
+running it, not by reading. Every parity test had both sides populated or both sides empty; none
+put a zero on exactly one side. So the load-bearing half of the change was asserted only in prose,
+inside the commit whose entire subject is that prose is the weakest place to keep a guard. That is
+the defect class this repository tracks, committed one level down from its own repair.
+
+| Finding | Verdict | Outcome |
+|---|---|---|
+| "A partially filled shadow is still a green" — **false** | CONFIRMED, by the repo's own committed test | fixed in the runbook, README and CHANGELOG; scoped to the corpus-on-disk case that is genuinely unguarded |
+| **`and` → `or` mutant survives the whole suite** | CONFIRMED **by execution** | new test `test_parity_reports_a_missing_shadow_as_missing_sources_not_as_vacuity`, which asserts the *reason* and kills the mutant |
+| The refusal returned **before** the `parity.failures` loop, suppressing `rls_enabled` and `indexes_valid` — catalog facts that can be false on an EMPTY pair | CONFIRMED by six auditors | fixed: failures print first; new test pins it. ⚠️ My first wording of the justification was itself a false enumeration — I wrote that `parity` is the *only* step inspecting the shadow's RLS, and `cutover` checks it too via `_require_parity`. The true, narrower claim is that for a BOTH-EMPTY pair `cutover` refuses at `_require_non_empty_shadow` before reaching that check, so this is the only place an *empty* pair's RLS failure surfaces |
+| "the one failure mode in the cutover sequence that presents as a green" — **overstated** | CONFIRMED: `cutover` calls `_require_non_empty_shadow` *before* `_require_parity`, deliberately outside it so `--allow-divergent-corpus` cannot skip it | fixed: what this closes is the misleading green at step 8, **not** a path to a promoted empty index |
+| "**the one** failure mode" is wrong a second way: rows can exist while every `content_hash` is absent, so `''` compares equal to `''` | CONFIRMED — the repo gates this separately in `benchmarks/check_generation_parity.py` | claim corrected in code comment, runbook and README; detection **not** implemented (that is a feature, not this fix) |
+| My header correction replaced one over-generalisation with its mirror image: "the exemption is this file's alone" implies the other 13 `docs/*.md` are gated | CONFIRMED | fixed: they are simply **not gated yet**, which is not the same thing |
+| "the runbook edit **removed** more prose than it added" | CONFIRMED FALSE — measured **+214 / −104 words** | fixed; the reduction is recorded as still owed |
+| Section R still enumerated parity's exit conditions without the new one, so the document listed them two ways | CONFIRMED | fixed, with the step-8 table named as authoritative |
+| "exits zero unconditionally" holds for `claim_gate.py` (stdlib only) but not for `evidence_injection.py`, which can die on an import | CONFIRMED | quantifier scoped |
+| The entry published a live deployment's authentication posture in a **public** repository | CONFIRMED, low severity | the blocker is kept; the mechanism detail moved to private ops notes |
+| The refusal message named only the shadow, and named neither the tenant nor the generations | CONFIRMED | message now names the tenant and both generation ids, and gives the remedy that actually clears the state |
+
+**Round 2, over the fix batch, found three more — and the pattern held exactly.** The
+anti-regression pass returned 12 SAFE, 1 SCOPE_CREEP and 2 REGRESSION_RISK; the architect gate then
+returned **REVISE** on three, every one of them a defect *in the prose written to fix round 1*:
+
+| Round 2 finding | Why it is the same defect |
+|---|---|
+| My new refusal message changed the emitted string, and the runbook and CHANGELOG still quoted the **old** literal | A false quote, in the gated document, introduced by the commit whose subject is false claims about code. Both now quote a real substring, verified by reconstructing the emitted string and asserting containment rather than by eye |
+| I wrote that `parity` is "the **sole** place a shadow's RLS is checked". **False** — `cutover` checks it too, via `_require_parity` → `validate_generation_parity` | An enumeration that missed one, which is precisely finding F-A and F-D, committed inside their own fix. The true claim is narrower: for a BOTH-EMPTY pair `cutover` refuses at `_require_non_empty_shadow` before reaching that check, so this is the only place an **empty** pair's RLS failure surfaces |
+| The overstatement corrected in three files survived **verbatim** in a fourth — the test docstring | "Fixed" was recorded while one copy stood. A test docstring is prose about code in exactly the sense this batch is about: it is what the next reader consults to learn why the guard exists |
+
+So this session's series is **27 → 3**, and the honest reading matches the entry below: the defects
+are not in the code, they are in the explanatory prose, and each round's prose generates the next
+round's findings. The code change has been stable at twenty lines since the first draft and no
+audit round has found a defect in it.
+
+**Deferred, deliberately.** Moving the emptiness check *into* `validate_generation_parity` so
+`ControlPlane._require_parity` and the benchmark harness inherit it is the better long-term shape,
+and it changes semantics for two other consumers — that belongs in its own change with its own
+tests, not folded into this one. Today the invariant holds by ordering in `control_plane.py`, which
+is recorded rather than relied on silently.
+
+### The runbook had never been EXECUTED, so I executed it, and it broke twice
+
+Every session of this program has *documented* the eleven-step sequence. None has run it. I ran the
+whole thing end to end against a clean PostgreSQL 16 with pgvector, with the two roles provisioned
+exactly as `MIGRATIONS.md` specifies (`LOGIN NOINHERIT NOBYPASSRLS`, no superuser), the real
+in-repo `corpus/`, and the offline `hashing` embedder so nothing touched the network.
+
+**This is a VALIDATION environment, not a production rollout.** It has no production corpus and no
+production tenant, it fabricates neither, and no promotion decision was produced or implied. What it
+tests is whether the document works.
+
+| Step | Result |
+|---|---|
+| 1 `migrate` | exit 0 |
+| 1 verify (`status`) | 🛑 **exit 1**, `InsufficientPrivilege: permission denied for table recall_index_generations` |
+| 2 `schema apply` / `status` on the chunk table | exit 0 / exit 0, ledger through `0013` |
+| grants, generated | exit 0. All three documented forms reproduce: `--table` before the subcommand works; **after** it exits 2 with `unrecognized arguments`; omitting it silently grants the DEFAULT table |
+| 3 `create-generation` x2 | exit 0 |
+| 4 index the shadow | 🛑 **exit 1**, `permission denied for table chunks_g_blue` |
+| 4 index, after the second grant pass | exit 0, five chunks from five files, into each generation |
+| `parity`, active populated + shadow empty | **exit 1**, `shadow generation is missing sources` and `chunk counts differ` |
+| `parity`, both populated | **exit 0**, `parity: OK` over five and five |
+| 5 `mark-ready` / 7 `replay` | exit 0 / exit 0 (`no pending migration events`) |
+| 9 `readiness` | could not run offline: it builds the route's real embedding profile |
+| 10 `cutover` | exit 0, silent, and it **swapped** the slots as documented |
+| R rollback, short form | exit 0 and **silently NULLed the shadow route**, detaching the generation that was serving seconds earlier |
+| R rollback, with `--shadow-generation` | exit 0, route restored |
+| 11 `retire` while routed | **exit 1**, refused, naming the shadow slot |
+| 11 `retire` after detaching | exit 0. Re-routing the retired generation then **exit 1** |
+| un-retire via `mark-ready` | exit 0, state back to `ready`, **`retired_at` left set**, and `set-route` accepts it again |
+
+**Two of those are runbook defects and both are ORDERING.** The grants bullet is filed under
+"Preconditions" and cannot be completed there: it generates grants for tables that step 2 and step 3
+create. That is not a cosmetic filing error, it is a hard stop at step 4 and a misleading refusal at
+step 1's own verify line, where an operator reads `permission denied ... recall_index_generations`
+and goes looking for a broken migration. The working order is
+**1 → 2 → grants → 3 → grants again → 4**, and the runbook now says so in both places.
+
+**One is a display trap I had not known about.** `status` prints the *declared* `--chunks` from
+`mark-ready`, not a count. A generation holding five rows, marked ready with `--chunks 0`, prints
+`chunks=0` while `parity` reports five. The runbook already said the declared count is unchecked; it
+did not say `status` is where you would read it and be misled.
+
+**Everything else held exactly as written**, including four claims that had only ever been read
+rather than run: the three `--table` grant forms, the slot swap at cutover, the short-form rollback
+NULLing the shadow, and the un-retire path leaving `retired_at` set.
+
+✅ **And it settles a question two entries left open.** `create-generation` **does** write the
+per-table ledger rows: both new generation tables came out with `0001`–`0007` present. The previous
+entry inferred that from reading `ensure_schema` and could not explain the deployment's missing
+rows. The inference is now confirmed by execution, which narrows the unexplained state to the older
+build that provisioned those tables, exactly as that entry suspected.
+
+⚠️ **This does not certify the deployment.** It certifies the document, on a clean database, with
+an offline embedder. `readiness` is unexercised here by construction, and latency remains PENDING.
+
+### The latency blocker, measured better than last time
+
+VPS2 reported load average **19.58, 15.58, 16.72** on **12 cores**, up 11:54 — a steady-state
+1/5/15 triple, not the post-reboot one-minute readings the entry below had to qualify. Normalised
+per core that is 1.63 / 1.30 / 1.39. The host cannot serve as the 16-vCPU idle reference
+environment. **Latency stays PENDING and PENDING blocks promotion.** No timing taken on that host is
+cited for anything; the only values taken off it are checksums, counts, sizes and exit codes.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** | External dependency. Do not work around it. | Latency **PENDING**; promotion blocked on latency grounds. | unchanged; now measured as a steady-state triple rather than a post-reboot spot reading |
+| **No production corpus, no production tenant.** | External dependency | Production indexing and cohort cutover cannot be performed or claimed. | unchanged; both generations still hold zero rows |
+| **No approved local generator confirmed.** | External dependency | Six of the campaign's seven gates cannot run. | unchanged, re-verified both sides; the seventh gate ran and passed |
+| **`recall_runtime` lacks `SELECT` on `recall_schema_versions`.** | Provisioning gap, deliberately not fixed | `status` and `readiness` fail on the credential they document. | unchanged |
+| **Model licences unrecorded for 2 of 3 artifacts.** | Provisioning gap | Redistribution rights are not recorded. | unchanged |
+| **Outbound network unblocked on VPS2.** | Deployment gap | The documented workload-boundary control is absent. | unchanged |
+| **No credential path for the documented roles.** | Provisioning gap | The enterprise CLI cannot be run as the roles it documents, so no readiness verdict can be obtained for the serving role. Specifics in the private ops notes, not here. | **new** |
+| **Both roles are `INHERIT`, not `NOINHERIT`.** | Provisioning gap | A documented precondition is unmet. Inert today (`pg_auth_members` is empty) and would stop being inert the moment either role is granted membership in anything. | **new** |
+
+### What the next session should start with
+
+1. **The provisioning gaps, which are now five and are all one statement each** except the egress
+   policy, which is a decision about a shared host: the `recall_schema_versions` grant, the two
+   licence records, the two role attributes, and a credential path for the enterprise CLI.
+2. **Decide whether `benchmarks/*.py` should be runnable gates or stop being described as gates.**
+   Either give `claim_gate.py` and `evidence_injection.py` a `__main__` that exits non-zero, or
+   record in both files that the pytest test is the only gate. The failure mode is not the code, it
+   is that "I ran the gate" was written down twice and was not checkable either time.
+3. **`readiness` still only evaluates the ACTIVE generation**, so a shadow with a missing per-table
+   ledger is invisible until it is promoted. Unchanged from the entry below, and still worth
+   deciding.
+4. **The evidence-boundary performance backlog, carried from 2026-08-05 and still open.** ⚠️ An
+   earlier draft of *this* list dropped it, which is how a carried item dies: not by being closed
+   but by falling out of one handoff. The five that remain, in that entry's own order:
+   `render_evidence_prompt` is `asdict`-dominated (12.4 to 14.6x slower than an explicit dict, on a
+   per-request path); `EvidenceResult` ships every evidence byte twice, so dropping `items[].text`
+   would save 32 to 36% but is a design decision about what `items[]` is for; the budget loop is
+   quadratic and inert only because no shipped caller sets `max_tokens`; there is no memoisation
+   between the two retrieval tools; and assembly exceptions are invisible to the retrieval metrics
+   on both tools. ✅ The sixth item on that list, `recall_evidence` having no test of its
+   authorization scope or rate-limit debit, is **CLOSED** — `tests/test_mcp_tool_authorization.py`
+   now covers it with a parametrised case, a wrong-scope refusal and a coverage guard, 43 passed.
+   I verified that by running it rather than by reading the entry.
+5. **The audit ran, and the trend still has not converged.** The entry below concluded after four
+   rounds that dense cross-referential prose about code is a medium this process does not converge
+   in (41 → 9 → 6 → 12). This session's diff went through the tiered CCA pipeline at DEEP and came
+   back with **27 raw findings across six auditors**, and the important thing about them is *where*
+   they were: almost all in the prose I had just written to fix a prose defect. See the audit
+   section above. I claimed in an earlier draft of this entry that "the runbook edit removed more
+   prose than it added"; **measured on `git diff` added/removed lines through `wc -w`, it added
+   214 words and removed 104** (the method matters — a `\w+` tokenisation gives 209/99, and an
+   unstated method is how a number like this drifts). The reduction that entry recommended is
+   still owed, and this entry does not deliver it either.
+
+
+## 2026-08-07, closing the program: two gates were red before I touched anything, and one had been red behind a job that never ran
+
+Briefed to close the program in four parts: a conditional generation campaign, a full verification
+sweep, documentation, and deployment readiness up to shadow smoke. The headline is not the
+documentation. It is that **`master` was red on two of the six CI jobs when this session started**,
+and that one of those two had been red since the SPLADE merge without anything reporting it.
+
+### Session ledger
+
+| # | Part | Outcome |
+|---|---|---|
+| 1 | Generation campaign, conditional on an approved local generator | **NOT RUN**, correctly: no generator exists to run it against. Verified rather than cited; see below |
+| 2 | Full verification sweep, local plus the CI job set | done, **two red gates found and fixed**, one pre-existing formatting gap reported rather than "fixed" |
+| 3 | Operator runbook, README posture, artifact provenance | done; the claim gate fired on my own README edit and was right |
+| 4 | Deployment readiness on VPS2, stopping at shadow smoke | done; **four migrations applied**, readiness still `False` and correctly so |
+
+### Part 1: the conditional was false, and I checked rather than quoting the blocker
+
+The standing blocker "no approved local generator confirmed" has been carried unchanged through ten
+entries of this document. A blocker that has been copied forward that many times is exactly the kind
+of fact that stops being checked, so this session checked it from both sides before declining to run
+the campaign.
+
+**Repository side.** `generate_from_evidence` takes its generator as a **callable parameter**. There
+is no environment variable selecting one (`RECALL_*GEN*` matches nothing outside the word
+"generation"), no extra in `pyproject.toml` that installs one, no registry entry, and no import of
+`ollama`, `llama.cpp`, `vllm` or `AutoModelForCausalLM` anywhere in `recall/` or `recall_mcp/`.
+
+**Deployment side.** `/opt/recall-enterprise/manifest.json` records three model artifacts: two
+embedders and one cross-encoder reranker. There are no causal-LM weights and no `.gguf` anywhere
+under `/opt/recall-enterprise`. `transformers` is installed in the deployment venv and ships
+`models/llama/` and `models/mistral4/`, which are **source files, not weights**; a search that
+stopped at the filename would have reported a generator that does not exist.
+
+So the three paired arms were not run, and no generator was invented, downloaded or selected. The
+gates written for that campaign (noninferiority within 2 pp per corpus, a paired bootstrap interval
+above zero before any improvement claim, citation validity exactly 100 percent, generator bypass
+exactly 100 percent on abstention, adversarial regression no worse than 2 pp, no system-prompt
+interpolation, no increase against the frozen Session 6 suite) remain unexecuted and are recorded as
+blocked on the dependency, not as passed.
+
+### Part 2: what the sweep actually found
+
+Every exit code below was read **directly from the command** and never through a pipe. That is not a
+stylistic note: my own first VPS2 probe script piped a CLI through `head` and printed `EXIT=0` for
+five commands that had all failed with exit 2, which is the same defect the brief warns about and I
+reproduced it before catching it.
+
+⚠️ **These are LOCAL REPRODUCTIONS of the CI job configurations, not CI runs**, and the deltas
+matter: the `test` job ran against PostgreSQL 16 as CI does, but `floor` ran against PostgreSQL
+**17** where CI pins pg16, and every run was on Windows rather than `ubuntu-latest`. Timings,
+collection counts and host readings below are single observations from this session's transcript and
+are **not reproducible from the repository**; the file counts, the migration numbers and the
+headroom ratio are.
+
+| Gate | Before | After |
+|---|---|---|
+| `ruff check .` | clean | clean |
+| `ruff format --check .` | **330 files would be reformatted** | unchanged, and deliberately so; see below |
+| `mypy` | **RED, 1 error** | clean, 166 source files |
+| CI `test`: `pytest --cov-fail-under=70` | (not reached) | **2993 passed, 44 skipped, 0 failed**, 1075.86 s, PostgreSQL 16. Coverage **83.28% of the shipped packages** (`recall`, `recall_mcp`; tests excluded), floor 70, against the ~75% `ci.yml` records as the reference for that floor |
+| CI `schema-migrations` on PostgreSQL 16 | (not reached) | 60 passed, 47.02 s |
+| CI `schema-migrations` on PostgreSQL 17 | (not reached) | 60 passed, 41.38 s |
+| CI `typecheck` | **RED** (same error as `mypy`) | clean |
+| CI `floor`: py3.11, `--resolution lowest-direct` | (not reached) | **2993 passed, 44 skipped, 0 failed**, 626.31 s, on Python 3.11.15 against PostgreSQL 17. Resolved to the declared minimums exactly: mcp 1.27.2, pgvector 0.4.0, psycopg 3.3.4, PyJWT 2.10.1, pytest 8.0.0 |
+| CI `audit`: `uv lock --check` | clean | clean |
+| CI `audit`: `pip-audit` | **RED, 1 CVE** | clean, "No known vulnerabilities found" |
+| Packaging: `python -m build` + `twine check` | (not run) | both artifacts **PASSED** |
+| `benchmarks/claim_gate.py` | clean | clean |
+| Artifact provenance tests | 137 passed | 137 passed |
+
+**The typecheck failure is the one worth carrying forward, because of how it stayed invisible.**
+`recall/sparse.py` imports `transformers` inside its loader, the same lazy guard every optional
+extra in this repo uses, but `transformers.*` was never added to the mypy override list. Two things
+hid it. First, on the SPLADE merge (`d12ebf0`) the `typecheck` job was **CANCELLED, not run**: a
+skipped gate and a passing gate did not read the same only because someone looked closely at the
+run. Second, the follow-up that fixed the other three breakages (`3ab1ee8`) recorded "mypy clean",
+truthfully, from a venv where the `sparse` extra happened to be installed. The override block's own
+comment already says why that is not enough: `follow_imports = skip` is chosen over plain
+`ignore_missing_imports` so the result does **not** depend on whether the extra is present, "or the
+gate is advisory". The missing entry reintroduced exactly that dependence. Verified by execution in
+a `.[dev]`-only venv: red before, clean after.
+
+**The CVE is `CVE-2026-71554` in `h2` 4.4.0**, fixed in 4.4.1. `h2` is transitive (httpx's `http2`
+extra) and unconstrained by `pyproject.toml`, so the repair is a three-line lock movement with no
+declared-dependency change.
+
+**`ruff format --check` was left failing, on purpose.** The project configures no formatter: there is
+no `[tool.ruff.format]` section, no `format` target in the `Makefile`, and no CI job that runs it.
+Reformatting 330 files to make a check pass that nothing asks for would be a diff far larger than
+this entire session's real work, and it would bury it. Recorded as a gap: **`ruff check` is the
+project's only style gate, and formatting is unenforced.**
+
+### Part 4: the deployment, and the guard that stopped it
+
+All VPS2 work used **root SSH, not qwen-mcp**, and this is stated because it is a deviation: this
+program lives in `/opt/recall-enterprise` and `/var/tmp`, outside qwen-mcp's four file roots. No
+package was installed on the host and no network fetch was made from it: the new wheel was built
+locally, shipped by `scp`, unzipped to `/var/tmp/recall-close-pkg` and put on `PYTHONPATH` in front
+of the deployed venv's interpreter, so the deployed venv is byte-identical to how the session found
+it.
+
+**The migration ledger refused to move, and it was right to.** `schema_status` raised
+`MigrationChecksumMismatch` on `0008_generation_foundation.sql`: the applied checksum
+(`7d2a8bc1…`) differs from the packaged one (`d9cb4951…`). Commit `f18abc5`, dated **one day after**
+this database was provisioned, edited that migration's bytes, and its own message anticipated the
+consequence:
+
+> Any database that already applied the old 0008 is hard-blocked by the ledger drift check until
+> its ledger row is cleared, which in practice means local dev databases and CI.
+
+**That enumeration was too narrow by exactly one database, and it is the enterprise deployment this
+program is about.** The scope of the hazard was recorded honestly and was still wrong, because the
+author listed the databases they could see.
+
+The remedy was taken with the operator's approval, and the argument for it was made checkable rather
+than asserted. The whole byte difference is one statement, `SET CONSTRAINTS ALL IMMEDIATE`, which
+drains deferred foreign-key events queued by an `INSERT … SELECT … FROM` the legacy chunk table.
+With that table empty the insert queues nothing and the statement is a no-op, so the two versions
+are equivalent **on this database specifically**. The script asserted that emptiness as a
+precondition and aborts rather than proceeding if it fails, recorded the ledger row verbatim
+(including a ready-to-run restore `INSERT`) before deleting it, and only then re-applied.
+
+| Step | Result |
+|---|---|
+| Preconditions: rows across chunk, generation and tenant_state tables | 0, asserted before acting |
+| Preconditions: pending outbox events | 0 |
+| Preconditions: disk headroom vs the active index | 578,933,866,496 bytes free against a 131,072-byte active index, **4,416,914.9x**, requirement 2.2x. ⚠️ **PASSED VACUOUSLY.** Measured per index rather than asserted: 131,072 bytes is 16 pages of 8 KiB across **seven** indexes (2 pages each for the five btrees, 3 each for the GIN and HNSW), which is the empty-index floor, so the ratio bounds nothing about a real build. The same vacuity warning this entry gives `parity` applies here and I did not give it. The 2.2x factor is also unsourced: nothing in the repository derives it, and it is applied to `pg_indexes_size`, which **excludes the heap**: on this table `pg_total_relation_size` is 196,608 against a heap of 8,192, and on a populated chunk table carrying text and vectors the heap is what dominates. The three figures do not sum (131,072 + 8,192 = 139,264, not 196,608): the 57,344-byte remainder is TOAST and the free space map |
+| Global migrations applied as `recall_migrator` | 0008 (re-applied), **0011, 0012, 0013**. 0009 and 0010 are also global and were already applied on 2026-08-03; they were untouched |
+| Per-table migrations applied as `recall_migrator` | 0001 to 0007 for **both** generation tables |
+| Schema state after | `current=0013 required=0013 compatible=True` on every target |
+| Indexes after | all 14 across the two generation chunk tables (7 each: primary key plus 0002 to 0007) still `indisvalid`, plus 3 valid on the new `recall_sparse_v1` including the concurrent HNSW `sparsevec` index |
+| RLS after | forced on `recall_calibrations`, `recall_calibration_query_sets`, `recall_sparse_v1` |
+| Row counts after | still 0 on both generations: nothing here wrote data |
+
+**Fixing the checksum drift immediately exposed a second failure it had been masking.** With 0008
+resolved, `readiness` stopped reporting a mismatch and started reporting
+`SchemaTooOld: table 'recall_chunks_g20260803_sym' needs schema migration(s) ['0001' … '0007']`. The
+two generation tables had **no rows at all** in the per-table migration ledger, while having every
+index present and valid and RLS forced. The drift guard had been hiding it ever since. This is the
+program's own recorded pattern: a fix promotes a dormant defect, so the check runs again after.
+
+⚠️ **My first explanation of the cause was wrong, and the audit caught it.** I wrote that
+`create-generation` does not write those ledger rows and cited `GenerationStore.ensure_schema()`
+raising by design. Neither supports the claim: `create-generation` builds a **`PgVectorStore`** and
+calls its `ensure_schema()`, which is `apply_migrations(table=…)` and does write exactly those
+0001 to 0007 rows, and `GenerationStore` is the v1 store bound to `recall_chunks_v1`, not on that
+path at all. What is verified is the STATE (two tables, no ledger rows, `SchemaTooOld`); the ROUTE
+that produced it is unknown, and the deployed build is an older one. Generalising one observation
+into a property of a command that does do the work is precisely the defect class this document
+keeps recording, and I committed it in the entry describing the audit that would have caught it.
+
+### What readiness says now, and why it is still `False`
+
+```
+failed: control plane ledger query failed: InsufficientPrivilege: permission denied for table recall_schema_versions
+degraded: no profile matched calibration is loaded, so abstention capability is degraded
+ready: False
+degraded: True
+evaluated as role: recall_runtime
+```
+
+Down from three failures to one plus one degradation, and the remaining failure is a **missing
+grant, not a bug**: `recall_runtime` has no privilege of any kind on `recall_schema_versions`, while
+`ENTERPRISE_RETRIEVAL.md` documents `status` and `readiness` as serving-credential commands that
+both read the control-plane ledger. The operator's decision was to record it rather than change
+grants on a host that also runs live production, so the runbook now states the required grant as a
+precondition. Nothing was granted.
+
+### What was NOT done, deliberately
+
+* **No promotion, and none was possible.** All four committed decisions in `results/promotion/`
+  read `"promoted": false`, so there is no winning profile to register a shadow generation for.
+  Latency is PENDING, and PENDING blocks promotion on its own.
+* **No production indexing and no cohort cutover.** There is no production corpus and no production
+  tenant: the only route is `enterprise-smoke`, and every chunk table holds zero rows. Both are
+  external dependencies, not steps that were skipped.
+* **`parity enterprise-smoke` succeeded and it is a VACUOUS pass.** Exit 0, "parity: OK", over
+  0 active chunks and 0 shadow chunks. Two empty generations cannot disagree. It is recorded here
+  and warned about in the runbook rather than counted as evidence.
+* **No egress change.** `ufw` on VPS2 defaults to `allow (outgoing)`, so outbound network is **not
+  blocked** at the workload boundary. Nothing is running to egress (there are no `recall*` systemd
+  units on the host at all), but the control is absent, and changing firewall policy on a host
+  running a live money path was out of scope.
+
+### Measured, and the negative results among them
+
+**All three model artifact digests reproduce.** Recomputed with a standalone transcription of
+`artifact_tree_sha256` that deliberately does **not** import the deployed wheel, so a tree agreeing
+with its record is evidence rather than the code checking itself.
+
+| Tree | Recomputed | Agrees with |
+|---|---|---|
+| `models/ms-marco-MiniLM-L-6-v2` | `db6ad87969c7…2ab2a` | `manifest.json` and the pin in `recall/rerank.py` |
+| `models/bge-fastembed-cache` | `9a443d711e06…c919c` | `manifest.json` |
+| `models/qwen3-embedding-0.6b-97b0c614` | `0e9f06588b7e…0fc9f` | `manifest.json` and `ENTERPRISE_RETRIEVAL.md` |
+
+**Licence records are incomplete, and the digests are what make that visible.** There is not one
+`LICENSE`, `LICENCE` or `COPYING` file in any of the three provisioned trees, and `manifest.json`
+records a `license` key for **one model of three** (`qwen3-embedding-0.6b-384-v1`, apache-2.0). A
+digest says which bytes are installed; it says nothing about whether they may be shipped. The
+reranker and the BGE cache are both unrecorded.
+
+**The latency blocker, restated from observation rather than memory.** VPS2 **rebooted during this
+session** and reported one-minute load averages of 20.85 and then 35.24 on 12 cores, from unrelated
+live production. That is worse than the **12.55** the previous entry recorded (9.78 belongs to the
+2026-08-05 retrieval-profiles entry, five dated entries back; an earlier draft of this paragraph put
+it one entry back, and the first correction of that draft said two, which was also wrong). ⚠️ Both readings are one-minute
+figures taken **after a reboot**, so they are still converging and are not like-for-like with the
+steady-state 1/5/15 triples earlier entries published. Normalised per core they are 1.74 and 2.94
+against 1.05, so the direction holds even though the units do not. No timing taken here is cited for
+anything; the only numbers taken off that host are checksums, counts and exit codes.
+
+### Part 3: the documentation, and the gate that caught me
+
+`docs/ENTERPRISE_RETRIEVAL.md` now opens with a real operator runbook: a preconditions section, the
+ordered eleven-step sequence (plus preconditions and rollback) as a table naming the credential and
+the non-zero exit condition for each
+step, then grouped sections with what to verify afterwards, and rollback. The two hazards this
+session hit are written into it at the step where an operator would hit them: the per-table
+migration step whose ledger rows were missing (cause unknown, see the correction above), and the
+checksum-drift stop with the conditions under which clearing a ledger row is defensible.
+
+`README.md`'s production-posture table gains four rows: index generations and cutover, retrieval
+cost profiles, the generator-neutral evidence boundary, and serving latency marked ❌ **PENDING**
+with the reason.
+
+**The claim gate fired on my first version of those rows, and it was right.** I had written the
+profile concurrency literals into the posture table; `test_no_new_unmarked_numbers[README.md]`
+reported four new unmarked numbers. The available escape was a code span, and the gate's own comment
+names that as its soft spot ("a count written inside a code span is invisible to this gate"), so
+taking it would have been gaming the guard rather than satisfying it. The numbers came out of the
+table instead and the row points at `recall/profiles.py` and the runbook, which is where a tuning
+value belongs. Gate clean afterwards, 137 provenance tests passing.
+
+### The audit found more than the session did, and the runbook was the target
+
+The diff went through the tiered CCA pipeline at DEEP (`RUN_STAKES` and `RUN_NUM` both fire: the
+runbook instructs irreversible database operations and the entry publishes figures). Six auditors,
+41 raw findings. ⚠️ **Deterministic coverage was NONE**: `cca_checks` is not installed in this
+environment, so every verdict rests on LLM adjudication plus what I re-executed myself. I verified
+each item below by running it or by reading the named source, not by reading the report.
+
+**The documentation was the dangerous artifact, not the code.** The code change this session made is
+one mypy override entry and a lockfile bump. The runbook is what tells a human to run irreversible
+operations on a production database, and its first draft stated three guards that do not exist:
+
+| Finding | Verdict | Outcome |
+|---|---|---|
+| **`mark-ready` documented as exiting non-zero when the counts do not match.** No such check exists | CONFIRMED, from the code's own docstring: "stores its `--chunks`/`--sources` argparse ints verbatim and compares them to nothing" | fixed; also records that it has no state guard and will move a `failed` generation to `ready` |
+| **`replay` grouped with the commands that "only read".** It is a write path into both generations | CONFIRMED, stated in `enterprise_cli.py`'s own comment | fixed, in the table and in the credentials prose |
+| **`retire` documented as following `cutover`.** `cutover` SWAPS the slots, so the old generation becomes the shadow and `retire` refuses it in either slot: step 11 could never succeed as written | CONFIRMED by reading `control_plane.py:865` | fixed; also records that retirement is database-GLOBAL with no un-retire command, so it is the point of no return that ends rollback |
+| **The rollback command was the only step with no command line**, and its literal short form NULLs the shadow route | CONFIRMED | fixed, with the `--shadow-generation` flag and a verify line |
+| **The grants precondition named one object of six, hand-written**, which is the exact anti-pattern `MIGRATIONS.md` warns about after an operator following a hand-written list got `permission denied` at startup | CONFIRMED by two auditors independently | fixed: point at the shipped generator instead |
+| **And the generator command I then wrote does not parse.** `--table` is a top-level argument; after the subcommand it exits 2, and the obvious repair silently grants the DEFAULT table | CONFIRMED **by execution**: exit 2 as written, exit 0 and six statements in the corrected order | fixed |
+| **Step 2 had no command, and the obvious invocation fetches a model** because `--dim` defaults to an embedder-inferred value, failing on a network fetch under the egress boundary the same page requires | CONFIRMED | fixed, with an explicit `--dim` and the flag ordering stated |
+| **The ledger remedy was generalised and its safeguards were weaker than the guard it defeats** | CONFIRMED by two auditors | fixed: names the table, both key columns, the `__global__` scope, the backup precondition, the ACCESS EXCLUSIVE and `statement_timeout = 0` cost, that restoring the row does not undo the DDL, and that the default remedy is a new migration version |
+| **`--allow-divergent-corpus` was undocumented** while the parity refusal advertises it at the worst possible moment | CONFIRMED | documented with a hard rule |
+| **The vacuous-parity warning was too weak** to beat the runbook's own "proceed on green" framing | CONFIRMED | fixed: an explicit STOP with a threshold |
+| **The disk-headroom precondition passed VACUOUSLY** and I published `4,416,914.9x` without saying so | CONFIRMED: 131,072 bytes is the empty-index floor, and the same entry warns about exactly this for `parity` | fixed; the 2.2x factor is also marked as an unsourced rule of thumb applied to a base that excludes the heap |
+| Load average attributed to the wrong prior entry (12.55, not 9.78), published as bare scalars across a reboot | CONFIRMED | fixed |
+| The gate table captioned as CI jobs when these are local reproductions, and `floor` ran on PostgreSQL 17 where CI pins 16 | CONFIRMED | fixed, with the deltas named |
+| `### Documentation` inserted mid-list, orphaning a pre-existing **security** fix under it | CONFIRMED | fixed, heading moved below the last `Fixed` bullet |
+| h2 CVE reachability stops one hop short: the chain is bench-extra only, so no wheel, CI job or deployment contained it | CONFIRMED | CHANGELOG now says the gate was real and the exposure was not |
+
+**Two claims of mine were withdrawn rather than softened, and both are the same defect class.**
+
+1. **I described a hazard that had been fixed the day before.** Both the README row and the runbook
+   said a dual-write re-index reads its skip set from the active store, so a shadow attached midway
+   is silently short. Commit `b0e74e5` replaced that predicate on 2026-08-06: `index.py` reads the
+   shadow's own `source_content_hashes()` and skips only when a file is current in **both**
+   generations, with three tests shown to fail against the old code. I copied the claim forward from
+   an older entry of this document without checking it against the code. The residual gap that does
+   survive is on the delete path instead, and that is what both documents now say.
+
+2. **I misattributed the ledger-row finding to `create-generation`.** See the correction above. The
+   state was verified; the cause was invented.
+
+Both are instances of the standard this repository already carries: **verify a memory fact before
+acting on it.** A prior session's entry is a memory, and this document is where they are stored.
+
+### Round 2, over the fix batch, and it found six more of the same family
+
+Round 1's fixes were themselves audited, by re-verifying every claim the fix batch NEWLY asserts
+against the source. **14 of 18 held. Four did not, and two more were found outside the list.** This
+is the pattern this project has recorded before: a fix batch contains defects of the family it
+repaired.
+
+| Claim the FIX BATCH asserted | Verdict | Correction |
+|---|---|---|
+| "`parity` compares the two physical tables and **never reads the registry**" | **FALSE** | `_cmd_parity` calls `control.route()`, which selects from `recall_index_generations`; that read is the module's stated design rule (an operator names a generation, the registry names the table). The true, narrower claim is that parity never **compares** the declared counts |
+| "It emits six statements, covering the chunk table, four control-plane tables and the outbox sequence" | **FALSE** | The count is right (executed: six with `--enterprise`, three without) and the coverage is not: they grant **fourteen objects plus a sequence**. My summary silently omitted `recall_schema_migrations` and all eight generation and calibration tables, **inside the bullet whose whole argument is that hand-summarised grant lists drift and cause `permission denied`**. It now says to diff against the command's own output and not against any summary, including that one |
+| "a `DELETE ... WHERE version = '0012'` strips the row for every chunk table" | **FALSE** | 0012 is ≥ 0008, so it is global and exactly one row exists. The example chosen to prove that both key columns are needed is the one case where they are not. Rewritten to split 0001-0007 (per table) from 0008+ (one global row), with a command for each |
+| "the re-insert overwrites `applied_by` and `applied_at`" | **UNCERTAIN, mechanism wrong** | `applied_by` is written by **no statement in the codebase**: it is a column default, and the upsert's `DO UPDATE SET` list omits it. The conclusion holds for delete-then-re-apply and **inverts** for restore-then-re-apply, which preserves the original applier while stamping a new timestamp. Both cases now stated |
+| "131,072 bytes is sixteen empty 8 KiB pages, the floor for **an index** over ZERO rows" | **FALSE** | Sound as a total, unsupported as a floor: it is 16 pages across **seven** indexes. Re-measured per index on the host (2 pages each for the five btrees, 3 each for the GIN and HNSW) rather than reconstructed |
+| The `MigrationChecksumMismatch` discriminator | **FALSE** | There are **four** wordings, and two of them say "checksum drift" while meaning opposite things. My rule named only `schema_status`'s, so it routed `apply_migrations`' LEDGER error into the "your working tree is corrupt, touch nothing in the database" branch. That is the error **step 2's own command raises**. Replaced with a table of all four |
+
+The last one is the sharpest, and it is the same shape as the guard-that-cannot-fire class: a
+discriminator that misclassifies the exact case the document tells the reader to produce.
+
+**The anti-regression half of round 2 found three more, and the shape is identical.** Of seventeen
+hunks, twelve were SAFE, three carried the regressions below, and two were **SCOPE_CREEP**: a
+backlog item and a disclosure that rode along with a fix rather than being asked for by one. The
+CHANGELOG restructure verified as a **pure restore** (201 bullets
+before and after, and every one of the 197 bullets predating the stray heading back under the
+heading it had then), and the untouched sections verified byte-identical by digest rather than by
+reading. The three that were not:
+
+| Regression the FIX introduced | How it was caught |
+|---|---|
+| `CONTRIBUTING.md` says `uv export` without `--frozen` **rewrites** `uv.lock`. It does not when the lock is current | **Executed**: same SHA256 and same size before and after. The claim was copied from `ci.yml`'s own comment, which carries the same error. Corrected to the conditional truth (it updates the lock only when the lock is out of date), which is also the real reason the ordering matters |
+| The step-2 verify line `schema status` **omits `--dim`**, reintroducing the model fetch its own ⚠️ six lines below forbids | `cli.py:417` resolves `dim` **before** the subcommand branches at 419, so `status` builds an embedder too. It looked fine when run here only because this host has the model cached, which is the exact failure the runbook warns about |
+| "Retirement ... there is no un-retire command ... the only recovery is a restore" | Falsified by step 5 of the **same commit**: `mark-ready` has no state guard, so it writes a retired generation back to `ready`. An operator would order a database restore for something one command undoes |
+
+The middle one is the sharpest thing in round 2: **a fix that reintroduces its own defect one line
+below itself**, and that passes on any machine with a warm cache. That is a guard whose failure is
+invisible in the environment where it is written and live in the environment where it is used.
+
+### Round 3 did NOT come back dry, and the recurrence is the same defect a third time
+
+The expectation going in was convergence. It did not converge. **41 → 9 → 6**, and the headline
+defect is the one round 2 had just fixed, reproduced at a different call site by the fix for it.
+
+**The `MigrationChecksumMismatch` table misrouted a LEDGER error into the working-tree branch,
+again.** Round 1's prose named one wording. Round 2 replaced it with a table of four and called that
+exhaustive. There are **nine raise sites across four functions**, and the omitted one is
+`check_schema`'s `migration <file> checksum does not match the running package` — a ledger
+comparison, reached from `readiness.py:257`, which is **step 9 of this runbook**. Apply round 2's own
+tie-breaker to it (row one names the migration, row four begins `applied migration`) and it lands on
+row one: *working tree corrupt, restore the files, touch nothing in the database.* Wrong branch,
+wrong action, on a production database, produced by the document's own diagnostic procedure. Both
+round 3 auditors found it independently.
+
+Rewritten to discriminate by **which function raised it**, which the operator knows from the command
+they ran, with the message demoted to confirmation. The exhaustiveness claim is gone: a table that
+must enumerate nine raise sites is a guard that goes stale the next time one is added.
+
+| Other round 3 findings | Correction |
+|---|---|
+| **My `applied_by` fix was itself wrong** — and ⚠️ **round 4 then showed this correction was wrong too.** Round 2 said restore-then-re-apply preserves the original applier; round 3 said it refuses; **both are one branch of the same `if`.** `apply_migrations` raises only when the restored checksum DIFFERS from the package. A restored row whose checksum MATCHES, in state `running` or `failed`, falls through to `_mark_running`, whose `DO UPDATE SET` omits `applied_by` — so it preserves the original applier under a new timestamp, exactly as round 2 said | Round 4's fix stopped narrating the mechanism. The bullet now states only what holds on **both** branches (after any re-apply, `applied_by` no longer answers who applied the version in the ledger) and points at the source for an incident |
+| **The unconditional imperative "Both columns are required" was deleted** when the section split by version range, leaving "a version-only DELETE happens to hit only it" as the last words before the SQL. That licenses omitting the predicate for exactly the versions whose re-application takes ACCESS EXCLUSIVE | Imperative restored above the split; the 0008+ observation demoted to explaining why `0012` was the wrong example |
+| **Round 2's own yield was published as both 9 and 6**, 32 lines apart, and the 6 silently dropped the anti-regression half containing the sharpest finding | Both now 9, with the split named |
+| The round 2 record said "twelve of seventeen SAFE" and named three, accounting for 15 of 17 | The two SCOPE_CREEP hunks are now named |
+| `pg_indexes_size` + heap does not sum to `pg_total_relation_size` | The 57,344-byte remainder is named as TOAST and the free space map |
+| `ci.yml`'s comment still asserted the unconditional `uv export` rewrite that round 2 corrected in `CONTRIBUTING.md`, so the repository contradicted itself across two committed files | Both now state the conditional, and each points at the other |
+
+**The systemic finding, which both auditors reached independently:** `claim_gate.py`'s `GATED_DOCS`
+covered `results/RESULTS.md`, `results/FINDINGS.md`, `README.md` and `benchmarks/SUITE-DESIGN.md`,
+and **not** `docs/ENTERPRISE_RETRIEVAL.md` or this file. Three rounds of numeric and factual claims
+had accumulated in the two documents the only automated claim guard in this repository does not
+read, which is why every defect above had to be found by a human-directed audit rather than by a
+gate.
+
+✅ **Closed for the runbook in `3509256`**, with a red-state proof and six figures marked rather than
+frozen. ⛔ **Deliberately NOT closed for this file**: it gains an entry every session, and
+`build_baseline()` regenerates every entry in one pass, so gating it would re-freeze the other four
+each time. See the comment on `GATED_DOCS`. Round 4 then found the gate's own comment overstated its
+coverage, which is recorded there.
+
+### Round 4: the convergence assumption is FALSIFIED
+
+Round 3 predicted convergence on this project's recorded pattern. **Round 4 found 12, against round
+3's 6.** The series is **41 → 9 → 6 → 12**. It is not converging, and after four rounds that is a
+more important result than any individual correction above.
+
+**The mechanism is legible in the data.** Every round's defects were in prose written to fix the
+previous round's, and the two rounds that added the most explanatory prose produced the most new
+defects. Three claims have been rewritten three or four times each, and every rewrite asserted a
+*narrower* mechanism than the code implements:
+
+| Claim | Round 2 said | Round 3 said | Round 4 found |
+|---|---|---|---|
+| `applied_by` after a re-apply | preserves the original applier | **cannot**, it refuses | **both are one branch of the same `if`**; the refusal fires only on checksum drift |
+| The `MigrationChecksumMismatch` discriminator | match the message shape | match the raising **function** | the document invalidated its own rule twelve lines later, and round 3 deleted a message rule that was true for the rows it named |
+| Step 11's un-retire path | descriptive: "there is a path, know it" | normative: "you may use it", on a premise the same section falsifies | **phantom fix** — mapped to no finding, and `retire` has no state precondition, so a `failed` generation can reach `retired` |
+
+**So round 4 changed method: reduce rather than elaborate.** The `applied_by` bullet now states only
+what holds on both branches and points at the source. The discriminator gives the two-step procedure
+instead of one rule that cannot decide. The step 11 paragraph was reverted, not patched. The coverage
+census in `claim_gate.py` no longer publishes exact token counts, since those were stale in the
+commit that wrote them and would go stale on the next edit; it publishes the invariant shape and a
+one-line recompute.
+
+**Two findings are the stalest kind and both were mine.** The ratchet log asserted a total (`2481`)
+that appears at **no commit** in git history, inside the entry whose stated purpose was to reconcile
+the log with the committed file; it is now reconstructed by summing the committed file at every
+commit that touched it. And the coverage census, the gate's own honesty statement, was measured
+before the six markers the same commit added.
+
+⚠️ **Round 5 has not been run, and the trend gives no reason to expect it dry.** The honest read
+after four rounds: dense cross-referential prose about code is a medium this process does not
+converge in. The next session should consider whether the runbook wants *less* explanation rather
+than more careful explanation.
+
+⚠️ **Round 2's anti-regression reviewer saw only 10 of the 41 round-1 findings**, because only two
+auditors wrote trail files and the rest returned their findings in-band. Four of its hunk mappings
+rest on inference from the commit message rather than on a finding it read. Its verdicts are
+independently sourced to code and execution, so this weakens the MAPPING, not the findings.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** VPS2 rebooted mid-session and showed load 20.85 then 35.24 on 12 cores. | External dependency. Do not work around it. | Latency **PENDING**; promotion blocked on latency grounds. | unchanged, and the host got worse |
+| **No production corpus, no production tenant.** | External dependency | Production indexing and cohort cutover cannot be performed or claimed. Every parity result is vacuous. | unchanged, now measured: 0 rows in every chunk table |
+| **No approved local generator confirmed.** | External dependency | The generation campaign cannot run. The evidence path stays exercised against a stub only. | unchanged, and **re-verified from both the repository and the deployment** rather than carried forward |
+| **`recall_runtime` lacks `SELECT` on `recall_schema_versions`.** | Provisioning gap, deliberately not fixed | `status` and `readiness` fail on the credential they document. | **new**, documented as a runbook precondition |
+| **Model licences unrecorded for 2 of 3 artifacts.** | Provisioning gap | Artifact identity is verified; redistribution rights are not recorded. | **new** |
+| **Outbound network unblocked on VPS2.** | Deployment gap | The documented workload-boundary control is absent. Nothing runs there today. | **new** |
+
+### What the next session should start with
+
+1. **The three new provisioning gaps above**, in that order: the grant is one idempotent statement,
+   the licences are a manifest edit, the egress policy is a decision about a shared host.
+2. **Find out how the two generation tables came to have no per-table ledger rows.** `readiness` also
+   only ever evaluates the ACTIVE generation, so a shadow in that state is invisible until it is
+   promoted. Worth deciding whether `readiness` should check both slots, and whether `SchemaTooOld`
+   should name the remedy (`recall --table X schema --dim N apply`) rather than the condition.
+
+2b. **Make `_cmd_parity` exit non-zero when both generations are empty.** The runbook now carries
+   that guard in prose, and a guard in prose is the weakest place to keep one: the same document
+   teaches "do not proceed past a red one", and this failure mode is a green. The code is where it
+   belongs.
+
+2c. **Run audit round 3.** Round 1 found 41, round 2 found 9 more in round 1's own fixes (6 in claim
+   re-verification plus 3 in anti-regression), and the
+   corrections above are round 2's output. This project's recorded pattern is convergence at round
+   three, so round 3 is the one that should come back dry. Until it does, treat the runbook's newest
+   paragraphs as unverified. The rounds are converging on the numbers this pattern predicts
+   (41 → 9 → ?), and every defect in round 2 was in prose I wrote to fix a defect in round 1.
+3. **A CI job that runs `ruff format --check`, or a decision that formatting is unenforced.** Right
+   now the answer is neither: the tool is installed, it fails, and nothing asks it.
+4. The four performance items from the 2026-08-05 evidence-boundary entry, still untouched.
+
+
+## 2026-08-06, generation parity: the invariant HOLDS at campaign scale, and it took three launches
+
+Briefed to run the three-context-mode promotion campaign and, additionally, to verify the parity
+invariant this family of profiles rests on. **The campaign had already been run and merged before
+this session started.** The parity verification had not, and it was the only part of the brief still
+open. It is now **done and passing**.
+
+### The result
+
+**No context mode alters the raw chunk content or the raw content hashes it stores.** Three
+independent comparisons against the raw baseline, over the same corpus and glob the campaign used.
+
+| comparison | content parity | chunks | missing | extra | hash mismatches | coverage |
+|---|---|---|---|---|---|---|
+| baseline vs `bge-small-context-document-v1` | **holds** | 21924 = 21924 | 0 | 0 | 0 | 746/746 |
+| baseline vs `bge-small-context-section-v1` | **holds** | 21924 = 21924 | 0 | 0 | 0 | 746/746 |
+| baseline vs `bge-small-context-neighbor-v1` | **holds** | 21924 = 21924 | 0 | 0 | 0 | 746/746 |
+
+`rls_enabled` and `indexes_valid` were true on every generation, so `GenerationParity.valid` is true
+too and no host-shaped failure is hiding inside the content verdict.
+
+**The headline is an ABSENCE, so the controls are the result.** All four gated the exit code and all
+four passed. **0 degenerate hashes** over 746 sources per comparison, so this is not the
+`coalesce(…, '')` trap comparing two absences. **746 of 746 sources compared**, so it is not two
+empty generations reporting no mismatches. The **positive control FIRED**: one changed file came
+back `valid: false` with exactly one entry in `hash_mismatches` and the failure string
+`raw content hashes differ between generations`. And the self-comparison held on every field.
+
+Verbatim verdict line: `comparisons=3/3 content_parity=True coverage=True hashes_sha256=True
+self_comparison=True positive_control_fired=True`
+
+Archived at `/var/lib/recall-benchmarks/2026-08-06-context-mode-generation-parity/`, **8 of 8 files
+verify with `sha256sum -c`**. The result JSON is committed at
+`results/promotion/generation-parity.json`.
+
+⚠️ **This does not say a context mode is good.** The campaign already ran and refused all three. It
+says the four arms were describing the SAME corpus, which is the precondition that comparison rests
+on and which nothing had checked at this scale.
+
+What else landed: the harness, five review rounds over it, and several corrections to claims of mine.
+
+⚠️ **Evidence in this entry is of two kinds and they are labelled.** Rows marked HOST are measured
+on VPS2 against `recall_campaign` and the archive under `/var/lib/recall-benchmarks/`, and **cannot
+be reproduced from this repository**; rows marked REPO can. An earlier draft put both in one table
+with nothing distinguishing them, which is the same shape as the defects below.
+
+### The campaign was already on master, and the brief's baseline question has an answer
+
+`9c8fa08`, merged as PR #220, is this campaign. Three `PromotionDecision`s, four ledgers and a
+frozen manifest, archived with a `MANIFEST.sha256` I verified: **16 of 16 files pass
+`sha256sum -c`**. All three candidates refused promotion; the deltas are `+2.27 pp`, `+2.27 pp` and
+`+0.00 pp`, every bootstrap interval straddling zero. Nothing here changes that result.
+
+The brief asked me to state the baseline explicitly, and to say why if asymmetric lost.
+**Asymmetric BGE never produced a result to lose with.** The paired comparison was stopped before
+it ran because `bge-small-symmetric-v1` and `bge-small-asymmetric-v1` are the same system under
+fastembed 0.8.0: `BAAI/bge-small-en-v1.5` resolves to `OnnxTextEmbedding`, which overrides neither
+`query_embed` nor `passage_embed`. The campaign's baseline is `bge-small-symmetric-v1`, and that is
+the correct reading of the brief rather than a substitution, because asymmetric's `context_mode` is
+`none` as well: it is the raw-context arm either way.
+
+### The parity check has no artifact, and it cannot be run retroactively
+
+There is no parity artifact in the repository or the archive. It also cannot be produced after the
+fact: `recall/eval/promotion/__main__.py::_indexed_store` indexes into a `promo_<uuid8>` table and
+drops it in a `finally`, so **every generation that campaign built is gone**, which I confirmed
+against the database rather than inferring from the code. Any parity check is therefore a REBUILD
+over the same corpus, and the harness says so in the artifact it emits.
+
+### ⚠️ Prior work existed and I wrote that it did not
+
+`tests/test_context_modes_index.py::test_raw_text_and_content_hashes_are_identical_across_generations_and_modes`
+already asserts this invariant over four independently indexed generations against real PostgreSQL
+rows, and it is **stricter** than the new harness: it compares stored text, `content_hash`,
+`text_start`/`text_end` and `heading_hierarchy`, where the harness compares source sets, raw hashes
+and chunk counts. This document already recorded that invariant as "held".
+
+I wrote "Prior work: NONE FOUND" from a `docs_search(source_type="memory")` that returned
+`gap_warning` TRUE. That search was scoped to the MEMORY corpus, **which cannot see repository
+tests**. "No memo records this" was true; "no prior work exists" does not follow from it. The
+standing rule to search memory before re-measuring did its job. What failed is that I answered a
+different question from the one I then asserted: **a corpus-scoped search bounds its own conclusion
+to that corpus.**
+
+The honest scope is therefore narrower than the first docstring claimed. The existing test covers
+the invariant at unit scale through a stub embedder inside pytest; the harness checks it at
+**campaign scale** through the real fastembed profiles at the pinned artifact tree, comparing
+promotion-shaped generations with the shipped `validate_generation_parity` instead of hand-written
+assertions. A scale-and-realism check on covered ground, not a first look.
+
+### What was measured, and what was not
+
+| Gate | Kind | Result |
+|---|---|---|
+| Campaign archive integrity | HOST | **16 of 16 files pass `sha256sum -c`** under `/var/lib/recall-benchmarks/2026-08-06-context-mode-campaign/`. Not reproducible from this repo |
+| Campaign generations still exist? | HOST | **No.** Confirmed absent in `recall_campaign`; only `chunks` and the schema tables remain |
+| 12-file smoke | HOST | **passed on the PRE-AUDIT harness (`4021381`) only.** See the warning below: this row does NOT cover the current code |
+| New refusal guards, post-audit | HOST | **all three fire**: compare without a positive control, `--control-files 0`, `--control-files -1` |
+| `taskset` mask probe | HOST | all five real masks pass; `taskset -c 50,51 true` refuses, so the guard can fire |
+| `ruff check` | REPO | clean on 0.15.22, inside CI's `>=0.5,<0.16` pin |
+| shell syntax, `bash -n` | REPO | clean |
+| Full 746-file parity run | HOST | ✅ **COMPLETED on the third launch.** Four arms `rc=0`, 21,924 chunks each, compare `rc=0`, all five gates green |
+| Archive integrity, this run | HOST | **8 of 8 files pass `sha256sum -c`** |
+| `mypy`, `pytest` | — | ⛔ **NOT RUN.** See below |
+
+✅ **The harness's success path is now smoked, and this row used to say the opposite.** Until the
+third launch, the only end-to-end pass in this table belonged to `4021381`, a version this entry's
+own audit section shows was not gating: its `content_parity_holds` omitted the chunk-count term and
+its `ctl_ok` was `ctl is None or ...`, so a control could pass vacuously. Everything executed against
+the post-audit harness exercised a REFUSAL or a cleanup, never a successful comparison, and
+**"audited" was standing in for "shown to work"**. It no longer is: the completed run drove every
+control, including the positive one, through the success path.
+
+**The full run is the deliverable and it did not exist at the time of the first write-up.** Four
+arms were indexing concurrently at two pinned cores each and were terminated (`rc=143`) at 13:14
+UTC, with the tables holding between 1626 and 3728 chunks of roughly 14,200 each, i.e. **11% to 26%
+of each arm**. An earlier draft of this entry called that "roughly half the corpus", which its own
+figures contradict. The operator stopped the host deliberately. This is a recorded stop, **not** an
+unexplained death, and it is not attributed to any mechanism in this code.
+
+⚠️ **`mypy` and the test suite were not run.** The only local virtualenv is an editable install
+pinned to the primary clone, which is 44 commits behind `origin/master`, so importing through it
+would check this branch's files against a different revision of `recall`. Running them needs a
+worktree venv or the host. A skipped gate and a passing gate must not read the same, so: type
+checking and tests are **unverified** for this change. `ruff` does not import, and is clean.
+
+### The audit found more than the work did, and the two sharpest findings were mine
+
+Tiered CCA at **DEEP**, forced because the content check fires on `drop`/`rmtree`, on `round`/
+`count` and on `migration`. The trigger is real rather than a filename artifact: this harness
+creates and drops tables in a live database and calls `shutil.rmtree` on an argv path. Nine
+auditors, **none died**, 109 raw findings.
+
+**Deterministic coverage was FULL for Python**, unlike the last several sessions: `cca_checks` is
+installed here and reported `definedness, nullability, taint, type, clock_leak` with nothing
+unavailable. The shell driver has no deterministic backend, so findings in it rest on LLM
+adjudication plus what I re-ran myself.
+
+| Finding | Auditors | Outcome |
+|---|---|---|
+| **The verdict dropped a term the shipped validator computes.** `content_parity_holds` omitted `active_chunks == shadow_chunks` and the exit code never read `result.valid`, so a pair the validator failed on chunk count was written to the artifact with `valid: false` and a populated `failures` list while the process exited **0** | NUM, DAT | fixed. Chunk count sits on the CONTENT side of the split, because `contextual_passages` returns one chunk per input chunk in every mode |
+| **The compare stage dropped four tables it never created**, on every exit path including the deliberate refusals, so one dead arm would destroy the three that succeeded and the stage could never be re-run | BUG, SEC, STAKES, DAT, PERF | fixed with an ownership flag; generation tables now survive unless `--drop-generations` is passed |
+| **Three controls the docstring called "blocking" did not gate.** Control 4 was computed, written to the artifact and never read; the positive control passed *vacuously* when `--control-corpus` was omitted; `detected_exactly_one_source` was computed one line below the gate and ignored | BUG, STAKES, NUM, DOC | fixed, all folded into the exit expression, and `--control-corpus` is now required for `compare`/`all` |
+| **Control 4's stated rationale was inverted.** A self-comparison cannot separate "the validator works" from "the validator returns valid for everything": a validator hardcoded to `valid=True` passes it identically | DOC | rationale corrected. Only control 3, which demands a NEGATIVE verdict, discriminates those two |
+| **The driver captured each arm's exit status and discarded it.** `idx()` returned its trailing `echo`'s status and a bare `wait` always returns 0, so a dead arm was invisible and the compare stage ran anyway | BUG, STAKES, NUM, CODE, DAT | fixed: PIDs collected, waited per PID, compare refused on any failure |
+| Unconfined `shutil.rmtree` on an argv path, with `resolve()` following a symlink first | SEC, STAKES, DAT | fixed: symlinks refused, overlap with `--corpus-dir` refused, and an existing directory must carry a marker this harness wrote |
+| The docstring promised `rls_enabled` / `indexes_valid` "as their own fields" and the artifact contained neither | DOC, CODE | fixed, both emitted from `readiness_facts()` |
+| `all([])` is True, so every aggregate was vacuously satisfied over zero comparisons | NUM | fixed, the comparison count is asserted against `len(CANDIDATES)` |
+| A comment reasoned about `OMP_NUM_THREADS` which the script never set; "shares nothing but the database server" was contradicted by the stagger comment 50 lines below; "(measured: ~4h20m)" labelled a projection | DOC | all three corrected. The 4h20m is now labelled a projection, because no sequential four-arm run was ever completed |
+
+**The exit-status finding is the one to carry forward.** My own commit message named the campaign's
+`exit=$?`-after-`$(date -Is)` bug and claimed to have handled it. I did handle it one level in, and
+then threw the value away one level out. *Capturing a status correctly and discarding it is not
+checking it*, and the four-line comment explaining why the capture must be immediate made the
+discard harder to see rather than easier.
+
+### Round 2 over the fix batch found two regressions the fixes introduced
+
+This program's standing lesson is that a fix batch promotes dormant defects, so the audit runs
+after as well as before. It did here: the anti-regression gate over the fix diff returned **2
+REGRESSION_RISK and 3 SCOPE_CREEP across 22 hunks**, and both regressions were mine.
+
+* **A precondition I added to fail closed could refuse a host that previously worked.**
+  `[ "$(nproc)" -ge 8 ]` expands EMPTY when `nproc` is absent, and `[ "" -ge 8 ]` exits 2 with
+  `integer expected`, so the driver would die claiming "fewer than 8 cores" **on a twelve-core
+  machine**. Reproduced by execution rather than by reading, then fixed with a defaulted variable
+  and re-executed to confirm it degrades cleanly and still passes at 12 cores. A guard that fails
+  for a reason unrelated to what it guards is the same class this program keeps recording.
+* **The `rmtree` marker guard aborted after the expensive work.** A `ctl` directory left by an
+  earlier run, or by a crash in the one-syscall window between `mkdir` and the marker write, would
+  raise *after* the three comparisons and *before* the artifact write, discarding a completed
+  measurement. Now an EMPTY directory is accepted, because deleting one destroys nothing.
+* **The scope creep is the instructive one.** The finding was a FALSE COMMENT about
+  `OMP_NUM_THREADS`; my fix set that variable *and* introduced `RECALL_EMBED_THREADS`, which is a
+  live knob that changes every arm's thread budget and therefore contradicts the same file's claim
+  that this run uses the campaign's core budget. **The fix for a false comment is a true comment,
+  not a new runtime knob.** Reverted.
+
+The gate also confirmed the ownership fix does not over-drop or leak: the two control tables are
+owned and still dropped, `--stage index` still keeps its table, and the four generation tables
+survive. It found one pre-existing leak it was careful to label as not introduced here.
+
+**Round 3 converged on NEW DEFECT CLASSES**, which is this pipeline's stopping rule. ⚠️ The three
+counts are NOT one measurement and must not be read as a descending series: round 1 found **109 raw
+findings**, round 2 found **5 anti-regression findings over 22 hunks**, and round 3 found **2
+findings but 0 new classes**. And the sequence did not end there: round 4 was the run itself, and it
+found a defect that refused the run outright (below). *A convergence claim is only as good as the
+denominator each number counts.* Round 3's two findings were both
+Low/P3 and diagnostics-only, and both were cases where a repair of mine did not do what its own
+comment said. The first is worth carrying: my `nproc` fix was committed under a comment claiming it
+produced "a variable that is always an integer", and it did not, because `nproc` exiting 0 with
+EMPTY output leaves the variable empty and the `integer expected` shape survived untouched. *The
+repair of a false claim acquired a false claim of its own.* Executed across four cases before and
+after. The second: `any(ctl.iterdir())` propagates an `OSError` that the `is_file()` it sat beside
+swallows, so an unlistable directory aborted with a bare traceback instead of the refusal; failure
+to list now reads as NOT EMPTY, because the one thing that must never follow from an unknown
+directory is a recursive delete.
+
+### Round 4 was the run itself, and it found what three review rounds could not
+
+The relaunch refused immediately: **"FATAL: 2 cores visible"** on a twelve-core host. `nproc`
+honours `OMP_NUM_THREADS`, and this script exports it as 2 about fifteen lines above the core
+count. So the guard read 2 and refused the run outright.
+
+That is an interaction between **two fixes from the same batch**: one set `OMP_NUM_THREADS` to make
+a false comment true, the other counted cores to fail closed. Three review rounds read the two
+hunks separately and none connected them, because *nothing had run the script end to end between
+them*. 🔑 **Reviewing two hunks separately is not reviewing their interaction, and the only thing
+that reliably finds an interaction is execution.**
+
+The repair is not a better count. A count was a PROXY for the question the pins ask, and all three
+shapes of the proxy were wrong differently: the bare `$(nproc)` broke on a missing binary, the
+defaulted one broke on empty output, and the validated one broke on `OMP_NUM_THREADS`. The guard
+now **probes each mask it will actually use** (`0,1`, `2,3`, `4,5`, `6,7`, `0-7`) with
+`taskset -c "$mask" true`, which is not a measurement of anything: it is the operation itself, and
+is therefore immune to all three failure modes at once.
+
+⚠️ One correction made while proving it, which is why the probe is per-mask rather than over the
+union: a **partially valid mask SUCCEEDS.** `taskset -c 0-7` on a four-core host sets affinity to
+0-3 and returns 0, so a union probe would have passed on a host where two of the four arms could
+not run. Only a mask with NO valid CPU is refused, measured: `taskset -c 50-99 true` fails with
+`Invalid argument`. The guard was shown to fire before it was trusted.
+
+### Carried forward, unfixed
+
+1. **`--table-prefix` reaches a table name through `isidentifier()`, not `validate_table_name()`.**
+   The three context profiles share the first 18 characters `bge_small_context_`, so at a
+   44-character prefix `44 + 1 + 18 = 63 = NAMEDATALEN - 1` and **all three candidate tables
+   collapse into one**. The baseline does NOT collide (`bge_small_symmetric_v1` truncates
+   differently), so the harness runs three comparisons that are the same comparison and reports
+   parity three times over a single arm. (An earlier draft said it would "compare that table with
+   itself", which is wrong about the mechanism; the FALSE PASS conclusion is unchanged.)
+   `recall/control_plane.py` already ships the stricter validator and its docstring records
+   `PgVectorStore` as not yet converted. This is the carried item that can produce a false pass, so
+   it outranks the rest.
+2. **The driver runs code from a `/var/tmp` checkout rather than the checkout it ships in**, so a
+   stale copy can run silently. Of the three sibling drivers, `scripts/run_locomo_arms.sh` anchors
+   to `$(dirname "$0")/..`, `run_lme_s.sh` to `$(dirname "$0")`, and `scripts/run_gap_parallel.sh`
+   hard-codes `cd /root/recall`. (An earlier draft said "both sibling drivers anchor", which
+   miscounted them and ignored that one commits the same anti-pattern.)
+3. **Nothing in the driver is overridable** (`${VAR:-default}`). All three sibling drivers do use
+   that form, but by PRACTICE rather than by a stated convention: a grep for prose stating it
+   returns nothing beyond one comment in `run_gap_parallel.sh` about honouring an operator DSN. And
+   committed host paths **do** have prior art here (`scripts/run_gap_parallel.sh` commits
+   `/root/recall` and `/root/.voyage_env`; `benchmarks/check_profile_encoder_distinctness.py`
+   commits an `/opt/recall-enterprise/...` cache path), so the earlier draft's "no prior art in this
+   public repository" was false. The hard-coded paths remain worth fixing; the justification was
+   overstated.
+4. **The coverage denominator is a second filesystem walk** (`corpus.glob`) rather than the
+   indexer's own `candidate_files`, which additionally drops non-files and symlink escapes. It fails
+   closed, so it cannot manufacture a pass.
+5. **The compare stage loads the ONNX model four times to read `embedder.dim`**, which the registry
+   declares without touching disk, and `_parity` re-reads `source_raw_hashes` after the validator
+   already did: an auditor counted **36 full scans where 8 would do**.
+6. **The re-run guard refuses a COMPLETE generation.** `_index` fails on `stats.chunks == 0`, which
+   is exactly what a fully-indexed table returns once the fingerprint skip sets in.
+7. Tables `pfull_*` and `psmoke_*` are **left on the host** and must be dropped through
+   `PgVectorStore.drop_table()`, never through psql: `drop_table` clears the
+   `recall_schema_migrations` rows in the same transaction, and a bare `DROP TABLE` leaves them,
+   after which the next run skips creation and fails validation on a table that no longer exists. I
+   hit that trap for real this session.
+8. **Five refusals in the control block are argv-checkable but fire after the expensive work.** The
+   symlink check, the corpus-overlap check and the exists / is-dir / listable / marker checks all
+   read only argv and filesystem state available at parse time, yet they sit after four index runs
+   and every comparison, and before the artifact write, so tripping one discards a completed
+   measurement. Round 2 fixed exactly ONE member of this class (the empty-directory case) and left
+   the rest. `args.out`'s parent is likewise never validated until the write.
+9. **The control corpus is flattened to basenames**, so under the recursive default glob two corpus
+   files sharing a name silently overwrite, the control holds fewer files than `--control-files`,
+   and `sources_expected` overstates what was compared. Not caught, because `ctl_ok` reads only
+   `fired` and `detected_exactly_one_source`, never the control's own `coverage_ok`.
+10. **A window inside `_index` still leaks.** Registration now happens immediately after `_index`
+    RETURNS, but `_index` calls `ensure_schema()` before it indexes, so a failure inside it (the
+    zero-chunk refusal, a psycopg error, an interrupt) still leaves a created table unregistered.
+    Closing it fully means registering from inside `_index`, which is a signature change.
+
+### A fifth review round, run while the relaunched job was indexing
+
+Two read-only reviews with lenses the first four did not use: a WHOLE-FILE audit (because round 4's
+defect lived in the relationship between two hunks, which four diff-scoped reviews could not see)
+and a claim-check of this entry against the repository.
+
+The whole-file audit found six, of which four are fixed here and two are items 8 and 9 above. The
+one worth naming: **`owned` did not mean what its own comment said.** It recorded that
+`ensure_schema()` had run, and that call silently ADOPTS a pre-existing table, so a re-run over
+tables another process built would have marked them owned and dropped them. Ownership is now asked
+of the catalog with `to_regclass` BEFORE migrating. Also fixed: the cleanup dropped its own
+generations on the success path of `--stage all`, contradicting the rationale `--drop-generations`
+states for its own default (a `scratch` flag now separates disposable control tables from expensive
+generations); the control corpus was indexed with a hardcoded `*.rst` while the main corpus used
+`--glob`; and the control tables were registered for cleanup only after the whole block succeeded.
+
+The claim-check confirmed the measurements and found the prose wrong in four places, all corrected
+above: "roughly half the corpus" contradicted this entry's own chunk counts (**11% to 26%**); the
+corpus size was given as 746 here and 732 in the harness; two carried-forward items cited sibling
+drivers that do not say what I claimed, and asserted "no prior art" for committed host paths when
+`scripts/run_gap_parallel.sh` and `benchmarks/check_profile_encoder_distinctness.py` both contain
+some; and the 44-character truncation collapses the three CANDIDATES into one table while the
+baseline truncates differently, so the failure is three identical comparisons rather than a table
+compared with itself.
+
+🔑 **The sharpest of the eight was not a wrong number.** The only end-to-end "passed" row in the
+table above belongs to `4021381`, a version this same entry demonstrates was not gating. Everything
+executed against the post-audit harness exercises a refusal or a cleanup. **"Audited" had been
+standing in for "shown to work", and they are not the same claim.** The table now says so.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** VPS2 was at load average 12.55 on 12 cores at session start, worse than the 9.78 previously recorded. | External dependency. Do not work around it. | Latency **PENDING**; promotion blocked on latency grounds. | unchanged. No timing here is cited for anything |
+| **VPS2 unavailable.** The operator stopped the run and reserved the host for other work. | External dependency | The full-corpus parity measurement cannot be completed until the host is free. | **new this session** |
+| **No production corpus.** | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
+| **No approved local generator confirmed.** | Open | The generator-neutral path stays unexercised end to end. | unchanged |
+| **The harness cannot supply a calibration.** | Open | Every campaign arm ran `development` trust policy, so `superseded_trust_rate` is NOT MEASURED and the trust gate did not run. | unchanged from the entry below |
+
+### What the next session should start with
+
+1. ~~Finish the parity run.~~ **Done**, and passing. ~~The generation tables are left on the host.~~
+   **Dropped 2026-08-06** through `PgVectorStore.drop_table()`, so the migration ledger rows went
+   with them (74 ledger rows to 46; 0 remaining for those prefixes, asserted rather than assumed).
+   ⚠️ **Reproducing the run therefore now costs a full four-arm re-index**, roughly three hours
+   sequential, not a free compare re-run. `benchmarks/drop_parity_tables.py` is the sweeper; it
+   reaches orphans `--drop-generations` cannot, because that flag only sees tables a run registered.
+2. **Run `mypy` and `pytest` against this branch**, which needs a worktree venv rather than the
+   primary clone's editable install. Both are still unverified, and with CI unable to acquire
+   runners they are now **the largest untested surface in this work**.
+3. ~~The committed artifact predates its own `_provenance` block.~~ **Stamped 2026-08-06**, and the
+   block declares `stamped_after_the_fact: true` with `measured_at` kept separate from
+   `provenance_stamped_at`. The stamp was the ONLY change, enforced rather than asserted: the tool
+   refused to write until a `json.dumps` round trip reproduced the file byte for byte, then compared
+   all nine pre-existing keys (`git diff`: 24 insertions, 0 deletions). The archived copy is the
+   untouched original and the two digests are recorded in `results/ARTIFACTS.md` and in the
+   archive's own `NOTE.md`, so the divergence is explained from both ends rather than looking like
+   tampering.
+4. Carried-forward items 1 to 3, in that order; item 1 (`validate_table_name`) is the only one that
+   can produce a FALSE PASS.
+5. The campaign entry below still asks for `recall index`'s missing over-broad glob guard and the
+   arm-identity defect. Neither was touched here.
+
+---
+
+
+## 2026-08-06, context modes on the PEPs: a null, and a question that narrowed three times
+Four arms, one corpus, 88 paired answerable questions. **No context mode is distinguishable from
+the raw baseline.** All three candidates refused promotion. This directory holds the negative
+result, which is retained deliberately: the brief asked for it to be published if the candidate
+lost, and it did.
+
+## The result
+
+| candidate | delta hit@5 | bootstrap 95% CI | Holm p |
+|---|---|---|---|
+| `bge-small-context-document-v1` | +2.27 pp | [-3.41, +7.95] pp | 0.3438 |
+| `bge-small-context-section-v1` | +2.27 pp | [-3.41, +7.95] pp | 0.3438 |
+| `bge-small-context-neighbor-v1` | +0.00 pp | [-6.82, +6.82] pp | 1.0000 |
+
+Every interval straddles zero. **+2.27 pp is two questions.** With 88 paired answerable questions
+the smallest expressible move is 1.14 pp, so document and section mode each got two more right than
+baseline and neighbour mode got none. At this width the study can only detect large effects, and
+there were none to detect.
+
+Promotion refused for all three, on five criteria each: the macro CI does not clear zero; no corpus
+reaches Holm-corrected significance; `superseded_trust_rate` NOT MEASURED (development trust
+policy); security verification not green; latency PENDING.
+
+## ⚠️ The latency column is NOT a measurement
+
+Diagnostic-only p95: baseline 3320 ms, document 2063 ms, neighbour 818 ms, section 626 ms. If that
+ordering held it would be a large effect favouring the candidates. **It cannot be cited.** It was
+taken on a host at load average 20-40 with four arms competing for eight cores, which is exactly why
+`latency_status` is PENDING and why the harness files these under `observed_diagnostic_only`. It is
+a reason to want the reference host, not evidence about the profiles.
+
+## The question narrowed three times, and each narrowing was forced
+
+The brief asked for five corpora. What ran was one.
+
+* **`ladder` is incompatible with this harness.** `benchmarks/ladder/run.py` ingests "per distinct
+  corpus state" and keys instances by `(scope, excised_doc_ids)`: each of its 1800 instances has its
+  own corpus with its gold documents excised, and that excision IS the experiment. The promotion
+  harness indexes one directory and searches every question against it, so the 1500 unanswerable
+  instances would have been searched against a corpus still containing their answers. It would have
+  produced numbers.
+* **`labelled` cannot certify and cannot pass the regression gate.** Certification needs 20
+  answerable and 20 unanswerable; it has 14 answerable in total. Separately its hit@5 granularity is
+  7.14 pp against a 2 pp no-regression threshold, so any single question moving the wrong way
+  breaches the gate and no smaller move exists.
+* **`locomo`, `longmemeval`, `mtrag`** need host data and were out of scope for this run.
+
+So the macro-across-corpora design collapsed to a single corpus. The gate's multi-corpus criteria
+(macro average, Holm across corpora, per-corpus regression) all degenerate to one corpus, and the
+decision documents say so rather than presenting a macro over n=1 as though it were a macro.
+
+## Two defects in the harness were found by running it, and fixed
+
+Both made a whole class of arm impossible, and neither was visible by reading:
+
+1. `_indexed_store` never passed a `context_policy`, so `Indexer` defaulted to `raw-v1` and REFUSED
+   every context profile. All three candidate arms died at index time before a single question was
+   scored, while the raw baseline scored 110 of 110.
+2. `index_path` defaults to `**/*.md` and the PEPs are `.rst`, so indexing wrote ZERO chunks and all
+   110 questions abstained against an empty index with `dense_cosine: nan`. The gate's `VacuousArm`
+   guard did catch it, which is the guard working, but only after four arms had each paid for a full
+   embedding pass, and its message blames the label space, which was not the fault.
+
+Fixed on `codex/promotion-calibration-wiring` (`2b815b3`): the policy is derived from the arm's own
+profile, there is a `--glob` argument, and an empty index is refused at index time where the cause
+is still legible. Eight tests, both mutations killed.
+
+## What is in here
+
+| File | What it is |
+|---|---|
+| `peps.manifest.jsonl` | the frozen question set, digest `20e4928f2d799e57…a1885c`, 110 questions (88 answerable) |
+| `baseline.*.jsonl`, `ctx-*.jsonl` | four arm ledgers, 110 rows each, ALL rows carrying real hits |
+| `decision.ctx-*.json` | three PromotionDecisions, all `promoted: false` |
+| `run_arms.sh`, `rerun_section.sh` | the drivers, warts included (see below) |
+| `arm-*.log`, `run.log` | per-arm and driver logs |
+
+**Every ledger was checked for non-empty `retrieved_chunk_ids` before any number here was read.**
+That check is not ceremony: the previous attempt produced four ledgers of 110 rows each in which
+every single row was empty, and they looked identical to these from the outside.
+
+## Operational record, including what went wrong
+
+Five launch attempts. The failures are recorded because they were mine and they are the reusable
+part:
+
+* **Unthrottled first run**: 634% CPU for 44 minutes on a host whose permanent ~9 load from live
+  production is a documented standing blocker for this program.
+* **`OMP_NUM_THREADS` does not cap onnxruntime.** The driver set it to 2 with a comment explaining
+  that it capped the CPU execution provider. Measured: 24 threads, 6.2 cores. **`taskset` is the
+  cap.** Verify with delta `utime+stime` from `/proc/PID/stat`, NOT with `ps` %CPU, which is a
+  LIFETIME AVERAGE and reads as though the pin failed for minutes after a fast start.
+* **Four arms launched simultaneously**: `ensure_schema()` takes a process-wide advisory lock and
+  `apply_migrations` refuses rather than waiting, so three died instantly with `ConcurrentMigrator`.
+  Fixed by staggering 90 s. A stagger is a race made unlikely, not a race removed.
+* **`exit=$?` after `$(date -Is)` reports the DATE's exit status.** The command substitution runs
+  first and resets `$?`. Every arm reported `exit=0`, including `ctx-section`, which died after 3h11m
+  having written nothing. A status line that could only ever say success.
+* **CRLF line endings** from a Windows-authored script made `set -u` a syntax error, so two launches
+  silently did nothing.
+
+`ctx-section` was re-run alone and completed (`rc=0`, captured on its own line this time). Why the
+first attempt died is **not established**: no OOM kill in the journal, 27 GB free, a 0-byte log, and
+its throwaway table left undropped so the `finally` never ran. Recorded as unexplained rather than
+attributed.
+
+## Provenance
+
+* Host: VPS2, root SSH. This program lives in `/opt/recall-enterprise`, outside qwen-mcp's four file
+  roots, so root SSH is the documented fallback and was used.
+* Database: `recall_campaign`, created for this work with migrations 0001-0011 applied and verified
+  (11 ledger rows, checksum drift none). `recall_enterprise` was NOT touched: it refuses 0011 on a
+  pre-existing checksum drift in `0008`, edited in place by #196 after that database was provisioned.
+* Stack: fastembed 0.8.0, onnxruntime 1.28.0, Python 3.12.
+* Artifact tree: a digest-bound copy of the provisioned bge cache,
+  `9a443d711e063427f62cf559a38863122ee5ed107fdd7920de882fd66dbc919c`.
+* Trust policy: `development` on every arm. The harness cannot supply a calibration at all
+  (`StoreSearch` is constructed without `calibration=`, there is no `--calibration` flag, and the run
+  indexes into a throwaway table that is not a registered generation), so strict mode refuses every
+  search regardless of what artifact exists.
+
+## ⚠️ Known defect these ledgers are exposed to
+
+`--glob` and `--corpus-dir` select WHICH corpus an arm measured and appear in none of
+`ArmConfig.identity()`, `artifact_stem()`, or the fields `score_arm` compares on resume. Re-running
+an arm under a different corpus selector lands in the SAME ledger, resumes every row and republishes
+the previous corpus's results. Demonstrated by the CCA bug auditor. **Unfixed at the time of
+writing.** These ledgers are correct because the directory was cleaned before the run, not because
+the harness would have prevented it.
+
+
+### What the next session should start with
+
+1. **`recall index` has NO over-broad glob guard, and it is the path that matters.**
+   `recall/cli.py:739` passes `--glob` from argv straight to `index_path`, writing into the
+   operator's PERSISTENT `--table`. The guard added this session sits only on the eval harness,
+   whose store is `promo_<uuid8>` and is dropped in a `finally`. Measured: `candidate_files(root,
+   '**/*')` returns `.env`, `id_rsa`, `tokens.json`. **The guard went on the safe path and the
+   dangerous one was left open.** Its right home is `recall.index.candidate_files`, the one place
+   every caller passes through, which also covers `recall_index` MCP, `recall lint` and
+   `recall fix`.
+
+2. **`--glob` is the wrong mechanism, and the evidence is not that it took three corrections.**
+   The adapters already know the extension, and for three of them it is INSIDE the label strings
+   the scorer compares against: `PepsAdapter` labels are `pep-0690.rst`, `LongMemEvalAdapter`
+   emits `f"{sid}.md"`, `LocomoAdapter` resolves to `.md`. The glob is a SCORING input, not a
+   confinement setting, and neither guard can see it go wrong: `_indexed_store` refuses only
+   `chunks == 0`, and `VacuousArm` returns as soon as ONE answerable question hits at 20, so a
+   partial label-space mismatch scores a depressed-but-plausible number and publishes it.
+   Recommendation: declare `glob: tuple[str, ...]` on the adapter with a `corpus_glob()` accessor
+   built like `label_kind()`, which already refuses an adapter that declared none; keep
+   `--corpus-dir`; delete `--glob` from `run`. `LEDGER_ID_FIELDS` already contains `corpus`, so
+   deriving the glob from the adapter closes half of item 3 for free. It also restores a
+   capability the predicate makes impossible: a multi-extension corpus is inexpressible, since
+   pathlib rejects `**/*.{md,rst}` and the only working spelling, `**/*.[mr]*`, is refused as the
+   round-1 bypass shape.
+
+3. **The arm-identity defect**, above: `--glob` and `--corpus-dir` are absent from
+   `ArmConfig.identity()`, `artifact_stem()` and the resume comparison.
+
+4. **The local dev database on 5432 carries migrations `0012` and `0013` that exist on NO
+   committed branch.** Someone has uncommitted schema work applied there; it makes every
+   DB-backed test in a fresh worktree fail with `SchemaTooNew`.
+
+5. If the context-mode question is worth answering, it needs a corpus that can express an answer.
+   88 paired questions cannot resolve anything under about 7 pp.
+
+---
+
+
+## 2026-08-05, the paired comparison: stopped before it ran, because its two arms are the same system
+
+Branch cut fresh from `origin/master` at `ca8ccd8`, in its own worktree (`…/RE-call-paired`). The
+primary clone was clean and on `master` for once; it was still left alone, because three
+consecutive entries below record finding somebody else's uncommitted work in it.
+
+### Session ledger
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | Verify the three stated preconditions | done. **One holds, two do not**; evidence per precondition below |
+| 2 | Predict the outcome and the invariants before running | done, and the prediction is what stopped the run |
+| 3 | Run the paired comparison, both retrieval profiles, five corpora | **NOT DONE, deliberately.** The two named arms cannot produce different vectors. Measured, with controls |
+| 4 | Machine-readable decision, negative result retained, archived | done, as a **precondition audit** rather than a counterfeit `PromotionDecision` |
+| 5 | Decide which candidate the campaign should actually compare | **not mine to decide.** Two registered candidates are real; the choice is below and needs the operator |
+
+### The headline: the candidate is not a different system
+
+`bge-small-symmetric-v1` and `bge-small-asymmetric-v1` are registered in
+`recall/embedding_registry.py` with the same `model_name`, `dimension`, `context_mode`,
+`normalization`, `instruction_version`, `chunker_version` and `backend`. They differ in exactly two
+fields, `query_mode` and `passage_mode`, and `/opt/recall-enterprise/manifest.json` records them as
+the active and shadow profiles of **one** provisioned artifact tree
+(`9a443d711e06…c919c`, recomputed this session and equal to the recorded value).
+
+So the entire retrieval difference between the two arms is whatever the backend's `query_embed` and
+`passage_embed` do differently from `embed`. Measured on VPS2 against that tree, offline: **nothing.
+Six probes, three query-shaped and three passage-shaped, all three encoders byte-identical on every
+one, cosine exactly 1.0.**
+
+**And the reason is a property of the library, not of this host.** `BAAI/bge-small-en-v1.5`
+resolves to `OnnxTextEmbedding`, which does **not** override `query_embed` or `passage_embed`: both
+come from `TextEmbeddingBase` and `yield from self.embed(...)` with no instruction. The script walks
+that delegation chain (`TextEmbedding.query_embed` → `TextEmbeddingBase.query_embed`) and reports
+it, so the finding rests on two independent legs, behaviour and source, and does not expire with
+this deployment.
+
+A paired comparison of the two is therefore a system compared with itself. Every question's `hit@5`
+delta is zero by construction, the stratified paired bootstrap interval is `[0, 0]`, and the gate
+refuses for a reason that describes neither profile. `results/promotion/decision.null-difference.json`
+is the same KIND of null, produced by the previous session deliberately as the harness's own
+control. **It is not the same artifact**, and the difference is the dangerous part: both of its arms
+are `bge-small-symmetric-v1` at one fingerprint, so its deltas are exact zeros, whereas the briefed
+pairing has two fingerprints and two physical tables, so its deltas would be tie-break noise around
+zero. Running the campaign as briefed would have published a noisier control under a candidate's
+name and called it the first real paired comparison.
+
+**This also corrects the session-8 entry below**, which grouped `bge-small-asymmetric-v1` with the
+context profiles as differing "in the passage TEXT they embed". It does not: `context_mode` is
+`none` for both it and `bge-small-symmetric-v1`, so their `context_version` is `raw-v1` on both
+sides and the passage text is identical too. Only the three context profiles differ in text.
+
+⚠️ **Worse than uninformative.** The two profiles have different fingerprints, so they index into
+two different physical tables. Ties among equal scores can break on row order, so two provably
+identical systems can still yield a handful of nonzero per-question deltas. A gate fed that noise
+can report a corpus improvement with a Holm-corrected p-value attached to it. A null that is
+*exactly* zero refuses cleanly; a null contaminated by tie-break noise is the shape that promotes
+something.
+
+**This was predicted in writing before it was measured**, from the registry alone, and the
+measurement is the confirmation rather than the discovery. Session 8 had already recorded the same
+fact (`docs_search`, cosine 0.81, no gap warning) and this run is an independent confirmation with
+different probe texts, made because a fact that decides whether a whole campaign is worth running is
+one to confirm rather than inherit.
+
+### The preconditions: one holds, two do not
+
+The brief said to stop and say so rather than improvise if any was missing. Two are missing.
+
+| Precondition | Verdict | Evidence |
+|---|---|---|
+| The prior session's promotion harness is merged | **HOLDS** | `recall/eval/promotion/` is on `origin/master` at `ca8ccd8` (PR #208, merged as `c6c0197`), and `results/promotion/decision.null-difference.json` proves the producer has been driven end to end. ⚠️ PR **#203** (eval question-id validation, shared scoring flag, nearest-rank percentile) is still **OPEN**; it touches `benchmarks/` scoring rather than this package |
+| Frozen manifests exist | **FAILS, for five of the six corpora**, but the gap is smaller than this entry first said | the only PROMOTION-format frozen manifest is `results/promotion/labelled.manifest.jsonl`: 25 questions, digest `cad3281c…`. **Correction, from the CCA doc auditor:** the ladder already carries its own frozen manifest, `results/ladder/manifest.jsonl`, 1800 instances, digest `6bfe2d2b…`, which `LadderAdapter` re-expresses rather than re-derives. My evidence command was `find / -xdev -maxdepth 8 -name '*.manifest.jsonl'`, a glob that **cannot match a file named `manifest.jsonl`**, so the search that produced "nothing anywhere" was incapable of finding it |
+| Profile-scoped calibration artifacts exist for both profiles | **FAILS, for both** | the mechanism exists (`save_for_profile` / `load_for_profile`, `PROFILE_FINGERPRINT_KEY`, covered by `tests/test_calibration_profile_scope.py`). No artifact does. The only two RE-call calibration artifacts on the host belong to a Voyage embedder and an OpenAI embedder, **both `certified: false`**, and neither names a BGE profile. Relation `recall_calibrations` **does not exist** in either RE-call database there, and the deployment manifest records `core_schema_current: 0010` while calibration binding is migration `0011` |
+
+**The corpus DATA is not the problem, and three of the six need no host data at all.** Measured by
+calling `unavailable_reason()` on every adapter from a bare checkout:
+
+| Corpus | Freezable from a clean clone? |
+|---|---|
+| `labelled`, `ladder`, `peps` | **yes**, `unavailable_reason() is None` for all three |
+| `locomo`, `longmemeval`, `mtrag` | no: need `locomo10.json`, `longmemeval_s.json` and the MT-RAG release, all provisioned on the host |
+
+So the blocker is narrower than "five corpora cannot be scored": three can be frozen today with one
+command, and only the other three depend on host data. What is absent everywhere is the frozen
+question set, whose entire value is that it predates any candidate result, and the calibration
+without which `superseded_trust_rate` is `null` rather than a number.
+
+> Host paths and database names with no prior art in this repository are deliberately not
+> written out here. This repository is public,
+> and the CCA security auditor found that five such strings in the first draft of this entry had no
+> prior art anywhere in it. The operator runbook is the place for them; a handoff needs to say what
+> exists, not where.
+
+That last one is not a formality. `recall.eval.promotion run --trust-policy strict` **refuses**
+without a generation-bound certified calibration, and `--trust-policy development` records every
+verdict as `unverified`, under which the gate's "superseded trust rate exactly zero" criterion
+cannot be evaluated at all. The existing null-difference decision says exactly that in its
+`failures` list.
+
+### What was measured
+
+`benchmarks/check_profile_encoder_distinctness.py`, run on VPS2 by root SSH. qwen-mcp's file roots
+are `/opt/sentiment_agent`, `/var/lib/qwen_agent`, `/var/log/qwen_agent` and
+`/etc/systemd/system`; this program lives in `/opt/recall-enterprise`, outside all four, so root SSH
+is the documented fallback and is stated here rather than left to be inferred.
+
+The script does not import the `recall` package. The subject is what the BACKEND does, and asking
+the code under test whether its own two configurations differ is the self-comparison this program
+keeps recording. Five controls, all blocking:
+
+| Control | Result |
+|---|---|
+| Positive: two texts that must not agree | fired, cosine `0.65494816858` |
+| Determinism: the same call twice | byte-identical, so an "identical" reading is not luck |
+| Coverage: every declared probe produced a row, both shapes present | fired, 6 of 6. `all([])` is `True`, so a truncated probe set would have read as identity |
+| **Sensitivity: a deliberate 1e-4 rad rotation must be reported as DIFFERENT** | fired, cosine `0.999999995`. **This is the control the first version did not have** |
+| Identity: artifact digest bound, vector width matched | fired, digest equals the manifest's, `local_files_only` confirmed consumed |
+
+**The sensitivity row is the finding of this session's own audit.** The first version's two controls both
+varied the TEXT and held the ENCODER fixed, at a cosine of 0.65, while the probes vary the ENCODER
+and hold the text fixed, and the null is drawn on that axis. So it established that the comparator
+separates grossly different vectors and never that it could see a small difference between two
+encoders. **A positive control validates the MECHANISM, not the SCOPE**, and I shipped an instance
+of this program's own standing lesson.
+
+The related defect was in the arithmetic. `_cosine` computed entirely in float32, so it returned
+values **above 1.0** for byte-identical vectors (31.9% of 20000 trials, max `1.000000119209`) and
+returned exactly `1.0` for vectors differing in 382 of 384 components (a 3e-5 rad rotation). The
+published "cosine exactly 1.0" was not a property that implementation reliably produced. It now
+computes in float64 and clamps; reverting it to float32 turns **11 of the 28 new tests** red.
+
+Every guard was shown able to fail by mutation, applied and restored **by bytes**, with the file
+verified byte-identical afterwards: sensitivity, coverage, provisioning, digest binding, the float64
+cosine, the usage-versus-help exit split, the AST delegation check, the verdict's use of it, the
+schema stamp and the provenance stamp. **10 of 10 killed** in one sweep.
+
+Two earlier rounds got this wrong, and both errors were in the SWEEP rather than in the code, which
+is why the count is stated from a single clean run rather than accumulated across rounds. One
+mutation's search string did not match and the harness aborted that row instead of reporting a
+survival, which is the behaviour that makes the other rows mean anything. And "delete the schema
+key" **survived**, because the test read the committed artifact FILE and could not see the emitter
+losing the key: a test that pins an artifact does not pin the code that writes it.
+
+**No timing is reported and none is citable.** VPS2 showed a load average of 9.37 / 8.79 / 9.46 on
+12 cores while this ran, from unrelated live production. The only numbers taken from VPS2 here are
+digests, byte comparisons and cosines.
+
+### Archived
+
+`/var/lib/recall-benchmarks/2026-08-05-embedding-profile-distinctness/`, with `MANIFEST.sha256`
+covering every file and `sha256sum -c` passing. The archive is populated from `git show <rev>:<path>`, so it holds exactly the bytes git stores,
+and `result.json` carries `script_sha256`, the producing script's digest over LF-normalised bytes.
+
+**No digests are quoted here, deliberately.** The invariant is stated instead, and it is checkable
+with one command against any revision:
+
+```
+git show <rev>:benchmarks/check_profile_encoder_distinctness.py | sha256sum   # == the archived copy
+jq -r .script_sha256 results/promotion/encoder-distinctness.bge-small.json    # == the same value
+```
+
+⚠️ **This one sentence was wrong four times, and the fourth is the one that matters.** It quoted
+the digest of the script *before* the audit rewrote 694 lines of it; then a test-file digest that
+moved when one test was appended; then it compared a CRLF working copy against an LF git blob, so
+the archived file and the committed file genuinely differed and `sha256sum` on the working copy
+could never have detected it. Each time the value was patched. The fourth time it went stale
+**inside the commit that wrote it**, which is structural: a document cannot correctly quote the
+digest of a file it is committed alongside, because writing the quote changes the tree.
+
+**Four rounds on one claim means the mechanism is wrong, not the number**, and the first three
+patches were all treating a mechanism failure as an arithmetic one. Naming the invariant and the
+command ends it: there is no value left to go stale, and `script_sha256` puts the provenance inside
+the artifact where it travels with the result instead of in a paragraph beside it. The previous
+session recorded the same class from the other side, a mutation harness whose `write_text` restore
+rewrote LF as CRLF and left ten files dirty.
+
+Two machine-readable artifacts, and neither is a `PromotionDecision`. No arm was scored, so
+emitting that schema would have described a gate evaluation that never happened, and a refusal to
+run must not read like a run that refused.
+
+| Artifact | Where | Schema |
+|---|---|---|
+| The precondition verdicts and their evidence | archive only | `recall-precondition-audit-v1` |
+| The measurement itself | **in the repository**, `results/promotion/encoder-distinctness.bge-small.json`, and in the archive | `recall-encoder-distinctness-v1` |
+
+The second is committed so the finding survives without host access, and it carries an explicit
+`schema` key because it sits in `results/promotion/`, the directory promotion decisions are written
+into, where a reader should not have to infer the kind from the filename. A test asserts both the
+schema and the absence of `promoted` / `bootstrap_interval`.
+
+### What was deliberately not done
+
+1. **No arm was scored, no manifest was frozen, no calibration was authored.** Each of those would
+   have been improvising a missing precondition into existence, which the brief forbade and which
+   would have produced a manifest that postdates the candidate — the one property a frozen manifest
+   exists to deny.
+2. **The MT-RAG pool-100 preregistration was not touched, relabelled or extended.** It is a valid
+   preregistered baseline and it cannot certify a pool-20 quality profile.
+3. **No new profile was registered.** Giving BGE a query instruction would make the asymmetric
+   profile genuinely asymmetric, and that is a new model candidate, which this program's standing
+   scope puts behind a separately registered experiment.
+
+### The decision the next session needs from the operator
+
+The campaign's machinery is sound; only its candidate is empty. Two registered candidates would
+make it a real experiment, and choosing between them is a decision rather than a fix:
+
+1. **The context-mode profiles** — `bge-small-context-{document,section,neighbor}-v1` against
+   `bge-small-symmetric-v1`. These genuinely differ: the same encoder over different passage text,
+   which is the one axis the byte-identity finding above leaves intact. The context-modes entry
+   below deliberately did not measure which mode wins and named it the next campaign. **This is the
+   paired embedding comparison that is actually available today.**
+
+   Two things make it cleaner than it looks, and both come out of this session's measurement.
+   The briefed arms share `context_version = raw-v1`, so they were identical in **passage text as
+   well as encoder**, which is why their null is exact rather than approximate. And the context
+   profiles declare `query_embed` / `passage_embed` while `bge-small-symmetric-v1` declares
+   `embed`, so a comparison between them nominally varies two things at once — except that the
+   encoder-mode variation is now **measured to be a no-op on this backend**, which makes it a
+   genuine single-variable experiment. That is only true because of the measurement above; without
+   it, the comparison would have been confounded and nobody would have known.
+2. **The retrieval profiles** — `fast` against `quality` (pinned MiniLM, pool 20) on one embedding
+   profile. Also a real difference, and it is the arm the MT-RAG pool-100 results cannot certify.
+   But it varies the retrieval profile rather than the embedding profile, so the gate's arms mean
+   something different and the brief's framing would have to move with it.
+
+Either way the two failing preconditions have to be met first: freeze a manifest per corpus, and
+author a generation-bound certified calibration (which needs migration `0011` applied on the host,
+where the schema is currently at `0010`).
+
+### Gates run
+
+| Gate | Result |
+|---|---|
+| `ruff check .` | clean, ruff 0.15.22 |
+| `mypy` | clean, 149 source files |
+| `pytest tests/test_bench_profile_encoder_distinctness.py` | **28 passed** (new file) |
+| `pytest` on the four suites reading the edited documents | 81 passed |
+| `benchmarks/claim_gate.py` | exit 0 |
+| Mutation sweep over the new guards | **10 of 10 killed**, one clean sweep, file restored byte-identical |
+| CCA audit | DEEP tier, 5 auditors, **31 findings**; then the anti-regression and architect gates, **2 regressions + 8 more**; see below |
+
+### The audit found the apparatus, not the conclusion, and that is the second headline
+
+**Deterministic coverage was NONE** (`cca_checks` is not installed in this venv), so every verdict
+rests on LLM adjudication plus what I re-executed myself. Two auditors were deliberately not
+dispatched: `perf-auditor` (nothing here is on a hot path) and `env-validator` (no config key was
+added). Those two dimensions are **unaudited** for this change, and a skipped gate must not read
+like a passing one.
+
+The conclusion survived every finding. The apparatus did not:
+
+| Finding | Outcome |
+|---|---|
+| **Both controls varied the TEXT and never the ENCODER**, so a text-keyed cache would have passed them, and the harness's resolution on the decision axis was never demonstrated | fixed: the sensitivity control, plus delegation-chain introspection |
+| **`_cosine` computed in float32**: above 1.0 for byte-identical vectors, blind below 3e-5 rad | fixed: float64 and clamped. Reverting it turns 11 of 28 tests red |
+| **fastembed 0.8.0's artifact-miss path `rmtree`s and `unlink`s BEFORE checking `local_files_only`**, and the default `--cache-dir` was the production tree with "run as root" in the instructions | fixed: `assert_provisioned` refuses that state before the loader is constructed, and the run instruction now uses a copy. **I had already run the first version as root against the live tree**; it survived only because the tree resolves cleanly |
+| **Nothing bound the result to the artifact** it was attributed to: no digest, no width check | fixed, both, before any encoding |
+| **No test seam and no companion test.** The only proof a control could refuse was a copy hand-edited on the host and deleted | fixed: `model_factory`, and a test file now carrying 28 tests against a stub backend, so CI runs them without the `fastembed` extra |
+| **"The only frozen manifest anywhere is `labelled`"** came from a glob that cannot match `manifest.jsonl` | fixed above; the ladder has one and three corpora freeze from a clean clone |
+| **The CHANGELOG called the existing null-difference decision "already that artifact"** while this entry argued the real pairing differs in exactly the way that matters | fixed; both now say same KIND, not same artifact |
+| Argparse usage errors exited 2, the same code as a refused control | fixed, usage is 64 |
+| Version lookup ran after the measurement and could destroy it; `hasattr` where `callable` was meant; `NaN` serialised into a "machine-readable" artifact; offline guard only in `main()`; the verdict hardcoded profile names while the model was a parameter | all fixed |
+| Prior-work statement was the fifth paragraph rather than the first, and the module carried no `PRE-REGISTERED` block | fixed, per `benchmarks/EXPERIMENT-CONVENTION.md` |
+| Five host paths and two database names had no prior art in this **public** repository | fixed, genericised |
+
+Recorded and **not** fixed: the backend's native dtype is still not recorded beside the byte
+comparison, so "byte-identical" is stated at float32 resolution without saying so; and `numpy` is
+imported in several helpers rather than once, which is the repo's optional-extra idiom applied more
+times than it needs to be.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** VPS2 showed load average 9.37 on 12 cores during this session. | External dependency. Do not work around it. | Latency is **PENDING**; promotion blocked on latency grounds. Quality and safety gates still run. | unchanged, restated from observation |
+| **No frozen manifest outside `labelled`.** | Open, **new to this list** | Four of the five corpora in the campaign brief cannot be scored reproducibly. | new |
+| **No certified calibration for any BGE profile, and `recall_calibrations` is not deployed.** | Open, **new to this list** | Under `strict` the harness refuses; under `development` every trust verdict is `unverified` and the superseded-trust gate cannot be evaluated. | new |
+| **No production corpus.** | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
+| **No approved local generator confirmed.** | Open | The generator-neutral evidence path stays unexercised end to end. | unchanged |
+
+### What the next session should start with
+
+1. **The operator's answer to the candidate question above.** Everything else is downstream of it.
+2. **Freeze a manifest per corpus**, once the candidate is chosen: `python -m recall.eval.promotion
+   freeze --corpus …`. The adapters for all six exist; the data is provisioned on VPS2; nothing has
+   been frozen but `labelled`.
+3. **Apply migration `0011` on the host and author a calibration bound to a generation.** Until
+   then no decision can be green, and the `superseded_trust_rate` gate is not merely failing but
+   unevaluable.
+4. **PR #203** is still open and touches the scoring path. Land it before any campaign quotes a
+   percentile.
+5. The dual-write skip defect (`recall/index.py:426`/`:459`) named two entries below is still open
+   and is still the only item that can silently half-populate a shadow generation.
+
+---
+
+
+## 2026-08-05, the evidence boundary: reachable, and the delimiter it could not defend
+
+### Session ledger
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | Export the boundary from the package surface | done, 14 names on `recall.__all__` |
+| 2 | Wire additively into CLI, MCP, LangChain, LlamaIndex; a backward-compatibility test each | done; the CLI was the only surface missing the six identity fields |
+| 3 | Enforce the bundle contract (ok-only, order, no newest-wins, no dedup, no neighbours, abstain bypasses) | done, and **the "degraded yields empty" half of it was FALSE**; see below |
+| 4 | Enforce the prompt boundary | done, and **it was broken**: corpus text could close the delimiter |
+| 5 | Enforce validation | done, plus `normalize_citations` |
+| 6 | Orchestration | done, generator-neutral against a stub |
+| 7 | Frozen adversarial suite + recorded baseline | done, 52 trials, two controls |
+| 8 | Prove every new test can fail | done, **53 of 53 mutations killed**, three only after repair |
+| 9 | CCA audit at DEEP | done, 9 auditors, none died, 62 raw findings. It found more than the mutation sweep did |
+
+This is backlog item 11 (session 5). The standing blocker "no approved local generator confirmed"
+is unchanged and still blocks the end-to-end path; the neutral flow is tested against a stub, which
+is what the brief scoped.
+
+### The audit found four things the mutation sweep could not, and one of them was mine
+
+The mutation sweep proved every test I wrote could fail. It could not tell me a test was **built
+from the shape that passes**, and that is what happened.
+
+**`build_evidence_bundle` claimed a degraded result yields an EMPTY bundle. It does not.**
+`recall/trust.py` degrades in two shapes and only one blanks the verdicts: with no calibration at
+all every verdict becomes `unverified` and the bundle empties, but with a **caller-supplied
+uncertified `Calibration`** under a development policy the verdicts are deliberately left alone, so
+`ok` survives and the bundle is populated **while the result is degraded**. My contract test
+constructed only `unverified` hits, so it could never fail on the violating branch, and the claim
+read as proven for the whole session. Three auditors found it independently; one drove the real
+`trusted_search` end to end and observed a corpus sentinel inside the rendered generator prompt.
+
+The CLI reaches that branch **by default**: `_cli_trust` synthesises exactly such a calibration in
+development mode. So `recall search --evidence` was printing citable evidence from an uncertified
+retrieval, and `EvidenceBundle` carried no field that could say so.
+
+Fixed by making the signal representable rather than by narrowing the prose: `trust_state` and
+`failure_code` are now on the bundle, populated on both return paths, so the three non-MCP surfaces
+inherit them; the advice names the degradation; `_print_result` prints a `DEGRADED` flag. The new
+test is written **from the violating shape**, which is the part worth carrying forward.
+
+**A guard of mine could not fire, and a second one fired on prose.** The no-neighbour-retrieval test
+scanned the module's raw source for `recall.trust`. Adding a comment that *explains* how the trust
+layer degrades turned it red - a guard that fails on a docstring is not guarding the code. It now
+walks the AST and asserts on imports.
+
+**The injection rate was named by the wrong denominator.** 39 trials, but 13 of them (the whole
+`metadata` carrier) cannot inject by construction: an evidence item carries no corpus metadata
+dict, so that payload never reaches a rendered message. The suite's own docstring and its own test
+both said the arm was vacuous; the knowledge never reached the division. It put the **previous**
+renderer at 8/39 = 0.205 when its rate over payload-carrying trials was 8/26 = 0.308 -
+understating by a third the defect this session fixed. Confirmed with a `hypothesis` falsifying
+example whose shrink target was the suite exactly as shipped. The rate now divides by
+`carrying_trials`, and both numbers are recorded so the gap stays visible.
+
+**The suite did not exercise `chunk_id`**, the field a citation actually resolves to, even though a
+chunk id is minted from the file name. No live vulnerability - `_encode` escapes the whole encoded
+JSON, so the field was covered - but the baseline's SCOPE was narrower than the carrier it named,
+which a digest-pinned artifact makes expensive to widen later. Added as a fourth carrier.
+
+### The defect that justified the session
+
+`render_evidence_prompt` wrapped a `json.dumps` payload in `<evidence_data>` ... `</evidence_data>`.
+`json.dumps` escapes quotes, backslashes and control characters. It does **not** escape `<` or `>`,
+and the delimiter is built from exactly those two characters. A memory whose text, file name or
+chunk id contained the closing tag ended the region early, and everything after it arrived as free
+prose in the model's own instruction channel. **Delimiting without escaping the delimiter is not
+delimiting.**
+
+Reproduced before fixing (two closing tags in one rendered message), then fixed by escaping both
+brackets to their `\uXXXX` form, which is still valid JSON and parses back byte-identically. An
+auditor recorded the non-obvious reason the order is right: escaping **after** `json.dumps` is safe
+because an angle bracket can then only occur inside a string literal, so the substitution cannot
+corrupt the structure; escaping first would have altered the evidence.
+
+The invariant asserted is **no angle bracket inside the region**, not "the closing tag is absent".
+The weaker form is what the first mutation sweep exposed: escaping only `<` already prevents the
+closing tag from appearing, so dropping the `>` escape changed nothing any test could see. A
+boundary defined by one delimiter's exact spelling is inert against a variant spelling.
+
+### What was measured
+
+| Gate | Result |
+|---|---|
+| `ruff check .` | clean |
+| `mypy` | clean, 140 source files |
+| Mutation sweep | **53 of 53 killed** (3 survived the first pass; each was a real gap, closed and re-killed) |
+| Injection baseline | **0 escapes over 52 trials**; positive control 12, negative control 0 escapes AND 0 preservation |
+| CCA audit | DEEP, 9 auditors, none died, 62 raw findings; `cca_checks` installed, so definedness / nullability / taint / type / clock_leak had a deterministic backend and two numeric findings carry `hypothesis` artifacts |
+| Second mutation sweep, over the AUDIT FIXES | **17 of 17 killed**; 4 survived the first pass, and the rate one survived TWICE |
+| Audit of the FIX BATCH (bug + anti-regression gates) | 7 findings, 2 SCOPE_CREEP, **0 REGRESSION_RISK**; two were defects the fixes introduced |
+| Third mutation round, over those fixes | 5 of 5 killed |
+| Full suite | **2627 passed, 3 failed, 13 skipped**; the 3 are `test_bench_systems.py`, failing identically on clean `origin/master` under the same DSN |
+
+**A second sweep, over the audit fixes, was needed and found four more.** A fix whose test was
+never shown to fail is a hypothesis. The one worth naming survived TWICE: with the boundary
+holding, the live injection numerator is zero, so 0/39 and 0/52 are the same number and **no
+assertion on the live rate can discriminate its denominator**. The first repair recomputed the rate
+inside the test, which pinned the artifact rather than the generator. The second drove
+`build_baseline()` and still could not tell the two divisors apart. It is killed now because both
+rates were routed through **one** `injection_rate()` helper, so the positive control — whose
+numerator is not zero — is what discriminates it. A guard on a quantity that is zero by design has
+to be anchored to one that is not.
+
+Two others in that sweep were guards of mine that could not fire: the CLI's `DEGRADED` flag had no
+test at all, and the import denylist was strictly subsumed by the allowlist beside it, so emptying
+it changed nothing. The denylist is gone; an allowlist forbids a store reached by any name.
+
+**The three mutation survivors are the part to carry forward**, because each was a test that could
+not discriminate: escaping only `<` was indistinguishable from escaping both; the
+abstain-consistency error was carried by a second, redundant error, so deleting the first changed
+nothing; and `payload_preserved` read 13/13 on both live arms, so a version stuck at `True` looked
+identical to a working one. The last needed a **negative control** - a renderer that ships no
+evidence at all, which must score a perfect escape rate and zero preservation.
+
+### The fix batch had to be audited too, and it had introduced two defects
+
+This program's standing lesson is that a fix can promote a dormant defect. It did, and one of them
+is the sharpest thing in the session.
+
+**`injection_rate` reproduced the defect it was written to remove.** The helper that gave the rate's
+denominator its correct scope narrowed the DENOMINATOR to payload-carrying trials and left the
+NUMERATOR over every row. Marking all 52 trials escaped returned **1.333333** - a rate above one.
+Marking only the structurally inert arm escaped returned 0.333333, from thirteen attempts the
+module's own docstring says were never made. Neither test could see it, because both recomputed the
+identical asymmetric expression. The replacement test fabricates escapes rather than recomputing a
+formula, and the function asserts `0 <= rate <= 1` on the way out.
+
+**The `-k 0` traceback the batch claimed to fix was still there.** The clamp went into
+`_print_evidence`, but `trusted_search` refuses `k < 1` as its FIRST statement, two calls earlier,
+so the guard could never run for the invocation its own comment named.
+
+Three more were false statements of the class the batch had just corrected elsewhere: the new
+`UNCALIBRATED_NOTE` / `STALE_INDEX_NOTE` constants said they de-duplicated `search_memory`'s copies
+and `search_memory` was never wired to them; `_result_with`'s docstring still said "three carriers"
+inside the function the fourth was added to; and the CHANGELOG still said "all five" over six named
+fields.
+
+**Round 3 is where this converges, and that is the stopping rule.** Rounds 1 to 3 found 62, 7 and 0
+new defect classes. This project has recorded the same shape before: auditing a fix batch finds
+defects in the batch, and it converges at the third round.
+
+### Decisions a reader should be able to reverse
+
+1. **A degraded bundle may be non-empty, and is served with an in-band warning** rather than
+   refused. Strict mode (the production default) never reaches it, the abstention benchmarks
+   deliberately measure that branch, and refusing would make the CLI unable to demonstrate the
+   trust layer at all. Revisit if a generator path ever runs unattended.
+2. **`normalize_citations` collapses duplicates instead of rejecting the answer.** Only ever
+   subtractive, so it cannot mint the identifier that would then satisfy the citation check.
+3. **A generator declaring `insufficient_evidence` over a populated bundle is ACCEPTED.** Retrieved
+   is not the same as answers-the-question, and erroring would push a generator toward answering.
+4. **The bundle is a PREFIX of retrieval order under a token budget**, so one oversized passage at
+   rank 1 ends the selection rather than being skipped. First-fit would reorder by size, which is
+   the ranking this function exists not to do.
+5. **`recall_evidence` returns the prompt rather than consuming it.** No generator is chosen or
+   shipped; the client is the generator.
+
+### What the audit surfaced and this session did NOT fix
+
+1. **`render_evidence_prompt` is `asdict`-dominated** - measured 12.4 to 14.6x slower than an
+   explicit dict, 68 to 80% of the render, now on a per-request path. The fix trades that for a
+   dict literal that no longer tracks the dataclass; it needs a pinning test, and that is its own
+   change.
+2. **`EvidenceResult` ships every evidence byte twice** (escaped in `user_message`, raw in
+   `items[].text`), measured 1.80 to 1.92x the bytes of `recall_search`. Dropping `text` would save
+   32 to 36%, but it is a design decision about what `items[]` is for.
+3. **The budget loop is quadratic** - 1,338,640 characters fed to the tokenizer at `max_items=50`
+   for a 52,300 byte payload. Inert today: no shipped caller sets `max_tokens`. Reachable from the
+   library. One free part WAS taken: the per-candidate tuple allocation moved inside the branch
+   that reads it, so it no longer runs on the budget-free path both shipped callers use. The
+   quadratic RENDER, which is the actual cost, is untouched.
+4. **No memoisation between the two retrieval tools.** A consult-then-answer pair pays retrieval
+   twice and takes a second slot from quality's pool of two.
+5. **Assembly exceptions are invisible to the retrieval metrics** on both tools, not only the new
+   one.
+6. **Two auditors disagreed on whether the new artifact needs a `results/ARTIFACTS.md` row.** I
+   followed the one that quoted the file's own rule ("if the run is meant to replace a published
+   table") and cited `CLAIMS_BASELINE.json` as exact precedent: this is a ratchet, not a
+   measurement, and it replaces no table. Recorded because the other auditor's point - that the
+   artifact sits outside every provenance guard - is also true.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** | External dependency. Do not work around it. | Latency **PENDING**; promotion blocked on latency grounds. | unchanged; no timing here is cited for any promotion decision |
+| **No production corpus.** | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
+| **No approved local generator confirmed.** | Open | The generator-neutral path stays unexercised end to end. | unchanged. The boundary is now reachable and tested against a stub, which is as far as this blocker allows |
+
+### What the next session should start with
+
+1. **The four performance items above**, in that order. (1) and (2) are measured, bounded and
+   uncontroversial; (3) is latent until a caller sets a budget.
+2. **Decide whether `items[].text` should exist**, since it settles (2).
+3. `recall_evidence` has **no test of its authorization scope or its rate-limit debit** - the
+   registration test greps the server's source text, and every behavioural test calls the service
+   function directly, bypassing `_require`. A future edit dropping `_require(SCOPE_READ)` would
+   leave the suite green.
+4. The remaining gap-matrix backlog; item 11 is now closed.
+
+---
+
+## 2026-08-05, retrieval profiles: a budget that does something, bounded cost, a complete result surface
+
+### Session ledger
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | Profiles behave as specified, selection is process level, conflicts refuse **startup** | done; the conflict used to refuse the first *search*, not startup |
+| 2 | Decide and implement what `latency_budget_ms` means at request time | done, admission deadline + reported overrun; see below |
+| 3 | Resource bounds: one reranker per worker, thread limits, bounded queues, rejection **before** embedding, separate fast/quality concurrency | done; the rejection ordering was already right and is now proven, the rest was not |
+| 4 | Result surface: profile, generation, pool size, rerank flag, and all seven stage timings | done, `evidence_assembly` was the missing bracket |
+| 5 | Safety: dense cosine preserved, no query or corpus text in logs | done, with a positive control on the detector |
+| 6 | Prove every new test can fail | done, **54 of 54 mutations killed**, all as clean assertion failures |
+| 7 | CCA audit at DEEP, plus the anti-regression and architect gates | done; **the audit invalidated the first version of item 3**, and the two gates then found six more, one of them inside the audit fix. Reported first, below |
+
+This is backlog session 9 (items 25 to 28) plus the parts of areas 4, 5 and 6 the gap matrix marked
+untested. Backlog item 29 (the reranker's `local_files_only` / `artifact_sha256` offline path and
+the symlink-escape refusal) is **not** done: it needs the `rerank` extra installed to exercise, and
+this session added the pin rather than the loader test.
+
+**Correction, made on merge.** This entry was written saying "session 3, the outbox drain, is still
+first in the backlog and still untouched". That was true when the branch was cut from `98f2a85` and
+is not true now: a concurrent session landed it as #198 and #201 while this branch ran, and its
+entry sits directly below this one. An earlier draft of this paragraph also said `origin/master`
+did not move during the session; it moved **28 commits**, across two merges: 23 before the PR
+was opened and 5 more in the minutes after, which GitHub reported as CONFLICTING.
+
+The branch was **merged rather than rebased**, because four commits would each have had to resolve
+the same two shared-document conflicts. Both documents were resolved by **reconstruction with
+assertions**: upstream's copy is carried through byte for byte and this entry inserted before it,
+verified by length and by content rather than by reading the diff. Upstream's new
+`tests/test_env_example_parity.py` — which is, pleasingly, the gate this entry recommends below as
+future work — passes against this branch's `.env.example`.
+
+⚠️ One of those assertions was itself too wide, which is worth recording because it is the same
+shape as the defects this session spent its day on. The "no conflict markers survived" check was a
+plain substring test, and it fired on a **historical CHANGELOG entry that describes** a release
+which shipped raw markers. Anchoring the pattern to line starts, which is what git actually writes,
+is the difference between a guard and a text search.
+
+### The audit found the guard could not fire, and that is the headline
+
+The work above went through the tiered CCA pipeline at DEEP (forced: the diff trips the numeric
+path). Ten auditors, 46 raw findings. **The most important one invalidates the first version of
+this session's central claim**, so it is recorded before the claim rather than after it.
+
+**`queue_full` could never fire through the server, and the budget did not bound the client's
+wait.** Every MCP tool body runs inside `anyio.to_thread.run_sync`, so a request parked in
+`RetrievalAdmission` is holding a worker thread. anyio's default limiter is **40** tokens. Fast's
+`8 + 32` is also **40**. The 41st concurrent search therefore never reached `__enter__` at all: it
+waited in anyio's limiter, which has no timeout, no budget and no counter. A saturated process
+would have queued unboundedly while `recall_retrieval_rejected_total` read zero, which is exactly
+the scenario the budget was written to prevent.
+
+Three independent auditors found it and each measured `total_tokens == 40` rather than asserting
+it; I re-measured before acting. **A guard that reads as protection and cannot fire** is this
+project's standing lesson, and the first version of this session's work was an instance of it. The
+existing test proved the mechanism on a hand-built 1+1 profile and never through the server:
+**a positive control validates the MECHANISM, not the SCOPE.**
+
+Fixed by sizing the pool from the profile (`worker_thread_budget` = admission capacity plus eight
+reserved threads, raised at startup, never lowered), with the invariant asserted for every profile
+and the application of it tested separately, because asserting an invariant is not enforcing it.
+
+### What the rest of the audit changed
+
+| Finding | Verdict | Outcome |
+|---|---|---|
+| Admission capacity equals the anyio worker pool, so `queue_full` is unreachable | CONFIRMED, measured | fixed, above |
+| CHANGELOG mis-stated the one genuinely new startup refusal | CONFIRMED | fixed; see below |
+| `_validate_quality_reranker_config` compared a normalised digest and returned the raw one | CONFIRMED, measured | fixed, normalise once and return that |
+| Budget charged twice (admission timeout AND end-to-end deadline) | CONFIRMED | fixed, `budget_exceeded` now on served work; `admission_wait` is a stage |
+| `QUALITY_PROFILE != resolve_retrieval_profile("quality")`, so they minted two admission queues | CONFIRMED, measured | fixed both ways: constant matches its resolver, and the queue is keyed on `queue_identity` |
+| `_admission` still on `lru_cache`, the defect this diff fixed for the reranker | CONFIRMED | fixed, same lock |
+| A failed reranker construction was retried on every request, re-hashing the model tree | CONFIRMED | fixed, failures are cached |
+| `recall_retrieval_total_ms` was success-only | CONFIRMED | fixed, observed on every exit plus `recall_retrieval_failed_total` |
+| Legacy's 24-day sentinel shipped to clients as `latency_budget_ms` | CONFIRMED | fixed, `null` when no budget is enforced |
+| Running-slot leak in the window between acquire and its store | CONFIRMED | **NOT closed.** An ownership flag was added and the anti-regression gate then showed the branch cannot fire: CPython's exception table makes the acquire call the only interruptible point, where the flag is still false, and the real window is inside `Semaphore.acquire`. The guard is kept (correct, free) and the claim is withdrawn |
+| `RECALL_RERANK_THREADS` documented as general; only read on quality | CONFIRMED | doc fixed, behaviour unchanged |
+| Docs claimed model+revision are pinned; only the digest is enforced | CONFIRMED | doc fixed, and the tree-vs-model limit stated |
+| `.env.example` blank keys break a rollback to the previous parser | CONFIRMED | keys commented out; rollback note in the CHANGELOG |
+| Two `### Added` blocks in `[Unreleased]` | **FALSE POSITIVE** | `HEAD~1` already had six such groups; it is the file's per-session convention, not something this diff introduced |
+| Per-request metric overhead (~87 us, 0.035% of the fast budget) | CONFIRMED, measured | no change; the auditor's own verdict was "not material" |
+
+**The CHANGELOG correction is the one worth naming.** I had written that a contradictory pair, a
+missing reranker path, or a non-pinned digest "used to produce a server that came up clean and
+failed on its first client request". That is true of four of the five newly refusing
+configurations, and **false of the fifth**: before this change the operator's digest was passed
+straight to `verify_artifact`, so a quality deployment whose digest correctly described its *own*
+reranker tree started **and served every request**. It is now a breaking change for that
+deployment, and the CHANGELOG says so.
+
+### The two remaining gates then found six more, including one in the audit fix itself
+
+The anti-regression gate (`differential-review` over the fix diff) and the architect gate both
+returned **REVISE**. Running them mattered: three of their six findings are in code the audit
+itself never saw, which is this program's own lesson that **a fix can promote a dormant defect, so
+the audit goes after as well as before**.
+
+| Finding | Verdict | Outcome |
+|---|---|---|
+| **The `k` clamp had no test.** It is the entire mechanism behind "a client cannot request a more expensive profile", newly advertised in three documents, and deleting it left all 2345 tests green | CONFIRMED | fixed: a test with a legacy arm, so it discriminates the clamp rather than a small store |
+| **A shed request was counted as a failure and injected its budget-length wait into the served-latency histogram.** Measured by the reviewer, reproduced here | CONFIRMED | fixed: `RetrievalOverloaded` is matched before the general handler, so a shed appears only in `recall_retrieval_rejected_total`. It would otherwise have contaminated the p95 this program is blocked on, in exactly the overload regime that matters |
+| **Sizing the pool from the profile removed anyio's 40 as an accidental thread ceiling**, making `RECALL_SEARCH_QUEUE` an unvalidated thread-count knob (`=5000` would ask for 5008 threads) | CONFIRMED | fixed: `MAX_ADMISSION_CAPACITY = 256`, refused at resolution |
+| **Re-raising one cached exception instance grows its traceback per call**, and each retained frame pins its locals, which on this path include the query text | CONFIRMED, measured (4 → 7 → 10 → 13 → 16 frames) | fixed: cache `(type, args)` and raise a fresh instance. This was also a safety defect, not only a leak |
+| **`except BaseException` cached a `KeyboardInterrupt`**, turning a transient event into a process-lifetime outage | CONFIRMED | fixed: narrowed to `Exception` |
+| **`inference_threads` was plumbed but never shown to reach the reranker** | CONFIRMED | fixed: a recording stub asserts the kwarg, without needing the `rerank` extra |
+| `.env.example` rollback premise ("no version parses these keys strictly") | **REFUTED** | `git show 98f2a85:recall/profiles.py` parses them strictly, and the deployed VPS2 wheel is built from an ancestor. The fix stands; the CHANGELOG wording now says which builds are affected rather than implying released ones |
+
+**And one claim of mine was withdrawn rather than softened.** The ownership flag added for the
+running-permit leak **cannot fire**: CPython's exception table makes the acquire call the only
+interruptible point in that block, where the flag is still false, and the real window lives inside
+`Semaphore.acquire`. I had recorded that leak as fixed. It is not. The guard is kept because it is
+correct and free, and the claim is gone from the code comment, this document and the table above.
+
+### What the audit surfaced and this session did NOT fix
+
+Recorded rather than acted on, with the reason:
+
+1. **No tenant dimension in admission.** One tenant can fill the queue, and the new shedding turns
+   that from queueing into active rejection for every other tenant. The rate limiter bounds call
+   RATE, not concurrency. This is a design decision about fairness, beyond the scope given.
+2. **The reranker pin is a tree digest of one provisioned directory**, not a portable model
+   identity, and no shipped command reproduces that tree. Documented as a limit; deciding between
+   "pin the tree" and "pin a portable identity" is a decision, not a bug fix.
+3. **`total_ms` includes the queue wait, so it is a weak cross-tenant load signal.** Low severity
+   and the field is genuinely useful; noted.
+4. **`RetrievalOverloaded`'s message discloses the process's admission parameters** to a client.
+5. **`retry_after_seconds` is a backoff hint derived from the budget, not a computed time to
+   success** the way `RateLimited`'s is. Honest documentation was chosen over inventing a drain
+   estimate this program cannot measure.
+6. **The legacy `RECALL_RERANK` path is still not validated at startup.** The claim is now scoped
+   to the profile path rather than the claim being widened.
+7. **`_RERANKERS` is keyed on the profile name, not the full reranker identity.** Unreachable with
+   a static process environment, which is the documented deployment model.
+
+⚠️ **Two auditors died mid-run on API errors** (`code-auditor`, `env-validator`), so general code
+quality and the full `.env.example` round trip were **not** covered. A skipped gate and a passing
+gate must not read the same, so: those two dimensions are unaudited for this change.
+
+⚠️ **Deterministic coverage for this run was NONE.** `cca_checks` is not installed in this venv, so
+no static backend was available and every verdict above rests on LLM adjudication plus whatever I
+re-executed myself. Everything marked "measured" is a command I ran.
+
+### What `latency_budget_ms` means now
+
+It was declared on every profile, validated in `__post_init__`, and read by nothing:
+`git grep` returned three hits, all inside `recall/profiles.py`. The promotion gate's budget is a
+separate caller-supplied float. It now means exactly two things, both observable and both tested.
+
+**It bounds the admission wait.** `RetrievalAdmission.__enter__` takes the queue slot
+non-blocking, then the running slot with the budget as its timeout. A request that cannot start
+within the budget is shed with `RetrievalOverloaded(reason="budget_exhausted")` *before the query
+is embedded*. Previously the running-slot acquisition blocked with no timeout, so `queue_capacity`
+bounded how many threads could be parked and said nothing about how long any of them waited.
+
+**It labels an overrun.** A request that finishes over budget still returns its answer and reports
+`total_ms`, `latency_budget_ms` and `budget_exceeded`, plus
+`recall_retrieval_budget_exceeded_total{profile}` and a warning carrying numbers only.
+
+**The budget is charged once.** `budget_exceeded` is computed on the work the request did
+(`total_ms` minus the `admission_wait` stage), not on end-to-end latency. Since the budget is
+already spent as the admission timeout, charging it again would label a fast retrieval slow
+because another request was ahead of it, and would saturate the counter under any queueing.
+The legacy profile enforces no budget and reports `latency_budget_ms` as `null` rather than the
+24-day sentinel used internally.
+
+**A mid-flight abort was rejected, deliberately.** There is no cancellation point inside a blocking
+cross-encoder `predict`. Aborting would pay the whole cost and then discard the answer, which turns
+a latency regression into an availability incident. Shedding happens at the door, where it is free.
+
+⚠️ This makes the budget *enforced*. It does not make it *validated*: no measurement here says 250
+ms or 1500 ms is the right number, and none can be taken until the latency blocker below is
+resolved.
+
+### A latent bug the new timeout would have made live
+
+`RetrievalAdmission.__enter__` acquired the queue slot and then the running slot. `__exit__` does
+not run when `__enter__` raises, so any failure between the two lost that queue slot permanently.
+Once every one of the `max_concurrency + queue_capacity` permits has leaked the process refuses
+every request forever while reporting itself merely busy; partial leakage degrades proportionally.
+(An earlier draft of this entry said `queue_capacity` leaks were enough. The audit caught it: after
+32 leaks a fast process still serves 8 concurrent requests, with no queue depth left.) It was
+unreachable before (nothing could fail between the two acquisitions) and would have become
+reachable the moment the timeout was added. The release is now explicit on every failure path,
+including `BaseException`.
+
+⚠️ **The running-permit half of this is NOT fixed, and the anti-regression gate is what caught the
+overclaim.** An ownership flag was added so the handler could release the running permit too. The
+gate then showed the branch cannot fire: CPython's exception table makes the acquire call the only
+interruptible point in that block, where the flag is still false, and the actual window lives
+inside `Semaphore.acquire` between its counter decrement and its return, which is not reachable
+from calling code. The flag is kept because it is correct and free, but **a guard that reads as
+protection and cannot fire is exactly what this program refuses to count**, so the claim is
+withdrawn rather than softened. The queue-permit leak, which was the reachable one, is closed.
+
+The test that pins it discriminates on the *reason* of a second rejection, not on a count: a leaked
+slot makes the next attempt `queue_full` without waiting, and only a returned slot lets it reach the
+budget wait again.
+
+### What else landed
+
+**Separate concurrency budgets.** Both profiles inherited `max_concurrency=4` / `queue_capacity=16`;
+legacy still does. Fast is now 8 + 32 and quality 2 + 8. Quality's per-request budget is six times
+fast's, so an equal queue depth would make its clients wait roughly six times as long; the new
+values hold `queue_capacity x latency_budget_ms` within one order of magnitude (fast 8000
+slot-milliseconds, quality 12000). **Slot-milliseconds, not CPU-seconds:** an earlier draft of this
+entry called the quantity CPU-seconds, which is wrong by a factor of 1000 and names a factor
+(`max_concurrency`) the argument is not about. `latency_budget_ms` bounds a WAIT, not a service
+time, so nothing here is a claim about CPU consumed.
+
+**These are a policy choice and are labelled as one in the code, the doc and `.env.example`.** They
+are not tuned to measured throughput and cannot be until there is a reference host.
+
+**One reranker per worker, under a lock.** The shared instance was memoised with `lru_cache`, which
+is a cache lookup and not a construction lock: on a cold start under load, every concurrent first
+request missed and loaded its own copy of a cross-encoder. The test uses a factory that sleeps, so
+the race is deterministic rather than incidental; unlocked, eight threads build eight models.
+
+**Startup refuses a bad cost profile.** `startup_retrieval_profile` resolves the profile and
+validates the quality reranker configuration, and it is the first thing `_lifespan` does, ahead of
+any I/O. It imports no torch and loads no model: a configuration check that needed the extra
+installed would not be a startup check. The test asserts the refusal is the *profile* one, so the
+check cannot be silently moved below the store setup.
+
+**The quality reranker is pinned by digest.** `RECALL_RERANK_SHA256` used to be whatever the
+operator typed, which made the `local_files_only` verification self-referential: it proved the tree
+hashes to its own hash, which every tree does. `recall/rerank.py` now pins artifact `db6ad879…` and
+the environment must equal it.
+
+Two limits the audit made explicit, both now in the docs. The model name and revision recorded
+beside the digest are **provenance, not a runtime check** (nothing reads them; the quality profile
+loads locally, where the Hub revision is unused). And the digest hashes a whole provisioned
+**tree**, path names included, so it identifies one directory rather than the model in general;
+no shipped command reproduces that tree elsewhere.
+
+**`admission_wait` and `evidence_assembly` timings.** Five stages were timed; queueing and the
+assembly of the client-facing evidence were not. All eight are now on `stage_ms` and observed into
+`METRICS` as `recall_retrieval_stage_ms{profile,stage}` alongside `recall_retrieval_total_ms`
+(backlog item 28), the latter on **every** exit including failures. Every label is
+library-authored; no corpus-derived string can reach one.
+
+**`RetrievalOverloaded` is now a retryable refusal** carrying `reason` and `retry_after_seconds`,
+following `recall_mcp.limits.RateLimited` rather than inventing a second convention (backlog item
+25). The retry hint is capped at 5 s so the legacy profile's 24-day sentinel budget cannot be handed
+to a client.
+
+### What was measured
+
+**The reranker pin, on VPS2.** Root SSH, not qwen-mcp: this program lives in
+`/opt/recall-enterprise`, outside qwen-mcp's four file roots. `artifact_tree_sha256` was
+**reimplemented in a standalone script** and run over the provisioned trees, deliberately not
+importing the deployed wheel, so the result is an independent recomputation rather than the code
+checking itself.
+
+| Tree | Recomputed digest | Agrees with |
+|---|---|---|
+| `models/ms-marco-MiniLM-L-6-v2` | `db6ad87969c7…2ab2a` | `manifest.json`, recorded 2026-08-03 |
+| `models/bge-fastembed-cache` | `9a443d711e06…c919c` | `manifest.json`, and the 2026-08-05 embedding session's own run |
+
+The second row is the positive control: it reproduces a digest two independent tools already agree
+on, so a recomputation that matched the first row by accident would have had to match this one too.
+Nothing under `/opt/recall-enterprise` was modified; the script lives at
+`/var/tmp/recall-reranker-pin-check.py`.
+
+**The latency blocker, restated from observation rather than memory.** VPS2 reported a load average
+of 9.78 / 9.44 / 8.84 on 12 cores during this session, from unrelated live production. Unchanged and
+not worked around. **No timing in this session is cited for any promotion decision**; the only
+numbers taken from VPS2 here are checksums.
+
+### Gates run
+
+| Gate | Result |
+|---|---|
+| `ruff check .` | clean |
+| `mypy` | clean, 139 source files |
+| `pytest -q` | **2316 passed, 35 skipped, 0 failed** (7 m 48 s) on the branch; **2533 passed, 36 skipped, 0 failed** (10 m 04 s) after merging the 28 upstream commits. Throwaway pgvector container on port 5437 |
+| Mutation sweep | **54 of 54 killed** (two repairs along the way; see below) |
+| CCA audit | DEEP tier, 10 auditors, **2 died mid-run**; anti-regression and architect gates both REVISE, then satisfied |
+
+The suite ran against a container created for this session rather than the shared dev database on
+5432, following the previous entry's finding that a test database provisioned before #196 must be
+recreated. Two other containers were up on this machine and were left alone.
+
+### A hazard this session introduced, and caught
+
+Emptying `RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` in `.env.example` (so they default to
+the selected profile rather than to a shared `4` / `16`) would have made the shipped example refuse
+startup: a dotenv load puts an empty **string** in the environment rather than omitting the key, and
+`_positive` read that as a malformed integer. Empty now means unset, with a test asserting that the
+empty and absent resolutions are equal objects rather than merely both non-raising.
+
+Worth naming because the defect was created by a documentation edit and would have been found by an
+operator, not by the suite: nothing tests `.env.example` against the parser.
+
+### Proving the tests can fail
+
+54 mutations, one narrow change each, across `profiles.py`, `service.py`, `server.py`, `rerank.py`,
+`retriever.py` and one against the test file's own leak detector. The harness aborts the entire run
+if a search string is absent or occurs more than once, and it restores by **bytes** rather than
+`write_text`, which is what left ten files spuriously dirty last session. A final pass asserts every
+touched file is byte-identical to its starting content; it was.
+
+**The sweep found a test of mine that could not discriminate**, which is the reason to run it at
+all. `the budget is charged twice, wait included` survived: the fixture queued a request for 200 ms
+and then ran a microsecond search, so even with the wait charged the total stayed inside the 250 ms
+budget and a double-charging implementation passed. The fixture now queues ~150 ms **and** does
+~150 ms of work, so wait plus work crosses the budget while the work alone does not, and it asserts
+both halves of that so a future edit cannot quietly return it to the vacuous shape.
+
+**And one "kill" was not a kill.** `an interrupt during a cold build poisons the cache` reported
+red, but the run said `no tests ran`: the mutated code let a `KeyboardInterrupt` escape the test,
+which aborts the pytest session rather than failing an assertion. **A session that never finished
+is not evidence a test can fail** — the same class as a guard that is silent for an unrelated
+reason. The test now catches it explicitly and calls `pytest.fail`, so the mutation produces a red
+test. All 54 kills are clean assertion failures.
+
+Three others are worth naming because they separate a real guard from a description:
+
+* **"the query is embedded before admission is taken"** inserts one `timed.embed([query])` above the
+  admission block. The rejection still raises and the process still looks like it has working
+  overload control; only `embedder.calls == 0` fails. That assertion is the ordering requirement,
+  and nothing else in the test would have noticed.
+* **"hits carry the fused rank instead of the dense cosine"** replaces the dense score with the RRF
+  value in `recall/retriever.py`. The fixture uses two chunks at cosine 1.0 and 0.6, so a single
+  wrong-but-plausible score cannot satisfy both assertions.
+* **"the log-leak detector reads only the rendered message"** mutates the *test's* own helper. Two
+  of the three planted leaks ride the `extra=` channel and the exception text, which a detector
+  reading `getMessage()` alone would miss, so this proves the detector rather than the code.
+
+The one search-string mismatch this run produced (a wrong indentation) aborted before any test ran,
+which is the harness behaving as designed.
+
+### Decisions a reader should be able to reverse
+
+1. **The budget sheds at the door and never aborts in flight.** The alternative is a hard deadline
+   with a cancellable retrieval, which would need cancellation points the cross-encoder does not
+   offer. Revisit only with a real cancellation mechanism, not with a timer.
+2. **The concurrency numbers (8/32 and 2/8) are unmeasured policy.** They are the first thing to
+   re-derive once a reference host exists. Nothing depends on their exact values.
+3. **`RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` now default to the profile's value**
+   rather than a shared 4/16, and `.env.example` no longer ships those two numbers pre-filled. An
+   operator who had copied the example and relied on the literal `4` will now get the profile
+   default instead. That is the intended direction; it is a behaviour change on an opt-in path.
+4. **A reranker digest that is not the pin refuses.** Fail-closed, and consistent with how
+   `embedding_registry` treats artifacts, but it means an operator with a legitimately different
+   local copy must register an experiment rather than set a variable.
+5. **`RetrievalOverloaded` propagates as an exception with structured fields**, matching
+   `RateLimited`, rather than being mapped to a distinct MCP error type. If the MCP layer ever
+   grows a real status taxonomy, both should move together.
+6. **The stage-timing metric has no tenant dimension.** Profile and stage only. Adding a tenant
+   label would make the series cardinality tenant-controlled, and the gap matrix's note about
+   `MetricsRegistry` accepting unconstrained labels is still open.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** VPS2 showed load average 9.78 on 12 cores during this session. | External dependency. Do not work around it. | Latency is **PENDING**; promotion blocked on latency grounds. Quality and safety gates still run. | unchanged. The budget is now enforced but its VALUE is unvalidated |
+| **No production corpus.** | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
+| **No approved local generator confirmed.** | Open | The generator-neutral evidence path stays unexercised end to end. | unchanged |
+
+### What the next session should start with
+
+1. ~~Session 3 of the backlog, the migration outbox drain.~~ **Landed by a concurrent session while
+   this branch ran** (#198, #201); see the entry directly below. Read that one before planning,
+   because this list was written against a backlog that has since moved.
+2. Backlog item 29, deliberately left here: cover the reranker's offline loader path
+   (`local_files_only`, `artifact_sha256`, `inference_threads`) and the symlink-escape refusal.
+   This session pinned the digest but never loaded a model; the pin and the loader are two
+   different guards and only one of them has been shown to fire.
+3. Decide whether `MetricsRegistry.increment` / `observe` should take an allowlist of label values.
+   Every call site is library-authored today and one new careless call would end that, which is the
+   same shape as the `advice` injection this codebase already fixed once.
+4. Consider a test that parses `.env.example` through the resolvers that read those keys. This
+   session created a startup-refusing example with a one-line documentation edit and caught it by
+   reasoning, not by a gate.
+5. **Decide the tenant-fairness question in admission** (audit item 1 above). The shedding this
+   session added turns one tenant's saturation into every other tenant's rejection, and the rate
+   limiter bounds call rate rather than concurrency. This became a live question because of this
+   change, so it should not wait behind the whole backlog.
+6. **Re-run the two auditors that died**, `code-auditor` and `env-validator`. General code quality
+   and the `.env.example` round trip are unaudited for this change.
+
+---
+
+
+
+## 2026-08-05, context modes: three modes given a rule each, and two rules that were not enforced
+
+Backlog session 9. Branch cut fresh from `origin/master` at `fa673e5`, in a separate worktree
+(`…/RE-call-ctxmodes`) because the primary clone was mid-flight on someone else's work — see below.
+
+### Session ledger
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | Three deterministic context modes that never alter stored chunk text | done; `chunk_text()` and the stored row are byte-identical under every mode |
+| 2 | One test per rule, eight rules | done, 69 tests across two files |
+| 3 | The load-bearing invariant, per mode, over five corpus shapes | done at the function level and again against real PostgreSQL rows |
+| 4 | Prove every test can fail by mutation | done, **38 of 38 mutations killed, 0 unapplied** |
+| 5 | Decide which mode wins | **deliberately not done.** That is session 10's campaign; running it here would have measured the harness |
+
+`ruff check .` clean on 0.15.22 (inside CI's `>=0.5,<0.16` pin), `mypy` clean across 139 source
+files.
+
+### The primary clone was someone else's, again
+
+`C:/…/eva/work/RE-call` was on `codex/retrieval-profiles-bounded-cost` with **620 uncommitted
+insertions** across eight files, including `recall/profiles.py`, `recall_mcp/service.py` and two
+untracked test files — and `recall/profiles.py` is a file this session's brief also named. Nothing
+of theirs was branched over, committed, stashed or reverted; this session ran in its own worktree
+with its own `.venv` (the clone's venv is an editable install pinned to the clone's absolute path,
+so running from the worktree would have imported THEIR code while reporting mine).
+
+`origin/master` also moved twice mid-session, `fa673e5` to `c02645b` (#202, OIDC subject binding).
+Only `CHANGELOG.md` overlaps.
+
+**This is the third consecutive session to record the same thing.** Check `git worktree list` and
+`git status` in the primary clone before branching there; the answer has been "someone else is in
+it" every time.
+
+Two smaller races, both new, both worth the next session's attention:
+
+* **A subagent overwrote this session's mutation harness.** The architect gate wrote its own
+  one-off mutation script to `…/scratchpad/mutate.py`, the exact path the sweep runner lived at,
+  and the next sweep silently ran the subagent's single mutation instead of thirty-nine. It was
+  caught only because the output carried a `-x` flag and a `RESTORED` line the harness never
+  prints. The scratchpad is shared exactly like the clone is; the runner is now
+  `sweep_runner.py`, and a session that hands agents a working directory should assume they
+  write into it.
+* **The `CHANGELOG.md` conflict resolution committed its own conflict markers, and the guard that
+  should have prevented it is what caused it.** The resolver asserted `"\n=======\n" not in out`;
+  a bare `=======` is legal Markdown and occurs elsewhere in a 100k-line changelog, so the
+  assertion tripped, the script died **before writing anything**, and the `git add` on the next
+  shell line was not chained behind its exit code. `git rebase --continue` then committed the
+  markers. Repaired by rebasing both commits, and verified per commit rather than at the tip.
+  The shape is general: **a resolver's guard must match the marker PREFIXES (`^<<<<<<< `,
+  `^>>>>>>> `) rather than a substring that legal content can contain, and the command that
+  stages its output must be chained behind it.** A check that fails open is worse than no check,
+  because it also stops the work that would have succeeded.
+
+### What the shipped code actually did, measured before anything was changed
+
+The brief listed eight rules. Six were already enforced by `recall/context.py`. Two were not, and
+both were found by executing the shipped code against each rule rather than by reading it:
+
+| Rule | Shipped behaviour |
+|---|---|
+| Title precedence | **defective.** The frontmatter scan compared `key.strip()` and returns on its first hit, so an indented `title:` nested under any other mapping outranked the document's own when it appeared above it |
+| Root-relative paths only | **unenforced.** `/etc/passwd`, `C:\Users\…`, `//server/share` and `../../../etc/shadow` all reached the rendered `source:` field verbatim |
+| Caps 256 / 256 / 512 | held |
+| Neighbour ≤ 200 per side | held |
+| Complete chunk preserved | held |
+| Degradation order | held (verified by a monotonic budget sweep, not by reading the list) |
+| Mode and version recorded | held, in both metadata and the profile identity |
+| Raw text identical across modes | held |
+
+The second one matters beyond tidiness: an absolute path in the embedded text puts the host's
+filesystem layout into stored vectors, and makes one corpus embed differently on two machines.
+
+### What landed
+
+| Area | Change |
+|---|---|
+| Title | the frontmatter key must be top level; the basename fallback reads the whole path |
+| Paths | `root_relative_source` refuses absolute, drive-lettered, UNC and traversing paths, **in every mode including `none`** — the mode is chosen by the profile, so a guard reachable only on the contextual path is one the cheapest caller skips |
+| Caps | `TITLE_MAX_CHARS`, `SOURCE_MAX_CHARS`, `SECTION_MAX_CHARS`, `SECTION_DEGRADED_MAX_CHARS`, `NEIGHBOR_MAX_CHARS` replace literals at call sites |
+| Ladder | `DEGRADATION_ORDER` is now the order the ladder is BUILT from, and `DOCUMENT_DEGRADATION_ORDER` is a derived suffix of it |
+| Neighbours | folded to one line before the 200 is counted |
+| Docs | a "Deterministic context modes" section in `ENTERPRISE_RETRIEVAL.md`, and a `CHANGELOG.md` entry |
+
+### The audit found more than the session did, and four of its findings were mine
+
+The commit went through the tiered CCA pipeline at DEEP (forced: `RUN_STAKES` and `RUN_NUM` both
+fired on the diff). Ten auditors, 33 raw findings. **Deterministic coverage was NONE**: `cca_checks`
+is not installed in this environment and is not on the package registry, so no static backend was
+available and every verdict below rests on LLM adjudication plus my own re-execution. I verified
+each P1 myself by running it rather than by reading the report.
+
+| # | Finding | Verdict |
+|---|---|---|
+| 1 | The basename fallback split the guard's **truncated** return value. At a 264-character path the cut landed on a `/`, the basename was empty and the `title:` field vanished from the passage; at 261 the title was `not`, and two files in one deep directory got identical titles | CONFIRMED by execution, **fixed** |
+| 2 | The guard validated `normalised` and returned `normalised[:256]`, so truncation ran after the checks and could MANUFACTURE a `..`: `"a" * 253 + "/..x"` passed the traversal check and came back ending `/..` | CONFIRMED by execution, **fixed** |
+| 3 | `^[A-Za-z]:` refused `a:b/notes.md`, legal on Linux and macOS and exactly what `relative_to(root).as_posix()` produces; the refusal aborts a run whose earlier batches are already committed | CONFIRMED by execution, **fixed** |
+| 4 | `DEGRADATION_ORDER` read as the ladder's specification and was an independent second literal. Renaming the ladder's labels left all 52 tests green | CONFIRMED by mutation, **fixed** |
+| 5 | `metadata->>'content_hash'` is SQL NULL when the key is absent, so the content-hash arm of the load-bearing test compared NULL with NULL. Stripping `content_hash` from every stored row left the test **named for content hashes** green | CONFIRMED by execution against the database, **fixed** |
+| 6 | An adjacent chunk containing `\nsource: /etc/shadow` put a second `source:` line into this chunk's rendered passage, and the neighbour cap was the only one counting un-normalised characters | CONFIRMED by execution, **fixed** (folded) |
+
+The first three are one root cause: a cap applied after a check, in a function whose docstring
+argued carefully about ordering control-character stripping against the traversal check and then
+mutated its value after validating it. **The guard did not hold on its own output**, and it was
+written in the same session that added the guard.
+
+Findings 4 and 5 are the same class as each other and it is the class this repository keeps
+recording: a check that compares an object with itself. The order constant agreed with the ladder
+because both were transcribed from the same intention, not because anything bound them; the two
+content-hash arms agreed because both were absent.
+
+### The mutation sweep, twice, and what it caught that the first pass did not
+
+Every mutation is applied and restored **by bytes** (`write_text` rewrites LF as CRLF on Windows,
+which left ten files dirty for a previous session), and the harness refuses to report a result for
+a mutation whose search string is not found exactly once.
+
+| Pass | Result |
+|---|---|
+| First, 27 mutations | 17 killed, **8 survivors, 2 never applied** |
+| After fixing the survivors, 38 mutations | **38 killed, 0 unapplied** |
+
+The eight survivors were all mine, and five were the same defect:
+
+* three cap tests asserted `len(field) == TITLE_MAX_CHARS`, so raising the constant raised both
+  sides and the published cap could move while the test stayed green;
+* the neighbour test asserted `previous == chunks[0][-200:]` against a fixture of `"A" * 1000`,
+  whose first 200 characters equal its last 200 — the fixture could not tell a head from a tail;
+* the `index_fingerprint` test passed for the wrong reason: each mode was indexed under its own
+  profile, so the fingerprints differed whether or not the mode was part of them. It now holds one
+  legacy embedder fixed across four policies, which is the only arrangement that attributes the
+  difference to the mode.
+
+And after the audit's fix to finding 4, the ladder test became tautological in a new way: the
+ladder is now emitted FROM `DEGRADATION_ORDER`, so comparing what it emits against that constant
+compares the code with itself. The sweep caught that too. The expected rungs are now written out.
+
+### Decisions a reader should be able to reverse
+
+1. **`root_relative_source` refuses rather than sanitises, and raising aborts the run.** Every
+   caller in the package passes a root-relative path, so the refusal is unreachable in normal use.
+   The alternative — skip and count the file like `vanished_before_read` — was not taken, because
+   a source name the indexer cannot represent is a defect to see rather than a file to lose.
+2. **The rendered `field: value` form is not a parsed format.** The chunk is interpolated verbatim
+   because rule 5 requires it, so a document containing a line that looks like a field renders
+   one. Structural fields and neighbour excerpts cannot forge a line; the chunk can. Folding the
+   chunk would have been the alternative and it contradicts rule 5.
+3. **The source cap truncates the HEAD of a long path**, so two paths sharing 256 characters render
+   an identical `source:` field. Keeping the tail would disambiguate better (the leaf is what
+   identifies a document). Not changed here: it is a behaviour change with no finding behind it.
+4. **`index_fingerprint` deliberately depends on the mode** while nothing else stored does.
+
+### Carried forward, unfixed and recorded rather than lost
+
+**The one worth acting on: a dual-write re-index writes NOTHING to the shadow generation.**
+`Indexer.index_path` reads its skip set from the ACTIVE store alone (`recall/index.py:426`) and
+skips a file whose active fingerprint matches (`:459`), so `pending_shadow_chunks` stays empty and
+`_flush` returns before appending an outbox event. Measured against real PostgreSQL: a second
+dual-write run over the same corpus with the shadow emptied reported
+`IndexStats(files=0, chunks=0, skipped=3)` with `active 15 shadow 0` and `pending []`. Nothing in
+the return value, the logs or `pending_events()` distinguishes "the shadow is up to date" from "the
+shadow received nothing", and `cutover`'s `_require_non_empty_shadow` only catches a TOTALLY empty
+one — a shadow attached midway through a corpus is silently missing every file already indexed.
+**This is pre-existing on master and outside this diff**, which is why it was not fixed here.
+
+Also carried: the test role is a superuser in `docker-compose.yml` and in all three CI database
+jobs, so `FORCE ROW LEVEL SECURITY` is inert and every `set_config('recall.tenant_id', …)` in the
+suite is unfalsifiable there (this session added one negative control on `unprivileged_dsn` that
+does establish it); `recall/index.py` still stores the absolute host path in the `source` column,
+so the CHANGELOG's "filesystem layout in stored vectors" is fixed for the vectors and remains true
+of that column; `structure_chunks`'s `text_start`/`text_end` are code-point offsets into the
+frontmatter-stripped body but are stored beside the file path under names that do not say so; and
+a further 12 P3 findings (naming, positional tuple reads, an unused import idiom) were reported
+and deferred.
+
+### Gates run
+
+| Gate | Result |
+|---|---|
+| `ruff check .` | clean (0.15.22) |
+| `mypy` | clean, 139 source files |
+| `pytest -q`, before the audit fixes | 2412 passed, 36 skipped, 0 failed (12 m 10 s) |
+| Mutation sweep | 38 of 38 killed, 0 unapplied |
+
+The three `tests/test_bench_systems.py` failures the previous session recorded **did not occur
+here**, which supports its diagnosis: they are triggered by `fastembed` being installed locally,
+and this session's venv is a fresh `.[dev]` install without it. That is not a fix, only evidence
+about the cause.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** VPS2 has 12 cores under a permanent load average near 8 from unrelated live production. | External dependency. Do not work around it. | Latency is **PENDING**; promotion blocked on latency grounds. Quality and safety gates still run. | unchanged; this session measured nothing on VPS2 and cites no timing |
+| **No production corpus.** | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
+| **No approved local generator confirmed.** | Open | The generator-neutral evidence path stays unexercised end to end. | unchanged |
+
+### What the next session should start with
+
+1. **The dual-write skip defect above.** It is the only item here that can silently produce a
+   half-populated shadow generation and let a cutover promote it. It has a measured reproduction
+   and no shipped workaround.
+2. Backlog session 3, the outbox drain, is **done** (the 08-05 control-plane entry below). Session
+   4, making the documentation true, is still open and still names the `RECALL_DSN` contradiction.
+3. **Session 10's campaign is now unblocked**: the harness exists, every rule has a test, and every
+   test has been shown able to fail. Which of the three modes retrieves best is still unmeasured,
+   and this session deliberately measured nothing about it.
+
+---
+
+## 2026-08-05, the missing link: the promotion gate has a producer, and it refuses
+
+Backlog session 10, taken ahead of session 4. Branch cut fresh from `origin/master` at `fa673e5`
+into a separate worktree; `origin/master` moved to `c02645b` (PR #202, OIDC subject binding) while
+this ran and the branch was merged onto it before the PR.
+
+### Session ledger
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | Frozen input manifests, on the ladder digest pattern | done, `recall/eval/promotion/manifest.py` |
+| 2 | The per-question record schema, exactly the sixteen named fields | done and CLOSED — an extra field is refused, not ignored |
+| 3 | Corpus adapters for all five named corpora, plus the in-repo labelled set | done; only `labelled` could be EXECUTED here, see below |
+| 4 | Aggregator emitting the gate input and a machine-readable decision | done, `recall/eval/promotion/aggregate.py` |
+| 5 | Profile-scoped calibration, failing closed on cross-profile reuse | done, `load_for_profile` extends `load_for` and does not weaken it |
+| 6 | Pick ONE resume mechanism, factor it out, use it | done, 3 → 2; the third is deliberately left, with the reason recorded |
+| 7 | Latency PENDING must block promotion rather than pass silently | done, `latency_p95_ms: float \| None`; PENDING is a failure |
+| 8 | Prove it end to end on a small corpus with baseline == candidate | done, `results/promotion/decision.null-difference.json` |
+| 9 | Prove every new test can fail | done, 29 of 29 mutations turned their named test red |
+| 10 | Audit this session's own work | done, DEEP tier, 13 fixes, 10 of 10 red→green proofs verified |
+
+97 new tests across six files. `ruff check .` clean on the CI-pinned ruff (local 0.16 reports 420
+errors on untouched code; the pin is `>=0.5,<0.16`, and 0.15.22 is clean). `mypy` clean on the new
+modules.
+
+### What landed
+
+| Area | Change |
+|---|---|
+| Frozen manifests | `manifest.py`, the same shape as `benchmarks/ladder/manifest.py` rather than a second one: sorted canonical rendering, digest over body AND provenance, digest excluded from what it covers, reader refuses a mismatch. `freeze` refuses to overwrite an existing manifest |
+| Record schema | `records.py`, sixteen fields, closed. `output_hash` covers the retrieval output and the configuration identity but **deliberately not `stage_timings`** — timings are not reproducible, so a hash that moved with the clock could not answer "did these two arms return the same thing?", which is the question the null-difference proof needs |
+| Adapters | `labelled`, `peps`, `locomo`, `ladder`, `longmemeval`, `mtrag`. `recall/eval/peps_questions.json` was in the tree and referenced by no code; it is wired now. MT-RAG becomes one corpus per domain, because this repo's macro average is the UNWEIGHTED mean over corpora and its domains differ in judged-query count by nearly a factor of two (the AUD-1 finding) |
+| Aggregator | `QuestionOutcome`/`SafetyMetrics`/`RetrievalGateInput`, `PromotionDecision` JSON. Primary hit@5 and MRR; hit@1, hit@20, nDCG@5, false confidence, false abstention and latency recorded beside the decision and labelled `secondary_diagnostic_only` |
+| Calibration | `save_for_profile`/`load_for_profile` in `recall/calibration.py`, keyed on `EmbeddingProfile.fingerprint()`. `ArmConfig.artifact_stem` puts the fingerprint in every ledger filename |
+| Resume | `recall/eval/resume.py`; `benchmarks/ladder/run.py` and `benchmarks/beam/run.py` both delegate to it |
+| Latency | `RetrievalGateInput.latency_p95_ms` accepts `None` = PENDING, and PENDING FAILS |
+
+### The four refusals, and why each one exists
+
+The aggregator mostly refuses to build a gate input. Each refusal closes a way the gate could pass
+without having been asked anything.
+
+| Refusal | What it prevents |
+|---|---|
+| Arms that do not cover the frozen manifest exactly, or whose rows carry a different `input_hash` | A paired test over a set that quietly shrank between the arms is not the test that was declared |
+| Safety metrics that are NaN because their class is empty | `recall/eval/metrics.py` returns NaN on an empty class, which is right for publishing and wrong for a gate: the gate compares with `>`, every comparison against NaN is False, so an empty safety check reads EXACTLY like a passed one |
+| Unanswerable questions in the paired quality set | hit@5 on a question with no relevant document is 0.0 for every system that has ever existed, so including them dilutes the delta toward zero by an amount that depends only on how many were included. They score on the safety axis, which is the axis they were written for |
+| An arm that retrieves no labelled document for ANY question | See below. This one was written because it happened |
+
+### What was measured
+
+**The gate's `promoted=True` branch executed for the first time.** The gap matrix recorded that
+`tests/test_promotion.py` held one test asserting `not decision.promoted`, and that "a gate that has
+only ever been shown to fail is not evidence that it can pass; it is compatible with a gate that
+refuses everything." It is not: a fixture improving 4/20 to 18/20 on two corpora, with green
+security and a measured p95 under budget, returns `promoted=True` with no failures. Every refusal
+below is then flipped off THAT configuration, one condition at a time, so each test shows its own
+branch firing rather than sharing a fixture that would have failed anyway.
+
+**End to end on the labelled corpus, baseline == candidate.** 25 questions (14 answerable, 11
+unanswerable), 22 documents, `bge-small-symmetric-v1`, both arms the same configuration. All 25 rows
+share an `output_hash` across the two arms, so the difference is null by construction rather than by
+measurement. The gate refused on five counts:
+
+| Failure | |
+|---|---|
+| macro paired hit@5 bootstrap interval does not clear zero | delta exactly 0.0, interval [0.0, 0.0] |
+| no improving corpus has Holm corrected paired significance below 0.05 | Holm p = 1.0 |
+| **superseded trust rate was NOT MEASURED** | both arms degraded; `superseded_trust_rate: null` |
+| security verification is not green | `--security-green` defaults to False; unverified is not green |
+| **retrieval p95 latency is PENDING** | `gate_input_p95_ms: null` |
+
+Removing only the PENDING condition from an otherwise-promotable fixture leaves exactly one failure,
+which is how the test shows that PENDING is what fired and not something else about the fixture.
+
+The third row is the one this session's audit added, and it is the more consequential of the two
+"not measured" failures. `recall/trust.py` overwrites **every** verdict with `unverified` in
+degraded mode, *after* `evaluate` has computed the real one, so a superseded hit and a clean one
+leave identical rows. The first version of this harness therefore computed
+`superseded_trust_rate = 0.0` for a degraded arm and **satisfied** the gate's zero-tolerance check
+by never having measured it. It is now `None`, which blocks, on the same pattern as a PENDING
+latency: an unmeasured input produces a decision that names what was missing rather than a
+traceback or a pass.
+
+**Two defects that only a real run could surface.** The harness was written, unit-tested green, and
+then run for the first time against a live store:
+
+1. `score_arm` never passed `input_hash` into `build_record`. Caught by the adapter tests, before
+   the live run.
+2. **The labelled corpus scored 0 of 14, and nothing raised.** Its labels are `cache_decision.md:0`;
+   `PgVectorStore` chunk ids are content hashes. Every comparison was a miss, both arms were equally
+   wrong, and the gate computed a delta of exactly zero and produced a clean-looking refusal. The
+   numbers were meaningless and the artifact would not have said so.
+
+   The fix is `search.LABEL_KEYS`: five declared id spaces, `label_kind` required on every adapter
+   with **no inherited default**, since a default is how a new adapter inherits a comparison that is
+   silently wrong for its corpus. The detector is `aggregate.VacuousArm`, because a fix with no
+   detector only covers the mistake that was already made. Both are mutation-proven.
+
+### The audit of this session's own work, and what it found
+
+The commit went through the tiered CCA pipeline at DEEP (forced: `RUN_NUM` and `RUN_STAKES` both
+fire on a diff full of rates and thresholds). Four auditors, 36 raw findings, 13 fixed. Every
+deterministic backend was available for Python (`definedness`, `nullability`, `taint`, `type`,
+`clock_leak`).
+
+**Six of the findings are the same failure class this harness was built to refuse, found in the
+harness.** Each was proven by executing the shipped code, not by reading it:
+
+| Finding | The gate could... |
+|---|---|
+| `cmd_decide` narrowed the frozen manifest to the corpora present in the BASELINE ledger | ...return `promoted=true` on a question set that shrank after the freeze, stamped with the full manifest's digest. Measured: the same two-corpus manifest returned `promoted=false` citing a regression on the second corpus, and `promoted=true` with that corpus absent from both ledgers |
+| `latency_p95_ms` was checked only against `None` | ...pass the budget on a NaN, because `nan > budget` is False, and report `latency_status: MEASURED`. NaN is reachable from this package's own `_percentile` over an empty sample |
+| `record_from_dict` copied `output_hash` instead of recomputing it | ...be flipped by editing ten rows of a ledger. The manifest was tamper-evident; the EVIDENCE was not. Measured: `promoted=false` → `promoted=true` |
+| a wholly degraded arm computed `superseded_trust_rate = 0.0` | ...satisfy a zero-tolerance safety check by never having measured it |
+| `artifact_stem` omitted `retrieval_profile`, `generation`, `candidate_pool` | ...compare a ledger with itself: two arms differing only in `--retrieval-profile` produced the identical filename, the second resumed the first's rows and scored nothing |
+| `--no-resume` read nothing but still appended | ...gate on the rows the run was told to discard, since `read_ledger` keeps the FIRST occurrence of an id |
+
+Two of those sat directly under docstrings claiming the opposite. `artifact_stem` said it carried
+"the COMPLETE immutable identity" while carrying three of six fields, and the `reranking_status`
+comment said a configured-but-failed reranker "is visible here" when `HybridRetriever` sets
+`reranking_ran` *before* calling the reranker, making `"failed"` unreachable. The first is fixed;
+the second is a comment correction, because making it observable needs a change in the retriever
+and that is a different diff. **A comment that claims more than the code is the same defect as a
+guard that cannot fire, and this session produced both while writing about both.**
+
+Also fixed: `--corpus mtrag` matched nothing (the adapter stamps `mtrag:<domain>`, the CLI filtered
+on equality, so a wired corpus was unrunnable); `ArmConfig.generation` was recorded on every row
+and never passed to `trusted_search`, so the evidence named a generation the search never used;
+`secondary_metrics` pooled across corpora while the headline is macro (a factor-2.2 disagreement
+inside one document, the AUD-1 finding again); `write_decision` allowed a bare `NaN` token into a
+committed artifact; the decision named its arms only by the free-text label a human typed; and
+`--dsn` was required, putting the database password into argv.
+
+Ten red→green proofs, each verified against the pre-fix code by
+`cca_tautology_check verify`: **10 of 10 RED**. Each carries a control test asserting the
+behaviour that did NOT change, because a refusal that swallows the passing case is not a fix.
+
+**The anti-regression pass then found two more, in the fixes themselves, and both are the same
+lesson twice.**
+
+The `--dsn` fix moved the credential out of argv and deleted `required=True` without replacing the
+guarantee it carried. `PgVectorStore` does not validate a DSN, so `None` reached psycopg as an
+`AttributeError` *after* a model load, and an EMPTY string — the ordinary shape of an unset systemd
+or CI variable — is a valid libpq conninfo meaning "use the local defaults". On a peer-auth host
+that connects to the operator's own database, where the command then creates, indexes and drops a
+table. **Removing a check because its side effect was undesirable removed the check.**
+
+The MT-RAG fix shipped with a test that could not fail. It re-implemented the `startswith`
+expression inline against the adapter instead of calling the CLI's filter, so it passed with the
+fix reverted — a guard that cannot fire, inside the fix for a filter that matched nothing. The
+comprehension is now the named `scope_questions`, the test calls it, and a mutation reverting the
+filter turns it red. It is the fifth instance of a non-discriminating assertion recorded here, and
+the first one this program caught in its own audit fixes rather than in the code under audit.
+
+⚠️ **The harness that first checked those three mutations reported two of them RED when the tests
+did not exist at all** — the edit that was supposed to add them had silently not applied, and a
+non-zero pytest exit for "no tests ran" is indistinguishable from one for "the test failed" if you
+only read the exit code. That is the repository's own standing rule about reading an exit code
+through a pipe, in a new costume. The re-check parses `N failed` out of pytest's summary and
+reports `INCONCLUSIVE` otherwise; all three are RED under it.
+
+**Mutation sweep: 29 of 29.** Each new guard was disabled in the source and its named test asserted
+to go red. One survived the first pass, and it is the instructive one: deleting the
+absent-fingerprint branch in `load_for_profile` left the identity-equality check below it, which
+also returns None, so a test asserting only `is None` passed with the branch removed. The branch's
+real contribution is the DIAGNOSIS — "this file records no `profile_fingerprint`" is an actionable
+instruction, while "it was fitted under identity None" describes nothing that exists — so the test
+now asserts the warning. That is the fourth instance of a non-discriminating assertion recorded in
+this repository.
+
+**Resume: three mechanisms became two, not four.** `benchmarks/ladder/run.py::_recorded` and
+`benchmarks/beam/run.py::_already_done` now both delegate to `recall/eval/resume.py`. The ladder's
+behaviour is unchanged. Beam gains one behaviour deliberately: a truncated final line used to raise
+`JSONDecodeError` there and now counts as "not yet scored". These sidecars are read after an
+interruption, so a torn tail was the one malformed line that function was guaranteed to meet, and
+refusing to resume from it meant re-paying for every question in the file. `recall/eval/gap_run.py`
+is **not** migrated, and the reason is recorded in `resume.py`'s own docstring rather than left to
+be rediscovered as "a fourth mechanism appeared": its unit of resume is a whole corpus result FILE
+carrying a `status` marker, its artifacts under `results/gap/` are committed in that shape, and
+unifying it would rewrite a published artifact format for no resume benefit.
+
+### What is NOT proven, stated rather than implied
+
+- **Only `labelled` was executed.** It is the one corpus whose documents ship in the repository.
+  `peps`, `locomo`, `longmemeval` and `mtrag` are wired and unit-tested against synthetic fixtures
+  in their own formats, but their `label_kind` mappings have **not** been confirmed against a real
+  index. `ladder`'s reader is exercised against a manifest written by the ladder's own writer,
+  including the digest refusal, but not against a live retrieval. Each mapping was derived by
+  reading the code that writes those ids, and each is named in `search.py`'s table with the function
+  it mirrors. The vacuity refusal is what turns a wrong one into a loud failure instead of a zero.
+- **The proof run is DEGRADED.** A plain store has no generation-bound certified calibration, so
+  strict trust mode refuses it — correctly. The run used `--trust-policy development`, every verdict
+  is `unverified`, and the artifact records `trust_verdicts: {"unverified": 25}` for both arms so
+  that its `false_confidence: 1.00` cannot be read as a property of this library's abstention. The
+  two arms stay comparable to each other; neither is comparable to a trusted run. **Wiring a
+  strict-mode gate run needs a generation-bound certified calibration end to end, and no session has
+  done that.**
+- **`--trust-policy` defaults to strict** rather than to the mode that would have made this session's
+  run easier. A harness defaulting to development mode would silently score a degraded system and
+  publish the numbers as if the trust gate had run.
+- **No campaign verdict was produced, and none was attempted.** This session built the producer.
+
+### Standing blockers
+
+| Blocker | Kind | Effect | Change |
+|---|---|---|---|
+| **No latency reference host.** VPS2 has 12 cores under a permanent load average near 8 from unrelated live production. | External dependency. Do not work around it. | Latency is **PENDING**; promotion blocked on latency grounds. Quality and safety gates still run. | **now enforced in code**: `latency_p95_ms=None` is a gate FAILURE, and the harness will not supply a number without `--certified-latency-p95-ms`. Nothing was measured on VPS2 this session |
+| **No production corpus.** | Open | Nothing may be claimed about enterprise-corpus behaviour. | unchanged |
+| **No approved local generator confirmed.** | Open | The generator-neutral evidence path stays unexercised end to end. | unchanged |
+| **No generation-bound certified calibration has ever been produced end to end.** | Open, NEW | Every gate run is degraded, so `superseded_trust_rate` is **NOT MEASURED** and blocks promotion on its own. | newly identified this session, and **enforced in code** after the audit: a degraded arm reports `None`, not `0.0` |
+
+### What the next session should start with
+
+Backlog session 4, making the documentation true, which the previous entry named and which is still
+first. It was not taken here because the goal was the producer; nothing in this session touched the
+`RECALL_DSN` contradiction, and the sharpest consequence recorded there still stands: a green
+`recall-enterprise readiness` run certifies the credential the CLI connected as, which the enterprise
+doc tells the operator to make the MIGRATION role.
+
+Then, in the promotion lane specifically, and in this order:
+
+1. **A generation-bound certified calibration, end to end.** This is now a hard blocker, not a
+   quality concern: `superseded_trust_rate` comes back NOT MEASURED for a degraded arm and fails
+   the gate by itself, so **no promotion decision can be green until a trusted run is possible**.
+   `recall/trust.py` overwrites every verdict with `unverified` in degraded mode, so the
+   information is destroyed at the source and no amount of care in the harness recovers it. The
+   path is `CalibrationRepository.calibrate` → `publish` against a built generation; nothing wires
+   it end to end today.
+2. **Confirm one external corpus's `label_kind` against a live index** — `locomo` is the cheapest,
+   since `recall/eval/locomo.py` already writes the documents. One confirmed mapping turns four
+   derived-by-reading claims into three.
+3. Only then a campaign with a real candidate arm.
+
+Carried forward unchanged: the MT-RAG baseline still has no `results/ARTIFACTS.md` row
+(deliberately), and `bench/mtrag-symmetric-baseline` is still local and unpushed.
 
 ---
 
@@ -375,6 +3023,9 @@ Nothing in this session depends on that being false, and nothing here changes it
 
 * the three context profiles and `bge-small-asymmetric-v1` currently differ from
   `bge-small-symmetric-v1` in the passage TEXT they embed, not in the encoder they use;
+  **[corrected 2026-08-05, see the top entry: `bge-small-asymmetric-v1` does NOT belong in this
+  sentence. Its `context_mode` is `none`, the same as the symmetric profile, so its passage text
+  is identical too. Only the three context profiles differ in text.]**
 * the dispatch still has to be correct, because `qwen3-embedding-0.6b-384-v1` does use a distinct
   instruction-prefixed query encoder, and because a future fastembed or model could add one
   without changing a profile ID;
@@ -582,7 +3233,7 @@ contradictions. The matrix says so per row.
 | Profile registry is a dict literal in `service.py::make_embedder`, partly duplicated in `context.py` | **confirmed**: `recall_mcp/service.py:113-120` and `recall/context.py:37-41`, two independent literals, already differing in extent |
 | `cache_key` omits `context_version` and `artifact_digest` | **confirmed**: `recall/cache.py:26`; both are independently settable at `recall/embeddings.py:334-339` |
 | `latency_budget_ms` is enforced nowhere; only the promotion gate reads it | **sharpened**: `git grep` returns three hits, all inside `recall/profiles.py`. The gate's budget is a separate caller-supplied field (`recall/promotion.py:33`). **Nothing** reads the profile's value |
-| `recall/evidence.py` is complete but unexported and unreachable | **confirmed**: absent from `recall/__init__.py`; referenced only by `tests/test_evidence.py` and one prose line |
+| `recall/evidence.py` is complete but unexported and unreachable | **confirmed**: absent from `recall/__init__.py`; referenced only by `tests/test_evidence.py` and one prose line → **RESOLVED 2026-08-05** (`codex/evidence-boundary-reachable`) |
 | `recall/promotion.py` has no producer outside its test | **confirmed**: `tests/test_promotion.py:8-13` is the only construction site |
 | `FAST_PROFILE` and `QUALITY_PROFILE` share `candidate_k=20` | **refuted as a defect**: `docs/ENTERPRISE_RETRIEVAL.md:57-59` specifies "the same candidate pool" deliberately, so cost differences are attributable to the reranker alone |
 | `readiness.py`, `validate_generation_parity`, `replay_pending`, `enterprise_cli.py` have no tests | **confirmed, one narrowed**: `tenant_readiness` / `process_readiness` (later session) *are* covered by `tests/test_tenant_readiness.py`; `check_enterprise_readiness` is not. The other three have no test reference at all |
