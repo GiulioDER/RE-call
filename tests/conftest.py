@@ -146,18 +146,36 @@ def _db_available() -> bool:
         return False
 
 
-requires_db = pytest.mark.skipif(
-    not _db_available(),
-    reason="pgvector DB not reachable (run `docker compose up -d`)",
-)
+#: One wording, used by the collection-time mark and by every fixture that refuses at setup, so a
+#: DB-less run reports the same reason however the test was skipped.
+DB_UNREACHABLE = "pgvector DB not reachable (run `docker compose up -d`)"
 
-#: Fixtures below that a test must REQUEST to reach the database, and which therefore oblige it to
-#: carry `@requires_db`. Autouse fixtures are deliberately absent: they cannot be requested, so they
-#: cannot mark anything, and the one that exists self-guards on `_db_available()` instead.
+requires_db = pytest.mark.skipif(not _db_available(), reason=DB_UNREACHABLE)
+
+
+def require_db() -> None:
+    """Skip the calling test unless the database is reachable.
+
+    The single refusal site. `@requires_db` is a collection-time optimisation and only protects
+    tests whose author remembered it: `test_store_cosines_for.py` and `test_store_query_latency.py`
+    both reached this database without it and spent 213 s collecting `ConnectionTimeout` failures
+    instead of skipping. Anything here that can touch the database calls this FIRST, so the
+    refusal does not depend on anyone remembering.
+
+    Exported deliberately. A module-local fixture that opens its own connection, and there are 22
+    of them, is outside this file's reach; calling `require_db()` at the top of one buys it the
+    same protection.
+    """
+    if not _db_available():
+        pytest.skip(DB_UNREACHABLE)
+
+#: Fixtures below that hand a test access to the database. Each one REFUSES to run without a
+#: reachable DB, which is what makes `@requires_db` an optimisation (skip at collection, before the
+#: fixture is ever set up) rather than the thing standing between a missing mark and a 213 s red.
 #:
 #: Hand-maintained, so `test_requires_db_coverage.py` derives the same set from this file's source
-#: and requires the two to match. Without that, a new DB fixture added here and forgotten there
-#: would silently exempt every test using it from the coverage guard.
+#: and requires both the membership and the refusal to match. A new DB fixture added here without
+#: the refusal is exactly the hole this pair exists to close.
 DB_BACKED_FIXTURES = ("cli_table", "make_store", "unprivileged_dsn")
 
 #: Role provisioned by `unprivileged_dsn` when `TEST_DSN` turns out to be privileged.
@@ -173,6 +191,9 @@ def role_is_unprivileged(dsn: str) -> bool:
     job is to prove a negative capability. Every RLS assertion in the suite rests on this answer,
     so an unknown privilege must never be the safe one.
     """
+    # Tests import and call this directly, not only through `unprivileged_dsn`, so the refusal
+    # belongs here too rather than only at the fixture that happens to be the usual caller.
+    require_db()
     with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as conn:
         row = conn.execute(
             "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"
@@ -206,8 +227,7 @@ def unprivileged_dsn() -> str:
     Every test that uses this fixture still asserts the property itself. A fixture named
     "unprivileged" is a claim; `SELECT rolsuper OR rolbypassrls` is evidence.
     """
-    if not _db_available():
-        pytest.skip("pgvector DB not reachable")
+    require_db()
     if role_is_unprivileged(TEST_DSN):
         return TEST_DSN
 
@@ -326,6 +346,16 @@ def _isolate_recall_logger() -> Iterator[None]:
 
 @pytest.fixture
 def make_store() -> Iterator[Callable[[int], PgVectorStore]]:
+    """Hands out throwaway tables, and REFUSES to run at all when there is no database.
+
+    The refusal is the point. `@requires_db` is the convention, but a convention only protects the
+    tests whose author remembered it: `test_store_cosines_for.py` and `test_store_query_latency.py`
+    both requested this fixture without the mark, and instead of skipping they spent 213 s
+    collecting `psycopg.errors.ConnectionTimeout` failures. Skipping HERE makes that impossible
+    rather than merely discouraged, because every test that reaches this database through conftest
+    must come through this line, whether or not anyone marked it.
+    """
+    require_db()
     created: list[PgVectorStore] = []
 
     def _factory(dim: int) -> PgVectorStore:
@@ -363,6 +393,7 @@ def cli_table() -> Iterator[str]:
     database was configured. A throwaway table per test isolates without dropping anything a
     user owns.
     """
+    require_db()  # see `make_store`: the refusal is what makes the mark optional
     name = "cli_" + uuid.uuid4().hex[:8]
     apply_migrations(TEST_DSN, table=name, dim=64)
     yield name
