@@ -17,6 +17,7 @@ import pytest
 from recall.observability import HISTOGRAM_CAPACITY, METRICS, Metrics
 from recall.store import LEG_DENSE, LEG_SPARSE, STORE_QUERY_METRIC
 from recall.types import Chunk
+from tests.conftest import requires_db
 
 DIM = 8
 
@@ -68,6 +69,7 @@ def _series(leg: str) -> tuple[list[float], int]:
     return METRICS.drain_histogram(STORE_QUERY_METRIC, leg=leg)
 
 
+@requires_db
 def test_query_dense_records_one_sample_per_call(store):
     for _ in range(3):
         store.query_dense(_vec(), k=2)
@@ -78,6 +80,7 @@ def test_query_dense_records_one_sample_per_call(store):
     assert all(ms > 0 for ms in samples), "a real round trip cannot take zero measurable time"
 
 
+@requires_db
 def test_the_two_legs_are_separate_series(store):
     store.query_dense(_vec(), k=2)
     store.query_sparse("alpha beta", k=2)
@@ -88,6 +91,7 @@ def test_the_two_legs_are_separate_series(store):
     assert len(dense_samples) == 1 and len(sparse_samples) == 1
 
 
+@requires_db
 def test_recorded_latency_tracks_injected_delay(store, monkeypatch):
     """THE falsification test: make the query provably slow, require the instrument to say so.
 
@@ -118,6 +122,7 @@ def test_recorded_latency_tracks_injected_delay(store, monkeypatch):
     )
 
 
+@requires_db
 def test_a_rejected_call_records_nothing(store):
     """`k <= 0` issues no statement, so it must not contribute a ~0 ms sample."""
     with pytest.raises(ValueError):
@@ -129,6 +134,7 @@ def test_a_rejected_call_records_nothing(store):
     assert _series(LEG_SPARSE) == ([], 0)
 
 
+@requires_db
 def test_a_failing_query_is_still_timed(store):
     """A timer that records only on success hides the slow path worth finding."""
     boom = RuntimeError("connection died")
@@ -148,6 +154,7 @@ def test_a_failing_query_is_still_timed(store):
     assert total == 1
 
 
+@requires_db
 def test_drain_isolates_consecutive_measurements(store):
     """Draining is what stops configuration B's mean from including configuration A's samples."""
     store.query_dense(_vec(), k=2)
@@ -320,6 +327,7 @@ def test_snapshot_reveals_truncation_like_the_drain_does():
     assert entry["truncated"] is True
 
 
+@requires_db
 def test_newest_indexed_at_is_timed_as_a_store_leg(store):
     """It is a real round trip on every search; untimed, it books store cost as Python glue."""
     store.newest_indexed_at()
