@@ -9,6 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml"><img src="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://pypi.org/project/recall-rag/"><img src="https://img.shields.io/pypi/v/recall-rag.svg" alt="PyPI"></a>
   <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
@@ -55,6 +56,10 @@ included in [FINDINGS §9d](https://github.com/GiulioDER/RE-call/blob/master/res
 RE-call comes out **more accurate**, **$0 to build at any scale**, and it keeps your data on
 infrastructure you own. We publish the configuration where it loses, because a benchmark you
 cannot lose isn't one.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/mem0_comparison.svg" alt="RE-call vs Mem0 on the LOCOMO benchmark. Judged answer accuracy: RE-call 0.420, Mem0 0.366, n=1,540, paired p=0.0002 to 0.0065, Holm-corrected. Cost to build the benchmark memory: RE-call $0.00, Mem0 $7.29." width="900">
+</p>
 
 Its real strength, though, is that it is built to be **tuned, not fixed**. Every stage of the
 pipeline (embedder, reranker, the SPLADE sidecar, the entailment judge) is opt-in and swappable,
@@ -122,24 +127,19 @@ flowchart TB
     class SP,LS,RR,EJ opt
 ```
 
-**The solid path is what runs if you change nothing. Everything dashed and amber is opt-in and off
-by default** — the learned-sparse SPLADE leg, the cross-encoder reranker and the entailment judge
-each cost something measurable, and each is enabled by name rather than inferred for you.
+**The solid path is what runs if you change nothing.** Writing a memory is a local embedding, no
+LLM call, so it stays free at any scale. On the read path, dense and sparse search feed **RRF
+fusion**, the **gap check** refuses to dress up nearest-noise as an answer, and the **trust layer**
+enforces supersession, validity, and a confidence threshold fitted per embedder and corpus, never a
+shipped constant, before anything reaches the agent.
 
-**Writing a memory involves no LLM call at all**, which is why it is free at any scale: validity is
-plain frontmatter in the memory itself (`supersedes: old_doc.md`, `valid_until: 2026-06-30`) —
-*authored, not inferred*, because a claim honoured as written is safe and a claim guessed at is not.
-
-On the read path, dense semantic search and sparse keyword search each retrieve candidates,
-**Reciprocal Rank Fusion** merges them, the **gap check** refuses to dress up nearest-noise as an
-answer, and the **trust layer** judges every surviving hit — supersession, validity window,
-calibrated confidence — before it reaches the agent. The threshold it abstains at is **fitted per
-embedder and corpus, never a shipped constant**; the measurement that proves it cannot be one is
-[FINDINGS](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)'s headline negative
-result.
+**Everything dashed and amber is opt-in and off by default:** the SPLADE leg, the cross-encoder
+reranker, the entailment judge. Each costs something measurable, so each is switched on by name,
+never inferred for you. Full derivation of the threshold and every measured trade-off:
+[FINDINGS](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md).
 
 → Every phase in full, every embedder measured so far, and what each option costs:
-**[docs/pipeline.svg](https://github.com/GiulioDER/RE-call/blob/master/docs/pipeline.svg)**.
+**[docs/pipeline.png](https://github.com/GiulioDER/RE-call/blob/master/docs/pipeline.png)**.
 
 ## Quickstart · 2 minutes, no API key
 
@@ -194,14 +194,20 @@ development fallback for the serving DSN.
 
 ### Multi-query fusion (`search_fused`)
 
-Fuses the current turn with a concatenation of prior turns, then reranks once. Measured on
-MTRAG-human dev at `candidate_k=100`, with a reranker: **+0.0084 nDCG@5**<!--@ citation-pending: measured in `/var/lib/recall-benchmarks/2026-08-07-mtrag-rerank-conversion/`, an archive outside this repo --> (Holm-significant, cross-encoder/`ms-marco-MiniLM-L-6-v2`) and
-**+0.0842 R@100**<!--@ citation-pending: measured in `/var/lib/recall-benchmarks/2026-08-07-mtrag-rerank-conversion/`, an archive outside this repo --> over single-query `search`. Gains proved significant and directional under BAAI/`bge-reranker-v2-m3` (+0.0117 nDCG@5)<!--@ citation-pending: measured in `/var/lib/recall-benchmarks/2026-08-07-mtrag-rerank-conversion/`, an archive outside this repo -->. The effect is small in absolute terms, and it was measured on one dev split, so treat it as
-directional evidence rather than a guarantee on your corpus.
+Fuses the current turn with prior turns before reranking once, for a small, reranker-gated accuracy
+gain on multi-turn conversations. It requires a reranker and refuses without one, and it is opt-in
+by data: no `history`, no fusion, every existing `search()` call is unaffected.
 
 ```python
 result = retriever.search_fused("and what about the deadline?", history=["what is the policy?"])
 ```
+
+<details>
+<summary>Measured gains, costs, and refusal conditions</summary>
+
+Measured on MTRAG-human dev at `candidate_k=100`, with a reranker: **+0.0084 nDCG@5**<!--@ citation-pending: measured in `/var/lib/recall-benchmarks/2026-08-07-mtrag-rerank-conversion/`, an archive outside this repo --> (Holm-significant, cross-encoder/`ms-marco-MiniLM-L-6-v2`) and
+**+0.0842 R@100**<!--@ citation-pending: measured in `/var/lib/recall-benchmarks/2026-08-07-mtrag-rerank-conversion/`, an archive outside this repo --> over single-query `search`. Gains proved significant and directional under BAAI/`bge-reranker-v2-m3` (+0.0117 nDCG@5)<!--@ citation-pending: measured in `/var/lib/recall-benchmarks/2026-08-07-mtrag-rerank-conversion/`, an archive outside this repo -->. The effect is small in absolute terms, and it was measured on one dev split, so treat it as
+directional evidence rather than a guarantee on your corpus.
 
 ⚠️ **Requires a reranker, and refuses without one.** Raw, this arm scores **0.0447 nDCG@5 below**<!--@ citation-pending: measured in `/var/lib/recall-benchmarks/2026-08-07-mtrag-rerank-conversion/`, an archive outside this repo -->
 `search()`; the cross-encoder is what repairs the ranking damage a concatenated query does. RE-call
@@ -209,8 +215,7 @@ ships with the reranker off by default (see above), which is exactly why `search
 rather than merely warns when none is configured.
 
 It also costs roughly **twice the retrieval** of `search()`, plus mandatory reranking (~1,050<!--@ citation-pending: measured in `/var/lib/recall-benchmarks/2026-08-07-mtrag-rerank-conversion/`, an archive outside this repo -->
-ms/query on CPU). Whether that trade is worth it is an operator decision. Fusion is opt-in by
-data: no `history`, no fusion, and every existing `search()` call is unaffected.
+ms/query on CPU). Whether that trade is worth it is an operator decision.
 
 Histories whose concatenation exceeds 4,096<!--@ citation-pending: source constant, not a measurement: `FUSED_HISTORY_MAX_CHARS` in recall/retriever.py --> characters are **refused, not truncated**: a truncated
 history is a configuration that was never measured. A result can also carry fewer than `k` hits,
@@ -219,19 +224,25 @@ when a chunk is deleted between retrieval and the final rescore.
 `search_fused` is library only for now; it is not exposed as an MCP tool. Adding `history` to a
 public tool surface needs its own auth, limits, and query length contract.
 
+</details>
+
 ### Immutable index generations
 
+Builds a replacement index generation without mutating the active one, then promotes or rolls back
+by atomically switching tenant pointers, so a re-index never risks the serving index. Full manifest
+commands, lifecycle rules, and retention: [docs/GENERATIONS.md](docs/GENERATIONS.md).
+
+<details>
+<summary>Fingerprinting, calibration status, and operational notes</summary>
+
 The generation index path fingerprints the embedder revision, chunker configuration, FTS configuration,
-and immutable object manifest. It builds a replacement generation without mutating the active
-one, then promotes or rolls back by atomically changing tenant pointers. Equal vector dimensions
-do not permit reuse across models or revisions. Legacy rows are registered as
-`legacy_unverified` and never become an active strict generation index.
+and immutable object manifest. Equal vector dimensions do not permit reuse across models or
+revisions. Legacy rows are registered as `legacy_unverified` and never become an active strict
+generation index.
 
 Production object access requires a deployment-owned bucket and prefix allowlist; requests cannot
 supply credentials or an endpoint. Every object version, length, and cryptographic digest is
-verified before embedding. See the
-[generation operations guide](docs/GENERATIONS.md) for manifest commands, lifecycle rules,
-retention, the rebuild storage budget, and erasure semantics.
+verified before embedding.
 
 Tenant and generation bound calibration now ships. Strict production enforcement is the next
 implementation session, so generation promotion remains blocked in production and requires an
@@ -239,7 +250,7 @@ explicit unsafe flag in development. A published artifact does not yet make this
 production path fail closed when calibration is absent.
 
 > **Two operational notes.** The test suite **DROPs tables**, so it reads a separate
-> `RECALL_TEST_DSN` and never the serving DSN — exporting your real DSN and running `pytest` cannot
+> `RECALL_TEST_DSN` and never the serving DSN, exporting your real DSN and running `pytest` cannot
 > touch it. And the MCP server **refuses to start** if `RECALL_SERVING_DSN` (or its deprecated
 > `RECALL_DSN` fallback) carries the built-in
 > `recall:recall` credentials against a non-local host; set a real password, or
@@ -247,9 +258,11 @@ production path fail closed when calibration is absent.
 
 > **Multi-tenancy.** Set `RECALL_TENANT` or `PgVectorStore(tenant=...)`. RLS enforces the same
 > boundary in the database, so a forgotten `WHERE` returns nothing rather than another tenant's
-> memories. ⚠️ **RLS is bypassed by a superuser or a `BYPASSRLS` role** — including the one in this
+> memories. ⚠️ **RLS is bypassed by a superuser or a `BYPASSRLS` role**, including the one in this
 > repo's `docker-compose.yml`. Connect as an unprivileged role, or that second layer is decoration;
 > `store.check_rls_effective()` tells you which you have, and the server warns at startup.
+
+</details>
 
 ## Use it with Claude (MCP)
 

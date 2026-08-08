@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 270" width="900" height="270" role="img" aria-labelledby="t d">
+  <title id="t">RE-call vs Mem0 on the LOCOMO benchmark</title>
+  <desc id="d">Two bar charts. Judged answer accuracy: RE-call 0.42, Mem0 0.366. Cost to build the benchmark memory: RE-call $0.00, Mem0 $7.29. Same generator, same judge, paired questions, results in FINDINGS section 9d.</desc>
+  <style>
+    .sans { font-family: -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+    .mono { font-family: ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace; }
+  </style>
+
+  <!-- card -->
+  <rect x="1" y="1" width="898" height="268" rx="16" fill="#0d1117" stroke="#30363d"/>
+
+  <!-- accent bar -->
+  <rect x="40" y="20" width="5" height="26" rx="2.5" fill="#3fb950"/>
+
+  <!-- title -->
+  <text x="58" y="40" class="sans" font-size="19" font-weight="700" fill="#e6edf3">RE-call vs Mem0 on LOCOMO, same generator, same judge, paired questions</text>
+  <text x="850" y="40" class="mono" font-size="11.5" fill="#6e7681" text-anchor="end">FINDINGS &#167;9d</text>
+
+  <!-- panel: accuracy -->
+  <rect x="40" y="66" width="405" height="180" rx="10" fill="#161b22" stroke="#21262d"/>
+  <text x="60" y="94" class="sans" font-size="14" fill="#adbac7">Judged answer accuracy</text>
+  <text x="60" y="112" class="mono" font-size="11" fill="#6e7681">n = 1,540 &#183; Mem0&#8217;s default embedder</text>
+
+  <!-- RE-call bar -->
+  <text x="60" y="146" class="mono" font-size="12.5" fill="#adbac7">RE-call</text>
+  <rect x="140" y="132" width="220" height="18" rx="3" fill="#21262d"/>
+  <rect x="140" y="132" width="184.8" height="18" rx="3" fill="#3fb950"/>
+  <text x="370" y="146" class="mono" font-size="13" font-weight="700" fill="#3fb950">0.420</text>
+
+  <!-- Mem0 bar -->
+  <text x="60" y="180" class="mono" font-size="12.5" fill="#8b949e">Mem0</text>
+  <rect x="140" y="166" width="220" height="18" rx="3" fill="#21262d"/>
+  <rect x="140" y="166" width="161.0" height="18" rx="3" fill="#6e7681"/>
+  <text x="370" y="180" class="mono" font-size="13" font-weight="700" fill="#8b949e">0.366</text>
+
+  <text x="60" y="222" class="sans" font-size="11.5" fill="#6e7681">paired p = 0.0002&#8211;0.0065, Holm-corrected, across both</text>
+  <text x="60" y="237" class="sans" font-size="11.5" fill="#6e7681">OpenAI reader models the field benchmarks with.</text>
+
+  <!-- panel: cost -->
+  <rect x="455" y="66" width="405" height="180" rx="10" fill="#161b22" stroke="#21262d"/>
+  <text x="475" y="94" class="sans" font-size="14" fill="#adbac7">Cost to build the benchmark memory</text>
+  <text x="475" y="112" class="mono" font-size="11" fill="#6e7681">metered API calls, ingest and retrieval</text>
+
+  <!-- RE-call bar -->
+  <text x="475" y="146" class="mono" font-size="12.5" fill="#adbac7">RE-call</text>
+  <rect x="555" y="132" width="220" height="18" rx="3" fill="#21262d"/>
+  <rect x="555" y="132" width="4" height="18" rx="2" fill="#3fb950"/>
+  <text x="785" y="146" class="mono" font-size="13" font-weight="700" fill="#3fb950">$0.00</text>
+
+  <!-- Mem0 bar -->
+  <text x="475" y="180" class="mono" font-size="12.5" fill="#8b949e">Mem0</text>
+  <rect x="555" y="166" width="220" height="18" rx="3" fill="#21262d"/>
+  <rect x="555" y="166" width="200.5" height="18" rx="3" fill="#6e7681"/>
+  <text x="785" y="180" class="mono" font-size="13" font-weight="700" fill="#8b949e">$7.29</text>
+
+  <text x="475" y="222" class="sans" font-size="11.5" fill="#6e7681">no LLM anywhere in the ingest or retrieval path,</text>
+  <text x="475" y="237" class="sans" font-size="11.5" fill="#6e7681">writing a memory is an embedding, searching is Postgres.</text>
+</svg>
