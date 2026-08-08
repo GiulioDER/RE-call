@@ -92,6 +92,15 @@ SPARSE_ARMS = (
     Arm("splade_only", "last", 100, use_dense=False, sparse_backend="splade"),
     Arm("hybrid_both", "last", 100, sparse_backend="both", role="secondary"),
     Arm("dense_only", "last", 100, use_sparse=False),
+    # ⚠️ Added 2026-08-08, AFTER the five arms above had been scored on dev. It is therefore a
+    # POST-HOC configuration, not a pre-registered one, and anything published from it has to say
+    # so. The evidence for adding it was already on the table rather than fished for: on the
+    # sealed split the reranker took `recall_default_last` from nDCG@5 0.3701 to
+    # `recall_rerank_last`'s 0.4227, and `hybrid_splade` is the best retrieval arm measured on
+    # dev, so their combination is where RE-call's maximum most likely sits. Choosing a
+    # configuration on dev is what dev is FOR; the sin would be choosing it on the held-out set.
+    Arm("hybrid_splade_rerank", "last", 100, sparse_backend="splade", rerank=True,
+        role="best-known"),
 )
 
 ALL_ARMS = ARMS + SPARSE_ARMS
