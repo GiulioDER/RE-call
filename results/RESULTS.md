@@ -134,6 +134,10 @@ same pipeline, only the embedder swapped.
 | public Python PEPs (746 docs) | bge-small | local | 0.705 | [0.56, 0.82] | 0.483 | — | — |
 | public Python PEPs | voyage-3 | cloud | 0.727 | [0.58, 0.84] | 0.629 | — | — |
 
+<sub>The **`search p50` column is pre-fix**: measured with a percentile index one rank too high
+(`CHANGELOG.md`, `latency_ms`). A re-run returns the next sample down whenever the scored n is
+even. Rates, intervals and MRR are unaffected.</sub>
+
 - **Idiosyncratic corpus (internal codenames, project shorthand): cloud is worth +0.282** — the
   intervals barely touch, the one lever of five tested that the sample resolves (vs rerank +0.065
   n.s., pool ±0.065 n.s., chunk size +0.000; FINDINGS §7).
@@ -304,6 +308,9 @@ python -m recall.eval.locomo_entailment_sweep --data locomo10.json --answerable-
 | **false-abstain** | **0.481** | 0.409 | 0.328 |
 | search p50 | 66 ms | 68 ms | 90 ms |
 
+<sub>The **`search p50` row is pre-fix** — percentile index one rank too high (`CHANGELOG.md`,
+`latency_ms`). Every other row in this table is unaffected.</sub>
+
 **knowledge-update: hit@5 1.000** [0.90, 1.00] on the comparable arm — the benchmark's own name for
 the supersession class this library exists for — and the most robust category under haystack
 pressure (retains 74% of its hit@5 from Oracle to merged-S vs 51% overall).
@@ -457,7 +464,7 @@ different scale regardless.
 | ↳ of which, 17k+ docs | — | median **+0.062** |
 | idiosyncratic jargon corpus | 0.348 | **0.630 (+0.282)** |
 | LOCOMO conversational (§7a) | measured | not run at scale |
-| search latency p50 | **45 ms** | 246 ms (network RTT) |
+| search latency p50 | **45 ms** (pre-fix, see `CHANGELOG.md` `latency_ms`) | 246 ms (network RTT) |
 | index 6.5k chunks | 696 s (CPU) | 224 s (batched API) |
 | marginal API cost | **$0, at any scale** | per-token, per query and per re-index |
 | data leaves your infra | **never** | every document and every query |

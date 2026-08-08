@@ -5,6 +5,47 @@ import math
 import random
 from statistics import NormalDist
 
+from recall.observability import percentile
+
+
+#: The quantiles both eval harnesses publish, named once so the two cannot drift apart.
+LATENCY_QUANTILES = (0.50, 0.95)
+
+
+def latency_report(samples_ms: list[float]) -> dict[str, float]:
+    """p50/p95 of a latency sample, nearest-rank, in milliseconds to 0.1 ms.
+
+    `int(q*n)` reads like a percentile index and is not — it IS the 1-based nearest rank, so
+    subscripting a 0-based list with it reports the next sample up, one whole rank too high,
+    every time. That defect was fixed in `recall.observability.percentile` and again in
+    `recall.eval.scale`, and `tests/test_percentiles.py` records why a partial fix is the
+    dangerous one: "fixing one copy and publishing from the other is exactly how the wrong number
+    reached results/*.md".
+
+    Both eval harnesses carried it again (`lat[int(0.95 * len(lat))]` for p95 and
+    `lat[len(lat) // 2]` for p50 — the same off-by-one, since `len(lat) // 2` is also a 1-based
+    rank whenever n is even). They now call this instead. Measured: p50 moves for EVERY even n,
+    p95 only when n is a multiple of 20, and the old value was always the higher of the two —
+    see the CHANGELOG entry, which names the published figures that move.
+
+    Not yet one copy repo-wide: `benchmarks/latency.py:_percentile` is a separate implementation
+    on a DIFFERENT convention (`int(round(q*(n-1)))`, which interpolates the rank rather than
+    taking the ceiling) and also backs that module's bootstrap CI quantiles. It returns 51.0
+    where this returns 50.0 for p50 of 1..100. Left alone deliberately rather than silently
+    swept in, and named here so the next reader does not have to discover it.
+
+    Empty sample -> empty dict, matching what both harnesses already published for a run with no
+    timed queries: a latency report with no data is not a latency of zero.
+    """
+    if not samples_ms:
+        return {}
+    ordered = sorted(samples_ms)
+    # `ndigits=None`: round ONCE, here, at the precision this report publishes. Reading through
+    # `percentile`'s 3-dp default and rounding that to 0.1 ms disagrees with a single round on
+    # ~0.5% of values, which would make "to 0.1 ms" above a label the function does not honour.
+    return {f"p{int(q * 100)}": round(percentile(ordered, q, ndigits=None), 1)
+            for q in LATENCY_QUANTILES}
+
 
 def precision_at_k(retrieved_ids: list[str], relevant_ids: list[str], k: int) -> float:
     """Fraction of the top-k retrieved that are relevant.

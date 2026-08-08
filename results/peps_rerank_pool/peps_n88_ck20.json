@@ -1,0 +1,2517 @@
+{
+  "corpus": {
+    "files": 0,
+    "chunks": 21961,
+    "sources_expected": 733,
+    "sources_indexed": 743,
+    "index_seconds": 5.0,
+    "table": "peps_bge"
+  },
+  "questions": {
+    "total": 110,
+    "answerable": 88,
+    "unanswerable": 22,
+    "held_out": 55,
+    "score_retrieval_on": "all",
+    "retrieval_scored_on": 88,
+    "false_abstain_scored_on": 44,
+    "abstention_accuracy_scored_on": 11
+  },
+  "candidate_k": 20,
+  "threshold": 0.72,
+  "arms": {
+    "bm25": {
+      "hit_at_5": {
+        "rate": 0.4886,
+        "ci": [
+          0.3869,
+          0.5913
+        ],
+        "n": 88
+      },
+      "mrr": 0.3521,
+      "latency_ms": {
+        "p50": 44.2,
+        "p95": 85.5
+      },
+      "misses": [
+        {
+          "id": "a02",
+          "query": "what did the review of the public C interface conclude about who depends on it",
+          "expected": [
+            "pep-0733.rst"
+          ],
+          "got": [
+            "pep-8002.rst",
+            "pep-0761.rst",
+            "pep-0684.rst",
+            "pep-0543.rst",
+            "pep-0001.rst"
+          ]
+        },
+        {
+          "id": "a03",
+          "query": "how did the library for running work across several cpus get into the standard distribution",
+          "expected": [
+            "pep-0371.rst"
+          ],
+          "got": [
+            "pep-3139.rst",
+            "pep-0680.rst",
+            "pep-0262.rst",
+            "pep-0408.rst",
+            "pep-0749.rst"
+          ]
+        },
+        {
+          "id": "a04",
+          "query": "where do i declare which tools are needed to build my package before anything runs",
+          "expected": [
+            "pep-0518.rst"
+          ],
+          "got": [
+            "pep-0639/appendix-user-scenarios.rst",
+            "pep-0694.rst",
+            "pep-0808.rst",
+            "pep-0470.rst",
+            "pep-0725.rst"
+          ]
+        },
+        {
+          "id": "a05",
+          "query": "how do i tell the interpreter which character set my source file is written in",
+          "expected": [
+            "pep-0263.rst"
+          ],
+          "got": [
+            "pep-3147.rst",
+            "pep-3116.rst",
+            "pep-3120.rst",
+            "pep-0374.rst",
+            "pep-0470.rst"
+          ]
+        },
+        {
+          "id": "a10",
+          "query": "who governs the packaging tooling group and how are decisions made",
+          "expected": [
+            "pep-0609.rst"
+          ],
+          "got": [
+            "pep-8002.rst",
+            "pep-8013.rst",
+            "pep-0772.rst",
+            "pep-0753.rst",
+            "pep-0665.rst"
+          ]
+        },
+        {
+          "id": "a11",
+          "query": "was there a proposal to stop installers touching the system interpreter unless isolated",
+          "expected": [
+            "pep-0704.rst"
+          ],
+          "got": [
+            "pep-0768.rst",
+            "pep-0780.rst",
+            "pep-0582.rst",
+            "pep-0343.rst",
+            "pep-0788.rst"
+          ]
+        },
+        {
+          "id": "a13",
+          "query": "how can objects with cleanup methods participate in cycles safely",
+          "expected": [
+            "pep-0442.rst"
+          ],
+          "got": [
+            "pep-0253.rst",
+            "pep-0703.rst",
+            "pep-0419.rst",
+            "pep-0556.rst"
+          ]
+        },
+        {
+          "id": "a16",
+          "query": "why were security fixes backported to an old branch past its normal support window",
+          "expected": [
+            "pep-0466.rst"
+          ],
+          "got": [
+            "pep-0598.rst",
+            "pep-0413.rst",
+            "pep-0385.rst"
+          ]
+        },
+        {
+          "id": "a18",
+          "query": "is there a way to ship a module without immediately freezing its interface",
+          "expected": [
+            "pep-0408.rst",
+            "pep-0411.rst"
+          ],
+          "got": [
+            "pep-0749.rst",
+            "pep-0458.rst",
+            "pep-0615.rst",
+            "pep-0008.rst",
+            "pep-0518.rst"
+          ]
+        },
+        {
+          "id": "a20",
+          "query": "why did filenames stop going through the legacy windows byte interface",
+          "expected": [
+            "pep-0529.rst"
+          ],
+          "got": [
+            "pep-0809.rst",
+            "pep-0694.rst",
+            "pep-0393.rst",
+            "pep-3147.rst",
+            "pep-0625.rst"
+          ]
+        },
+        {
+          "id": "a22",
+          "query": "was there an attempt to standardise how libraries pass pictures between each other",
+          "expected": [
+            "pep-0368.rst"
+          ],
+          "got": [
+            "pep-0346.rst",
+            "pep-0445.rst",
+            "pep-0371.rst",
+            "pep-0586.rst",
+            "pep-0543.rst"
+          ]
+        },
+        {
+          "id": "a23",
+          "query": "can pure python code ask whether an object exposes a raw memory view",
+          "expected": [
+            "pep-0688.rst"
+          ],
+          "got": [
+            "pep-0574.rst",
+            "pep-3118.rst",
+            "pep-3146.rst"
+          ]
+        },
+        {
+          "id": "a26",
+          "query": "how was the standard message-recording facility designed",
+          "expected": [
+            "pep-0282.rst"
+          ],
+          "got": [
+            "pep-0751.rst",
+            "pep-0534.rst",
+            "pep-0446.rst"
+          ]
+        },
+        {
+          "id": "a28",
+          "query": "how do i bind a name inside a condition without a separate statement",
+          "expected": [
+            "pep-0379.rst",
+            "pep-0572.rst"
+          ],
+          "got": [
+            "pep-0315.rst",
+            "pep-0238.rst",
+            "pep-0634.rst",
+            "pep-0635.rst",
+            "pep-0359.rst"
+          ]
+        },
+        {
+          "id": "a29",
+          "query": "was there a proposal to let plus-equals be used where a value is expected",
+          "expected": [
+            "pep-0577.rst"
+          ],
+          "got": [
+            "pep-0285.rst",
+            "pep-0813.rst",
+            "pep-0727.rst",
+            "pep-0584.rst",
+            "pep-0485.rst"
+          ]
+        },
+        {
+          "id": "a30",
+          "query": "what improvements were suggested for the old form-handling web modules",
+          "expected": [
+            "pep-0222.rst"
+          ],
+          "got": [
+            "pep-0347.rst",
+            "pep-0002.rst",
+            "pep-0594.rst",
+            "pep-0316.rst",
+            "pep-0816.rst"
+          ]
+        },
+        {
+          "id": "a35",
+          "query": "why don't common errors carry machine-readable fields about what went wrong",
+          "expected": [
+            "pep-0473.rst"
+          ],
+          "got": [
+            "pep-0642.rst",
+            "pep-0727.rst",
+            "pep-0008.rst",
+            "pep-0810.rst",
+            "pep-0504.rst"
+          ]
+        },
+        {
+          "id": "a36",
+          "query": "which upload formats were retired from the package index",
+          "expected": [
+            "pep-0527.rst"
+          ],
+          "got": [
+            "pep-0426.rst",
+            "pep-0759.rst",
+            "pep-0694.rst",
+            "pep-0807.rst"
+          ]
+        },
+        {
+          "id": "a38",
+          "query": "how were release numbers compared before the current ordering rules",
+          "expected": [
+            "pep-0386.rst"
+          ],
+          "got": [
+            "pep-0207.rst",
+            "pep-0407.rst",
+            "pep-0440.rst",
+            "pep-0634.rst",
+            "pep-0602.rst"
+          ]
+        },
+        {
+          "id": "a39",
+          "query": "where do i declare sets of development requirements that never ship to users",
+          "expected": [
+            "pep-0735.rst"
+          ],
+          "got": [
+            "pep-0773.rst",
+            "pep-0600.rst",
+            "pep-0817.rst",
+            "pep-0665.rst"
+          ]
+        },
+        {
+          "id": "a41",
+          "query": "how does a windows machine pick which interpreter runs a given script",
+          "expected": [
+            "pep-0397.rst"
+          ],
+          "got": [
+            "pep-0486.rst",
+            "pep-0722.rst",
+            "pep-3146.rst",
+            "pep-0582.rst"
+          ]
+        },
+        {
+          "id": "a43",
+          "query": "was there a governance proposal deliberately minimising rules and thresholds",
+          "expected": [
+            "pep-8014.rst"
+          ],
+          "got": [
+            "pep-0013.rst",
+            "pep-8002.rst",
+            "pep-8012.rst",
+            "pep-0647.rst"
+          ]
+        },
+        {
+          "id": "a44",
+          "query": "why were the cryptographic signature files for wheels dropped",
+          "expected": [
+            "pep-0815.rst"
+          ],
+          "got": [
+            "pep-0480.rst",
+            "pep-0740.rst"
+          ]
+        },
+        {
+          "id": "a46",
+          "query": "was a faster replacement for the built-in sequence type ever proposed",
+          "expected": [
+            "pep-3128.rst"
+          ],
+          "got": [
+            "pep-0234.rst",
+            "pep-0212.rst",
+            "pep-0203.rst",
+            "pep-3111.rst",
+            "pep-0383.rst"
+          ]
+        },
+        {
+          "id": "a47",
+          "query": "how can i push a value or an error into a paused generator",
+          "expected": [
+            "pep-0288.rst"
+          ],
+          "got": [
+            "pep-0342.rst",
+            "pep-0568.rst",
+            "pep-0818.rst"
+          ]
+        },
+        {
+          "id": "a48",
+          "query": "what protocol speeds up calling objects from c without building a tuple",
+          "expected": [
+            "pep-0590.rst"
+          ],
+          "got": [
+            "pep-0273.rst",
+            "pep-3156.rst",
+            "pep-0580.rst",
+            "pep-0479.rst"
+          ]
+        },
+        {
+          "id": "a49",
+          "query": "why don't open handles leak into subprocesses by default any more",
+          "expected": [
+            "pep-0446.rst"
+          ],
+          "got": [
+            "pep-0538.rst",
+            "pep-0554.rst",
+            "pep-0433.rst",
+            "pep-0324.rst"
+          ]
+        },
+        {
+          "id": "a52",
+          "query": "how do i annotate the type of a plain variable rather than a parameter",
+          "expected": [
+            "pep-0526.rst"
+          ],
+          "got": [
+            "pep-0747.rst",
+            "pep-0612.rst",
+            "pep-0649.rst",
+            "pep-0484.rst",
+            "pep-0470.rst"
+          ]
+        },
+        {
+          "id": "a53",
+          "query": "what mechanism lets a library define its own safe string formatting",
+          "expected": [
+            "pep-0750.rst"
+          ],
+          "got": [
+            "pep-0502.rst",
+            "pep-0501.rst",
+            "pep-0405.rst",
+            "pep-0389.rst",
+            "pep-0708.rst"
+          ]
+        },
+        {
+          "id": "a56",
+          "query": "was an exact fraction type with unbounded precision ever proposed",
+          "expected": [
+            "pep-0239.rst"
+          ],
+          "got": [
+            "pep-0564.rst",
+            "pep-0646.rst",
+            "pep-0238.rst",
+            "pep-0410.rst",
+            "pep-0786.rst"
+          ]
+        },
+        {
+          "id": "a58",
+          "query": "was it proposed to stop adjacent quoted literals joining automatically",
+          "expected": [
+            "pep-3126.rst"
+          ],
+          "got": [
+            "pep-0822.rst",
+            "pep-3112.rst",
+            "pep-0498.rst",
+            "pep-0204.rst",
+            "pep-0787.rst"
+          ]
+        },
+        {
+          "id": "a59",
+          "query": "what rules govern how modules in the standard library emit diagnostics",
+          "expected": [
+            "pep-0337.rst"
+          ],
+          "got": [
+            "pep-0002.rst",
+            "pep-0233.rst",
+            "pep-0413.rst",
+            "pep-0680.rst",
+            "pep-0534.rst"
+          ]
+        },
+        {
+          "id": "a60",
+          "query": "how do i see the earlier failure that was being handled when this one was raised",
+          "expected": [
+            "pep-3134.rst"
+          ],
+          "got": [
+            "pep-0794.rst",
+            "pep-0211.rst",
+            "pep-0374.rst",
+            "pep-0694.rst",
+            "pep-0558.rst"
+          ]
+        },
+        {
+          "id": "a61",
+          "query": "how do we stop an internal project name being hijacked from a public index",
+          "expected": [
+            "pep-0708.rst"
+          ],
+          "got": [
+            "pep-0691.rst",
+            "pep-0423.rst",
+            "pep-0541.rst",
+            "pep-0683.rst"
+          ]
+        },
+        {
+          "id": "a66",
+          "query": "how do i pick apart a bundle of several errors raised together",
+          "expected": [
+            "pep-0785.rst"
+          ],
+          "got": [
+            "pep-0798.rst",
+            "pep-0102.rst",
+            "pep-0374.rst",
+            "pep-0612.rst",
+            "pep-0748.rst"
+          ]
+        },
+        {
+          "id": "a67",
+          "query": "how can i control what happens when decoding hits an invalid byte",
+          "expected": [
+            "pep-0293.rst"
+          ],
+          "got": [
+            "pep-0253.rst",
+            "pep-0829.rst",
+            "pep-0810.rst",
+            "pep-8002.rst"
+          ]
+        },
+        {
+          "id": "a71",
+          "query": "how did true and false become their own type rather than plain integers",
+          "expected": [
+            "pep-0285.rst"
+          ],
+          "got": [
+            "pep-0290.rst",
+            "pep-0642.rst",
+            "pep-3141.rst",
+            "pep-0681.rst",
+            "pep-0432.rst"
+          ]
+        },
+        {
+          "id": "a72",
+          "query": "is there a proposal to let objects control how they are displayed when formatted for reading",
+          "expected": [
+            "pep-0813.rst"
+          ],
+          "got": [
+            "pep-0525.rst",
+            "pep-0690.rst",
+            "pep-0830.rst",
+            "pep-0430.rst",
+            "pep-0261.rst"
+          ]
+        },
+        {
+          "id": "a73",
+          "query": "how do compiled modules get created in stages rather than all at once",
+          "expected": [
+            "pep-0489.rst"
+          ],
+          "got": [
+            "pep-0830.rst",
+            "pep-0445.rst",
+            "pep-0831.rst",
+            "pep-0463.rst",
+            "pep-0229.rst"
+          ]
+        },
+        {
+          "id": "a74",
+          "query": "where would whole-number functions like combinations live",
+          "expected": [
+            "pep-0791.rst"
+          ],
+          "got": [
+            "pep-0355.rst",
+            "pep-0785.rst",
+            "pep-0665.rst",
+            "pep-0208.rst",
+            "pep-0292.rst"
+          ]
+        },
+        {
+          "id": "a79",
+          "query": "can i spread several iterables into one call or literal",
+          "expected": [
+            "pep-0448.rst"
+          ],
+          "got": [
+            "pep-0798.rst",
+            "pep-0618.rst",
+            "pep-0380.rst",
+            "pep-3148.rst"
+          ]
+        },
+        {
+          "id": "a80",
+          "query": "which fields describe a distribution and what do they mean",
+          "expected": [
+            "pep-0345.rst"
+          ],
+          "got": [
+            "pep-0557.rst",
+            "pep-0390.rst",
+            "pep-3101.rst",
+            "pep-0440.rst",
+            "pep-0426.rst"
+          ]
+        },
+        {
+          "id": "a81",
+          "query": "can a field of a generated class transform the value assigned to it",
+          "expected": [
+            "pep-0712.rst"
+          ],
+          "got": [
+            "pep-0681.rst",
+            "pep-0333.rst",
+            "pep-0557.rst",
+            "pep-3333.rst"
+          ]
+        },
+        {
+          "id": "a83",
+          "query": "what three structural changes to how the community is organised were proposed",
+          "expected": [
+            "pep-8015.rst"
+          ],
+          "got": [
+            "pep-0407.rst",
+            "pep-0701.rst",
+            "pep-0501.rst",
+            "pep-8011.rst",
+            "pep-8002.rst"
+          ]
+        },
+        {
+          "id": "a84",
+          "query": "was there a proposal to let the string conversion function return wide characters",
+          "expected": [
+            "pep-0349.rst"
+          ],
+          "got": [
+            "pep-3138.rst",
+            "pep-0261.rst",
+            "pep-3101.rst"
+          ]
+        }
+      ]
+    },
+    "dense": {
+      "hit_at_5": {
+        "rate": 0.6364,
+        "ci": [
+          0.5321,
+          0.7292
+        ],
+        "n": 88
+      },
+      "mrr": 0.453,
+      "latency_ms": {
+        "p50": 39.1,
+        "p95": 126.2
+      },
+      "misses": [
+        {
+          "id": "a03",
+          "query": "how did the library for running work across several cpus get into the standard distribution",
+          "expected": [
+            "pep-0371.rst"
+          ],
+          "got": [
+            "pep-0810.rst",
+            "pep-0703.rst",
+            "pep-0456.rst"
+          ]
+        },
+        {
+          "id": "a05",
+          "query": "how do i tell the interpreter which character set my source file is written in",
+          "expected": [
+            "pep-0263.rst"
+          ],
+          "got": [
+            "pep-0529.rst",
+            "pep-0538.rst",
+            "pep-0540.rst"
+          ]
+        },
+        {
+          "id": "a10",
+          "query": "who governs the packaging tooling group and how are decisions made",
+          "expected": [
+            "pep-0609.rst"
+          ],
+          "got": [
+            "pep-0772.rst",
+            "pep-0771.rst"
+          ]
+        },
+        {
+          "id": "a11",
+          "query": "was there a proposal to stop installers touching the system interpreter unless isolated",
+          "expected": [
+            "pep-0704.rst"
+          ],
+          "got": [
+            "pep-0668.rst",
+            "pep-0684.rst",
+            "pep-0440.rst",
+            "pep-0773.rst"
+          ]
+        },
+        {
+          "id": "a15",
+          "query": "how can a function tell the type checker that a runtime check narrowed a type",
+          "expected": [
+            "pep-0647.rst"
+          ],
+          "got": [
+            "pep-0742.rst",
+            "pep-0563.rst",
+            "pep-0484.rst"
+          ]
+        },
+        {
+          "id": "a17",
+          "query": "how did the popular patching and stubbing library become part of the standard distribution",
+          "expected": [
+            "pep-0417.rst"
+          ],
+          "got": [
+            "pep-0561.rst",
+            "pep-0301.rst",
+            "pep-0368.rst",
+            "pep-0413.rst"
+          ]
+        },
+        {
+          "id": "a18",
+          "query": "is there a way to ship a module without immediately freezing its interface",
+          "expected": [
+            "pep-0408.rst",
+            "pep-0411.rst"
+          ],
+          "got": [
+            "pep-0302.rst",
+            "pep-0273.rst",
+            "pep-0369.rst",
+            "pep-0406.rst"
+          ]
+        },
+        {
+          "id": "a19",
+          "query": "what steps did a maintainer follow to cut a small bugfix release",
+          "expected": [
+            "pep-0102.rst"
+          ],
+          "got": [
+            "pep-0006.rst",
+            "pep-0462.rst"
+          ]
+        },
+        {
+          "id": "a23",
+          "query": "can pure python code ask whether an object exposes a raw memory view",
+          "expected": [
+            "pep-0688.rst"
+          ],
+          "got": [
+            "pep-3118.rst",
+            "pep-0445.rst",
+            "pep-0207.rst"
+          ]
+        },
+        {
+          "id": "a26",
+          "query": "how was the standard message-recording facility designed",
+          "expected": [
+            "pep-0282.rst"
+          ],
+          "got": [
+            "pep-0703.rst",
+            "pep-0657.rst",
+            "pep-0554.rst",
+            "pep-0627.rst"
+          ]
+        },
+        {
+          "id": "a29",
+          "query": "was there a proposal to let plus-equals be used where a value is expected",
+          "expected": [
+            "pep-0577.rst"
+          ],
+          "got": [
+            "pep-0485.rst",
+            "pep-0584.rst",
+            "pep-0284.rst",
+            "pep-0642.rst",
+            "pep-0572.rst"
+          ]
+        },
+        {
+          "id": "a30",
+          "query": "what improvements were suggested for the old form-handling web modules",
+          "expected": [
+            "pep-0222.rst"
+          ],
+          "got": [
+            "pep-0268.rst",
+            "pep-0676.rst",
+            "pep-0829.rst",
+            "pep-3333.rst",
+            "pep-0333.rst"
+          ]
+        },
+        {
+          "id": "a38",
+          "query": "how were release numbers compared before the current ordering rules",
+          "expected": [
+            "pep-0386.rst"
+          ],
+          "got": [
+            "pep-0440.rst"
+          ]
+        },
+        {
+          "id": "a39",
+          "query": "where do i declare sets of development requirements that never ship to users",
+          "expected": [
+            "pep-0735.rst"
+          ],
+          "got": [
+            "pep-0650.rst",
+            "pep-0633.rst",
+            "pep-0725.rst",
+            "pep-0517.rst"
+          ]
+        },
+        {
+          "id": "a40",
+          "query": "what are the conventions for writing the documentation string of a function",
+          "expected": [
+            "pep-0257.rst"
+          ],
+          "got": [
+            "pep-0727.rst",
+            "pep-0007.rst",
+            "pep-0436.rst"
+          ]
+        },
+        {
+          "id": "a41",
+          "query": "how does a windows machine pick which interpreter runs a given script",
+          "expected": [
+            "pep-0397.rst"
+          ],
+          "got": [
+            "pep-0441.rst",
+            "pep-0486.rst",
+            "pep-0394.rst",
+            "pep-0554.rst",
+            "pep-0734.rst"
+          ]
+        },
+        {
+          "id": "a47",
+          "query": "how can i push a value or an error into a paused generator",
+          "expected": [
+            "pep-0288.rst"
+          ],
+          "got": [
+            "pep-0342.rst",
+            "pep-0479.rst",
+            "pep-0789.rst",
+            "pep-0798.rst"
+          ]
+        },
+        {
+          "id": "a50",
+          "query": "how were coroutines extended so they could also yield values",
+          "expected": [
+            "pep-0525.rst"
+          ],
+          "got": [
+            "pep-0492.rst",
+            "pep-0555.rst",
+            "pep-0521.rst"
+          ]
+        },
+        {
+          "id": "a53",
+          "query": "what mechanism lets a library define its own safe string formatting",
+          "expected": [
+            "pep-0750.rst"
+          ],
+          "got": [
+            "pep-0675.rst",
+            "pep-3101.rst",
+            "pep-0502.rst",
+            "pep-0749.rst"
+          ]
+        },
+        {
+          "id": "a56",
+          "query": "was an exact fraction type with unbounded precision ever proposed",
+          "expected": [
+            "pep-0239.rst"
+          ],
+          "got": [
+            "pep-0786.rst",
+            "pep-0238.rst"
+          ]
+        },
+        {
+          "id": "a57",
+          "query": "how do i get an isolated set of installed packages per project",
+          "expected": [
+            "pep-0405.rst"
+          ],
+          "got": [
+            "pep-0751.rst",
+            "pep-0735.rst",
+            "pep-0438.rst",
+            "pep-0301.rst",
+            "pep-0771.rst"
+          ]
+        },
+        {
+          "id": "a59",
+          "query": "what rules govern how modules in the standard library emit diagnostics",
+          "expected": [
+            "pep-0337.rst"
+          ],
+          "got": [
+            "pep-0534.rst",
+            "pep-0368.rst",
+            "pep-0002.rst",
+            "pep-0408.rst"
+          ]
+        },
+        {
+          "id": "a60",
+          "query": "how do i see the earlier failure that was being handled when this one was raised",
+          "expected": [
+            "pep-3134.rst"
+          ],
+          "got": [
+            "pep-0678.rst",
+            "pep-0830.rst",
+            "pep-0317.rst"
+          ]
+        },
+        {
+          "id": "a61",
+          "query": "how do we stop an internal project name being hijacked from a public index",
+          "expected": [
+            "pep-0708.rst"
+          ],
+          "got": [
+            "pep-0842.rst",
+            "pep-0541.rst",
+            "pep-0794.rst",
+            "pep-0752.rst"
+          ]
+        },
+        {
+          "id": "a63",
+          "query": "how do i describe a mapping where each key has its own value type",
+          "expected": [
+            "pep-0589.rst"
+          ],
+          "got": [
+            "pep-3119.rst",
+            "pep-0642.rst",
+            "pep-0653.rst",
+            "pep-0622.rst"
+          ]
+        },
+        {
+          "id": "a66",
+          "query": "how do i pick apart a bundle of several errors raised together",
+          "expected": [
+            "pep-0785.rst"
+          ],
+          "got": [
+            "pep-0668.rst",
+            "pep-0678.rst",
+            "pep-0654.rst",
+            "pep-0765.rst",
+            "pep-0340.rst"
+          ]
+        },
+        {
+          "id": "a68",
+          "query": "can a dependency be conditioned on features of the runtime binary interface",
+          "expected": [
+            "pep-0780.rst"
+          ],
+          "got": [
+            "pep-0622.rst",
+            "pep-0635.rst",
+            "pep-0544.rst",
+            "pep-0657.rst"
+          ]
+        },
+        {
+          "id": "a74",
+          "query": "where would whole-number functions like combinations live",
+          "expected": [
+            "pep-0791.rst"
+          ],
+          "got": [
+            "pep-0786.rst",
+            "pep-0281.rst",
+            "pep-0209.rst",
+            "pep-0225.rst"
+          ]
+        },
+        {
+          "id": "a75",
+          "query": "how do i declare a generic class without importing a separate helper",
+          "expected": [
+            "pep-0695.rst"
+          ],
+          "got": [
+            "pep-0560.rst",
+            "pep-0544.rst",
+            "pep-0483.rst",
+            "pep-0612.rst"
+          ]
+        },
+        {
+          "id": "a80",
+          "query": "which fields describe a distribution and what do they mean",
+          "expected": [
+            "pep-0345.rst"
+          ],
+          "got": [
+            "pep-0262.rst",
+            "pep-0480.rst",
+            "pep-0557.rst",
+            "pep-0459.rst",
+            "pep-0426.rst"
+          ]
+        },
+        {
+          "id": "a83",
+          "query": "what three structural changes to how the community is organised were proposed",
+          "expected": [
+            "pep-8015.rst"
+          ],
+          "got": [
+            "pep-0729.rst",
+            "pep-8000.rst",
+            "pep-8011.rst",
+            "pep-8002.rst"
+          ]
+        },
+        {
+          "id": "a84",
+          "query": "was there a proposal to let the string conversion function return wide characters",
+          "expected": [
+            "pep-0349.rst"
+          ],
+          "got": [
+            "pep-0261.rst",
+            "pep-0333.rst",
+            "pep-0393.rst"
+          ]
+        }
+      ]
+    },
+    "sparse": {
+      "hit_at_5": {
+        "rate": 0.5341,
+        "ci": [
+          0.4306,
+          0.6347
+        ],
+        "n": 88
+      },
+      "mrr": 0.4009,
+      "latency_ms": {
+        "p50": 91.9,
+        "p95": 164.3
+      },
+      "misses": [
+        {
+          "id": "a02",
+          "query": "what did the review of the public C interface conclude about who depends on it",
+          "expected": [
+            "pep-0733.rst"
+          ],
+          "got": [
+            "pep-0399.rst",
+            "pep-3108.rst",
+            "pep-0482.rst",
+            "pep-0580.rst"
+          ]
+        },
+        {
+          "id": "a03",
+          "query": "how did the library for running work across several cpus get into the standard distribution",
+          "expected": [
+            "pep-0371.rst"
+          ],
+          "got": [
+            "pep-0420.rst",
+            "pep-0255.rst",
+            "pep-0408.rst",
+            "pep-0396.rst",
+            "pep-0413.rst"
+          ]
+        },
+        {
+          "id": "a04",
+          "query": "where do i declare which tools are needed to build my package before anything runs",
+          "expected": [
+            "pep-0518.rst"
+          ],
+          "got": [
+            "pep-0517.rst",
+            "pep-0725.rst",
+            "pep-0600.rst",
+            "pep-0836.rst"
+          ]
+        },
+        {
+          "id": "a05",
+          "query": "how do i tell the interpreter which character set my source file is written in",
+          "expected": [
+            "pep-0263.rst"
+          ],
+          "got": [
+            "pep-3120.rst",
+            "pep-0304.rst",
+            "pep-0302.rst",
+            "pep-0441.rst"
+          ]
+        },
+        {
+          "id": "a10",
+          "query": "who governs the packaging tooling group and how are decisions made",
+          "expected": [
+            "pep-0609.rst"
+          ],
+          "got": [
+            "pep-0771.rst",
+            "pep-0665.rst",
+            "pep-0735.rst",
+            "pep-8002.rst",
+            "pep-0751.rst"
+          ]
+        },
+        {
+          "id": "a11",
+          "query": "was there a proposal to stop installers touching the system interpreter unless isolated",
+          "expected": [
+            "pep-0704.rst"
+          ],
+          "got": [
+            "pep-0582.rst",
+            "pep-0668.rst",
+            "pep-0486.rst",
+            "pep-0304.rst",
+            "pep-0522.rst"
+          ]
+        },
+        {
+          "id": "a15",
+          "query": "how can a function tell the type checker that a runtime check narrowed a type",
+          "expected": [
+            "pep-0647.rst"
+          ],
+          "got": [
+            "pep-0675.rst",
+            "pep-0742.rst",
+            "pep-0484.rst"
+          ]
+        },
+        {
+          "id": "a17",
+          "query": "how did the popular patching and stubbing library become part of the standard distribution",
+          "expected": [
+            "pep-0417.rst"
+          ],
+          "got": [
+            "pep-0748.rst",
+            "pep-0543.rst",
+            "pep-0297.rst",
+            "pep-0408.rst"
+          ]
+        },
+        {
+          "id": "a18",
+          "query": "is there a way to ship a module without immediately freezing its interface",
+          "expected": [
+            "pep-0408.rst",
+            "pep-0411.rst"
+          ],
+          "got": [
+            "pep-0282.rst",
+            "pep-0605.rst",
+            "pep-0809.rst",
+            "pep-0734.rst"
+          ]
+        },
+        {
+          "id": "a19",
+          "query": "what steps did a maintainer follow to cut a small bugfix release",
+          "expected": [
+            "pep-0102.rst"
+          ],
+          "got": [
+            "pep-0602.rst",
+            "pep-0101.rst",
+            "pep-0006.rst"
+          ]
+        },
+        {
+          "id": "a26",
+          "query": "how was the standard message-recording facility designed",
+          "expected": [
+            "pep-0282.rst"
+          ],
+          "got": [
+            "pep-0807.rst",
+            "pep-0333.rst",
+            "pep-0534.rst",
+            "pep-0830.rst",
+            "pep-0827.rst"
+          ]
+        },
+        {
+          "id": "a27",
+          "query": "how did the interpreter decide what to do when arithmetic mixes two different types",
+          "expected": [
+            "pep-0208.rst"
+          ],
+          "got": [
+            "pep-0209.rst",
+            "pep-0655.rst",
+            "pep-0238.rst",
+            "pep-0568.rst",
+            "pep-0636.rst"
+          ]
+        },
+        {
+          "id": "a29",
+          "query": "was there a proposal to let plus-equals be used where a value is expected",
+          "expected": [
+            "pep-0577.rst"
+          ],
+          "got": [
+            "pep-0485.rst",
+            "pep-0642.rst",
+            "pep-0661.rst",
+            "pep-0637.rst",
+            "pep-0557.rst"
+          ]
+        },
+        {
+          "id": "a30",
+          "query": "what improvements were suggested for the old form-handling web modules",
+          "expected": [
+            "pep-0222.rst"
+          ],
+          "got": [
+            "pep-0209.rst",
+            "pep-3108.rst",
+            "pep-0328.rst",
+            "pep-0478.rst",
+            "pep-0493.rst"
+          ]
+        },
+        {
+          "id": "a35",
+          "query": "why don't common errors carry machine-readable fields about what went wrong",
+          "expected": [
+            "pep-0473.rst"
+          ],
+          "got": [
+            "pep-0438.rst",
+            "pep-0639/appendix-license-survey.rst",
+            "pep-0792.rst",
+            "pep-0290.rst",
+            "pep-0638.rst"
+          ]
+        },
+        {
+          "id": "a36",
+          "query": "which upload formats were retired from the package index",
+          "expected": [
+            "pep-0527.rst"
+          ],
+          "got": [
+            "pep-0740.rst",
+            "pep-0759.rst",
+            "pep-0777.rst",
+            "pep-0381.rst",
+            "pep-0817.rst"
+          ]
+        },
+        {
+          "id": "a38",
+          "query": "how were release numbers compared before the current ordering rules",
+          "expected": [
+            "pep-0386.rst"
+          ],
+          "got": [
+            "pep-0440.rst",
+            "pep-0836.rst",
+            "pep-0825.rst"
+          ]
+        },
+        {
+          "id": "a40",
+          "query": "what are the conventions for writing the documentation string of a function",
+          "expected": [
+            "pep-0257.rst"
+          ],
+          "got": [
+            "pep-0727.rst",
+            "pep-3138.rst",
+            "pep-0008.rst",
+            "pep-0436.rst"
+          ]
+        },
+        {
+          "id": "a42",
+          "query": "which old modules had to keep working with much older interpreters",
+          "expected": [
+            "pep-0291.rst"
+          ],
+          "got": [
+            "pep-0297.rst",
+            "pep-0554.rst",
+            "pep-0238.rst",
+            "pep-3146.rst",
+            "pep-0102.rst"
+          ]
+        },
+        {
+          "id": "a43",
+          "query": "was there a governance proposal deliberately minimising rules and thresholds",
+          "expected": [
+            "pep-8014.rst"
+          ],
+          "got": [
+            "pep-8013.rst",
+            "pep-0013.rst",
+            "pep-0577.rst",
+            "pep-0772.rst",
+            "pep-0453.rst"
+          ]
+        },
+        {
+          "id": "a44",
+          "query": "why were the cryptographic signature files for wheels dropped",
+          "expected": [
+            "pep-0815.rst"
+          ],
+          "got": [
+            "pep-0740.rst",
+            "pep-0491.rst",
+            "pep-0427.rst"
+          ]
+        },
+        {
+          "id": "a46",
+          "query": "was a faster replacement for the built-in sequence type ever proposed",
+          "expected": [
+            "pep-3128.rst"
+          ],
+          "got": [
+            "pep-3101.rst",
+            "pep-0781.rst",
+            "pep-0246.rst",
+            "pep-3119.rst",
+            "pep-0211.rst"
+          ]
+        },
+        {
+          "id": "a47",
+          "query": "how can i push a value or an error into a paused generator",
+          "expected": [
+            "pep-0288.rst"
+          ],
+          "got": [
+            "pep-0492.rst",
+            "pep-0342.rst",
+            "pep-0589.rst",
+            "pep-0754.rst"
+          ]
+        },
+        {
+          "id": "a48",
+          "query": "what protocol speeds up calling objects from c without building a tuple",
+          "expected": [
+            "pep-0590.rst"
+          ],
+          "got": [
+            "pep-0688.rst",
+            "pep-0703.rst",
+            "pep-0657.rst",
+            "pep-0246.rst",
+            "pep-0580.rst"
+          ]
+        },
+        {
+          "id": "a50",
+          "query": "how were coroutines extended so they could also yield values",
+          "expected": [
+            "pep-0525.rst"
+          ],
+          "got": [
+            "pep-0342.rst",
+            "pep-0380.rst",
+            "pep-0221.rst"
+          ]
+        },
+        {
+          "id": "a52",
+          "query": "how do i annotate the type of a plain variable rather than a parameter",
+          "expected": [
+            "pep-0526.rst"
+          ],
+          "got": [
+            "pep-0681.rst",
+            "pep-0747.rst",
+            "pep-0604.rst",
+            "pep-0484.rst",
+            "pep-0695.rst"
+          ]
+        },
+        {
+          "id": "a57",
+          "query": "how do i get an isolated set of installed packages per project",
+          "expected": [
+            "pep-0405.rst"
+          ],
+          "got": [
+            "pep-0751.rst",
+            "pep-0518.rst",
+            "pep-0817.rst",
+            "pep-0771.rst"
+          ]
+        },
+        {
+          "id": "a59",
+          "query": "what rules govern how modules in the standard library emit diagnostics",
+          "expected": [
+            "pep-0337.rst"
+          ],
+          "got": [
+            "pep-0565.rst",
+            "pep-0399.rst",
+            "pep-0453.rst",
+            "pep-0534.rst",
+            "pep-0597.rst"
+          ]
+        },
+        {
+          "id": "a60",
+          "query": "how do i see the earlier failure that was being handled when this one was raised",
+          "expected": [
+            "pep-3134.rst"
+          ],
+          "got": [
+            "pep-3109.rst",
+            "pep-0227.rst",
+            "pep-0324.rst",
+            "pep-3118.rst",
+            "pep-0654.rst"
+          ]
+        },
+        {
+          "id": "a61",
+          "query": "how do we stop an internal project name being hijacked from a public index",
+          "expected": [
+            "pep-0708.rst"
+          ],
+          "got": [
+            "pep-0694.rst",
+            "pep-0541.rst",
+            "pep-0426.rst"
+          ]
+        },
+        {
+          "id": "a62",
+          "query": "how did importing from a sibling package become unambiguous",
+          "expected": [
+            "pep-0328.rst"
+          ],
+          "got": [
+            "pep-0008.rst",
+            "pep-0338.rst",
+            "pep-0420.rst",
+            "pep-0366.rst"
+          ]
+        },
+        {
+          "id": "a66",
+          "query": "how do i pick apart a bundle of several errors raised together",
+          "expected": [
+            "pep-0785.rst"
+          ],
+          "got": [
+            "pep-0678.rst",
+            "pep-0348.rst",
+            "pep-0533.rst"
+          ]
+        },
+        {
+          "id": "a67",
+          "query": "how can i control what happens when decoding hits an invalid byte",
+          "expected": [
+            "pep-0293.rst"
+          ],
+          "got": [
+            "pep-0538.rst",
+            "pep-0529.rst",
+            "pep-0829.rst"
+          ]
+        },
+        {
+          "id": "a71",
+          "query": "how did true and false become their own type rather than plain integers",
+          "expected": [
+            "pep-0285.rst"
+          ],
+          "got": [
+            "pep-0290.rst",
+            "pep-3100.rst",
+            "pep-0435.rst",
+            "pep-0804.rst"
+          ]
+        },
+        {
+          "id": "a73",
+          "query": "how do compiled modules get created in stages rather than all at once",
+          "expected": [
+            "pep-0489.rst"
+          ],
+          "got": [
+            "pep-0384.rst",
+            "pep-0810.rst",
+            "pep-0396.rst",
+            "pep-0405.rst",
+            "pep-0694.rst"
+          ]
+        },
+        {
+          "id": "a74",
+          "query": "where would whole-number functions like combinations live",
+          "expected": [
+            "pep-0791.rst"
+          ],
+          "got": [
+            "pep-0575.rst",
+            "pep-0207.rst",
+            "pep-0584.rst",
+            "pep-0204.rst",
+            "pep-0622.rst"
+          ]
+        },
+        {
+          "id": "a78",
+          "query": "what was proposed for authenticated requests and remote file editing over the web",
+          "expected": [
+            "pep-0268.rst"
+          ],
+          "got": [
+            "pep-0507.rst",
+            "pep-0694.rst",
+            "pep-0481.rst",
+            "pep-0376.rst"
+          ]
+        },
+        {
+          "id": "a79",
+          "query": "can i spread several iterables into one call or literal",
+          "expected": [
+            "pep-0448.rst"
+          ],
+          "got": [
+            "pep-0718.rst",
+            "pep-0289.rst",
+            "pep-0618.rst",
+            "pep-3148.rst",
+            "pep-0675.rst"
+          ]
+        },
+        {
+          "id": "a81",
+          "query": "can a field of a generated class transform the value assigned to it",
+          "expected": [
+            "pep-0712.rst"
+          ],
+          "got": [
+            "pep-0557.rst",
+            "pep-0681.rst"
+          ]
+        },
+        {
+          "id": "a83",
+          "query": "what three structural changes to how the community is organised were proposed",
+          "expected": [
+            "pep-8015.rst"
+          ],
+          "got": [
+            "pep-0474.rst",
+            "pep-0327.rst",
+            "pep-8010.rst",
+            "pep-0731.rst",
+            "pep-0501.rst"
+          ]
+        },
+        {
+          "id": "a84",
+          "query": "was there a proposal to let the string conversion function return wide characters",
+          "expected": [
+            "pep-0349.rst"
+          ],
+          "got": [
+            "pep-3138.rst",
+            "pep-3101.rst",
+            "pep-0261.rst",
+            "pep-0506.rst",
+            "pep-0042.rst"
+          ]
+        }
+      ]
+    },
+    "hybrid": {
+      "hit_at_5": {
+        "rate": 0.625,
+        "ci": [
+          0.5206,
+          0.7189
+        ],
+        "n": 88
+      },
+      "mrr": 0.4833,
+      "latency_ms": {
+        "p50": 110.7,
+        "p95": 163.2
+      },
+      "misses": [
+        {
+          "id": "a03",
+          "query": "how did the library for running work across several cpus get into the standard distribution",
+          "expected": [
+            "pep-0371.rst"
+          ],
+          "got": [
+            "pep-0810.rst",
+            "pep-0420.rst",
+            "pep-0703.rst",
+            "pep-0255.rst",
+            "pep-0456.rst"
+          ]
+        },
+        {
+          "id": "a04",
+          "query": "where do i declare which tools are needed to build my package before anything runs",
+          "expected": [
+            "pep-0518.rst"
+          ],
+          "got": [
+            "pep-0725.rst",
+            "docs/build.rst",
+            "pep-0517.rst"
+          ]
+        },
+        {
+          "id": "a05",
+          "query": "how do i tell the interpreter which character set my source file is written in",
+          "expected": [
+            "pep-0263.rst"
+          ],
+          "got": [
+            "pep-0441.rst",
+            "pep-0529.rst",
+            "pep-3120.rst",
+            "pep-0538.rst",
+            "pep-0304.rst"
+          ]
+        },
+        {
+          "id": "a07",
+          "query": "what are the exact semantics of the match statement",
+          "expected": [
+            "pep-0634.rst"
+          ],
+          "got": [
+            "pep-0635.rst",
+            "pep-0622.rst",
+            "pep-0642.rst"
+          ]
+        },
+        {
+          "id": "a10",
+          "query": "who governs the packaging tooling group and how are decisions made",
+          "expected": [
+            "pep-0609.rst"
+          ],
+          "got": [
+            "pep-0771.rst",
+            "pep-0772.rst",
+            "pep-0665.rst"
+          ]
+        },
+        {
+          "id": "a11",
+          "query": "was there a proposal to stop installers touching the system interpreter unless isolated",
+          "expected": [
+            "pep-0704.rst"
+          ],
+          "got": [
+            "pep-0668.rst",
+            "pep-0582.rst",
+            "pep-0684.rst"
+          ]
+        },
+        {
+          "id": "a15",
+          "query": "how can a function tell the type checker that a runtime check narrowed a type",
+          "expected": [
+            "pep-0647.rst"
+          ],
+          "got": [
+            "pep-0484.rst",
+            "pep-0742.rst"
+          ]
+        },
+        {
+          "id": "a17",
+          "query": "how did the popular patching and stubbing library become part of the standard distribution",
+          "expected": [
+            "pep-0417.rst"
+          ],
+          "got": [
+            "pep-0561.rst",
+            "pep-0748.rst",
+            "pep-0301.rst",
+            "pep-0543.rst"
+          ]
+        },
+        {
+          "id": "a18",
+          "query": "is there a way to ship a module without immediately freezing its interface",
+          "expected": [
+            "pep-0408.rst",
+            "pep-0411.rst"
+          ],
+          "got": [
+            "pep-0302.rst",
+            "pep-0605.rst",
+            "pep-0282.rst",
+            "pep-0273.rst"
+          ]
+        },
+        {
+          "id": "a23",
+          "query": "can pure python code ask whether an object exposes a raw memory view",
+          "expected": [
+            "pep-0688.rst"
+          ],
+          "got": [
+            "pep-3118.rst",
+            "pep-3119.rst",
+            "pep-0574.rst",
+            "pep-0528.rst"
+          ]
+        },
+        {
+          "id": "a26",
+          "query": "how was the standard message-recording facility designed",
+          "expected": [
+            "pep-0282.rst"
+          ],
+          "got": [
+            "pep-0703.rst",
+            "pep-0807.rst",
+            "pep-0657.rst",
+            "pep-0333.rst",
+            "pep-0554.rst"
+          ]
+        },
+        {
+          "id": "a29",
+          "query": "was there a proposal to let plus-equals be used where a value is expected",
+          "expected": [
+            "pep-0577.rst"
+          ],
+          "got": [
+            "pep-0485.rst",
+            "pep-0584.rst",
+            "pep-0642.rst",
+            "pep-0284.rst",
+            "pep-0661.rst"
+          ]
+        },
+        {
+          "id": "a30",
+          "query": "what improvements were suggested for the old form-handling web modules",
+          "expected": [
+            "pep-0222.rst"
+          ],
+          "got": [
+            "pep-0268.rst",
+            "pep-0209.rst",
+            "pep-0676.rst",
+            "pep-3108.rst",
+            "pep-0829.rst"
+          ]
+        },
+        {
+          "id": "a36",
+          "query": "which upload formats were retired from the package index",
+          "expected": [
+            "pep-0527.rst"
+          ],
+          "got": [
+            "pep-0381.rst",
+            "pep-0753.rst",
+            "pep-0817.rst",
+            "pep-0740.rst"
+          ]
+        },
+        {
+          "id": "a40",
+          "query": "what are the conventions for writing the documentation string of a function",
+          "expected": [
+            "pep-0257.rst"
+          ],
+          "got": [
+            "pep-0727.rst",
+            "pep-3138.rst",
+            "pep-0007.rst"
+          ]
+        },
+        {
+          "id": "a41",
+          "query": "how does a windows machine pick which interpreter runs a given script",
+          "expected": [
+            "pep-0397.rst"
+          ],
+          "got": [
+            "pep-0486.rst",
+            "pep-0773.rst",
+            "pep-0394.rst",
+            "pep-0441.rst"
+          ]
+        },
+        {
+          "id": "a43",
+          "query": "was there a governance proposal deliberately minimising rules and thresholds",
+          "expected": [
+            "pep-8014.rst"
+          ],
+          "got": [
+            "pep-0013.rst",
+            "pep-8000.rst",
+            "pep-8016.rst",
+            "pep-0647.rst",
+            "pep-8013.rst"
+          ]
+        },
+        {
+          "id": "a46",
+          "query": "was a faster replacement for the built-in sequence type ever proposed",
+          "expected": [
+            "pep-3128.rst"
+          ],
+          "got": [
+            "pep-0279.rst",
+            "pep-3101.rst",
+            "pep-0653.rst",
+            "pep-0781.rst"
+          ]
+        },
+        {
+          "id": "a47",
+          "query": "how can i push a value or an error into a paused generator",
+          "expected": [
+            "pep-0288.rst"
+          ],
+          "got": [
+            "pep-0342.rst",
+            "pep-0492.rst",
+            "pep-0479.rst",
+            "pep-0789.rst"
+          ]
+        },
+        {
+          "id": "a48",
+          "query": "what protocol speeds up calling objects from c without building a tuple",
+          "expected": [
+            "pep-0590.rst"
+          ],
+          "got": [
+            "pep-0580.rst",
+            "pep-0579.rst",
+            "pep-3153.rst",
+            "pep-0688.rst"
+          ]
+        },
+        {
+          "id": "a53",
+          "query": "what mechanism lets a library define its own safe string formatting",
+          "expected": [
+            "pep-0750.rst"
+          ],
+          "got": [
+            "pep-3101.rst",
+            "pep-0675.rst"
+          ]
+        },
+        {
+          "id": "a56",
+          "query": "was an exact fraction type with unbounded precision ever proposed",
+          "expected": [
+            "pep-0239.rst"
+          ],
+          "got": [
+            "pep-0786.rst",
+            "pep-0242.rst",
+            "pep-0327.rst"
+          ]
+        },
+        {
+          "id": "a57",
+          "query": "how do i get an isolated set of installed packages per project",
+          "expected": [
+            "pep-0405.rst"
+          ],
+          "got": [
+            "pep-0735.rst",
+            "pep-0771.rst",
+            "pep-0751.rst",
+            "pep-0518.rst"
+          ]
+        },
+        {
+          "id": "a59",
+          "query": "what rules govern how modules in the standard library emit diagnostics",
+          "expected": [
+            "pep-0337.rst"
+          ],
+          "got": [
+            "pep-0534.rst",
+            "pep-0408.rst",
+            "pep-0002.rst"
+          ]
+        },
+        {
+          "id": "a60",
+          "query": "how do i see the earlier failure that was being handled when this one was raised",
+          "expected": [
+            "pep-3134.rst"
+          ],
+          "got": [
+            "pep-0654.rst",
+            "pep-0830.rst",
+            "pep-0678.rst",
+            "pep-3109.rst"
+          ]
+        },
+        {
+          "id": "a61",
+          "query": "how do we stop an internal project name being hijacked from a public index",
+          "expected": [
+            "pep-0708.rst"
+          ],
+          "got": [
+            "pep-0541.rst",
+            "pep-0423.rst",
+            "pep-0794.rst",
+            "pep-0842.rst"
+          ]
+        },
+        {
+          "id": "a63",
+          "query": "how do i describe a mapping where each key has its own value type",
+          "expected": [
+            "pep-0589.rst"
+          ],
+          "got": [
+            "pep-3119.rst",
+            "pep-0636.rst",
+            "pep-0622.rst",
+            "pep-0642.rst"
+          ]
+        },
+        {
+          "id": "a66",
+          "query": "how do i pick apart a bundle of several errors raised together",
+          "expected": [
+            "pep-0785.rst"
+          ],
+          "got": [
+            "pep-0668.rst",
+            "pep-0678.rst",
+            "pep-0348.rst",
+            "pep-0654.rst"
+          ]
+        },
+        {
+          "id": "a67",
+          "query": "how can i control what happens when decoding hits an invalid byte",
+          "expected": [
+            "pep-0293.rst"
+          ],
+          "got": [
+            "pep-3116.rst",
+            "pep-0538.rst",
+            "pep-0383.rst",
+            "pep-0330.rst"
+          ]
+        },
+        {
+          "id": "a74",
+          "query": "where would whole-number functions like combinations live",
+          "expected": [
+            "pep-0791.rst"
+          ],
+          "got": [
+            "pep-0786.rst",
+            "pep-0575.rst",
+            "pep-0281.rst",
+            "pep-0207.rst"
+          ]
+        },
+        {
+          "id": "a81",
+          "query": "can a field of a generated class transform the value assigned to it",
+          "expected": [
+            "pep-0712.rst"
+          ],
+          "got": [
+            "pep-0681.rst",
+            "pep-0557.rst"
+          ]
+        },
+        {
+          "id": "a83",
+          "query": "what three structural changes to how the community is organised were proposed",
+          "expected": [
+            "pep-8015.rst"
+          ],
+          "got": [
+            "pep-0731.rst",
+            "pep-0413.rst",
+            "pep-0308.rst",
+            "pep-0729.rst",
+            "pep-0474.rst"
+          ]
+        },
+        {
+          "id": "a84",
+          "query": "was there a proposal to let the string conversion function return wide characters",
+          "expected": [
+            "pep-0349.rst"
+          ],
+          "got": [
+            "pep-0261.rst",
+            "pep-3138.rst",
+            "pep-0333.rst",
+            "pep-3101.rst"
+          ]
+        }
+      ]
+    },
+    "hybrid+rerank": {
+      "hit_at_5": {
+        "rate": 0.6364,
+        "ci": [
+          0.5321,
+          0.7292
+        ],
+        "n": 88
+      },
+      "mrr": 0.467,
+      "latency_ms": {
+        "p50": 5363.3,
+        "p95": 8660.9
+      },
+      "misses": [
+        {
+          "id": "a03",
+          "query": "how did the library for running work across several cpus get into the standard distribution",
+          "expected": [
+            "pep-0371.rst"
+          ],
+          "got": [
+            "pep-0420.rst",
+            "pep-0703.rst",
+            "pep-3148.rst",
+            "pep-0376.rst"
+          ]
+        },
+        {
+          "id": "a04",
+          "query": "where do i declare which tools are needed to build my package before anything runs",
+          "expected": [
+            "pep-0518.rst"
+          ],
+          "got": [
+            "pep-0725.rst",
+            "pep-0517.rst",
+            "pep-0516.rst"
+          ]
+        },
+        {
+          "id": "a05",
+          "query": "how do i tell the interpreter which character set my source file is written in",
+          "expected": [
+            "pep-0263.rst"
+          ],
+          "got": [
+            "pep-3120.rst",
+            "pep-0441.rst",
+            "pep-0304.rst"
+          ]
+        },
+        {
+          "id": "a07",
+          "query": "what are the exact semantics of the match statement",
+          "expected": [
+            "pep-0634.rst"
+          ],
+          "got": [
+            "pep-0622.rst",
+            "pep-0635.rst",
+            "pep-0653.rst"
+          ]
+        },
+        {
+          "id": "a10",
+          "query": "who governs the packaging tooling group and how are decisions made",
+          "expected": [
+            "pep-0609.rst"
+          ],
+          "got": [
+            "pep-0772.rst"
+          ]
+        },
+        {
+          "id": "a11",
+          "query": "was there a proposal to stop installers touching the system interpreter unless isolated",
+          "expected": [
+            "pep-0704.rst"
+          ],
+          "got": [
+            "pep-0684.rst",
+            "pep-0554.rst",
+            "pep-0582.rst",
+            "pep-0668.rst",
+            "pep-0432.rst"
+          ]
+        },
+        {
+          "id": "a13",
+          "query": "how can objects with cleanup methods participate in cycles safely",
+          "expected": [
+            "pep-0442.rst"
+          ],
+          "got": [
+            "pep-0683.rst",
+            "pep-0533.rst",
+            "pep-0342.rst"
+          ]
+        },
+        {
+          "id": "a15",
+          "query": "how can a function tell the type checker that a runtime check narrowed a type",
+          "expected": [
+            "pep-0647.rst"
+          ],
+          "got": [
+            "pep-0742.rst",
+            "pep-0724.rst"
+          ]
+        },
+        {
+          "id": "a17",
+          "query": "how did the popular patching and stubbing library become part of the standard distribution",
+          "expected": [
+            "pep-0417.rst"
+          ],
+          "got": [
+            "pep-0411.rst",
+            "pep-0408.rst",
+            "pep-0534.rst",
+            "pep-0297.rst",
+            "pep-0543.rst"
+          ]
+        },
+        {
+          "id": "a18",
+          "query": "is there a way to ship a module without immediately freezing its interface",
+          "expected": [
+            "pep-0408.rst",
+            "pep-0411.rst"
+          ],
+          "got": [
+            "pep-0302.rst",
+            "pep-0605.rst",
+            "pep-0776.rst"
+          ]
+        },
+        {
+          "id": "a23",
+          "query": "can pure python code ask whether an object exposes a raw memory view",
+          "expected": [
+            "pep-0688.rst"
+          ],
+          "got": [
+            "pep-0574.rst",
+            "pep-3118.rst",
+            "pep-0528.rst",
+            "pep-0454.rst",
+            "pep-0445.rst"
+          ]
+        },
+        {
+          "id": "a26",
+          "query": "how was the standard message-recording facility designed",
+          "expected": [
+            "pep-0282.rst"
+          ],
+          "got": [
+            "pep-0627.rst",
+            "pep-0807.rst",
+            "pep-0249.rst",
+            "pep-0333.rst"
+          ]
+        },
+        {
+          "id": "a29",
+          "query": "was there a proposal to let plus-equals be used where a value is expected",
+          "expected": [
+            "pep-0577.rst"
+          ],
+          "got": [
+            "pep-0637.rst",
+            "pep-0485.rst",
+            "pep-0463.rst",
+            "pep-0586.rst"
+          ]
+        },
+        {
+          "id": "a35",
+          "query": "why don't common errors carry machine-readable fields about what went wrong",
+          "expected": [
+            "pep-0473.rst"
+          ],
+          "got": [
+            "pep-0008.rst",
+            "pep-0310.rst",
+            "pep-0557.rst",
+            "pep-3127.rst",
+            "pep-0438.rst"
+          ]
+        },
+        {
+          "id": "a36",
+          "query": "which upload formats were retired from the package index",
+          "expected": [
+            "pep-0527.rst"
+          ],
+          "got": [
+            "pep-0694.rst",
+            "pep-0817.rst",
+            "pep-0753.rst",
+            "pep-0759.rst"
+          ]
+        },
+        {
+          "id": "a38",
+          "query": "how were release numbers compared before the current ordering rules",
+          "expected": [
+            "pep-0386.rst"
+          ],
+          "got": [
+            "pep-0440.rst"
+          ]
+        },
+        {
+          "id": "a40",
+          "query": "what are the conventions for writing the documentation string of a function",
+          "expected": [
+            "pep-0257.rst"
+          ],
+          "got": [
+            "pep-0727.rst",
+            "pep-0216.rst",
+            "pep-0008.rst"
+          ]
+        },
+        {
+          "id": "a41",
+          "query": "how does a windows machine pick which interpreter runs a given script",
+          "expected": [
+            "pep-0397.rst"
+          ],
+          "got": [
+            "pep-0486.rst",
+            "pep-0734.rst",
+            "pep-0711.rst",
+            "pep-0722.rst"
+          ]
+        },
+        {
+          "id": "a42",
+          "query": "which old modules had to keep working with much older interpreters",
+          "expected": [
+            "pep-0291.rst"
+          ],
+          "got": [
+            "pep-0297.rst",
+            "pep-0810.rst",
+            "pep-0630.rst",
+            "pep-0684.rst",
+            "pep-0594.rst"
+          ]
+        },
+        {
+          "id": "a43",
+          "query": "was there a governance proposal deliberately minimising rules and thresholds",
+          "expected": [
+            "pep-8014.rst"
+          ],
+          "got": [
+            "pep-8013.rst",
+            "pep-0013.rst",
+            "pep-8016.rst",
+            "pep-8000.rst"
+          ]
+        },
+        {
+          "id": "a46",
+          "query": "was a faster replacement for the built-in sequence type ever proposed",
+          "expected": [
+            "pep-3128.rst"
+          ],
+          "got": [
+            "pep-0246.rst",
+            "pep-0270.rst",
+            "pep-3119.rst",
+            "pep-3101.rst",
+            "pep-0211.rst"
+          ]
+        },
+        {
+          "id": "a47",
+          "query": "how can i push a value or an error into a paused generator",
+          "expected": [
+            "pep-0288.rst"
+          ],
+          "got": [
+            "pep-0342.rst",
+            "pep-0533.rst",
+            "pep-0340.rst"
+          ]
+        },
+        {
+          "id": "a50",
+          "query": "how were coroutines extended so they could also yield values",
+          "expected": [
+            "pep-0525.rst"
+          ],
+          "got": [
+            "pep-0342.rst",
+            "pep-0334.rst",
+            "pep-0521.rst",
+            "pep-0550.rst"
+          ]
+        },
+        {
+          "id": "a53",
+          "query": "what mechanism lets a library define its own safe string formatting",
+          "expected": [
+            "pep-0750.rst"
+          ],
+          "got": [
+            "pep-0498.rst",
+            "pep-3101.rst",
+            "pep-0502.rst"
+          ]
+        },
+        {
+          "id": "a57",
+          "query": "how do i get an isolated set of installed packages per project",
+          "expected": [
+            "pep-0405.rst"
+          ],
+          "got": [
+            "pep-0735.rst",
+            "pep-0751.rst",
+            "pep-0817.rst",
+            "pep-0771.rst"
+          ]
+        },
+        {
+          "id": "a59",
+          "query": "what rules govern how modules in the standard library emit diagnostics",
+          "expected": [
+            "pep-0337.rst"
+          ],
+          "got": [
+            "pep-0453.rst",
+            "pep-0565.rst",
+            "pep-0399.rst",
+            "pep-0534.rst"
+          ]
+        },
+        {
+          "id": "a60",
+          "query": "how do i see the earlier failure that was being handled when this one was raised",
+          "expected": [
+            "pep-3134.rst"
+          ],
+          "got": [
+            "pep-0317.rst",
+            "pep-0678.rst",
+            "pep-0346.rst",
+            "pep-0289.rst"
+          ]
+        },
+        {
+          "id": "a66",
+          "query": "how do i pick apart a bundle of several errors raised together",
+          "expected": [
+            "pep-0785.rst"
+          ],
+          "got": [
+            "pep-0533.rst",
+            "pep-0678.rst",
+            "pep-0654.rst",
+            "pep-0431.rst",
+            "pep-0735.rst"
+          ]
+        },
+        {
+          "id": "a67",
+          "query": "how can i control what happens when decoding hits an invalid byte",
+          "expected": [
+            "pep-0293.rst"
+          ],
+          "got": [
+            "pep-0529.rst",
+            "pep-0330.rst",
+            "pep-3116.rst",
+            "pep-0538.rst"
+          ]
+        },
+        {
+          "id": "a74",
+          "query": "where would whole-number functions like combinations live",
+          "expected": [
+            "pep-0791.rst"
+          ],
+          "got": [
+            "pep-0208.rst",
+            "pep-0622.rst",
+            "pep-0786.rst",
+            "pep-0204.rst"
+          ]
+        },
+        {
+          "id": "a82",
+          "query": "why did the memory handling of the c argument parser need reworking",
+          "expected": [
+            "pep-0286.rst"
+          ],
+          "got": [
+            "pep-0701.rst",
+            "pep-0306.rst",
+            "pep-0617.rst",
+            "pep-0339.rst"
+          ]
+        },
+        {
+          "id": "a83",
+          "query": "what three structural changes to how the community is organised were proposed",
+          "expected": [
+            "pep-8015.rst"
+          ],
+          "got": [
+            "pep-8000.rst",
+            "pep-0609.rst",
+            "pep-0308.rst",
+            "pep-8011.rst",
+            "pep-0327.rst"
+          ]
+        }
+      ]
+    }
+  },
+  "abstention_accuracy": {
+    "rate": 1.0,
+    "ci": [
+      0.7412,
+      1.0
+    ],
+    "n": 11
+  },
+  "false_abstain": {
+    "rate": 0.0227,
+    "ci": [
+      0.004,
+      0.1181
+    ],
+    "n": 44
+  }
+}
