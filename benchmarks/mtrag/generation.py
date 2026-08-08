@@ -410,25 +410,40 @@ def main(argv: list[str] | None = None) -> int:
     failed: list[str] = []
     consecutive = 0
     failures_path = args.out.with_suffix(args.out.suffix + ".failed.jsonl")
+    # Rewritten, not appended across runs: this file describes the run that just happened. Appending
+    # would leave a task that failed once and later succeeded sitting in the log forever, so the
+    # file would over-report while the "done" event under-reported, and the two would disagree.
+    failures_path.unlink(missing_ok=True)
     with args.out.open("a", encoding="utf-8") as handle:
         for position, task in enumerate(pending, 1):
-            contexts = contexts_for(task, recall_contexts)
             try:
+                # ⚠️ `contexts_for` and `build_messages` belong INSIDE the guard, not above it.
+                # The property being defended is "no single task can end the run", and an earlier
+                # version of this block guarded only `generate_one`, which implements the narrower
+                # "no single API failure can end the run". A malformed context row raises
+                # `AttributeError` out of `normalise_context`, which is not a `RuntimeError`, so it
+                # escaped, killed the run, and logged nothing: the exact failure this quarantine
+                # exists to prevent, reached by the one path it did not cover. The release's own
+                # contexts are well-formed, but `--contexts-from` reads a file we do not control.
+                contexts = contexts_for(task, recall_contexts)
                 answer = generate_one(
                     client, args.model, build_messages(task, contexts), args.max_tokens
                 )
-            except RuntimeError as exc:
-                # One task that cannot be answered must not end the run. A content-policy refusal
-                # on a single conversational turn is a per-task condition, and because resume is
-                # driven by what is WRITTEN, an abort here would park the run at this same task on
-                # every retry: 841 answerable tasks held hostage by one. Nothing is written to the
-                # submission, so a later run retries it rather than inheriting a fabricated answer.
+            except Exception as exc:
+                # Deliberately `Exception`, not a list of the failures imagined so far. Enumerating
+                # types is what produced the bug above: any type not on the list becomes fatal, and
+                # the list is guesswork about data we do not control. `BaseException` still
+                # propagates, so Ctrl-C and SystemExit stop the run as they should. The type is
+                # recorded so a systematic fault is legible rather than hidden as "some failures".
                 failed.append(str(task["task_id"]))
                 consecutive += 1
                 with failures_path.open("a", encoding="utf-8") as fh:
-                    fh.write(json.dumps({"task_id": task["task_id"], "error": str(exc)}) + "\n")
+                    fh.write(json.dumps({"task_id": task["task_id"],
+                                         "error_type": type(exc).__name__,
+                                         "error": str(exc)}) + "\n")
                 print(
                     json.dumps({"event": "task_failed", "task_id": task["task_id"],
+                                "error_type": type(exc).__name__,
                                 "consecutive": consecutive, "error": str(exc)[:200]}),
                     flush=True,
                 )

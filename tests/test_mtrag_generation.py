@@ -323,6 +323,92 @@ def test_one_unanswerable_task_does_not_take_the_other_840_down_with_it(
     )
 
 
+def test_a_malformed_context_is_quarantined_like_any_other_per_task_failure(
+    tmp_path, monkeypatch
+) -> None:
+    """The quarantine must cover ALL per-task work, not just the API call.
+
+    This is the same defect as the test above, reached by the path the first fix did not cover.
+    `contexts_for` used to run one line ABOVE the `try`, so a context row that is not a dict raised
+    `AttributeError` out of `normalise_context`, sailed past `except RuntimeError`, killed the run
+    and logged nothing. The guard read as "no task can end the run" while implementing "no API
+    failure can end the run". `--contexts-from` reads a file we do not control, so this is reachable
+    with real data, not only in theory.
+    """
+    tasks = [_task(task_id=f"c{i}<::>1") for i in range(4)]
+    tasks[1]["contexts"] = ["this is a string, not a context dict"]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+    monkeypatch.setattr(gen, "generate_one", lambda *a, **k: "an answer")
+
+    rc = gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+
+    assert rc == 0
+    written = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert [r["task_id"] for r in written] == ["c0<::>1", "c2<::>1", "c3<::>1"], (
+        "the tasks AFTER the malformed one must still be attempted"
+    )
+    logged = [
+        json.loads(line)
+        for line in out.with_suffix(out.suffix + ".failed.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert [r["task_id"] for r in logged] == ["c1<::>1"]
+    assert logged[0]["error_type"] == "AttributeError", (
+        "the exception type must be recorded, or a systematic fault reads as 'some failures'"
+    )
+
+
+def test_the_failures_log_describes_this_run_not_every_run(tmp_path, monkeypatch) -> None:
+    """A task that failed once and later succeeded must not stay in the log forever.
+
+    Appending across runs makes the log over-report while the `done` event under-reports, and the
+    two then disagree about the same run.
+    """
+    tasks = [_task(task_id="c0<::>1")]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+    failures = out.with_suffix(out.suffix + ".failed.jsonl")
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+
+    def fail(*a, **k):
+        raise RuntimeError("transient outage")
+
+    monkeypatch.setattr(gen, "generate_one", fail)
+    gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+    assert len(failures.read_text(encoding="utf-8").splitlines()) == 1
+
+    monkeypatch.setattr(gen, "generate_one", lambda *a, **k: "an answer")
+    gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+
+    # Deleted outright when the retry leaves nothing to report, rather than left as an empty file.
+    assert not failures.exists() or failures.read_text(encoding="utf-8").strip() == "", (
+        "the retry succeeded, so the stale failure record must be gone"
+    )
+
+
+def test_build_messages_never_names_a_withheld_field_in_its_source() -> None:
+    """A structural check, because the substring guard has a blind spot.
+
+    `_assert_no_withheld_metadata` compares literal strings, so a TRANSFORMED leak (a truncated
+    slice of the gold answer, or a lower-cased label) would slip past it. This asserts the stronger
+    and simpler property instead: the prompt-building path never refers to those keys at all, so
+    there is nothing to transform. Requires the good rather than refusing one shape of bad.
+    """
+    import inspect
+
+    source = inspect.getsource(gen.build_messages) + inspect.getsource(gen.conversation_text)
+
+    for field in ("Answerability", "targets", "Question Type", "Multi-Turn"):
+        assert field not in source, (
+            f"{field!r} is named in the prompt-building path; it is withheld benchmark metadata "
+            f"and must never be readable from there"
+        )
+
+
 def test_a_run_where_nothing_succeeds_stops_instead_of_billing_every_task(
     tmp_path, monkeypatch
 ) -> None:
