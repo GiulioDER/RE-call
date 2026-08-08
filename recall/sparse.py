@@ -5,9 +5,11 @@ See `docs/superpowers/specs/2026-08-06-learned-sparse-splade-design.md`.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
+from contextlib import closing
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 import hashlib
 
 
@@ -57,6 +59,12 @@ class SparseProfile:
 
         Fields are NUL-terminated before hashing. The terminators are what make the
         concatenation unambiguous; without them ``("ab", "c")`` and ``("a", "bc")`` hash alike.
+
+        ⚠️ This stability guarantee covers the CACHE KEY, not sidecar coverage. The sparse
+        sidecar (`recall.store.PgVectorStore.sparse_covered_sources`) is keyed on `profile_id`
+        alone, which is not this fingerprint: `top_k` and the checkpoint's pinned `revision`
+        (folded into `artifact_digest`) can both change without `profile_id` changing, and the
+        sidecar has no way to notice. See that method's docstring for what that costs.
         """
         digest = hashlib.sha256()
         parts = [
@@ -264,3 +272,401 @@ class SpladeEncoder:
             logits = self._model(**encoded).logits
         weights = splade_weights(logits, encoded["attention_mask"])
         return [prune_to_top_k(row, self._profile.top_k) for row in weights]
+
+
+class SparseEncoderProtocol(Protocol):
+    """What the indexing helpers actually need from an encoder.
+
+    Stated as a protocol rather than as `SpladeEncoder`, because the tests drive these helpers
+    with a deterministic keyword encoder and that is a feature: it keeps the corpus path testable
+    without a 500 MB download, and it keeps `torch` out of a lexical-only install.
+    """
+
+    @property
+    def profile(self) -> SparseProfile: ...
+
+    def encode(self, texts: list[str]) -> list[dict[int, float]]: ...
+
+
+@dataclass(frozen=True)
+class SparseIndexResult:
+    """What one indexing pass wrote, and what it could not write.
+
+    `empty_ids` is not a warning to be discarded. It is the ONLY explanation an operator will get
+    for `assert_sparse_coverage` finding fewer sidecar rows than chunks, so it is returned rather
+    than logged.
+    """
+
+    written: int
+    empty_ids: list[str]
+
+
+def _validated_batch_size(batch_size: Any) -> int:
+    """The one place a batch size is checked, shared by both entry points.
+
+    Shared rather than duplicated because `backfill_learned_sparse` derives TWO values from this
+    argument — the `iter_chunks` FETCH size and the encode batch — and the moment each validates
+    its own copy they are free to disagree about what the caller asked for.
+
+    The `isinstance` half is not decoration. `None` is the realistic mistake (an unset option
+    threaded through) and a bare `batch_size < 1` answers it with `TypeError: '<' not supported
+    between instances of 'NoneType' and 'int'`, which names neither the argument nor the rule.
+    """
+    if not isinstance(batch_size, int) or batch_size < 1:
+        raise ValueError(
+            f"batch_size must be >= 1, got {batch_size!r}; nothing would be encoded"
+        )
+    return batch_size
+
+
+def store_sparse_vectors(
+    store: Any,
+    encoder: SparseEncoderProtocol,
+    items: Iterable[tuple[str, str]],
+    *,
+    batch_size: int = 32,
+    progress: Callable[[int], None] | None = None,
+) -> SparseIndexResult:
+    """Encode `(chunk_id, text)` pairs and write them to the learned sparse sidecar.
+
+    The profile id is read off `encoder.profile`, never taken as a separate argument. Vectors
+    filed under a name a different model produced score plausibly instead of failing, which is
+    precisely what the profile column exists to prevent, so the caller is not given the chance.
+
+    A chunk that encodes to an EMPTY vector is skipped and its id returned. `upsert_sparse`
+    refuses an empty mapping (the table's CHECK requires nnz > 0), and it is right to, but that
+    refusal belongs at the corpus level where an operator can act on it: see
+    `assert_sparse_coverage`. One term-free passage must not kill a whole index.
+
+    `progress` receives the running written count after each batch, so a caller can print
+    something during a CPU encode that takes tens of minutes.
+
+    The iterator is CLOSED on the way out, and that matters most on the failing path. `items` is
+    routinely a generator over `store.iter_chunks()`, a server-side cursor holding one pooled
+    connection open inside a transaction for its whole scan. If `encoder.encode` or
+    `store.upsert_sparse` raises mid-batch, a bare `for` loop abandons that generator suspended
+    mid-yield, still holding the connection, and cleanup falls to CPython refcounting finalising
+    the orphan. That is usually prompt but is NOT guaranteed: anything retaining the traceback —
+    a retry loop storing the exception, a caller logging `sys.exc_info()`, a test framework's
+    `excinfo` — keeps this frame alive and `items` with it, and the connection stays checked out
+    for as long as that reference lives. Closing here is what makes the release deterministic
+    rather than a property of the garbage collector.
+
+    This belongs at this level because this function is the ACTUAL consumer: it is what advances
+    the iterator, so it is what owes it a close. A caller wrapping its own generator is welcome
+    to, and `backfill_learned_sparse` does, but that protects only that caller.
+    """
+    batch_size = _validated_batch_size(batch_size)
+
+    profile_id = encoder.profile.profile_id
+    written = 0
+    empty_ids: list[str] = []
+    batch: list[tuple[str, str]] = []
+
+    def _flush_batch() -> None:
+        nonlocal written
+        if not batch:
+            return
+        vectors = encoder.encode([text for _, text in batch])
+        payload: dict[str, dict[int, float]] = {}
+        for (chunk_id, _text), weights in zip(batch, vectors, strict=True):
+            if weights:
+                payload[chunk_id] = weights
+            else:
+                empty_ids.append(chunk_id)
+        if payload:
+            written += store.upsert_sparse(profile_id, payload)
+        batch.clear()
+        if progress is not None:
+            progress(written)
+
+    items_iter = iter(items)
+    try:
+        for item in items_iter:
+            batch.append(item)
+            if len(batch) >= batch_size:
+                _flush_batch()
+        _flush_batch()
+    finally:
+        # `items` is an `Iterable`, not a generator: a list's iterator has no `close`, and the
+        # signature deliberately accepts both. `contextlib.closing` would demand the method.
+        close = getattr(items_iter, "close", None)
+        if close is not None:
+            close()
+
+    return SparseIndexResult(written=written, empty_ids=empty_ids)
+
+
+class SparseCoverageError(RuntimeError):
+    """The sidecar disagrees with the corpus under a profile, in either direction.
+
+    Fewer sidecar rows than chunks: the retrieval leg would answer, thinly and silently. More
+    sidecar rows than chunks: the sidecar holds rows for chunks that no longer exist, because it
+    keys its parent as a column value rather than a relation, so nothing cascades when a chunk is
+    removed. Both are real faults and both raise; only the message differs.
+    """
+
+
+def assert_sparse_coverage(
+    store: Any, profile_id: str, *, empty_ids: "Iterable[str]" = ()
+) -> None:
+    """Refuse a corpus whose sidecar is not complete under `profile_id`.
+
+    This is the corpus-level half of the empty-vector decision made in `store_sparse_vectors`,
+    and it is the reason skipping a row there is safe. A partially encoded corpus does not error
+    on query: the learned leg simply retrieves from the fraction that exists, and the result is
+    indistinguishable from a corpus where those passages genuinely did not match.
+
+    `empty_ids` is what `store_sparse_vectors` returned. It does not suppress the refusal, it
+    EXPLAINS it: an operator who can see that the missing chunks were term-free can proceed,
+    where "1 of 2" alone cannot be told apart from a broken encoder.
+
+    The two counts are separate round trips (`sparse_row_count`, then `count()`), so this assumes
+    indexing has quiesced: a concurrent indexer running between the two queries can make them
+    disagree transiently. No locking is added for that; the caller is responsible for calling
+    this only once writes have settled.
+    """
+    encoded = store.sparse_row_count(profile_id)
+    total = store.count()
+    if encoded == total:
+        return
+    if encoded < total:
+        message = (
+            f"learned sparse sidecar holds {encoded} of {total} chunks under profile "
+            f"{profile_id!r}. A query would retrieve from the encoded fraction and report "
+            f"nothing, so no result from this corpus may be quoted."
+        )
+        named = list(empty_ids)
+        if named:
+            shown = ", ".join(named[:10])
+            more = f" (and {len(named) - 10} more)" if len(named) > 10 else ""
+            message += f" {len(named)} chunk(s) encoded to an empty vector: {shown}{more}."
+        raise SparseCoverageError(message)
+    raise SparseCoverageError(
+        f"learned sparse sidecar holds {encoded} rows under profile {profile_id!r}, more than "
+        f"the {total} chunks in the corpus. The sidecar keys its parent chunk table as a column "
+        f"value, not a relation, so nothing cascades when a chunk row is removed: these are "
+        f"orphaned rows for chunks that no longer exist. Likely causes are `replace_sources` "
+        f"re-chunking a source into fewer chunks, which leaves the tail's old sidecar rows "
+        f"behind, or `_prune_vanished` removing a source that left the corpus through "
+        f"`delete_sources`, which also does not clean the sidecar. This still refuses, because "
+        f"a sidecar that disagrees with the corpus is a real fault: at least {encoded - total} "
+        f"sidecar row(s) are orphaned. This compares counts, not id sets, so an overcount is "
+        f"not evidence that coverage is complete: a separately unencoded chunk can still be "
+        f"hiding inside it."
+    )
+
+
+def backfill_learned_sparse(
+    store: Any,
+    encoder: SparseEncoderProtocol,
+    *,
+    batch_size: int = 32,
+    progress: Callable[[int], None] | None = None,
+) -> SparseIndexResult:
+    """Encode every chunk already in `store` into the learned sparse sidecar.
+
+    This is the path that reaches corpora indexed before `Indexer` could write the sidecar, which
+    is every corpus that exists today. It streams `store.iter_chunks()`, a server-side cursor
+    that excludes the dense vector, so a corpus larger than memory is fine.
+
+    `batch_size` is validated ONCE, here, and the single validated value is then both the cursor's
+    FETCH size and the encode batch. It used to be clamped with `max(batch_size, 1)` for the
+    cursor and passed through raw to `store_sparse_vectors`, which left one argument feeding two
+    separately-derived meanings: nothing today can tell them apart, because every value the clamp
+    would change is a value the other side rejects, but that is a coincidence of the current
+    validation order rather than a property, and it costs nothing to not depend on it.
+
+    IDEMPOTENT, not resumable. `upsert_sparse` is ON CONFLICT DO UPDATE, so re-invoking simply
+    re-encodes. Skipping ids already present would need a `store.sparse_ids(profile_id)` this
+    store does not have, and at the corpus sizes this serves it would buy nothing. That is a
+    decision, not an oversight.
+
+    `store.iter_chunks()` holds a pool-borrowed connection open inside an explicit
+    `conn.transaction()`, with a named server-side cursor bound to it, for the entire life of the
+    generator. This is the one call site that drives that generator through fallible work,
+    `encoder.encode` and `store.upsert_sparse`, rather than materialising it or reading plain
+    attributes. If either raises mid-batch, the generator would otherwise be abandoned mid-yield,
+    still holding its transaction and its pooled connection open, reclaimed only whenever CPython
+    happens to garbage-collect it, which is not promptly once a traceback is retained anywhere up
+    the stack. `closing` forces the generator's own cleanup (rolling back the transaction and
+    releasing the connection) on the way out, success or failure, so this function owns the
+    resource it created instead of leaving that to its caller.
+
+    On the connection mode `PgVectorStore` itself recommends as the default (no `pool_size`, no
+    `shared_pool`), that held connection is the SAME one `store.upsert_sparse` writes through:
+    `_with_retry` runs each write directly on `self._direct`, which is the very connection
+    `iter_chunks()` is holding inside its open `conn.transaction()`. So on that path the writes do
+    not commit independently, they JOIN the reader's transaction: this whole function, the read
+    cursor and every write it drives, is ONE all-or-nothing transaction held open for the duration
+    of the encode. A failure on chunk 900 of 1000 rolls back chunks 1 through 899 as well, not
+    only the batch that failed. (Pooled and shared-pool stores borrow a SEPARATE connection per
+    `upsert_sparse` call, so this does not apply there.)
+    """
+    batch_size = _validated_batch_size(batch_size)
+    with closing(store.iter_chunks(batch_size=batch_size)) as chunks:
+        return store_sparse_vectors(
+            store,
+            encoder,
+            ((chunk.id, chunk.text) for chunk in chunks),
+            batch_size=batch_size,
+            progress=progress,
+        )
+
+
+#: What BERT-base fp32 inference needs with headroom for activations at batch 32. Stated as a
+#: number rather than computed, and exposed as a parameter, because a caller running a larger
+#: checkpoint or a bigger batch has a different answer and should not have to edit this file.
+DEFAULT_REQUIRED_VRAM_MB = 2048
+
+SPARSE_DEVICES = ("auto", "cpu", "cuda")
+
+
+class SparseDeviceError(RuntimeError):
+    """A device was asked for by name and cannot be used."""
+
+
+@dataclass(frozen=True)
+class DeviceReport:
+    """Everything the device decision was made from, kept so it can be printed and stamped.
+
+    `learned_sparse_encode_ms_mean` is a transformer forward pass, so its value on CPU and on GPU
+    are measurements of different things. An artifact that does not record which one it was cannot
+    be compared against another, which is why this whole object reaches provenance rather than
+    only the resolved string.
+    """
+
+    requested: str
+    resolved: str
+    torch_cuda_build: str | None
+    device_name: str | None
+    capability: tuple[int, int] | None
+    supported_architectures: tuple[str, ...]
+    free_vram_mb: int | None
+    refusal: str | None
+
+
+def device_refusal(
+    *,
+    cuda_build: str | None,
+    device_count: int,
+    capability: tuple[int, int] | None,
+    arch_list: tuple[str, ...],
+    free_vram_mb: int | None,
+    required_vram_mb: int = DEFAULT_REQUIRED_VRAM_MB,
+) -> str | None:
+    """Why CUDA cannot be used, or `None` when it can.
+
+    A PURE function over the facts, deliberately. Every branch is then reachable from a test on a
+    box with no GPU and no CUDA build, which is the only way this guard gets shown FIRING rather
+    than shown running. The collector that gathers these facts has no logic in it.
+
+    The checks are ordered so each names its own fix. A CPU-only wheel and an absent card need
+    different actions, and telling someone with a working card that they have no GPU sends them
+    to the wrong one.
+    """
+    if cuda_build is None:
+        return (
+            "torch is a CPU-only build (torch.version.cuda is None), so no GPU is reachable "
+            "regardless of what hardware is present. Install a CUDA build of torch."
+        )
+    if device_count < 1:
+        return (
+            f"torch is built against CUDA {cuda_build} but reports no CUDA device. The driver, "
+            f"the container's device mapping or CUDA_VISIBLE_DEVICES is where to look."
+        )
+    if capability is not None:
+        arch = f"sm_{capability[0]}{capability[1]}"
+        if arch_list and arch not in arch_list:
+            return (
+                f"this card is compute capability {capability[0]}.{capability[1]} ({arch}) and "
+                f"the installed torch was not built for it. It carries {', '.join(arch_list)}. "
+                f"A wheel without the architecture does not decline politely, so this refuses "
+                f"here instead. Install a torch build listing {arch}, or pass --sparse-device cpu."
+            )
+    if free_vram_mb is not None and free_vram_mb < required_vram_mb:
+        return (
+            f"only {free_vram_mb} MiB of VRAM is free and this needs about {required_vram_mb} "
+            f"MiB. Encoding would fail partway through a corpus rather than here."
+        )
+    return None
+
+
+def inspect_sparse_device(
+    requested: str = "auto", required_vram_mb: int = DEFAULT_REQUIRED_VRAM_MB
+) -> DeviceReport:
+    """Read the device facts off torch and apply `device_refusal` to them.
+
+    `requested="cpu"` short-circuits before importing torch. Otherwise asking for CPU on a box
+    with no torch would import torch in order to decide it did not need torch.
+    """
+    if requested == "cpu":
+        return DeviceReport(
+            requested=requested, resolved="cpu", torch_cuda_build=None, device_name=None,
+            capability=None, supported_architectures=(), free_vram_mb=None, refusal=None,
+        )
+
+    try:
+        import torch
+    except ImportError:
+        return DeviceReport(
+            requested=requested, resolved="cpu", torch_cuda_build=None, device_name=None,
+            capability=None, supported_architectures=(), free_vram_mb=None,
+            refusal="torch is not installed; the learned sparse path needs the `sparse` extra",
+        )
+
+    cuda_build = torch.version.cuda
+    device_count = torch.cuda.device_count() if cuda_build else 0
+    name = None
+    capability = None
+    free_vram_mb = None
+    arch_list: tuple[str, ...] = ()
+    if device_count:
+        name = torch.cuda.get_device_name(0)
+        capability = torch.cuda.get_device_capability(0)
+        arch_list = tuple(torch.cuda.get_arch_list())
+        # `mem_get_info` returns (free, total) in bytes. FREE rather than total: another process
+        # holding the card is the common case on a shared box, and total would say yes to a card
+        # with nothing left to give.
+        free_bytes, _total = torch.cuda.mem_get_info(0)
+        free_vram_mb = int(free_bytes // (1024 * 1024))
+
+    refusal = device_refusal(
+        cuda_build=cuda_build, device_count=device_count, capability=capability,
+        arch_list=arch_list, free_vram_mb=free_vram_mb, required_vram_mb=required_vram_mb,
+    )
+    return DeviceReport(
+        requested=requested, resolved="cpu" if refusal else "cuda",
+        torch_cuda_build=cuda_build, device_name=name, capability=capability,
+        supported_architectures=arch_list, free_vram_mb=free_vram_mb, refusal=refusal,
+    )
+
+
+def resolve_sparse_device(
+    requested: str = "auto",
+    required_vram_mb: int = DEFAULT_REQUIRED_VRAM_MB,
+    *,
+    report: DeviceReport | None = None,
+) -> str:
+    """The device string for `SpladeEncoder.from_pretrained`, refusing a named GPU it cannot use.
+
+    `auto` means "use it if it is there", so a refusal is information and the answer is `cpu`.
+    `cuda` is a STATEMENT about the run, and answering `cpu` to it would make that statement false
+    while producing correct vectors roughly a hundred times more slowly, with nothing to show for
+    it. See the note on `SpladeEncoder.device`.
+
+    `report`, when given, is used AS IS instead of calling `inspect_sparse_device` again. Without
+    this, a caller that also wants the report for its own provenance (as `store_latency_share.py`
+    does) ends up taking two separate live `torch.cuda` readings: one to build the report it
+    stamps into the artifact, one taken here to decide. Near a VRAM threshold on a real GPU those
+    two reads are not guaranteed to agree, so the reading that drove the decision and the reading
+    that gets published could describe two different moments. Passing the report through makes
+    them the SAME reading. Omitted, behaviour is unchanged: one fresh read, exactly as before.
+    """
+    if requested not in SPARSE_DEVICES:
+        raise ValueError(f"device must be one of {SPARSE_DEVICES}, got {requested!r}")
+    if report is None:
+        report = inspect_sparse_device(requested, required_vram_mb=required_vram_mb)
+    if requested == "cuda" and report.refusal:
+        raise SparseDeviceError(f"--sparse-device cuda was requested but {report.refusal}")
+    return report.resolved

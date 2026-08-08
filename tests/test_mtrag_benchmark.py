@@ -1,3 +1,5 @@
+import json
+
 from benchmarks.mtrag import run
 from benchmarks.mtrag.run import ndcg_at, query_text, recall_at, score_predictions
 
@@ -152,3 +154,380 @@ def test_dev_queries_reach_the_retriever_without_their_speaker_prefix() -> None:
     task = {"task_id": "q1", "_domain": "clapnq", "_text": "|user|: How many teams are in the NFL?"}
 
     assert run.query_text(task, "last") == "How many teams are in the NFL?"
+
+
+def _fake_release(
+    root, dev_queries: int, test_queries: int, query_modes: tuple[str, ...] = ("lastturn",)
+) -> None:
+    """A minimal MTRAG root carrying BOTH layouts, with deliberately different sizes.
+
+    The sizes differ so a validation that reads the wrong split cannot accidentally agree with
+    one that reads the right one. Equal fixtures are how a split bug hides.
+    """
+    import json as _json
+    import zipfile
+
+    for domain in run.DOMAINS:
+        corpus = root / "corpora" / "passage_level" / f"{domain}.jsonl.zip"
+        corpus.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(corpus, "w") as zf:
+            zf.writestr(f"{domain}.jsonl", "")
+
+        dev_dir = root / "mtrag-human" / "retrieval_tasks" / domain
+        (dev_dir / "qrels").mkdir(parents=True, exist_ok=True)
+        for mode_file in query_modes:
+            (dev_dir / f"{domain}_{mode_file}.jsonl").write_text(
+                "".join(
+                    _json.dumps({"_id": f"{domain}conv{i}<::>1", "text": f"q {mode_file}"}) + "\n"
+                    for i in range(dev_queries)
+                ),
+                encoding="utf-8",
+            )
+        (dev_dir / "qrels" / "dev.tsv").write_text(
+            "query\tcorpus\tscore\n"
+            + "".join(f"{domain}conv{i}<::>1\tc{i}\t1\n" for i in range(dev_queries)),
+            encoding="utf-8",
+        )
+
+    sealed_qrels = root / "mtragun-human" / "retrieval_tasks" / "qrels"
+    sealed_qrels.mkdir(parents=True, exist_ok=True)
+    sealed_tasks = root / "mtragun-human" / "generation_tasks"
+    sealed_tasks.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for domain in run.DOMAINS:
+        (sealed_qrels / f"{domain}.tsv").write_text(
+            "query\tcorpus\tscore\n"
+            + "".join(f"{domain}-test-{i}\tc{i}\t1\n" for i in range(test_queries)),
+            encoding="utf-8",
+        )
+        rows += [
+            _json.dumps({"task_id": f"{domain}-test-{i}", "Collection": domain})
+            for i in range(test_queries)
+        ]
+    (sealed_tasks / "reference.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def test_validation_describes_the_split_it_was_asked_for(tmp_path) -> None:
+    """The manifest's `release` block must describe the split the run actually scores.
+
+    `main()` writes `{"split": args.split, "release": validate_release(...)}` into one manifest.
+    If validation ignores the split, those two fields contradict each other inside a single
+    object: the run says `dev` and the provenance describes the SEALED set, down to the sha256 of
+    files the run never opened. The scores would be right and the record of what they are would
+    be wrong, which is the harder error to catch later.
+
+    The pre-existing guard asserts `args.split == "dev"`, the argparse DEFAULT. The flag was never
+    the problem; nothing downstream read it.
+    """
+    _fake_release(tmp_path, dev_queries=7, test_queries=3)
+
+    dev = run.validate_release(tmp_path, "dev")
+    test = run.validate_release(tmp_path, "test")
+
+    assert dev["scored_query_count"] == 7 * len(run.DOMAINS)
+    assert test["scored_query_count"] == 3 * len(run.DOMAINS)
+    assert dev["split"] == "dev"
+    assert test["split"] == "test"
+    # The hashes must come from different files, or the block is describing one split for both.
+    assert dev["input_sha256"] != test["input_sha256"]
+
+
+def test_dev_validation_hashes_the_query_mode_the_selected_arms_use(tmp_path) -> None:
+    """The provenance must name the files the ARMS open, not a hard-coded default.
+
+    `validate_release` takes a `query_mode`, and on the dev split that argument is what selects
+    WHICH per-domain file gets hashed. `main()` used to omit it, so the hashes were always the
+    `last` files no matter which arms ran. That is the same defect as the split bug one axis over:
+    every declared arm happens to use `last` today, so it was unobservable, but `DEV_QUERY_FILES`
+    also defines `full` and `rewrite`.
+
+    A run whose arms disagree about query mode has no single correct answer for one hash block, so
+    it is refused rather than silently labelled with one of them.
+    """
+    _fake_release(tmp_path, dev_queries=4, test_queries=2, query_modes=("lastturn", "questions"))
+
+    by_last = run.validate_release(tmp_path, "dev", "last")
+    by_full = run.validate_release(tmp_path, "dev", "full")
+
+    assert by_last["query_mode_validated"] == "last"
+    assert by_full["query_mode_validated"] == "full"
+    assert by_last["input_sha256"] != by_full["input_sha256"], (
+        "the two query modes read different files, so their hash blocks must differ; "
+        "equal hashes mean the mode is not reaching the file selection"
+    )
+
+
+def test_a_dev_run_whose_arms_disagree_on_query_mode_is_refused() -> None:
+    """One manifest carries one `input_sha256` block, so it can describe only one query mode."""
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="query mode"):
+        run.dev_query_mode_for(["recall_default_last", "recall_default_recent3"], "dev")
+
+
+def test_the_dev_query_mode_comes_from_the_selected_arms() -> None:
+    assert run.dev_query_mode_for(["hybrid_splade", "hybrid_lexical"], "dev") == "last"
+
+
+def test_dev_tasks_carry_the_fields_the_prediction_writer_reads(tmp_path) -> None:
+    """`run.py --split dev` had never completed a run: the writer reads fields dev lacked.
+
+    `run_arm` builds each prediction from `task["conversation_id"]`, `task["Collection"]` and
+    `task["input"]`. `load_dev_tasks` normalised only `task_id`, `_domain` and `_text`, so the
+    first arm died with KeyError: 'conversation_id' after validation had already passed. The dev
+    baseline recorded in memory (nDCG@5 0.2849 / R@100 0.6865) came from a separate probe script,
+    which is why nothing had noticed.
+
+    The missing fields are DERIVABLE, not absent. MTRAG uses one id convention across both splits:
+    the sealed release ships `conversation_id` "18ef26..." beside `task_id` "18ef26...<::>7", and
+    a dev `_id` reads "dd6b6f...<::>2". The conversation id is the part before the separator.
+    """
+    domain = run.DOMAINS[0]
+    dev_dir = tmp_path / "mtrag-human" / "retrieval_tasks" / domain
+    dev_dir.mkdir(parents=True, exist_ok=True)
+    for other in run.DOMAINS:
+        d = tmp_path / "mtrag-human" / "retrieval_tasks" / other
+        d.mkdir(parents=True, exist_ok=True)
+        rows = ""
+        if other == domain:
+            rows = json.dumps(
+                {"_id": "conv123<::>4", "text": "|user|: Do the Cardinals play outside the US?"}
+            ) + "\n"
+        (d / f"{other}_lastturn.jsonl").write_text(rows, encoding="utf-8")
+
+    tasks = run.load_dev_tasks(tmp_path, "last")
+
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task["task_id"] == "conv123<::>4"
+    assert task["conversation_id"] == "conv123"
+    assert task["Collection"] == domain
+    assert task["input"] == [
+        {"speaker": "user", "text": "Do the Cardinals play outside the US?"}
+    ], "input must be the turn WITHOUT the speaker prefix the release ships"
+
+
+def _write_dev(root, domain: str, mode_file: str, rows: list[dict]) -> None:
+    import json as _json
+
+    d = root / "mtrag-human" / "retrieval_tasks" / domain
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{domain}_{mode_file}.jsonl").write_text(
+        "".join(_json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+    )
+
+
+def test_full_mode_records_one_input_entry_per_turn(tmp_path) -> None:
+    """The `_questions` file concatenates the conversation, one turn per line.
+
+    Collapsing it into a single `{"speaker": "user", "text": ...}` records one fabricated turn
+    whose body contains several real ones, which is not what the submission format means by
+    `input`. Dormant today, since every declared dev arm uses `last`, but `DEV_QUERY_FILES`
+    exposes `full` and the CLI can select it.
+    """
+    for domain in run.DOMAINS:
+        rows = []
+        if domain == run.DOMAINS[0]:
+            rows = [{"_id": "conv9<::>2", "text": "|user|: where do they play\n|user|: outside the US?"}]
+        _write_dev(tmp_path, domain, "questions", rows)
+
+    tasks = run.load_dev_tasks(tmp_path, "full")
+
+    assert tasks[0]["input"] == [
+        {"speaker": "user", "text": "where do they play"},
+        {"speaker": "user", "text": "outside the US?"},
+    ]
+
+
+def test_an_id_without_the_separator_is_refused(tmp_path) -> None:
+    """The conversation id is derived by splitting; a different convention must not pass silently.
+
+    `.split(sep, 1)[0]` on an id lacking the separator returns the whole id, so conversation_id
+    would equal task_id and look plausible.
+    """
+    import pytest as _pytest
+
+    for domain in run.DOMAINS:
+        rows = [{"_id": "no-separator-here", "text": "|user|: hi"}] if domain == run.DOMAINS[0] else []
+        _write_dev(tmp_path, domain, "lastturn", rows)
+
+    with _pytest.raises(RuntimeError, match="carries no"):
+        run.load_dev_tasks(tmp_path, "last")
+
+
+def test_the_recorded_input_is_what_the_retriever_was_given(tmp_path) -> None:
+    """`_text` and `input` are computed separately from one source; pin that they agree.
+
+    If they drift, the prediction records an `input` that is not what was searched, and no
+    existing test compares them.
+    """
+    for domain in run.DOMAINS:
+        rows = [{"_id": "c1<::>1", "text": "|user|: how many teams"}] if domain == run.DOMAINS[0] else []
+        _write_dev(tmp_path, domain, "lastturn", rows)
+
+    task = run.load_dev_tasks(tmp_path, "last")[0]
+
+    assert run.query_text(task, "last") == task["input"][-1]["text"]
+
+
+def test_the_default_arm_selection_is_runnable_on_the_default_split() -> None:
+    """`--split dev` is the default so the sealed set must be typed out. It has to work.
+
+    The default ARMS tuple mixes `last` and `recent3`, and `recent3` has no dev file, so the
+    default selection on the default split used to refuse before writing anything.
+    """
+    names = run.select_arm_names(None, "dev")
+
+    assert names, "the default dev selection must not be empty"
+    assert run.dev_query_mode_for(names, "dev") == "last"
+    assert "recall_default_recent3" not in names
+
+
+def test_an_explicit_arm_request_is_still_honoured_into_the_refusal() -> None:
+    """Narrowing applies to the DEFAULT only. Naming two incompatible arms must still raise."""
+    import pytest as _pytest
+
+    explicit = ["recall_default_last", "recall_default_recent3"]
+
+    assert run.select_arm_names(explicit, "dev") == explicit
+    with _pytest.raises(ValueError, match="query mode"):
+        run.dev_query_mode_for(run.select_arm_names(explicit, "dev"), "dev")
+
+
+def test_the_two_reranked_arms_vary_only_the_reranker() -> None:
+    """Local against hosted, with nothing else moving.
+
+    If they also differed in candidate_k or backend, the measured gap would not be attributable to
+    the reranker, and the article's two rows would be comparing two different systems.
+    """
+    local = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_rerank")
+    hosted = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
+    differing = {
+        f for f in ("query_mode", "candidate_k", "use_dense", "use_sparse", "rerank",
+                    "sparse_backend")
+        if getattr(local, f) != getattr(hosted, f)
+    }
+
+    assert differing == set()
+    assert (local.reranker, hosted.reranker) == ("minilm", "voyage")
+
+
+def test_an_unknown_reranker_name_is_refused() -> None:
+    """A typo must not silently fall back to the local model and be reported as the hosted one."""
+    import pytest as _pytest
+
+    bogus = run.Arm("x", "last", 100, rerank=True, reranker="nope")
+    with _pytest.raises(ValueError, match="not built"):
+        run.build_reranker(bogus)
+
+
+def test_the_unreranked_primary_is_the_matched_control_for_both() -> None:
+    """hybrid_splade must differ from each reranked arm ONLY in `rerank`."""
+    base = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade")
+    for name in ("hybrid_splade_rerank", "hybrid_splade_voyage"):
+        arm = next(a for a in run.SPARSE_ARMS if a.name == name)
+        differing = {
+            f for f in ("query_mode", "candidate_k", "use_dense", "use_sparse", "sparse_backend")
+            if getattr(base, f) != getattr(arm, f)
+        }
+        assert differing == set(), name
+        assert base.rerank is False and arm.rerank is True
+
+
+def test_a_transient_failure_is_retried_not_fatal(monkeypatch) -> None:
+    """A hosted reranker turns one 429 into a dead arm unless the search is retried."""
+    monkeypatch.setattr(run.time, "sleep", lambda *_: None)
+
+    class Flaky:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, query, k):
+            self.calls += 1
+            if self.calls < 3:
+                raise ConnectionError("transient")
+            return "ok"
+
+    arm = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
+    flaky = Flaky()
+    result, elapsed_ms, retries = run.search_with_retry(flaky, "q", arm)
+
+    assert result == "ok"
+    assert flaky.calls == 3
+    assert retries == 2
+    # The elapsed time must cover ONLY the successful attempt. Timing from before the first would
+    # include 2s + 4s of backoff, and one retried query would put 6000ms into a published p95.
+    assert elapsed_ms < 1000.0
+
+
+def test_retries_are_bounded_and_name_the_partial_file(monkeypatch) -> None:
+    """Give up eventually, and say where the already-paid work was flushed."""
+    import pytest as _pytest
+
+    monkeypatch.setattr(run.time, "sleep", lambda *_: None)
+
+    class Dead:
+        def search(self, query, k):
+            raise ConnectionError("always")
+
+    arm = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
+    with _pytest.raises(RuntimeError, match="partial.jsonl"):
+        run.search_with_retry(Dead(), "q", arm)
+
+
+def test_build_reranker_refuses_an_arm_that_does_not_rerank() -> None:
+    """Constructing a PAID client for an arm that never reranks would demand a key for nothing."""
+    import pytest as _pytest
+
+    arm = run.Arm("x", "last", 100, rerank=False, reranker="voyage")
+    with _pytest.raises(ValueError, match="rerank=False"):
+        run.build_reranker(arm)
+
+
+def test_a_permanent_error_is_not_retried(monkeypatch) -> None:
+    """A bad key is not a flaky network. Retrying it burns 14s and reads like one.
+
+    The final message must carry the underlying error, so someone skimming output sees "bad
+    credential" rather than having to open a chained traceback to find out.
+    """
+    import pytest as _pytest
+
+    monkeypatch.setattr(run.time, "sleep", lambda *_: None)
+
+    class AuthenticationError(Exception):
+        pass
+
+    class Unauthorized:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, query, k):
+            self.calls += 1
+            raise AuthenticationError("invalid api key")
+
+    arm = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
+    bad = Unauthorized()
+    with _pytest.raises(RuntimeError, match="invalid api key"):
+        run.search_with_retry(bad, "q", arm)
+
+    assert bad.calls == 1, "a permanent error must not be retried"
+
+
+def test_the_failure_message_says_the_partial_is_not_resumed(monkeypatch) -> None:
+    """The partial file is forensic, not a checkpoint. Nothing reads it back.
+
+    The first version of this fix claimed in its commit message that a transient failure no longer
+    discards an arm's paid work. That was only true of the bytes: there is no resume, so a restart
+    re-issues every call including the billed ones. The message must not imply otherwise.
+    """
+    import pytest as _pytest
+
+    monkeypatch.setattr(run.time, "sleep", lambda *_: None)
+
+    class Dead:
+        def search(self, query, k):
+            raise ConnectionError("always")
+
+    arm = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
+    with _pytest.raises(RuntimeError, match="NOT resumed from"):
+        run.search_with_retry(Dead(), "q", arm)

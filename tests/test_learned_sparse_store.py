@@ -6,11 +6,13 @@ conftest refuses a remote or shared-with-RECALL_DSN target, and `make_store` dro
 
 from __future__ import annotations
 
+import psycopg
 import pytest
 
 from recall.sparse import SparseProfile
+from recall.store import SPARSE_TABLE
 from recall.types import Chunk
-from tests.conftest import requires_db
+from tests.conftest import TEST_DSN, requires_db
 
 PROFILE = SparseProfile(
     profile_id="test-splade",
@@ -111,4 +113,47 @@ def test_a_query_never_returns_rows_encoded_under_a_different_profile(make_store
     hits = store.query_learned_sparse({7: 1.0}, k=5, profile_id="profile-a")
 
     assert [hit.chunk.id for hit in hits] == []
+
+
+@requires_db
+def test_a_source_is_covered_only_once_every_one_of_its_chunks_is_encoded(make_store) -> None:
+    """Partial coverage reads as NOT covered. `index_path`'s skip predicate depends on this.
+
+    One source, two chunks. Encoding only the first must not mark the source covered: a caller
+    that treated it as covered would skip the second chunk on the next run and leave a permanent
+    hole in the sidecar. Only once both chunks are encoded does the source appear.
+    """
+    store = make_store(64)
+    one = Chunk(id="one", source="/corpus/two-chunks.md", text="first half", metadata={})
+    two = Chunk(id="two", source="/corpus/two-chunks.md", text="second half", metadata={})
+    store.upsert([one, two], [[0.1] * 64, [0.1] * 64])
+
+    store.upsert_sparse(PROFILE.profile_id, {"one": {7: 1.0}})
+    assert store.sparse_covered_sources(PROFILE.profile_id) == set()
+
+    store.upsert_sparse(PROFILE.profile_id, {"two": {11: 1.0}})
+    assert store.sparse_covered_sources(PROFILE.profile_id) == {"/corpus/two-chunks.md"}
+
+
+@requires_db
+def test_dropping_the_table_removes_its_sidecar_rows(make_store) -> None:
+    """The sidecar has no FOREIGN KEY, so nothing cascades on its behalf.
+
+    `chunk_table` is a column VALUE, not a relation, so a dropped table leaves its sparse rows
+    addressable by a name that no longer resolves. Every throwaway eval store would orphan a
+    uuid-named row set, permanently, and nothing would ever look for them again.
+    """
+    store = make_store(64)
+    store.upsert([Chunk(id="alpha", source="/c/a.md", text="a", metadata={})], [[0.1] * 64])
+    store.upsert_sparse("drop-probe", {"alpha": {7: 1.0}})
+    table = store.table
+    assert store.sparse_row_count("drop-probe") == 1
+
+    store.drop_table()
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        remaining = conn.execute(
+            f"SELECT count(*) FROM {SPARSE_TABLE} WHERE chunk_table = %s", (table,)
+        ).fetchone()
+    assert remaining is not None and remaining[0] == 0
 

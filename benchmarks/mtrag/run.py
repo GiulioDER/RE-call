@@ -14,6 +14,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,15 @@ class Arm:
     use_dense: bool = True
     use_sparse: bool = True
     rerank: bool = False
+    #: WHICH reranker, when `rerank` is True. Named per arm rather than fixed globally because
+    #: the two are not interchangeable and the difference is the point: a five-way measurement on
+    #: 2026-07-29 put `voyage:rerank-2.5` significantly ahead of the local MiniLM (mean rank
+    #: +0.177, CI95 [+0.038, +0.323]), and pool-level Voyage lifted hit@5 0.640 to 0.870 on the
+    #: ladder. ⚠️ Every one of those measurements is on LOCOMO, PEPs or the bilingual memo corpus,
+    #: NONE on MTRAG, and the local MiniLM's effect changes SIGN across them (+0.145, -0.068,
+    #: -0.400). So neither is assumed better here; both are run.
+    #: ⛔ Do not stack them: RRF(voyage+MiniLM) scored 0.808 against voyage alone at 0.846.
+    reranker: str = "minilm"
     role: str = "ablation"
     sparse_backend: str = "lexical"
 
@@ -91,6 +101,21 @@ SPARSE_ARMS = (
     Arm("splade_only", "last", 100, use_dense=False, sparse_backend="splade"),
     Arm("hybrid_both", "last", 100, sparse_backend="both", role="secondary"),
     Arm("dense_only", "last", 100, use_sparse=False),
+    # ⚠️ Added 2026-08-08, AFTER the five arms above had been scored on dev. It is therefore a
+    # POST-HOC configuration, not a pre-registered one, and anything published from it has to say
+    # so. The evidence for adding it was already on the table rather than fished for: on the
+    # sealed split the reranker took `recall_default_last` from nDCG@5 0.3701 to
+    # `recall_rerank_last`'s 0.4227, and `hybrid_splade` is the best retrieval arm measured on
+    # dev, so their combination is where RE-call's maximum most likely sits. Choosing a
+    # configuration on dev is what dev is FOR; the sin would be choosing it on the held-out set.
+    Arm("hybrid_splade_rerank", "last", 100, sparse_backend="splade", rerank=True,
+        reranker="minilm", role="best-known-local"),
+    # The hosted counterpart. Kept a SEPARATE arm rather than a flag on the one above so both are
+    # reported, because they are different product claims: the local arm needs no network egress
+    # and no paid API, which is the property the published RE-call article is about, and this one
+    # trades that away for whatever the cross-encoder buys.
+    Arm("hybrid_splade_voyage", "last", 100, sparse_backend="splade", rerank=True,
+        reranker="voyage", role="best-known-hosted"),
 )
 
 ALL_ARMS = ARMS + SPARSE_ARMS
@@ -294,6 +319,12 @@ def load_tasks(root: Path, split: str = "test", query_mode: str = "last") -> lis
     return tasks
 
 
+#: Separates the conversation id from the turn number in every MTRAG task id, on both splits.
+#: Verified against the released files rather than assumed: sealed `task_id` "18ef26...<::>7"
+#: sits beside `conversation_id` "18ef26...", and a dev `_id` reads "dd6b6f...<::>2".
+CONVERSATION_SEPARATOR = "<::>"
+
+
 def load_dev_tasks(root: Path, query_mode: str) -> list[dict[str, Any]]:
     """MTRAG-human tasks, normalised to the shape the evaluation loop already consumes.
 
@@ -312,8 +343,43 @@ def load_dev_tasks(root: Path, query_mode: str) -> list[dict[str, Any]]:
                 item = json.loads(line)
                 if "_id" not in item or "text" not in item:
                     raise RuntimeError(f"{path}:{line_no} is missing _id or text")
+                task_id = str(item["_id"])
+                if CONVERSATION_SEPARATOR not in task_id:
+                    raise RuntimeError(
+                        f"{path}:{line_no} has id {task_id!r}, which carries no "
+                        f"{CONVERSATION_SEPARATOR!r}. The conversation id is derived by splitting "
+                        f"on it, so a different id convention would silently record "
+                        f"conversation_id == task_id rather than failing. This file has already "
+                        f"cost three defects found only at runtime; the assumption is checked."
+                    )
+                # MTRAG uses ONE id convention across both splits: the sealed release ships
+                # `conversation_id` "18ef26..." beside `task_id` "18ef26...<::>7", and a dev
+                # `_id` reads "dd6b6f...<::>2". So the conversation id is the part before the
+                # separator, derived rather than invented. `run_arm` reads `conversation_id`,
+                # `Collection` and `input` off every task to build a prediction, and dev used to
+                # carry none of them, so the first arm died with KeyError after validation had
+                # already passed. Normalising here keeps the writer identical across splits,
+                # which is the same reason this function normalises the other fields.
+                text = str(item["text"])
+                # `full` (the `_questions` file) concatenates the conversation, one turn per
+                # line, each with its own speaker tag. Collapsing that into a single
+                # {"speaker": "user", "text": ...} would record one fabricated turn whose body
+                # contains several real ones, which is not what the submission format means by
+                # `input`. `last` and `rewrite` are single-line, so they yield one entry anyway.
+                turns = [
+                    {"speaker": "user", "text": stripped}
+                    for stripped in strip_speaker(text).splitlines()
+                    if stripped
+                ]
                 tasks.append(
-                    {"task_id": str(item["_id"]), "_domain": domain, "_text": str(item["text"])}
+                    {
+                        "task_id": task_id,
+                        "conversation_id": task_id.split(CONVERSATION_SEPARATOR, 1)[0],
+                        "Collection": domain,
+                        "input": turns,
+                        "_domain": domain,
+                        "_text": text,
+                    }
                 )
     return tasks
 
@@ -466,7 +532,7 @@ def run_arm(
         flush=True,
     )
     started = time.perf_counter()
-    reranker = CrossEncoderReranker() if arm.rerank else None
+    reranker = build_reranker(arm) if arm.rerank else None
     sparse_encoder = None
     if arm.sparse_backend in ("splade", "both"):
         # Imported HERE, not at module scope: torch and transformers are an optional extra, and a
@@ -497,17 +563,22 @@ def run_arm(
     predictions = []
     latencies_ms = []
     gap_count = 0
+    retried_queries = 0
     tasks = load_tasks(root, split, arm.query_mode)
     try:
         for position, task in enumerate(tasks, 1):
             domain = task_domain(task)
             query = query_text(task, arm.query_mode)
-            query_started = time.perf_counter()
             # Depth 100, not 10. The top-10 ordering is unchanged (reranking happens over the
             # fused pool BEFORE truncation), so every previously reported metric at k<=10 is
             # unaffected; what this buys is Recall@100 for free on the same pass.
-            result = retrievers[domain].search(query, k=RETRIEVAL_DEPTH)
-            latencies_ms.append((time.perf_counter() - query_started) * 1000.0)
+            #
+            # The elapsed time comes from INSIDE search_with_retry and covers only the attempt
+            # that succeeded. Timing this from out here would fold the backoff sleeps into the
+            # figure, and one retried query would put 2000 ms or more into the published p50/p95.
+            result, elapsed_ms, retries = search_with_retry(retrievers[domain], query, arm)
+            latencies_ms.append(elapsed_ms)
+            retried_queries += retries
             gap_count += int(result.gap_warning)
             contexts = []
             total = len(result.hits)
@@ -543,6 +614,23 @@ def run_arm(
                     ),
                     flush=True,
                 )
+    except BaseException:
+        # Flush what was already produced, before re-raising. For an arm whose reranker is a PAID
+        # hosted API this is the difference between losing a transient network blip and losing
+        # every billed call the arm has made: `predictions` used to be written only after the loop
+        # completed, so a failure at query 500 discarded 499 paid reranks and restarted at one.
+        # Named `.partial.jsonl` deliberately, so nothing globbing `*.predictions.jsonl` can
+        # mistake an aborted arm for a complete one.
+        partial = output_dir / f"{arm.name}.partial.jsonl"
+        with partial.open("w", encoding="utf-8") as handle:
+            for item in predictions:
+                handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+        print(
+            json.dumps({"event": "arm_failed", "arm": arm.name, "completed": len(predictions),
+                        "partial": str(partial), "at": utc_now()}),
+            flush=True,
+        )
+        raise
     finally:
         for store in stores.values():
             store.close()
@@ -551,12 +639,19 @@ def run_arm(
     with prediction_path.open("w", encoding="utf-8") as handle:
         for item in predictions:
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+    # A completed arm removes its own forensic file. Otherwise a stale partial from an earlier
+    # failed attempt sits beside a valid, complete result for the same arm, silently disagreeing
+    # with it about how many queries ran.
+    (output_dir / f"{arm.name}.partial.jsonl").unlink(missing_ok=True)
     scores = score_predictions(predictions, load_qrels(root, split), arm.pool_bound())
     ordered = sorted(latencies_ms)
     summary = {
         "arm": asdict(arm),
         "predictions": len(predictions),
         "gap_warnings": gap_count,
+        # Non-zero means some queries below were retried. The latency figures exclude the backoff
+        # sleeps, but a reader of a published p95 deserves to know a retry happened at all.
+        "retried_queries": retried_queries,
         "elapsed_s": time.perf_counter() - started,
         "latency_ms": {
             "mean": sum(latencies_ms) / len(latencies_ms),
@@ -579,18 +674,180 @@ def run_arm(
     return summary
 
 
-def validate_release(root: Path) -> dict[str, Any]:
+def arm_runs_on(arm: "Arm", split: str) -> bool:
+    """Whether this arm has a queries file on `split` at all.
+
+    `recent3` slices a conversation, which the dev release does not ship: `dev_tasks_path` raises
+    for it. So a dev run cannot include those arms, and asking for the DEFAULT selection on the
+    default split must not be a way to discover that.
+    """
+    return split != "dev" or arm.query_mode in DEV_QUERY_FILES
+
+
+def select_arm_names(requested: "Sequence[str] | None", split: str) -> list[str]:
+    """The arms to run, with the default narrowed to what this split can actually run.
+
+    ⚠️ `--split` defaults to `dev` deliberately, so the sealed set has to be typed out to reach.
+    That default was unrunnable: the default `ARMS` tuple mixes `last` and `recent3`, `recent3`
+    has no dev file, and `dev_query_mode_for` refused the mixture before anything was written. So
+    `python -m benchmarks.mtrag.run` on its own defaults died before the manifest existed, and the
+    CLI help said nothing about it.
+
+    An EXPLICIT `--arms` is still honoured exactly as given, including into the refusal: someone
+    who names two incompatible arms should be told, not quietly given one of them. Only the
+    DEFAULT is narrowed, which is the case where no one expressed an intent to be contradicted.
+    """
+    if requested:
+        return list(requested)
+    return [arm.name for arm in ARMS if arm_runs_on(arm, split)]
+
+
+#: Attempts per query before an arm gives up, and the base delay for exponential backoff. A hosted
+#: reranker turns one transient 429 or connection reset into a dead arm, and for a PAID one it also
+#: throws away every call already billed.
+RETRIEVAL_ATTEMPTS = 4
+RETRIEVAL_BACKOFF_S = 2.0
+
+
+#: Error type names that mean the configuration is wrong, not that the network hiccuped. Retrying
+#: these burns 14 seconds and prints three `retrieval_retry` lines that read like a flaky network
+#: while the real answer is a bad key. Matched on NAME rather than class so this module does not
+#: import the hosted client just to define its own retry policy.
+PERMANENT_ERROR_NAMES = frozenset({
+    "AuthenticationError", "PermissionDeniedError", "InvalidRequestError", "NotFoundError",
+    "BadRequestError",
+})
+
+
+def search_with_retry(retriever: Any, query: str, arm: "Arm") -> tuple[Any, float, int]:
+    """`retriever.search` with backoff. Returns (result, elapsed_ms, retries).
+
+    Retries the WHOLE search, which is safe for CORRECTNESS because `search` is a pure read: it
+    re-runs the dense and sparse legs and the rerank, and writes nothing.
+
+    ⚠️ It is NOT free for COST. On a hosted-reranker arm every attempt is a billed call, so a
+    query that succeeds on the third attempt is billed three times, and one that exhausts all
+    attempts is billed `RETRIEVAL_ATTEMPTS` times and still ends up dropped. Anyone raising
+    `RETRIEVAL_ATTEMPTS` is raising the worst-case bill by the same factor.
+
+    `elapsed_ms` times ONLY the attempt that succeeded. Timing from before the first attempt would
+    fold the backoff sleeps into the number, so a single retried query would report 2000 ms or
+    more of "latency" and land straight in the published p50/p95. `retries` is returned so a
+    reader can find the affected queries instead of having to trust that there were none.
+    """
+    last: Exception | None = None
+    for attempt in range(1, RETRIEVAL_ATTEMPTS + 1):
+        started = time.perf_counter()
+        try:
+            result = retriever.search(query, k=RETRIEVAL_DEPTH)
+            return result, (time.perf_counter() - started) * 1000.0, attempt - 1
+        except Exception as exc:  # noqa: BLE001 - re-raised below once attempts are exhausted
+            last = exc
+            name = type(exc).__name__
+            if name in PERMANENT_ERROR_NAMES or attempt == RETRIEVAL_ATTEMPTS:
+                break
+            delay = RETRIEVAL_BACKOFF_S * (2 ** (attempt - 1))
+            print(
+                json.dumps({"event": "retrieval_retry", "arm": arm.name, "attempt": attempt,
+                            "sleeping_s": delay, "error": name, "at": utc_now()}),
+                flush=True,
+            )
+            time.sleep(delay)
+    raise RuntimeError(
+        f"arm {arm.name!r} gave up on a query after {RETRIEVAL_ATTEMPTS} attempts "
+        f"({type(last).__name__}: {last}); predictions produced so far are flushed to "
+        f"{arm.name}.partial.jsonl, which is a FORENSIC record and is NOT resumed from: "
+        f"re-running this arm re-issues every call, including any already billed."
+    ) from last
+
+
+def build_reranker(arm: "Arm") -> Any:
+    """The reranker this arm names.
+
+    `voyageai` is imported inside the branch, so an arm that does not ask for it needs neither the
+    package nor a key. `VoyageReranker` resolves `VOYAGE_API_KEY` eagerly and raises at
+    construction rather than partway through a run, which is the behaviour worth having here.
+    """
+    if not arm.rerank:
+        raise ValueError(
+            f"build_reranker called for arm {arm.name!r}, which has rerank=False. The caller is "
+            f"expected to check that first. Building one anyway would demand VOYAGE_API_KEY and "
+            f"construct a PAID client for an arm that never reranks."
+        )
+    if arm.reranker == "voyage":
+        from benchmarks.voyage_rerank import VoyageReranker
+
+        return VoyageReranker()
+    if arm.reranker == "minilm":
+        return CrossEncoderReranker()
+    raise ValueError(
+        f"arm {arm.name!r} names reranker {arm.reranker!r}, which is not built. "
+        f"Known: 'minilm' (local cross-encoder, no network) and 'voyage' (hosted rerank-2.5)."
+    )
+
+
+def dev_query_mode_for(arm_names: "Sequence[str]", split: str) -> str:
+    """The single query mode a run's manifest can honestly describe.
+
+    On the dev split, `query_mode` selects WHICH per-domain file an arm reads, so it also selects
+    which file the provenance should hash. One manifest carries one `input_sha256` block, so it
+    can describe exactly one mode. Arms that disagree are refused rather than silently labelled
+    with whichever one happened to be the default.
+
+    This exists because threading `split` alone left the same defect one axis over: `main()` called
+    `validate_release(root, args.split)` and the hashes stayed pinned to `last` regardless of the
+    arms. Every arm declared today uses `last` (or `recent3`, which has no dev file and raises), so
+    it was unobservable, but `DEV_QUERY_FILES` also defines `full` and `rewrite`.
+
+    The test split has a single tasks file, so the mode does not change what is hashed and any
+    value is accurate; `last` is returned for a stable record.
+    """
+    if split != "dev":
+        return "last"
+    modes = {arm.query_mode for arm in ALL_ARMS if arm.name in set(arm_names)}
+    if len(modes) > 1:
+        raise ValueError(
+            f"selected dev arms disagree on query mode ({sorted(modes)}). One manifest carries "
+            f"one input_sha256 block and can describe only one of them, so this refuses rather "
+            f"than recording provenance for files half the arms never open. Run them as separate "
+            f"invocations, one per query mode."
+        )
+    return modes.pop() if modes else "last"
+
+
+def validate_release(
+    root: Path, split: str = "test", query_mode: str = "last"
+) -> dict[str, Any]:
+    """Describe and hash the release files for THIS split.
+
+    ⚠️ This used to take only `root`, so every path helper it called fell back to its `"test"`
+    default and it read the SEALED MTRAG-UN files no matter what `--split` said. `main()` writes
+    `{"split": args.split, "release": validate_release(...)}` into one manifest, so a dev run
+    emitted a manifest that said `dev` beside a provenance block describing the held-out set,
+    down to the sha256 of files the run never opened. The SCORES were right the whole time
+    (`run_arm` passes `split` to `load_qrels`); what was wrong was the record of what they were,
+    which is the half nobody re-derives later.
+
+    The pre-existing guard asserted `args.split == "dev"`, the argparse default. The flag was
+    never the problem. Nothing downstream read it.
+    """
+    if split == "dev":
+        task_files = {
+            f"tasks_{domain}": dev_tasks_path(root, domain, query_mode) for domain in DOMAINS
+        }
+    else:
+        task_files = {"tasks": tasks_path(root)}
     missing = [
         path for path in
-        [tasks_path(root), *(corpus_zip(root, d) for d in DOMAINS),
-         *(qrels_path(root, d) for d in DOMAINS)]
+        [*task_files.values(), *(corpus_zip(root, d) for d in DOMAINS),
+         *(qrels_path(root, d, split) for d in DOMAINS)]
         if not path.exists()
     ]
     if missing:
         raise FileNotFoundError(f"missing MTRAG release files: {missing}")
-    tasks = load_tasks(root)
+    tasks = load_tasks(root, split, query_mode)
     task_ids = {task["task_id"] for task in tasks}
-    qrels = load_qrels(root)
+    qrels = load_qrels(root, split)
     qrel_ids = {query_id for rows in qrels.values() for query_id in rows}
     unknown = qrel_ids - task_ids
     if unknown:
@@ -599,14 +856,19 @@ def validate_release(root: Path) -> dict[str, Any]:
     for task in tasks:
         by_domain[task_domain(task)] += 1
     return {
+        "split": split,
+        "query_mode_validated": query_mode,
         "task_count": len(tasks),
         "tasks_by_domain": by_domain,
         "scored_query_count": len(qrel_ids),
         "unscored_query_count": len(task_ids - qrel_ids),
         "qrels_by_domain": {domain: len(rows) for domain, rows in qrels.items()},
         "input_sha256": {
-            "tasks": sha256_file(tasks_path(root)),
-            **{f"qrels_{domain}": sha256_file(qrels_path(root, domain)) for domain in DOMAINS},
+            **{name: sha256_file(path) for name, path in task_files.items()},
+            **{
+                f"qrels_{domain}": sha256_file(qrels_path(root, domain, split))
+                for domain in DOMAINS
+            },
             **{f"corpus_{domain}": sha256_file(corpus_zip(root, domain)) for domain in DOMAINS},
         },
     }
@@ -647,7 +909,9 @@ def main(argv: list[str] | None = None) -> int:
     root = args.mtrag_root.resolve()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    release = validate_release(root)
+    selected_arm_names = select_arm_names(args.arms, args.split)
+    query_mode = dev_query_mode_for(selected_arm_names, args.split)
+    release = validate_release(root, args.split, query_mode)
     manifest = {
         "benchmark": "MTRAG-UN / MTRAGEval Task A (four-domain public release)",
         "started_at": utc_now(),
@@ -696,7 +960,7 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(index_results, indent=2), encoding="utf-8"
         )
     if args.phase in ("evaluate", "all"):
-        selected = set(args.arms or [arm.name for arm in ARMS])
+        selected = set(selected_arm_names)
         summaries = []
         for arm in ALL_ARMS:
             if arm.name in selected:
