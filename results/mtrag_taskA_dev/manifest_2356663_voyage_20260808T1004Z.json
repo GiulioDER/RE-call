@@ -1,0 +1,210 @@
+{
+  "benchmark": "MTRAG-UN / MTRAGEval Task A (four-domain public release)",
+  "started_at": "2026-08-08T10:04:37.137659+00:00",
+  "frozen_arms": [
+    {
+      "name": "recall_default_last",
+      "query_mode": "last",
+      "candidate_k": 20,
+      "use_dense": true,
+      "use_sparse": true,
+      "rerank": false,
+      "reranker": "minilm",
+      "role": "primary",
+      "sparse_backend": "lexical"
+    },
+    {
+      "name": "recall_default_recent3",
+      "query_mode": "recent3",
+      "candidate_k": 20,
+      "use_dense": true,
+      "use_sparse": true,
+      "rerank": false,
+      "reranker": "minilm",
+      "role": "secondary",
+      "sparse_backend": "lexical"
+    },
+    {
+      "name": "recall_rerank_last",
+      "query_mode": "last",
+      "candidate_k": 100,
+      "use_dense": true,
+      "use_sparse": true,
+      "rerank": true,
+      "reranker": "minilm",
+      "role": "secondary",
+      "sparse_backend": "lexical"
+    },
+    {
+      "name": "recall_rerank_recent3",
+      "query_mode": "recent3",
+      "candidate_k": 100,
+      "use_dense": true,
+      "use_sparse": true,
+      "rerank": true,
+      "reranker": "minilm",
+      "role": "competitive",
+      "sparse_backend": "lexical"
+    },
+    {
+      "name": "dense_last",
+      "query_mode": "last",
+      "candidate_k": 100,
+      "use_dense": true,
+      "use_sparse": false,
+      "rerank": false,
+      "reranker": "minilm",
+      "role": "ablation",
+      "sparse_backend": "lexical"
+    },
+    {
+      "name": "sparse_last",
+      "query_mode": "last",
+      "candidate_k": 100,
+      "use_dense": false,
+      "use_sparse": true,
+      "rerank": false,
+      "reranker": "minilm",
+      "role": "ablation",
+      "sparse_backend": "lexical"
+    },
+    {
+      "name": "hybrid_lexical",
+      "query_mode": "last",
+      "candidate_k": 100,
+      "use_dense": true,
+      "use_sparse": true,
+      "rerank": false,
+      "reranker": "minilm",
+      "role": "control",
+      "sparse_backend": "lexical"
+    },
+    {
+      "name": "hybrid_splade",
+      "query_mode": "last",
+      "candidate_k": 100,
+      "use_dense": true,
+      "use_sparse": true,
+      "rerank": false,
+      "reranker": "minilm",
+      "role": "primary",
+      "sparse_backend": "splade"
+    },
+    {
+      "name": "splade_only",
+      "query_mode": "last",
+      "candidate_k": 100,
+      "use_dense": false,
+      "use_sparse": true,
+      "rerank": false,
+      "reranker": "minilm",
+      "role": "ablation",
+      "sparse_backend": "splade"
+    },
+    {
+      "name": "hybrid_both",
+      "query_mode": "last",
+      "candidate_k": 100,
+      "use_dense": true,
+      "use_sparse": true,
+      "rerank": false,
+      "reranker": "minilm",
+      "role": "secondary",
+      "sparse_backend": "both"
+    },
+    {
+      "name": "dense_only",
+      "query_mode": "last",
+      "candidate_k": 100,
+      "use_dense": true,
+      "use_sparse": false,
+      "rerank": false,
+      "reranker": "minilm",
+      "role": "ablation",
+      "sparse_backend": "lexical"
+    },
+    {
+      "name": "hybrid_splade_rerank",
+      "query_mode": "last",
+      "candidate_k": 100,
+      "use_dense": true,
+      "use_sparse": true,
+      "rerank": true,
+      "reranker": "minilm",
+      "role": "best-known-local",
+      "sparse_backend": "splade"
+    },
+    {
+      "name": "hybrid_splade_voyage",
+      "query_mode": "last",
+      "candidate_k": 100,
+      "use_dense": true,
+      "use_sparse": true,
+      "rerank": true,
+      "reranker": "voyage",
+      "role": "best-known-hosted",
+      "sparse_backend": "splade"
+    }
+  ],
+  "split": "dev",
+  "release": {
+    "split": "dev",
+    "query_mode_validated": "last",
+    "task_count": 777,
+    "tasks_by_domain": {
+      "clapnq": 208,
+      "cloud": 188,
+      "fiqa": 180,
+      "govt": 201
+    },
+    "scored_query_count": 777,
+    "unscored_query_count": 0,
+    "qrels_by_domain": {
+      "clapnq": 208,
+      "cloud": 188,
+      "fiqa": 180,
+      "govt": 201
+    },
+    "input_sha256": {
+      "tasks_clapnq": "df1313e94929f32d8c3b9b70b2e045a129db2f2fc7bec0adb5d20828b112178e",
+      "tasks_cloud": "85851a3d24fd09d07b6817ad023604f42ed3313af34dc95431c039890ddda1cb",
+      "tasks_fiqa": "c491ac98e0ae1bc9f5db26e42fdcbb815ef7111b1fcf26794a7481d6c19ee2e6",
+      "tasks_govt": "d24b26f4488f3416a84db8bb150b01095d0894b4274e3750f193ab4c38b09a75",
+      "qrels_clapnq": "0766bc3e8fb6f515c34b33a97e568394303214915a2f835533705979b2303d97",
+      "qrels_cloud": "925635635bf0e60b20d8ea0b18160cff878897acf8e0bf54e7096cc0ade8bd3b",
+      "qrels_fiqa": "a10ec0b5cba634d6c4ad02dd86de715a258ebd313dbcf5fa2d0a77bb0e121abc",
+      "qrels_govt": "46acb9b882297b6ff68978a56fd4ec57ea1c340cd604c62787a9ad69ac880d34",
+      "corpus_clapnq": "3f4bd79341b176070a83b6281bf380d7d6958270c137913f7377121b85a0747e",
+      "corpus_cloud": "a0c5427013c65556aeddfdc246dd6068f3a7fad08ce6ae7adddaa9e87aae246d",
+      "corpus_fiqa": "59f7cf5b043abe007fdb6521eb281bf055524de4376466e9cb4808466e761ee9",
+      "corpus_govt": "09adcc5a1a8d11e362c66d7dbf0ef2ea338df4327d655102bf91ea8e258399f6"
+    }
+  },
+  "revisions": {
+    "recall": "235666324ea534ff77ac05264aab40e3bc353e68",
+    "mtrag": null,
+    "adapter_sha256": "78b21b5c52401b899baf64838097c80a281f6c91603d89ca352da4f36519ee2d"
+  },
+  "runtime": {
+    "python": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+    "platform": "Linux-6.8.0-137-generic-x86_64-with-glibc2.39",
+    "cpu_count": 12,
+    "packages": {
+      "recall": null,
+      "fastembed": "0.8.0",
+      "sentence-transformers": "5.7.0",
+      "torch": "2.13.0",
+      "psycopg": "3.3.4"
+    }
+  },
+  "embedder_model": "BAAI/bge-small-en-v1.5",
+  "phase": "evaluate",
+  "table_prefix": "recall_mtrag_bge_v1",
+  "batch_size": 256,
+  "index_domains": [
+    "clapnq",
+    "cloud",
+    "fiqa",
+    "govt"
+  ]
+}
