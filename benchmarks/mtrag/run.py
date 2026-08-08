@@ -142,6 +142,22 @@ def git_revision(path: Path) -> str | None:
         return None
 
 
+def git_is_dirty(path: Path) -> bool | None:
+    """Whether the working tree has uncommitted changes. `None` if it cannot be determined.
+
+    A revision alone does not say what ran. `rev-parse HEAD` names a commit; if the tree was dirty
+    the code that executed was something else, and the artifact would assert a provenance it does
+    not have. That is worse than recording nothing, because a populated field reads as settled.
+    """
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", str(path), "status", "--porcelain"], text=True
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return bool(out.strip())
+
+
 def manifest_filename(revision: str | None, started_at: str) -> str:
     """A manifest name unique to the run that wrote it.
 
@@ -149,8 +165,13 @@ def manifest_filename(revision: str | None, started_at: str) -> str:
     because re-running the same commit is normal (a resumed arm, a widened split) and a name keyed
     on revision alone would still overwrite. A missing revision degrades to `norev` rather than
     raising: losing the name is worse than losing one field of it.
+
+    Sub-second precision is kept. Truncating to the second would let two runs of one revision
+    started in the same second collide, which is the same defect at lower probability, and a
+    driver script launching arms in a loop is exactly how that stops being hypothetical.
     """
-    return f"manifest_{(revision or 'norev')[:7]}_{started_at.replace(':', '').replace('-', '')[:15]}.json"
+    stamp = started_at.replace(":", "").replace("-", "").replace(".", "").replace("+", "_")
+    return f"manifest_{(revision or 'norev')[:7]}_{stamp}.json"
 
 
 def package_version(name: str) -> str | None:
@@ -684,6 +705,10 @@ def run_arm(
         # whose code version could only be inferred from a schema key that happened to be missing.
         # An artifact that cannot say what produced it is not evidence.
         "recall_revision": git_revision(Path(__file__).resolve().parents[2]),
+        # True means the revision above is NOT what ran: the tree had uncommitted edits. Recorded
+        # rather than assumed clean, because a revision string with no dirty flag beside it reads
+        # as proof and would be exactly the kind of artifact this whole change exists to prevent.
+        "recall_dirty": git_is_dirty(Path(__file__).resolve().parents[2]),
         # Which checkpoint produced the term weights, and the credit it obliges. Both are null on
         # a lexical-only arm, where no learned sparse model was loaded at all.
         "sparse_model": sparse_model_used,
@@ -948,6 +973,7 @@ def main(argv: list[str] | None = None) -> int:
         "release": release,
         "revisions": {
             "recall": git_revision(Path(__file__).resolve().parents[2]),
+            "recall_dirty": git_is_dirty(Path(__file__).resolve().parents[2]),
             "mtrag": git_revision(root),
             "adapter_sha256": sha256_file(Path(__file__)),
         },

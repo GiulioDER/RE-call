@@ -557,3 +557,50 @@ def test_two_runs_into_one_directory_do_not_overwrite_each_others_manifest() -> 
     # A missing revision must still yield a usable, unique name rather than raising.
     d = manifest_filename(None, "2026-08-08T10:04:37+00:00")
     assert d.startswith("manifest_norev_") and d.endswith(".json")
+
+
+def test_two_runs_in_the_same_second_still_get_distinct_manifests() -> None:
+    """Truncating the stamp to whole seconds reintroduces the collision at lower probability.
+
+    Arms take minutes, so this looks impossible until a driver script launches two in a loop.
+    """
+    from benchmarks.mtrag.run import manifest_filename
+
+    rev = "235666324ea534ff77ac05264aab40e3bc353e68"
+    a = manifest_filename(rev, "2026-08-08T14:46:14.505185+00:00")
+    b = manifest_filename(rev, "2026-08-08T14:46:14.998001+00:00")
+
+    assert a != b, "same revision, same second, different microsecond must not collide"
+    assert ":" not in a and "/" not in a, "must be a legal filename on Windows and Linux"
+
+
+def test_a_dirty_tree_is_recorded_rather_than_passed_off_as_its_commit(tmp_path) -> None:
+    """A revision with no dirty flag beside it reads as proof it is not.
+
+    `git rev-parse HEAD` names a commit; if the tree had uncommitted edits, the code that ran was
+    something else. Recording the revision alone would assert a provenance the artifact does not
+    have, which is the failure this whole change exists to prevent.
+    """
+    import subprocess
+
+    from benchmarks.mtrag.run import git_is_dirty
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def run(*a):
+        return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, check=True)
+
+    run("init", "-q")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "t")
+    (repo / "f.txt").write_text("one", encoding="utf-8")
+    run("add", "f.txt")
+    run("commit", "-qm", "first")
+
+    assert git_is_dirty(repo) is False, "a committed tree is clean"
+
+    (repo / "f.txt").write_text("two", encoding="utf-8")
+    assert git_is_dirty(repo) is True, "an uncommitted edit must be reported"
+
+    # Not a repo at all: unknown, not silently 'clean'.
+    assert git_is_dirty(tmp_path / "nope") is None
