@@ -429,6 +429,12 @@ def main(argv: list[str] | None = None) -> int:
                 answer = generate_one(
                     client, args.model, build_messages(task, contexts), args.max_tokens
                 )
+            except MemoryError:
+                # Not quarantinable. `MemoryError` is an `Exception`, so the handler below would
+                # otherwise catch it and loop straight into the next allocation-heavy iteration,
+                # with the interpreter in a state that is not safe to keep working in. Unlikely
+                # with payloads this small, which is why it is a carve-out and not a redesign.
+                raise
             except Exception as exc:
                 # Deliberately `Exception`, not a list of the failures imagined so far. Enumerating
                 # types is what produced the bug above: any type not on the list becomes fatal, and
@@ -478,15 +484,23 @@ def main(argv: list[str] | None = None) -> int:
                     "size_mb": round(size_mb, 2)}),
         flush=True,
     )
-    # A partial submission is not a submission: say so here rather than letting the official
-    # checker be the first thing that notices.
+    # A partial submission is not a submission, and saying so ONLY on stdout is a false green: a
+    # caller that gates on the exit code, which is the normal thing to do, reads success.
+    #
+    # The consecutive-failure breaker cannot cover this. It trips on 5 IN A ROW, so a fault that
+    # hits most tasks in a scattered pattern, or one confined to a tail shorter than the limit,
+    # fails almost everything and still finishes "cleanly": measured at 30 of 40 tasks failed with
+    # rc=0. `check_submission_size` counts bytes and never completeness, so nothing downstream
+    # catches it either. Exit code 0 has to mean the submission is whole.
     if failed:
         print(
             json.dumps({"event": "incomplete", "note":
-                        f"{len(failed)} task(s) have no answer. Re-run the same command to retry "
-                        f"only those; the completed ones are skipped."}),
+                        f"{len(failed)} of {len(pending)} task(s) have no answer, so this file is "
+                        f"NOT submittable. Re-run the same command to retry only those; the "
+                        f"completed ones are skipped."}),
             flush=True,
         )
+        return 1
     return 0
 
 

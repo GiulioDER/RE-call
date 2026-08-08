@@ -312,7 +312,7 @@ def test_one_unanswerable_task_does_not_take_the_other_840_down_with_it(
         "--mtrag-root", str(root), "--task", "b", "--out", str(out),
     ])
 
-    assert rc == 0
+    assert rc == 1, "an incomplete submission must not report success through the exit code"
     written = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert len(written) == 3, "the three answerable tasks must still be written"
     failures = out.with_suffix(out.suffix + ".failed.jsonl")
@@ -345,7 +345,7 @@ def test_a_malformed_context_is_quarantined_like_any_other_per_task_failure(
 
     rc = gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
 
-    assert rc == 0
+    assert rc == 1
     written = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert [r["task_id"] for r in written] == ["c0<::>1", "c2<::>1", "c3<::>1"], (
         "the tasks AFTER the malformed one must still be attempted"
@@ -390,13 +390,51 @@ def test_the_failures_log_describes_this_run_not_every_run(tmp_path, monkeypatch
     )
 
 
-def test_build_messages_never_names_a_withheld_field_in_its_source() -> None:
-    """A structural check, because the substring guard has a blind spot.
+def test_a_scattered_fault_that_never_trips_the_breaker_still_fails_the_run(
+    tmp_path, monkeypatch
+) -> None:
+    """The false green the consecutive-only breaker cannot see.
 
-    `_assert_no_withheld_metadata` compares literal strings, so a TRANSFORMED leak (a truncated
-    slice of the gold answer, or a lower-cased label) would slip past it. This asserts the stronger
-    and simpler property instead: the prompt-building path never refers to those keys at all, so
-    there is nothing to transform. Requires the good rather than refusing one shape of bad.
+    A fault that hits most tasks but never 5 in a row leaves the breaker untouched, so the run
+    ends normally with a submission missing most of its answers. `check_submission_size` counts
+    bytes, not completeness, so nothing downstream objects either. If the exit code were 0 here,
+    every caller that gates on it, which is the normal thing to do, would read success.
+    """
+    tasks = [_task(task_id=f"c{i}<::>1") for i in range(40)]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+
+    calls = {"n": 0}
+
+    def every_fourth_succeeds(*a, **k):
+        calls["n"] += 1
+        if calls["n"] % 4 == 0:
+            return "an answer"
+        raise RuntimeError("scattered fault")
+
+    monkeypatch.setattr(gen, "generate_one", every_fourth_succeeds)
+
+    rc = gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+
+    written = out.read_text(encoding="utf-8").splitlines()
+    assert len(written) == 10, "3 of every 4 tasks failed, so only 10 answers exist"
+    assert rc == 1, (
+        "30 of 40 tasks failed and the breaker never tripped; exit code 0 here is a false green"
+    )
+
+
+def test_build_messages_never_names_a_withheld_field_in_its_source() -> None:
+    """A tripwire, NOT the leak defence. Do not treat a green here as sufficient.
+
+    It text-scans the literal source of exactly two functions, so any indirection defeats it: a
+    helper that reads `task["targets"]` and is called from `build_messages` passes this cleanly
+    (verified). It catches the careless direct edit and nothing subtler.
+
+    The property that actually matters is `_assert_no_withheld_metadata`, which inspects the built
+    prompt itself and is driven by the mutation tests above. This exists because that check
+    compares literal strings and so cannot see a TRANSFORMED leak (a truncated slice of the gold
+    answer, a re-cased label); the two cover different halves and neither is sufficient alone.
     """
     import inspect
 
