@@ -140,31 +140,46 @@ def _refuses_without_a_database(fn: AnyFunc) -> bool:
     autouse fixture, which cannot skip anything and must no-op instead, an `if` on `_db_available`
     with a bail in ITS OWN body.
 
-    `node.body` rather than `ast.walk(node)`, and nested functions excluded. Walking the whole `If`
-    also saw the else branch and the bodies of helper functions defined inside it, so a fixture
-    whose bail sat in the else, or belonged to an inner function, read as guarded.
+    Three properties, all of them load-bearing, and each pinned by a row of the table below.
+
+    POSITION: the refusal must be the FIRST statement after any docstring, not merely present
+    somewhere. A fixture that connects and then refuses has already paid the connect timeout, and
+    scanning for a match anywhere accepted exactly that.
+
+    POLARITY: the `if` must test `not <probe>`. `if _db_available(): return` bails precisely when
+    the database IS reachable, which is the opposite of a guard, and reads identically to a scan
+    that only asks whether the probe is mentioned.
+
+    DEPTH: `fn.body`, so a `require_db()` sitting inside a nested helper that nobody calls is not
+    mistaken for the fixture's own refusal, and `node.body`, so a bail in the `else` branch is not
+    either.
     """
-    for node in ast.iter_child_nodes(fn):
+    for node in fn.body:
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            continue  # module or function docstring, not a statement that does anything
         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
             func = node.value.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            if name == "require_db":
-                return True
-        if not isinstance(node, ast.If):
-            continue
-        calls_probe = any(
-            isinstance(inner, ast.Call)
-            and isinstance(getattr(inner, "func", None), ast.Name | ast.Attribute)
-            and (
-                inner.func.id if isinstance(inner.func, ast.Name) else inner.func.attr
+            return name == "require_db"
+        if isinstance(node, ast.If):
+            test = node.test
+            if not (isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not)):
+                return False
+            calls_probe = any(
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Name | ast.Attribute)
+                and (inner.func.id if isinstance(inner.func, ast.Name) else inner.func.attr)
+                == "_db_available"
+                for inner in ast.walk(test.operand)
             )
-            == "_db_available"
-            for inner in ast.walk(node.test)
-        )
-        if not calls_probe:
-            continue
-        if any(isinstance(stmt, ast.Return) for stmt in node.body):
-            return True
+            if not calls_probe:
+                return False
+            return any(isinstance(stmt, ast.Return) for stmt in node.body)
+        return False  # the first thing this fixture does is something other than refusing
     return False
 
 
@@ -256,11 +271,38 @@ def _only(source: str) -> AnyFunc:
             False,
         ),
         (
-            "branches on something that is not the probe, and does bail",
-            # Isolates the "is it the probe?" half specifically: this row is the only one whose
-            # verdict flips if that check is removed, because it satisfies the bail half.
-            "def f():\n    if os.environ.get('CI'):\n        return None\n"
+            "negates something that is not the probe, and does bail",
+            # Isolates the "is it the probe?" check specifically: this row satisfies position,
+            # polarity and bail, so it is the only one whose verdict flips if that check goes.
+            "def f():\n    if not os.environ.get('CI'):\n        return None\n"
             "    return psycopg.connect(TEST_DSN)\n",
+            False,
+        ),
+        (
+            "connects first and refuses afterwards, having already paid the timeout",
+            "def f():\n    apply_migrations(TEST_DSN, table='t', dim=4)\n    require_db()\n"
+            "    yield 't'\n",
+            False,
+        ),
+        (
+            "bails when the database IS reachable, which is a guard with its polarity inverted",
+            "def f():\n    if _db_available():\n        yield\n        return\n"
+            "    yield psycopg.connect(TEST_DSN)\n",
+            False,
+        ),
+        (
+            "refuses only inside a nested helper that nothing calls",
+            "def f():\n    def unused():\n        require_db()\n"
+            "    return psycopg.connect(TEST_DSN)\n",
+            False,
+        ),
+        (
+            "does anything at all before refusing",
+            # Deliberately strict, and this row says so. The rule is "the refusal is the first
+            # statement after the docstring", with no judgement about whether what precedes it
+            # looks harmless, because deciding which statements can reach a socket is the sort of
+            # approximation that made the previous three versions of this file wrong.
+            "def f():\n    x = 1\n    require_db()\n    yield x\n",
             False,
         ),
         (
