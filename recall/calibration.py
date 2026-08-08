@@ -18,8 +18,12 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import quantiles
+from typing import TYPE_CHECKING
 
 from recall.observability import get_logger
+
+if TYPE_CHECKING:  # `recall.embeddings` imports this module, so the runtime import would cycle
+    from recall.embeddings import EmbeddingProfile
 
 DEFAULT_SCALE = 0.05
 DEFAULT_PATH = "calibration.json"
@@ -321,6 +325,12 @@ def _resolve_path(path: str | Path | None) -> Path:
     return Path(path or os.environ.get(ENV_VAR) or DEFAULT_PATH)
 
 
+#: JSON key holding `EmbeddingProfile.fingerprint()` — the SHA256 over the COMPLETE immutable
+#: embedding identity, not just its profile id. See `load_for_profile` for why the id alone is
+#: not enough to decide that a threshold may be applied.
+PROFILE_FINGERPRINT_KEY = "profile_fingerprint"
+
+
 def save(cal: Calibration, path: str | Path | None = None) -> Path:
     """Write the calibration JSON; returns the path written."""
     p = _resolve_path(path)
@@ -455,4 +465,76 @@ def load_for(embedder: str, path: str | Path | None = None) -> Calibration | Non
             "loaded calibration %s is NOT certified — %s", p, cal.certification_reason
         )
     _LOAD_CACHE[key] = (digest, cal)
+    return cal
+
+
+def save_for_profile(
+    cal: Calibration, profile: "EmbeddingProfile", path: str | Path | None = None
+) -> Path:
+    """`save`, plus the complete embedding identity the threshold was fitted under.
+
+    Refuses a calibration whose `embedder` is not this profile's id, because the file would then
+    carry two disagreeing claims about what it applies to and `load_for` and `load_for_profile`
+    would resolve it differently.
+    """
+    if cal.embedder != profile.profile_id:
+        raise ValueError(
+            f"calibration is for embedder {cal.embedder!r} but the profile is "
+            f"{profile.profile_id!r}; the file would claim two different owners"
+        )
+    written = save(cal, path)
+    payload = json.loads(written.read_text(encoding="utf-8"))
+    payload[PROFILE_FINGERPRINT_KEY] = profile.fingerprint()
+    written.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return written
+
+
+def load_for_profile(
+    profile: "EmbeddingProfile", path: str | Path | None = None
+) -> Calibration | None:
+    """Load a calibration only when it was fitted under this EXACT embedding identity.
+
+    An EXTENSION of `load_for`, never a relaxation: every check `load_for` makes still runs, and
+    this adds one more on top. `load_for` filters on the profile ID string, which is the coarsest
+    part of an embedding's identity. Two runs can share `bge-small-symmetric-v1` and differ in
+    artifact digest, dimension, encoder modes, normalization, instruction version, chunker version
+    or inference-library version — every one of which moves the cosine regime the threshold was
+    fitted in, and every one of which is already key material in
+    `EmbeddingProfile.fingerprint()`.
+
+    **Absent fingerprint fails CLOSED.** A file predating this key cannot demonstrate which
+    identity it belongs to, and serving it because it does not contradict us is precisely
+    cross-profile reuse with the evidence missing rather than absent. The caller gets None, which
+    every consumer already handles as "uncalibrated", so the failure is a degraded mode and not a
+    crash. `load_for` is untouched, so a legacy caller keeps the behaviour it had.
+
+    Reads the file a second time rather than threading the raw payload out of `load_for`'s cached
+    path: this runs once per benchmark arm, not once per query, and the alternative was widening
+    `load_for`'s return type on the hot retrieval path to serve a caller that is not on it.
+    """
+    cal = load_for(profile.profile_id, path)
+    if cal is None:
+        return None
+    resolved = _resolve_path(path)
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+        stored = payload.get(PROFILE_FINGERPRINT_KEY)
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+    if not isinstance(stored, str) or not stored:
+        _log.warning(
+            "calibration %s records no %s, so it cannot show which embedding identity it was "
+            "fitted under — refusing it rather than applying it to %s (uncalibrated fallback)",
+            resolved, PROFILE_FINGERPRINT_KEY, profile.profile_id,
+        )
+        return None
+    expected = profile.fingerprint()
+    if stored != expected:
+        _log.warning(
+            "calibration %s was fitted under embedding identity %s, not %s — refusing it "
+            "(uncalibrated fallback). The profile ids match; something else in the identity "
+            "does not.",
+            resolved, stored, expected,
+        )
+        return None
     return cal

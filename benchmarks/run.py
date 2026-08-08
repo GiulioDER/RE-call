@@ -34,6 +34,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+import warnings
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -577,7 +579,78 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     print(json.dumps(agg, indent=2))
     print(f"full results -> {path}")
     print(f"incremental  -> {partial_path}")
+    # Release the arm's handles while the interpreter is still healthy. A `Mem0System` holds
+    # exclusive Qdrant locks for as long as it lives (see `Mem0System.close`), including one on a
+    # machine-global telemetry path that no `run_id` disambiguates. Process exit would drop them
+    # anyway; the point is to do it here rather than during finalisation, where qdrant-client's own
+    # finaliser dies with `ModuleNotFoundError: import of msvcrt halted`.
+    #
+    # SUCCESS PATH ONLY, deliberately, and it is not a guarantee: there is no `try/finally`, so an
+    # exception on the way here skips this and falls back to process exit. The honest fix, if that
+    # ever stops being good enough, is `with _build_system(...) as system:` around the body — not a
+    # second close bolted on elsewhere. Duck-typed because `MemorySystem` is a three-member
+    # protocol and `RecallSystem` has nothing to release: it holds a DSN string, not a connection.
+    #
+    # Guarded: by this point the artifact and its sidecar are written and their paths printed, so
+    # a teardown failure must not change the run's verdict. Unguarded, a complete run would exit
+    # non-zero and a wrapper reading that status would re-run it, re-spending LLM credit on work
+    # that already succeeded.
+    close = getattr(system, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception as exc:  # noqa: BLE001 - a wedged handle is not a failed benchmark run
+            # The REPORT is guarded as carefully as the call, for the two reasons
+            # `Mem0System.close` documents: `warnings.warn` raises under `-W error`, and `repr()`
+            # of an arbitrary exception can raise. Either one, unguarded, would skip `return 0`
+            # and produce exactly the non-zero exit this handler exists to prevent.
+            _warn_teardown_failed(system, exc)
     return 0
+
+
+def _warn_teardown_failed(subject: object, exc: BaseException) -> None:
+    """Report a teardown failure without ever becoming one.
+
+    Teardown of an already-written artifact must not change a run's verdict, so nothing in here
+    may raise. But it must not be silent either: the whole cost of the incident this traces back
+    to was diagnostic, and under `-W error` the warning IS the raise, so a bare `pass` would drop
+    the breadcrumb precisely when someone has asked to be strict. stderr is the last resort.
+
+    Every value that reaches the message is derived behind its own guard, including
+    `type(x).__name__` (a metaclass can make that raise) — which is why `subject` is passed in
+    whole rather than pre-formatted by the caller. By the time `message` is built both parts are
+    plain strings, so the f-string itself cannot fail.
+
+    `BaseException`, not `Exception`, in all three handlers. That does swallow a `KeyboardInterrupt`
+    arriving in the microseconds this runs, and that is the intended trade: the results are already
+    written and their paths already printed, so a Ctrl+C landing inside a diagnostic must not be
+    what turns a finished run into a failed one.
+    """
+    try:
+        name = type(subject).__name__
+    except BaseException:  # noqa: BLE001 - see the docstring: nothing here may raise
+        name = "<unnameable>"
+    try:
+        detail = repr(exc)
+    except BaseException:  # noqa: BLE001 - an exception whose repr raises is still evidence
+        try:
+            detail = f"<unprintable {type(exc).__name__}>"
+        except BaseException:  # noqa: BLE001 - a hostile metaclass, one level further down
+            detail = "<unprintable>"
+    message = f"benchmarks.run: closing {name} failed: {detail}"
+    try:
+        # stacklevel=2 points at the close site in `main`, which is where the pre-helper version
+        # pointed. 3 would credit whoever called `main`, i.e. `raise SystemExit(main())`.
+        warnings.warn(message, stacklevel=2)
+    except BaseException:  # noqa: BLE001 - `-W error` turns the report into a raise
+        # `sys.stderr` is None under pythonw, and `print(file=None)` writes to STDOUT rather than
+        # raising — which would interleave this into the artifact paths and the aggregate JSON.
+        stream = sys.stderr
+        if stream is not None:
+            try:
+                print(message, file=stream)
+            except BaseException:  # noqa: BLE001 - a closed stderr is not a failed benchmark run
+                pass
 
 
 if __name__ == "__main__":

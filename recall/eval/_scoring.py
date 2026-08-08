@@ -20,9 +20,10 @@ from __future__ import annotations
 #: every answerable question instead, which is methodologically free — `hit_at_k` and `mrr` never
 #: read the calibration, so the fit/held split buys them nothing and halves their sample — but it
 #: is NOT the default, because the default decides what a published figure MEANS. Silently
-#: widening it would change the value of `README.md`'s PEPs table under a reproduce command that
-#: ships in the same file, and would move `results/gap/*.json` across 17 corpora without changing
-#: one byte of their provenance. Opt in per run, and record which mode produced the artifact.
+#: widening it would change the value of `docs/EVIDENCE.md`'s PEPs table under a reproduce command
+#: that ships in the same file, and would move `results/gap/*.json` across 17 corpora without
+#: changing one byte of their provenance. Opt in per run, and record which mode produced the
+#: artifact.
 #:
 #: Abstention is unaffected by this setting: `false_abstain` and `abstention_accuracy` are always
 #: scored on the held half, because the threshold is fitted on the other one.

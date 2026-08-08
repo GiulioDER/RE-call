@@ -8,7 +8,302 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Changed (action required)
+- **FastEmbed profile fingerprints change, so profile-bound calibrations must be re-fitted.**
+  The resolved ONNX execution provider is now part of `EmbeddingProfile.dependencies`, which is
+  fingerprint key material. A calibration bound by profile fingerprint before this release no
+  longer matches: `calibration.load_for_profile` logs a warning and returns `None`, so a run
+  CONTINUES UNCALIBRATED rather than refusing — re-fit before trusting an abstention threshold.
+  This affects the v1 profile-fingerprint binding and the embedding cache only; the CERTIFIED v2
+  binding stores `EmbedderIdentity`, which carries no dependencies and is still provider-blind,
+  so a CPU-fit certified calibration continues to bind to a CUDA-served pipeline. Cached
+  vectors simply miss and re-embed, at the cost of one full re-encode. Only FastEmbed-derived
+  profiles are affected; the global fingerprint domain tag is deliberately NOT bumped, since that
+  would also invalidate Voyage and every other profile whose vectors this change cannot have
+  moved.
+
 ### Added
+- **`HybridRetriever.search_fused(query, history, k, source)`: multi-query fusion of the current
+  turn with prior turns.** Fuses retrieval for `query` with retrieval for a concatenation of prior
+  turns, then reranks once. Measured on MTRAG-human dev at `candidate_k=100` with a reranker:
+  **+0.0084 nDCG@5** (Holm-significant, cross-encoder/ms-marco-MiniLM-L-6-v2) and **+0.0842 R@100** over single-query `search`.
+  Gains proved significant and directional under BAAI/bge-reranker-v2-m3 (+0.0117 nDCG@5), on one dev split. The gain is conditional
+  on reranking: raw, this arm is **0.0447 nDCG@5 worse** than `search()`, which is why
+  `search_fused` refuses rather than warns when no reranker is configured; RE-call ships with the
+  reranker off by default. It costs roughly 2x the retrieval of `search()` plus mandatory
+  reranking (about 1,050 ms/query on CPU), so it is opt-in by data: no `history`, no fusion, and
+  `search()` is unchanged.
+
+  Adds `PgVectorStore.cosines_for`, used to put every returned hit back on the query's cosine
+  basis after rerank. A chunk deleted between retrieval and that rescore is omitted from
+  `cosines_for` and dropped from the result rather than served a stale, possibly history basis
+  score, so `search_fused` can return fewer than `k` hits. Library only for now: not exposed as an
+  MCP tool.
+
+- **`FastEmbedEmbedder(providers=...)` and `.session_providers`.** `providers` forwards an ONNX
+  Runtime execution-provider REQUEST to fastembed; it is not a guarantee, because asking for
+  `CUDAExecutionProvider` against a wheel built for a different CUDA major falls back to CPU with
+  only a `RuntimeWarning`. `.session_providers` reports what the live `InferenceSession` actually
+  resolved — never `onnxruntime.get_available_providers()`, which reports what the wheel was
+  compiled with and stays true while the session sits on CPU. The resolved providers are now part
+  of the embedding profile's `dependencies` on BOTH the legacy and the registered-profile path,
+  so a CPU-built and a CUDA-built vector no longer share a cache key or a calibration binding.
+  When fastembed's internals do not expose a session, this is recorded as
+  `onnx-providers-source: unavailable` rather than as a provider name — "could not tell" is a
+  third state and must not read as a CPU run.
+- **`benchmarks/check_profile_encoder_distinctness.py`, and the finding it exists to record.**
+  `bge-small-symmetric-v1` and `bge-small-asymmetric-v1` differ in two registry fields
+  (`query_mode`, `passage_mode`) and share every other identity field and one provisioned artifact
+  tree. Measured against that tree on the deployment host, offline: `embed`, `query_embed` and
+  `passage_embed` return **byte-identical** vectors for `BAAI/bge-small-en-v1.5` under fastembed
+  0.8.0, on all six probes. The reason is a property of the library rather than of one deployment:
+  that model resolves to `OnnxTextEmbedding`, which does not override either method, so both come
+  from `TextEmbeddingBase` and `yield from self.embed(...)` with no instruction. The two profiles
+  therefore cannot produce different vectors, and **a paired promotion comparison of the two is a
+  null by construction** rather than an experiment. It would be the same KIND of null the harness
+  already published as its own control (`results/promotion/decision.null-difference.json`) but
+  **not the same artifact**: that control's two arms share one fingerprint, so its deltas are exact
+  zeros, while these two profiles have different fingerprints and land in different physical
+  tables, making their deltas tie-break noise around zero, which is worse rather than equivalent.
+  No behaviour changes; `docs/ENTERPRISE_RETRIEVAL.md` now says so where a reader designing an
+  experiment will meet it, because "names a distinct encoder" and "gets distinct vectors" had been
+  the same sentence. Five controls, all blocking (positive, determinism, coverage, identity binding, and a
+  sensitivity control that requires a deliberate 1e-4 rad rotation to be reported as different),
+  each proven able to refuse by mutation rather than merely to run (10 of 10 guards killed), and covered by
+  `tests/test_bench_profile_encoder_distinctness.py` against a stub backend so CI exercises them
+  without the `fastembed` extra. Run output committed at `results/promotion/encoder-distinctness.bge-small.json`
+  (schema `recall-encoder-distinctness-v1`, not a `PromotionDecision`) and archived under
+  `/var/lib/recall-benchmarks/`.
+
+- **The evidence boundary is reachable.** `recall/evidence.py` was complete and correct and
+  imported by nothing but its own test: absent from `recall/__init__.py`, wired into no surface.
+  `EvidenceItem`, `EvidenceBundle`, `AnswerEnvelope`, `EvidencePolicy`, `build_evidence_bundle`,
+  `render_evidence_prompt` and `validate_answer` are now exported from the package root, and the
+  boundary is reachable from all four integrations:
+
+  - `recall search --evidence` prints the bundle and the exact prompt it renders to, as JSON;
+  - a new read-only MCP tool, `recall_evidence`, returns the bundle plus the rendered system and
+    user messages and runs no generator — the client is the generator;
+  - `RecallRetriever.evidence()` / `.evidence_prompt()` on both the LangChain and the LlamaIndex
+    adapters, over the same injectable `search_fn`.
+
+  All four are additive: existing fields, metadata keys and tools are unchanged, and each of the
+  four carries a test asserting a frozen list of its pre-existing keys. The CLI listing also gains
+  six identity fields — chunk id, ordinal, `valid_from`, embedding profile, retrieval profile
+  and index generation — which the three other surfaces already carried.
+
+- **`normalize_citations`, and `GenerationResult.citations_normalized`.** A generator that cites
+  the same chunk twice is redundant, not unsound, so `generate_from_evidence` now collapses
+  duplicates deterministically instead of discarding the answer. Normalisation is
+  first-occurrence ordered, idempotent and only ever subtractive, so it cannot mint an identifier
+  that then satisfies the citation check it feeds. `validate_answer` on its own is unchanged and
+  still reports a duplicate as an error.
+
+- **`latency_budget_ms` now means something at request time.** It was declared on every retrieval
+  profile, validated, and read by nothing. It now does two enforced things. It **bounds the
+  admission wait**: a request that cannot acquire a running slot within the budget is shed with
+  `RetrievalOverloaded` *before the query is embedded*, so a refused request costs nothing.
+  Previously `queue_capacity` bounded how many threads could be parked and said nothing about how
+  long any of them waited, so a process could hold a client for minutes behind a slow reranked
+  query with every counter reading healthy. And it **labels an overrun**: a request that finishes
+  over budget still returns its answer and reports `total_ms`, `latency_budget_ms` and
+  `budget_exceeded` on the response.
+
+  The budget is charged **once**: `budget_exceeded` is computed on the work the request did
+  (`total_ms` minus the new `admission_wait` stage), not on end-to-end latency. The budget is
+  already spent as the admission timeout, so charging it again would label a fast retrieval slow
+  because another request was ahead of it. The legacy profile enforces no budget and reports
+  `latency_budget_ms` as `null` rather than the 24-day sentinel used internally.
+
+  Aborting mid-flight was considered and rejected: there is no cancellation point inside a
+  blocking cross-encoder `predict`, so the process would pay the whole cost and discard the answer.
+
+- **The MCP server now sizes its worker pool from the retrieval profile** (`worker_thread_budget`:
+  admission capacity plus eight reserved threads, raised at startup and never lowered). The
+  admission gate is entered inside an `anyio` worker thread, so its capacity is denominated in
+  threads: fast's 8 + 32 is exactly anyio's 40-token default, which would have meant the request
+  that should be shed never reached the gate at all. It would have waited in anyio's limiter,
+  which has no timeout and no counter, so `recall_retrieval_rejected_total` would have read zero
+  while clients waited unboundedly. The reserved headroom also keeps queued searches from
+  starving `recall_index`, `recall_forget`, `recall_stats` and bearer-token validation.
+
+- **`RetrievalOverloaded` is a retryable refusal, not a bare `RuntimeError`.** It carries `reason`
+  (`queue_full` or `budget_exhausted`) and `retry_after_seconds`, matching how
+  `recall_mcp.limits.RateLimited` reports a refusal a client should come back from. Rejections are
+  counted as `recall_retrieval_rejected_total{profile,reason}`.
+
+- **`admission_wait` and `evidence_assembly` stage timings.** The response surface timed five
+  stages and stopped at the trust gate; queueing and the assembly of the client-facing evidence
+  (provenance, validity, verdicts, advice) were unattributed. All eight stages are now on
+  `stage_ms` and observed into `METRICS` as `recall_retrieval_stage_ms{profile,stage}` alongside
+  `recall_retrieval_total_ms{profile}`, so per-stage percentiles exist across a population of
+  queries rather than only per response. `recall_retrieval_total_ms` is observed on failures as
+  well as successes, with `recall_retrieval_failed_total{profile}` counting them: a timer that
+  records only on success hides the slow path worth finding. It excludes requests that were
+  **shed**, which did no work by construction and would otherwise make healthy load shedding
+  look like an outage; those appear only in `recall_retrieval_rejected_total{profile,reason}`.
+
+- **The quality profile's reranker is pinned by artifact digest.** `recall/rerank.py` pins
+  artifact SHA256 `db6ad879…`, and `RECALL_RERANK_SHA256` must now *equal* the pin rather than
+  define it. Verifying a tree against a digest the operator supplied proves only that the tree
+  hashes to its own hash.
+
+  Two limits, both deliberate. The model name and revision recorded beside the digest are
+  **provenance, not a runtime check**: the quality profile loads locally with `local_files_only`,
+  where the Hub revision is unused. And the digest hashes a whole provisioned **tree**, path names
+  included, so it identifies one provisioned directory rather than the model in general; a
+  differently laid out copy of the same weights hashes differently and is refused. No shipped
+  command reproduces that tree, which is a real gap for operators outside the recorded deployment.
+
+### Changed
+- **⚠️ BREAKING for one configuration: a quality process whose `RECALL_RERANK_SHA256` is not the
+  pinned digest now refuses to start.** Previously that digest was passed straight to
+  `verify_artifact`, so a deployment whose value correctly described its *own* reranker tree
+  started and served every request. Such a deployment must now either provision the pinned tree
+  or stay on the legacy `RECALL_RERANK` switch.
+
+  The other new startup refusals are re-timings, not losses: a bad profile name, a contradictory
+  `RECALL_RETRIEVAL_PROFILE` / `RECALL_RERANK` pair, a non-integer or non-positive
+  concurrency/queue override, and a quality profile with no `RECALL_RERANK_PATH` /
+  `RECALL_RERANK_SHA256` all failed every *search* before this release. They now fail at startup,
+  which is the first thing the lifespan does, ahead of any I/O.
+
+  The legacy `RECALL_RERANK` path is **not** covered by the startup check: it resolves to the
+  legacy profile, whose reranker configuration is still discovered when the first search builds it.
+
+- **Fast and quality carry separate concurrency budgets.** Both used to inherit `max_concurrency=4`
+  / `queue_capacity=16`. Legacy still does; fast is now 8 + 32 and quality 2 + 8. Quality's
+  per-request budget is six times fast's, so an equal queue depth made its clients wait roughly six
+  times as long; the numbers hold `queue_capacity × latency_budget_ms` within one order of
+  magnitude (fast 8000 slot-ms, quality 12000).
+
+  ⚠️ **This silently changes capacity for anyone who adopts the new `.env.example`,** in opposite
+  directions per profile: fast 4/16 → 8/32 (double the concurrent load), quality 4/16 → 2/8
+  (admission capacity 20 → 10, so more `queue_full` rejections at the same traffic). Legacy is
+  unchanged. Re-state the values you actually want rather than adopting the blanks.
+
+  ⚠️ **Rollback note.** `RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` are now **commented
+  out** in `.env.example` rather than present-and-blank, because an empty value is read as unset by
+  this change and as a malformed integer by every build before it (`_positive` treated only an
+  absent key as unset). No *released* version reads these keys at all, so published-package users
+  are unaffected; the exposure is a rollback to an earlier build of the unreleased enterprise work,
+  which is what this program's own deployment runs.
+
+- **`max_concurrency + queue_capacity` is now capped at 256** and a larger value refuses at
+  resolution. Sizing the worker pool from the profile removed anyio's 40-token default as an
+  accidental ceiling on process thread count, which would otherwise have made
+  `RECALL_SEARCH_QUEUE` an unvalidated thread-count knob.
+
+  ⚠️ These values are a policy choice, not a measurement. Latency for this program is PENDING for
+  want of an idle reference host.
+
+- **One reranker per worker process, built under a lock, with failures cached.** The shared
+  instance was memoised with `lru_cache`, which is a cache lookup and not a construction lock: on
+  a cold start under load, every concurrent first request missed and loaded its own copy of the
+  cross-encoder. Only successes were cached, so a bad artifact re-ran the full tree SHA256 over a
+  several-hundred-megabyte model directory on every client search. The admission queue itself had
+  the same `lru_cache` defect and now uses the same lock.
+
+- **`RECALL_RERANK_THREADS` is read on the quality profile only.** It was documented as a general
+  inference-thread bound; the legacy `RECALL_RERANK` path never passed it to the cross-encoder.
+  The documentation now says so. Behaviour is unchanged.
+
+### Fixed
+- **`recall-enterprise parity` passed vacuously on two empty generations, and a vacuous pass here
+  reads as permission to run `cutover`.** Two empty generations cannot disagree, so every
+  comparison `validate_generation_parity` makes was satisfied, `GenerationParity.valid` was True,
+  and the command printed `parity: OK` and exited 0 over 0 active and 0 shadow chunks. That is the
+  state the reference deployment is in, and at this step it presents as a **green**, so the
+  runbook's own rule — each step is a gate, do not proceed past a red one — could not catch it.
+  ⚠️ **What this closes is the misleading green at step 8, not a path to a promoted empty index:**
+  `ControlPlane.cutover` calls `_require_non_empty_shadow` before its parity check, deliberately
+  outside it so `--allow-divergent-corpus` cannot skip it, so an empty shadow was never
+  promotable. The guard existed, in prose, in `docs/ENTERPRISE_RETRIEVAL.md`;
+  prose is the weakest place to keep a guard, because it lives in the document an operator reads
+  for permission to proceed. `_cmd_parity` now exits 1 with a refusal naming the tenant and both
+  generation ids: `... holds no chunks in either generation (...), so the comparison is vacuous and
+  certifies nothing`. It also now prints any `parity.failures` **before** that refusal, because
+  `indexes_valid` and `rls_enabled` are catalog facts that can be false of an EMPTY pair, and for
+  an empty pair this is the only place such a failure surfaces at all: `readiness` evaluates
+  `route.active`, and `cutover` — which does check the shadow's RLS on its default path — refuses
+  at `_require_non_empty_shadow` before it ever reaches that check. **No override flag**,
+  deliberately: `cutover --allow-divergent-corpus` in
+  this same CLI is the cautionary case, a refusal that advertises its own escape hatch at the exact
+  moment the operator is under pressure to get past it. The condition is BOTH empty, so a populated
+  active against an empty shadow still fails on missing sources rather than having that restated as
+  a vacuity error. Proven by execution against the old code, which printed `parity: OK` and exited
+  0, and paired with a negative control asserting a populated matching pair still exits 0, so the
+  refusal cannot be broadened into a blanket one without a test going red, and by a third test
+  pinning the BOTH-empty scoping itself: a populated active against an empty shadow must keep
+  failing on `missing sources` rather than being restated as a vacuity error. That one was written
+  because mutating the guard's `and` to `or` left the entire suite green — the scoping was asserted
+  only in a code comment, which is the same defect this bullet repairs, one level down.
+  ⚠️ A shadow partially filled relative to the active **is** caught, on missing sources or
+  differing chunk counts. What nothing catches is a pair that agrees with each other while both are
+  short of the corpus on disk, or two generations whose rows all lack a content hash and so compare
+  `''` against `''`. Neither is new, and `parity` does not detect either.
+- **The `typecheck` CI job was red on `master`, behind a job that was CANCELLED rather than run.**
+  `recall/sparse.py` imports `transformers` inside its loader, the same lazy guard every optional
+  extra in this repository uses, but `transformers.*` was never added to the mypy override list, so
+  `mypy` failed with `Cannot find implementation or library stub for module named "transformers"` in
+  any environment without the `sparse` extra. That is exactly CI's `typecheck` job, which installs
+  `.[dev]` only. Two things kept it invisible: on the SPLADE merge (`d12ebf0`) the job was cancelled,
+  so it produced no verdict at all, and the follow-up that fixed the other three breakages recorded
+  "mypy clean" truthfully, from a venv where the extra happened to be installed. The override block's
+  own comment already explains why that is not enough: `follow_imports = skip` is chosen over plain
+  `ignore_missing_imports` precisely so the result does not depend on whether the extra is present,
+  "or the gate is advisory". Verified red before and clean after (166 source files) in a
+  `.[dev]`-only environment. No source or behaviour change; the gate now reports what it always
+  should have.
+- **`CVE-2026-71554` in `h2` 4.4.0, which made the `audit` CI job red.** `h2` arrives transitively
+  through httpx's `http2` extra and is unconstrained by `pyproject.toml`, so the fix is a lockfile
+  movement to 4.4.1 with no declared-dependency change. `pip-audit` reports no known
+  vulnerabilities afterwards. **The red gate was real and the exposure was not**: the full chain is
+  `bench` extra → `mem0ai` → `qdrant-client` → `httpx[http2]` → `h2`, and `pyproject.toml` documents
+  the `bench` extra as never added to `dev` and never installed in CI, so no shipped wheel, no CI job
+  and no deployment ever contained the vulnerable version. The constraint also lives only in
+  `uv.lock`: anyone installing `recall-rag[bench]` from PyPI resolves `h2` independently.
+  `requirements.lock.txt`, which the `audit` job generates and which `CONTRIBUTING.md` now documents
+  as a local reproduction of that job, is gitignored: an untracked generated copy of the resolved
+  dependency set beside `uv.lock` is a second source of truth that can drift silently and be swept
+  into a later commit.
+
+- **Corpus text could close the evidence delimiter, and reach the model outside the data region.**
+  `render_evidence_prompt` wrapped a `json.dumps` payload in `<evidence_data>...</evidence_data>`.
+  `json.dumps` escapes quotes, backslashes and control characters; it does not escape `<` or `>`,
+  which is what the delimiter is built from. A memory whose text, file name or chunk id contained
+  `</evidence_data>` ended the region early, and everything after it arrived as free prose in the
+  model's own instruction channel. Delimiting without escaping the delimiter is not delimiting.
+
+  Both angle brackets now escape to their `\uXXXX` form, which is still valid JSON and parses back
+  to the identical string, so evidence is unchanged for a consumer that parses it and inert for one
+  that scans for the closing tag. A frozen adversarial suite (`benchmarks/evidence_injection.py`,
+  baseline in `results/evidence_injection_baseline.json`) records 0 escapes over 52 trials, against
+  12 for the previous renderer.
+
+- **An empty evidence bundle blamed the token budget for everything.** `build_evidence_bundle`
+  returned `reason_code="evidence_budget_exhausted"` whenever the selection came out empty,
+  including when there had been no trusted candidate at all. It now reports `no_trusted_evidence`
+  in that case.
+
+- **A degraded retrieval could produce a populated evidence bundle while the surface said it could
+  not.** `EvidenceResult.trust_state` was documented as "a degraded result yields an EMPTY bundle".
+  That holds only when there is no calibration at all, where every verdict becomes `unverified`;
+  with a caller-supplied uncertified calibration the verdicts stand and the bundle is citable, which
+  is the shape `recall search` reaches by default in development mode. `EvidenceBundle` now carries
+  `trust_state` and `failure_code` in band, the advice names the degradation explicitly, and the CLI
+  prints a `DEGRADED` flag.
+
+- **`RetrievalAdmission` leaked a queue slot on any failure after the slot was taken.** `__exit__`
+  does not run when `__enter__` raises, so a slot lost this way was lost permanently; after
+  `queue_capacity` of them the process refuses every request forever while reporting itself busy.
+  Latent before this release (nothing could fail between the two acquisitions) and live the moment
+  the budget-bounded wait was added.
+- **An empty `RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` / `RECALL_RERANK_THREADS` is now
+  read as unset rather than as a malformed integer.** A dotenv load puts an empty *string* in the
+  environment rather than omitting the key, so a copied `.env` with these left blank refused
+  startup.
+
 - **Subject-to-tenant binding for OIDC (`RECALL_OIDC_SUBJECT_TENANTS`).** The tenant allowlist
   bounds *which* tenants exist; it never bound *who* may name one, so any subject able to obtain a
   token from the issuer with the right audience reached every provisioned tenant. A bound subject
@@ -41,6 +336,19 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   ⚠️ Two limits, in `docs/AUTH.md`: step 1 cannot run under `RECALL_ENV=production` (the token
   file is the active mechanism there and production refuses it), and rollback is a mode flip only
   while the token file still exists.
+- **The three deterministic context modes are now specified, enforced and tested rule by rule.**
+  `bge-small-context-document-v1`, `bge-small-context-section-v1` and
+  `bge-small-context-neighbor-v1` build embedding text separately from stored text. Named caps
+  (`TITLE_MAX_CHARS` 256, `SOURCE_MAX_CHARS` 256, `SECTION_MAX_CHARS` 512, `NEIGHBOR_MAX_CHARS`
+  200) and a labelled degradation ladder (`DEGRADATION_ORDER`: neighbour context dropped first,
+  section detail shortened then dropped, title detail last, the complete chunk always preserved)
+  replace the literals and the anonymous candidate list. 69 tests across two files, one per rule,
+  including a property-style test that raw chunk text and content hashes are byte-identical to the
+  symmetric baseline over five corpus shapes, and nine asserted against real stored rows across two
+  generations dual-written under different modes. See
+  [docs/ENTERPRISE_RETRIEVAL.md](docs/ENTERPRISE_RETRIEVAL.md).
+
+  No mode is recommended over another, and nothing here measures retrieval quality.
 
 - **External OIDC identity for the MCP server's HTTP transports.** `RECALL_OIDC_ISSUER`,
   `RECALL_OIDC_AUDIENCE` and `RECALL_OIDC_TENANTS` (required together), plus optional
@@ -52,6 +360,62 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   unlisted tenant is refused (`tenant_not_allowed`) rather than opening a store nobody
   provisioned. The check runs after signature verification, so it cannot be used to enumerate
   the tenant list.
+
+- **A producer for the retrieval promotion gate** (`recall/eval/promotion/`, run as
+  `python -m recall.eval.promotion freeze|run|decide`). `recall/promotion.py` implemented
+  `evaluate_retrieval_promotion` completely and nothing built a `RetrievalGateInput` outside its
+  own test, so no promotion decision could exist. It now can.
+
+  Frozen input manifests fix question ids and input hashes **before** any candidate result exists,
+  using the ladder manifest pattern: sorted canonical rendering, a digest over body and provenance,
+  the digest excluded from what it covers, and a reader that refuses a mismatch rather than
+  repairing it. A closed sixteen-field per-question record schema is shared by every corpus
+  adapter — LOCOMO, PEPs (`recall/eval/peps_questions.json`, in the tree since it was written and
+  referenced by no code until now), the Answerability Ladder, LongMemEval and MT-RAG. The
+  aggregator emits `QuestionOutcome`, `SafetyMetrics` and `RetrievalGateInput`, and writes a
+  machine-readable `PromotionDecision` JSON.
+
+  It mostly refuses, and each refusal is a way the gate could otherwise pass without being asked.
+  Arms that do not cover the frozen manifest exactly, or whose rows were scored against a different
+  input hash, are not paired. Safety metrics that are NaN because their class is empty are refused
+  rather than compared, since `nan - nan > 0.02` is False and an empty check reads exactly like a
+  passed one. An arm that retrieves no labelled document for any question is refused as a
+  label-space mismatch, because two such arms differ by exactly zero and produce a clean-looking
+  refusal.
+- **`recall.calibration.load_for_profile` and `save_for_profile`.** `load_for` filters on the
+  profile ID, the coarsest part of an embedding's identity: two runs can share
+  `bge-small-symmetric-v1` and differ in artifact digest, dimension, encoder modes, normalization,
+  instruction version, chunker version or inference-library version, each of which moves the cosine
+  regime a threshold was fitted in. `load_for_profile` additionally requires
+  `EmbeddingProfile.fingerprint()` to match, and **fails closed** on a file that records no
+  fingerprint at all. `load_for` is unchanged, so no existing caller changes behaviour.
+- **`recall.eval.resume`**, one resume mechanism for incremental evaluation runs. Three
+  incompatible ones existed; `benchmarks/ladder/run.py` and `benchmarks/beam/run.py` now delegate
+  to this, which is the ladder's own: append-only JSONL, resume by id, a truncated trailing line
+  tolerated as "not yet recorded", mid-file corruption loud. `recall/eval/gap_run.py` is
+  deliberately not migrated — its unit of resume is a corpus result *file* carrying a `status`
+  marker, and unifying it would rewrite a published artifact format for no resume benefit.
+### Documentation
+- **`docs/ENTERPRISE_RETRIEVAL.md` is now an operator runbook** rather than a sequence sketch. It
+  opens with preconditions (unprivileged roles, the grants each command actually needs, pgvector and
+  `sparsevec` availability, independently recomputed artifact digests, recorded licences, a blocked
+  egress boundary, and a disk-headroom rule of thumb), then gives the ordered eleven-step sequence
+  (plus preconditions and rollback) as a table naming the credential and the non-zero exit condition
+  for every step, then grouped sections with what to verify afterwards. Hazards are written in at the
+  step where an operator meets them, including several the runbook's first draft got wrong and an
+  audit corrected: `mark-ready` records its `--chunks`/`--sources` and **never checks them**;
+  `replay` takes the serving credential but is a **write path**; `readiness` names its own role
+  subject but not its own generation subject, so run before cutover it certifies the OUTGOING
+  generation; `retire` cannot follow `cutover` directly because cutover swaps the slots, and
+  retirement is database-global with no un-retire command; `parity` succeeding on two empty
+  generations is a vacuous pass that must be treated as a hard stop; and a migration whose bytes
+  changed after it was applied is a hard stop with no override flag, whose remedy names the ledger
+  table, both key columns, the `__global__` scope, a backup precondition, and the fact that
+  restoring the deleted row does not undo the DDL the re-apply performs.
+- **`README.md`'s production-posture table gains four rows**: index generations and cutover,
+  retrieval cost profiles, the generator-neutral evidence boundary, and serving latency marked
+  **PENDING**. The parity row warns that a comparison of two empty generations succeeds and prints
+  `OK` without having compared anything.
 
 ### Changed
 - **New startup refusals on the MCP HTTP transports.** The server now refuses to boot when: no
@@ -94,6 +458,20 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   behind or whose applied SQL no longer matched the shipped bytes. `recall-enterprise migrate` also
   takes an advisory lock, matching `recall schema apply`. See `docs/MIGRATIONS.md`.
 
+- **`SafetyMetrics.superseded_trust_rate` accepts `None`, meaning NOT MEASURED, and NOT MEASURED
+  is a FAILURE.** An arm scored under a degraded trust policy has every verdict overwritten with
+  `unverified` by `recall/trust.py`, *after* the trust layer computed the real one, so a superseded
+  hit and a clean one leave identical rows. Encoding that as `0.0` SATISFIED the gate's
+  zero-tolerance check by never having measured it. Same shape as PENDING latency, and it blocks
+  the same way.
+- **`RetrievalGateInput.latency_p95_ms` accepts `None`, meaning PENDING, and PENDING is a
+  FAILURE.** A non-finite or non-positive value is also a failure: `nan > budget` is False, so a
+  NaN would otherwise pass the budget check and be reported as MEASURED. The program has no idle reference environment (VPS2 carries a permanent load average
+  near 8 from unrelated production), so every promotion decision it can produce today is PENDING on
+  latency. The two alternative encodings were both worse: a default of `0.0` makes an unmeasured
+  latency the fastest possible one, and omitting the check makes a missing measurement
+  indistinguishable from a passing one. A float still behaves exactly as before, budget check
+  included.
 ### Changed
 - **BREAKING (enterprise): physical table identifiers are now an allowlist**,
   `^[a-z_][a-z0-9_]{0,45}$`. The previous gate was `str.isidentifier()`, which accepts non-ASCII,
@@ -160,8 +538,11 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   published is pre-fix** — that is the rule, and it is stated as a rule because an enumeration of
   affected cells is the kind of claim that is wrong the moment a figure is quoted somewhere new.
   The primary tables carry the annotation in place, so they cannot disagree with the reproduce
-  command beside them: `README.md`'s PEPs arms table (n=44 — p50 moves, p95 does not) and its
-  real-corpus row, and the `search p50` rows in `results/RESULTS.md`. Figures DERIVED from those
+  command beside them: the PEPs arms table in `docs/EVIDENCE.md` (n=44 — p50 moves, p95 does not),
+  the real-corpus row in `docs/PRODUCTION.md`, and the `search p50` rows in `results/RESULTS.md`.
+  Both of the first two were `README.md`'s until the README was shortened and its evidence moved
+  into those files; the annotation followed the cells rather than staying with the file, which is
+  the whole point of annotating in place. Figures DERIVED from those
   runs are not individually annotated: the rerank-cost and embedder-cost latencies in
   `results/FINDINGS.md` and the `search p50` in `docs/CASE_STUDY.md` come from the same code path
   and are pre-fix under the same rule.
@@ -302,6 +683,38 @@ NOT — see the percentile fix above, which is a separate defect and does move n
 ### Fixed
 - The `hnsw.ef_search` cap warning used `stacklevel=2`, which after the timed-wrapper split named
   `recall/store.py` itself rather than the caller.
+- **An indented `title:` in frontmatter outranked the document's own.** `document_title` compared
+  `key.strip()`, so a `title:` nested under any other mapping matched, and because the scan returns
+  on its first hit a nested key appearing above the real one won — embedding a sub-object's label
+  as the document's title. The frontmatter key must now be top level.
+- **`contextual_passages` embedded absolute paths verbatim.** "Root-relative paths only" was
+  documented and unenforced: an absolute POSIX path, a Windows drive letter, a UNC path or a `..`
+  traversal reached the rendered `source:` field, putting the host's filesystem layout into stored
+  vectors and making the embedding text for one corpus differ between two machines.
+  `root_relative_source` now refuses them, in every mode including `none` — the mode is chosen by
+  the profile, so a guard reachable only on the contextual path is one the cheapest caller skips.
+- **The path guard did not hold on its own return value.** It validated the normalised path and
+  then returned `normalised[:256]`, so truncation ran after the checks and could manufacture what
+  they had just refused: `"a" * 253 + "/..x"` passed the traversal check and came back as a
+  256-character path whose last segment is `..`. It now validates and does not truncate; the cap
+  belongs to the rendered field and is applied there.
+- **A path longer than 256 characters silently lost its title.** The basename fallback split the
+  guard's already-truncated return value, so at 264 characters the cut landed on a `/`, the
+  basename was empty and the `title:` field disappeared from the passage; at 261 the title was
+  the fragment `not`, and two files in one deep directory got byte-identical titles.
+- **`^[A-Za-z]:` refused `a:b/notes.md`**, a legal relative path on Linux and macOS that
+  `relative_to(root).as_posix()` produces, and the refusal aborted the whole indexing run after
+  earlier batches had already been committed. The drive test now requires a separator or end of
+  string after the colon.
+- **A neighbour excerpt could forge a structural field.** The 200-character neighbour budget was
+  the only cap counted on un-normalised text, so newlines were spent against it and an adjacent
+  chunk containing `\nsource: /etc/shadow` put a second `source:` line into this chunk's passage.
+  Neighbour excerpts are now folded to one line before the 200 is counted. The chunk itself is
+  still interpolated verbatim — rule 5 requires it — so the rendered form remains text to embed
+  and never text to parse.
+- The refusal messages no longer interpolate the offending path. The case they fire on is a
+  caller that lost its root, so the value is an absolute host path and echoing it into the logs is
+  the disclosure the guard exists to prevent.
 
 
 ## [0.8.0] — 2026-08-02

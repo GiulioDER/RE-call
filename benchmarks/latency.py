@@ -29,6 +29,7 @@ Run from the repo root, on an idle machine:
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import random
@@ -85,21 +86,66 @@ def _run_arm(
     ingest_secs: list[float] = []
     retrieve_ms: list[float] = []
     warmed = False
-    for conv in convs:
-        t0 = time.perf_counter()
-        system.ingest(conv)
-        ingest_secs.append(time.perf_counter() - t0)
-        qs = _questions(conv, q_per, rng)
-        if not warmed:
-            for q in qs[:warmup]:
-                system.retrieve(q)  # discard: warm connections / caches
-            warmed = True
-        for q in qs:
-            for _ in range(reps):
-                t = time.perf_counter()
-                system.retrieve(q)
-                retrieve_ms.append((time.perf_counter() - t) * 1000.0)
-    return ingest_secs, retrieve_ms
+    try:
+        for conv in convs:
+            t0 = time.perf_counter()
+            system.ingest(conv)
+            ingest_secs.append(time.perf_counter() - t0)
+            qs = _questions(conv, q_per, rng)
+            if not warmed:
+                for q in qs[:warmup]:
+                    system.retrieve(q)  # discard: warm connections / caches
+                warmed = True
+            for q in qs:
+                for _ in range(reps):
+                    t = time.perf_counter()
+                    system.retrieve(q)
+                    retrieve_ms.append((time.perf_counter() - t) * 1000.0)
+        return ingest_secs, retrieve_ms
+    finally:
+        # This function builds an arm and then abandons it, so its handles have to be released
+        # here: a `Mem0System` left open holds exclusive Qdrant locks for the rest of the process
+        # (see `Mem0System.close`). Note the two arms as they run today do NOT collide on the
+        # per-run store — `recall` opens no Qdrant at all and each arm gets its own `run_id` — but
+        # mem0's telemetry store lives on one machine-global path, and a lock left to the garbage
+        # collector can outlive the process's ability to release it. Duck-typed on purpose:
+        # `MemorySystem` is deliberately three members, and `RecallSystem` has nothing to release
+        # — it holds a DSN string, not a connection.
+        close = getattr(system, "close", None)
+        try:
+            if callable(close):
+                close()
+        finally:
+            # Releasing handles is not reclaiming memory, and this module is the one place that
+            # difference is measurable. Both arms hold an embedder inside a REFERENCE CYCLE, so
+            # dropping the last reference frees the wrapper and leaves the weights: measured
+            # against the real class, dropping mem0's `HuggingFaceEmbedding` keeps its
+            # `SentenceTransformer` (~133MB) alive until a collection runs, and
+            # `RecallSystem._embedder` is abandoned the same way. `main` times the arms
+            # sequentially in one process, so without this arm 2 is measured on a machine still
+            # holding arm 1's model, and the comparison this module exists to produce is between
+            # an arm that ran clean and one that did not.
+            #
+            # `del` BOTH names first, and that is the whole trick rather than a tidy-up. While
+            # this frame is alive, `system` and the bound method in `close` are each a strong
+            # reference, so the arm is still REACHABLE and a collection here frees nothing.
+            # Measured: with both bound, `gc.collect()` returns 0 and the arm stays alive; with
+            # only `system` deleted it still returns without freeing the arm, because the bound
+            # method pins it independently; with both deleted the cycle goes.
+            #
+            # This reclaims on the SUCCESS path only, which is the path that has a next arm. When
+            # the run raises, the propagating traceback holds the arm's own method frame, whose
+            # `self` pins the arm, and no `del` here can reach that. Not worth chasing: `main`
+            # catches nothing, so a crashed arm ends the process.
+            #
+            # HERE and not in `Mem0System.close`: a library teardown should not run a full
+            # collection to flatter a benchmark, and `RecallSystem` has no `close` at all yet
+            # holds an embedder just the same. Bare `gc.collect()` is a full collection; a
+            # generational one would skip a model already promoted out of the young generations.
+            # The cost is single-digit milliseconds, once per arm, outside every measured region:
+            # `ingest_secs` and `retrieve_ms` are both complete before `finally` runs.
+            del close, system
+            gc.collect()
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,0 +1,115 @@
+{
+  "_provenance": {
+    "generated_at": "2026-08-06T09:37:23+00:00",
+    "stack": {
+      "fastembed": "0.8.0",
+      "onnxruntime": "1.28.0"
+    },
+    "status": "current"
+  },
+  "arms": {
+    "baseline": {
+      "candidate_pool": 20,
+      "embedding_profile_id": "bge-small-symmetric-v1",
+      "generation": "legacy",
+      "label": "baseline",
+      "reranking_status": "not_configured",
+      "retrieval_profile": "legacy"
+    },
+    "candidate": {
+      "candidate_pool": 20,
+      "embedding_profile_id": "bge-small-context-neighbor-v1",
+      "generation": "legacy",
+      "label": "ctx-neighbor",
+      "reranking_status": "not_configured",
+      "retrieval_profile": "legacy"
+    }
+  },
+  "corpora": [
+    "peps"
+  ],
+  "failures": [
+    "macro paired hit@5 bootstrap interval does not clear zero",
+    "no improving corpus has Holm corrected paired significance below 0.05",
+    "superseded trust rate was NOT MEASURED — the candidate arm ran under a degraded trust policy, so every verdict is 'unverified' and a stale hit is indistinguishable from a clean one",
+    "security verification is not green",
+    "retrieval p95 latency is PENDING — no measurement from a reference host, so the latency budget could not be evaluated"
+  ],
+  "frozen_manifest_digest": "20e4928f2d799e57a6979d9380950c30ed346e7cd49fc2286a62788680a1885c",
+  "latency": {
+    "budget_ms": 250.0,
+    "gate_input_p95_ms": null,
+    "observed_diagnostic_only": {
+      "baseline_p95_ms": 3320.359439996537,
+      "candidate_p95_ms": 818.1821030448191
+    }
+  },
+  "latency_status": "PENDING",
+  "n_manifest_questions": 110,
+  "n_paired_questions": 88,
+  "primary": {
+    "bootstrap_interval": [
+      -0.06818181818181818,
+      0.06818181818181818
+    ],
+    "corpus_hit5_delta": {
+      "peps": 0.0
+    },
+    "holm_p_values": {
+      "peps": 1.0
+    },
+    "macro_hit5_delta": 0.0,
+    "metric": "hit@5"
+  },
+  "promoted": false,
+  "safety": {
+    "baseline": {
+      "false_abstention": 0.0,
+      "false_confidence": 1.0,
+      "superseded_trust_rate": null
+    },
+    "candidate": {
+      "false_abstention": 0.0,
+      "false_confidence": 1.0,
+      "superseded_trust_rate": null
+    }
+  },
+  "schema": "recall-promotion-decision-v1",
+  "secondary_diagnostic_only": {
+    "baseline": {
+      "false_abstention": 0.0,
+      "false_confidence": 1.0,
+      "hit_at_1": 0.375,
+      "hit_at_20": 0.8409090909090909,
+      "hit_at_5": 0.625,
+      "latency_p50_ms": 1250.1485190005042,
+      "latency_p95_ms": 3320.359439996537,
+      "mrr": 0.5013282791340067,
+      "n_answerable": 88,
+      "n_unanswerable": 22,
+      "ndcg_at_5": 0.9318767022247075
+    },
+    "candidate": {
+      "false_abstention": 0.0,
+      "false_confidence": 1.0,
+      "hit_at_1": 0.38636363636363635,
+      "hit_at_20": 0.8409090909090909,
+      "hit_at_5": 0.625,
+      "latency_p50_ms": 474.00151402689517,
+      "latency_p95_ms": 818.1821030448191,
+      "mrr": 0.4996285122705577,
+      "n_answerable": 88,
+      "n_unanswerable": 22,
+      "ndcg_at_5": 0.9647170554738796
+    }
+  },
+  "security_green": false,
+  "trust_verdicts": {
+    "baseline": {
+      "unverified": 110
+    },
+    "candidate": {
+      "unverified": 110
+    }
+  }
+}

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from math import isfinite
 from statistics import mean
 
 
@@ -20,7 +21,13 @@ class QuestionOutcome:
 class SafetyMetrics:
     false_confidence: float
     false_abstention: float
-    superseded_trust_rate: float
+    #: ``None`` means NOT MEASURED, and like a PENDING latency it is a FAILURE rather than an
+    #: exemption. An arm scored under a degraded trust policy has every verdict overwritten with
+    #: ``unverified`` (`recall/trust.py`), which destroys the distinction this rate is made of: a
+    #: superseded hit and a clean one are then the same observation. Encoding that as ``0.0``
+    #: would SATISFY the zero-tolerance check below by never having measured it, which is the
+    #: failure mode this whole gate exists to refuse.
+    superseded_trust_rate: float | None
 
 
 @dataclass(frozen=True)
@@ -29,7 +36,13 @@ class RetrievalGateInput:
     baseline_safety: SafetyMetrics
     candidate_safety: SafetyMetrics
     security_green: bool
-    latency_p95_ms: float
+    #: ``None`` means PENDING: the p95 has not been measured on a host that can carry the claim.
+    #: PENDING is a FAILURE, not an exemption. The alternative encodings were both worse — a
+    #: default of 0.0 makes an unmeasured latency the fastest possible one, and omitting the check
+    #: makes a missing measurement indistinguishable from a passing one. This program has no idle
+    #: reference host (see docs/ENTERPRISE_PROGRAM_STATUS.md's standing blockers), so PENDING is
+    #: the state every real decision is in today, and it must block rather than pass silently.
+    latency_p95_ms: float | None
     latency_budget_ms: float
 
 
@@ -151,11 +164,31 @@ def evaluate_retrieval_promotion(
         failures.append("false confidence regresses by more than two percentage points")
     if gate.candidate_safety.false_abstention - gate.baseline_safety.false_abstention > 0.02:
         failures.append("false abstention regresses by more than two percentage points")
-    if gate.candidate_safety.superseded_trust_rate != 0.0:
+    if gate.candidate_safety.superseded_trust_rate is None:
+        failures.append(
+            "superseded trust rate was NOT MEASURED — the candidate arm ran under a degraded "
+            "trust policy, so every verdict is 'unverified' and a stale hit is indistinguishable "
+            "from a clean one"
+        )
+    elif gate.candidate_safety.superseded_trust_rate != 0.0:
         failures.append("superseded trust rate is not zero")
     if not gate.security_green:
         failures.append("security verification is not green")
-    if gate.latency_p95_ms > gate.latency_budget_ms:
+    if gate.latency_p95_ms is None:
+        failures.append(
+            "retrieval p95 latency is PENDING — no measurement from a reference host, so the "
+            "latency budget could not be evaluated"
+        )
+    elif not (isfinite(gate.latency_p95_ms) and gate.latency_p95_ms > 0.0):
+        # NaN is the one that matters, and it is reachable without malice: a percentile over an
+        # empty sample is NaN, and `nan > budget` is False, so an unmeasured latency would pass
+        # the budget check while being reported as MEASURED. That is the same shape as the None
+        # case above and must fail the same way, not slip through as the fastest possible p95.
+        failures.append(
+            f"retrieval p95 latency {gate.latency_p95_ms!r} is not a positive finite "
+            f"measurement, so the latency budget could not be evaluated"
+        )
+    elif gate.latency_p95_ms > gate.latency_budget_ms:
         failures.append("retrieval p95 exceeds its profile budget")
     return PromotionDecision(
         promoted=not failures,

@@ -25,7 +25,14 @@ from recall.types import Chunk
 
 DOMAINS = ("clapnq", "cloud", "fiqa", "govt")
 DOMAIN_ALIASES = {"ibmcloud": "cloud", **{domain: domain for domain in DOMAINS}}
+
+#: Default learned sparse checkpoint. apache-2.0; see recall.sparse.KNOWN_MODELS.
+DEFAULT_SPARSE_MODEL = "prithivida/Splade_PP_en_v1"
 EMBEDDER_MODEL = "BAAI/bge-small-en-v1.5"
+
+#: How deep each query retrieves. 100, so Recall@100 is available; the top-10 ordering is
+#: identical to a k=10 run because reranking happens over the fused pool BEFORE truncation.
+RETRIEVAL_DEPTH = 100
 
 
 @dataclass(frozen=True)
@@ -37,6 +44,24 @@ class Arm:
     use_sparse: bool = True
     rerank: bool = False
     role: str = "ablation"
+    sparse_backend: str = "lexical"
+
+    def pool_bound(self) -> int:
+        """The most distinct chunks fusion can hold for this arm, before truncation to k.
+
+        Each enabled leg contributes at most `candidate_k` candidates and RRF unions them, so a
+        metric cut DEEPER than this measures the POOL, not the ranking. `DEFAULT_CANDIDATE_K`
+        already says that about the depth curve; this turns it into a number the results file
+        carries, so nobody reads Recall@100 off an arm whose pool tops out at 40.
+        """
+        legs = 0
+        if self.use_dense:
+            legs += 1
+        if self.use_sparse and self.sparse_backend in ("lexical", "both"):
+            legs += 1
+        if self.use_sparse and self.sparse_backend in ("splade", "both"):
+            legs += 1
+        return self.candidate_k * legs
 
 
 # Frozen before the first evaluation. Do not reorder or change these arms after observing scores;
@@ -49,6 +74,26 @@ ARMS = (
     Arm("dense_last", "last", 100, use_sparse=False),
     Arm("sparse_last", "last", 100, use_dense=False),
 )
+
+#: Learned sparse arms, frozen 2026-08-06 BEFORE any score was observed.
+#:
+#: The question is single: does dense + SPLADE beat dense + ts_rank? Everything else is held
+#: fixed, so the sparse leg's backend is the only thing that varies. `hybrid_both` is declared
+#: here rather than added later precisely so that running it is pre-registered and not a
+#: post-hoc rescue once the primary arm's number is known.
+#:
+#: All five use candidate_k=100, so every arm's pool bound is >= 100 and Recall@100 measures
+#: retrieval depth rather than the pool. That is why they do NOT reuse the candidate_k=20
+#: defaults above.
+SPARSE_ARMS = (
+    Arm("hybrid_lexical", "last", 100, role="control"),
+    Arm("hybrid_splade", "last", 100, sparse_backend="splade", role="primary"),
+    Arm("splade_only", "last", 100, use_dense=False, sparse_backend="splade"),
+    Arm("hybrid_both", "last", 100, sparse_backend="both", role="secondary"),
+    Arm("dense_only", "last", 100, use_sparse=False),
+)
+
+ALL_ARMS = ARMS + SPARSE_ARMS
 
 
 def utc_now() -> str:
@@ -98,8 +143,35 @@ def corpus_zip(root: Path, domain: str) -> Path:
     return root / "corpora" / "passage_level" / f"{domain}.jsonl.zip"
 
 
-def qrels_path(root: Path, domain: str) -> Path:
+#: Which judged set an evaluation scores against.
+#:
+#: ⛔ `test` is MTRAG-UN, the HELD-OUT set the official leaderboard scored. The archived
+#: 2026-08-04 Task A baseline was run on it, which is why it is sealed: every further arm
+#: comparison belongs on `dev` (MTRAG-human), or the held-out set stops being held out.
+#: New arms default to dev for that reason, and choosing `test` has to be typed out.
+SPLITS = ("dev", "test")
+
+#: dev query modes are FILES, not computations. MTRAG-human ships the last user turn, the
+#: full-conversation concatenation, and a GOLD human rewrite as three aligned files with the same
+#: ids, so the rewriting ceiling is measurable with no LLM at all.
+DEV_QUERY_FILES = {"last": "lastturn", "full": "questions", "rewrite": "rewrite"}
+
+
+def qrels_path(root: Path, domain: str, split: str = "test") -> Path:
+    if split == "dev":
+        return root / "mtrag-human" / "retrieval_tasks" / domain / "qrels" / "dev.tsv"
     return root / "mtragun-human" / "retrieval_tasks" / "qrels" / f"{domain}.tsv"
+
+
+def dev_tasks_path(root: Path, domain: str, query_mode: str) -> Path:
+    suffix = DEV_QUERY_FILES.get(query_mode)
+    if suffix is None:
+        raise ValueError(
+            f"dev split has no file for query mode {query_mode!r}; "
+            f"available modes are {sorted(DEV_QUERY_FILES)}. "
+            f"'recent3' is a TEST-split computation over a conversation and has no dev equivalent."
+        )
+    return root / "mtrag-human" / "retrieval_tasks" / domain / f"{domain}_{suffix}.jsonl"
 
 
 def tasks_path(root: Path) -> Path:
@@ -206,7 +278,9 @@ def index_domain(
     }
 
 
-def load_tasks(root: Path) -> list[dict[str, Any]]:
+def load_tasks(root: Path, split: str = "test", query_mode: str = "last") -> list[dict[str, Any]]:
+    if split == "dev":
+        return load_dev_tasks(root, query_mode)
     tasks = []
     with tasks_path(root).open(encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, 1):
@@ -220,11 +294,59 @@ def load_tasks(root: Path) -> list[dict[str, Any]]:
     return tasks
 
 
+def load_dev_tasks(root: Path, query_mode: str) -> list[dict[str, Any]]:
+    """MTRAG-human tasks, normalised to the shape the evaluation loop already consumes.
+
+    The dev files are per-domain `{"_id", "text"}` records, so the domain comes from WHICH FILE a
+    row was read from rather than from a field inside it, and the query mode selects the file
+    rather than slicing a conversation. Normalising here keeps the caller identical across splits
+    instead of branching at every use site.
+    """
+    tasks: list[dict[str, Any]] = []
+    for domain in DOMAINS:
+        path = dev_tasks_path(root, domain, query_mode)
+        with path.open(encoding="utf-8") as handle:
+            for line_no, line in enumerate(handle, 1):
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                if "_id" not in item or "text" not in item:
+                    raise RuntimeError(f"{path}:{line_no} is missing _id or text")
+                tasks.append(
+                    {"task_id": str(item["_id"]), "_domain": domain, "_text": str(item["text"])}
+                )
+    return tasks
+
+
+def strip_speaker(text: str) -> str:
+    """Remove the '|user|: ' turn prefix MTRAG-human ships on every line.
+
+    Byte-identical to `benchmarks/mtrag/probe/fix_retrieval_2x2.py` on `bench/mtrag-arm-r`, on
+    purpose: the established dev baseline (nDCG@5 0.2849 / R@100 0.6865) was measured with THAT
+    normalisation, and a merely similar one makes this run incomparable with it while looking
+    fine.
+
+    The prefix is not part of the question. Left in, the literal token reaches the embedder and
+    the sparse encoder on every dev query and depresses the entire run, with nothing failing.
+    Only a leading speaker tag is removed; a colon inside the question is content and survives.
+    """
+    return "\n".join(
+        ln.split(":", 1)[1].strip() if ln.startswith("|") and ":" in ln else ln
+        for ln in text.splitlines()
+    ).strip()
+
+
 def task_domain(task: dict[str, Any]) -> str:
+    if "_domain" in task:
+        return str(task["_domain"])
     return DOMAIN_ALIASES[str(task["Collection"]).lower()]
 
 
 def query_text(task: dict[str, Any], mode: str) -> str:
+    if "_text" in task:
+        # dev: the mode already chose the FILE, so the only work left is dropping the speaker
+        # tag the release prefixes to every turn.
+        return strip_speaker(task["_text"])
     turns = task["input"]
     user_turns = [str(turn["text"]).strip() for turn in turns if turn["speaker"] == "user"]
     if not user_turns:
@@ -236,11 +358,11 @@ def query_text(task: dict[str, Any], mode: str) -> str:
     raise ValueError(f"unknown query mode {mode!r}")
 
 
-def load_qrels(root: Path) -> dict[str, dict[str, set[str]]]:
+def load_qrels(root: Path, split: str = "test") -> dict[str, dict[str, set[str]]]:
     all_qrels: dict[str, dict[str, set[str]]] = {}
     for domain in DOMAINS:
         domain_qrels: dict[str, set[str]] = {}
-        with qrels_path(root, domain).open(encoding="utf-8") as handle:
+        with qrels_path(root, domain, split).open(encoding="utf-8") as handle:
             next(handle)
             for line in handle:
                 query_id, corpus_id, score = line.rstrip("\n").split("\t")
@@ -265,7 +387,9 @@ def recall_at(ranked: list[str], relevant: set[str], k: int) -> float:
 
 
 def score_predictions(
-    predictions: list[dict[str, Any]], qrels: dict[str, dict[str, set[str]]]
+    predictions: list[dict[str, Any]],
+    qrels: dict[str, dict[str, set[str]]],
+    pool_bound: int | None = None,
 ) -> dict[str, Any]:
     """Score predictions against the qrels, per query and aggregated.
 
@@ -281,7 +405,14 @@ def score_predictions(
     this function's output shape stays what the frozen run produced.
     """
     by_task = {item["task_id"]: item for item in predictions}
-    ks = (1, 3, 5, 10)
+    # 100 is here because Recall@100 is the diagnostic that separates a COVERAGE problem from a
+    # RANKING problem, and it costs nothing once retrieval already runs this deep. It is recorded,
+    # not used as a gate.
+    ks = (1, 3, 5, 10, 100)
+    # A cutoff deeper than the fused pool measures the POOL, not the ranking. Naming the bounded
+    # metrics keeps a pool-limited Recall@100 from rendering identically to a real one.
+    bounded = [f"{m}@{k}" for k in ks for m in ("nDCG", "Recall")
+               if pool_bound is not None and k > pool_bound]
     domain_rows: dict[str, Any] = {}
     # `dict.__or__` gives mypy no type context, so the merged comprehensions infer
     # `list[Never]`; `list[float]` here would be rejected by dict's invariance.
@@ -320,16 +451,32 @@ def score_predictions(
         },
         "domains": domain_rows,
         "per_query": per_query,
+        "pool_bound": pool_bound,
+        "metrics_bounded_by_pool": bounded,
     }
 
 
 def run_arm(
     *, arm: Arm, dsn: str, root: Path, output_dir: Path,
-    embedder: FastEmbedEmbedder, prefix: str,
+    embedder: FastEmbedEmbedder, prefix: str, split: str = "test",
+    sparse_model: str | None = None, accept_noncommercial_license: bool = False,
 ) -> dict[str, Any]:
-    print(json.dumps({"event": "arm_start", "arm": arm.name, "at": utc_now()}), flush=True)
+    print(
+        json.dumps({"event": "arm_start", "arm": arm.name, "split": split, "at": utc_now()}),
+        flush=True,
+    )
     started = time.perf_counter()
     reranker = CrossEncoderReranker() if arm.rerank else None
+    sparse_encoder = None
+    if arm.sparse_backend in ("splade", "both"):
+        # Imported HERE, not at module scope: torch and transformers are an optional extra, and a
+        # lexical-only run must not require them to be installed at all.
+        from recall.sparse import SpladeEncoder
+
+        sparse_encoder = SpladeEncoder.from_pretrained(
+            sparse_model or DEFAULT_SPARSE_MODEL,
+            accept_noncommercial_license=accept_noncommercial_license,
+        )
     stores = {
         domain: PgVectorStore(dsn, embedder.dim, table=table_name(prefix, domain))
         for domain in DOMAINS
@@ -342,19 +489,24 @@ def run_arm(
             candidate_k=arm.candidate_k,
             use_dense=arm.use_dense,
             use_sparse=arm.use_sparse,
+            sparse_backend=arm.sparse_backend,
+            sparse_encoder=sparse_encoder,
         )
         for domain, store in stores.items()
     }
     predictions = []
     latencies_ms = []
     gap_count = 0
-    tasks = load_tasks(root)
+    tasks = load_tasks(root, split, arm.query_mode)
     try:
         for position, task in enumerate(tasks, 1):
             domain = task_domain(task)
             query = query_text(task, arm.query_mode)
             query_started = time.perf_counter()
-            result = retrievers[domain].search(query, k=10)
+            # Depth 100, not 10. The top-10 ordering is unchanged (reranking happens over the
+            # fused pool BEFORE truncation), so every previously reported metric at k<=10 is
+            # unaffected; what this buys is Recall@100 for free on the same pass.
+            result = retrievers[domain].search(query, k=RETRIEVAL_DEPTH)
             latencies_ms.append((time.perf_counter() - query_started) * 1000.0)
             gap_count += int(result.gap_warning)
             contexts = []
@@ -399,7 +551,7 @@ def run_arm(
     with prediction_path.open("w", encoding="utf-8") as handle:
         for item in predictions:
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
-    scores = score_predictions(predictions, load_qrels(root))
+    scores = score_predictions(predictions, load_qrels(root, split), arm.pool_bound())
     ordered = sorted(latencies_ms)
     summary = {
         "arm": asdict(arm),
@@ -472,7 +624,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--index-domains", nargs="+", choices=DOMAINS, default=list(DOMAINS),
         help="domains to index; evaluation always uses all four official domains",
     )
-    parser.add_argument("--arms", nargs="*", choices=[arm.name for arm in ARMS])
+    parser.add_argument("--arms", nargs="*", choices=[arm.name for arm in ALL_ARMS])
+    parser.add_argument(
+        "--split", choices=SPLITS, default="dev",
+        help="dev = MTRAG-human (default). test = MTRAG-UN, the SEALED held-out set the "
+             "leaderboard scored; the archived Task A baseline already used it, so a new arm "
+             "comparison run there stops it being held out.",
+    )
+    parser.add_argument(
+        "--sparse-model", default=None,
+        help=f"learned sparse checkpoint (default {DEFAULT_SPARSE_MODEL})",
+    )
+    parser.add_argument(
+        "--accept-noncommercial-license", action="store_true",
+        help="required for naver/splade-v3 (cc-by-nc-sa-4.0)",
+    )
     return parser.parse_args(argv)
 
 
@@ -485,7 +651,8 @@ def main(argv: list[str] | None = None) -> int:
     manifest = {
         "benchmark": "MTRAG-UN / MTRAGEval Task A (four-domain public release)",
         "started_at": utc_now(),
-        "frozen_arms": [asdict(arm) for arm in ARMS],
+        "frozen_arms": [asdict(arm) for arm in ALL_ARMS],
+        "split": args.split,
         "release": release,
         "revisions": {
             "recall": git_revision(Path(__file__).resolve().parents[2]),
@@ -531,12 +698,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.phase in ("evaluate", "all"):
         selected = set(args.arms or [arm.name for arm in ARMS])
         summaries = []
-        for arm in ARMS:
+        for arm in ALL_ARMS:
             if arm.name in selected:
                 summaries.append(
                     run_arm(
                         arm=arm, dsn=dsn, root=root, output_dir=output_dir,
-                        embedder=embedder, prefix=args.table_prefix,
+                        embedder=embedder, prefix=args.table_prefix, split=args.split,
+                        sparse_model=args.sparse_model,
+                        accept_noncommercial_license=args.accept_noncommercial_license,
                     )
                 )
         (output_dir / "summary.json").write_text(

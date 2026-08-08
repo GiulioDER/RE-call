@@ -124,7 +124,7 @@ def test_retrieval_scores_every_answerable_question_abstention_only_the_held_hal
 def test_default_mode_scores_retrieval_on_the_held_half(tmp_path) -> None:
     """The DEFAULT must stay `held`, because the default decides what a published number means.
 
-    `README.md` states a PEPs table over "44 held-out answerable questions" and ships the
+    `docs/EVIDENCE.md` states a PEPs table over "44 held-out answerable questions" and ships the
     reproduce command in the same file; `gap_run` records per-corpus rates for 17 BEIR corpora.
     Flipping this default silently changes what all of those figures mean, with no diff in their
     provenance. So the widened sample is opt-in, and this test is what stops it drifting back.

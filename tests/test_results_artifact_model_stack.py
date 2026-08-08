@@ -76,6 +76,10 @@ def _artifacts() -> list[Path]:
         # (including a `queries.json`) under the same tree, and those are INPUTS, not
         # artifacts. A wider glob makes this suite red on any machine that has run it.
         *(RESULTS / "store_latency").rglob("splits.json"),
+        # `decision*.json` by name, for the same reason `splits.json` is: the promotion harness
+        # writes its frozen manifest and its per-question ledgers into the same directory, and
+        # those are INPUTS and RAW ROWS, not artifacts. The decision is the artifact.
+        *(RESULTS / "promotion").glob("decision*.json"),
     ]
     return sorted(p for p in paths if p.is_file())
 
