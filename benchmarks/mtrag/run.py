@@ -563,17 +563,22 @@ def run_arm(
     predictions = []
     latencies_ms = []
     gap_count = 0
+    retried_queries = 0
     tasks = load_tasks(root, split, arm.query_mode)
     try:
         for position, task in enumerate(tasks, 1):
             domain = task_domain(task)
             query = query_text(task, arm.query_mode)
-            query_started = time.perf_counter()
             # Depth 100, not 10. The top-10 ordering is unchanged (reranking happens over the
             # fused pool BEFORE truncation), so every previously reported metric at k<=10 is
             # unaffected; what this buys is Recall@100 for free on the same pass.
-            result = search_with_retry(retrievers[domain], query, arm)
-            latencies_ms.append((time.perf_counter() - query_started) * 1000.0)
+            #
+            # The elapsed time comes from INSIDE search_with_retry and covers only the attempt
+            # that succeeded. Timing this from out here would fold the backoff sleeps into the
+            # figure, and one retried query would put 2000 ms or more into the published p50/p95.
+            result, elapsed_ms, retries = search_with_retry(retrievers[domain], query, arm)
+            latencies_ms.append(elapsed_ms)
+            retried_queries += retries
             gap_count += int(result.gap_warning)
             contexts = []
             total = len(result.hits)
@@ -634,12 +639,19 @@ def run_arm(
     with prediction_path.open("w", encoding="utf-8") as handle:
         for item in predictions:
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+    # A completed arm removes its own forensic file. Otherwise a stale partial from an earlier
+    # failed attempt sits beside a valid, complete result for the same arm, silently disagreeing
+    # with it about how many queries ran.
+    (output_dir / f"{arm.name}.partial.jsonl").unlink(missing_ok=True)
     scores = score_predictions(predictions, load_qrels(root, split), arm.pool_bound())
     ordered = sorted(latencies_ms)
     summary = {
         "arm": asdict(arm),
         "predictions": len(predictions),
         "gap_warnings": gap_count,
+        # Non-zero means some queries below were retried. The latency figures exclude the backoff
+        # sleeps, but a reader of a published p95 deserves to know a retry happened at all.
+        "retried_queries": retried_queries,
         "elapsed_s": time.perf_counter() - started,
         "latency_ms": {
             "mean": sum(latencies_ms) / len(latencies_ms),
@@ -697,34 +709,55 @@ RETRIEVAL_ATTEMPTS = 4
 RETRIEVAL_BACKOFF_S = 2.0
 
 
-def search_with_retry(retriever: Any, query: str, arm: "Arm") -> Any:
-    """`retriever.search` with backoff, because a reranked arm depends on a remote service.
+#: Error type names that mean the configuration is wrong, not that the network hiccuped. Retrying
+#: these burns 14 seconds and prints three `retrieval_retry` lines that read like a flaky network
+#: while the real answer is a bad key. Matched on NAME rather than class so this module does not
+#: import the hosted client just to define its own retry policy.
+PERMANENT_ERROR_NAMES = frozenset({
+    "AuthenticationError", "PermissionDeniedError", "InvalidRequestError", "NotFoundError",
+    "BadRequestError",
+})
 
-    Retries the WHOLE search, which is safe because `search` is a pure read: it re-runs the dense
-    and sparse legs and the rerank, and writes nothing. Retrying a write would need idempotence
-    reasoning; this needs none.
 
-    An arm with no reranker, or with the local one, has nothing here that fails transiently, so
-    the first attempt either succeeds or the error is real and still propagates on the last.
+def search_with_retry(retriever: Any, query: str, arm: "Arm") -> tuple[Any, float, int]:
+    """`retriever.search` with backoff. Returns (result, elapsed_ms, retries).
+
+    Retries the WHOLE search, which is safe for CORRECTNESS because `search` is a pure read: it
+    re-runs the dense and sparse legs and the rerank, and writes nothing.
+
+    ⚠️ It is NOT free for COST. On a hosted-reranker arm every attempt is a billed call, so a
+    query that succeeds on the third attempt is billed three times, and one that exhausts all
+    attempts is billed `RETRIEVAL_ATTEMPTS` times and still ends up dropped. Anyone raising
+    `RETRIEVAL_ATTEMPTS` is raising the worst-case bill by the same factor.
+
+    `elapsed_ms` times ONLY the attempt that succeeded. Timing from before the first attempt would
+    fold the backoff sleeps into the number, so a single retried query would report 2000 ms or
+    more of "latency" and land straight in the published p50/p95. `retries` is returned so a
+    reader can find the affected queries instead of having to trust that there were none.
     """
     last: Exception | None = None
     for attempt in range(1, RETRIEVAL_ATTEMPTS + 1):
+        started = time.perf_counter()
         try:
-            return retriever.search(query, k=RETRIEVAL_DEPTH)
+            result = retriever.search(query, k=RETRIEVAL_DEPTH)
+            return result, (time.perf_counter() - started) * 1000.0, attempt - 1
         except Exception as exc:  # noqa: BLE001 - re-raised below once attempts are exhausted
             last = exc
-            if attempt == RETRIEVAL_ATTEMPTS:
+            name = type(exc).__name__
+            if name in PERMANENT_ERROR_NAMES or attempt == RETRIEVAL_ATTEMPTS:
                 break
             delay = RETRIEVAL_BACKOFF_S * (2 ** (attempt - 1))
             print(
                 json.dumps({"event": "retrieval_retry", "arm": arm.name, "attempt": attempt,
-                            "sleeping_s": delay, "error": type(exc).__name__, "at": utc_now()}),
+                            "sleeping_s": delay, "error": name, "at": utc_now()}),
                 flush=True,
             )
             time.sleep(delay)
     raise RuntimeError(
-        f"arm {arm.name!r} failed {RETRIEVAL_ATTEMPTS} consecutive retrieval attempts; "
-        f"predictions produced so far are flushed to {arm.name}.partial.jsonl"
+        f"arm {arm.name!r} gave up on a query after {RETRIEVAL_ATTEMPTS} attempts "
+        f"({type(last).__name__}: {last}); predictions produced so far are flushed to "
+        f"{arm.name}.partial.jsonl, which is a FORENSIC record and is NOT resumed from: "
+        f"re-running this arm re-issues every call, including any already billed."
     ) from last
 
 

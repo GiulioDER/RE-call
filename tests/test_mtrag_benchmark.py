@@ -434,8 +434,10 @@ def test_the_unreranked_primary_is_the_matched_control_for_both() -> None:
         assert base.rerank is False and arm.rerank is True
 
 
-def test_a_transient_failure_is_retried_not_fatal() -> None:
+def test_a_transient_failure_is_retried_not_fatal(monkeypatch) -> None:
     """A hosted reranker turns one 429 into a dead arm unless the search is retried."""
+    monkeypatch.setattr(run.time, "sleep", lambda *_: None)
+
     class Flaky:
         def __init__(self):
             self.calls = 0
@@ -448,13 +450,21 @@ def test_a_transient_failure_is_retried_not_fatal() -> None:
 
     arm = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
     flaky = Flaky()
-    assert run.search_with_retry(flaky, "q", arm) == "ok"
+    result, elapsed_ms, retries = run.search_with_retry(flaky, "q", arm)
+
+    assert result == "ok"
     assert flaky.calls == 3
+    assert retries == 2
+    # The elapsed time must cover ONLY the successful attempt. Timing from before the first would
+    # include 2s + 4s of backoff, and one retried query would put 6000ms into a published p95.
+    assert elapsed_ms < 1000.0
 
 
-def test_retries_are_bounded_and_name_the_partial_file() -> None:
+def test_retries_are_bounded_and_name_the_partial_file(monkeypatch) -> None:
     """Give up eventually, and say where the already-paid work was flushed."""
     import pytest as _pytest
+
+    monkeypatch.setattr(run.time, "sleep", lambda *_: None)
 
     class Dead:
         def search(self, query, k):
@@ -472,3 +482,52 @@ def test_build_reranker_refuses_an_arm_that_does_not_rerank() -> None:
     arm = run.Arm("x", "last", 100, rerank=False, reranker="voyage")
     with _pytest.raises(ValueError, match="rerank=False"):
         run.build_reranker(arm)
+
+
+def test_a_permanent_error_is_not_retried(monkeypatch) -> None:
+    """A bad key is not a flaky network. Retrying it burns 14s and reads like one.
+
+    The final message must carry the underlying error, so someone skimming output sees "bad
+    credential" rather than having to open a chained traceback to find out.
+    """
+    import pytest as _pytest
+
+    monkeypatch.setattr(run.time, "sleep", lambda *_: None)
+
+    class AuthenticationError(Exception):
+        pass
+
+    class Unauthorized:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, query, k):
+            self.calls += 1
+            raise AuthenticationError("invalid api key")
+
+    arm = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
+    bad = Unauthorized()
+    with _pytest.raises(RuntimeError, match="invalid api key"):
+        run.search_with_retry(bad, "q", arm)
+
+    assert bad.calls == 1, "a permanent error must not be retried"
+
+
+def test_the_failure_message_says_the_partial_is_not_resumed(monkeypatch) -> None:
+    """The partial file is forensic, not a checkpoint. Nothing reads it back.
+
+    The first version of this fix claimed in its commit message that a transient failure no longer
+    discards an arm's paid work. That was only true of the bytes: there is no resume, so a restart
+    re-issues every call including the billed ones. The message must not imply otherwise.
+    """
+    import pytest as _pytest
+
+    monkeypatch.setattr(run.time, "sleep", lambda *_: None)
+
+    class Dead:
+        def search(self, query, k):
+            raise ConnectionError("always")
+
+    arm = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
+    with _pytest.raises(RuntimeError, match="NOT resumed from"):
+        run.search_with_retry(Dead(), "q", arm)
