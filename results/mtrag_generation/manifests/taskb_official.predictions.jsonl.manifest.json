@@ -1,0 +1,10 @@
+{
+  "prompt": "official",
+  "layout": "official",
+  "model": "openai/gpt-4o",
+  "task": "b",
+  "contexts_from": "reference",
+  "max_tokens": 512,
+  "tasks": 842,
+  "limit": null
+}

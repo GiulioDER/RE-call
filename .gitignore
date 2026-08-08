@@ -51,3 +51,10 @@ results/ladder/*.log
 # release. The MANIFEST records sha256 + provenance so a result stays checkable without vendoring
 # the payload, same rule as the corpora above.
 results/mtrag_generation/*.predictions.jsonl
+
+# MTRAG scored/algorithmic outputs: derived from the predictions and the release, tens of MB.
+# RESULTS.md carries the numbers and MANIFEST.md the provenance; regenerating needs only the
+# committed harness plus a GPU pass.
+results/mtrag_generation/*.scored.jsonl
+results/mtrag_generation/scored_*.jsonl
+results/mtrag_generation/algorithmic/*.jsonl
