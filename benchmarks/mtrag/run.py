@@ -6,6 +6,7 @@ import json
 import math
 import os
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -143,15 +144,27 @@ def git_revision(path: Path) -> str | None:
 
 
 def git_is_dirty(path: Path) -> bool | None:
-    """Whether the working tree has uncommitted changes. `None` if it cannot be determined.
+    """Whether TRACKED files differ from HEAD. `None` if it cannot be determined.
 
-    A revision alone does not say what ran. `rev-parse HEAD` names a commit; if the tree was dirty
-    the code that executed was something else, and the artifact would assert a provenance it does
-    not have. That is worse than recording nothing, because a populated field reads as settled.
+    A revision alone does not say what ran. `rev-parse HEAD` names a commit; if tracked files were
+    modified, the code that executed was something else, and the artifact would assert a provenance
+    it does not have. That is worse than recording nothing, because a populated field reads as
+    settled.
+
+    ⚠️ `--untracked-files=no` is a deliberate decision, not the default. Plain `--porcelain` counts
+    untracked files, and this benchmark writes its own artifacts (`*.metrics.json`,
+    `manifest_*.json`, predictions) into `--output-dir`. Point that inside the repo once and the
+    flag latches True forever, on every later run, regardless of whether any code changed. A flag
+    that is always True is exactly as useless as one that is always False, and worse than absent,
+    because it trains a reader to skip past it.
+
+    The cost of that choice, stated rather than hidden: a NEW untracked `.py` that gets imported
+    does change what ran, and this will not catch it. Modified tracked files are the load-bearing
+    case and the one that stays meaningful.
     """
     try:
         out = subprocess.check_output(
-            ["git", "-C", str(path), "status", "--porcelain"], text=True
+            ["git", "-C", str(path), "status", "--porcelain", "--untracked-files=no"], text=True
         )
     except (OSError, subprocess.CalledProcessError):
         return None
@@ -166,12 +179,21 @@ def manifest_filename(revision: str | None, started_at: str) -> str:
     on revision alone would still overwrite. A missing revision degrades to `norev` rather than
     raising: losing the name is worse than losing one field of it.
 
-    Sub-second precision is kept. Truncating to the second would let two runs of one revision
-    started in the same second collide, which is the same defect at lower probability, and a
-    driver script launching arms in a loop is exactly how that stops being hypothetical.
+    Sub-second precision is kept AND the pid is appended. Truncating to the second let two runs of
+    one revision started in the same second collide, which is the same defect at lower probability;
+    but microseconds alone still rely on the clock never sampling `.0` twice in one second, and
+    `isoformat()` omits the fractional part entirely when it is zero. The pid does not depend on
+    clock resolution, so uniqueness stops resting on luck.
+
+    The stamp strips every non-alphanumeric rather than translating separators one at a time. The
+    earlier version replaced `+` but not `-`, so a negative UTC offset had its sign deleted and the
+    offset digits glued onto the microseconds with no delimiter. Only `utc_now()` calls this today,
+    so that was unreachable, but the function is general and unit-tested, and a rule with an
+    exception for one sign is a rule waiting to be wrong. The name only needs to be unique and
+    legible; the exact timestamp lives inside the manifest.
     """
-    stamp = started_at.replace(":", "").replace("-", "").replace(".", "").replace("+", "_")
-    return f"manifest_{(revision or 'norev')[:7]}_{stamp}.json"
+    stamp = re.sub(r"[^0-9A-Za-z]", "", started_at)
+    return f"manifest_{(revision or 'norev')[:7]}_{stamp}_{os.getpid()}.json"
 
 
 def package_version(name: str) -> str | None:

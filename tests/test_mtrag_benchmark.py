@@ -573,6 +573,21 @@ def test_two_runs_in_the_same_second_still_get_distinct_manifests() -> None:
     assert a != b, "same revision, same second, different microsecond must not collide"
     assert ":" not in a and "/" not in a, "must be a legal filename on Windows and Linux"
 
+    # `isoformat()` DROPS the fractional part when microsecond is exactly 0, so microseconds alone
+    # leave uniqueness resting on the clock never sampling .0 twice in a second. The pid does not
+    # depend on clock resolution.
+    import os as _os
+
+    zero = manifest_filename(rev, "2026-08-08T14:46:14+00:00")
+    assert str(_os.getpid()) in zero, "uniqueness must not rest on the wall clock alone"
+    assert zero != a
+
+    # A negative UTC offset must not silently glue its digits onto the microseconds. Unreachable
+    # via utc_now() today, but the function is general and a rule with an exception for one sign
+    # is a rule waiting to be wrong.
+    neg = manifest_filename(rev, "2026-08-08T14:46:14.505185-05:00")
+    assert neg != a and neg.endswith(".json") and ":" not in neg
+
 
 def test_a_dirty_tree_is_recorded_rather_than_passed_off_as_its_commit(tmp_path) -> None:
     """A revision with no dirty flag beside it reads as proof it is not.
@@ -601,6 +616,21 @@ def test_a_dirty_tree_is_recorded_rather_than_passed_off_as_its_commit(tmp_path)
 
     (repo / "f.txt").write_text("two", encoding="utf-8")
     assert git_is_dirty(repo) is True, "an uncommitted edit must be reported"
+
+    run("checkout", "--", "f.txt")
+    assert git_is_dirty(repo) is False
+
+    # An UNTRACKED file must NOT count. This benchmark writes its own artifacts into --output-dir,
+    # and if that ever sits inside the repo, counting untracked files latches the flag True on
+    # every later run regardless of whether code changed. A flag that is always True is as useless
+    # as one that is always False, and worse than absent: it teaches the reader to skip it.
+    (repo / "some_run_output.metrics.json").write_text("{}", encoding="utf-8")
+    assert git_is_dirty(repo) is False, "the benchmark's own output must not poison the flag"
+
+    # ...but a STAGED change must, since that is a real difference from HEAD.
+    (repo / "f.txt").write_text("three", encoding="utf-8")
+    run("add", "f.txt")
+    assert git_is_dirty(repo) is True, "a staged-but-uncommitted change is still not HEAD"
 
     # Not a repo at all: unknown, not silently 'clean'.
     assert git_is_dirty(tmp_path / "nope") is None
