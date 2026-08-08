@@ -432,3 +432,43 @@ def test_the_unreranked_primary_is_the_matched_control_for_both() -> None:
         }
         assert differing == set(), name
         assert base.rerank is False and arm.rerank is True
+
+
+def test_a_transient_failure_is_retried_not_fatal() -> None:
+    """A hosted reranker turns one 429 into a dead arm unless the search is retried."""
+    class Flaky:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, query, k):
+            self.calls += 1
+            if self.calls < 3:
+                raise ConnectionError("transient")
+            return "ok"
+
+    arm = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
+    flaky = Flaky()
+    assert run.search_with_retry(flaky, "q", arm) == "ok"
+    assert flaky.calls == 3
+
+
+def test_retries_are_bounded_and_name_the_partial_file() -> None:
+    """Give up eventually, and say where the already-paid work was flushed."""
+    import pytest as _pytest
+
+    class Dead:
+        def search(self, query, k):
+            raise ConnectionError("always")
+
+    arm = next(a for a in run.SPARSE_ARMS if a.name == "hybrid_splade_voyage")
+    with _pytest.raises(RuntimeError, match="partial.jsonl"):
+        run.search_with_retry(Dead(), "q", arm)
+
+
+def test_build_reranker_refuses_an_arm_that_does_not_rerank() -> None:
+    """Constructing a PAID client for an arm that never reranks would demand a key for nothing."""
+    import pytest as _pytest
+
+    arm = run.Arm("x", "last", 100, rerank=False, reranker="voyage")
+    with _pytest.raises(ValueError, match="rerank=False"):
+        run.build_reranker(arm)
