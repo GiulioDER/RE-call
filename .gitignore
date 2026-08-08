@@ -46,3 +46,8 @@ oracle_out/
 # manifest*.jsonl / responses_*.jsonl / H1_VERDICT*; anything *_smoke is a throwaway.
 results/ladder/*_smoke.jsonl
 results/ladder/*.log
+
+# MTRAG generation predictions: 16 MB of model output, reproducible from the harness and the
+# release. The MANIFEST records sha256 + provenance so a result stays checkable without vendoring
+# the payload, same rule as the corpora above.
+results/mtrag_generation/*.predictions.jsonl

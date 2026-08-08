@@ -136,16 +136,92 @@ def splade_weights(logits: "torch.Tensor", attention_mask: "torch.Tensor") -> li
 #: default; it is here because it is the model MTRAGEval rank 3 used and the comparable number is
 #: worth being able to produce. `Splade_PP_en_v1` is apache-2.0 and is what you get if you do not
 #: choose. Weights are downloaded by the user at runtime and are not vendored by this package.
-KNOWN_MODELS: dict[str, str] = {
-    "prithivida/Splade_PP_en_v1": "apache-2.0",
-    "naver/splade-v3": "cc-by-nc-sa-4.0",
+@dataclass(frozen=True)
+class ModelLicense:
+    """What a checkpoint is licensed under, and what attributing it correctly requires.
+
+    The SPDX id alone is not enough to COMPLY. CC BY-NC-SA 4.0 obliges a user to give appropriate
+    credit, link the licence, and indicate whether changes were made, so those three have to be
+    data we can emit next to a result, not a remark in a comment that never reaches an artifact.
+    `changes` is the third of those and is the one most easily forgotten, because "we only ran
+    inference" still has to be stated rather than assumed.
+    """
+
+    creator: str
+    license_id: str
+    license_url: str
+    source_url: str
+    changes: str
+
+    @property
+    def is_commercial_ok(self) -> bool:
+        return self.license_id == "apache-2.0"
+
+
+#: Every checkpoint this encoder will load, with what using it obliges. An unrecorded licence is
+#: refused rather than assumed permissive; see `SpladeEncoder.from_pretrained`.
+KNOWN_MODELS: dict[str, ModelLicense] = {
+    "prithivida/Splade_PP_en_v1": ModelLicense(
+        creator="Prithivi Da",
+        license_id="apache-2.0",
+        license_url="https://www.apache.org/licenses/LICENSE-2.0",
+        source_url="https://huggingface.co/prithivida/Splade_PP_en_v1",
+        changes="No modification. Used for inference only, to produce term weights.",
+    ),
+    "naver/splade-v3": ModelLicense(
+        creator="Naver Corporation",
+        license_id="cc-by-nc-sa-4.0",
+        license_url="https://creativecommons.org/licenses/by-nc-sa/4.0/",
+        source_url="https://huggingface.co/naver/splade-v3",
+        changes="No modification. Used for inference only, to produce term weights.",
+    ),
     # SPLADE++ EnsembleDistil. Same BERT MLM architecture and 30522 vocabulary as the two above,
     # so it is a drop-in for this encoder, and stronger than the default (MRR@10 38.3 vs 37.22).
     # It exists here because `naver/splade-v3` is a GATED repo: reaching it needs an approved
     # HuggingFace account, not merely the licence flag. This is the closest ungated substitute
     # for the "is our checkpoint the weak link?" control.
-    "naver/splade-cocondenser-ensembledistil": "cc-by-nc-sa-4.0",
+    "naver/splade-cocondenser-ensembledistil": ModelLicense(
+        creator="Naver Corporation",
+        license_id="cc-by-nc-sa-4.0",
+        license_url="https://creativecommons.org/licenses/by-nc-sa/4.0/",
+        source_url="https://huggingface.co/naver/splade-cocondenser-ensembledistil",
+        changes=(
+            "No modification to the model. Weights were loaded unchanged and used for inference "
+            "only; the pruning to a top-k budget is applied to this run's OUTPUT vectors, not to "
+            "the checkpoint."
+        ),
+    ),
 }
+
+
+def attribution_notice(model_name: str) -> str:
+    """The credit line a result computed with `model_name` has to carry.
+
+    Written next to any artifact the model contributed to, so the obligation travels with the
+    number rather than living in a source file the reader never opens. Covers the Attribution
+    term (credit, licence link, changes stated); NonCommercial is enforced upstream by
+    `from_pretrained`'s gate, and ShareAlike binds only if the vectors are redistributed, which
+    is why the notice names them.
+    """
+    entry = KNOWN_MODELS.get(model_name)
+    if entry is None:
+        raise ValueError(f"no licence recorded for {model_name!r}; cannot attribute it")
+    lines = [
+        f"Term weights in this artifact were produced with {model_name}",
+        f"  Creator: {entry.creator}",
+        f"  Source:  {entry.source_url}",
+        f"  Licence: {entry.license_id} ({entry.license_url})",
+        f"  Changes: {entry.changes}",
+    ]
+    if not entry.is_commercial_ok:
+        lines += [
+            "  Use:     NON-COMMERCIAL. Benchmark reproduction and research only. This checkpoint",
+            "           is not shipped with RE-call and is not the default; RE-call's default is",
+            f"           {DEFAULT_MODEL} (apache-2.0).",
+            "  ShareAlike: if the derived sparse vectors are redistributed, they must carry this",
+            "           same licence. They are not redistributed by this benchmark.",
+        ]
+    return "\n".join(lines)
 
 DEFAULT_MODEL = "prithivida/Splade_PP_en_v1"
 
@@ -193,18 +269,20 @@ class SpladeEncoder:
         checkpoint arriving by default is a licence violation nobody chose — so
         `naver/splade-v3` has to be opted into by name, in code, with this flag.
         """
-        license_id = KNOWN_MODELS.get(model_name)
-        if license_id is None:
+        entry = KNOWN_MODELS.get(model_name)
+        if entry is None:
             raise ValueError(
                 f"unknown learned sparse model {model_name!r}; known models are "
                 f"{sorted(KNOWN_MODELS)}. Record it in KNOWN_MODELS with its licence first — an "
                 f"unrecorded licence is exactly what this check exists to prevent."
             )
-        if license_id != "apache-2.0" and not accept_noncommercial_license:
+        if not entry.is_commercial_ok and not accept_noncommercial_license:
             raise ValueError(
-                f"{model_name} is licensed {license_id}, which is not compatible with RE-call's "
-                f"MIT distribution for commercial use. Pass accept_noncommercial_license=True to "
-                f"use it anyway (benchmark reproduction), or keep the default {DEFAULT_MODEL}."
+                f"{model_name} is licensed {entry.license_id}, which is not compatible with "
+                f"RE-call's MIT distribution for commercial use. Benchmark reproduction and "
+                f"research ARE permitted by that licence: pass accept_noncommercial_license=True "
+                f"to proceed, and the result must carry attribution_notice({model_name!r}). "
+                f"Otherwise keep the default {DEFAULT_MODEL}."
             )
 
         from transformers import AutoModelForMaskedLM, AutoTokenizer

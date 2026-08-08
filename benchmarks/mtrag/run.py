@@ -534,15 +534,22 @@ def run_arm(
     started = time.perf_counter()
     reranker = build_reranker(arm) if arm.rerank else None
     sparse_encoder = None
+    sparse_model_used: str | None = None
+    sparse_attribution: str | None = None
     if arm.sparse_backend in ("splade", "both"):
         # Imported HERE, not at module scope: torch and transformers are an optional extra, and a
         # lexical-only run must not require them to be installed at all.
-        from recall.sparse import SpladeEncoder
+        from recall.sparse import SpladeEncoder, attribution_notice
 
+        sparse_model_used = sparse_model or DEFAULT_SPARSE_MODEL
         sparse_encoder = SpladeEncoder.from_pretrained(
-            sparse_model or DEFAULT_SPARSE_MODEL,
+            sparse_model_used,
             accept_noncommercial_license=accept_noncommercial_license,
         )
+        # Resolved here, next to the number it belongs to. A licence that obliges attribution is
+        # not discharged by a note in a source file the reader of a result never opens, so the
+        # credit line is written into the metrics artifact itself.
+        sparse_attribution = attribution_notice(sparse_model_used)
     stores = {
         domain: PgVectorStore(dsn, embedder.dim, table=table_name(prefix, domain))
         for domain in DOMAINS
@@ -660,6 +667,10 @@ def run_arm(
         },
         "scores": scores,
         "prediction_sha256": sha256_file(prediction_path),
+        # Which checkpoint produced the term weights, and the credit it obliges. Both are null on
+        # a lexical-only arm, where no learned sparse model was loaded at all.
+        "sparse_model": sparse_model_used,
+        "sparse_attribution": sparse_attribution,
     }
     (output_dir / f"{arm.name}.metrics.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"

@@ -170,7 +170,68 @@ def test_the_default_model_is_the_permissively_licensed_one() -> None:
     non-commercial model the default that everyone installs without choosing it."""
     from recall.sparse import DEFAULT_MODEL, KNOWN_MODELS
 
-    assert KNOWN_MODELS[DEFAULT_MODEL] == "apache-2.0"
+    assert KNOWN_MODELS[DEFAULT_MODEL].license_id == "apache-2.0"
+    assert KNOWN_MODELS[DEFAULT_MODEL].is_commercial_ok
+
+
+def test_every_recorded_model_can_be_attributed() -> None:
+    """CC BY-NC-SA 4.0 requires credit, a licence link, and a statement of changes.
+
+    A licence id alone does not discharge that, so every entry must carry all three. Checked for
+    every model rather than the two we happen to run, because the next one added is the one that
+    will be missing a field.
+    """
+    from recall.sparse import KNOWN_MODELS, attribution_notice
+
+    for name, entry in KNOWN_MODELS.items():
+        assert entry.creator and entry.license_url and entry.source_url and entry.changes, name
+        notice = attribution_notice(name)
+        assert entry.creator in notice
+        assert entry.license_url in notice
+        assert entry.changes in notice
+
+
+def test_a_noncommercial_model_is_attributed_as_noncommercial() -> None:
+    """The notice has to say the thing that constrains the reader, not just name a licence.
+
+    Someone reading a benchmark result needs to know this checkpoint is not what ships and that
+    redistributing the derived vectors would carry the ShareAlike obligation.
+    """
+    from recall.sparse import attribution_notice
+
+    notice = attribution_notice("naver/splade-cocondenser-ensembledistil")
+
+    assert "NON-COMMERCIAL" in notice
+    assert "ShareAlike" in notice
+    assert "cc-by-nc-sa-4.0" in notice
+    assert "https://creativecommons.org/licenses/by-nc-sa/4.0/" in notice
+    assert "not shipped with RE-call" in notice
+
+
+def test_attribution_is_refused_for_an_unrecorded_model() -> None:
+    """Better to fail than to emit a result with no credit line attached to it."""
+    from recall.sparse import attribution_notice
+
+    with pytest.raises(ValueError, match="no licence recorded"):
+        attribution_notice("someone/unrecorded-checkpoint")
+
+
+def test_every_model_is_documented_in_the_third_party_notice() -> None:
+    """The repo-level attribution must not drift from the registry.
+
+    A model added to `KNOWN_MODELS` and forgotten here is an undischarged Attribution obligation
+    that nothing else would catch, since the code keeps working perfectly.
+    """
+    from pathlib import Path
+
+    from recall.sparse import KNOWN_MODELS
+
+    notice = Path(__file__).resolve().parent.parent / "docs" / "THIRD_PARTY_MODELS.md"
+    text = notice.read_text(encoding="utf-8")
+
+    for name, entry in KNOWN_MODELS.items():
+        assert name in text, f"{name} is in KNOWN_MODELS but undocumented in {notice.name}"
+        assert entry.license_url in text, f"{name}'s licence link is missing from {notice.name}"
 
 
 def test_encoder_sends_inputs_to_the_models_device(tiny_splade) -> None:
