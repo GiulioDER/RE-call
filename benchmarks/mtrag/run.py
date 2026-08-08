@@ -142,6 +142,17 @@ def git_revision(path: Path) -> str | None:
         return None
 
 
+def manifest_filename(revision: str | None, started_at: str) -> str:
+    """A manifest name unique to the run that wrote it.
+
+    Two runs into one output directory must not collide. Keyed on BOTH revision and start time,
+    because re-running the same commit is normal (a resumed arm, a widened split) and a name keyed
+    on revision alone would still overwrite. A missing revision degrades to `norev` rather than
+    raising: losing the name is worse than losing one field of it.
+    """
+    return f"manifest_{(revision or 'norev')[:7]}_{started_at.replace(':', '').replace('-', '')[:15]}.json"
+
+
 def package_version(name: str) -> str | None:
     try:
         return version(name)
@@ -667,6 +678,12 @@ def run_arm(
         },
         "scores": scores,
         "prediction_sha256": sha256_file(prediction_path),
+        # The commit that produced THIS arm, recorded in the arm's own file. The run manifest also
+        # carries it, but a manifest is one file per run and an arm's numbers outlive the run: a
+        # later run reusing the output directory used to overwrite it, leaving five completed arms
+        # whose code version could only be inferred from a schema key that happened to be missing.
+        # An artifact that cannot say what produced it is not evidence.
+        "recall_revision": git_revision(Path(__file__).resolve().parents[2]),
         # Which checkpoint produced the term weights, and the credit it obliges. Both are null on
         # a lexical-only arm, where no learned sparse model was loaded at all.
         "sparse_model": sparse_model_used,
@@ -949,6 +966,16 @@ def main(argv: list[str] | None = None) -> int:
         "batch_size": args.batch_size,
         "index_domains": args.index_domains,
     }
+    # Run-SCOPED, not a fixed name. Writing every run's manifest to `preregistered_manifest.json`
+    # means a second run into the same output directory silently destroys the first run's
+    # provenance, and the per-arm metrics carry no revision to fall back on. That already happened
+    # here: five dev arms completed 2026-08-07/08, a later arm reused the directory, and the only
+    # record of which commit produced those five is now gone. Their numbers survived scrutiny only
+    # because `retriever.py` turned out to be byte-identical across the range, which is luck
+    # standing in for a record. The stable name is still written, for anything that reads it.
+    (output_dir / manifest_filename(manifest["revisions"]["recall"], manifest["started_at"])).write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
     (output_dir / "preregistered_manifest.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
     )
