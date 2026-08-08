@@ -18,7 +18,7 @@
 <p align="center">
   <a href="#why-re-call">Why RE-call</a>
   &nbsp;·&nbsp;
-  <a href="#who-is-it-for">Who it's for</a>
+  <a href="#what-re-call-can-do-for-you">What it can do for you</a>
   &nbsp;·&nbsp;
   <a href="#how-it-works">How it works</a>
   &nbsp;·&nbsp;
@@ -30,7 +30,7 @@
 </p>
 
 <p align="center">
-  <b>📐 <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/pipeline.svg">THE FULL PIPELINE, CORPUS TO ANSWER</a></b><br>
+  <b>📐 <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/pipeline.png">THE FULL PIPELINE, CORPUS TO ANSWER</a></b><br>
   <i>every phase in one diagram, with what each option costs</i>
 </p>
 
@@ -49,37 +49,42 @@
 Give your AI agent, app, or team a long-term memory that is **free to run**, **stays on your
 machines**, and **tells the truth about what it knows**.
 
-Head-to-head against **[Mem0](https://github.com/mem0ai/mem0)** — the most-adopted open-source
-memory layer — on the public **LOCOMO** benchmark, with an *identical* generator and judge and
-paired questions (full table, losses and caveats included →
-[FINDINGS §9d](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)):
+Measured against **[Mem0](https://github.com/mem0ai/mem0)** on the public **LOCOMO** benchmark,
+with an *identical* generator, judge, and paired questions (full table, losses and caveats
+included in [FINDINGS §9d](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)):
+RE-call comes out **more accurate**, **$0 to build at any scale**, and it keeps your data on
+infrastructure you own. We publish the configuration where it loses, because a benchmark you
+cannot lose isn't one.
 
-- 🎯 **More accurate** on both OpenAI reader models the field benchmarks with (paired
-  p = 0.0002–0.0065, Holm-corrected), and it refuses fewer legitimate questions — the lead holds
-  even on **Mem0's own default embedder** (`text-embedding-3-small`): judged answer accuracy
-  **0.42 vs 0.366**, n=1,540.
-- 💸 **$0 to build, at any scale** — no LLM anywhere in the ingest or retrieval path. Writing a
-  memory is an embedding; searching is Postgres. Building the benchmark's memory cost Mem0
-  **$7.29** in metered API calls; RE-call **$0.00**.
-- ⚡ **~4.3× faster to build** memory, and measurably faster to query — a write-heavy agent fills
-  fast, with no per-write API bill.
-- 🔒 **Your data never leaves your infrastructure** — local embeddings on the PostgreSQL you
-  already run and back up. No vendor cloud, no graph database, no per-query egress, so it works
-  offline and in privacy-bound environments. (A cloud embedder is a measured *option* for
-  jargon-heavy corpora, never a dependency.)
-- 🧭 **It abstains instead of guessing** — superseded or expired memories are demoted rather than
-  served. → [see it in one screen](https://github.com/GiulioDER/RE-call/blob/master/docs/EVIDENCE.md#see-it-in-one-screen)
+Its real strength, though, is that it is built to be **tuned, not fixed**. Every stage of the
+pipeline (embedder, reranker, the SPLADE sidecar, the entailment judge) is opt-in and swappable,
+so the same system runs comfortably at either end of the spectrum:
 
-We publish the configuration where it loses, because a benchmark you can't lose isn't one.
+- 🔒 **Fully local and air-gapped**, for maximum data protection: local embeddings, your own
+  PostgreSQL, zero external calls, zero per-query egress.
+- ☁️ **With a cloud embedder and reranker**, when a jargon-heavy corpus makes the extra accuracy
+  worth the cost.
+- ⚙️ **From a laptop to production hardware**, without re-architecting: the free default path is
+  fast out of the box, and every heavier option is named and measured, never silently switched on.
 
-## Who is it for
+Every setting keeps the same guarantee: superseded or expired memories are demoted, not served, so
+the agent says "I don't know" instead of guessing. Whatever the constraint (data residency,
+latency, GPU availability, or plain cost), RE-call's pipeline reconfigures around it instead of
+forcing one shape on every deployment.
+→ [see it in one screen](https://github.com/GiulioDER/RE-call/blob/master/docs/EVIDENCE.md#see-it-in-one-screen)
 
-| you are | the problem you have | what RE-call does about it |
-|---|---|---|
-| **a dev building an agent** | it re-litigates settled decisions and contradicts its own memory | supersession and validity enforced at retrieval; abstention as a first-class return value; drop-in LangChain / LlamaIndex retrievers and an MCP server for Claude |
-| **a solo founder / indie hacker** | memory layers charge an LLM call for every memory written | $0 marginal cost, forever — embed locally, store in the Postgres you already have, and scaling up never creates a new API bill |
-| **a SaaS or small company** | user data can't be shipped to a third party just to have "memory" | multi-tenant with database-enforced row-level security, token auth, `recall forget` for right-to-erasure, MIT license, all on your own Postgres |
-| **a trader / researcher / operator** | notes pile up and the stale conclusion outranks its own correction | built inside a production trading-research agent for exactly this: closed experiments stay closed, reversed decisions stop resurfacing |
+## What RE-call can do for you
+
+- **Stop an agent from re-litigating settled decisions or contradicting its own memory.**
+  Supersession and validity are enforced at retrieval, abstention is a first-class return value,
+  and drop-in LangChain / LlamaIndex retrievers plus an MCP server for Claude fit the stack you
+  already run.
+- **Remove the per-write API bill.** Embed locally, store in the Postgres you already run, and
+  scaling up never creates a new invoice.
+- **Keep user data on infrastructure you control.** Multi-tenant with database-enforced row-level
+  security, token auth, `recall forget` for right-to-erasure, MIT license.
+- **Keep closed experiments closed.** Built inside a production trading-research agent so a stale
+  conclusion never outranks its own correction.
 
 **Try it in 2 minutes, no API key** → [Quickstart](#quickstart--2-minutes-no-api-key).
 
