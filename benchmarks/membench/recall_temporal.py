@@ -49,10 +49,10 @@ from collections.abc import Iterable
 
 from membench.axes.temporal.adapter import TemporalDocument, TemporalResponse
 
+from benchmarks._trust import bench_search
 from benchmarks.membench import _env
 from recall.index import Indexer
 from recall.store import PgVectorStore
-from recall.trust import trusted_search
 
 DSN = os.environ.get("MEMBENCH_DSN", "postgresql:///membench_tmp")
 TABLE = os.environ.get("MEMBENCH_TABLE", "tmp_chunks")
@@ -150,7 +150,18 @@ class RecallTemporal:
 
     def query(self, question: str, *, reference_time: str) -> TemporalResponse:
         now = dt.datetime.fromisoformat(reference_time).replace(tzinfo=dt.UTC)
-        result = trusted_search(
+        # `bench_search`, not `trusted_search`: the latter's default policy is STRICT, and this
+        # corpus has no generation and no published calibration, so every query would refuse with
+        # INDEX_NOT_READY before retrieval ran. See `benchmarks/_trust.py`.
+        #
+        # This axis is the one where the calibration half matters MOST, and where getting only the
+        # policy half would have been silently catastrophic rather than merely wrong: the filter
+        # below keeps `ok` hits only, and development mode without a calibration rewrites every
+        # verdict to `unverified`. Nothing would clear the filter, `cited` would be empty for every
+        # question, `answered` would be False everywhere, and `covering_selection_rate` would read
+        # 0.0000 across the board — indistinguishable from a validity layer that does not work,
+        # which is precisely the failure this adapter was once fixed for.
+        result = bench_search(
             self._store, self._embedder, question, now=now,
             k=self._k, candidate_k=self._ck, reranker=self._rr,
         )
