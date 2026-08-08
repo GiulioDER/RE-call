@@ -31,9 +31,20 @@ this module rather than merely informing it:
   2. 🔑 **A correct "I don't know" on an UNANSWERABLE task scores exactly 1.0 on RL_F, RB_llm AND
      RB_alg simultaneously** (72/72 model cells), so abstention moves the harmonic mean further per
      unit of effort than anything else. Published baselines manage it 0.0% to 32.7% of the time and
-     the rate is close to INVERSELY ranked with overall score. That is why `SYSTEM_PROMPT` tells the
-     model to say it does not know rather than guess: not prompt engineering for advantage, but
-     refusing to handicap the arm on the benchmark's dominant lever.
+     the rate is close to INVERSELY ranked with overall score.
+
+     ⛔ THE INFERENCE I DREW FROM THAT WAS WRONG, and it is measured wrong, not merely arguable.
+     This docstring used to end: "That is why SYSTEM_PROMPT tells the model to say it does not know
+     rather than guess: not prompt engineering for advantage, but refusing to handicap the arm on
+     the benchmark's dominant lever." Task B over gold contexts, 842 tasks, says otherwise:
+
+         false abstentions on ANSWERABLE      83 / 709  (11.7%)
+         RL_F when it abstained vs answered   0.0726 vs 0.8901
+         harmonic mean, ours vs THEIR gpt-4o  0.5508 vs 0.6208   (same task, same contexts)
+
+     The prize is capped at 55 unanswerable tasks; the bill was 83 answerable ones at ~0.8 each. A
+     lever being dominant does not mean pulling it harder is free, and I never priced the other
+     side of the trade. See `PROMPTS`, and pass `--prompt neutral`.
   3. ⚠️ **`RAG.json` licenses a PAIRED WITHIN-FILE comparison and no parity claim.** Recomputing the
      published table from it runs +0.018 to +0.043 HIGH on every model. The aggregation formula (a
      harmonic mean of the three per-metric means) is right and reproduces 5ting's self-reported
@@ -122,14 +133,41 @@ MAX_SUBMISSION_MB = 20
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "openai/gpt-4o"
 
-#: The instruction is deliberately plain and identical across both tasks. Anything cleverer would
-#: be prompt engineering that the leaderboard rows we compare against did not get, and the
-#: comparison is about the retrieval and the model, not about our prompt.
-SYSTEM_PROMPT = (
-    "You are answering the last user turn in a conversation, using only the passages provided. "
-    "If the passages do not contain the answer, say that you do not know rather than guessing. "
-    "Answer directly and concisely."
-)
+#: ⚠️ MTRAG does NOT publish the prompt its baselines used — the repo ships retrieval conversion
+#: and evaluation, no generation script. So an exact prompt match is impossible and any comparison
+#: carries an irreducible prompt difference. What IS controllable is not handicapping ourselves,
+#: which the first version did.
+#:
+#: MEASURED, Task B over gold contexts, 842 tasks:
+#:   `abstain` produced 83 false abstentions on 709 ANSWERABLE tasks (11.7%), and a false
+#:   abstention scores near zero — RL_F 0.0726 against 0.8901 when it answered, RB_llm 0.1542
+#:   against 0.7334. Harmonic mean 0.5508 against the benchmark's own GPT-4o at 0.6208 on the same
+#:   task, same contexts, same model.
+#:
+#: 🔑 The reasoning that produced `abstain` was that a correct "I don't know" scores 1.0 on all
+#: three metrics at once, so abstention is the dominant lever. That is true and it is only half the
+#: trade: 55 unanswerable tasks can win at most 55 points, while 83 false abstentions lose ~0.8
+#: each. The prompt bought the smaller prize with the larger one.
+#:
+#: `neutral` states the task and stops. It does NOT instruct the model to answer regardless, which
+#: would be the same error with the sign flipped; what to do when the passages fall short is left
+#: to the model, which is the behaviour being measured.
+PROMPTS = {
+    "abstain": (
+        "You are answering the last user turn in a conversation, using only the passages provided. "
+        "If the passages do not contain the answer, say that you do not know rather than guessing. "
+        "Answer directly and concisely."
+    ),
+    "neutral": (
+        "You are answering the last user turn in a conversation, using the passages provided. "
+        "Answer directly and concisely."
+    ),
+}
+
+#: Default stays `abstain` so every artifact produced before this flag existed is still
+#: reproducible from the committed code. New runs pass `--prompt` explicitly.
+DEFAULT_PROMPT = "abstain"
+SYSTEM_PROMPT = PROMPTS[DEFAULT_PROMPT]
 
 
 def generation_tasks_path(root: Path, task: str) -> Path:
@@ -241,12 +279,14 @@ def conversation_text(task: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def build_messages(task: dict[str, Any], contexts: list[dict[str, Any]]) -> list[dict[str, str]]:
+def build_messages(
+    task: dict[str, Any], contexts: list[dict[str, Any]], system: str = SYSTEM_PROMPT
+) -> list[dict[str, str]]:
     passages = "\n\n".join(
         f"[{i + 1}] {ctx['text']}" for i, ctx in enumerate(contexts) if ctx["text"]
     ) or "(no passages were retrieved)"
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system},
         {
             "role": "user",
             "content": f"Passages:\n{passages}\n\nConversation:\n{conversation_text(task)}\n\n"
@@ -360,6 +400,14 @@ def main(argv: list[str] | None = None) -> int:
              "benchmarks.mtrag.run predictions file to use RE-call's",
     )
     ap.add_argument("--max-tokens", type=int, default=512)
+    ap.add_argument(
+        "--prompt", choices=sorted(PROMPTS), default=DEFAULT_PROMPT,
+        help=(
+            "which system prompt. `abstain` is what every pre-2026-08-08 artifact used and stays "
+            "the default so those remain reproducible; see PROMPTS for the measurement that "
+            "motivated `neutral`."
+        ),
+    )
     ap.add_argument("--limit", type=int, default=None, help="first N tasks; for a cost probe")
     ap.add_argument(
         "--dry-run", action="store_true",
@@ -382,6 +430,10 @@ def main(argv: list[str] | None = None) -> int:
     print(
         json.dumps({
             "event": "start", "task": args.task, "model": args.model,
+            # Recorded because it CHANGES THE NUMBER: `abstain` cost 0.07 harmonic mean on
+            # Task B. An artifact that does not name its prompt cannot be compared to one
+            # that used a different one.
+            "prompt": args.prompt,
             "contexts_from": args.contexts_from if args.task == "c" else "reference",
             "tasks": len(tasks), "already_done": len(tasks) - len(pending), "pending": len(pending),
         }),
@@ -394,7 +446,7 @@ def main(argv: list[str] | None = None) -> int:
             contexts = contexts_for(task, recall_contexts)
             if not contexts:
                 missing += 1
-            chars += sum(len(m["content"]) for m in build_messages(task, contexts))
+            chars += sum(len(m["content"]) for m in build_messages(task, contexts, PROMPTS[args.prompt]))
         print(
             json.dumps({
                 "event": "dry_run", "prompt_chars": chars,
@@ -427,7 +479,7 @@ def main(argv: list[str] | None = None) -> int:
                 # contexts are well-formed, but `--contexts-from` reads a file we do not control.
                 contexts = contexts_for(task, recall_contexts)
                 answer = generate_one(
-                    client, args.model, build_messages(task, contexts), args.max_tokens
+                    client, args.model, build_messages(task, contexts, PROMPTS[args.prompt]), args.max_tokens
                 )
             except MemoryError:
                 # Not quarantinable. `MemoryError` is an `Exception`, so the handler below would
