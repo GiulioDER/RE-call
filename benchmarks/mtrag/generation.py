@@ -6,11 +6,28 @@ RL_F RB_llm RB_alg harmonic mean")` returned substantial prior art, and three fi
 this module rather than merely informing it:
 
   [[project-recall-mtrag-rbalg-probe-2026-08-05]] (merged, PR #212)
-  1. ⛔ **`mtragun-human/generation_tasks/reference.jsonl` ships the per-task `answerability`
-     label**, inside each turn's `enrichments`, even though MTRAGEval says that metadata was
-     withheld from participants. **It must never reach an inference path.** It is the exact thing
-     the abstention decision is supposed to INFER. `build_messages` below therefore reads only
-     `speaker` and `text` from each turn, never the turn dict itself.
+  1. ⛔ **`mtrag-human/generation_tasks/reference.jsonl` ships the per-task answerability label**,
+     even though MTRAGEval says that metadata was withheld from participants. **It must never
+     reach an inference path.** It is the exact thing the abstention decision is supposed to
+     INFER. `build_messages` below therefore reads only `speaker` and `text` from each turn, never
+     the turn dict and never the task dict.
+
+     ⚠️ WHERE IT ACTUALLY LIVES, counted 2026-08-08 over all 842 rows of BOTH `reference.jsonl`
+     and `RAG.jsonl` in the release this run reads:
+
+         top-level `Answerability`  842/842      turns carrying `enrichments`  0/6684
+         top-level `targets`        842/842      turn keys: speaker, text, metadata
+
+     Two withheld fields, both TOP-LEVEL siblings of `input`, and `targets` is the more dangerous
+     of the pair: `Answerability` reveals whether to abstain, `targets` IS the gold answer.
+     (`Question Type` and `Multi-Turn` are top-level too.)
+
+     An earlier draft of this docstring said the label sits "inside each turn's `enrichments`".
+     The memo says no such thing, it says "per-task", which is right; the `enrichments` detail was
+     invented here and no such key exists anywhere in either file. It was not harmless: the leak
+     test's fixture was built to match it, so the guard covered a path the release never emits
+     while leaving both real ones unguarded, and it would have stayed green through a genuine
+     leak. A guard built on an unverified shape is a guard that cannot fire.
   2. 🔑 **A correct "I don't know" on an UNANSWERABLE task scores exactly 1.0 on RL_F, RB_llm AND
      RB_alg simultaneously** (72/72 model cells), so abstention moves the harmonic mean further per
      unit of effort than anything else. Published baselines manage it 0.0% to 32.7% of the time and
@@ -128,6 +145,14 @@ def generation_tasks_path(root: Path, task: str) -> Path:
 
 
 def load_generation_tasks(path: Path) -> list[dict[str, Any]]:
+    """Every task, validated against what the official checker requires BEFORE anything is spent.
+
+    `format_checker.py` rejects a `rag_taskc` row whose `Collection` is not a string or whose
+    `input` is missing. Those are the fields `submission_row` copies straight through, and it
+    defaults both to `None`, so without this check a malformed release would be discovered by the
+    checker only after ~842 paid calls had already gone out. Validating at load time costs one
+    pass over a file we are reading anyway.
+    """
     tasks = []
     with path.open(encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, 1):
@@ -136,6 +161,16 @@ def load_generation_tasks(path: Path) -> list[dict[str, Any]]:
             item = json.loads(line)
             if "task_id" not in item:
                 raise RuntimeError(f"{path}:{line_no} has no task_id")
+            if not isinstance(item.get("Collection"), str):
+                raise RuntimeError(
+                    f"{path}:{line_no} task {item['task_id']}: `Collection` must be a string, got "
+                    f"{type(item.get('Collection')).__name__}. The official checker rejects this."
+                )
+            if not item.get("input"):
+                raise RuntimeError(
+                    f"{path}:{line_no} task {item['task_id']}: no `input` turns, so there is no "
+                    f"question to answer and the submission row would be rejected."
+                )
             tasks.append(item)
     return tasks
 
@@ -164,9 +199,18 @@ def normalise_context(ctx: dict[str, Any], rank: int, total: int) -> dict[str, A
     descending value preserves whatever order the source produced. The benchmark's own contexts do
     not always carry one; deriving it from the rank keeps a single rule for every source.
     """
+    doc_id = ctx.get("document_id")
+    if doc_id is None:
+        doc_id = ctx.get("id")
+    # `is None`, not truthiness: an id of `0` or `""` is a real id the source chose, and silently
+    # swapping it for a fallback would mis-attribute the passage.
+    score = ctx.get("score")
+    # `bool` is a subclass of `int`, so a `True` here would otherwise become the score `1.0`
+    # instead of falling through to the rank-derived value.
+    numeric = isinstance(score, (int, float)) and not isinstance(score, bool)
     return {
-        "document_id": str(ctx.get("document_id") or ctx.get("id") or ""),
-        "score": float(ctx["score"]) if isinstance(ctx.get("score"), (int, float)) else float(total - rank),
+        "document_id": str(doc_id if doc_id is not None else ""),
+        "score": float(score) if numeric else float(total - rank),
         "text": str(ctx.get("text") or ""),
         "title": ctx.get("title"),
     }
@@ -247,6 +291,10 @@ def openrouter_client(api_key: str | None = None) -> Any:
 
 GENERATION_ATTEMPTS = 4
 GENERATION_BACKOFF_S = 2.0
+#: Consecutive per-task failures that stop the run. One task can fail on its own merits (a
+#: content-policy refusal); five in a row is the whole run being broken, and the difference is
+#: worth ~837 unnecessary billed attempts.
+CONSECUTIVE_FAILURE_LIMIT = 5
 PERMANENT_ERROR_NAMES = frozenset(
     {"AuthenticationError", "PermissionDeniedError", "NotFoundError", "BadRequestError"}
 )
@@ -359,10 +407,42 @@ def main(argv: list[str] | None = None) -> int:
 
     client = openrouter_client()
     written = 0
+    failed: list[str] = []
+    consecutive = 0
+    failures_path = args.out.with_suffix(args.out.suffix + ".failed.jsonl")
     with args.out.open("a", encoding="utf-8") as handle:
         for position, task in enumerate(pending, 1):
             contexts = contexts_for(task, recall_contexts)
-            answer = generate_one(client, args.model, build_messages(task, contexts), args.max_tokens)
+            try:
+                answer = generate_one(
+                    client, args.model, build_messages(task, contexts), args.max_tokens
+                )
+            except RuntimeError as exc:
+                # One task that cannot be answered must not end the run. A content-policy refusal
+                # on a single conversational turn is a per-task condition, and because resume is
+                # driven by what is WRITTEN, an abort here would park the run at this same task on
+                # every retry: 841 answerable tasks held hostage by one. Nothing is written to the
+                # submission, so a later run retries it rather than inheriting a fabricated answer.
+                failed.append(str(task["task_id"]))
+                consecutive += 1
+                with failures_path.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"task_id": task["task_id"], "error": str(exc)}) + "\n")
+                print(
+                    json.dumps({"event": "task_failed", "task_id": task["task_id"],
+                                "consecutive": consecutive, "error": str(exc)[:200]}),
+                    flush=True,
+                )
+                # But a run where nothing succeeds is a broken key or a dead model, not a run of
+                # unlucky tasks, and burning through 842 of those is the expensive way to find out.
+                if consecutive >= CONSECUTIVE_FAILURE_LIMIT:
+                    raise RuntimeError(
+                        f"{consecutive} tasks failed in a row, the last being {task['task_id']}: "
+                        f"{exc}. Stopping rather than attempting the remaining "
+                        f"{len(pending) - position}, because a whole-run fault (bad key, unknown "
+                        f"model, exhausted credit) looks exactly like this."
+                    ) from exc
+                continue
+            consecutive = 0
             handle.write(json.dumps(submission_row(task, contexts, answer), ensure_ascii=False) + "\n")
             # Flushed per answer, not per batch. The file IS the checkpoint: a crash costs the
             # call in flight, never the ones already paid for.
@@ -370,16 +450,28 @@ def main(argv: list[str] | None = None) -> int:
             written += 1
             if position % 25 == 0:
                 print(
-                    json.dumps({"event": "progress", "written": written, "pending": len(pending)}),
+                    json.dumps({"event": "progress", "written": written,
+                                "failed": len(failed), "pending": len(pending)}),
                     flush=True,
                 )
 
     size_mb = check_submission_size(args.out)
     print(
         json.dumps({"event": "done", "written": written, "output": str(args.out),
+                    "failed": len(failed), "failed_task_ids": failed[:20],
+                    "failures_log": str(failures_path) if failed else None,
                     "size_mb": round(size_mb, 2)}),
         flush=True,
     )
+    # A partial submission is not a submission: say so here rather than letting the official
+    # checker be the first thing that notices.
+    if failed:
+        print(
+            json.dumps({"event": "incomplete", "note":
+                        f"{len(failed)} task(s) have no answer. Re-run the same command to retry "
+                        f"only those; the completed ones are skipped."}),
+            flush=True,
+        )
     return 0
 
 

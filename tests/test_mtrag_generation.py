@@ -9,28 +9,50 @@ import pytest
 from benchmarks.mtrag import generation as gen
 
 
-def _task(task_id: str = "conv1<::>2", answerability: str = "UNANSWERABLE") -> dict:
-    """A task shaped like the real release, INCLUDING the label that must not leak.
+#: The literal gold answer, which ships in every task's top-level `targets`. Distinctive on
+#: purpose: an assertion on a generic string could pass by luck.
+GOLD_ANSWER = "No, the Cardinals play only within the United States."
 
-    `mtrag-human` ships `answerability` inside each turn's `enrichments`. MTRAGEval withheld that
-    metadata from participants, and it is exactly what the abstention decision is supposed to
-    infer, so the fixture carries it deliberately: a test that omitted it could not catch a leak.
+
+def _task(task_id: str = "conv1<::>2", answerability: str = "UNANSWERABLE") -> dict:
+    """A task shaped like the REAL release, including every field that must not leak.
+
+    Verified against `mtrag-human/generation_tasks/reference.jsonl` and `RAG.jsonl` (842 rows
+    each): `Answerability`, `targets`, `Question Type` and `Multi-Turn` are TOP-LEVEL keys on the
+    task, siblings of `input`; turns carry `metadata`, and **zero** turns in either file carry an
+    `enrichments` key.
+
+    An earlier version of this fixture invented `enrichments.answerability` nested inside each
+    turn. That shape does not exist in the release, so the leak test guarded a path the producer
+    never emits while leaving the two real ones unguarded, and it would have stayed green through
+    a genuine leak. Fabricating an input the producer does not emit does not test the guard.
+
+    `targets` is the more dangerous of the two: `Answerability` reveals whether to abstain, but
+    `targets` is the answer itself.
     """
     return {
         "task_id": task_id,
         "conversation_id": task_id.split("<::>")[0],
         "Collection": "clapnq",
+        "Answerability": [answerability],
+        "Question Type": ["Factoid"],
+        "Multi-Turn": ["Follow-up"],
+        "targets": [{"text": GOLD_ANSWER}],
         "input": [
             {
                 "speaker": "user",
                 "text": "where do the arizona cardinals play",
-                "enrichments": {"Question Type": ["Factoid"], "answerability": [answerability]},
+                "metadata": {"author_type": "human", "created_at": "2024-01-01T00:00:00Z"},
             },
-            {"speaker": "agent", "text": "In Glendale, Arizona."},
+            {
+                "speaker": "agent",
+                "text": "In Glendale, Arizona.",
+                "metadata": {"author_type": "human", "created_at": "2024-01-01T00:00:01Z"},
+            },
             {
                 "speaker": "user",
                 "text": "do they play outside the US?",
-                "enrichments": {"answerability": [answerability]},
+                "metadata": {"author_type": "human", "created_at": "2024-01-01T00:00:02Z"},
             },
         ],
         "contexts": [
@@ -40,24 +62,67 @@ def _task(task_id: str = "conv1<::>2", answerability: str = "UNANSWERABLE") -> d
     }
 
 
-def test_the_answerability_label_never_reaches_the_prompt() -> None:
+def _assert_no_withheld_metadata(blob: str) -> None:
+    """The leak checks themselves, factored out so the mutation test can exercise THESE.
+
+    If the mutation test re-implemented the assertions it would only prove that a copy of them
+    fails, which says nothing about the copy that guards the real run.
+    """
+    assert "UNANSWERABLE" not in blob, "the abstention label leaked into the prompt"
+    assert "Answerability" not in blob
+    assert GOLD_ANSWER not in blob, "the gold answer leaked into the prompt"
+    assert "targets" not in blob
+    assert "Question Type" not in blob
+    assert "Multi-Turn" not in blob
+
+
+def test_no_withheld_task_metadata_reaches_the_prompt() -> None:
     """⛔ The single most important property in this module.
 
     A correct "I don't know" on an UNANSWERABLE task scores exactly 1.0 on all three metrics at
     once, so a model that can SEE the label scores far above one that has to infer it. That would
     not be a better system, it would be a leaked answer key, and nothing downstream would show it.
+    `targets` is worse still: it is the gold answer, so leaking it would score near-perfectly on
+    every task, answerable or not.
+
+    Field names below are the real ones (see `_task`), so this fails if a future edit reads
+    `task["Answerability"]` or `task["targets"]` directly.
     """
     task = _task(answerability="UNANSWERABLE")
     contexts = gen.contexts_for(task, None)
 
     blob = json.dumps(gen.build_messages(task, contexts))
 
-    assert "UNANSWERABLE" not in blob
-    assert "answerability" not in blob
-    assert "enrichments" not in blob
-    assert "Question Type" not in blob
-    # The actual conversation must still be there, or the test would pass on an empty prompt.
+    _assert_no_withheld_metadata(blob)
+    # The conversation itself must survive, or this would pass on an empty prompt.
     assert "do they play outside the US?" in blob
+    assert "where do the arizona cardinals play" in blob
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["Answerability", "targets", "Question Type", "Multi-Turn"],
+    ids=["answerability", "gold_answer", "question_type", "multi_turn"],
+)
+def test_the_leak_guard_fires_on_a_build_messages_that_leaks(monkeypatch, field: str) -> None:
+    """The guard above only means something if it can fail. This is that proof.
+
+    A leak test never shown to fail is a hypothesis, not a guard: it reads as protection while
+    being unable to fire. So mutate `conversation_text`, the function a careless "give the model
+    more context" edit would most plausibly touch, into one that appends a withheld top-level
+    field, and assert the REAL checks reject the result. One case per field, so a guard that
+    covers three of four still fails here.
+    """
+    task = _task(answerability="UNANSWERABLE")
+    honest = gen.conversation_text
+
+    monkeypatch.setattr(
+        gen, "conversation_text", lambda t: f"{honest(t)}\n{field}: {t[field]}"
+    )
+    blob = json.dumps(gen.build_messages(task, gen.contexts_for(task, None)))
+
+    with pytest.raises(AssertionError):
+        _assert_no_withheld_metadata(blob)
 
 
 def test_contexts_are_trimmed_to_the_official_maximum() -> None:
@@ -176,3 +241,128 @@ def test_an_oversized_submission_is_refused(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="above the official"):
         gen.check_submission_size(big)
+
+
+def _write_tasks(path, rows) -> None:
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "mangle, expected",
+    [
+        (lambda t: t.pop("Collection"), "must be a string"),
+        (lambda t: t.update({"Collection": None}), "must be a string"),
+        (lambda t: t.update({"input": []}), "no `input` turns"),
+    ],
+    ids=["collection_missing", "collection_null", "input_empty"],
+)
+def test_a_task_the_official_checker_would_reject_fails_before_anything_is_spent(
+    tmp_path, mangle, expected: str
+) -> None:
+    """Validation belongs at load time, not at submission time.
+
+    `submission_row` defaults `Collection` and `input` to `None`, which `format_checker.py`
+    rejects. Without this gate the rejection surfaces only after ~842 answers have been paid for,
+    which is the most expensive possible moment to learn the shape was wrong.
+    """
+    task = _task()
+    mangle(task)
+    path = tmp_path / "tasks.jsonl"
+    _write_tasks(path, [task])
+
+    with pytest.raises(RuntimeError, match=expected):
+        gen.load_generation_tasks(path)
+
+
+def _mtrag_root(tmp_path, tasks) -> "object":
+    root = tmp_path / "mt-rag-benchmark"
+    d = root / "mtrag-human" / "generation_tasks"
+    d.mkdir(parents=True)
+    _write_tasks(d / "reference.jsonl", tasks)
+    return root
+
+
+def test_one_unanswerable_task_does_not_take_the_other_840_down_with_it(
+    tmp_path, monkeypatch
+) -> None:
+    """A per-task failure must be quarantined, not fatal.
+
+    A content-policy refusal on one conversational turn is a property of that task. Aborting would
+    be bad enough on its own, but resume is driven by what was WRITTEN, so the failing task is
+    first in line on every retry: the run would park at the same place forever and the remaining
+    tasks would never be reached.
+    """
+    tasks = [_task(task_id=f"c{i}<::>1") for i in range(4)]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+
+    def fake(client, model, messages, max_tokens):
+        if "c1<::>1" in json.dumps(messages) or fake.n == 1:
+            fake.n += 1
+            raise RuntimeError("moderation refused this turn")
+        fake.n += 1
+        return "an answer"
+
+    fake.n = 0
+    monkeypatch.setattr(gen, "generate_one", fake)
+
+    rc = gen.main([
+        "--mtrag-root", str(root), "--task", "b", "--out", str(out),
+    ])
+
+    assert rc == 0
+    written = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert len(written) == 3, "the three answerable tasks must still be written"
+    failures = out.with_suffix(out.suffix + ".failed.jsonl")
+    assert failures.exists(), "the failed task must be recorded, not silently dropped"
+    assert len(failures.read_text(encoding="utf-8").splitlines()) == 1
+    assert all("moderation" not in json.dumps(r) for r in written), (
+        "a failed task must not be written to the submission as a fabricated answer"
+    )
+
+
+def test_a_run_where_nothing_succeeds_stops_instead_of_billing_every_task(
+    tmp_path, monkeypatch
+) -> None:
+    """Quarantine must not become 'burn through 842 tasks with a dead key'.
+
+    A bad key, an unknown model or exhausted credit fails every task identically, and that is
+    indistinguishable from bad luck until you count. The circuit breaker is what makes the
+    per-task quarantine safe to have.
+    """
+    tasks = [_task(task_id=f"c{i}<::>1") for i in range(40)]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+    calls = {"n": 0}
+
+    def always_fails(*a, **k):
+        calls["n"] += 1
+        raise RuntimeError("401 invalid api key")
+
+    monkeypatch.setattr(gen, "generate_one", always_fails)
+
+    with pytest.raises(RuntimeError, match="in a row"):
+        gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+
+    assert calls["n"] == gen.CONSECUTIVE_FAILURE_LIMIT, (
+        f"should stop after {gen.CONSECUTIVE_FAILURE_LIMIT} consecutive failures, not attempt all "
+        f"{len(tasks)}"
+    )
+
+
+def test_a_context_score_of_zero_and_an_id_of_zero_survive_normalisation() -> None:
+    """`or` would swallow both: a real id of `0` and a real score of `0.0` are not absences.
+
+    `bool` is an `int` subclass, so a `True` score must NOT be taken as numeric either, or it
+    silently becomes the score `1.0` and reorders the ranking.
+    """
+    assert gen.normalise_context({"document_id": 0, "score": 0.0, "text": "t"}, 0, 5) == {
+        "document_id": "0", "score": 0.0, "text": "t", "title": None,
+    }
+    assert gen.normalise_context({"id": "d", "score": True, "text": "t"}, 1, 5)["score"] == 4.0, (
+        "a boolean is not a score; it must fall through to the rank-derived value"
+    )
