@@ -573,8 +573,15 @@ def main(argv: list[str] | None = None) -> None:
         # `recall setup` is the command you run to REPAIR a broken .env, so blocking it on a
         # broken .env is the same dead end that carve-out exists to avoid, one guard down. A
         # round-6 audit caught this: it fired unconditionally and refused `setup` even when the
-        # operator had already passed an explicit --dsn that resolved the ambiguity. `setup`
-        # still gets a note about the broken file, from run_setup_wizard, not a refusal here.
+        # operator had already passed an explicit --dsn that resolved the ambiguity.
+        #
+        # `setup` is not left silent: the note comes from the import-time stderr print above
+        # (near `_DOTENV_ERROR = _dotenv_exc`), which runs for every command before args.cmd is
+        # even known — NOT from run_setup_wizard, which has no .env-specific messaging of its
+        # own. A round-7 audit caught an earlier version of this comment misattributing it,
+        # which is worth naming: believing the notice were conditional on reaching the wizard
+        # could lead a later change to gate or remove the import-time print, leaving `setup`
+        # with zero indication anything was wrong.
         and _DOTENV_ERROR is not None
         and not _env_opt_out("RECALL_IGNORE_BROKEN_DOTENV")
     ):
