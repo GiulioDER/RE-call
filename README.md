@@ -57,7 +57,26 @@ paired questions (full table, losses and caveats included →
 - 🧭 **It abstains instead of guessing** — superseded or expired memories are demoted rather than
   served. → [see it in one screen](#see-it-in-one-screen)
 
-We publish the configuration where it loses, because a benchmark you can't lose isn't one.
+We publish the configuration where it loses, because a benchmark you can't lose isn't one. On
+**[MTRAG](docs/MTRAG_BENCHMARK.md)**, IBM's multi-turn RAG benchmark, our end-to-end score lands
+**0.0064 below** the published `gpt-4o` baseline. That result is in this repo with the same
+prominence as the ones we win.
+
+**Its real strength is that it is built to be tuned, not fixed.** Every stage (embedder, reranker,
+the SPLADE sidecar, the entailment judge) is opt-in and swappable, so one engine covers the whole
+spectrum. On MTRAG's 777 judged queries that span is **nDCG@5 0.2930 to 0.4342**, a 48% relative
+range across configurations of the same system, and every rung is a named flag with a measured
+price:
+
+- 🔒 **Fully local and air-gapped**, for maximum data protection: local embeddings, your own
+  PostgreSQL, zero external calls, zero per-query egress.
+- ☁️ **With a cloud embedder or reranker**, when a jargon-heavy or large corpus makes the accuracy
+  worth the cost and the API dependency.
+- ⚙️ **From a laptop to production hardware** without re-architecting: the free default path is fast
+  out of the box, and every heavier option is named and measured, never silently switched on.
+
+Whatever the binding constraint (data residency, latency, GPU availability, or plain cost), the
+pipeline reconfigures around it instead of forcing one shape on every deployment.
 
 ## Who is it for
 
@@ -129,6 +148,7 @@ table without them is marketing.
 | **Near-misses need a judge, not a threshold** | QNLI stage cuts near-miss false-confidence **0.70 → 0.30** (hashing) and **1.00 → 0.50** (bge-small), same judge across embedders, no per-embedder retuning → [RESULTS §3](https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md) | Judge-alone *degrades* far-gap detection — the two stack, neither replaces the other. Costs ~0.1–1.0 s per query |
 | **Retrieval, on a second public benchmark** | **knowledge-update 1.000** (36/36) — the category this library exists for, and the most robust one under haystack pressure (retains 74% of hit@5 across a 20× larger corpus where the overall figure retains 51%). Overall **hit@5 0.970** [0.94, 0.99] on LongMemEval's own per-question haystacks with the *free local* embedder → [FINDINGS §10](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | A *retrieval* figure — evidence session in the top 5 — **not** the benchmark's LLM-judged answer accuracy. It does not belong in a column with one. **And 0.970 is the benchmark's ~49-session haystack, not a memory store: on one merged 19,195-session index the same questions score 0.366.** Both arms are published because the second is the one that looks like production |
 | **Abstention has a bounded domain** | Far gaps: accuracy **1.00** (PEPs), **0.89** (real corpus). Near-misses: **it fails** — false-abstain **0.481** on LongMemEval, and **six** candidate signals all score AUC ≤ 0.753 — the best one's 95% interval tops out at **0.826**, below the ~0.90 a usable gate needs, so the bar is *excluded* rather than merely unproven. Independently corroborated on LOCOMO, where no judge configuration crosses into usable territory either → [FINDINGS §9–§10](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | Nothing was retuned, because every alternative measured *worse*. `recall calibrate` reports separability **with its interval**, certifies on the interval's lower bound, and exits non-zero rather than certify a threshold the data cannot support |
+| **Abstention holds up under an external judge — and retrieval was not the cap** | On **MTRAG**, IBM's 842-task multi-turn RAG benchmark scored by *its own* `gpt-4o-mini` judge: **16/55 = 29%** of unanswerable tasks correctly refused, against a published field spanning **0%–32.7%**. RE-call's contexts beat the benchmark's own retrieval **+0.0011**, consistently signed across two prompts → [docs/MTRAG_BENCHMARK.md](docs/MTRAG_BENCHMARK.md) | ⛔ **We do not top this benchmark**: end-to-end **−0.0064** against the published `gpt-4o`. The harness is not the excuse — on gold contexts we score 0.6195 against their 0.6208, gap **0.0013**. Baselines are **recomputed**, so every comparison is an anchored lift and none may be quoted against the public leaderboard. **And the abstention rate is a property of the generator prompt, not of retrieval**: one prompt change moved correct abstentions 89% → 64% |
 | **Free to write — and faster** | No LLM at ingest (Mem0 runs one extraction call per session): **0 LLM calls / $0** to build memory, measured **~4.3× faster to build** and **~26% faster per query** vs Mem0 on LOCOMO, same local embedder → [benchmarks/REVIEW.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md) | One head-to-head (2 conversations, single run); the retrieve CI is optimistic (repeated queries) and the backends differ (Postgres vs in-process Qdrant), so treat retrieval speed as directional — ingest speed and the $0/0-calls cost are the robust part |
 
 Full methodology, per-embedder tables and the negative results → **[results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)**.
@@ -338,6 +358,89 @@ python -m recall.eval.labelled --corpus peps/peps --questions recall/eval/peps_q
 → Every number, its command and its evidence tier: **[results/RESULTS.md](https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md)**.
 What each one means and where it stops: **[results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)**.
 
+## Multi-turn RAG, judged by someone else: MTRAG
+
+Every abstention number above this line was produced by our own harness. **[MTRAG](https://github.com/IBM/mt-rag-benchmark)**
+(IBM, TACL 2025) is the first place that claim faced an external judge: 842 human-written multi-turn
+tasks over four corpora, nine published baselines, and an official scorer that pays a **full 1.0 on
+all three metrics** for correctly saying "I do not have that information". Almost no other benchmark
+scores a refusal as anything but a miss.
+
+**Tuning is the whole product, so here is the tuning curve.** 777 judged queries, one engine, six
+configurations, every figure recomputed by a scorer written separately from the harness and agreeing
+to ±0.000000:
+
+| configuration | nDCG@5 | R@100 | what it costs |
+|---|---|---|---|
+| dense only | 0.3024 | 0.6736 | free, local, fastest |
+| hybrid, Postgres FTS sparse leg | 0.2930 | 0.6865 | free, local |
+| **hybrid + SPLADE learned sparse** *(free default)* | **0.3573** | **0.7377** | free, local, transformer encode per query |
+| **+ Voyage rerank-2.5** *(one flag)* | **0.4342** | **0.7668** | paid API, ~1 s/query |
+
+Swapping the lexical sparse leg for SPLADE is worth **+0.0512 R@100** on these queries and stays
+free. Voyage rerank on top is **+0.0769 nDCG@5**, 95% CI **[+0.0571, +0.0964]**, p = 0.00010 — and
+**worse on 162 of the 777**, which is precisely why it is off by default. An average lift is not a
+promise per query.
+
+**How we compare, end to end.** Same generator, same prompt, same judge, only the contexts differ:
+
+| | harmonic |
+|---|---|
+| llama-3.1-405b-instruct *(top published baseline)* | 0.5691 |
+| gpt-4o *(published baseline)* | 0.5591 |
+| **RE-call contexts** | **0.5527** |
+| the benchmark's own retrieval (ELSER) | 0.5516 |
+| gpt-4o-mini *(published baseline)* | 0.5437 |
+
+**RE-call's retrieval beats the benchmark's own by +0.0011**, consistently signed across both prompts
+we tested. ⛔ **And we do not beat the baselines**: 0.5527 against `gpt-4o`'s 0.5591 is **−0.0064**.
+Our harness is not the excuse. On Task B, which supplies gold contexts and therefore contains no
+RE-call at all, we score **0.6195** against their `gpt-4o` at **0.6208**, a gap of **0.0013** on
+identical inputs.
+
+**Abstention, by their judge, is where the shape of this system shows.** On the 55 unanswerable
+tasks, correct refusals:
+
+| system | correct refusals | end-to-end harmonic |
+|---|---|---|
+| llama-3.1-8b-instruct | 18/55 · 32.7% | 0.4710 |
+| **ours** | **16/55 · 29.1%** | **0.5527** |
+| llama-3.1-70b-instruct | 16/55 · 29.1% | 0.5378 |
+| gpt-4o-mini | 13/55 · 23.6% | 0.5437 |
+| gpt-4o | 7/55 · 12.7% | 0.5591 |
+| llama-3.1-405b-instruct | 3/55 · 5.5% | 0.5691 |
+| mixtral_8x22b_instruct | 0/55 · 0.0% | 0.5230 |
+
+*Abridged: 7 of the 10 rows, and the human reference (48/55) is excluded from the ranking. Full
+table, including `qwen-2.5-72b` at 1/55 and `c4ai-command-r-plus` at 11/55, in the
+[report](docs/MTRAG_BENCHMARK.md#5-abstention-judged-by-someone-else).*
+
+**Second of nine on refusing what it cannot answer, while the two systems that outscore us end to
+end answer 87% and 95% of the questions their sources cannot support.** That is the trade this
+library is built to make, priced by an external judge on someone else's data. It is also why a
+single harmonic mean is the wrong way to shop: if you want the last 0.0064 of answer score and an
+agent that rarely admits a gap, the baselines above us are the better buy.
+
+> ### 🔑 The most useful thing we learned here is not about retrieval
+>
+> Swapping the generator prompt moved Task B from **0.5508 to 0.6195**, **+0.0687**, six places in
+> the table. Our prompt was producing **83 false abstentions on 709 answerable tasks**, and a false
+> abstention scores near zero. Set that against every retrieval lever on the same benchmark: SPLADE
+> +0.0303, the reranker +0.0769, our entire retrieval stack against theirs +0.0011 end to end.
+>
+> **On this benchmark the retriever was not the cap.** One prompt line outweighed the whole
+> retrieval stack. That is the argument for a tunable pipeline over a fixed one, and it is also the
+> reason we say **measure where your own cap is before paying to move it**.
+
+⚠️ Two limits worth reading before quoting any of this. Baselines are **recomputed here**, because
+recomputing runs +0.018 to +0.043 high against the published table, so each row is an anchored lift
+and none of it may be quoted against the public leaderboard directly. And the **first version of
+every number above was wrong**: the official scorer reads a lower-case `answerability` key while the
+release ships `Answerability`, so conditioning silently never ran and we spent a day comparing our
+raw metrics to their conditioned ones. Reported upstream as
+[IBM/mt-rag-benchmark#23](https://github.com/IBM/mt-rag-benchmark/issues/23).
+
+→ Full report, all six runs, the correction, and the compliance audit: **[docs/MTRAG_BENCHMARK.md](docs/MTRAG_BENCHMARK.md)**.
 
 ## How it works
 
