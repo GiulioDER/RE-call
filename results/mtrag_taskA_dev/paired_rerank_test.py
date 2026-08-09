@@ -17,6 +17,8 @@ import json
 import math
 import random
 
+__test__ = False
+
 D = "/var/tmp/mtrag_taskA_dev_20260807"
 ROOT = "/var/tmp/re_call_mtrag_20260803/mt-rag-benchmark"
 DOMAINS = ("clapnq", "cloud", "fiqa", "govt")
@@ -56,46 +58,51 @@ def per_query(arm, qrels, k=5):
     return out
 
 
-qrels = load_qrels()
-available = sorted(
-    p.split("/")[-1].replace(".predictions.jsonl", "") for p in glob.glob(f"{D}/*.predictions.jsonl")
-)
-print("arms available:", available)
+def main() -> None:
+    qrels = load_qrels()
+    available = sorted(
+        p.split("/")[-1].replace(".predictions.jsonl", "") for p in glob.glob(f"{D}/*.predictions.jsonl")
+    )
+    print("arms available:", available)
 
-BASE = "hybrid_splade"
-base = per_query(BASE, qrels)
+    BASE = "hybrid_splade"
+    base = per_query(BASE, qrels)
 
-for arm in available:
-    if arm == BASE or "rerank" not in arm and "voyage" not in arm:
-        continue
-    cur = per_query(arm, qrels)
-    ids = sorted(set(base) & set(cur))
-    diffs = [cur[i] - base[i] for i in ids]
-    n = len(diffs)
-    mean = sum(diffs) / n
+    for arm in available:
+        if arm == BASE or "rerank" not in arm and "voyage" not in arm:
+            continue
+        cur = per_query(arm, qrels)
+        ids = sorted(set(base) & set(cur))
+        diffs = [cur[i] - base[i] for i in ids]
+        n = len(diffs)
+        mean = sum(diffs) / n
 
-    boots = []
-    for _ in range(10000):
-        s = [diffs[random.randrange(n)] for _ in range(n)]
-        boots.append(sum(s) / n)
-    boots.sort()
-    lo, hi = boots[int(0.025 * len(boots))], boots[int(0.975 * len(boots))]
+        boots = []
+        for _ in range(10000):
+            s = [diffs[random.randrange(n)] for _ in range(n)]
+            boots.append(sum(s) / n)
+        boots.sort()
+        lo, hi = boots[int(0.025 * len(boots))], boots[int(0.975 * len(boots))]
 
-    # Permutation: under the null the sign of each paired difference is exchangeable.
-    hits = 0
-    trials = 10000
-    for _ in range(trials):
-        t = sum(d if random.random() < 0.5 else -d for d in diffs) / n
-        if abs(t) >= abs(mean):
-            hits += 1
-    p = (hits + 1) / (trials + 1)
+        # Permutation: under the null the sign of each paired difference is exchangeable.
+        hits = 0
+        trials = 10000
+        for _ in range(trials):
+            t = sum(d if random.random() < 0.5 else -d for d in diffs) / n
+            if abs(t) >= abs(mean):
+                hits += 1
+        p = (hits + 1) / (trials + 1)
 
-    better = sum(1 for d in diffs if d > 1e-12)
-    worse = sum(1 for d in diffs if d < -1e-12)
-    print()
-    print(f"=== {arm}  vs  {BASE}   (paired, n={n}) ===")
-    print(f"  mean nDCG@5 delta : {mean:+.4f}")
-    print(f"  bootstrap 95% CI  : [{lo:+.4f}, {hi:+.4f}]")
-    print(f"  permutation p     : {p:.5f}")
-    print(f"  queries better    : {better}   worse: {worse}   unchanged: {n - better - worse}")
-    print(f"  crosses zero      : {'YES (not significant)' if lo <= 0 <= hi else 'no'}")
+        better = sum(1 for d in diffs if d > 1e-12)
+        worse = sum(1 for d in diffs if d < -1e-12)
+        print()
+        print(f"=== {arm}  vs  {BASE}   (paired, n={n}) ===")
+        print(f"  mean nDCG@5 delta : {mean:+.4f}")
+        print(f"  bootstrap 95% CI  : [{lo:+.4f}, {hi:+.4f}]")
+        print(f"  permutation p     : {p:.5f}")
+        print(f"  queries better    : {better}   worse: {worse}   unchanged: {n - better - worse}")
+        print(f"  crosses zero      : {'YES (not significant)' if lo <= 0 <= hi else 'no'}")
+
+
+if __name__ == "__main__":
+    main()

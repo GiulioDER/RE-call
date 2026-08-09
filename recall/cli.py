@@ -7,14 +7,16 @@ from pathlib import Path
 
 from recall.calibration import Calibration, load_for
 from recall._env import load_dotenv
-from recall.entailment import resolve_entailment_judge
+from recall.entailment import EntailmentJudge, resolve_entailment_judge
 from recall.embeddings import Embedder, resolve_embedder
 from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
 from recall.store import DEFAULT_TENANT, PgVectorStore, require_secure_dsn, warn_if_insecure_dsn
 from recall.trust import terminal_safe, trusted_search
+from recall.trust_policy import TrustPolicy
 from recall.types import TrustedResult
+from recall.setup import CalibrationResult
 
 load_dotenv()
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
@@ -61,7 +63,7 @@ def _run_queries(
     embedder: Embedder,
     queries: list[str],
     calibration: Calibration | None,
-    entailment=None,
+    entailment: EntailmentJudge | None = None,
 ) -> None:
     policy, calibration = _cli_trust(embedder, calibration)
     for q in queries:
@@ -78,15 +80,13 @@ def _run_queries(
         print()
 
 
-def _cli_policy():
-    from recall.trust_policy import TrustPolicy
-
+def _cli_policy() -> TrustPolicy:
     return TrustPolicy.from_env()
 
 
 def _cli_trust(
     embedder: Embedder, calibration: Calibration | None
-) -> tuple[object, Calibration | None]:
+) -> tuple[TrustPolicy, Calibration | None]:
     policy = _cli_policy()
     if calibration is None and not policy.strict:
         from recall.calibration import Calibration as _Calibration
@@ -289,10 +289,10 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"recall check: no such file: {raw}", file=sys.stderr)
                 raise SystemExit(2)
             names = corpus_names(args.corpus or f.parent)
-            result = check_file(f, names)
-            if result.needs_attention:
+            check_result = check_file(f, names)
+            if check_result.needs_attention:
                 needs += 1
-                print(format_prompt(result))
+                print(format_prompt(check_result))
         if needs:
             print(f"\n{needs} memo(s) state a closure in prose only.")
             if args.strict:
@@ -341,6 +341,7 @@ def main(argv: list[str] | None = None) -> None:
                 if not_found:
                     print(f"not found (check for typos): {', '.join(not_found)}")
     elif args.cmd == "search":
+        entail_judge: EntailmentJudge | None
         if args.entail:
             from recall.entailment import QnliEntailmentJudge
 
@@ -386,7 +387,7 @@ def main(argv: list[str] | None = None) -> None:
         from recall.setup import calibrate_from_files
 
         try:
-            result = calibrate_from_files(
+            calibration_result: CalibrationResult = calibrate_from_files(
                 dsn=args.dsn,
                 embedder_name=embedder.name,
                 queries_path=Path(args.queries),
@@ -395,9 +396,9 @@ def main(argv: list[str] | None = None) -> None:
             )
         except ValueError as exc:
             raise SystemExit(2) from exc
-        measured = result.report
-        cal = result.calibration
-        path = result.path
+        measured = calibration_result.report
+        cal = calibration_result.calibration
+        path = calibration_result.path
         print(f"embedder:  {embedder.name}")
         print(f"threshold: {cal.threshold} (scale {cal.scale})")
         sep = "n/a" if cal.separability is None else f"{cal.separability:.3f}"

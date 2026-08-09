@@ -221,6 +221,10 @@ module = [
     # includes `benchmarks`, and the typecheck job installs `.[dev]` only, so without this the job
     # fails on a dependency it deliberately does not install.
     "pyarrow.*",
+    "boto3.*",
+    "onnxruntime.*",
+    "transformers.*",
+    "membench.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

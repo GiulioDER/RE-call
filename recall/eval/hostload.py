@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
+from typing import cast
 
 _log = logging.getLogger(__name__)
 
@@ -57,10 +59,11 @@ def read_load_per_core() -> float | None:
     dark rather than that it was never available. The caller records the `None` either way and
     the artifact carries JSON null.
     """
-    try:
-        one_minute = os.getloadavg()[0]
-    except AttributeError:  # no getloadavg on this platform (Windows)
+    getloadavg = getattr(os, "getloadavg", None)
+    if getloadavg is None:  # no getloadavg on this platform (Windows)
         return None
+    try:
+        one_minute = cast(Callable[[], tuple[float, float, float]], getloadavg)()[0]
     except OSError as exc:
         _log.warning(
             "could not read host load average (%s); the quiescence guard is not protecting "

@@ -29,6 +29,8 @@ ADVERTISING_DOCS = (
     Path(__file__).resolve().parent.parent / "docs" / "ENGINEERING.md",
 )
 
+README = ADVERTISING_DOCS[0]
+
 #: Below this, the run is a subset (`-k`, a single file) and its count says nothing about the
 #: suite. Well under a full collection, well over any plausible targeted run.
 _FULL_RUN_FLOOR = 500

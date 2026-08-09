@@ -12,6 +12,7 @@ from typing import Callable, Sequence
 
 from recall.calibration import Calibration, from_samples, save
 from recall.embeddings import resolve_embedder
+from recall.eval.calibrate import CalibrationReport
 
 SETUP_BEGIN = "# recall setup begin"
 SETUP_END = "# recall setup end"
@@ -42,7 +43,7 @@ class Choice:
 class CalibrationResult:
     path: Path
     calibration: Calibration
-    report: object
+    report: CalibrationReport
 
 
 def _module_available(name: str) -> bool:
@@ -57,7 +58,7 @@ def _probe_gpu() -> str | None:
     if torch is not None:
         try:
             if torch.cuda.is_available():
-                return torch.cuda.get_device_name(0)
+                return str(torch.cuda.get_device_name(0))
         except Exception:
             pass
         try:
