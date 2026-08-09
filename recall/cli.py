@@ -8,9 +8,11 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from recall._env import load_dotenv
+from recall.calibration import Calibration, load_for
+from recall.embeddings import resolve_embedder
+from recall.entailment import EntailmentJudge, resolve_entailment_judge
 from recall.setup import CalibrationResult
-
-from recall.calibration import Calibration
 from recall.trust_policy import TrustPolicy
 from recall.embeddings import Embedder, HashingEmbedder
 from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
@@ -25,6 +27,17 @@ from recall.store import (
 from recall.trust import terminal_safe, trusted_search
 from recall.types import TrustedResult
 
+# `recall setup` writes its answers to .env, so the file has to be read BEFORE the DSN
+# defaults below are computed from os.environ. Without this the wizard appears to succeed
+# and the very next command silently ignores every setting it just captured.
+try:
+    load_dotenv()
+except (OSError, UnicodeDecodeError):  # a .env that is a directory, unreadable, or not UTF-8
+    # This runs at IMPORT time, so an exception here kills `recall --help`, every command, and
+    # `import recall.cli` for library consumers and test collection. A malformed .env must
+    # degrade to "no .env" rather than take the process down.
+    pass
+
 DEFAULT_DSN = os.environ.get(
     "RECALL_SERVING_DSN",
     os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall"),
@@ -32,14 +45,36 @@ DEFAULT_DSN = os.environ.get(
 DEFAULT_MIGRATION_DSN = os.environ.get("RECALL_MIGRATION_DSN")
 
 
-def _make_embedder(name: str) -> Embedder:
-    if name == "hashing":
-        return HashingEmbedder(dim=64)
-    if name == "fastembed":
-        from recall.embeddings import FastEmbedEmbedder
+def _require_secure(dsn: str) -> None:
+    """Indirection so ONE call site decides which DSNs are guarded; see `main`.
 
-        return FastEmbedEmbedder()
-    raise SystemExit(f"unknown embedder: {name}")
+    A bug audit proposed converting the PermissionError this raises into a SystemExit, on the
+    grounds that every other operator-facing refusal in this file is a SystemExit and this one
+    arrives as a traceback. That was REJECTED: `test_cli_db_commands_fail_closed_on_insecure_
+    default_dsn` asserts the PermissionError propagates, and it is a security test pinning
+    fail-closed behaviour. Rewriting a security assertion to accommodate a cosmetic improvement
+    is the wrong trade. The exception type is deliberate; do not "tidy" it.
+
+    Resolving `require_secure_dsn` through the module global at call time is also deliberate:
+    that test monkeypatches it, and a `from`-bound local would make the patch inert.
+    """
+    require_secure_dsn(dsn)
+
+
+def _make_embedder(name: str) -> Embedder:
+    """Resolve any spelling `resolve_embedder` accepts, not just the two built-ins.
+
+    The setup wizard offers `st:<model>` and `voyage:<model>`; a hardcoded two-way branch here
+    (and a matching argparse `choices=`) rejected exactly the values it had just written to .env,
+    so an operator who picked MiniLM or Voyage could not index at all.
+    """
+    try:
+        return resolve_embedder(name)
+    except (ValueError, RuntimeError, ImportError) as exc:
+        # Not just ValueError: the spellings `choices=` used to block reach constructors that
+        # raise RuntimeError for a missing API key and ImportError for a missing extra. Those
+        # are operator errors and belong on one line, not in a traceback.
+        raise SystemExit(str(exc)) from exc
 
 
 def _print_result(result: TrustedResult) -> None:
@@ -179,10 +214,20 @@ def _run_queries(
     embedder: Embedder,
     queries: list[str],
     calibration: Calibration | None,
+    entailment: EntailmentJudge | None = None,
 ) -> None:
     policy, calibration = _cli_trust(embedder, calibration)
     for q in queries:
-        _print_result(trusted_search(store, embedder, q, calibration=calibration, policy=policy))
+        _print_result(
+            trusted_search(
+                store,
+                embedder,
+                q,
+                calibration=calibration,
+                policy=policy,
+                entailment=entailment,
+            )
+        )
         print()
 
 
@@ -205,7 +250,14 @@ def main(argv: list[str] | None = None) -> None:
         default=DEFAULT_MIGRATION_DSN,
         help="DDL-owner DSN used only by `schema apply` (env: RECALL_MIGRATION_DSN)",
     )
-    parser.add_argument("--embedder", default="fastembed", choices=["fastembed", "hashing"])
+    # No `choices=`: the accepted set is whatever `resolve_embedder` supports
+    # (hashing, fastembed[:model], st:<model>, voyage[:model], openai[:model]), and
+    # duplicating it here is how it drifted out of step with the setup wizard.
+    parser.add_argument(
+        "--embedder",
+        default=os.environ.get("RECALL_EMBEDDER", "fastembed"),
+        help="hashing, fastembed[:model], st:<model>, voyage[:model], openai[:model]",
+    )
     parser.add_argument(
         "--table",
         default="chunks",
@@ -221,9 +273,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("setup", help="run the first install wizard and write a local .env file")
+    sub.add_parser("setup", help="run the first install wizard and write a local .env file").set_defaults(
+        _opens_db=True  # the wizard connects when the operator accepts the calibrate prompt
+    )
 
     p_schema = sub.add_parser("schema", help="inspect or apply versioned database migrations")
+
+    p_schema.set_defaults(_opens_db=True)
     p_schema.add_argument(
         "--dim",
         type=int,
@@ -260,6 +316,8 @@ def main(argv: list[str] | None = None) -> None:
     p_manifest_verify.add_argument("--size", type=int)
 
     p_generation = sub.add_parser("generation", help="manage immutable blue green generations")
+
+    p_generation.set_defaults(_opens_db=True)
     generation_sub = p_generation.add_subparsers(dest="generation_cmd", required=True)
     p_build = generation_sub.add_parser("build", help="create and build a generation")
     p_build.add_argument("manifest")
@@ -285,6 +343,8 @@ def main(argv: list[str] | None = None) -> None:
     p_gc.add_argument("--retain-previous", type=int, default=2)
 
     p_index = sub.add_parser("index", help="index a folder of markdown or code")
+
+    p_index.set_defaults(_opens_db=True)
     p_index.add_argument("path")
     p_index.add_argument(
         "--glob",
@@ -304,6 +364,8 @@ def main(argv: list[str] | None = None) -> None:
         "forget",
         help="permanently delete indexed memory for the given source(s) — irreversible",
     )
+
+    p_forget.set_defaults(_opens_db=True)
     p_forget.add_argument(
         "sources",
         nargs="+",
@@ -320,6 +382,8 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     p_search = sub.add_parser("search", help="search the index")
+
+    p_search.set_defaults(_opens_db=True)
     p_search.add_argument("query")
     p_search.add_argument("-k", type=int, default=5)
     p_search.add_argument(
@@ -336,13 +400,15 @@ def main(argv: list[str] | None = None) -> None:
         "produces an empty bundle. Additive: the normal listing is printed either way.",
     )
 
-    sub.add_parser("demo", help="index corpus/ and run sample memory queries")
-    sub.add_parser("code", help="index recall's own source and run sample code queries")
+    sub.add_parser("demo", help="index corpus/ and run sample memory queries").set_defaults(_opens_db=True)
+    sub.add_parser("code", help="index recall's own source and run sample code queries").set_defaults(_opens_db=True)
 
     p_lint = sub.add_parser(
         "lint",
         help="check a corpus's supersession graph for broken/missing edges (no DB needed)",
     )
+
+    p_lint.set_defaults(_opens_db=True)
     p_lint.add_argument("path")
     p_lint.add_argument("--glob", default=DEFAULT_GLOB)
     p_lint.add_argument(
@@ -396,11 +462,14 @@ def main(argv: list[str] | None = None) -> None:
         "calibrate",
         help="calibrate the abstention threshold for this embedder against labeled queries",
     )
+    p_cal.set_defaults(_opens_db=True)
     p_cal.add_argument("queries", help="JSON list of {query, answerable, relevant_ids} entries")
     p_cal.add_argument("--corpus", default=None, help="corpus dir (default: the built-in eval corpus)")
     p_cal.add_argument("--out", default=None, help="output path (default: calibration.json)")
 
     p_calibration = sub.add_parser("calibration", help="inspect or transfer calibration artifacts")
+
+    p_calibration.set_defaults(_opens_db=True)
     calibration_sub = p_calibration.add_subparsers(dest="calibration_cmd", required=True)
     p_cal_measure = calibration_sub.add_parser(
         "calibrate", help="measure a calibration bound to one immutable generation"
@@ -429,11 +498,28 @@ def main(argv: list[str] | None = None) -> None:
     # `lint --semantic` all open connections and are not in it, and `--migration-dsn` (the
     # DDL-owner credential) is never checked on any path. Tracked as follow-up; do not read the
     # presence of this guard as coverage.
-    db_backed_cmds = {"index", "forget", "search", "demo", "code", "calibrate"}
-    if args.cmd in db_backed_cmds:
-        require_secure_dsn(args.dsn)
+    # Every command that will open a connection FAILS CLOSED on the insecure default DSN;
+    # the rest only warn.
+    #
+    # An earlier version of this set listed six commands by hand and missed four that connect
+    # (generation, calibration, schema, and lint --semantic), so the guard read as coverage and
+    # was not. The set is derived from the parsers now: a subcommand declares `_opens_db=True`
+    # beside its own definition, so a new one cannot be added without answering the question.
+    opens_db = bool(getattr(args, "_opens_db", False))
+    if args.cmd == "lint":  # only the --semantic path reaches a database
+        opens_db = bool(getattr(args, "semantic", False))
+    if args.cmd == "schema" and getattr(args, "schema_cmd", None) == "grants":
+        opens_db = False  # prints SQL for an operator to run; opens nothing
+    if opens_db:
+        _require_secure(args.dsn)
     else:
         warn_if_insecure_dsn(args.dsn)  # loud stderr note if default creds target a remote host
+
+    # The DDL-owner credential was never checked or even warned about on any path, which is the
+    # wrong way round: it is the most privileged DSN this CLI accepts.
+    migration_dsn = getattr(args, "migration_dsn", None)
+    if migration_dsn and opens_db and args.cmd == "schema":  # `opens_db` so grants stays exempt
+        _require_secure(migration_dsn)
 
     if args.cmd == "setup":
         from recall.setup import run_setup_wizard
@@ -673,6 +759,12 @@ def main(argv: list[str] | None = None) -> None:
             for u in unfixable:
                 print(f"  SKIP {u.file}: {u.reason}")
             print(f"\n{len(proposals)} edge(s) proposable, {len(unfixable)} need a human")
+            if args.apply and args.semantic:
+                # Resolve the embedder BEFORE writing. `--semantic` needs one, and dropping
+                # argparse's `choices=` moved an unknown spelling's failure from "exit 2 before
+                # anything happened" to "after apply_proposal has already rewritten the memos".
+                # This is the only destructive path that resolved it late.
+                _make_embedder(args.embedder)
             if not args.apply:
                 # Dry run by DEFAULT: this edits the user's own documents, and a tool that
                 # rewrites your memory the first time you try it has earned distrust.
@@ -688,7 +780,13 @@ def main(argv: list[str] | None = None) -> None:
             from recall.semantic_lint import semantic_lint
 
             emb = _make_embedder(args.embedder)
-            thr = args.threshold if args.threshold is not None else 0.70
+            # --threshold's help promises "the calibrated abstention threshold for this
+            # embedder" as the default; hardcoding 0.70 made that untrue on every corpus
+            # whose calibration says otherwise.
+            _cal = load_for(emb.name)
+            thr = args.threshold if args.threshold is not None else (
+                _cal.threshold if _cal else 0.70
+            )
             chains = semantic_lint(args.dsn, emb, args.path, threshold=thr, glob=args.glob)
             for c in chains:
                 print(
@@ -810,6 +908,18 @@ def main(argv: list[str] | None = None) -> None:
             print(f"\nnot judged: {cal.certification_reason}", file=sys.stderr)
         return
 
+    # ⚠️ Deliberately NOT `load_for(embedder.name)`, and a bug audit talked me into that once.
+    #
+    # `trusted_search` only consults the generation-bound resolver when `calibration is None`
+    # (recall/trust.py). Passing a legacy artifact sets calibration_status="legacy_unbound",
+    # which the strict policy maps to CALIBRATION_UNCERTIFIED, so pre-loading it REFUSES
+    # searches on a deployment that has a properly certified, generation-bound calibration.
+    # recall/trust.py states the rule directly: legacy JSON "is deliberately never auto-loaded:
+    # it has no tenant, generation, pipeline, corpus, or labelled query-set binding".
+    #
+    # 🔑 The open consequence, which is a DESIGN question and not an oversight: the artifact
+    # `recall calibrate` writes is therefore not read back by this path. Resolve that by
+    # deciding where install-time calibration binds, not by reinstating the line below.
     calibration = None
 
     if args.cmd == "index":
@@ -936,11 +1046,17 @@ def main(argv: list[str] | None = None) -> None:
                     if unseen:
                         print(unseen_note)
     elif args.cmd == "search":
-        entail_judge = None
-        if args.entail:
-            from recall.entailment import QnliEntailmentJudge
-
-            entail_judge = QnliEntailmentJudge()
+        # `resolve_entailment_judge` reads RECALL_ENTAILMENT (the opt-in the setup wizard
+        # writes) plus RECALL_ENTAILMENT_MODEL / _REVISION. Constructing QnliEntailmentJudge()
+        # directly ignored all three, so a pinned model was silently replaced by the default
+        # download. The explicit --entail flag still forces it on when the env says nothing.
+        entail_judge = resolve_entailment_judge()
+        if entail_judge is None and args.entail:
+            # Force it on THROUGH the resolver, not by constructing the judge bare: the bare
+            # form ignores RECALL_ENTAILMENT_MODEL/_REVISION, which is the exact defect this
+            # block was meant to fix. `recall setup` writes RECALL_ENTAILMENT="0", so this
+            # forcing path is the common one, not the rare one.
+            entail_judge = resolve_entailment_judge({**os.environ, "RECALL_ENTAILMENT": "1"})
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
             from recall.generation_store import GenerationStore
 
@@ -973,6 +1089,10 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "demo":
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
             raise SystemExit("the filesystem demo is unavailable in production")
+        # Resolved BEFORE the store opens and the corpus is indexed: a bad
+        # RECALL_ENTAILMENT value raises, and failing after the expensive work is the
+        # shape `search` already avoids.
+        _demo_judge = resolve_entailment_judge()
         with PgVectorStore(
             args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
         ) as store:
@@ -989,12 +1109,17 @@ def main(argv: list[str] | None = None) -> None:
                     "how do we handle penguins on mars?",
                 ],
                 calibration,
+                _demo_judge,
             )
     elif args.cmd == "code":
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
             raise SystemExit("local source indexing is unavailable in production")
         # index recall's own package source (content-agnostic engine, code-aware chunking)
         src = Path(__file__).resolve().parent
+        # Resolved BEFORE the store opens and the corpus is indexed: a bad
+        # RECALL_ENTAILMENT value raises, and failing after the expensive work is the
+        # shape `search` already avoids.
+        _demo_judge = resolve_entailment_judge()
         with PgVectorStore(
             args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant
         ) as store:
@@ -1010,6 +1135,7 @@ def main(argv: list[str] | None = None) -> None:
                     "how does cross-encoder reranking reorder hits?",
                 ],
                 calibration,
+                _demo_judge,
             )
 if __name__ == "__main__":
     main()
