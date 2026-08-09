@@ -110,7 +110,7 @@ class S3ObjectReader:
         service to an attacker-controlled S3 endpoint.
         """
         try:
-            import boto3  # type: ignore[import-not-found]
+            import boto3
         except ImportError as exc:  # pragma: no cover, exercised without the optional extra
             raise ImportError("S3 access requires: pip install recall-rag[s3]") from exc
         endpoint = os.environ.get("RECALL_S3_ENDPOINT_URL")
