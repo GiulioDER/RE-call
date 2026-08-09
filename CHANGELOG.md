@@ -8,7 +8,49 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+### Changed (action required)
+- **FastEmbed profile fingerprints change, so profile-bound calibrations must be re-fitted.**
+  The resolved ONNX execution provider is now part of `EmbeddingProfile.dependencies`, which is
+  fingerprint key material. A calibration bound by profile fingerprint before this release no
+  longer matches: `calibration.load_for_profile` logs a warning and returns `None`, so a run
+  CONTINUES UNCALIBRATED rather than refusing — re-fit before trusting an abstention threshold.
+  This affects the v1 profile-fingerprint binding and the embedding cache only; the CERTIFIED v2
+  binding stores `EmbedderIdentity`, which carries no dependencies and is still provider-blind,
+  so a CPU-fit certified calibration continues to bind to a CUDA-served pipeline. Cached
+  vectors simply miss and re-embed, at the cost of one full re-encode. Only FastEmbed-derived
+  profiles are affected; the global fingerprint domain tag is deliberately NOT bumped, since that
+  would also invalidate Voyage and every other profile whose vectors this change cannot have
+  moved.
+
 ### Added
+- **`HybridRetriever.search_fused(query, history, k, source)`: multi-query fusion of the current
+  turn with prior turns.** Fuses retrieval for `query` with retrieval for a concatenation of prior
+  turns, then reranks once. Measured on MTRAG-human dev at `candidate_k=100` with a reranker:
+  **+0.0084 nDCG@5** (Holm-significant, cross-encoder/ms-marco-MiniLM-L-6-v2) and **+0.0842 R@100** over single-query `search`.
+  Gains proved significant and directional under BAAI/bge-reranker-v2-m3 (+0.0117 nDCG@5), on one dev split. The gain is conditional
+  on reranking: raw, this arm is **0.0447 nDCG@5 worse** than `search()`, which is why
+  `search_fused` refuses rather than warns when no reranker is configured; RE-call ships with the
+  reranker off by default. It costs roughly 2x the retrieval of `search()` plus mandatory
+  reranking (about 1,050 ms/query on CPU), so it is opt-in by data: no `history`, no fusion, and
+  `search()` is unchanged.
+
+  Adds `PgVectorStore.cosines_for`, used to put every returned hit back on the query's cosine
+  basis after rerank. A chunk deleted between retrieval and that rescore is omitted from
+  `cosines_for` and dropped from the result rather than served a stale, possibly history basis
+  score, so `search_fused` can return fewer than `k` hits. Library only for now: not exposed as an
+  MCP tool.
+
+- **`FastEmbedEmbedder(providers=...)` and `.session_providers`.** `providers` forwards an ONNX
+  Runtime execution-provider REQUEST to fastembed; it is not a guarantee, because asking for
+  `CUDAExecutionProvider` against a wheel built for a different CUDA major falls back to CPU with
+  only a `RuntimeWarning`. `.session_providers` reports what the live `InferenceSession` actually
+  resolved — never `onnxruntime.get_available_providers()`, which reports what the wheel was
+  compiled with and stays true while the session sits on CPU. The resolved providers are now part
+  of the embedding profile's `dependencies` on BOTH the legacy and the registered-profile path,
+  so a CPU-built and a CUDA-built vector no longer share a cache key or a calibration binding.
+  When fastembed's internals do not expose a session, this is recorded as
+  `onnx-providers-source: unavailable` rather than as a provider name — "could not tell" is a
+  third state and must not read as a CPU run.
 - **`benchmarks/check_profile_encoder_distinctness.py`, and the finding it exists to record.**
   `bge-small-symmetric-v1` and `bge-small-asymmetric-v1` differ in two registry fields
   (`query_mode`, `passage_mode`) and share every other identity field and one provisioned artifact
@@ -167,6 +209,154 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   The documentation now says so. Behaviour is unchanged.
 
 ### Fixed
+- **The other three benchmark arms refused every question too.** The follow-up to the entry below:
+  `benchmarks/ladder/systems/recall_system.py`, `benchmarks/membench/recall_isolation.py` and
+  `benchmarks/membench/recall_temporal.py` all called `trusted_search` with no policy, so each
+  raised `TrustRefusal: INDEX_NOT_READY` before retrieval ran, exactly as the LOCOMO arm did.
+
+  The policy alone would have been silently worse on two of them, in opposite directions. Both
+  `recall_temporal` and the ladder adapter filter hits on `verdict == "ok"`, and development mode
+  without a calibration rewrites every verdict to `unverified`: nothing clears the filter, so
+  `covering_selection_rate` reads 0.0000 across the board — indistinguishable from a validity
+  layer that does not work, which is the exact failure `recall_temporal` was previously fixed for.
+  `recall_isolation` derives `answered` from `result.abstained`, which development mode forces to
+  False, collapsing it to "did retrieval return anything" — a leak axis pinned near 1.0 cannot
+  tell correct isolation from an adapter answering out of the wrong tenant.
+
+  All four arms now retrieve through a single new seam, `benchmarks._trust.bench_search`
+  (`research_search` plus an explicit `Calibration` at the library's `DEFAULT_GAP_THRESHOLD`), so
+  the two-part decision is made once rather than at four call sites. For the ladder arm this
+  restores exactly the configuration `benchmarks/ladder/report.py` already discloses its published
+  numbers ran with (`UNCALIBRATED_BGE_SMALL_FLOOR = 0.50`); its "shipped defaults, no overrides"
+  rule is now explicit that the shipped TRUST policy is the one exception, because read literally
+  that rule made the arm refuse every question instead of scoring at defaults.
+
+  The audit of that change found two more modules with the calibration half of the same defect,
+  both now routed through the shared seam. `benchmarks/check_temporal_live.py` is the worse one:
+  it is a PRE-REGISTERED end-to-end check whose P2 predicate and P3 control are both read off
+  `hit.verdict`, so with every verdict blanked to `unverified` its P2 was structurally
+  unreachable, its P3 passed vacuously, and it printed "NOT live" and exited 1 whatever the
+  validity layer did — the control that exists to prove the reference time reached the trust layer
+  had become the thing certifying that nothing was wrong. `benchmarks/beam/ksweep.py` reads only
+  hit text, so nothing it measures changes; it is routed through the seam anyway, so that "arms
+  that happen not to read verdicts" is not a category anyone has to re-decide per module.
+
+  ⚠️ **The new guard is a source scan, not a behavioural test, and that is deliberate.** Every one
+  of these adapters is unreachable from CI: the two mem-bench ones import `membench`, a separate
+  repo `pyproject.toml` deliberately does not depend on, and the LOCOMO one's integration tests
+  need `fastembed`, which is not in `[dev]` either. A behavioural test for any of them would be a
+  test CI skips, which is the failure mode being closed, reproduced inside the guard meant to
+  close it. `tests/test_bench_trust_policy.py` parses every module under `benchmarks/` and
+  enforces BOTH halves — no module may reach `recall.trust.trusted_search` (by any of the five
+  import spellings that bind it), and no module may call `research_search` without a calibration,
+  where a literal `calibration=None` counts as missing rather than supplied, because that is the
+  defect written in the spelling that looks like compliance. It needs no import, no database and
+  no optional extra, and it covers arms that do not exist yet.
+
+  ⚠️ **A green scan is not proof that every arm's threshold is live.** A calibration passed as a
+  variable cannot be judged from the source: `benchmarks/beam/systems.py` writes
+  `calibration=self._calibration`, which is None on any run without `--calibration`, so the rule
+  reports it as compliant. That arm's uncalibrated default is pre-existing and disclosed in its
+  own `describe()`, but one consequence is worth stating plainly, because BEAM's own docstring
+  calls abstention "the single design decision this benchmark exists to price": on a default run
+  its `if result.abstained: return []` is unreachable, so that category currently measures
+  nothing. Not changed here — it is a deliberate, documented arm and its own decision to make.
+- **The RE-call arm of the LOCOMO head-to-head benchmark refused every question, and CI could not
+  see it.** `benchmarks.systems.RecallSystem.retrieve` called `trusted_search` without a policy.
+  When retrieval began failing closed, that default became strict, and a freshly-ingested bench
+  tenant has no generation and no published calibration, so every query raised
+  `TrustRefusal: INDEX_NOT_READY` before retrieval ran. The arm could not score a single question.
+  Every other research harness — `recall.eval.locomo`, `benchmarks.beam.systems`,
+  `recall.eval.harness` — had already moved to `recall.eval._research_trust.research_search`,
+  which exists precisely because a benchmark scores corpora nobody has certified yet; this adapter
+  was missed. It went unnoticed for four days because its three integration tests are
+  `@requires_fastembed` and the `[dev]` extra CI installs does not include `fastembed`, so CI
+  skipped them and stayed green.
+
+  ⚠️ **The policy alone would have been the worse bug.** Development mode with `calibration=None`
+  means "no threshold exists at all", so `recall.trust` blanks every verdict to `unverified` and
+  forces `abstained=False`. `retrieve` would then never return `""`, and the abstention rate this
+  benchmark exists to publish would have read as a flat zero rather than as a dead gate. `retrieve`
+  therefore also passes an explicit `Calibration`, taking the branch the trust layer itself calls
+  "the path every abstention benchmark measures". The threshold is the library's
+  `DEFAULT_GAP_THRESHOLD`, the same constant `evaluate` fell back to before the trust gate existed,
+  so the arm measures the gate it always did, now stated rather than inherited.
+
+  `describe()` now publishes a `trust` block, read off the same arguments `retrieve` sends, so a
+  results artifact names the gate behind its headline abstention number instead of leaving a
+  reader to assume a fitted one. ⚠️ **That threshold is untuned and this arm cannot vary it**: 0.50
+  sits at the 0th percentile of five of six measured top-1 distributions and the 16th of the
+  sixth, so it barely fires on most embedders and starves a sixth of queries on one, and
+  `--embedder` can select any of them. Published abstention rates from this arm should be read
+  with that in mind; a `--threshold` flag should arrive with the sweep that needs it rather than
+  as an unreachable constructor argument. **The trust default is unchanged and was not weakened.**
+  Two new tests pin the wiring without Postgres or fastembed, so the next such omission fails on
+  the pull request rather than four days later.
+
+  Not fixed here, and carrying the identical defect:
+  `benchmarks/ladder/systems/recall_system.py`, `benchmarks/membench/recall_isolation.py` and
+  `benchmarks/membench/recall_temporal.py` all still call `trusted_search` with no policy. Each
+  needs its own decision on the calibration half rather than a mechanical swap, because
+  `recall_isolation` derives `answered` from `result.abstained`.
+- **`recall-enterprise parity` passed vacuously on two empty generations, and a vacuous pass here
+  reads as permission to run `cutover`.** Two empty generations cannot disagree, so every
+  comparison `validate_generation_parity` makes was satisfied, `GenerationParity.valid` was True,
+  and the command printed `parity: OK` and exited 0 over 0 active and 0 shadow chunks. That is the
+  state the reference deployment is in, and at this step it presents as a **green**, so the
+  runbook's own rule — each step is a gate, do not proceed past a red one — could not catch it.
+  ⚠️ **What this closes is the misleading green at step 8, not a path to a promoted empty index:**
+  `ControlPlane.cutover` calls `_require_non_empty_shadow` before its parity check, deliberately
+  outside it so `--allow-divergent-corpus` cannot skip it, so an empty shadow was never
+  promotable. The guard existed, in prose, in `docs/ENTERPRISE_RETRIEVAL.md`;
+  prose is the weakest place to keep a guard, because it lives in the document an operator reads
+  for permission to proceed. `_cmd_parity` now exits 1 with a refusal naming the tenant and both
+  generation ids: `... holds no chunks in either generation (...), so the comparison is vacuous and
+  certifies nothing`. It also now prints any `parity.failures` **before** that refusal, because
+  `indexes_valid` and `rls_enabled` are catalog facts that can be false of an EMPTY pair, and for
+  an empty pair this is the only place such a failure surfaces at all: `readiness` evaluates
+  `route.active`, and `cutover` — which does check the shadow's RLS on its default path — refuses
+  at `_require_non_empty_shadow` before it ever reaches that check. **No override flag**,
+  deliberately: `cutover --allow-divergent-corpus` in
+  this same CLI is the cautionary case, a refusal that advertises its own escape hatch at the exact
+  moment the operator is under pressure to get past it. The condition is BOTH empty, so a populated
+  active against an empty shadow still fails on missing sources rather than having that restated as
+  a vacuity error. Proven by execution against the old code, which printed `parity: OK` and exited
+  0, and paired with a negative control asserting a populated matching pair still exits 0, so the
+  refusal cannot be broadened into a blanket one without a test going red, and by a third test
+  pinning the BOTH-empty scoping itself: a populated active against an empty shadow must keep
+  failing on `missing sources` rather than being restated as a vacuity error. That one was written
+  because mutating the guard's `and` to `or` left the entire suite green — the scoping was asserted
+  only in a code comment, which is the same defect this bullet repairs, one level down.
+  ⚠️ A shadow partially filled relative to the active **is** caught, on missing sources or
+  differing chunk counts. What nothing catches is a pair that agrees with each other while both are
+  short of the corpus on disk, or two generations whose rows all lack a content hash and so compare
+  `''` against `''`. Neither is new, and `parity` does not detect either.
+- **The `typecheck` CI job was red on `master`, behind a job that was CANCELLED rather than run.**
+  `recall/sparse.py` imports `transformers` inside its loader, the same lazy guard every optional
+  extra in this repository uses, but `transformers.*` was never added to the mypy override list, so
+  `mypy` failed with `Cannot find implementation or library stub for module named "transformers"` in
+  any environment without the `sparse` extra. That is exactly CI's `typecheck` job, which installs
+  `.[dev]` only. Two things kept it invisible: on the SPLADE merge (`d12ebf0`) the job was cancelled,
+  so it produced no verdict at all, and the follow-up that fixed the other three breakages recorded
+  "mypy clean" truthfully, from a venv where the extra happened to be installed. The override block's
+  own comment already explains why that is not enough: `follow_imports = skip` is chosen over plain
+  `ignore_missing_imports` precisely so the result does not depend on whether the extra is present,
+  "or the gate is advisory". Verified red before and clean after (166 source files) in a
+  `.[dev]`-only environment. No source or behaviour change; the gate now reports what it always
+  should have.
+- **`CVE-2026-71554` in `h2` 4.4.0, which made the `audit` CI job red.** `h2` arrives transitively
+  through httpx's `http2` extra and is unconstrained by `pyproject.toml`, so the fix is a lockfile
+  movement to 4.4.1 with no declared-dependency change. `pip-audit` reports no known
+  vulnerabilities afterwards. **The red gate was real and the exposure was not**: the full chain is
+  `bench` extra → `mem0ai` → `qdrant-client` → `httpx[http2]` → `h2`, and `pyproject.toml` documents
+  the `bench` extra as never added to `dev` and never installed in CI, so no shipped wheel, no CI job
+  and no deployment ever contained the vulnerable version. The constraint also lives only in
+  `uv.lock`: anyone installing `recall-rag[bench]` from PyPI resolves `h2` independently.
+  `requirements.lock.txt`, which the `audit` job generates and which `CONTRIBUTING.md` now documents
+  as a local reproduction of that job, is gitignored: an untracked generated copy of the resolved
+  dependency set beside `uv.lock` is a second source of truth that can drift silently and be swept
+  into a later commit.
+
 - **Corpus text could close the evidence delimiter, and reach the model outside the data region.**
   `render_evidence_prompt` wrapped a `json.dumps` payload in `<evidence_data>...</evidence_data>`.
   `json.dumps` escapes quotes, backslashes and control characters; it does not escape `<` or `>`,
@@ -294,6 +484,28 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   tolerated as "not yet recorded", mid-file corruption loud. `recall/eval/gap_run.py` is
   deliberately not migrated — its unit of resume is a corpus result *file* carrying a `status`
   marker, and unifying it would rewrite a published artifact format for no resume benefit.
+### Documentation
+- **`docs/ENTERPRISE_RETRIEVAL.md` is now an operator runbook** rather than a sequence sketch. It
+  opens with preconditions (unprivileged roles, the grants each command actually needs, pgvector and
+  `sparsevec` availability, independently recomputed artifact digests, recorded licences, a blocked
+  egress boundary, and a disk-headroom rule of thumb), then gives the ordered eleven-step sequence
+  (plus preconditions and rollback) as a table naming the credential and the non-zero exit condition
+  for every step, then grouped sections with what to verify afterwards. Hazards are written in at the
+  step where an operator meets them, including several the runbook's first draft got wrong and an
+  audit corrected: `mark-ready` records its `--chunks`/`--sources` and **never checks them**;
+  `replay` takes the serving credential but is a **write path**; `readiness` names its own role
+  subject but not its own generation subject, so run before cutover it certifies the OUTGOING
+  generation; `retire` cannot follow `cutover` directly because cutover swaps the slots, and
+  retirement is database-global with no un-retire command; `parity` succeeding on two empty
+  generations is a vacuous pass that must be treated as a hard stop; and a migration whose bytes
+  changed after it was applied is a hard stop with no override flag, whose remedy names the ledger
+  table, both key columns, the `__global__` scope, a backup precondition, and the fact that
+  restoring the deleted row does not undo the DDL the re-apply performs.
+- **`README.md`'s production-posture table gains four rows**: index generations and cutover,
+  retrieval cost profiles, the generator-neutral evidence boundary, and serving latency marked
+  **PENDING**. The parity row warns that a comparison of two empty generations succeeds and prints
+  `OK` without having compared anything.
+
 ### Changed
 - **New startup refusals on the MCP HTTP transports.** The server now refuses to boot when: no
   mechanism is configured at all; `RECALL_OIDC_ISSUER` is set without `RECALL_OIDC_AUDIENCE` or
@@ -371,6 +583,80 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 - `recall-enterprise` reads `RECALL_MIGRATION_DSN` for its DDL subcommands and `RECALL_SERVING_DSN`
   for its read-only ones, both falling back to `RECALL_DSN`. `readiness` reports which role it
   evaluated, because its row level security verdict is about the connection it was given.
+
+### Added
+
+- `score_retrieval_on` (`"held"` default, `"all"` opt-in) selects the question population the
+  RETRIEVAL metrics (`hit_at_k`, `mrr`, `latency_ms`, `misses`) are scored on, in BOTH
+  `recall.eval.labelled` and `recall.eval.longmemeval_perq`, each with a `--score-retrieval-on`
+  CLI flag. `"all"` doubles the sample and is methodologically free — those metrics never read
+  the calibration, so the fit/held split halves them for nothing — but it is NOT the default,
+  because the default decides what every already-published figure means. The flag, its default
+  and the membership rule live once in `recall.eval._scoring`: two harnesses publishing a key
+  called `hit_at_k` must not be able to disagree about which questions it counts. In
+  `longmemeval_perq` the widened mode also widens `by_type` and `haystack_chunks` (which now
+  publishes its own `n`), and costs one extra haystack populate and one extra retrieval per fit
+  ANSWERABLE question.
+- `recall.eval.metrics.latency_report`, the one p50/p95 both harnesses now publish through.
+- `recall.observability.percentile` takes `ndigits` (default 3, unchanged); `ndigits=None`
+  returns the raw sample, so a caller that rounds for publication rounds exactly once.
+- The report's `questions` block now names one denominator per metric family, each read off the
+  list actually scored: `retrieval_scored_on`, `false_abstain_scored_on`,
+  `abstention_accuracy_scored_on`, and the `score_retrieval_on` mode that produced them.
+  `results/gap/*.json` records the retrieval denominator and mode alongside its rates.
+
+### Fixed
+
+- `abstention_scored_on` (added and removed within this unreleased window) named the abstention
+  family but reported `false_abstain`'s denominator, while `abstention_accuracy` is scored on the
+  held UNANSWERABLE questions — a third, unnamed denominator. Split into two correctly-named keys.
+- **`latency_ms` was reported one rank too high in both eval harnesses, and published p50 figures
+  move.** `recall.eval.labelled` and `recall.eval.longmemeval_perq` each computed
+  `{"p50": lat[len(lat) // 2], "p95": lat[int(0.95 * len(lat))]}` — the same
+  1-based-rank-used-as-a-0-based-index defect that `[0.5.1]` fixed in `recall/observability.py`
+  and `recall/eval/scale.py`. That entry said two copies of the formula existed; there were four,
+  and the harnesses went on publishing the old number, which is exactly the failure mode it
+  warned about. All four now go through `recall.observability.percentile` — the two eval
+  harnesses via the new `recall.eval.metrics.latency_report`, `recall.eval.scale` directly (it
+  publishes p99 as well, so it cannot share the two-quantile helper). A fifth implementation
+  survives in `benchmarks/latency.py` on a deliberately different, interpolating convention that
+  also backs that module's bootstrap CI quantiles; it is named in `latency_report`'s docstring
+  and left alone rather than swept in under cover of an off-by-one fix.
+  Measured scope: **p50 moves down one rank for every even n, p95 only when n is a multiple of
+  20**, and the old value was always the higher of the two. **Any `p50` these two harnesses
+  published is pre-fix** — that is the rule, and it is stated as a rule because an enumeration of
+  affected cells is the kind of claim that is wrong the moment a figure is quoted somewhere new.
+  The primary tables carry the annotation in place, so they cannot disagree with the reproduce
+  command beside them: the PEPs arms table in `docs/EVIDENCE.md` (n=44 — p50 moves, p95 does not),
+  the real-corpus row in `docs/PRODUCTION.md`, and the `search p50` rows in `results/RESULTS.md`.
+  Both of the first two were `README.md`'s until the README was shortened and its evidence moved
+  into those files; the annotation followed the cells rather than staying with the file, which is
+  the whole point of annotating in place. Figures DERIVED from those
+  runs are not individually annotated: the rerank-cost and embedder-cost latencies in
+  `results/FINDINGS.md` and the `search p50` in `docs/CASE_STUDY.md` come from the same code path
+  and are pre-fix under the same rule.
+- `recall.eval.labelled.check_question_ids` refuses a question set whose ids cannot carry the
+  fit/held boundary, at entry, before any connection is opened — and it is called from the CLI
+  path too, which previously dereferenced `q["id"]` first and died with a bare `KeyError`.
+
+### Changed (input contract)
+
+- **`recall.eval.labelled` now requires every question to carry a unique, non-empty string `id`**,
+  and `recall.eval.longmemeval_perq`'s CLI applies the same check at entry (its `evaluate` still
+  splits on index parity and reads ids only for the miss report, so the requirement there is a
+  fail-early one, not a correctness one).
+  A question file with a duplicate id used to score rather than fail, and under
+  `score_retrieval_on="all"` a duplicate straddling the fit/held boundary silently pulled a FIT
+  question into the abstention sample — fit-and-score-on-the-same-data, with the n unchanged and
+  only the rate made optimistic. The check is deliberately wider than that defect (unanswerable
+  questions need an id too, though `evaluate` never reads theirs) because one rule for the file
+  is easier to produce and to verify than one rule per class. Every question set this repo ships
+  or generates already complies; a hand-written labelled file may need ids added.
+
+**Abstention behaviour is unchanged in both modes**: `false_abstain` is always scored on the held
+answerable half, because its threshold is fitted on the other one. Published RATES are unaffected
+by the `score_retrieval_on` work: the default reproduces them exactly. Published `latency_ms` is
+NOT — see the percentile fix above, which is a separate defect and does move numbers.
 
 ### Changed
 - **BREAKING: retrieval fails closed when it cannot certify an answer.** `trusted_search` used to

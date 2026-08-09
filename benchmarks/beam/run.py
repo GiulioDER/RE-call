@@ -140,14 +140,52 @@ def score_question(
     question: Question,
     memories: list[dict[str, str]],
     answerer: Completer,
-    judge: Completer,
+    judge: Completer | None,
     cutoff: int,
 ) -> dict[str, Any]:
-    """Retrieve-free scoring of one question: generate an answer, then judge it."""
-    answer = answerer("", get_beam_answer_generation_prompt(question.question, memories, top_k=cutoff))
+    """Retrieve-free scoring of one question: generate an answer, then judge it.
+
+    `judge=None` generates WITHOUT judging. BEAM's judge reads only
+    ``(question, nugget, answer)`` — never the retrieved context — so a row produced here carries
+    everything `judge_answer` will later need, and a generate-only run can be scored afterwards
+    with no regeneration and no second retrieval. That is the whole point of the mode: the answers
+    are the expensive half, and which scoring protocol runs over them (an LLM judge, a human
+    labelling pass, or both) is a decision worth keeping open after the money is spent.
+
+    `context` and `memories` are persisted even though no judge consumes them. They are what makes
+    grounding and faithfulness analysis possible later, and what lets a DIFFERENT answerer be run
+    over the same retrieval without paying for retrieval again. Storing the prompt actually sent,
+    rather than reconstructing it later from a config, also means a change to
+    `get_beam_answer_generation_prompt` cannot silently reinterpret an old artifact.
+    """
+    context = get_beam_answer_generation_prompt(question.question, memories, top_k=cutoff)
+    answer = answerer("", context)
     if "ANSWER:" in answer:
         answer = answer.rsplit("ANSWER:", 1)[-1].strip()
-    mean, nuggets, errors = judge_answer(question, answer, judge)
+    judged = judge is not None
+    if judge is not None:
+        mean, nuggets, errors = judge_answer(question, answer, judge)
+    else:
+        # None, not NaN. `json.dumps` emits a bare `NaN` token, which is not valid JSON: jq,
+        # JSON.parse and Postgres jsonb all reject it, and with --no-judge that is EVERY row of a
+        # deliverable whose whole purpose is to be scored later by something else. `judged: false`
+        # and `judgment: "UNJUDGED"` already carry the state. Verified: allow_nan=False rejects it.
+        mean, nuggets, errors = None, [], 0
+    # `mean is not None and mean == mean` rather than an isinstance test: the question is "is
+    # there a number", and a type check would silently reclassify an int mean (which
+    # statistics.mean can return) from PASS to ERROR.
+    mean_number = mean if (mean is not None and mean == mean) else None
+    if not judged:
+        # NOT "ERROR". An unjudged row and a row whose judge failed are different states, and
+        # `aggregate` counts every non-numeric score as an error — so reusing ERROR here would
+        # report a clean generate-only run as 300 judge failures.
+        judgment = "UNJUDGED"
+    else:
+        judgment = (
+            ("PASS" if (mean_number or 0.0) >= 0.5 else "FAIL")
+            if mean_number is not None
+            else "ERROR"
+        )
     return {
         "question_id": question.question_id,
         "question_type": question.question_type,
@@ -156,11 +194,16 @@ def score_question(
         "rubric": question.rubric,
         "memories_retrieved": len(memories),
         "memories_evaluated": min(len(memories), cutoff),
+        # The evidence itself, not just its cardinality. `memories_evaluated` counts what the
+        # answerer saw; this is what it saw.
+        "memories": list(memories[:cutoff]),
+        "context": context,
         "generated_answer": answer,
         "abstained": _looks_like_refusal(answer),
         "retrieval_empty": not memories,
+        "judged": judged,
         "score": mean,
-        "judgment": ("PASS" if mean >= 0.5 else "FAIL") if mean == mean else "ERROR",
+        "judgment": judgment,
         "nugget_scores": nuggets,
         "judge_errors": errors,
     }
@@ -171,8 +214,23 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     `avg_score` is the headline Mem0 publishes (their 64.1 at 1M is `avg_score` 0.6409, NOT the
     70.14 % pass rate); both are reported so neither can be mistaken for the other.
+
+    A row from a generate-only run carries ``judged: False`` and a NaN score. Those are counted
+    SEPARATELY from judge errors: both are non-numeric scores, but "never asked" and "asked and
+    failed" are different facts, and folding them together would report an intentional
+    generate-only run as a total judge outage. Rows written before this field existed have no
+    ``judged`` key and default to True, so older artifacts aggregate exactly as they did.
+
+    The judge-independent signals — abstention, false-abstention, empty retrieval — are ALSO
+    reported over every row in `retrieval_all_rows`, because they are measurable without spending
+    anything and a generate-only run would otherwise report `None` for facts it actually holds.
+    They are a separate block rather than a widened denominator: the existing rates are computed
+    over judged rows and published that way, and silently changing what they average over would
+    move numbers that are already in an article.
     """
-    scored = [r for r in rows if r["score"] == r["score"]]
+    judged_rows = [r for r in rows if r.get("judged", True)]
+    unjudged_rows = [r for r in rows if not r.get("judged", True)]
+    scored = [r for r in judged_rows if isinstance(r["score"], (int, float)) and r["score"] == r["score"]]
     by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in scored:
         by_type[row["question_type"]].append(row)
@@ -180,10 +238,14 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     abstention_rows = by_type.get("abstention", [])
     answerable = [r for r in scored if r["question_type"] != "abstention"]
 
+    all_abstention = [r for r in rows if r["question_type"] == "abstention"]
+    all_answerable = [r for r in rows if r["question_type"] != "abstention"]
+
     return {
         "overall": {
             "n": len(scored),
-            "errors": len(rows) - len(scored),
+            "errors": len(judged_rows) - len(scored),
+            "unjudged": len(unjudged_rows),
             "avg_score": round(statistics.mean(r["score"] for r in scored), 4) if scored else None,
             "accuracy_pct": round(
                 100 * sum(1 for r in scored if r["score"] >= 0.5) / len(scored), 2
@@ -226,6 +288,33 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
             }
             for qt, items in sorted(by_type.items())
         },
+        # Judge-independent, over EVERY row including unjudged ones. `abstained` is derived from
+        # the answer text and `retrieval_empty` from the retrieval itself, so neither needs a
+        # judge; a generate-only run holds both facts and should not report None for them.
+        "retrieval_all_rows": {
+            "n": len(rows),
+            "abstention": {
+                "n": len(all_abstention),
+                "abstain_rate": round(
+                    sum(1 for r in all_abstention if r["abstained"]) / len(all_abstention), 4
+                )
+                if all_abstention
+                else None,
+            },
+            "false_abstain": {
+                "n": len(all_answerable),
+                "rate": round(
+                    sum(1 for r in all_answerable if r["abstained"]) / len(all_answerable), 4
+                )
+                if all_answerable
+                else None,
+                "retrieval_empty_rate": round(
+                    sum(1 for r in all_answerable if r["retrieval_empty"]) / len(all_answerable), 4
+                )
+                if all_answerable
+                else None,
+            },
+        },
     }
 
 
@@ -246,6 +335,204 @@ def _writer(path: Path) -> tuple[Callable[[dict[str, Any]], None], TextIO]:
             handle.flush()
 
     return write, handle
+
+
+def _redacted_database(dsn: str) -> str:
+    """`host:port/dbname`, with every credential component discarded — or a marker.
+
+    FAILS CLOSED. This value is persisted to the config sidecar AND to the results artifact, so a
+    parse that does not understand the DSN must not fall through to the raw string. The first
+    version used `urlsplit` alone, which silently returns the WHOLE libpq keyword form as `path`:
+
+        host=10.0.0.1 dbname=recall password=sup3rs3cret  ->  ':/host=… password=sup3rs3cret'
+
+    psycopg accepts that form, so the password would have been written verbatim into two files.
+    `conninfo_to_dict` parses both the URL and the keyword form; anything it cannot parse becomes
+    `<unparsed>`, matching the guard `recall/store.py:redacted_dsn` already carries.
+    """
+    if not dsn:
+        return ""
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+
+        parts = conninfo_to_dict(dsn)
+    except Exception:
+        return "<unparsed>"
+    host = str(parts.get("host") or "")
+    port = str(parts.get("port") or "")
+    name = str(parts.get("dbname") or "")
+    if not (host or name):
+        return "<unparsed>"
+    return f"{host}:{port}/{name}"
+
+
+def _run_config(args: argparse.Namespace, system: Any) -> dict[str, Any]:
+    """The configuration that identifies a run's rows, for the resume guard.
+
+    A DELIBERATE subset of `system.describe()`, not the whole thing. `describe()` also carries
+    per-conversation state (`tenant`) and running counters (the entailment guard's
+    `candidates_judged` / `candidates_skipped_by_cap`), which change WITHIN a single run. Comparing
+    those would make every resume look like a configuration change, and a guard that always fires
+    gets disabled — so it would end up protecting nothing.
+
+    What is here is what alters the answers: which corpus, which model, which retrieval knobs,
+    which index, and whether a judge ran at all.
+    """
+    described = system.describe() if hasattr(system, "describe") else {}
+    embedder = described.get("embedder") or {}
+    entailment = described.get("entailment") or {}
+    return {
+        "chat_size": args.chat_size,
+        "model": args.model,
+        "judge_model": args.judge_model or args.model,
+        "no_judge": bool(args.no_judge),
+        "k": args.k,
+        "cutoff": args.cutoff,
+        "candidate_k": described.get("candidate_k"),
+        "embedder_name": embedder.get("name"),
+        "embedder_model": embedder.get("model"),
+        "reranker": described.get("reranker"),
+        "entailment_guard": entailment.get("guard"),
+        "entailment_top_n": entailment.get("top_n"),
+        "table": described.get("table"),
+        "question_types": args.question_types or "all",
+        # `--conversations` selects which conversations are indexed AND questioned, so it decides
+        # which rows exist. It was added to the mem0 arm's config in the same batch and missed
+        # here — on the arm whose artifacts carry the published numbers. Resuming across a change
+        # to it merges the previous selection's rows via `_already_done`, while `_coverage`
+        # measures only the SHORTFALL (`expected - scored`) against the current selection: the
+        # extra rows are invisible to it, so the artifact reports `complete: true` while
+        # `aggregate` and `n` cover the union of both selections.
+        "conversations": args.conversations or "all",
+        # Added after six auditors independently found them missing. The calibration changes which
+        # memories reach the answerer; `--data` is the corpus the docstring already claimed to
+        # cover; and the database is what makes "same table name, different host" — the exact
+        # scenario transfer_index.py exists to create — distinguishable.
+        "calibration_threshold": (described.get("calibration") or {}).get("threshold"),
+        "calibration_certified": (described.get("calibration") or {}).get("certified"),
+        # Resolved: a relative --data compared across two working directories is a false
+        # mismatch, and a guard that refuses spuriously teaches the operator to pass the override.
+        "data": str(Path(getattr(args, "data", None) or ".").resolve()),
+        "database": _redacted_database(getattr(args, "dsn", "")),
+    }
+
+
+def _refuse_flags_this_arm_ignores(args: Any) -> None:
+    """Refuse flags `--rejudge-mem0` cannot honour, instead of accepting and ignoring them.
+
+    Both of these are about SPENDING, and both were silently swallowed. `--no-judge` was accepted
+    and the judge ran anyway. `--question-types` still is: its only consumer sits in the RE-call
+    arm past this branch's return, so `--rejudge-mem0 --question-types temporal-reasoning` judges
+    every published answer at full price while looking like a subset.
+
+    Refused rather than applied. This arm scores rows Mem0 published; inventing a filter over
+    someone else's artifact would silently change what the comparison covers. If narrowing is
+    ever wanted it belongs in `_load_published`, with the key recorded in `mem0_config` because
+    it would then select rows.
+    """
+    if args.no_judge:
+        raise SystemExit(
+            "--no-judge is meaningless with --rejudge-mem0: this arm ONLY judges, scoring "
+            "Mem0's already-published answers. Drop one of the two flags."
+        )
+    if args.question_types:
+        raise SystemExit(
+            "--question-types is not applied by --rejudge-mem0: this arm scores every published "
+            "answer that survives --conversations, so the flag would cost you the full judge run "
+            "while looking like a subset. Drop it, or narrow with --conversations instead."
+        )
+    # `--dry-run` is the STRONGEST member of this class and was the one still missing. Its help
+    # promises "make NO LLM call and spend nothing", and its only read sits in the RE-call arm,
+    # past this branch's return — so `--rejudge-mem0 --dry-run` exited 0 having judged every
+    # published answer at full price. That is the operator's most explicit possible statement of
+    # intent, silently inverted. Naming two of the three spending flags and stopping there is
+    # exactly how the original gap shipped.
+    # `args.dry_run`, NOT `getattr(args, "dry_run", False)`. This file's own tests record the
+    # standard (the `conversations` note in test_beam_generate_only_artifact.py): a defaulted read
+    # lets an args object that never carried the flag sail through, and this is the strongest of
+    # the three spending refusals — it must not be the only one that fails OPEN. If `--dry-run`'s
+    # dest is ever renamed, an AttributeError here is the correct outcome; silently resuming
+    # full-price judging is not. The test double carries the attribute instead of the production
+    # code carrying a default for it.
+    if args.dry_run:
+        raise SystemExit(
+            "--dry-run is not honoured by --rejudge-mem0: this arm has no retrieval to rehearse, "
+            "so there is nothing for it to do without paying the judge. Drop one of the two flags."
+        )
+
+
+def _write_run_config(path: Path, config: dict[str, Any]) -> None:
+    """Write the run's configuration beside its sidecar, before any paid call."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _config_sidecar_for(sidecar: Path) -> Path:
+    """`x.partial.jsonl` -> `x.partial.config.jsonl`.
+
+    `.jsonl` and NOT `.json`, which matters more than it looks. The results directory has a
+    convention this file has to stay out of the way of: `<base>.json` is the finished artifact and
+    several callers pick it up with `glob("*.json")` expecting exactly one match, while
+    `glob("*.partial.jsonl")` collects the crash-recovery sidecars and is counted. A config named
+    `.config.json` silently joins the first set — a real collision, caught by
+    `[artifact] = out_dir.glob("*.json")` raising "too many values to unpack".
+
+    `*.json` does not match a `.jsonl` suffix, and `*.partial.jsonl` does not match
+    `.partial.config.jsonl`, so this name is in neither set. A single JSON object on one line is
+    valid JSONL, so the extension is honest about the contents rather than a dodge.
+    """
+    return sidecar.with_suffix(".config.jsonl")
+
+
+def _check_resume_config(
+    resume: list[Path] | None, current: dict[str, Any], *, allow: bool
+) -> None:
+    """Refuse to resume across a configuration change, or where it cannot be verified.
+
+    An unverifiable resume is treated as a FAILING one, not a passing one. A sidecar with no
+    recorded configuration might have been produced by this exact setup or by a different
+    embedder entirely, and nothing downstream can tell the two apart afterwards — the resulting
+    artifact records only the CURRENT config while containing rows from both. "Cannot check" and
+    "checked and fine" have to land differently or the guard is decorative.
+
+    `--allow-config-change-on-resume` is the deliberate override, and the caller stamps it.
+    """
+    if not resume:
+        return
+    problems: list[str] = []
+    for sidecar in resume:
+        config_path = _config_sidecar_for(Path(sidecar))
+        if not config_path.exists():
+            problems.append(
+                f"{sidecar}: no {config_path.name} beside it, so the configuration that produced "
+                f"those rows is unknown and cannot be compared"
+            )
+            continue
+        try:
+            previous = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            problems.append(f"{config_path}: unreadable ({exc})")
+            continue
+        differing = sorted(
+            key
+            for key in set(current) | set(previous)
+            if current.get(key) != previous.get(key)
+        )
+        if differing:
+            detail = ", ".join(
+                f"{key}: {previous.get(key)!r} -> {current.get(key)!r}" for key in differing
+            )
+            problems.append(f"{sidecar}: configuration differs ({detail})")
+    if problems and not allow:
+        joined = "\n  ".join(problems)
+        raise SystemExit(
+            "refusing to resume: the rows being carried in were not produced by this "
+            "configuration, and the artifact would record only the current one.\n  "
+            f"{joined}\n"
+            "Pass --allow-config-change-on-resume to override, or start a clean run."
+        )
+    for problem in problems:
+        print(f"WARNING (--allow-config-change-on-resume): {problem}")
 
 
 def _coverage(expected: set[str], scored: set[str]) -> dict[str, Any]:
@@ -509,6 +796,38 @@ def build_parser() -> argparse.ArgumentParser:
         "unanswerable questions score HIGHER than its answerable ones.",
     )
     parser.add_argument(
+        "--calibration",
+        type=Path,
+        default=None,
+        help="A calibration file (from `benchmarks.beam.calibrate`) supplying the abstention "
+        "threshold for --embedder. Without it the library's UNTUNED 0.50 cosine floor applies, "
+        "which is not comparable across embedders: on voyage-4-large it starves 23.3%% of "
+        "questions to empty retrieval (7%% on text-embedding-3-small, 0%% on bge-small), and an "
+        "empty context makes the vendored answerer emit its refusal string — so a quarter of the "
+        "run would score as false abstentions caused by the harness. The file is keyed by the "
+        "embedding PROFILE ID (not the --embedder string) and the run REFUSES if it holds no "
+        "entry for this one.",
+    )
+    parser.add_argument(
+        "--no-judge",
+        action="store_true",
+        help="Generate answers and DO NOT judge them. BEAM's judge reads only (question, nugget, "
+        "answer) and never the retrieved context, so every row written here can be scored later "
+        "by the same judge with no regeneration and no second retrieval. Use when the scoring "
+        "protocol is undecided or human — the answers are the expensive half, and this keeps the "
+        "choice open after the money is spent. Rows are stamped judged=false and scored UNJUDGED, "
+        "counted apart from judge errors.",
+    )
+    parser.add_argument(
+        "--allow-config-change-on-resume",
+        action="store_true",
+        help="Permit --resume across a configuration change. Off by default: the sidecar's "
+        "sibling .partial.config.jsonl is compared against this run's configuration and a "
+        "mismatch aborts. Without that check a resume silently folds rows produced under one "
+        "embedder/k/reranker into an artifact that records only the new one, and nothing "
+        "downstream can tell afterwards.",
+    )
+    parser.add_argument(
         "--resume",
         type=Path,
         nargs="*",
@@ -533,6 +852,12 @@ def _main() -> None:
 
     # ---- The Mem0 arm: re-score published answers, no retrieval, no dataset needed. ----
     if args.rejudge_mem0:
+        # BEFORE the key, the meter and the artifact read. These refusals are about the flags
+        # alone, so requiring an API key and a readable artifact to deliver them was backwards:
+        # the operator got "OPENROUTER_API_KEY is not set" for a command that was never going to
+        # run regardless. Hoisting them also makes them unit-testable without a key or a file,
+        # which is why neither had a test.
+        _refuse_flags_this_arm_ignores(args)
         key = os.environ.get("OPENROUTER_API_KEY")
         if not key:
             raise SystemExit("OPENROUTER_API_KEY is not set")
@@ -546,6 +871,43 @@ def _main() -> None:
                 for qid, row in published.items()
                 if int(qid.split("_")[1]) in indices
             }
+
+        # The resume guard covered only the RE-call arm. Both arms write `*.partial.jsonl` into
+        # the same --out-dir and BEAM question ids are IDENTICAL across them, so
+        # `--resume out/*.partial.jsonl` — the invocation `_already_done`'s own docstring
+        # recommends — silently absorbed RE-call rows, dropped those questions from `pending`, and
+        # then died on `KeyError: published_score` AFTER the judge budget had been spent.
+        mem0_config = {
+            "arm": "mem0-rejudged",
+            "chat_size": args.chat_size,
+            "judge_model": args.judge_model or args.model,
+            "cutoff": args.cutoff,
+            # RESOLVED, for the reason `_run_config` already states about `--data`: a relative
+            # path compared across two working directories is a false mismatch, and a guard that
+            # refuses spuriously teaches the operator to reach for
+            # --allow-config-change-on-resume, which disables the check for every other key too.
+            "source_artifact": str(Path(args.rejudge_mem0).resolve()),
+            # `--conversations` IS recorded: it is the only flag that selects which rows this arm
+            # produces, so it is precisely what the guard has to compare on. Resuming a run scored
+            # over conversations 0-9 with `--conversations 10-19` previously passed, merged the
+            # old rows in via `_already_done`, and wrote an artifact whose `coverage` described
+            # only 10-19 while `aggregate` mixed both.
+            "conversations": args.conversations or "all",
+            # `question_types` is deliberately NOT recorded here, and now cannot vary either:
+            # this arm REFUSES the flag outright (above), so every run that reaches this line
+            # had it unset. Recording a constant would make the guard refuse over a difference
+            # that cannot exist. If the flag is ever applied here, it becomes row-selecting and
+            # must be added to this dict in the same change.
+            #
+            # Dropping a key IS a difference under `_check_resume_config`'s union-of-keys diff, so
+            # a sidecar written by the immediately preceding commit will refuse to resume. That
+            # commit is unreleased and on this branch, so no such sidecar exists outside a working
+            # tree; the alternative — freezing a key the arm ignores — would keep the guard
+            # firing on a difference that cannot change the work.
+        }
+        _check_resume_config(args.resume, mem0_config, allow=args.allow_config_change_on_resume)
+        _write_run_config(out_base.with_suffix(".partial.config.jsonl"), mem0_config)
+
         rows, done = _already_done(args.resume)
         pending_published = [(qid, row) for qid, row in published.items() if qid not in done]
         print(
@@ -596,7 +958,9 @@ def _main() -> None:
         published_scores = [r["published_score"] for r in rows if r["published_score"] is not None]
         summary = {
             "arm": "mem0-platform-rejudged",
-            "source_artifact": str(args.rejudge_mem0),
+            # Read back from `mem0_config` rather than re-derived, so the finished artifact and
+            # the crash-recovery sidecar cannot disagree about which file they describe.
+            "source_artifact": mem0_config["source_artifact"],
             "judge_model": args.judge_model or args.model,
             "chat_size": args.chat_size,
             # The retrieval budget this arm's answers were taken at. Recorded so `pair.compare`
@@ -633,6 +997,9 @@ def _main() -> None:
     # conversation is ready in ~3 s.
     n_conversations = count_conversations(args.data, indices)
     conversations = iter_conversations(args.data, args.chat_size, indices)
+    # The PATH is passed down, not a pre-resolved object: only BeamRecallSystem knows the
+    # embedding profile id, and that is the key the file is written under. Resolving it here
+    # against `args.embedder` never matched.
     system = BeamRecallSystem(
         args.dsn,
         embedder_name=args.embedder,
@@ -641,7 +1008,12 @@ def _main() -> None:
         entailment_top_n=args.entailment,
         reranker_name=args.reranker,
         candidate_k=args.candidate_k,
+        calibration_path=args.calibration,
     )
+    if args.calibration:
+        described = system.describe()["calibration"]
+        print(f"calibration: threshold={described['threshold']} "
+              f"certified={described['certified']}", flush=True)
 
     if args.dry_run:
         report: list[dict[str, Any]] = []
@@ -692,12 +1064,20 @@ def _main() -> None:
     answerer = OpenRouterLLM(model=args.model, api_key=key)
     judge_llm = OpenRouterLLM(model=args.judge_model or args.model, api_key=key)
 
+    run_config = _run_config(args, system)
+    _check_resume_config(args.resume, run_config, allow=args.allow_config_change_on_resume)
+
     rows, done = _already_done(args.resume)
     print(
         f"RE-call arm: {n_conversations} conversations, {len(done)} questions already scored, "
         f"{args.workers} workers"
     )
     write, handle = _writer(out_base.with_suffix(".partial.jsonl"))
+    # Written BEFORE the first paid call, so a run that dies on its first question still leaves a
+    # sidecar that says what produced it. The blocked 2026-07-28 best-config run is the reason
+    # this exists: its runner lived in /tmp, /tmp was cleared by a reboot, and the 5 rows it had
+    # already paid for became unusable because nothing recorded their configuration.
+    _write_run_config(out_base.with_suffix(".partial.config.jsonl"), run_config)
 
     def _score(question: Question) -> dict[str, Any]:
         # Retrieval happens INSIDE the worker: it opens its own store and connection, so the
@@ -706,7 +1086,11 @@ def _main() -> None:
         # conversations at once would let one's turns answer the other's questions.
         memories = system.retrieve(question.question)
         scored = score_question(
-            question, memories, answerer.complete, judge_llm.complete, args.cutoff
+            question,
+            memories,
+            answerer.complete,
+            None if args.no_judge else judge_llm.complete,
+            args.cutoff,
         )
         scored["conversation_idx"] = question.conversation_idx
         write(scored)
@@ -767,6 +1151,17 @@ def _main() -> None:
         "k": args.k,
         "cutoff": args.cutoff,
         "system": system.describe(),
+        # The same dict the sidecar guard compares on, so the final artifact and the crash-recovery
+        # record describe the run in identical terms rather than two hand-maintained copies.
+        "run_config": run_config,
+        "no_judge": bool(args.no_judge),
+        # An override that leaves no trace lets a run that crossed configurations read as clean.
+        # `allow_inert_arm` two blocks below is stamped for exactly this reason, and the guard's
+        # own docstring claimed "the caller stamps it" while nothing did.
+        "resume": {
+            "sidecars": [str(x) for x in (args.resume or [])],
+            "allow_config_change": bool(args.allow_config_change_on_resume),
+        },
         "metrics": aggregate(rows),
         "usage": {
             "total": total,

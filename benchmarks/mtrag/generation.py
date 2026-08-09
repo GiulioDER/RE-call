@@ -276,10 +276,17 @@ def normalise_context(ctx: dict[str, Any], rank: int, total: int) -> dict[str, A
     score = ctx.get("score")
     # `bool` is a subclass of `int`, so a `True` here would otherwise become the score `1.0`
     # instead of falling through to the rank-derived value.
-    numeric = isinstance(score, (int, float)) and not isinstance(score, bool)
+    #
+    # Narrowed inline rather than through a separate `numeric` flag: mypy cannot carry a type
+    # narrowing across a boolean variable, so `float(score)` read as `float(Any | None)` and the
+    # typecheck job failed on it. Runtime behaviour is identical.
+    if isinstance(score, (int, float)) and not isinstance(score, bool):
+        resolved_score = float(score)
+    else:
+        resolved_score = float(total - rank)
     return {
         "document_id": str(doc_id if doc_id is not None else ""),
-        "score": float(score) if numeric else float(total - rank),
+        "score": resolved_score,
         "text": str(ctx.get("text") or ""),
         "title": ctx.get("title"),
     }
@@ -373,9 +380,14 @@ def previous_prompt(out: Path) -> str | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8")).get("prompt")
+        prompt = json.loads(path.read_text(encoding="utf-8")).get("prompt")
     except (json.JSONDecodeError, OSError):
         return None
+    # Validate the type rather than trusting the manifest. This feeds the resume guard, which
+    # refuses to continue a run whose prompt differs; a non-string here would compare unequal to
+    # every known prompt name and read as UNKNOWN provenance, which is the safe direction but for
+    # the wrong reason. Returning None says "no recorded prompt", which is what a bad value means.
+    return prompt if isinstance(prompt, str) else None
 
 
 def already_done(path: Path) -> set[str]:

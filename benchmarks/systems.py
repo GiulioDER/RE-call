@@ -14,6 +14,12 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from recall.embeddings import embedding_profile_id
+# The same object `research_search` defaults to. Imported so `describe()` reports the policy this
+# arm ACTUALLY runs under rather than a hand-written claim about it: if the harness ever switches
+# to strict, the artifact follows automatically instead of going quietly stale.
+from recall.eval._research_trust import RESEARCH_POLICY
+
+from benchmarks._trust import uncalibrated_floor
 
 #: Retrieval budget shared by every arm unless ``--k`` overrides it. 5 is the value the harness was
 #: originally written with and the number every early result was measured at; it is kept as the
@@ -158,7 +164,7 @@ class RecallSystem:
     """RE-call adapter: index each dialogue turn, retrieve via the trust layer.
 
     Reuses the exact LOCOMO indexing/search machinery `recall.eval.locomo` already validates —
-    `index_conversation` for ingest, `trusted_search` for retrieve — rather than reimplementing
+    `index_conversation` for ingest, `research_search` for retrieve — rather than reimplementing
     either. Each conversation gets its own tenant (``bench-{sample_id}``) in a benchmark-only table
     (``bench_locomo_chunks``), mirroring the isolation `recall.eval.locomo.run` already relies on
     to keep one conversation's turns from leaking into another's answers.
@@ -167,6 +173,31 @@ class RecallSystem:
     abstention-propagates-as-empty-context behaviour is the single thing this whole benchmark
     exists to measure: the downstream generator sees no memories and must emit its own refusal
     token, exactly as it would for a real caller with no LLM in RE-call's path.
+
+    Retrieval goes through `research_search` with an EXPLICIT calibration, and both halves are
+    load-bearing:
+
+    - **The research policy.** LOCOMO has no tenant generation and no published calibration
+      artifact bound to it, so under the production `TrustPolicy` default (strict) every query
+      raises `TrustRefusal: INDEX_NOT_READY` before retrieval runs and the arm cannot score a
+      single question. `recall.eval.locomo` — the module this adapter claims to reuse — and
+      `benchmarks.beam.systems` already retrieve through `research_search` for exactly this
+      reason; this adapter was simply missed when the strict gate landed, and its integration
+      tests are `@requires_fastembed`, which CI skips, so nothing went red.
+    - **The explicit calibration.** The policy alone is not enough, and getting it wrong here is
+      worse than the refusal. Development mode with `calibration=None` means "no threshold exists
+      at all", so `recall.trust` overwrites every verdict to ``unverified`` and forces
+      ``abstained=False`` — deliberately, because abstaining is itself a trustworthy decision and
+      no gate licensed it. `retrieve` would then never return "", and the one behaviour this
+      benchmark exists to measure would read as a flat zero abstention rate rather than as a
+      broken gate. Passing a `Calibration` takes the other branch, which preserves the verdicts
+      and the abstention flag: "the path every abstention benchmark measures".
+
+    The threshold is the library's own `DEFAULT_GAP_THRESHOLD`, which is the constant `evaluate`
+    fell back to before the trust gate existed — so the arm measures the same gate it always did,
+    now stated rather than inherited. It is untuned and not comparable across embedders, and this
+    arm cannot vary it, which is why `describe()` publishes it instead of leaving a reader to
+    assume a fitted number produced the abstentions.
     """
 
     name = "recall"
@@ -185,6 +216,25 @@ class RecallSystem:
         self._embedder = resolve_embedder(embedder_name)
         self._reranker_name = reranker_name
         self._reranker = resolve_reranker(reranker_name)
+        # The abstention gate this arm runs, stated explicitly. See the class docstring for why
+        # `retrieve` cannot pass `calibration=None`: that spelling means "no threshold exists",
+        # and the trust layer answers it by forcing `abstained=False` on every query.
+        #
+        # NOT configurable, deliberately. The threshold is the library's untuned default and
+        # nothing here can vary it, which is a real limitation of this arm rather than an
+        # oversight: 0.50 sits at the 0th percentile of five of six measured top-1 distributions
+        # and the 16th of the sixth (see `recall/trust.py`), so it barely fires on most embedders
+        # and starves a sixth of queries on one, and this arm can be run on any of them via
+        # `--embedder`. A parameter no CLI reaches would only look like a remedy; wire a
+        # `--threshold` flag through `benchmarks/run.py` when a sweep actually needs one, so the
+        # knob arrives with the artifact field and the sweep that justify it. `describe()`
+        # publishes the constant meanwhile, so a reader can see which gate produced the numbers.
+        #
+        # Built by `benchmarks._trust`, which is where the sibling arms get theirs too, so "which
+        # threshold, keyed how" is decided in ONE place. This arm keeps the object rather than
+        # calling `bench_search`: `describe()` has to report the gate it ran under, and a helper
+        # that injects the calibration internally would leave nothing for the artifact to read.
+        self._calibration = uncalibrated_floor(self._embedder)
         # Overridable so a side experiment (e.g. the latency benchmark) can use its own table at a
         # different embedder width without colliding with the accuracy runs' `bench_locomo_chunks`.
         self._table = table
@@ -198,6 +248,7 @@ class RecallSystem:
     def describe(self) -> dict[str, Any]:
         """This arm's configuration, for the results artifact. Carries no secret (the DSN, which
         may embed a password, is deliberately not reported)."""
+        search = self._search_kwargs()
         return {
             "system": self.name,
             "k": self._k,
@@ -208,7 +259,61 @@ class RecallSystem:
             "reranker": self._reranker_name,
             "table": self._table,
             "tenant": self._tenant,
+            # WHICH abstention gate produced these numbers, and whether it could fire at all.
+            #
+            # The headline claim of this benchmark is an abstention rate, so an artifact that did
+            # not name the threshold behind it would leave a reader to assume a fitted one. It is
+            # the library's untuned default, which is not comparable across embedders (measured on
+            # other arms: it never fires on some models and starves a sixth of queries on others),
+            # and this arm cannot vary it. See `__init__`.
+            #
+            # Every field is READ OFF the arguments `retrieve` actually sends, via the shared
+            # `_search_kwargs`, rather than restated here. That is the difference between a
+            # description and a claim: an earlier draft reported `enforced` from an attribute
+            # `__init__` always set, so it read `true` unconditionally and would have gone on
+            # reading `true` after a `retrieve` that stopped PASSING the calibration — which is
+            # the exact omission this whole change is fixing, and the one the sibling adapters
+            # still carry. Now the two cannot diverge, because there is only one of them.
+            "trust": {
+                # `policy` obeys the same rule even though `_search_kwargs` carries no policy key
+                # today: `research_search` applies its own via `kwargs.setdefault`, so a caller's
+                # policy WINS. Hardcoding `RESEARCH_POLICY` here would publish `development` for a
+                # sweep that had added a strict policy to `_search_kwargs` to measure refusals —
+                # the same artifact-versus-search divergence the calibration fields just closed,
+                # left open on the one field most likely to be varied deliberately.
+                #
+                # `or`, not `get(..., default)`: a default applies only to a MISSING key, so a
+                # present `policy=None` — the natural spelling, since that is `trusted_search`'s
+                # own declared default for the parameter — would return None here and raise
+                # `None.mode` inside the artifact writer. Same rule as the calibration fields
+                # below: absent and None must degrade identically. `TrustPolicy` is a frozen
+                # dataclass with no `__bool__`, so it is always truthy and `or` cannot discard a
+                # real one.
+                "policy": (search.get("policy") or RESEARCH_POLICY).mode.value,
+                # `.get`, not `[...]`: `describe()` writes the results artifact, so a missing key
+                # here must degrade the report to `null` rather than raise and cost the run its
+                # output. The assertion that the key is PRESENT belongs in the tests, which make
+                # it, and not in the artifact writer.
+                "threshold": getattr(search.get("calibration"), "threshold", None),
+                "source": "library-default",
+                "certified": False,
+                "enforced": search.get("calibration") is not None,
+            },
         }
+
+    def _search_kwargs(self) -> dict[str, Any]:
+        """The search arguments this arm retrieves under. One source, two readers.
+
+        `retrieve` sends these and `describe` reports them, so the published artifact cannot
+        describe a gate the search never ran under.
+
+        ⚠️ If you add a `policy` key here, give it a real `TrustPolicy` and never `None`.
+        `research_search` applies its own with `kwargs.setdefault`, which does NOT replace a
+        present None, so `trusted_search` would resolve `None or TrustPolicy()` to STRICT and
+        refuse every query — the exact bug this adapter was fixed for, restored by a spelling
+        that reads like "use the default".
+        """
+        return {"k": self._k, "reranker": self._reranker, "calibration": self._calibration}
 
     def ingest(self, conversation: dict[str, Any]) -> None:
         from recall.eval.locomo import index_conversation
@@ -250,17 +355,15 @@ class RecallSystem:
         return len(sources)
 
     def retrieve(self, question: str) -> str:
+        from recall.eval._research_trust import research_search
         from recall.store import PgVectorStore
-        from recall.trust import trusted_search
 
         if self._tenant is None:
             raise RuntimeError("RecallSystem.retrieve() called before ingest()")
         with PgVectorStore(
             self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=self._table
         ) as store:
-            result = trusted_search(
-                store, self._embedder, question, k=self._k, reranker=self._reranker
-            )
+            result = research_search(store, self._embedder, question, **self._search_kwargs())
             if result.abstained:
                 return ""
             return "\n".join(hit.chunk.text for hit in result.hits)
@@ -289,7 +392,7 @@ class RecallSystem:
             self._dsn, dim=self._embedder.dim, tenant=self._tenant, table=self._table
         ) as store:
             # DEFAULT_CANDIDATE_K, not self._k or a separately-tunable value: `retrieve` above calls
-            # `trusted_search` without passing `candidate_k`, so that is the pool this arm actually
+            # `research_search` without passing `candidate_k`, so that is the pool this arm actually
             # retrieves at. Measuring a different pool size here would produce a verdict about a
             # configuration the run never uses.
             verdicts = ablation_verdicts(

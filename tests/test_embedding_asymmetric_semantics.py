@@ -231,7 +231,23 @@ def test_a_built_embedder_carries_the_registry_identity_verbatim(
     assert profile.context_version == "context-neighbor-v1"
     assert profile.query_mode == "query_embed"
     assert profile.passage_mode == "passage_embed"
-    assert dict(profile.dependencies).keys() == {"fastembed"}
+
+    # DELIBERATE CHANGE, not a relaxation. The registry declares WHAT the profile is; it cannot
+    # declare the ONNX execution provider, which is resolved when the session is constructed and
+    # is only knowable at build time. Since the provider moves vectors — measured: CPU vs CUDA
+    # changed top-45 membership on 2 of 64 queries — it is identity, so `build` must add it. What
+    # "verbatim" protects is every field the registry DOES declare, all asserted above and all
+    # unchanged. This assertion is pinned to the exact key set rather than widened to a superset,
+    # so a future entry sneaking into a registered profile's dependencies still fails here.
+    deps = dict(profile.dependencies)
+    assert deps.keys() == {"fastembed", "onnx-providers-source", "onnx-providers"}
+    assert deps["fastembed"], "the registry's own dependency entry must survive the wrap"
+    # Whichever way the stub resolves, the two provider fields must AGREE about whether the
+    # session was readable — a source of "session" alongside a value of "unavailable" (or the
+    # reverse) would mean the pair can report a provenance it did not observe.
+    assert (deps["onnx-providers-source"] == "unavailable") == (
+        deps["onnx-providers"] == "unavailable"
+    )
 
 
 def test_a_probed_dimension_that_contradicts_the_registry_refuses_to_start(

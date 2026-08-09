@@ -32,8 +32,9 @@ from recall.embeddings import FastEmbedEmbedder
 from recall.eval.locomo import index_conversation
 from recall.frontmatter import validity_bounds
 from recall.store import PgVectorStore
-from recall.eval._research_trust import research_search
 from recall.types import TrustedResult
+
+from benchmarks._trust import bench_search
 
 DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 TENANT = "temporal-live-check"
@@ -66,8 +67,16 @@ def main() -> int:
         wall = datetime.now(timezone.utc)
         q = "What did they say about their plans?"
 
-        res_early = research_search(store, emb, q, k=10, now=early)
-        res_wall = research_search(store, emb, q, k=10, now=wall)
+        # `bench_search`, not a bare `research_search`: P2 and P3 below are BOTH read off
+        # `hit.verdict`, and development mode without an explicit calibration rewrites every
+        # verdict to `unverified`. That makes P2 (`not_yet_valid > 0`) structurally unreachable
+        # and P3 (`not_yet_valid == 0` at wall clock) vacuously true — so this pre-registered
+        # check would print "NOT live" and exit 1 whatever the validity layer did, and its own
+        # control would be the thing certifying that nothing was wrong. Exactly the
+        # "document-level pass with a store-level failure would look exactly like success"
+        # this file was written to rule out, one layer further down.
+        res_early = bench_search(store, emb, q, k=10, now=early)
+        res_wall = bench_search(store, emb, q, k=10, now=wall)
 
         def verdicts(res: TrustedResult) -> Counter:
             return Counter(h.verdict for h in res.hits)

@@ -16,6 +16,11 @@ from typing import Any
 
 from benchmarks.beam.dataset import Conversation
 from recall.embeddings import embedding_profile_id
+from recall.guards import DEFAULT_GAP_THRESHOLD
+# The same object `research_search` defaults to. Imported so `describe()` reports the policy this
+# arm ACTUALLY runs under rather than a hand-written claim about it: if the harness ever switches
+# to strict, the artifact follows automatically instead of going quietly stale.
+from recall.eval._research_trust import RESEARCH_POLICY
 
 #: Benchmark-only table, isolated from the LOCOMO arm's `bench_locomo_chunks` so a BEAM run cannot
 #: contaminate — or be contaminated by — an accuracy run in flight.
@@ -225,6 +230,8 @@ class BeamRecallSystem:
         table: str = BEAM_TABLE,
         candidate_k: int | None = None,
         entailment_top_n: int = 0,
+        calibration: Any | None = None,
+        calibration_path: Any | None = None,
     ) -> None:
         from benchmarks.systems import resolve_embedder, resolve_reranker
 
@@ -253,6 +260,38 @@ class BeamRecallSystem:
             from recall.entailment import QnliEntailmentJudge
 
             self._entailment = TopNEntailment(QnliEntailmentJudge(), entailment_top_n)
+        # The abstention threshold, or None to accept the library's UNTUNED 0.50 default.
+        #
+        # It has to be passed in explicitly on this arm. `trusted_search` resolves a calibration
+        # from the store via `resolve_calibration`, but that method lives on the generation store,
+        # not on the `PgVectorStore` this system hands it — so the lookup silently misses, the
+        # status falls to "missing", and every query runs on the 0.50 constant. That constant is
+        # not comparable across embedders: measured on voyage-4-large it starves 14 of 60 questions
+        # (23.3%) to empty retrieval against 7% on text-embedding-3-small and 0% on bge-small.
+        #
+        # ⚠️ That figure comes from a DIFFERENT code path. Measured on this one, 2026-08-07: 54 of
+        # 300 scored questions sit below the 0.50 default and NONE was withheld, because
+        # `research_search` runs development mode. But it culls as soon as a calibration IS
+        # supplied — see `describe()`'s trust_policy note, which derives from both facts.
+        # Resolved HERE because this is the only place that knows the embedding PROFILE ID, and
+        # that is the key a calibration file is written under. run.py used to call
+        # `load_for(args.embedder, path)` with the CLI string, which never matches: `fastembed`
+        # resolves to profile `bge-small-symmetric-v1`, so every calibrated run on the free arm
+        # died telling the operator to fit the file they had just passed. Verified by execution.
+        if calibration_path is not None:
+            from recall.calibration import load_for
+
+            profile = embedding_profile_id(self._embedder)
+            calibration = load_for(profile, calibration_path)
+            if calibration is None:
+                raise SystemExit(
+                    f"{calibration_path} holds no calibration for embedding profile {profile!r} "
+                    f"(the --embedder string is {embedder_name!r}; the FILE is keyed by the "
+                    f"profile id, not by that string). It may also be absent, unreadable or "
+                    f"malformed — check the path exists on this host. Fit one with: "
+                    f"python -m benchmarks.beam.calibrate --embedder {embedder_name} ..."
+                )
+        self._calibration = calibration
         self._tenant: str | None = None
         #: filename -> turn date, so a retrieved chunk can be handed back with its date.
         self._dates: dict[str, str] = {}
@@ -263,6 +302,54 @@ class BeamRecallSystem:
             "system": self.name,
             "k": self._k,
             "candidate_k": self._candidate_k,
+            # WHICH abstention gate produced these numbers, and whether it could fire at all.
+            #
+            # Recording the threshold alone is not enough, and reporting it alone was actively
+            # misleading. This arm retrieves through `research_search`, which runs
+            # `TrustPolicy.development()`: that mode DEGRADES instead of refusing, so the threshold
+            # never culls a hit. Measured on the 300 scored questions, 54 (18.0%) have a top cosine
+            # below the 0.50 default and NONE was withheld; a 0.30 and a 0.50 arm returned
+            # byte-identical memory counts on all 300. An artifact that said only
+            # "threshold: library default 0.50" would name a control that never operated, and its
+            # false-abstention rate would be read as evidence about a gate rather than about the
+            # answerer — which is where BEAM's abstentions actually come from.
+            #
+            # `enforced` is DERIVED from the policy object rather than written by hand, so it
+            # cannot drift away from the behaviour it describes if the harness switches modes.
+            "calibration": (
+                {
+                    "source": "explicit",
+                    "threshold": getattr(self._calibration, "threshold", None),
+                    "certified": getattr(self._calibration, "certified", None),
+                }
+                if self._calibration is not None
+                else {
+                    "source": "library-default",
+                    # A float in BOTH branches. Prose here made the field uncomputable, and
+                    # hardcoding 0.50 duplicated a named constant that could drift.
+                    "threshold": DEFAULT_GAP_THRESHOLD,
+                    "certified": False,
+                }
+            ),
+            # `enforced` is the CONJUNCTION of two independent facts, and deriving it from the
+            # policy alone published a falsehood. `recall/trust.py` blanks verdicts and forces
+            # `abstained=False` only inside `if calibration is None:`; the explicit-calibration
+            # branch deliberately preserves them ("this is the path every abstention benchmark
+            # measures"). So with --calibration the threshold DOES cull and the trust layer DOES
+            # abstain, while the artifact said it structurally could not.
+            "trust_policy": {
+                "mode": RESEARCH_POLICY.mode.value,
+                "enforced": bool(self._calibration is not None or RESEARCH_POLICY.strict),
+                "note": (
+                    "an explicit calibration is in force: the threshold culls hits and a query "
+                    "with nothing above it returns empty context, so an abstention here may come "
+                    "from the trust layer"
+                    if self._calibration is not None
+                    else "development mode with no calibration: verdicts are blanked and "
+                    "abstained is forced False, so the threshold culls nothing and any abstention "
+                    "came from the answerer emitting its refusal string"
+                ),
+            },
             "embedder": {
                 "name": self._embedder_name,
                 "model": embedding_profile_id(self._embedder),
@@ -372,6 +459,7 @@ class BeamRecallSystem:
                 reranker=self._reranker,
                 candidate_k=self._candidate_k,
                 entailment=self._entailment,
+                calibration=self._calibration,
             )
             if result.abstained:
                 return []

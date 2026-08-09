@@ -97,6 +97,116 @@ def test_fake_records_ingested_conversations() -> None:
     assert [c["sample_id"] for c in system.ingested] == ["c1", "c2"]
 
 
+class _FakeStore:
+    """Stands in for `PgVectorStore` so the trust wiring can be read without a database.
+
+    `retrieve` only uses the store as a context manager and hands it straight to the search call,
+    so a bare object with `__enter__`/`__exit__` is the whole surface needed here.
+    """
+
+    def __enter__(self) -> _FakeStore:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+def test_retrieve_runs_the_research_policy_with_an_explicit_calibration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two halves of this arm's trust configuration, pinned where CI can actually see them.
+
+    Both integration tests below cover this behaviourally and BOTH are `@requires_fastembed`,
+    which the `[dev]` extra does not install — so CI skips them and skipped them on the day the
+    strict trust gate landed. `RecallSystem` kept calling `trusted_search` with no policy while
+    every other research harness moved to `research_search`, and the whole RE-call arm refused
+    every question with `INDEX_NOT_READY` for four days with a green pipeline. This test needs
+    neither Postgres nor fastembed, so the next such omission fails on the pull request.
+
+    Patches `trusted_search` where `_research_trust` bound it (module-level `from` import), not
+    `research_search` itself: the policy is applied INSIDE `research_search`, so patching that
+    would observe only the argument this adapter passes and would go green again the moment the
+    call reverted to plain `trusted_search`. Watching the layer underneath both is what makes the
+    policy assertion real rather than a restatement of the call.
+    """
+    from recall.eval import _research_trust
+    from recall.trust_policy import TrustMode
+
+    from benchmarks.systems import RecallSystem
+
+    seen: dict[str, Any] = {}
+
+    def _capture(store: Any, embedder: Any, query: str, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        raise AssertionError("stop here: the wiring is the thing under test")
+
+    monkeypatch.setattr(_research_trust, "trusted_search", _capture)
+    monkeypatch.setattr("recall.store.PgVectorStore", lambda *a, **kw: _FakeStore())
+
+    system = RecallSystem("postgresql://x/y", embedder_name="hashing")
+    system._tenant = "bench-itest"  # normally set by ingest(); this test does not index
+    with pytest.raises(AssertionError, match="stop here"):
+        system.retrieve("q")
+
+    # Half one: development mode, or every query refuses before retrieval ever runs.
+    assert seen["policy"].mode is TrustMode.DEVELOPMENT
+    # Half two: an explicit calibration, or `recall.trust` forces `abstained=False` on every
+    # query and the abstention rate this benchmark publishes becomes a structural zero.
+    calibration = seen.get("calibration")
+    assert calibration is not None, "retrieve() passed no calibration, so the gate cannot fire"
+    assert calibration.threshold == system.describe()["trust"]["threshold"]
+
+
+def test_describe_reports_the_abstention_gate_that_produced_the_numbers() -> None:
+    """The published artifact must name the threshold behind its headline abstention rate.
+
+    Every field is read off `_search_kwargs()`, the same object `retrieve` sends, so this asserts
+    what the arm RAN under rather than a hand-written restatement of it. `enforced` in particular:
+    reported from an attribute `__init__` always sets, it would have read `true` unconditionally,
+    including after a `retrieve` that stopped passing the calibration.
+    """
+    from recall.guards import DEFAULT_GAP_THRESHOLD
+    from recall.trust_policy import TrustPolicy
+
+    from benchmarks.systems import RecallSystem
+
+    system = RecallSystem("postgresql://x/y", embedder_name="hashing")
+    assert system.describe()["trust"] == {
+        "policy": "development",
+        "threshold": DEFAULT_GAP_THRESHOLD,
+        "source": "library-default",
+        "certified": False,
+        "enforced": True,
+    }
+    # `enforced` follows the ARGUMENTS rather than the attribute. The distinction is the whole
+    # point, so the calibration is dropped from `_search_kwargs` — the single source both readers
+    # share — and NOT from `self._calibration`. Nulling the attribute would have proved nothing:
+    # the regressed `describe()` this is guarding against read that same attribute, so it passes
+    # such a test unchanged. Patching the source is what discriminates, because only a `describe()`
+    # reading through `_search_kwargs` can see the difference.
+    system._search_kwargs = lambda: {"k": system._k, "reranker": system._reranker}  # type: ignore[method-assign]
+    assert system.describe()["trust"] == {
+        "policy": "development",
+        "threshold": None,
+        "source": "library-default",
+        "certified": False,
+        "enforced": False,
+    }
+    # `policy` obeys the same rule, and it is the field most likely to be varied on purpose: a
+    # sweep measuring strict-mode refusals would add one to `_search_kwargs`, and `research_search`
+    # lets a caller's policy win over its own. A hardcoded `development` here would publish the
+    # opposite of what such a run actually did.
+    strict = TrustPolicy.strict_policy()
+    system._search_kwargs = lambda: {"k": system._k, "policy": strict}  # type: ignore[method-assign]
+    assert system.describe()["trust"]["policy"] == "strict"
+    # A PRESENT-but-None policy degrades to the harness default rather than raising. `describe()`
+    # writes the results artifact, so an `AttributeError` here would cost a finished run its
+    # output; and None is the spelling most likely to be written, since it is `trusted_search`'s
+    # own declared default for that parameter.
+    system._search_kwargs = lambda: {"k": system._k, "policy": None}  # type: ignore[method-assign]
+    assert system.describe()["trust"]["policy"] == "development"
+
+
 @requires_fastembed
 @pytest.mark.skipif(not os.environ.get("RECALL_TEST_DSN"), reason="needs Postgres")
 def test_recall_system_indexes_and_retrieves() -> None:

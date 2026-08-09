@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, TypeVar
@@ -140,6 +140,11 @@ SPARSE_MAX_NONZERO = 1000
 #: caller assert "one sample per leg per query".
 LEG_META = "meta"
 
+#: Re-scoring specific ids against a query vector. Its own leg rather than folded into
+#: `LEG_META`: it is on the query path only for fused searches, so an operator comparing
+#: `search` against `search_fused` needs to see it separately to know what fusion costs.
+LEG_RESCORE = "rescore"
+
 #: EVERY leg label `STORE_QUERY_METRIC` is emitted under, for callers that must drain all of them.
 #:
 #: `METRICS` is process-wide, so a caller measuring one configuration after another has to clear
@@ -155,7 +160,7 @@ LEG_META = "meta"
 #: Hand-maintained like `TIMED_PUBLIC_METHODS` and checked the same way —
 #: `test_store_query_legs_matches_the_actual_timer_labels` parses this module and requires this
 #: tuple to EQUAL the set of `leg=` labels the timers actually emit.
-STORE_QUERY_LEGS = (LEG_DENSE, LEG_SPARSE, LEG_LEARNED_SPARSE, LEG_META)
+STORE_QUERY_LEGS = (LEG_DENSE, LEG_SPARSE, LEG_LEARNED_SPARSE, LEG_META, LEG_RESCORE)
 
 #: Public methods that carry a `METRICS.timer` and delegate to a private twin. A subclass MUST
 #: override the `_`-prefixed twin, NEVER the name listed here — overriding the public method
@@ -176,6 +181,7 @@ TIMED_PUBLIC_METHODS = (
     "query_sparse",
     "query_learned_sparse",
     "newest_indexed_at",
+    "cosines_for",
 )
 
 #: How long schema DDL may WAIT FOR A LOCK before giving up (ms). Not a bound on the work — the
@@ -2093,6 +2099,40 @@ class PgVectorStore:
             ).fetchone()
         )
         return row[0] if row else None
+
+    def cosines_for(self, ids: Sequence[str], vec: list[float]) -> dict[str, float]:
+        """Cosine similarity between `vec` and each of `ids`, for ids that exist.
+
+        `search_fused` retrieves with two query embeddings, so a hit surfaced only by the history
+        variant carries a cosine against the HISTORY, not the query. `hit.score` is not
+        decorative: `trust.py` thresholds on it and feeds it to `cal.confidence()`, a calibration
+        fitted on cosines against the query. This puts every returned hit back on that one basis.
+
+        Ids that do not exist are OMITTED rather than returned as 0.0. Zero is a real cosine and
+        would read as a genuine poor match; absence is a different fact and the caller can tell.
+
+        Subclasses override `_cosines_for`, not this; see `TIMED_PUBLIC_METHODS`.
+        """
+        if not ids:
+            return {}
+        with METRICS.timer(STORE_QUERY_METRIC, leg=LEG_RESCORE):
+            return self._cosines_for(ids, vec)
+
+    def _cosines_for(self, ids: Sequence[str], vec: list[float]) -> dict[str, float]:
+        # De-duplicated but order-preserving: a repeated id would not change the answer, only
+        # the round trip's payload size, and `dict.fromkeys` is the standard way to do that
+        # without reaching for a set (which would make the query non-deterministic to read).
+        wanted = list(dict.fromkeys(str(i) for i in ids))
+
+        def _op(conn: "psycopg.Connection") -> list[tuple]:
+            return conn.execute(
+                f"SELECT id, 1 - (embedding <=> %s) FROM {self._table} "
+                f"WHERE tenant_id = %s AND id = ANY(%s)",
+                (Vector(vec), self._tenant, wanted),
+            ).fetchall()
+
+        rows = self._with_retry(_op)
+        return {str(row[0]): float(row[1]) for row in rows}
 
     def count(self) -> int:
         row = self._with_retry(
