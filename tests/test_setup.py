@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import pytest
 
 from recall.setup import HardwareProbe, embedder_choices, run_setup_wizard
 
@@ -181,6 +182,18 @@ def test_setup_wizard_treats_calibration_directory_as_output_folder(tmp_path, mo
 
     assert seen["out"] == tmp_path / "nested" / "calibration.json"
     assert "Calibration saved to" in output.getvalue()
+
+
+def test_setup_wizard_rejects_windows_host_path_for_calibration_output(tmp_path, monkeypatch):
+    monkeypatch.setattr("recall.setup.os.name", "posix")
+    from recall.setup import _require_local_output_path
+
+    with pytest.raises(ValueError, match="Calibration output path looks like a Windows host path"):
+        _require_local_output_path(
+            "C:\\Users\\gde00\\Music",
+            label="Calibration output path",
+            default=tmp_path / "calibration.json",
+        )
 
 
 def test_setup_wizard_can_enable_entailment_judge(tmp_path, monkeypatch):

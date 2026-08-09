@@ -462,7 +462,7 @@ with PgVectorStore(DSN, dim=emb.dim, tenant="acme", pool_size=8) as store:
         hit.validity.superseded_by
 ```
 
-Point `RECALL_DSN` at any Postgres.
+Point `RECALL_DSN` at any PostgreSQL instance with `pgvector`.
 
 > **Two operational notes.** The test suite **DROPs tables**, so it reads a separate
 > `RECALL_TEST_DSN` and never `RECALL_DSN` — exporting your real DSN and running `pytest` cannot
