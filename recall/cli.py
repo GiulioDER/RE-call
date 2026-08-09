@@ -324,6 +324,25 @@ def _cmd_generation(args: argparse.Namespace) -> None:
     )
 
 
+def _cmd_manifest(args: argparse.Namespace) -> None:
+    from recall.lineage import IndexManifestV1
+    from recall.manifest import S3ObjectReader, load_inventory
+
+    if args.manifest_cmd == "create":
+        objects = load_inventory(args.objects)
+        manifest = IndexManifestV1(args.tenant, args.corpus_version, objects)
+        output = Path(args.output)
+        output.write_text(manifest.to_json(), encoding="utf-8")
+        print(f"created {output} sha256={manifest.digest}")
+        return
+    if args.manifest_cmd == "verify":
+        manifest = IndexManifestV1.from_json(Path(args.manifest).read_bytes())
+        verified = S3ObjectReader.from_environment().verify(manifest)
+        print(f"verified sha256={manifest.digest} objects={len(verified)}")
+        return
+    raise SystemExit(f"unknown manifest subcommand: {args.manifest_cmd}")
+
+
 def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):  # clean UTF-8 output on Windows consoles
         sys.stdout.reconfigure(encoding="utf-8")
@@ -387,6 +406,15 @@ def main(argv: list[str] | None = None) -> None:
     p_gc = generation_sub.add_parser("gc", help="collect expired retired generations")
     p_gc.add_argument("--retention-days", type=int, default=7)
     p_gc.add_argument("--retain-previous", type=int, default=2)
+
+    p_manifest = sub.add_parser("manifest", help="create or verify an immutable corpus manifest")
+    manifest_sub = p_manifest.add_subparsers(dest="manifest_cmd", required=True)
+    p_create = manifest_sub.add_parser("create", help="create a manifest from an inventory")
+    p_create.add_argument("--corpus-version", required=True)
+    p_create.add_argument("--objects", required=True)
+    p_create.add_argument("--output", required=True)
+    p_verify = manifest_sub.add_parser("verify", help="verify a manifest against S3")
+    p_verify.add_argument("manifest")
 
     p_index = sub.add_parser("index", help="index a folder of markdown or code")
     p_index.add_argument("path")
@@ -525,6 +553,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "generation":
         _cmd_generation(args)
+        return
+
+    if args.cmd == "manifest":
+        _cmd_manifest(args)
         return
 
     if args.cmd == "lint":  # pure filesystem check — no embedder, no DB
