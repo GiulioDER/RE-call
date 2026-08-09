@@ -342,6 +342,7 @@ def test_calibration_cli_create_publish_inspect_and_export(
     cli_main(
         [
             *base,
+            "calibration",
             "calibrate",
             "--generation",
             generation_id,
