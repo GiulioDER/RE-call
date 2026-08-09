@@ -1,5 +1,12 @@
 # MTRAG Tasks B and C — results as of 2026-08-08
 
+> 🔴 **SUPERSEDED IN PART — read `CORRECTION-idk-conditioning-2026-08-09.md` FIRST.**
+> Every harmonic mean below compares our RAW metrics against the baselines' IDK-CONDITIONED ones,
+> because the official scorer reads a lower-case `answerability` key that the release files spell
+> `Answerability`, so the conditioning silently never ran on our data. The corrected figures, the
+> proof that the baselines are conditioned, and the re-scored pre-registration are in that file.
+> The prose findings here still hold; the NUMBERS do not.
+
 **Prior work** (searched this session, per CLAUDE.md; recorded rather than repeated):
 `docs_search(source_type='memory', "MTRAG Task B Task C generation RAG answer quality GPT-4o judge
 RL_F RB_llm RB_alg harmonic mean")` and
