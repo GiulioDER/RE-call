@@ -70,7 +70,7 @@
   <text x="88" y="456" class="sans sub"><tspan class="subb">2.3&#215; more often than gpt-4o</tspan> and still finishes</text>
   <text x="88" y="484" class="sans sub">4th on answer quality. <tspan class="subb">It calls no LLM.</tspan></text>
 
-  <text x="88" y="546" class="mono kick" font-size="12.5" fill="#4c5f7a">RE&#8209;CALL <tspan fill="#2c3d54">&#183;</tspan> MIT <tspan fill="#2c3d54">&#183;</tspan> PIP INSTALL RECALL&#8209;RAG</text>
+  <text x="88" y="546" class="mono kick" fill="#4c5f7a" style="font-size:12.5px">RE&#8209;CALL <tspan fill="#2c3d54">&#183;</tspan> APACHE 2.0 <tspan fill="#2c3d54">&#183;</tspan> PIP INSTALL RECALL&#8209;RAG</text>
 
   <!-- ============ right: the result card ============ -->
   <rect x="736" y="118" width="456" height="404" rx="16" fill="#070d18" fill-opacity=".72" stroke="#25384f" stroke-width="1.3"/>
