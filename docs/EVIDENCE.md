@@ -18,11 +18,7 @@ supersession, expiry, and a calibrated confidence — not on distance alone, so 
 outranks the one it replaced no matter which is closer. When nothing clears the bar, the result is
 an abstention rather than the nearest match.
 
-## See it in one screen
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/superseded-catch.png" width="740" alt="recall demo: the stale rate-limit memory has the highest cosine (0.806) but is flagged superseded and demoted below the current memory; an unanswerable query returns an explicit ABSTAIN.">
-</p>
+## See it in one command
 
 <details>
 <summary>same run, as text</summary>
