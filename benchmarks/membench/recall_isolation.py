@@ -31,7 +31,10 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable
 
-from membench.axes.isolation.adapter import TenantDocument, TenantResponse
+from membench.axes.isolation.adapter import (
+    TenantDocument,
+    TenantResponse,
+)
 
 from benchmarks._trust import bench_search
 from benchmarks.membench import _env

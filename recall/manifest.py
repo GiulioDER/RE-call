@@ -110,7 +110,7 @@ class S3ObjectReader:
         service to an attacker-controlled S3 endpoint.
         """
         try:
-            import boto3
+            import boto3  # type: ignore[import-not-found]
         except ImportError as exc:  # pragma: no cover, exercised without the optional extra
             raise ImportError("S3 access requires: pip install recall-rag[s3]") from exc
         endpoint = os.environ.get("RECALL_S3_ENDPOINT_URL")
@@ -185,4 +185,3 @@ def load_inventory(path: str | Path) -> tuple[ManifestObjectV1, ...]:
         "objects": value,
     }
     return IndexManifestV1.from_dict(wrapper).objects
-

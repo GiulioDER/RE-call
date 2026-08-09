@@ -1,6 +1,6 @@
 # Model licences
 
-RE-call is **MIT**. It ships **no model weights**. Every model below is downloaded from
+RE-call is **Apache 2.0**. It ships **no model weights**. Every model below is downloaded from
 HuggingFace by the user at runtime, so RE-call redistributes nothing and this document is
 guidance for adopters rather than a licence obligation of the package.
 

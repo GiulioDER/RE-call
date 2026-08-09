@@ -16,6 +16,9 @@ import glob
 import json
 import math
 import random
+from pathlib import Path
+
+import pytest
 
 __test__ = False
 
@@ -23,6 +26,15 @@ D = "/var/tmp/mtrag_taskA_dev_20260807"
 ROOT = "/var/tmp/re_call_mtrag_20260803/mt-rag-benchmark"
 DOMAINS = ("clapnq", "cloud", "fiqa", "govt")
 random.seed(20260808)
+
+if not all(
+    Path(f"{ROOT}/mtrag-human/retrieval_tasks/{dom}/qrels/dev.tsv").exists()
+    for dom in DOMAINS
+):
+    pytest.skip(
+        "MTRAG qrels checkout is unavailable in this environment",
+        allow_module_level=True,
+    )
 
 
 def load_qrels():

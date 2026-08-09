@@ -1,4 +1,4 @@
-"""Every advertised test count must be a floor the suite actually clears.
+"""The README's advertised test count must be a floor the suite actually clears.
 
 It said **890** while the suite collected **1,339** — stale by half, in two places (the badge and
 the Engineering section). Nothing reported it, because a number in prose has no CI.

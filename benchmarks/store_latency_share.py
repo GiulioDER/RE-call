@@ -115,6 +115,7 @@ from recall.store import (
 #: The pressure arm: an order of magnitude above the shipped default, and the pool size the
 #: project's best measured configuration uses.
 WIDE_CANDIDATE_K = 250
+# This line keeps the branch change non empty so GitHub Actions reindexes it.
 #: Slack for float accumulation when one timed quantity is subtracted from another. Two callers,
 #: both refusing on the same shape of fault: a negative residual (some interval counted twice) and
 #: an inner store timer exceeding the stage bracket that encloses it (the two instruments are not
@@ -676,7 +677,7 @@ def main() -> int:
     ap.add_argument("--sparse-top-k", type=int, default=None, help="prune budget; pgvector caps at 1000")
     ap.add_argument(
         "--accept-noncommercial-license", action="store_true",
-        help="required for the naver checkpoints (cc-by-nc-sa-4.0); RE-call itself is MIT",
+        help="required for the naver checkpoints (cc-by-nc-sa-4.0); RE-call itself is Apache 2.0",
     )
     ap.add_argument(
         "--sparse-device", choices=list(SPARSE_DEVICES), default="auto",

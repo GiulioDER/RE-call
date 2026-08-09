@@ -47,7 +47,10 @@ import tempfile
 import os
 from collections.abc import Iterable
 
-from membench.axes.temporal.adapter import TemporalDocument, TemporalResponse
+from membench.axes.temporal.adapter import (
+    TemporalDocument,
+    TemporalResponse,
+)
 
 from benchmarks._trust import bench_search
 from benchmarks.membench import _env
