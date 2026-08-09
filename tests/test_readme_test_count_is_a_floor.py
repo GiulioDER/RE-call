@@ -47,6 +47,13 @@ def test_the_two_advertised_counts_agree() -> None:
     assert len(values) == 1, f"badge and prose disagree: {sorted(values)}"
 
 
+def test_the_schema_migrations_claim_matches_the_readme_body() -> None:
+    text = README.read_text(encoding="utf-8")
+    assert "no versioned upgrade path" not in text
+    assert "ordered SQL migration path" in text
+    assert "pre-tenancy tables are migrated in place" in text
+
+
 def test_the_suite_clears_the_advertised_floor(request: pytest.FixtureRequest) -> None:
     collected = len(request.session.items)
     if collected < _FULL_RUN_FLOOR:

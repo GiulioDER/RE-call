@@ -176,3 +176,26 @@ def test_cli_logging_goes_to_stderr_not_stdout(tmp_path, capsys, cli_table):
     # where no handler was configured at all and the record went nowhere — which WAS the bug.
     assert "pruning" in captured.err, "the prune log record was emitted nowhere"
     assert "pruning" not in captured.out, "a log record leaked onto stdout"
+
+
+def test_cli_db_commands_fail_closed_on_insecure_default_dsn(monkeypatch, tmp_path):
+    from recall import cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod,
+        "DEFAULT_DSN",
+        "postgresql://recall:recall@db.example.com:5432/recall",
+    )
+
+    def _blocked(_: str) -> None:
+        raise PermissionError("blocked")
+
+    monkeypatch.setattr(cli_mod, "require_secure_dsn", _blocked)
+
+    with pytest.raises(PermissionError, match="blocked"):
+        main(["search", "caching"])
+
+    note = tmp_path / "note.md"
+    note.write_text("the caching layer decision was adopted", encoding="utf-8")
+    monkeypatch.setattr(cli_mod, "require_secure_dsn", _blocked)
+    main(["check", str(note)])

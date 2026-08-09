@@ -12,7 +12,7 @@ from recall.embeddings import Embedder, resolve_embedder
 from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
-from recall.store import DEFAULT_TENANT, PgVectorStore, warn_if_insecure_dsn
+from recall.store import DEFAULT_TENANT, PgVectorStore, require_secure_dsn, warn_if_insecure_dsn
 from recall.trust import terminal_safe, trusted_search
 from recall.types import TrustedResult
 
@@ -193,7 +193,11 @@ def main(argv: list[str] | None = None) -> None:
     p_cal.add_argument("--out", default=None, help="output path (default: calibration.json)")
 
     args = parser.parse_args(argv)
-    warn_if_insecure_dsn(args.dsn)  # loud stderr note if default creds target a remote host
+    db_backed_cmds = {"index", "forget", "search", "demo", "code", "calibrate"}
+    if args.cmd in db_backed_cmds:
+        require_secure_dsn(args.dsn)
+    else:
+        warn_if_insecure_dsn(args.dsn)  # loud stderr note if default creds target a remote host
 
     if args.cmd == "lint":  # pure filesystem check — no embedder, no DB
         from recall.lint import lint_corpus

@@ -201,7 +201,7 @@ on a laptop.
 | **Data erasure** | ✅ `recall forget` / `recall_forget` permanently delete a source's chunks; previews by default, `--yes` to act | The right-to-erasure path — irreversible, so it refuses to act unattended without the flag |
 | **Abuse bounds** | ✅ `recall_index` refuses before embedding anything if a request exceeds `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` | A client-callable indexer with no cap is an unbounded spend on a cloud embedder |
 | **Authentication** | ✅ bearer tokens on the HTTP transports, three scopes, one tenant per principal — see [docs/AUTH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/AUTH.md) | Starting an HTTP transport without tokens **refuses to boot** rather than warning. stdio stays unauthenticated by design: it is a private pipe, not a listener |
-| **Schema migrations** | ❌ runtime `CREATE TABLE IF NOT EXISTS`, no versioned upgrade path | Pre-tenancy tables *are* migrated in place, with a test |
+| **Schema migrations** | ✅ ordered SQL migration path; pre-tenancy tables are migrated in place | Runtime `CREATE TABLE IF NOT EXISTS` is bootstrap only, not the whole story |
 | **HA / replication** | ❌ out of scope — this is a library over your Postgres | — |
 
 ## Retrieval quality: it depends on your corpus, and here is the rule
@@ -567,8 +567,9 @@ Stated plainly, because the failure mode this library exists to prevent is confi
   rate limits and an indexing byte quota ship too, but their buckets are per process, so N workers
   admit roughly N times the rate. For revocation, rotation or per-request identity, front this with
   a real identity provider and supply the MCP SDK's `auth_server_provider`.
-- **No schema migrations, no HA.** Runtime `CREATE TABLE IF NOT EXISTS`, no versioned upgrade path
-  (pre-tenancy tables *are* migrated in place, with a test). Replication is your Postgres's job.
+- **Schema migrations are versioned now, HA is still out of scope.** Runtime
+  `CREATE TABLE IF NOT EXISTS` is bootstrap only; pre-tenancy tables are migrated in place with a
+  test. Replication is your Postgres's job.
 
 
 ## Engineering
