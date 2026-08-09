@@ -84,6 +84,40 @@ the corpus cannot answer.
 The stale memory is more similar to the query, but it is declared superseded and loses to the
 current memory. The unrelated query returns an abstention. That is the core behavior.
 
+## How it works
+
+```mermaid
+flowchart TB
+    M(["memo · markdown + frontmatter<br/>supersedes · valid_from · valid_until"]) --> CH[chunk]
+    CH --> EW["embed · local, no API call"]
+    EW -. optional .-> SP[SPLADE encode]
+    EW --> DB
+    SP -. optional .-> DB
+
+    Q([query]) --> EQ["embed · query encoder"]
+    EQ --> DB[("PostgreSQL + pgvector<br/>vectors and full-text in one DB")]
+
+    DB --> DN["dense · pgvector cosine"]
+    DB --> SL["sparse · Postgres full-text"]
+    DB -. optional .-> LS["learned sparse · SPLADE"]
+
+    DN --> F[Reciprocal Rank Fusion]
+    SL --> F
+    LS -. optional .-> F
+
+    F -. optional .-> RR[cross-encoder rerank]
+    RR --> GP
+    F --> GP{{"gap check · calibrated threshold"}}
+    GP --> TR{"trust layer<br/>supersession · validity · confidence"}
+    CAL[/"calibration · fitted per embedder and corpus"/] --> TR
+    TR -. optional .-> EJ{{entailment judge}}
+    EJ --> OUT
+    TR --> OUT(["verdict + confidence + provenance<br/>or ABSTAIN, with a reason"])
+
+    classDef opt stroke:#d29922,color:#d29922,stroke-dasharray:5 4
+    class SP,LS,RR,EJ opt
+```
+
 ## Product surface
 
 | Area | Ships today |
