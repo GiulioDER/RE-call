@@ -32,7 +32,12 @@ from recall.types import TrustedResult
 # and the very next command silently ignores every setting it just captured.
 try:
     load_dotenv()
-except (OSError, UnicodeDecodeError):  # a .env that is a directory, unreadable, or not UTF-8
+except Exception:  # noqa: BLE001 - see below
+    # Deliberately broad. The narrow (OSError, UnicodeDecodeError) form missed ValueError:
+    # a NUL byte is VALID UTF-8, so read_text succeeds and os.environ.__setitem__ then
+    # raises 'embedded null character' - which is the realistic shape of a .env truncated
+    # by a crash mid-write. The whole point of this block is that a malformed .env must
+    # degrade to 'no .env', so enumerating exception types here is the wrong game.
     # This runs at IMPORT time, so an exception here kills `recall --help`, every command, and
     # `import recall.cli` for library consumers and test collection. A malformed .env must
     # degrade to "no .env" rather than take the process down.
@@ -70,10 +75,35 @@ def _make_embedder(name: str) -> Embedder:
     """
     try:
         return resolve_embedder(name)
-    except (ValueError, RuntimeError, ImportError) as exc:
-        # Not just ValueError: the spellings `choices=` used to block reach constructors that
-        # raise RuntimeError for a missing API key and ImportError for a missing extra. Those
-        # are operator errors and belong on one line, not in a traceback.
+    except Exception as exc:  # noqa: BLE001 - see below
+        # Deliberately broad, and an enumerated tuple was tried first and was wrong. The
+        # spellings `choices=` used to block reach real constructors: `st:<model>` raises
+        # huggingface_hub.RepositoryNotFoundError (an OSError subclass) for a typo, the cloud
+        # embedders probe the API in __init__ and re-raise the vendor SDK's own exception
+        # (openai.AuthenticationError inherits only from Exception), and an offline box raises
+        # httpx errors on the DEFAULT path. Every one of those is an operator mistake and
+        # belongs on one line. KeyboardInterrupt and SystemExit are not Exception subclasses,
+        # so they still propagate.
+        raise SystemExit(f"embedder {name!r}: {exc}") from exc
+
+
+def _entailment_judge(force: bool = False) -> EntailmentJudge | None:
+    """Resolve the optional judge, turning a bad env value into a refusal, not a traceback.
+
+    Two defects this exists to prevent, both found by audit:
+
+    * `resolve_entailment_judge` raises ValueError for any RECALL_ENTAILMENT outside its
+      true/false sets. Calling it unconditionally on search/demo/code made a TYPO in the .env
+      that `recall setup` itself writes traceback out of every search. Before that call was
+      added the variable was never read on those paths, so this was a new failure mode.
+    * That raise also happened BEFORE the `--entail` fallback could run, so an invalid env
+      value disabled an explicit flag. `force` resolves through the same resolver with the
+      opt-in overridden, so `--entail` works whatever the env says.
+    """
+    env = {**os.environ, "RECALL_ENTAILMENT": "1"} if force else None
+    try:
+        return resolve_entailment_judge(env)
+    except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
 
@@ -511,7 +541,22 @@ def main(argv: list[str] | None = None) -> None:
     if args.cmd == "schema" and getattr(args, "schema_cmd", None) == "grants":
         opens_db = False  # prints SQL for an operator to run; opens nothing
     if opens_db:
-        _require_secure(args.dsn)
+        if args.cmd == "setup":
+            # The wizard is the command you run to REPAIR a bad configuration, so a bare
+            # refusal is a dead end: it takes `dsn=args.dsn` verbatim and never prompts for
+            # one. Still guarded, because it does connect when the operator accepts the
+            # calibrate prompt — but the refusal has to name the way out.
+            try:
+                _require_secure(args.dsn)
+            except PermissionError as exc:
+                raise SystemExit(
+                    f"{exc}\n\n"
+                    "This is `recall setup`, which cannot prompt its way out of this: pass a "
+                    "DSN explicitly with `recall --dsn <dsn> setup`, or set "
+                    "RECALL_ALLOW_INSECURE_DSN=1 to accept the risk deliberately."
+                ) from exc
+        else:
+            _require_secure(args.dsn)
     else:
         warn_if_insecure_dsn(args.dsn)  # loud stderr note if default creds target a remote host
 
@@ -759,12 +804,13 @@ def main(argv: list[str] | None = None) -> None:
             for u in unfixable:
                 print(f"  SKIP {u.file}: {u.reason}")
             print(f"\n{len(proposals)} edge(s) proposable, {len(unfixable)} need a human")
+            _validated_emb = None
             if args.apply and args.semantic:
                 # Resolve the embedder BEFORE writing. `--semantic` needs one, and dropping
                 # argparse's `choices=` moved an unknown spelling's failure from "exit 2 before
                 # anything happened" to "after apply_proposal has already rewritten the memos".
                 # This is the only destructive path that resolved it late.
-                _make_embedder(args.embedder)
+                _validated_emb = _make_embedder(args.embedder)
             if not args.apply:
                 # Dry run by DEFAULT: this edits the user's own documents, and a tool that
                 # rewrites your memory the first time you try it has earned distrust.
@@ -779,14 +825,27 @@ def main(argv: list[str] | None = None) -> None:
         if args.semantic:  # opt-in retrieval-based missing-edge check (needs DB + embedder)
             from recall.semantic_lint import semantic_lint
 
-            emb = _make_embedder(args.embedder)
+            # Reuse the instance built for pre-write validation. Constructing twice is not
+            # free: the cloud embedders probe the API inside __init__, so a second build is a
+            # second billable request, and the local ones reload the model.
+            emb = _validated_emb or _make_embedder(args.embedder)
             # --threshold's help promises "the calibrated abstention threshold for this
             # embedder" as the default; hardcoding 0.70 made that untrue on every corpus
             # whose calibration says otherwise.
             _cal = load_for(emb.name)
-            thr = args.threshold if args.threshold is not None else (
-                _cal.threshold if _cal else 0.70
-            )
+            if args.threshold is not None:
+                thr, _src = args.threshold, "--threshold"
+            elif _cal is not None:
+                thr, _src = _cal.threshold, f"calibrated for {emb.name}"
+            else:
+                # `load_for` returns None WITHOUT raising when the artifact is keyed to a
+                # different embedder, so this fallback is reachable even when a calibration
+                # file exists — notably because the setup wizard keys it by the embedder
+                # SPELLING while `recall calibrate` keys it by `embedder.name`. Saying which
+                # threshold was used is the difference between a silent wrong answer and a
+                # visible one; the help text promises the calibrated value.
+                thr, _src = 0.70, f"UNCALIBRATED default, no calibration matched {emb.name}"
+            print(f"semantic threshold: {thr:.2f} ({_src})")
             chains = semantic_lint(args.dsn, emb, args.path, threshold=thr, glob=args.glob)
             for c in chains:
                 print(
@@ -1050,13 +1109,13 @@ def main(argv: list[str] | None = None) -> None:
         # writes) plus RECALL_ENTAILMENT_MODEL / _REVISION. Constructing QnliEntailmentJudge()
         # directly ignored all three, so a pinned model was silently replaced by the default
         # download. The explicit --entail flag still forces it on when the env says nothing.
-        entail_judge = resolve_entailment_judge()
-        if entail_judge is None and args.entail:
-            # Force it on THROUGH the resolver, not by constructing the judge bare: the bare
-            # form ignores RECALL_ENTAILMENT_MODEL/_REVISION, which is the exact defect this
-            # block was meant to fix. `recall setup` writes RECALL_ENTAILMENT="0", so this
-            # forcing path is the common one, not the rare one.
-            entail_judge = resolve_entailment_judge({**os.environ, "RECALL_ENTAILMENT": "1"})
+        # `--entail` resolves with the opt-in FORCED and never consults the env's own value,
+        # so a malformed RECALL_ENTAILMENT cannot defeat an explicit flag. Checking the plain
+        # resolver first would refuse before the flag was ever considered. Forcing goes THROUGH
+        # the resolver rather than constructing the judge bare, because the bare form ignores
+        # RECALL_ENTAILMENT_MODEL/_REVISION — the defect this block exists to fix. `recall
+        # setup` writes RECALL_ENTAILMENT="0", so the forcing path is the common one.
+        entail_judge = _entailment_judge(force=True) if args.entail else _entailment_judge()
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
             from recall.generation_store import GenerationStore
 
@@ -1092,7 +1151,7 @@ def main(argv: list[str] | None = None) -> None:
         # Resolved BEFORE the store opens and the corpus is indexed: a bad
         # RECALL_ENTAILMENT value raises, and failing after the expensive work is the
         # shape `search` already avoids.
-        _demo_judge = resolve_entailment_judge()
+        _demo_judge = _entailment_judge()
         with PgVectorStore(
             args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
         ) as store:
@@ -1119,7 +1178,7 @@ def main(argv: list[str] | None = None) -> None:
         # Resolved BEFORE the store opens and the corpus is indexed: a bad
         # RECALL_ENTAILMENT value raises, and failing after the expensive work is the
         # shape `search` already avoids.
-        _demo_judge = resolve_entailment_judge()
+        _demo_judge = _entailment_judge()
         with PgVectorStore(
             args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant
         ) as store:
