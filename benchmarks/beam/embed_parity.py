@@ -93,7 +93,7 @@ TIE_ATOL = 1e-12
 def _providers() -> list[str]:
     """The execution providers ONNX Runtime actually resolved, not the ones requested."""
     try:
-        import onnxruntime  # noqa: PLC0415
+        import onnxruntime  # type: ignore[import-untyped]  # noqa: PLC0415
 
         return list(onnxruntime.get_available_providers())
     except Exception:  # pragma: no cover - onnxruntime absent
