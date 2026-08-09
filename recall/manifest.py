@@ -185,4 +185,3 @@ def load_inventory(path: str | Path) -> tuple[ManifestObjectV1, ...]:
         "objects": value,
     }
     return IndexManifestV1.from_dict(wrapper).objects
-
