@@ -20,6 +20,7 @@ OFF by default: nothing calls this unless an ``EntailmentJudge`` is explicitly p
 """
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from typing import Protocol, runtime_checkable
 
@@ -40,6 +41,8 @@ DEFAULT_QNLI_MODEL = "cross-encoder/qnli-distilroberta-base"
 #: owner (or a compromise) can swap the weights and every consumer silently picks them up on
 #: the next cold cache. Pinning makes the resolved artifact immutable.
 DEFAULT_QNLI_REVISION = "7dd04ee0a6040c06fb381ad7edcb8585f4d937fd"
+_TRUE = frozenset({"1", "true", "yes", "on"})
+_FALSE = frozenset({"", "0", "false", "no", "off"})
 
 
 class QnliEntailmentJudge:
@@ -67,6 +70,27 @@ class QnliEntailmentJudge:
             return []
         scores = self._model.predict([(query, t) for t in texts])
         return [float(s) >= self._threshold for s in scores]
+
+
+def resolve_entailment_judge(env: dict[str, str] | None = None) -> EntailmentJudge | None:
+    """Build the optional entailment judge from env settings, or return None when off.
+
+    The setup wizard writes the opt-in as `RECALL_ENTAILMENT=1`; model selection is controlled by
+    `RECALL_ENTAILMENT_MODEL` and `RECALL_ENTAILMENT_REVISION`. Leaving the flag unset keeps the
+    judge off, which is the default shipped behavior.
+    """
+    source = env if env is not None else os.environ
+    raw = source.get("RECALL_ENTAILMENT", "").strip().lower()
+    if raw in _FALSE:
+        return None
+    if raw and raw not in _TRUE:
+        raise ValueError(
+            f"RECALL_ENTAILMENT={raw!r} is not a boolean. Use one of {sorted(_TRUE)} to enable "
+            "or leave it unset."
+        )
+    model = source.get("RECALL_ENTAILMENT_MODEL", DEFAULT_QNLI_MODEL)
+    revision = source.get("RECALL_ENTAILMENT_REVISION", DEFAULT_QNLI_REVISION)
+    return QnliEntailmentJudge(model=model, revision=revision)
 
 
 def _abstain_reason(hits: list[TrustedHit]) -> str:

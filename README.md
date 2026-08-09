@@ -424,6 +424,10 @@ pip install "recall-rag[fastembed]"  # local embeddings, no API key
 python -m recall.cli demo            # index corpus/ and run the sample queries
 ```
 
+> For a guided first install, run `python -m recall.cli setup` first. It asks about data
+> sensitivity, checks the hardware, lets you enter Voyage, OpenAI, or OpenRouter keys when
+> you have them, and writes a local `.env` file for the choices you made.
+
 > **The distribution is `recall-rag`; the import is `recall`.** `pip install recall` gets you an
 > unrelated RPC framework last released in 2014 — that name was taken and is not reclaimable, and
 > `re-call` is rejected by PyPI as too similar to it. Both `recall` and this package provide a

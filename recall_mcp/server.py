@@ -14,6 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
 
+from recall._env import load_dotenv
 from recall.calibration import load_for
 from recall.observability import METRICS, configure_logging, get_logger
 from recall.store import DEFAULT_TENANT, PgVectorStore, redacted_dsn
@@ -30,6 +31,7 @@ from recall_mcp.limits import limiter_from_env
 from recall_mcp.service import forget_memory, index_memory, make_embedder, memory_stats, search_memory
 from recall_mcp.stores import StoreRegistry
 
+load_dotenv()
 #: Which call budget each scope draws on. Keyed by scope rather than by tool name so a new tool
 #: is metered the moment it declares a scope — there is no separate table to remember to update,
 #: and an unmetered tool would be one that also skipped authorisation.

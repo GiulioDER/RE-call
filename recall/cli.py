@@ -5,8 +5,10 @@ import os
 import sys
 from pathlib import Path
 
-from recall.calibration import Calibration, from_samples, load_for, save
-from recall.embeddings import Embedder, HashingEmbedder
+from recall.calibration import Calibration, load_for
+from recall._env import load_dotenv
+from recall.entailment import resolve_entailment_judge
+from recall.embeddings import Embedder, resolve_embedder
 from recall.index import Indexer, PruneGuardTripped, chunk_code, chunk_text
 from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
@@ -14,17 +16,15 @@ from recall.store import DEFAULT_TENANT, PgVectorStore, warn_if_insecure_dsn
 from recall.trust import terminal_safe, trusted_search
 from recall.types import TrustedResult
 
+load_dotenv()
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 
 
 def _make_embedder(name: str) -> Embedder:
-    if name == "hashing":
-        return HashingEmbedder(dim=64)
-    if name == "fastembed":
-        from recall.embeddings import FastEmbedEmbedder
-
-        return FastEmbedEmbedder()
-    raise SystemExit(f"unknown embedder: {name}")
+    try:
+        return resolve_embedder(name)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _print_result(result: TrustedResult) -> None:
@@ -57,11 +57,22 @@ def _print_result(result: TrustedResult) -> None:
 
 
 def _run_queries(
-    store: PgVectorStore, embedder: Embedder, queries: list[str],
+    store: PgVectorStore,
+    embedder: Embedder,
+    queries: list[str],
     calibration: Calibration | None,
+    entailment=None,
 ) -> None:
     for q in queries:
-        _print_result(trusted_search(store, embedder, q, calibration=calibration))
+        _print_result(
+            trusted_search(
+                store,
+                embedder,
+                q,
+                calibration=calibration,
+                entailment=entailment,
+            )
+        )
         print()
 
 
@@ -73,7 +84,7 @@ def main(argv: list[str] | None = None) -> None:
     configure_logging()
     parser = argparse.ArgumentParser(prog="recall")
     parser.add_argument("--dsn", default=DEFAULT_DSN)
-    parser.add_argument("--embedder", default="fastembed", choices=["fastembed", "hashing"])
+    parser.add_argument("--embedder", default="fastembed")
     parser.add_argument(
         "--table", default="chunks",
         help="table to read/write (default: chunks). Use a throwaway name to keep an "
@@ -129,6 +140,7 @@ def main(argv: list[str] | None = None) -> None:
 
     sub.add_parser("demo", help="index corpus/ and run sample memory queries")
     sub.add_parser("code", help="index recall's own source and run sample code queries")
+    sub.add_parser("setup", help="run the first install wizard and write a local .env file")
 
     p_lint = sub.add_parser(
         "lint",
@@ -300,11 +312,12 @@ def main(argv: list[str] | None = None) -> None:
                 if not_found:
                     print(f"not found (check for typos): {', '.join(not_found)}")
     elif args.cmd == "search":
-        entail_judge = None
         if args.entail:
             from recall.entailment import QnliEntailmentJudge
 
             entail_judge = QnliEntailmentJudge()
+        else:
+            entail_judge = resolve_entailment_judge()
         with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
             store.ensure_schema()
             _print_result(
@@ -321,7 +334,7 @@ def main(argv: list[str] | None = None) -> None:
                 "do we inject retrieved context into the prompt?",
                 "how many requests per second can a client make?",
                 "how do we handle penguins on mars?",
-            ], calibration)
+            ], calibration, entailment=resolve_entailment_judge())
     elif args.cmd == "code":
         # index recall's own package source (content-agnostic engine, code-aware chunking)
         src = Path(__file__).resolve().parent
@@ -333,44 +346,25 @@ def main(argv: list[str] | None = None) -> None:
                 "where is reciprocal rank fusion implemented?",
                 "how are embeddings stored in postgres?",
                 "how does cross-encoder reranking reorder hits?",
-            ], calibration)
+            ], calibration, entailment=resolve_entailment_judge())
+    elif args.cmd == "setup":
+        from recall.setup import run_setup_wizard
+
+        run_setup_wizard(dsn=args.dsn)
     elif args.cmd == "calibrate":
-        import json
-
         from recall.calibration import ENV_VAR, _resolve_path
-        from recall.eval.calibrate import calibrate as run_calibration
+        from recall.setup import calibrate_from_files
 
-        # fail fast on a malformed or one-class queries file: a calibration built without both
-        # answerable AND unanswerable samples is degenerate, and saving it silently would arm a
-        # meaningless threshold
-        try:
-            entries = json.loads(Path(args.queries).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise SystemExit(f"cannot read queries file {args.queries!r}: {exc}") from exc
-        labeled = [q for q in entries if isinstance(q, dict) and not q.get("trust")]
-        if not all("query" in q and "answerable" in q for q in labeled):
-            raise SystemExit(
-                "queries file entries need 'query' and 'answerable' keys "
-                "(see recall/eval/queries.json for the format)"
-            )
-        if not any(q["answerable"] for q in labeled) or not any(
-            not q["answerable"] for q in labeled
-        ):
-            raise SystemExit(
-                "queries file needs at least one answerable AND one unanswerable entry — "
-                "a one-class file cannot calibrate an abstention threshold"
-            )
-
-        measured = run_calibration(
-            args.dsn,
-            embedder,
-            corpus_dir=Path(args.corpus) if args.corpus else None,
+        result = calibrate_from_files(
+            dsn=args.dsn,
+            embedder_name=embedder.name,
             queries_path=Path(args.queries),
+            corpus_dir=Path(args.corpus) if args.corpus else None,
+            out=Path(args.out) if args.out else None,
         )
-        cal = from_samples(
-            embedder.name, measured.answerable_max_cos, measured.unanswerable_max_cos
-        )
-        path = save(cal, args.out)
+        measured = result.report
+        cal = result.calibration
+        path = result.path
         print(f"embedder:  {embedder.name}")
         print(f"threshold: {cal.threshold} (scale {cal.scale})")
         sep = "n/a" if cal.separability is None else f"{cal.separability:.3f}"

@@ -8,7 +8,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
-from recall.embeddings import Embedder, HashingEmbedder
+from recall.entailment import resolve_entailment_judge
+from recall.embeddings import Embedder, resolve_embedder
 from recall.guards import staleness
 from recall.observability import METRICS, get_logger
 from recall.index import Indexer, candidate_files
@@ -89,14 +90,8 @@ DEFAULT_MAX_INDEX_BYTES = 20_000_000  # 20 MB
 
 
 def make_embedder(name: str) -> Embedder:
-    """Return the embedder backend by name ('fastembed' local default, or offline 'hashing')."""
-    if name == "hashing":
-        return HashingEmbedder(dim=HASHING_DIM)
-    if name == "fastembed":
-        from recall.embeddings import FastEmbedEmbedder
-
-        return FastEmbedEmbedder()
-    raise ValueError(f"unknown embedder: {name!r} (use 'fastembed' or 'hashing')")
+    """Return the configured embedder backend."""
+    return resolve_embedder(name)
 
 
 class SearchHit(BaseModel):
@@ -259,6 +254,11 @@ def _build_reranker(env: dict[str, str] | None = None) -> "Reranker | None":  # 
     return CrossEncoderReranker(model=model, revision=revision)
 
 
+def _build_entailment(env: dict[str, str] | None = None):  # pragma: no cover
+    """Instantiate the optional entailment judge when enabled in the environment."""
+    return resolve_entailment_judge(env)
+
+
 def search_memory(
     store: PgVectorStore,
     embedder: Embedder,
@@ -288,6 +288,7 @@ def search_memory(
     result = trusted_search(
         store, timed, query, k=k, source=source, calibration=calibration,
         reranker=_build_reranker(),
+        entailment=_build_entailment(),
     )
     hits = [
         SearchHit(
