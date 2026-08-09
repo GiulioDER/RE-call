@@ -8,6 +8,17 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-09
+
+### Fixed
+- Restored the top-level CLI surface, package exports, and README sections that a merge had
+  dropped, including the MTRAG showcase/article positioning and the package entry points.
+- Restored the dependency declarations and wheel metadata needed for the released extras to
+  install and type-check correctly.
+- Restored the `recall-enterprise` console script and the release smoke coverage that checks it.
+- Split the duplicate `paired_rerank_test.py` helpers into import-safe scripts so pytest no longer
+  collects them as colliding test modules.
+
 ### Changed (action required)
 - **FastEmbed profile fingerprints change, so profile-bound calibrations must be re-fitted.**
   The resolved ONNX execution provider is now part of `EmbeddingProfile.dependencies`, which is
