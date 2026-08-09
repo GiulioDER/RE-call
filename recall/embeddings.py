@@ -397,7 +397,7 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     ``hashing``, ``fastembed``, ``fastembed:<model>``, ``st:<model>``,
     ``voyage``, ``voyage:<model>``, ``openai`` and ``openai:<model>``.
     """
-    if name == "hashing":
+    if name == "hashing" or name.startswith("hashing-") or name.startswith("hashing:"):
         return HashingEmbedder(dim=64)
     if name == "fastembed":
         return FastEmbedEmbedder()
