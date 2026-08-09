@@ -163,6 +163,15 @@ packages = ["recall", "recall_mcp"]
 timeout = 120
 timeout_method = "thread"
 
+# Collect ONLY `tests/`. Two analysis scripts under `results/` are named `paired_rerank_test.py`
+# ("paired rerank test" as in the statistical test, not a unit test); neither defines a single
+# test function. Bare `pytest -q` picked them up anyway, and because they share a basename with
+# no package `__init__.py` between them, pytest could not give them distinct module names and
+# aborted the ENTIRE run with a collection error — so two files that contain no tests could turn
+# the whole suite red. Every real test in this repository lives in `tests/`; verified by
+# searching for `test_*.py` / `*_test.py` outside it and finding only those two.
+testpaths = ["tests"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
