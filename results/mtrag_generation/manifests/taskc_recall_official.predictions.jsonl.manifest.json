@@ -1,0 +1,10 @@
+{
+  "prompt": "official",
+  "layout": "official",
+  "model": "openai/gpt-4o",
+  "task": "c",
+  "contexts_from": "/var/tmp/mtrag_taskA_dev_20260807/hybrid_splade_voyage_842.predictions.jsonl",
+  "max_tokens": 512,
+  "tasks": 842,
+  "limit": null
+}

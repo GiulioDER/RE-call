@@ -1,0 +1,35 @@
+{"event": "start", "task": "c", "model": "openai/gpt-4o", "contexts_from": "benchmark", "tasks": 842, "already_done": 0, "pending": 842}
+{"event": "progress", "written": 25, "failed": 0, "pending": 842}
+{"event": "progress", "written": 50, "failed": 0, "pending": 842}
+{"event": "progress", "written": 75, "failed": 0, "pending": 842}
+{"event": "progress", "written": 100, "failed": 0, "pending": 842}
+{"event": "progress", "written": 125, "failed": 0, "pending": 842}
+{"event": "progress", "written": 150, "failed": 0, "pending": 842}
+{"event": "progress", "written": 175, "failed": 0, "pending": 842}
+{"event": "progress", "written": 200, "failed": 0, "pending": 842}
+{"event": "progress", "written": 225, "failed": 0, "pending": 842}
+{"event": "progress", "written": 250, "failed": 0, "pending": 842}
+{"event": "progress", "written": 275, "failed": 0, "pending": 842}
+{"event": "progress", "written": 300, "failed": 0, "pending": 842}
+{"event": "progress", "written": 325, "failed": 0, "pending": 842}
+{"event": "progress", "written": 350, "failed": 0, "pending": 842}
+{"event": "progress", "written": 375, "failed": 0, "pending": 842}
+{"event": "progress", "written": 400, "failed": 0, "pending": 842}
+{"event": "progress", "written": 425, "failed": 0, "pending": 842}
+{"event": "progress", "written": 450, "failed": 0, "pending": 842}
+{"event": "progress", "written": 475, "failed": 0, "pending": 842}
+{"event": "progress", "written": 500, "failed": 0, "pending": 842}
+{"event": "progress", "written": 525, "failed": 0, "pending": 842}
+{"event": "progress", "written": 550, "failed": 0, "pending": 842}
+{"event": "progress", "written": 575, "failed": 0, "pending": 842}
+{"event": "progress", "written": 600, "failed": 0, "pending": 842}
+{"event": "progress", "written": 625, "failed": 0, "pending": 842}
+{"event": "progress", "written": 650, "failed": 0, "pending": 842}
+{"event": "progress", "written": 675, "failed": 0, "pending": 842}
+{"event": "progress", "written": 700, "failed": 0, "pending": 842}
+{"event": "progress", "written": 725, "failed": 0, "pending": 842}
+{"event": "progress", "written": 750, "failed": 0, "pending": 842}
+{"event": "progress", "written": 775, "failed": 0, "pending": 842}
+{"event": "progress", "written": 800, "failed": 0, "pending": 842}
+{"event": "progress", "written": 825, "failed": 0, "pending": 842}
+{"event": "done", "written": 842, "output": "/var/tmp/mtrag_gen/taskc_benchmark.predictions.jsonl", "failed": 0, "failed_task_ids": [], "failures_log": null, "size_mb": 9.15}

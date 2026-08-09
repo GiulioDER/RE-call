@@ -61,9 +61,15 @@ cannot lose isn't one.
   <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/mem0_comparison.svg" alt="RE-call vs Mem0 on the LOCOMO benchmark. Judged answer accuracy: RE-call 0.420, Mem0 0.366, n=1,540, paired p=0.0002 to 0.0065, Holm-corrected. Cost to build the benchmark memory: RE-call $0.00, Mem0 $7.29." width="900">
 </p>
 
+On **[MTRAG](#multi-turn-rag-judged-by-someone-elses-judge)**, IBM's multi-turn RAG benchmark, our
+end-to-end score lands **0.0064 below** the published `gpt-4o` baseline. That loss sits in this
+README with the same prominence as the wins, next to the reason it is the trade we chose.
+
 Its real strength, though, is that it is built to be **tuned, not fixed**. Every stage of the
 pipeline (embedder, reranker, the SPLADE sidecar, the entailment judge) is opt-in and swappable,
-so the same system runs comfortably at either end of the spectrum:
+so the same system runs comfortably at either end of the spectrum. On MTRAG's 777 judged queries
+that span is **nDCG@5 0.2930 to 0.4342**, a 48% relative range across configurations of one engine,
+and every rung is a named flag with a measured price:
 
 - 🔒 **Fully local and air-gapped**, for maximum data protection: local embeddings, your own
   PostgreSQL, zero external calls, zero per-query egress.
@@ -92,6 +98,64 @@ forcing one shape on every deployment.
   conclusion never outranks its own correction.
 
 **Try it in 2 minutes, no API key** → [Quickstart](#quickstart--2-minutes-no-api-key).
+
+## Multi-turn RAG, judged by someone else's judge
+
+Every abstention number this project publishes came from our own harness.
+**[MTRAG](https://github.com/IBM/mt-rag-benchmark)** (IBM, TACL 2025) is the first place that claim
+faced an external one: 842 human-written multi-turn tasks, nine published baselines, and an official
+scorer that pays a **full 1.0 on all three metrics** for correctly saying "I do not have that
+information". Almost no other benchmark scores a refusal as anything but a miss.
+
+**The tuning curve, on 777 judged queries.** One engine, one flag between each rung:
+
+| configuration | nDCG@5 | R@100 | cost |
+|---|---|---|---|
+| dense only | 0.3024 | 0.6736 | free, local, fastest |
+| hybrid, Postgres FTS sparse leg | 0.2930 | 0.6865 | free, local |
+| **+ SPLADE learned sparse** *(the free default)* | **0.3573** | **0.7377** | free, local |
+| **+ Voyage rerank-2.5** *(one flag)* | **0.4342** | **0.7668** | paid API, ~1 s/query |
+
+The reranker is **+0.0769 nDCG@5**, 95% CI [+0.0575, +0.0968], p = 0.00010, **and worse on 162 of
+the 777**. An average lift is not a promise per query, which is why it is off by default.
+
+**End to end, same generator, prompt and judge, only the contexts differ.** RE-call's retrieval
+beats the benchmark's own by **+0.0011** (0.5527 against 0.5516), consistently signed across both
+prompts tested. ⛔ **And we do not beat the baselines**: 0.5527 against `gpt-4o`'s **0.5591** is
+**−0.0064**. The harness is not the excuse. On gold contexts, which contain no RE-call at all, we
+score **0.6195** against their **0.6208**, a gap of **0.0013** on identical inputs.
+
+**Where the shape of this system shows.** Correct refusals on the 55 unanswerable tasks:
+
+| system | correct refusals | end-to-end |
+|---|---|---|
+| llama-3.1-8b-instruct | 18/55 · 32.7% | 0.4710 |
+| **ours** | **16/55 · 29.1%** | **0.5527** |
+| gpt-4o | 7/55 · 12.7% | 0.5591 |
+| llama-3.1-405b-instruct | 3/55 · 5.5% | 0.5691 |
+| mixtral_8x22b_instruct | 0/55 · 0.0% | 0.5230 |
+
+**Second of ten at refusing what it cannot answer** (tied with `llama-3.1-70b`, behind only
+`llama-3.1-8b`), **while the two systems that outscore us end to end answer 87% and 95% of the
+questions their sources cannot support.** That is the trade this library is built to make, priced
+by someone else's judge on someone else's data. Abridged to 5 of 10 rows; the full table is in the
+report.
+
+> 🔑 **The most useful thing we learned here is not about retrieval.** Swapping the *generator
+> prompt* moved the gold-context score from 0.5913 to 0.6195, **+0.0282**, lifting us from 6th to
+> 3rd of ten, because our prompt was producing 83 false abstentions on 709 answerable tasks.
+> Measured on the *same* metric, our entire retrieval stack against the benchmark's own is
+> **+0.0011**. The prompt was worth roughly twenty-five times the retriever. **On this benchmark
+> the retriever was not the cap.** Measure where your own cap is before paying to move it.
+
+⚠️ Baselines are **recomputed here**, so every row is an anchored lift and none may be quoted
+against the public leaderboard. And the first version of every number above was wrong: the official
+scorer reads a lower-case `answerability` key while the release ships `Answerability`, so
+conditioning silently never ran. Reported upstream as
+[IBM/mt-rag-benchmark#23](https://github.com/IBM/mt-rag-benchmark/issues/23).
+
+→ Full report, all six runs, the correction and the compliance audit:
+**[docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md)**.
 
 ## How it works
 
@@ -350,6 +414,7 @@ install `.[dev]` only, so otherwise they would be shipped but never CI-tested or
 | [docs/PRODUCTION.md](https://github.com/GiulioDER/RE-call/blob/master/docs/PRODUCTION.md) | Production posture row by row, what this deliberately does not do, and the upgrade notes that can break a deployment |
 | [docs/PRIOR_ART.md](https://github.com/GiulioDER/RE-call/blob/master/docs/PRIOR_ART.md) | Graphiti, Mem0, Letta, LangMem, and where this genuinely differs |
 | [docs/ENGINEERING.md](https://github.com/GiulioDER/RE-call/blob/master/docs/ENGINEERING.md) | The test suite, the type gate, and the defects a real corpus found |
+| [docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md) | Multi-turn RAG scored by MTRAG's own judge: the tuning curve, the loss against the baselines, and the scoring bug we reported upstream |
 | [results/RESULTS.md](https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md) · [results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | Every number with its command, and what each one means |
 
 ## License

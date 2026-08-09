@@ -188,6 +188,20 @@ packages = ["recall", "recall_mcp"]
 timeout = 120
 timeout_method = "thread"
 
+# `results/` holds measurement ARTIFACTS and the one-off analysis scripts that produced them, never
+# tests. Two of those scripts are named `paired_rerank_test.py`, which matches pytest's default
+# `*_test.py` pattern, so a bare `pytest -q` from the repo root imported them at collection time and
+# died on a hard-coded `/var/tmp` qrels path that exists only on the machine that ran the benchmark.
+# A collection error fails the whole run, so this took down `test` and `floor` while the real suite
+# was fine.
+#
+# Excluding the directory rather than setting `testpaths = ["tests"]`: the dangerous failure here is
+# silently NOT running a test, and pinning testpaths would hide any future suite added outside
+# `tests/`. This only refuses a place that cannot legitimately contain one.
+#
+# pytest's defaults are restated because assigning this key replaces them rather than extending.
+norecursedirs = ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}", "results"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
