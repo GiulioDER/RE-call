@@ -32,16 +32,18 @@ from recall.types import TrustedResult
 # and the very next command silently ignores every setting it just captured.
 try:
     load_dotenv()
-except Exception:  # noqa: BLE001 - see below
-    # Deliberately broad. The narrow (OSError, UnicodeDecodeError) form missed ValueError:
-    # a NUL byte is VALID UTF-8, so read_text succeeds and os.environ.__setitem__ then
-    # raises 'embedded null character' - which is the realistic shape of a .env truncated
-    # by a crash mid-write. The whole point of this block is that a malformed .env must
-    # degrade to 'no .env', so enumerating exception types here is the wrong game.
-    # This runs at IMPORT time, so an exception here kills `recall --help`, every command, and
-    # `import recall.cli` for library consumers and test collection. A malformed .env must
-    # degrade to "no .env" rather than take the process down.
-    pass
+except Exception as _dotenv_exc:  # noqa: BLE001 - see below
+    # Deliberately broad: this runs at IMPORT time, so anything escaping here kills
+    # `recall --help`, every command, and `import recall.cli` for library consumers and test
+    # collection. Enumerating types was tried twice and was wrong twice — (OSError,
+    # UnicodeDecodeError) missed the ValueError that a NUL byte produces, and a NUL is valid
+    # UTF-8 so the read itself succeeds.
+    #
+    # It must also be LOUD. `load_dotenv` is all-or-nothing now (see recall/_env.py), so the
+    # process really is in the "no .env" state here rather than half-configured — but a
+    # silently ignored .env means the DSN falls back to the local default, passes the
+    # insecure-DSN guard precisely because it is local, and writes to the wrong database.
+    print(f"warning: ignoring .env — {type(_dotenv_exc).__name__}: {_dotenv_exc}", file=sys.stderr)
 
 DEFAULT_DSN = os.environ.get(
     "RECALL_SERVING_DSN",
@@ -84,7 +86,7 @@ def _make_embedder(name: str) -> Embedder:
         # httpx errors on the DEFAULT path. Every one of those is an operator mistake and
         # belongs on one line. KeyboardInterrupt and SystemExit are not Exception subclasses,
         # so they still propagate.
-        raise SystemExit(f"embedder {name!r}: {exc}") from exc
+        raise SystemExit(f"embedder {name!r}: {type(exc).__name__}: {exc}") from exc
 
 
 def _entailment_judge(force: bool = False) -> EntailmentJudge | None:
@@ -103,8 +105,13 @@ def _entailment_judge(force: bool = False) -> EntailmentJudge | None:
     env = {**os.environ, "RECALL_ENTAILMENT": "1"} if force else None
     try:
         return resolve_entailment_judge(env)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - same reasoning as _make_embedder above
+        # ValueError alone was not enough, and leaving the sibling narrow while broadening
+        # `_make_embedder` was inconsistent: `resolve_entailment_judge` CONSTRUCTS the judge,
+        # and QnliEntailmentJudge.__init__ eagerly builds a CrossEncoder — so a typo'd
+        # RECALL_ENTAILMENT_MODEL raises huggingface's RepositoryNotFoundError (an OSError),
+        # and a missing `recall[entail]` extra raises ImportError. Both are operator errors.
+        raise SystemExit(f"entailment judge: {type(exc).__name__}: {exc}") from exc
 
 
 def _print_result(result: TrustedResult) -> None:
@@ -793,6 +800,11 @@ def main(argv: list[str] | None = None) -> None:
         errors = sum(1 for i in issues if i.level == "error")
         warnings = len(issues) - errors
 
+        # Bound HERE, not inside `if args.fix:`, because `--semantic` is reachable without
+        # `--fix` and consumes it below. Initialising it in the fix block made plain
+        # `recall lint <path> --semantic` die with UnboundLocalError before doing any work.
+        _validated_emb: Embedder | None = None
+
         if args.fix:
             from recall.fix import apply_proposal, propose_fixes
 
@@ -804,7 +816,6 @@ def main(argv: list[str] | None = None) -> None:
             for u in unfixable:
                 print(f"  SKIP {u.file}: {u.reason}")
             print(f"\n{len(proposals)} edge(s) proposable, {len(unfixable)} need a human")
-            _validated_emb = None
             if args.apply and args.semantic:
                 # Resolve the embedder BEFORE writing. `--semantic` needs one, and dropping
                 # argparse's `choices=` moved an unknown spelling's failure from "exit 2 before
