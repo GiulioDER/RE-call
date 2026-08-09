@@ -865,3 +865,40 @@ class OpenAICompatEmbedder:
         contract as ``VoyageEmbedder.embed``, so this is a drop-in cloud embedder on the RE-call
         arm."""
         return batched_embed(texts, self._embed_one_batch, batch_size=self._batch_size)
+
+
+def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
+    """Build an embedder from a short config string.
+
+    Supported spellings:
+    ``hashing``, ``fastembed``, ``fastembed:<model>``, ``st:<model>``,
+    ``voyage``, ``voyage:<model>``, ``openai`` and ``openai:<model>``.
+    """
+    if name == "hashing":
+        return HashingEmbedder(dim=64)
+    if name == "fastembed":
+        return FastEmbedEmbedder()
+    if name.startswith("fastembed:"):
+        return FastEmbedEmbedder(model_name=name[len("fastembed:"):])
+    if name.startswith("st:"):
+        return SentenceTransformerEmbedder(name[3:])
+    source = os.environ if env is None else env
+    if name == "voyage":
+        return VoyageEmbedder(api_key=source.get("VOYAGE_API_KEY"))
+    if name.startswith("voyage:"):
+        return VoyageEmbedder(
+            model=name[len("voyage:"):], api_key=source.get("VOYAGE_API_KEY")
+        )
+    if name == "openai":
+        return OpenAICompatEmbedder(
+            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY")
+        )
+    if name.startswith("openai:"):
+        return OpenAICompatEmbedder(
+            model=name[len("openai:"):],
+            api_key=source.get("OPENROUTER_API_KEY") or source.get("OPENAI_API_KEY"),
+        )
+    raise ValueError(
+        f"unknown embedder: {name!r} (use hashing, fastembed, fastembed:<model>, "
+        "st:<model>, voyage, voyage:<model>, openai, or openai:<model>)"
+    )

@@ -334,6 +334,10 @@ PROFILE_FINGERPRINT_KEY = "profile_fingerprint"
 def save(cal: Calibration, path: str | Path | None = None) -> Path:
     """Write the calibration JSON; returns the path written."""
     p = _resolve_path(path)
+    if p.exists() and p.is_dir():
+        p = p / DEFAULT_PATH
+    p = p.expanduser().resolve()
+    p.parent.mkdir(parents=True, exist_ok=True)
     # The diagnosis travels WITH the threshold. A calibration.json that records "separability
     # 0.75, not certified" explains itself to whoever finds it months later; one carrying only a
     # number cannot be told apart from a working one.

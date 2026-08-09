@@ -18,7 +18,7 @@ build-backend = "hatchling.build"
 # so installing both into one environment gives two distributions writing the same import path, and
 # whichever installed last wins. Nothing detects it. Install `recall-rag`, never `recall`.
 name = "recall-rag"
-version = "0.8.0"
+version = "0.9.0"
 description = "Trustworthy retrieval for an AI agent's own memory — verdict, confidence and provenance per hit, or an explicit abstention"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -72,27 +72,8 @@ pool = ["psycopg-pool>=3.2"]
 # release walked in on `>=` and broke `master` 22 minutes after its last green run, with nothing in
 # this repo changed. Raising this cap is a PORT, not a bump.
 # Keep this in step with the `dev` extra below.
-# PyJWT[crypto] is declared DIRECTLY, not inherited from `mcp`. `recall_mcp.server` now imports
-# `recall_mcp.oidc` unconditionally, which imports `jwt` and `jwt.algorithms.RSAAlgorithm` at module
-# level, so a missing PyJWT is an ImportError on EVERY server start including stdio. `mcp` happens
-# to pull `pyjwt[crypto]` transitively today, but nothing bounds it: a PyJWT 3.x satisfies that
-# transitive `>=2.10.1` and would break `jwt.decode` with nothing in this repo changed. The
-# `[crypto]` marker is load-bearing, not cosmetic — without it RSAAlgorithm does not import.
-mcp = ["mcp>=1.27.2,<2", "psycopg-pool>=3.2", "PyJWT[crypto]>=2.10.1,<3"]
+mcp = ["mcp>=1.27.2,<2", "psycopg-pool>=3.2"]
 voyage = ["voyageai>=0.2"]
-s3 = ["boto3>=1.35"]
-# Learned sparse (SPLADE) retrieval. Deliberately NOT routed through sentence-transformers: its
-# `SparseEncoder` API needs ST >= 5.0, while rerank/entail/finetune pin >=3.0 and the note below
-# says to bump all three together. Going to `transformers` directly stops a retrieval experiment
-# from raising the RERANKER's floor as a side effect, and the inference is ~20 lines either way
-# (`recall/sparse.py`). Model weights are downloaded by the user at runtime, never vendored —
-# see KNOWN_MODELS for the licence of each supported checkpoint.
-# ⚠️ The CEILING is not cosmetic, for the same reason the `mcp` extra above carries one: this repo
-# was broken once by a major release walking in on an unbounded `>=` with nothing here changed.
-# EXERCISED against transformers 5.14.1 / torch 2.13. The 4.40 floor is the oldest release with the
-# APIs used here and is NOT itself tested — treat it as a claim about API availability, not about a
-# passing suite. Raising the cap to 6.x is a PORT, not a bump.
-sparse = ["transformers>=4.40,<6", "torch>=2.0,<3"]
 # NB: rerank / entail / finetune pin the same sentence-transformers floor — bump all three together.
 rerank = ["sentence-transformers>=3.0"]
 entail = ["sentence-transformers>=3.0"]
@@ -125,9 +106,7 @@ llamaindex = ["llama-index-core>=0.11"]
 # previously declared only as a MYPY override — i.e. the need was recorded for the type
 # checker and not for the installer, so provisioning a box with `.[bench]` raised
 # ModuleNotFoundError at the first parquet read rather than at install time.
-# numpy is imported at MODULE level by benchmarks/beam/embed_parity.py, so a box
-# provisioned with only this extra fails at first run rather than at install time.
-bench = ["mem0ai==2.0.13", "openai>=1.0", "pyarrow>=15", "numpy>=1.26"]
+bench = ["mem0ai==2.0.13", "openai>=1.0", "pyarrow>=15"]
 # pytest-timeout: a chunker that fails to terminate would otherwise HANG the run instead of
 # failing it — a hung CI job reads as "still running", not as a regression.
 #
@@ -145,9 +124,6 @@ dev = [
     # `test` and `typecheck` install `.[dev]` only, so an uncapped floor here breaks both jobs
     # even with the extra capped.
     "mcp>=1.27.2,<2", "psycopg-pool>=3.2",
-    # Mirrors the `mcp` extra: `recall_mcp.oidc` imports jwt at module level, so tests/typecheck
-    # need it here too.
-    "PyJWT[crypto]>=2.10.1,<3",
     # langchain-core: the `test` and `typecheck` jobs install `.[dev]` only, so the LangChain
     # adapter's test and its mypy pass need it here too. Mirrors the `langchain` extra above.
     "langchain-core>=0.3",
@@ -169,7 +145,6 @@ Changelog = "https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md"
 
 [project.scripts]
 recall = "recall.cli:main"
-recall-enterprise = "recall.enterprise_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["recall", "recall_mcp"]
@@ -231,14 +206,6 @@ module = [
     "tokenizers.*",
     "voyageai.*",
     "sentence_transformers.*",
-    # `sparse` extra. `recall/sparse.py` imports `transformers` inside the loader, the same lazy
-    # guard as every entry here — but the entry itself was never added. The SPLADE merge (d12ebf0)
-    # landed while the `typecheck` job was CANCELLED rather than run, so nothing reported it, and
-    # the follow-up that fixed the other three breakages recorded "mypy clean" from a venv where
-    # the extra happened to be installed. That is precisely the dependence this block's
-    # `follow_imports = skip` exists to remove: a gate whose verdict changes with the local
-    # install is advisory, and a cancelled job must not read like a passing one.
-    "transformers.*",
     # `finetune` extra. `benchmarks/rerank_finetune.py` imports torch inside main() only, so the
     # module imports and type-checks without it — the same guard as every entry above.
     "torch.*",
@@ -254,22 +221,6 @@ module = [
     # includes `benchmarks`, and the typecheck job installs `.[dev]` only, so without this the job
     # fails on a dependency it deliberately does not install.
     "pyarrow.*",
-    # Imported lazily inside embed_parity._providers(); the module must type-check
-    # without the extra installed, and CI installs only .[dev].
-    "onnxruntime.*",
-    # S3 extra. Imported lazily by recall.manifest and absent from the default/dev install.
-    "boto3.*",
-    # mem-bench: a SEPARATE repo, deliberately NOT a dependency of this one. Its `membench` package
-    # is stdlib-only and its "$0 to recompute" claim depends on staying that way, so we put it on
-    # PYTHONPATH at run time rather than installing it. `benchmarks/membench/` holds our
-    # submitter-side adapters, which import it. Same shape as every entry above: the module must
-    # type-check without the thing it optionally talks to.
-    "membench.*",
-    # benchmarks/mtrag/multiquery.py is a benchmark module carrying no py.typed marker, and it is
-    # imported by `deployable_fusion_weight` so the follow-on arm reuses its frozen fusion rather
-    # than restating it. Same shape as every entry above: the importing module must type-check
-    # whether or not the imported one is present, which also keeps the two mergeable in any order.
-    "benchmarks.mtrag.multiquery",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

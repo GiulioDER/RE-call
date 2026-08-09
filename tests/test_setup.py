@@ -1,0 +1,255 @@
+from __future__ import annotations
+
+import io
+
+from recall.setup import HardwareProbe, embedder_choices, run_setup_wizard
+
+
+def test_embedder_choices_hide_cloud_when_security_is_required():
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    choices = embedder_choices(probe, security_required=True, cloud_keys={})
+    labels = [c.label for c in choices]
+    assert "voyage cloud" not in labels
+    assert "openai compatible cloud" not in labels
+    assert "hashing" in labels
+    assert "fastembed" in labels
+
+
+def test_setup_wizard_writes_env_and_accepts_api_keys(tmp_path, monkeypatch):
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu="nvidia",
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    monkeypatch.setattr(
+        "recall.setup.calibrate_from_files",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("calibration should be skipped")),
+    )
+    answers = iter([
+        "n",
+        "voyage-key",
+        "openai-key",
+        "openrouter-key",
+        "4",
+        "1",
+        "1",
+        "n",
+        "n",
+    ])
+    output = io.StringIO()
+
+    def fake_input(_prompt: str = "") -> str:
+        return next(answers)
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=fake_input,
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "RECALL_DSN=postgresql://example/recall" in text
+    assert "RECALL_SECURITY_REQUIRED=0" in text
+    assert "VOYAGE_API_KEY=voyage-key" in text
+    assert "OPENAI_API_KEY=openai-key" in text
+    assert "OPENROUTER_API_KEY=openrouter-key" in text
+    assert "RECALL_EMBEDDER=voyage:voyage-3" in text
+    assert "RECALL_RERANK=0" in text
+    assert "RECALL_SPARSE=fts" in text
+    assert "RECALL_ENTAILMENT=0" in text
+    assert "Calibration skipped" in output.getvalue()
+
+
+def test_setup_wizard_skips_blank_calibration_inputs(tmp_path, monkeypatch):
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu="nvidia",
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    monkeypatch.setattr(
+        "recall.setup.calibrate_from_files",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("calibration should be skipped")),
+    )
+    answers = iter([
+        "n",
+        "voyage-key",
+        "openai-key",
+        "openrouter-key",
+        "4",
+        "1",
+        "1",
+        "n",
+        "y",
+        "",
+        "",
+    ])
+    output = io.StringIO()
+
+    def fake_input(_prompt: str = "") -> str:
+        return next(answers)
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=fake_input,
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "RECALL_DSN=postgresql://example/recall" in text
+    assert "RECALL_EMBEDDER=voyage:voyage-3" in text
+    assert "RECALL_SPARSE=fts" in text
+    assert "RECALL_ENTAILMENT=0" in text
+    assert "Calibration skipped" in output.getvalue()
+
+
+def test_setup_wizard_treats_calibration_directory_as_output_folder(tmp_path, monkeypatch):
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu="nvidia",
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    (tmp_path / "nested").mkdir()
+    seen = {}
+
+    def fake_calibrate_from_files(**kw):
+        seen["out"] = kw["out"]
+        return type(
+            "R",
+            (),
+            {
+                "path": kw["out"],
+                "calibration": type("C", (), {"threshold": 0.5})(),
+                "report": None,
+            },
+        )()
+
+    monkeypatch.setattr("recall.setup.calibrate_from_files", fake_calibrate_from_files)
+    answers = iter([
+        "n",
+        "voyage-key",
+        "openai-key",
+        "openrouter-key",
+        "4",
+        "1",
+        "1",
+        "n",
+        "y",
+        str(tmp_path / "queries.json"),
+        str(tmp_path / "corpus"),
+        str(tmp_path / "nested"),
+        "",
+    ])
+    output = io.StringIO()
+
+    def fake_input(_prompt: str = "") -> str:
+        return next(answers)
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=fake_input,
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    assert seen["out"] == tmp_path / "nested" / "calibration.json"
+    assert "Calibration saved to" in output.getvalue()
+
+
+def test_setup_wizard_can_enable_entailment_judge(tmp_path, monkeypatch):
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu="nvidia",
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    monkeypatch.setattr(
+        "recall.setup.calibrate_from_files",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("calibration should be skipped")),
+    )
+    answers = iter([
+        "n",
+        "voyage-key",
+        "openai-key",
+        "openrouter-key",
+        "4",
+        "1",
+        "1",
+        "y",
+        "1",
+        "n",
+    ])
+    output = io.StringIO()
+
+    def fake_input(_prompt: str = "") -> str:
+        return next(answers)
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=fake_input,
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "RECALL_ENTAILMENT=1" in text
+    assert "RECALL_ENTAILMENT_MODEL=cross-encoder/qnli-distilroberta-base" in text
+    assert "RECALL_ENTAILMENT_REVISION=7dd04ee0a6040c06fb381ad7edcb8585f4d937fd" in text
+    assert "Calibration skipped" in output.getvalue()
+
+
+def test_splade_choice_requires_cuda_gpu():
+    from recall.setup import sparse_choices
+
+    no_cuda = HardwareProbe(
+        cpu_count=8,
+        gpu="nvidia",
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    with_cuda = HardwareProbe(
+        cpu_count=8,
+        gpu="nvidia",
+        cuda_available=True,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    assert all(choice.label != "splade" for choice in sparse_choices(no_cuda))
+    assert any(choice.label == "splade" for choice in sparse_choices(with_cuda))

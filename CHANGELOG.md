@@ -6,6 +6,21 @@ a minor bump may still break schema or API. Dates are commit dates from `git log
 dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publishes to PyPI
 (see `.github/workflows/release.yml`).
 
+## [0.9.0] - 2026-08-09
+
+### Added
+- First install wizard (`python -m recall.cli setup`) with hardware probing, optional cloud API keys,
+  hardware gated embedder and sparse backend selection, optional entailment judge selection, and
+  calibration path persistence through `.env`.
+- Calibration file path handling now accepts either a file or a directory and resolves it before
+  saving, so a file picked anywhere on disk can be imported automatically on later runs.
+- The setup wizard now rejects host style Windows paths when run inside Docker and tells the user
+  to use the mounted container path instead.
+
+### Changed
+- Calibration is auto loaded during CLI, MCP server, and trust layer startup.
+- The optional entailment judge is now exposed through setup and `.env` driven startup.
+
 ## [Unreleased]
 
 ### Changed (action required)
