@@ -1,0 +1,173 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 840" width="1000" height="840" role="img" aria-labelledby="ttl dsc">
+  <title id="ttl">The RE-call pipeline, index and query to verdict</title>
+  <desc id="dsc">Write path: a memo carrying supersedes, valid_from and valid_until frontmatter is chunked and embedded locally with no API call. Query path: the query is embedded by the query encoder. Both meet in one PostgreSQL and pgvector database holding vectors and full text. Dense pgvector cosine and sparse Postgres full-text retrieval both feed Reciprocal Rank Fusion. An optional cross-encoder rerank, drawn dashed and amber, branches off to the right; the solid default path runs straight past it. Then a gap check against a calibrated threshold, then the trust layer enforcing supersession, validity and confidence, fed by a calibration fitted per embedder and corpus. The output is a verdict with confidence and provenance, or ABSTAIN with a reason.</desc>
+
+  <defs>
+    <linearGradient id="field" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0%"   stop-color="#04060c"/>
+      <stop offset="44%"  stop-color="#05080f"/>
+      <stop offset="68%"  stop-color="#070c1a"/>
+      <stop offset="100%" stop-color="#0a1226"/>
+    </linearGradient>
+    <radialGradient id="glowCyan" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%"  stop-color="#22d3ee" stop-opacity="0.20"/>
+      <stop offset="68%" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowViolet" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%"  stop-color="#8b5cf6" stop-opacity="0.20"/>
+      <stop offset="70%" stop-color="#8b5cf6" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowTeal" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%"  stop-color="#2dd4bf" stop-opacity="0.13"/>
+      <stop offset="72%" stop-color="#2dd4bf" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="vig" cx="0.5" cy="0.5" r="0.72">
+      <stop offset="52%"  stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.58"/>
+    </radialGradient>
+    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#22d3ee"/>
+      <stop offset="42%"  stop-color="#5eead4"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="dbFace" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#06161e"/>
+      <stop offset="30%"  stop-color="#0e2f3c"/>
+      <stop offset="62%"  stop-color="#0a2531"/>
+      <stop offset="100%" stop-color="#050f16"/>
+    </linearGradient>
+    <linearGradient id="dbLip" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#08202a"/>
+      <stop offset="34%"  stop-color="#2e8ea1"/>
+      <stop offset="66%"  stop-color="#175360"/>
+      <stop offset="100%" stop-color="#061a23"/>
+    </linearGradient>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d93b2"/>
+    </marker>
+    <marker id="arAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#f5a524"/>
+    </marker>
+    <marker id="arDim" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4c5f7a"/>
+    </marker>
+    <style>
+      .sans  { font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+      .mono  { font-family:ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,monospace; }
+      .nodeT { font-size:18px; font-weight:600; fill:#e9f6ff; }
+      .subT  { font-size:13.5px; font-weight:400; fill:#8aa0bd; }
+      .colT  { font-size:13px; font-weight:700; fill:#93aac8; letter-spacing:.16em; }
+      .amT   { font-size:17px; font-weight:600; fill:#f5a524; }
+      .amS   { font-size:13px; font-weight:600; fill:#bd8737; letter-spacing:.05em; }
+      .legT  { font-size:14px; fill:#8aa0bd; }
+      .outT  { font-size:19px; font-weight:700; fill:#f4f9ff; }
+      .outS  { font-size:16px; font-weight:600; fill:#67e8f9; }
+    </style>
+  </defs>
+
+  <rect width="1000" height="840" fill="url(#field)"/>
+  <ellipse cx="760" cy="230" rx="520" ry="380" fill="url(#glowCyan)"/>
+  <ellipse cx="930" cy="60"  rx="360" ry="300" fill="url(#glowViolet)"/>
+  <ellipse cx="300" cy="760" rx="460" ry="300" fill="url(#glowTeal)"/>
+  <rect width="1000" height="840" fill="url(#vig)"/>
+
+  <!-- ============ band headers ============ -->
+  <text x="313" y="28" class="sans colT" text-anchor="middle">INDEX &#183; NO LLM, EVER</text>
+  <rect x="213" y="36" width="200" height="2" rx="1" fill="url(#rule)" opacity=".5"/>
+  <text x="833" y="28" class="sans colT" text-anchor="middle">QUERY</text>
+  <rect x="763" y="36" width="140" height="2" rx="1" fill="url(#rule)" opacity=".5"/>
+
+  <!-- ============ row A: both entry paths, side by side ============ -->
+  <rect x="10" y="46" width="262" height="56" rx="28" fill="#0a1220" fill-opacity=".82" stroke="#2c4257" stroke-width="1.4"/>
+  <text x="141" y="70" class="sans nodeT" text-anchor="middle">memo</text>
+  <text x="141" y="90" class="mono subT" text-anchor="middle" style="font-size:10px">supersedes &#183; valid_from &#183; valid_until</text>
+
+  <path d="M272 74 L284 74" stroke="#7d93b2" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+
+  <rect x="290" y="46" width="96" height="56" rx="10" fill="#0a1220" fill-opacity=".82" stroke="#2c4257" stroke-width="1.4"/>
+  <text x="338" y="80" class="sans nodeT" text-anchor="middle">chunk</text>
+
+  <path d="M386 74 L408 74" stroke="#7d93b2" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+
+  <rect x="414" y="46" width="196" height="56" rx="10" fill="#0a1220" fill-opacity=".82" stroke="#2c4257" stroke-width="1.4"/>
+  <text x="512" y="70" class="sans nodeT" text-anchor="middle">embed</text>
+  <text x="512" y="90" class="mono subT" text-anchor="middle" style="font-size:12px">local, no API call</text>
+
+  <rect x="676" y="46" width="118" height="56" rx="28" fill="#0a1220" fill-opacity=".82" stroke="#2c4257" stroke-width="1.4"/>
+  <text x="735" y="80" class="sans nodeT" text-anchor="middle">query</text>
+
+  <path d="M794 74 L816 74" stroke="#7d93b2" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+
+  <rect x="822" y="46" width="168" height="56" rx="10" fill="#0a1220" fill-opacity=".82" stroke="#2c4257" stroke-width="1.4"/>
+  <text x="906" y="70" class="sans nodeT" text-anchor="middle">embed</text>
+  <text x="906" y="90" class="mono subT" text-anchor="middle" style="font-size:12px">query encoder</text>
+
+  <!-- into the store -->
+  <path d="M512 102 C512 116 470 112 440 124" stroke="#7d93b2" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+  <path d="M906 102 C906 118 760 112 690 126" stroke="#7d93b2" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+
+  <!-- ============ the store ============ -->
+  <path d="M250 148 L250 232 A250 22 0 0 0 750 232 L750 148 Z" fill="url(#dbFace)" stroke="#2c4257" stroke-width="1.4"/>
+  <ellipse cx="500" cy="148" rx="250" ry="22" fill="#08202a" stroke="url(#dbLip)" stroke-width="2"/>
+  <text x="500" y="196" class="sans nodeT" text-anchor="middle">PostgreSQL + pgvector</text>
+  <text x="500" y="217" class="mono subT" text-anchor="middle" style="font-size:12.5px">vectors and full-text in one database</text>
+
+  <path d="M400 250 C400 266 350 262 322 276" stroke="#7d93b2" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+  <path d="M600 250 C600 266 650 262 678 276" stroke="#7d93b2" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+
+  <!-- ============ the two legs ============ -->
+  <rect x="190" y="280" width="260" height="54" rx="10" fill="#0a1220" fill-opacity=".82" stroke="#2c4257" stroke-width="1.4"/>
+  <text x="320" y="302" class="sans nodeT" text-anchor="middle" style="font-size:17px">dense</text>
+  <text x="320" y="322" class="mono subT" text-anchor="middle" style="font-size:12px">pgvector cosine</text>
+
+  <rect x="550" y="280" width="260" height="54" rx="10" fill="#0a1220" fill-opacity=".82" stroke="#2c4257" stroke-width="1.4"/>
+  <text x="680" y="302" class="sans nodeT" text-anchor="middle" style="font-size:17px">sparse</text>
+  <text x="680" y="322" class="mono subT" text-anchor="middle" style="font-size:12px">Postgres full-text</text>
+
+  <path d="M320 334 C320 356 400 356 442 372" stroke="#7d93b2" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+  <path d="M680 334 C680 356 600 356 558 372" stroke="#7d93b2" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+
+  <!-- ============ fusion ============ -->
+  <rect x="380" y="376" width="240" height="52" rx="10" fill="#0a1220" fill-opacity=".92" stroke="#3d6f86" stroke-width="1.6"/>
+  <text x="500" y="408" class="sans nodeT" text-anchor="middle">Reciprocal Rank Fusion</text>
+
+  <!-- optional rerank, as a side branch so the default path stays a straight line -->
+  <path d="M620 402 C660 402 664 430 692 450" stroke="#f5a524" stroke-width="1.8" stroke-dasharray="7 6" fill="none" marker-end="url(#arAmber)"/>
+  <text x="700" y="442" class="sans amS">OPT-IN, OFF BY DEFAULT</text>
+  <rect x="660" y="452" width="300" height="52" rx="10" fill="#140f04" fill-opacity=".55" stroke="#f5a524" stroke-width="1.8" stroke-dasharray="8 6"/>
+  <text x="810" y="484" class="sans amT" text-anchor="middle">cross-encoder rerank</text>
+  <path d="M760 504 C740 528 700 528 676 534" stroke="#f5a524" stroke-width="1.8" stroke-dasharray="7 6" fill="none" marker-end="url(#arAmber)"/>
+
+  <!-- the default path: straight down, no detour -->
+  <path d="M500 428 L500 524" stroke="#7d93b2" stroke-width="1.8" fill="none" marker-end="url(#ar)"/>
+
+  <!-- ============ gap check ============ -->
+  <path d="M330 530 L670 530 L706 556 L670 582 L330 582 L294 556 Z" fill="#0a1220" fill-opacity=".92" stroke="#2c4257" stroke-width="1.4"/>
+  <text x="500" y="562" class="sans nodeT" text-anchor="middle" style="font-size:17px">gap check <tspan class="subT" style="font-size:13px">&#183; calibrated threshold</tspan></text>
+
+  <path d="M500 582 L500 604" stroke="#7d93b2" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+
+  <!-- ============ trust layer ============ -->
+  <rect x="280" y="610" width="440" height="62" rx="10" fill="#0a1220" fill-opacity=".92" stroke="#3d6f86" stroke-width="1.6"/>
+  <rect x="280" y="610" width="4" height="62" rx="2" fill="url(#rule)"/>
+  <text x="504" y="634" class="sans nodeT" text-anchor="middle">trust layer</text>
+  <text x="504" y="656" class="mono subT" text-anchor="middle" style="font-size:12.5px">supersession &#183; validity &#183; confidence</text>
+
+  <path d="M40 616 L252 616 L234 666 L22 666 Z" fill="#0a1220" fill-opacity=".7" stroke="#3a4d63" stroke-width="1.2"/>
+  <text x="137" y="636" class="sans subT" text-anchor="middle" fill="#93aac8" style="font-size:12.5px">calibration</text>
+  <text x="137" y="655" class="mono subT" text-anchor="middle" style="font-size:9.5px">per embedder and corpus</text>
+  <path d="M244 641 L272 641" stroke="#4c5f7a" stroke-width="1.4" stroke-dasharray="5 4" fill="none" marker-end="url(#arDim)"/>
+
+  <path d="M500 672 L500 700" stroke="#7d93b2" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+
+  <!-- ============ output ============ -->
+  <rect x="190" y="706" width="620" height="66" rx="33" fill="#08131f" fill-opacity=".92" stroke="url(#rule)" stroke-width="2.4"/>
+  <text x="500" y="735" class="sans outT" text-anchor="middle">verdict + confidence + provenance</text>
+  <text x="500" y="758" class="sans outS" text-anchor="middle">or ABSTAIN, with a reason</text>
+
+  <!-- ============ legend ============ -->
+  <line x1="228" y1="812" x2="272" y2="812" stroke="#7d93b2" stroke-width="2"/>
+  <text x="282" y="817" class="sans legT">runs if you change nothing</text>
+  <line x1="548" y1="812" x2="592" y2="812" stroke="#f5a524" stroke-width="2" stroke-dasharray="8 6"/>
+  <text x="602" y="817" class="sans legT" fill="#bd8737">opt-in, enabled by name</text>
+</svg>

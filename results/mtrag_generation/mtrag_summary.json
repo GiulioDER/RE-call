@@ -1,0 +1,365 @@
+{
+  "_note": "Every MTRAG figure this repository publishes, recomputed from committed artifacts by results/mtrag_generation/build_summary.py. Baselines are RECOMPUTED from the release, not copied from the paper, and run +0.018 to +0.043 high against the published table; they are anchored lifts and must not be quoted against the public leaderboard.",
+  "abstention_ours": {
+    "correct": 16,
+    "rate_pct": 29.09090909090909,
+    "source": "taskc_recall_official.fixed.jsonl.gz",
+    "total": 55
+  },
+  "baselines": {
+    "task_b": {
+      "c4ai-command-r-plus": {
+        "harmonic": 0.5984825838528923,
+        "n": 842,
+        "rb_alg": 0.44352412311661416,
+        "rb_llm": 0.6937779097387174,
+        "rl_f": 0.7595177369420015,
+        "unanswerable_correct": 7,
+        "unanswerable_pct": 12.727272727272727,
+        "unanswerable_total": 55
+      },
+      "gpt-4o": {
+        "harmonic": 0.6208255490982535,
+        "n": 842,
+        "rb_alg": 0.45470639483958813,
+        "rb_llm": 0.7615720506730006,
+        "rl_f": 0.7575868735693332,
+        "unanswerable_correct": 11,
+        "unanswerable_pct": 20.0,
+        "unanswerable_total": 55
+      },
+      "gpt-4o-mini": {
+        "harmonic": 0.5952542081301461,
+        "n": 842,
+        "rb_alg": 0.4331164051442234,
+        "rb_llm": 0.7498972684085511,
+        "rl_f": 0.7155637852442824,
+        "unanswerable_correct": 19,
+        "unanswerable_pct": 34.54545454545455,
+        "unanswerable_total": 55
+      },
+      "llama-3_1-405b-instruct": {
+        "harmonic": 0.6277334068200782,
+        "n": 842,
+        "rb_alg": 0.4750772746995481,
+        "rb_llm": 0.7416369754552653,
+        "rl_f": 0.7542561517849385,
+        "unanswerable_correct": 11,
+        "unanswerable_pct": 20.0,
+        "unanswerable_total": 55
+      },
+      "llama-3_1-70b-instruct": {
+        "harmonic": 0.5763075140954156,
+        "n": 842,
+        "rb_alg": 0.44219879269567763,
+        "rb_llm": 0.6632185273159145,
+        "rl_f": 0.6962192216827946,
+        "unanswerable_correct": 24,
+        "unanswerable_pct": 43.63636363636363,
+        "unanswerable_total": 55
+      },
+      "llama-3_1-8b-instruct": {
+        "harmonic": 0.4848023038063222,
+        "n": 842,
+        "rb_alg": 0.37063009205025804,
+        "rb_llm": 0.5936342042755345,
+        "rl_f": 0.5538808667935665,
+        "unanswerable_correct": 18,
+        "unanswerable_pct": 32.72727272727273,
+        "unanswerable_total": 55
+      },
+      "mixtral_8x22b_instruct": {
+        "harmonic": 0.5522365299747731,
+        "n": 842,
+        "rb_alg": 0.42021003092128734,
+        "rb_llm": 0.6977749406175773,
+        "rl_f": 0.6174494991358506,
+        "unanswerable_correct": 0,
+        "unanswerable_pct": 0.0,
+        "unanswerable_total": 55
+      },
+      "qwen-2_5-72b-instruct": {
+        "harmonic": 0.6030885884035218,
+        "n": 842,
+        "rb_alg": 0.4435026207624899,
+        "rb_llm": 0.747278325415677,
+        "rl_f": 0.7238896723100343,
+        "unanswerable_correct": 4,
+        "unanswerable_pct": 7.2727272727272725,
+        "unanswerable_total": 55
+      },
+      "qwen-2_5-7b-instruct": {
+        "harmonic": 0.5814708002034917,
+        "n": 842,
+        "rb_alg": 0.4357644016051895,
+        "rb_llm": 0.7188691607284243,
+        "rl_f": 0.6786844947393044,
+        "unanswerable_correct": 6,
+        "unanswerable_pct": 10.909090909090908,
+        "unanswerable_total": 55
+      },
+      "target": {
+        "harmonic": 0.8978305960189631,
+        "n": 842,
+        "rb_alg": 0.8771579132098898,
+        "rb_llm": 0.9519002375296912,
+        "rl_f": 0.8689518555203632,
+        "unanswerable_correct": 48,
+        "unanswerable_pct": 87.27272727272727,
+        "unanswerable_total": 55
+      }
+    },
+    "task_c": {
+      "c4ai-command-r-plus": {
+        "harmonic": 0.5502144057568423,
+        "n": 842,
+        "rb_alg": 0.3996218313372003,
+        "rb_llm": 0.6369809976247031,
+        "rl_f": 0.724559654697786,
+        "unanswerable_correct": 11,
+        "unanswerable_pct": 20.0,
+        "unanswerable_total": 55
+      },
+      "gpt-4o": {
+        "harmonic": 0.5591188758829221,
+        "n": 842,
+        "rb_alg": 0.3960086024324612,
+        "rb_llm": 0.7006448931116389,
+        "rl_f": 0.7076484466927011,
+        "unanswerable_correct": 7,
+        "unanswerable_pct": 12.727272727272727,
+        "unanswerable_total": 55
+      },
+      "gpt-4o-mini": {
+        "harmonic": 0.5436994801049326,
+        "n": 842,
+        "rb_alg": 0.38589331550851713,
+        "rb_llm": 0.6868509501187648,
+        "rl_f": 0.6800665666058393,
+        "unanswerable_correct": 13,
+        "unanswerable_pct": 23.636363636363637,
+        "unanswerable_total": 55
+      },
+      "llama-3_1-405b-instruct": {
+        "harmonic": 0.5691029887645856,
+        "n": 842,
+        "rb_alg": 0.41509275475527685,
+        "rb_llm": 0.6826086698337291,
+        "rl_f": 0.7156222480087946,
+        "unanswerable_correct": 3,
+        "unanswerable_pct": 5.454545454545454,
+        "unanswerable_total": 55
+      },
+      "llama-3_1-70b-instruct": {
+        "harmonic": 0.5378001861854905,
+        "n": 842,
+        "rb_alg": 0.3978200155397096,
+        "rb_llm": 0.6304394299287411,
+        "rl_f": 0.676413702771292,
+        "unanswerable_correct": 16,
+        "unanswerable_pct": 29.09090909090909,
+        "unanswerable_total": 55
+      },
+      "llama-3_1-8b-instruct": {
+        "harmonic": 0.4709838303117672,
+        "n": 842,
+        "rb_alg": 0.34754991924663053,
+        "rb_llm": 0.5873301662707838,
+        "rl_f": 0.5587400442331268,
+        "unanswerable_correct": 18,
+        "unanswerable_pct": 32.72727272727273,
+        "unanswerable_total": 55
+      },
+      "mixtral_8x22b_instruct": {
+        "harmonic": 0.5230295826428739,
+        "n": 842,
+        "rb_alg": 0.38652407035122394,
+        "rb_llm": 0.6560136579572448,
+        "rl_f": 0.6156521968976739,
+        "unanswerable_correct": 0,
+        "unanswerable_pct": 0.0,
+        "unanswerable_total": 55
+      },
+      "qwen-2_5-72b-instruct": {
+        "harmonic": 0.5625385441932108,
+        "n": 842,
+        "rb_alg": 0.4002031015735612,
+        "rb_llm": 0.6995172209026129,
+        "rl_f": 0.7119062840190779,
+        "unanswerable_correct": 1,
+        "unanswerable_pct": 1.8181818181818181,
+        "unanswerable_total": 55
+      },
+      "qwen-2_5-7b-instruct": {
+        "harmonic": 0.5447254988827301,
+        "n": 842,
+        "rb_alg": 0.39236499743381326,
+        "rb_llm": 0.6804548693586698,
+        "rl_f": 0.6715427126521932,
+        "unanswerable_correct": 3,
+        "unanswerable_pct": 5.454545454545454,
+        "unanswerable_total": 55
+      },
+      "target": {
+        "harmonic": 0.7947437798691755,
+        "n": 842,
+        "rb_alg": 0.8513003774792853,
+        "rb_llm": 0.9466627078384798,
+        "rl_f": 0.6477583702287021,
+        "unanswerable_correct": 48,
+        "unanswerable_pct": 87.27272727272727,
+        "unanswerable_total": 55
+      }
+    }
+  },
+  "deltas": {
+    "ours_vs_published_gpt4o_task_b": -0.0013362024027738784,
+    "prompt_effect_taskb": 0.02818513482039342,
+    "recall_vs_benchmark_contexts_abstain": 0.009894320032682868,
+    "recall_vs_benchmark_contexts_official": 0.001090350884637381,
+    "recall_vs_published_gpt4o_task_c": -0.00638463015024926,
+    "splade_over_lexical_recall_at_100": 0.05121192621192627,
+    "voyage_rerank_ndcg_at_5": 0.07692449936090329
+  },
+  "paired_rerank": {
+    "arms": [
+      "hybrid_splade",
+      "hybrid_splade_voyage"
+    ],
+    "better": 302,
+    "ci95_high": 0.09681134814434383,
+    "ci95_low": 0.05746615723057616,
+    "delta": 0.07692449936090327,
+    "metric": "nDCG@5",
+    "n": 777,
+    "p_permutation": 9.999000099990002e-05,
+    "unchanged": 313,
+    "worse": 162
+  },
+  "ranks": {
+    "taskb": {
+      "harmonic": 0.5913042118750862,
+      "of": 10,
+      "rank": 6
+    },
+    "taskb_official": {
+      "harmonic": 0.6194893466954796,
+      "of": 10,
+      "rank": 3
+    },
+    "taskc_benchmark": {
+      "harmonic": 0.5227770064946566,
+      "of": 10,
+      "rank": 9
+    },
+    "taskc_benchmark_official": {
+      "harmonic": 0.5516438948480354,
+      "of": 10,
+      "rank": 4
+    },
+    "taskc_recall": {
+      "harmonic": 0.5326713265273395,
+      "of": 10,
+      "rank": 8
+    },
+    "taskc_recall_official": {
+      "harmonic": 0.5527342457326728,
+      "of": 10,
+      "rank": 4
+    }
+  },
+  "runs": {
+    "taskb": {
+      "harmonic": 0.5913042118750862,
+      "n_rb_agg": 842,
+      "n_rb_llm": 842,
+      "n_rl_f": 832,
+      "rb_alg": 0.4627663129030879,
+      "rb_llm": 0.6314726840855107,
+      "rl_f": 0.7524381307987981,
+      "rows": 842
+    },
+    "taskb_official": {
+      "harmonic": 0.6194893466954796,
+      "n_rb_agg": 842,
+      "n_rb_llm": 842,
+      "n_rl_f": 842,
+      "rb_alg": 0.4572757783605701,
+      "rb_llm": 0.7285035629453681,
+      "rl_f": 0.7793276962414489,
+      "rows": 842
+    },
+    "taskc_benchmark": {
+      "harmonic": 0.5227770064946566,
+      "n_rb_agg": 842,
+      "n_rb_llm": 842,
+      "n_rl_f": 842,
+      "rb_alg": 0.39307248808990497,
+      "rb_llm": 0.5629453681710214,
+      "rl_f": 0.7051424711887173,
+      "rows": 842
+    },
+    "taskc_benchmark_official": {
+      "harmonic": 0.5516438948480354,
+      "n_rb_agg": 842,
+      "n_rb_llm": 842,
+      "n_rl_f": 842,
+      "rb_alg": 0.399032469616152,
+      "rb_llm": 0.6372921615201901,
+      "rl_f": 0.7336271669830166,
+      "rows": 842
+    },
+    "taskc_recall": {
+      "harmonic": 0.5326713265273395,
+      "n_rb_agg": 842,
+      "n_rb_llm": 842,
+      "n_rl_f": 842,
+      "rb_alg": 0.38923742795593824,
+      "rb_llm": 0.5830166270783848,
+      "rl_f": 0.7420336257500001,
+      "rows": 842
+    },
+    "taskc_recall_official": {
+      "harmonic": 0.5527342457326728,
+      "n_rb_agg": 842,
+      "n_rb_llm": 842,
+      "n_rl_f": 842,
+      "rb_alg": 0.3896768621539192,
+      "rb_llm": 0.6426365795724466,
+      "rl_f": 0.7661397933508314,
+      "rows": 842
+    }
+  },
+  "task_a": {
+    "dense_only": {
+      "n": 777,
+      "ndcg_at_5": 0.30241859311471164,
+      "recall_at_100": 0.6735735735735736
+    },
+    "hybrid_both": {
+      "n": 777,
+      "ndcg_at_5": 0.3347884788690241,
+      "recall_at_100": 0.7347444383158669
+    },
+    "hybrid_lexical": {
+      "n": 777,
+      "ndcg_at_5": 0.29301498024511613,
+      "recall_at_100": 0.6865278543849972
+    },
+    "hybrid_splade": {
+      "n": 777,
+      "ndcg_at_5": 0.35728865582904334,
+      "recall_at_100": 0.7377397805969235
+    },
+    "hybrid_splade_voyage": {
+      "n": 777,
+      "ndcg_at_5": 0.43421315518994663,
+      "recall_at_100": 0.7667708524851382
+    },
+    "splade_only": {
+      "n": 777,
+      "ndcg_at_5": 0.3285690327396765,
+      "recall_at_100": 0.7074033216890359
+    }
+  }
+}

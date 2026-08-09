@@ -9,9 +9,19 @@ chunking/hashing/frontmatter path every real corpus takes. A bespoke in-memory l
 measure a code path no user runs — that is the reason the sibling file writes files at all.
 
 **RE-call runs at shipped defaults here.** No reranker, no tuned `candidate_k`, no non-default
-embedder — `FastEmbedEmbedder` (local, no API key) and `trusted_search`'s own defaults. A tuned
-variant is a separately labelled arm and never the headline (`SUITE-DESIGN.md` rule 4); this file
-is the headline arm and must not quietly become the tuned one.
+embedder — `FastEmbedEmbedder` (local, no API key) and the library's own retrieval defaults. A
+tuned variant is a separately labelled arm and never the headline (`SUITE-DESIGN.md` rule 4); this
+file is the headline arm and must not quietly become the tuned one.
+
+⚠️ **"Shipped defaults" cannot include the shipped TRUST policy, and that is not a loophole.**
+`trusted_search` defaults to strict, which refuses any corpus without a published calibration
+artifact — correct for a serving path and fatal for a benchmark, since an uncertified corpus is
+what a benchmark measures. Read literally, "no overrides" made this arm refuse every question with
+`TrustRefusal: INDEX_NOT_READY` rather than score at shipped defaults, so the rule defeated itself.
+Retrieval therefore goes through `benchmarks._trust.bench_search`, which is development mode plus
+an EXPLICIT calibration at the library's own untuned 0.50 floor. That is exactly the configuration
+`benchmarks/ladder/report.py` already discloses as the one this arm's published numbers ran with
+(`UNCALIBRATED_BGE_SMALL_FLOOR`), so it restores the documented behaviour rather than changing it.
 """
 from __future__ import annotations
 
@@ -26,8 +36,8 @@ from recall.cache import EmbeddingCache
 from recall.embeddings import Embedder, FastEmbedEmbedder
 from recall.index import Indexer
 from recall.store import PgVectorStore
-from recall.trust import trusted_search
 
+from benchmarks._trust import bench_search
 from benchmarks.ladder.adapter import Document, Response
 
 _log = logging.getLogger(__name__)
@@ -206,8 +216,14 @@ class RecallSystem:
         return frozenset(ids)
 
     def query(self, question: str) -> Response:
-        """Ask RE-call's own agent-facing entry point, at its shipped defaults, no overrides."""
-        result = trusted_search(self._store, self._embedder, question)
+        """Ask RE-call's own agent-facing entry point, at its shipped retrieval defaults.
+
+        The trust policy is the one documented exception, and the module docstring says why: the
+        shipped policy refuses an uncertified corpus, which is the only kind a benchmark has.
+        `bench_search` supplies development mode and the explicit 0.50 floor this arm's report
+        already discloses; `k`, `candidate_k` and the reranker are still untouched defaults.
+        """
+        result = bench_search(self._store, self._embedder, question)
         # Read the score BEFORE the abstention branch. An abstained result still carries hits and
         # still has a top-1 cosine, and those are exactly the rows the threshold sweep needs.
         # Taking it only on the answered path would silently make the sweep blind to abstentions.

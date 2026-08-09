@@ -6,21 +6,6 @@ a minor bump may still break schema or API. Dates are commit dates from `git log
 dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publishes to PyPI
 (see `.github/workflows/release.yml`).
 
-## [0.9.0] - 2026-08-09
-
-### Added
-- First install wizard (`python -m recall.cli setup`) with hardware probing, optional cloud API keys,
-  hardware gated embedder and sparse backend selection, optional entailment judge selection, and
-  calibration path persistence through `.env`.
-- Calibration file path handling now accepts either a file or a directory and resolves it before
-  saving, so a file picked anywhere on disk can be imported automatically on later runs.
-- The setup wizard now rejects host style Windows paths when run inside Docker and tells the user
-  to use the mounted container path instead.
-
-### Changed
-- Calibration is auto loaded during CLI, MCP server, and trust layer startup.
-- The optional entailment judge is now exposed through setup and `.env` driven startup.
-
 ## [Unreleased]
 
 ### Changed (action required)
@@ -224,6 +209,95 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   The documentation now says so. Behaviour is unchanged.
 
 ### Fixed
+- **The other three benchmark arms refused every question too.** The follow-up to the entry below:
+  `benchmarks/ladder/systems/recall_system.py`, `benchmarks/membench/recall_isolation.py` and
+  `benchmarks/membench/recall_temporal.py` all called `trusted_search` with no policy, so each
+  raised `TrustRefusal: INDEX_NOT_READY` before retrieval ran, exactly as the LOCOMO arm did.
+
+  The policy alone would have been silently worse on two of them, in opposite directions. Both
+  `recall_temporal` and the ladder adapter filter hits on `verdict == "ok"`, and development mode
+  without a calibration rewrites every verdict to `unverified`: nothing clears the filter, so
+  `covering_selection_rate` reads 0.0000 across the board — indistinguishable from a validity
+  layer that does not work, which is the exact failure `recall_temporal` was previously fixed for.
+  `recall_isolation` derives `answered` from `result.abstained`, which development mode forces to
+  False, collapsing it to "did retrieval return anything" — a leak axis pinned near 1.0 cannot
+  tell correct isolation from an adapter answering out of the wrong tenant.
+
+  All four arms now retrieve through a single new seam, `benchmarks._trust.bench_search`
+  (`research_search` plus an explicit `Calibration` at the library's `DEFAULT_GAP_THRESHOLD`), so
+  the two-part decision is made once rather than at four call sites. For the ladder arm this
+  restores exactly the configuration `benchmarks/ladder/report.py` already discloses its published
+  numbers ran with (`UNCALIBRATED_BGE_SMALL_FLOOR = 0.50`); its "shipped defaults, no overrides"
+  rule is now explicit that the shipped TRUST policy is the one exception, because read literally
+  that rule made the arm refuse every question instead of scoring at defaults.
+
+  The audit of that change found two more modules with the calibration half of the same defect,
+  both now routed through the shared seam. `benchmarks/check_temporal_live.py` is the worse one:
+  it is a PRE-REGISTERED end-to-end check whose P2 predicate and P3 control are both read off
+  `hit.verdict`, so with every verdict blanked to `unverified` its P2 was structurally
+  unreachable, its P3 passed vacuously, and it printed "NOT live" and exited 1 whatever the
+  validity layer did — the control that exists to prove the reference time reached the trust layer
+  had become the thing certifying that nothing was wrong. `benchmarks/beam/ksweep.py` reads only
+  hit text, so nothing it measures changes; it is routed through the seam anyway, so that "arms
+  that happen not to read verdicts" is not a category anyone has to re-decide per module.
+
+  ⚠️ **The new guard is a source scan, not a behavioural test, and that is deliberate.** Every one
+  of these adapters is unreachable from CI: the two mem-bench ones import `membench`, a separate
+  repo `pyproject.toml` deliberately does not depend on, and the LOCOMO one's integration tests
+  need `fastembed`, which is not in `[dev]` either. A behavioural test for any of them would be a
+  test CI skips, which is the failure mode being closed, reproduced inside the guard meant to
+  close it. `tests/test_bench_trust_policy.py` parses every module under `benchmarks/` and
+  enforces BOTH halves — no module may reach `recall.trust.trusted_search` (by any of the five
+  import spellings that bind it), and no module may call `research_search` without a calibration,
+  where a literal `calibration=None` counts as missing rather than supplied, because that is the
+  defect written in the spelling that looks like compliance. It needs no import, no database and
+  no optional extra, and it covers arms that do not exist yet.
+
+  ⚠️ **A green scan is not proof that every arm's threshold is live.** A calibration passed as a
+  variable cannot be judged from the source: `benchmarks/beam/systems.py` writes
+  `calibration=self._calibration`, which is None on any run without `--calibration`, so the rule
+  reports it as compliant. That arm's uncalibrated default is pre-existing and disclosed in its
+  own `describe()`, but one consequence is worth stating plainly, because BEAM's own docstring
+  calls abstention "the single design decision this benchmark exists to price": on a default run
+  its `if result.abstained: return []` is unreachable, so that category currently measures
+  nothing. Not changed here — it is a deliberate, documented arm and its own decision to make.
+- **The RE-call arm of the LOCOMO head-to-head benchmark refused every question, and CI could not
+  see it.** `benchmarks.systems.RecallSystem.retrieve` called `trusted_search` without a policy.
+  When retrieval began failing closed, that default became strict, and a freshly-ingested bench
+  tenant has no generation and no published calibration, so every query raised
+  `TrustRefusal: INDEX_NOT_READY` before retrieval ran. The arm could not score a single question.
+  Every other research harness — `recall.eval.locomo`, `benchmarks.beam.systems`,
+  `recall.eval.harness` — had already moved to `recall.eval._research_trust.research_search`,
+  which exists precisely because a benchmark scores corpora nobody has certified yet; this adapter
+  was missed. It went unnoticed for four days because its three integration tests are
+  `@requires_fastembed` and the `[dev]` extra CI installs does not include `fastembed`, so CI
+  skipped them and stayed green.
+
+  ⚠️ **The policy alone would have been the worse bug.** Development mode with `calibration=None`
+  means "no threshold exists at all", so `recall.trust` blanks every verdict to `unverified` and
+  forces `abstained=False`. `retrieve` would then never return `""`, and the abstention rate this
+  benchmark exists to publish would have read as a flat zero rather than as a dead gate. `retrieve`
+  therefore also passes an explicit `Calibration`, taking the branch the trust layer itself calls
+  "the path every abstention benchmark measures". The threshold is the library's
+  `DEFAULT_GAP_THRESHOLD`, the same constant `evaluate` fell back to before the trust gate existed,
+  so the arm measures the gate it always did, now stated rather than inherited.
+
+  `describe()` now publishes a `trust` block, read off the same arguments `retrieve` sends, so a
+  results artifact names the gate behind its headline abstention number instead of leaving a
+  reader to assume a fitted one. ⚠️ **That threshold is untuned and this arm cannot vary it**: 0.50
+  sits at the 0th percentile of five of six measured top-1 distributions and the 16th of the
+  sixth, so it barely fires on most embedders and starves a sixth of queries on one, and
+  `--embedder` can select any of them. Published abstention rates from this arm should be read
+  with that in mind; a `--threshold` flag should arrive with the sweep that needs it rather than
+  as an unreachable constructor argument. **The trust default is unchanged and was not weakened.**
+  Two new tests pin the wiring without Postgres or fastembed, so the next such omission fails on
+  the pull request rather than four days later.
+
+  Not fixed here, and carrying the identical defect:
+  `benchmarks/ladder/systems/recall_system.py`, `benchmarks/membench/recall_isolation.py` and
+  `benchmarks/membench/recall_temporal.py` all still call `trusted_search` with no policy. Each
+  needs its own decision on the calibration half rather than a mechanical swap, because
+  `recall_isolation` derives `answered` from `result.abstained`.
 - **`recall-enterprise parity` passed vacuously on two empty generations, and a vacuous pass here
   reads as permission to run `cutover`.** Two empty generations cannot disagree, so every
   comparison `validate_generation_parity` makes was satisfied, `GenerationParity.valid` was True,

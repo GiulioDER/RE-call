@@ -961,6 +961,28 @@ class PgVectorStore:
             # is applied and the next explicit ensure_schema() correctly skips all SQL, leaving
             # the requested table absent.
             with conn.transaction():
+                # The learned sparse sidecar cannot cascade: its parent is a column VALUE
+                # (`chunk_table`), not a relation, so there is no foreign key to fire. Without
+                # this DELETE every throwaway store leaves a uuid-named row set addressable by a
+                # name that no longer resolves, and nothing ever looks for them again.
+                #
+                # The absent tenant filter is deliberate, and it works: `DROP TABLE` below is
+                # DDL and removes the table for every tenant, so a cleanup scoped to one would
+                # strand the rest. MEASURED rather than reasoned, because the sidecar does carry
+                # FORCE ROW LEVEL SECURITY with a tenant isolation policy (migration 0012) and
+                # that looks like it should narrow this statement: two tenants were given a
+                # sidecar row on one chunk table, one tenant's store dropped it, and both rows
+                # were gone. The roles this code runs under (local dev, CI, the test container)
+                # are superuser and BYPASSRLS, and RLS does not apply to them, FORCE or not.
+                # ⚠️ That is the CONDITION to watch. Under a role that is neither superuser nor
+                # BYPASSRLS the policy would engage, this DELETE would silently narrow to one
+                # tenant, and the drop would strand every other tenant's rows. Nothing here
+                # detects that; it is a property of the connecting role.
+                sidecar = conn.execute(f"SELECT to_regclass('{SPARSE_TABLE}')").fetchone()
+                if sidecar and sidecar[0]:
+                    conn.execute(
+                        f"DELETE FROM {SPARSE_TABLE} WHERE chunk_table = %s", (self._table,)
+                    )
                 conn.execute(f"DROP TABLE IF EXISTS {self._table}")
                 ledger = conn.execute(
                     "SELECT to_regclass('recall_schema_migrations')"
@@ -1525,6 +1547,54 @@ class PgVectorStore:
             # raised from inside a retry wrapper. 0 is the fail-CLOSED answer: it makes the query
             # refuse rather than proceed on a count nobody established.
             return int(row[0]) if row is not None else 0
+
+        return self._with_retry(_op)
+
+    def sparse_covered_sources(self, profile_id: str) -> set[str]:
+        """Sources whose EVERY chunk has a sidecar row under `profile_id`.
+
+        `index_path`'s skip predicate needs a per-SOURCE answer, and the sidecar is keyed by
+        chunk id, so the join has to be made here rather than inferred from a count. Partial
+        coverage of a source is deliberately reported as NOT covered: re-encoding a source that
+        is already half done is cheap, and skipping one that is half done leaves a hole no later
+        run would fill.
+
+        ⚠️ A source containing a chunk that encodes to an EMPTY vector can never reach full
+        coverage, because `store_sparse_vectors` skips those rows by design. Such a source is
+        therefore treated as not-yet-covered on every run, and `Indexer.index_path`'s skip
+        predicate re-runs the WHOLE index path for it: re-read, re-parse, re-chunk, re-embed
+        through `embed_with_cache`, and a full `replace_sources` delete and insert. The SPLADE
+        encode this recurs is cheap; the recurring cost that actually matters is the DENSE
+        embed, which on a metered embedder is a bill, not the sparse encode. That is wasted
+        work, not wrong work, and it is rare (a passage with no surviving terms at all); the
+        alternative would be a record of attempts, which is a bigger structure than the saving
+        justifies.
+
+        ⚠️ Coverage is keyed on `profile_id` ALONE, not on `SparseProfile.fingerprint()`. Two
+        encodings of the SAME model under different `top_k` or a different pinned `revision`
+        (folded into `artifact_digest`) share one `profile_id`, so changing either without
+        re-encoding reads here as fully covered: the corpus encoded at the OLD budget or
+        revision is reported covered under the NEW one, and `Indexer`'s skip predicate leaves
+        the stale vectors in place rather than re-encoding them. Re-keying the sidecar on the
+        full fingerprint would fix this; nothing does that today.
+        """
+        def _op(conn: "psycopg.Connection") -> set[str]:
+            rows = conn.execute(
+                f"""
+                SELECT c.source
+                FROM {self._table} c
+                LEFT JOIN {SPARSE_TABLE} s
+                  ON s.tenant_id = %(tenant)s
+                 AND s.chunk_table = %(chunk_table)s
+                 AND s.profile_id = %(profile)s
+                 AND s.id = c.id
+                WHERE c.tenant_id = %(tenant)s
+                GROUP BY c.source
+                HAVING count(*) FILTER (WHERE s.id IS NULL) = 0
+                """,
+                {"tenant": self._tenant, "chunk_table": self._table, "profile": profile_id},
+            ).fetchall()
+            return {row[0] for row in rows}
 
         return self._with_retry(_op)
 

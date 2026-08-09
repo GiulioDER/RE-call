@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-labelledby="bt bd">
+  <title id="bt">The RAG benchmark that pays you for saying "I don't know"</title>
+  <desc id="bd">Article banner. On MTRAG, IBM's 842-task multi-turn RAG benchmark, every row is read by gpt-4o and scored by the official gpt-4o-mini judge. Reading RE-call's contexts, gpt-4o correctly refuses 16 of 55 unanswerable questions, 29.1 percent, ranking 2nd; reading the benchmark's own retrieval the same model refuses 7 of 55, 12.7 percent. On answer quality RE-call's contexts score 0.5527, ranking 4th, against llama-3.1-405b's 0.5691 and gpt-4o's own 0.5591. Fourth on answer quality, second on refusing what it cannot answer.</desc>
+
+  <defs>
+    <linearGradient id="bfield" x1="0" y1="0" x2="1" y2="0.62">
+      <stop offset="0%"   stop-color="#04060c"/>
+      <stop offset="44%"  stop-color="#05080f"/>
+      <stop offset="68%"  stop-color="#070c1a"/>
+      <stop offset="100%" stop-color="#0a1226"/>
+    </linearGradient>
+    <radialGradient id="bCyan" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%"  stop-color="#22d3ee" stop-opacity="0.30"/>
+      <stop offset="68%" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="bViolet" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%"  stop-color="#8b5cf6" stop-opacity="0.34"/>
+      <stop offset="70%" stop-color="#8b5cf6" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="bTeal" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%"  stop-color="#2dd4bf" stop-opacity="0.14"/>
+      <stop offset="72%" stop-color="#2dd4bf" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="bVig" cx="0.5" cy="0.5" r="0.7">
+      <stop offset="52%"  stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.62"/>
+    </radialGradient>
+    <linearGradient id="brule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#22d3ee"/>
+      <stop offset="42%"  stop-color="#5eead4"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <filter id="bglow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+    <style>
+      .sans { font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+      .mono { font-family:ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,monospace; }
+      .kick { font-size:15px; font-weight:600; letter-spacing:.155em; fill:#93aac8; }
+      .kdim { fill:#4c5f7a; }
+      .h1   { font-size:50px; font-weight:800; letter-spacing:-.028em; fill:#f4f9ff; }
+      .sub  { font-size:19px; font-weight:400; fill:#8aa0bd; }
+      .subb { font-weight:700; fill:#67e8f9; }
+      .cardK{ font-size:11.5px; font-weight:700; letter-spacing:.17em; fill:#4c5f7a; }
+      .rowL { font-size:14px; fill:#8aa0bd; }
+      .rowV { font-size:14.5px; font-weight:700; fill:#e9f6ff; }
+      .rank { font-size:12.5px; font-weight:700; fill:#04060c; }
+      .claim{ font-size:13.5px; font-style:italic; fill:#8aa0bd; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bfield)"/>
+  <ellipse cx="947" cy="294" rx="560" ry="460" fill="url(#bCyan)"/>
+  <ellipse cx="1178" cy="77"  rx="420" ry="380" fill="url(#bViolet)"/>
+  <ellipse cx="768" cy="614"  rx="380" ry="320" fill="url(#bTeal)"/>
+  <ellipse cx="154" cy="602"  rx="560" ry="360" fill="url(#bCyan)" opacity=".25"/>
+  <rect width="1280" height="640" fill="url(#bVig)"/>
+
+  <!-- ============ left: the claim ============ -->
+  <text x="88" y="150" class="sans kick">PART 5 <tspan class="kdim">&#183;</tspan> THE ANSWERABILITY PROBLEM</text>
+
+  <text x="88" y="232" class="sans h1">The RAG benchmark that</text>
+  <text x="88" y="288" class="sans h1">pays you for saying</text>
+  <text x="88" y="344" class="sans h1">&#8220;I don&#8217;t know&#8221;</text>
+
+  <rect x="88" y="378" width="470" height="4" rx="2" fill="url(#brule)"/>
+  <rect x="88" y="378" width="470" height="4" rx="2" fill="url(#brule)" filter="url(#bglow)" opacity=".75"/>
+
+  <text x="88" y="428" class="sans sub">Nine published systems. One of them refuses</text>
+  <text x="88" y="456" class="sans sub"><tspan class="subb">2.3&#215; more often than gpt-4o</tspan> and still finishes</text>
+  <text x="88" y="484" class="sans sub">4th on answer quality. <tspan class="subb">It calls no LLM.</tspan></text>
+
+  <text x="88" y="546" class="mono kick" font-size="12.5" fill="#4c5f7a">RE&#8209;CALL <tspan fill="#2c3d54">&#183;</tspan> MIT <tspan fill="#2c3d54">&#183;</tspan> PIP INSTALL RECALL&#8209;RAG</text>
+
+  <!-- ============ right: the result card ============ -->
+  <rect x="736" y="118" width="456" height="404" rx="16" fill="#070d18" fill-opacity=".72" stroke="#25384f" stroke-width="1.3"/>
+
+  <text x="768" y="156" class="mono cardK">842 TASKS &#183; READER gpt-4o &#183; JUDGE gpt-4o-mini</text>
+  <line x1="768" y1="172" x2="1160" y2="172" stroke="#1b2a3d"/>
+
+  <!-- block A -->
+  <text x="768" y="204" class="mono cardK" fill="#5eead4">REFUSES WHAT IT CANNOT ANSWER</text>
+
+  <rect x="768" y="220" width="26" height="20" rx="5" fill="#5eead4"/>
+  <text x="781" y="235" class="mono rank" text-anchor="middle">2</text>
+  <text x="806" y="235" class="mono rowV" fill="#e9f6ff">gpt-4o + RE-call</text>
+  <text x="1160" y="235" class="mono rowV" fill="#5eead4" text-anchor="end">16/55 &#183; 29.1%</text>
+
+  <rect x="768" y="254" width="26" height="20" rx="5" fill="#1b2a3d"/>
+  <text x="781" y="269" class="mono rank" text-anchor="middle" fill="#7d93b2">6</text>
+  <text x="806" y="269" class="mono rowL">gpt-4o <tspan fill="#4c5f7a">+ theirs</tspan></text>
+  <text x="1160" y="269" class="mono rowL" text-anchor="end">7/55 &#183; 12.7%</text>
+
+  <rect x="768" y="288" width="26" height="20" rx="5" fill="#1b2a3d"/>
+  <text x="781" y="303" class="mono rank" text-anchor="middle" fill="#7d93b2">9</text>
+  <text x="806" y="303" class="mono rowL">qwen-2.5-72b</text>
+  <text x="1160" y="303" class="mono rowL" text-anchor="end">1/55 &#183; 1.8%</text>
+
+  <line x1="768" y1="330" x2="1160" y2="330" stroke="#1b2a3d"/>
+
+  <!-- block B -->
+  <text x="768" y="362" class="mono cardK" fill="#8b5cf6">ANSWER QUALITY</text>
+
+  <rect x="768" y="378" width="26" height="20" rx="5" fill="#1b2a3d"/>
+  <text x="781" y="393" class="mono rank" text-anchor="middle" fill="#7d93b2">1</text>
+  <text x="806" y="393" class="mono rowL">llama-3.1-405b</text>
+  <text x="1160" y="393" class="mono rowL" text-anchor="end">0.5691</text>
+
+  <rect x="768" y="412" width="26" height="20" rx="5" fill="#1b2a3d"/>
+  <text x="781" y="427" class="mono rank" text-anchor="middle" fill="#7d93b2">3</text>
+  <text x="806" y="427" class="mono rowL">gpt-4o <tspan fill="#4c5f7a">+ theirs</tspan></text>
+  <text x="1160" y="427" class="mono rowL" text-anchor="end">0.5591</text>
+
+  <rect x="768" y="446" width="26" height="20" rx="5" fill="#a78bfa"/>
+  <text x="781" y="461" class="mono rank" text-anchor="middle">4</text>
+  <text x="806" y="461" class="mono rowV" fill="#e9f6ff">gpt-4o + RE-call</text>
+  <text x="1160" y="461" class="mono rowV" fill="#a78bfa" text-anchor="end">0.5527</text>
+
+  <text x="768" y="500" class="sans claim">4th on answer quality, <tspan fill="#f5a524" font-style="normal" font-weight="700">2nd on refusing what it cannot answer.</tspan></text>
+</svg>
