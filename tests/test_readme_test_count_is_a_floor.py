@@ -58,7 +58,7 @@ def test_the_readme_has_a_clear_showcase_and_surface_split() -> None:
     text = README.read_text(encoding="utf-8")
     assert "## Showcase" in text
     assert "## Product surface" in text
-    assert "One command, one screenshot" in text
+    assert "The stale memory is more similar to the query" in text
 
 
 def test_the_readme_says_its_numbers_are_claim_gated() -> None:
