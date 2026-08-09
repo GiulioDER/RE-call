@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml"><img src="https://github.com/GiulioDER/RE-call/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
   <img src="https://img.shields.io/badge/tests-1300%2B%20·%20real%20pgvector-brightgreen" alt="1300+ tests">
@@ -65,7 +65,7 @@ We publish the configuration where it loses, because a benchmark you can't lose 
 |---|---|---|
 | **a dev building an agent** | it re-litigates settled decisions and contradicts its own memory | supersession and validity enforced at retrieval; abstention as a first-class return value; drop-in LangChain / LlamaIndex retrievers and an MCP server for Claude |
 | **a solo founder / indie hacker** | memory layers charge an LLM call for every memory written | $0 marginal cost, forever — embed locally, store in the Postgres you already have, and scaling up never creates a new API bill |
-| **a SaaS or small company** | user data can't be shipped to a third party just to have "memory" | multi-tenant with database-enforced row-level security, token auth, `recall forget` for right-to-erasure, MIT license, all on your own Postgres |
+| **a SaaS or small company** | user data can't be shipped to a third party just to have "memory" | multi-tenant with database-enforced row-level security, token auth, `recall forget` for right-to-erasure, Apache 2.0 license, all on your own Postgres |
 | **a trader / researcher / operator** | notes pile up and the stale conclusion outranks its own correction | built inside a production trading-research agent for exactly this: closed experiments stay closed, reversed decisions stop resurfacing |
 
 **Try it in 2 minutes, no API key** → [Quickstart](#quickstart--2-minutes-no-api-key). Everything
@@ -667,6 +667,10 @@ make eval                                        # ablations + trust + near-miss
 python -m recall.eval.scale --embedder hashing --filler 50000    # scale + latency
 ```
 
+## Citation
+
+If you describe RE-call in a paper, post, talk, or README of your own, please cite the project and credit Giulio D'Erme. Use [`CITATION.cff`](https://github.com/GiulioDER/RE-call/blob/master/CITATION.cff) as the canonical citation source.
+
 ## License
 
-MIT — see [LICENSE](https://github.com/GiulioDER/RE-call/blob/master/LICENSE).
+Apache 2.0 — see [LICENSE](https://github.com/GiulioDER/RE-call/blob/master/LICENSE), and keep [NOTICE](https://github.com/GiulioDER/RE-call/blob/master/NOTICE) with redistributed derivative works.

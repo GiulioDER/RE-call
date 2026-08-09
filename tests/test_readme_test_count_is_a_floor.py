@@ -67,6 +67,13 @@ def test_the_readme_says_its_numbers_are_claim_gated() -> None:
     assert "claim gate checks them in CI" in text
 
 
+def test_the_readme_names_apache_and_the_citation_path() -> None:
+    text = README.read_text(encoding="utf-8")
+    assert "Apache 2.0 license" in text
+    assert "## Citation" in text
+    assert "NOTICE" in text
+
+
 def test_the_suite_clears_the_advertised_floor(request: pytest.FixtureRequest) -> None:
     collected = len(request.session.items)
     if collected < _FULL_RUN_FLOOR:
