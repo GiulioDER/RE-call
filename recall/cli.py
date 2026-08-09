@@ -567,7 +567,17 @@ def main(argv: list[str] | None = None) -> None:
     if args.cmd == "schema" and getattr(args, "schema_cmd", None) == "grants":
         opens_db = False  # prints SQL for an operator to run; opens nothing
 
-    if opens_db and _DOTENV_ERROR is not None and not _env_opt_out("RECALL_IGNORE_BROKEN_DOTENV"):
+    if (
+        opens_db
+        and args.cmd != "setup"  # see the setup-specific carve-out for _require_secure below —
+        # `recall setup` is the command you run to REPAIR a broken .env, so blocking it on a
+        # broken .env is the same dead end that carve-out exists to avoid, one guard down. A
+        # round-6 audit caught this: it fired unconditionally and refused `setup` even when the
+        # operator had already passed an explicit --dsn that resolved the ambiguity. `setup`
+        # still gets a note about the broken file, from run_setup_wizard, not a refusal here.
+        and _DOTENV_ERROR is not None
+        and not _env_opt_out("RECALL_IGNORE_BROKEN_DOTENV")
+    ):
         # `.env` exists but could not be applied, so any variable it would have set — most
         # dangerously RECALL_SERVING_DSN — is silently absent from this process, and args.dsn
         # below is the LOCAL fallback rather than whatever was configured. Warning about that
