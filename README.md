@@ -59,6 +59,172 @@ paired questions (full table, losses and caveats included →
 
 We publish the configuration where it loses, because a benchmark you can't lose isn't one.
 
+## Judged by someone else: MTRAG
+
+**[MTRAG](https://github.com/IBM/mt-rag-benchmark)** (IBM, TACL 2025): 842 human-written
+multi-turn tasks, nine published systems, and an official `gpt-4o-mini-2024-07-18` judge that pays
+a **full 1.0 on every metric** for correctly saying *"I do not have that information"*. Almost no
+other benchmark scores a refusal as anything but a miss.
+
+### RE-call keeps the promise it makes
+
+Correct refusals on the 55 unanswerable tasks, same judge, same tasks, every system:
+
+| # | system | refuses what it cannot answer |
+|---|---|---|
+| 1 | llama-3.1-8b | 32.7% |
+| **2** | **RE-call** | **29.1%** |
+| 3 | llama-3.1-70b | 29.1% |
+| 4 | gpt-4o-mini | 23.6% |
+| 6 | **gpt-4o** | **12.7%** |
+| 7 | llama-3.1-405b | 5.5% |
+| 9 | qwen-2.5-72b | 1.8% |
+
+**RE-call refuses 2.3× more often than `gpt-4o`, and 16× more often than `qwen-2.5-72b`.**
+
+### From the top of the table, not the bottom
+
+Abstention usually costs answer quality. Here is what it cost:
+
+| # | system | answer quality |
+|---|---|---|
+| 1 | llama-3.1-405b | 0.5691 |
+| 2 | qwen-2.5-72b | 0.5625 |
+| 3 | gpt-4o | 0.5591 |
+| **4** | **RE-call** | **0.5527** |
+| 5 | c4ai-command-r-plus | 0.5502 |
+
+**RE-call is the only system in that top four that is also top three on abstention.** The three
+above it refuse 5.5%, 1.8% and 12.7%. The gap to `gpt-4o` is **0.0064**.
+
+And RE-call's retrieval beat the benchmark's own: **0.5527 against 0.5516** on identical
+generator, prompt and judge, with only the contexts swapped.
+
+### One engine, whatever you can afford
+
+| configuration | nDCG@5 | cost |
+|---|---|---|
+| **SPLADE learned sparse** *(the free default)* | **0.3573** | local, $0 |
+| **+ Voyage rerank** *(one flag)* | **0.4342** | paid API |
+
+A 48% relative span between two flags, measured on 777 judged queries. The reranker is
+**+0.0769 nDCG@5** and **worse on 162 of the 777**, which is why it is off by default.
+
+→ Every number, the six runs behind them, and the scoring bug I reported upstream:
+**[docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md)**.
+
+## One engine, whatever you can afford
+
+| configuration | nDCG@5 | cost |
+|---|---|---|
+| **SPLADE learned sparse** *(the free default)* | **0.3573** | local, $0 |
+| **+ Voyage rerank** *(one flag)* | **0.4342** | paid API |
+
+A 48% relative span between two flags, measured on 777 judged queries. The reranker is
+**+0.0769 nDCG@5** and **worse on 162 of the 777**, which is why it is off by default.
+
+→ Every number, the six runs behind them, and the scoring bug I reported upstream:
+**[docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md)**.
+
+## How it works
+
+```mermaid
+flowchart TB
+    M(["memo · markdown + frontmatter<br/>supersedes · valid_from · valid_until"]) --> CH[chunk]
+    CH --> EW["embed · local, no API call"]
+    EW -. optional .-> SP[SPLADE encode]
+    EW --> DB
+    SP -. optional .-> DB
+
+    Q([query]) --> EQ["embed · query encoder"]
+    EQ --> DB[("PostgreSQL + pgvector<br/>vectors and full-text in one DB")]
+
+    DB --> DN["dense · pgvector cosine"]
+    DB --> SL["sparse · Postgres full-text"]
+    DB -. optional .-> LS["learned sparse · SPLADE"]
+
+    DN --> F[Reciprocal Rank Fusion]
+    SL --> F
+    LS -. optional .-> F
+
+    F -. optional .-> RR[cross-encoder rerank]
+    RR --> GP
+    F --> GP{{"gap check · calibrated threshold"}}
+    GP --> TR{"trust layer<br/>supersession · validity · confidence"}
+    CAL[/"calibration · fitted per embedder and corpus"/] --> TR
+    TR -. optional .-> EJ{{entailment judge}}
+    EJ --> OUT
+    TR --> OUT(["verdict + confidence + provenance<br/>or ABSTAIN, with a reason"])
+
+    classDef opt stroke:#d29922,color:#d29922,stroke-dasharray:5 4
+    class SP,LS,RR,EJ opt
+```
+
+**The solid path is what runs if you change nothing.** Writing a memory is a local embedding, no
+LLM call, so it stays free at any scale. On the read path, dense and sparse search feed **RRF
+fusion**, the **gap check** refuses to dress up nearest-noise as an answer, and the **trust layer**
+enforces supersession, validity, and a confidence threshold fitted per embedder and corpus, never a
+shipped constant, before anything reaches the agent.
+
+**Everything dashed and amber is opt-in and off by default:** the SPLADE leg, the cross-encoder
+reranker, the entailment judge. Each costs something measurable, so each is switched on by name,
+never inferred for you. Full derivation of the threshold and every measured trade-off:
+[FINDINGS](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md).
+
+→ Every phase in full, every embedder measured so far, and what each option costs:
+**[docs/pipeline.png](https://github.com/GiulioDER/RE-call/blob/master/docs/pipeline.png)**.
+
+## Quickstart · 2 minutes, no API key
+
+```bash
+docker compose up -d --wait          # PostgreSQL + pgvector
+pip install "recall-rag[fastembed]"  # local embeddings, no API key
+python -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall \
+  schema --dim 384 apply             # explicit, versioned DDL step
+python -m recall.cli demo            # index corpus/ and run the sample queries
+```
+
+> **The distribution is `recall-rag`; the import is `recall`.** `pip install recall` gets you an
+> unrelated RPC framework last released in 2014 — that name was taken and is not reclaimable, and
+> `re-call` is rejected by PyPI as too similar to it. Both `recall` and this package provide a
+> top-level `recall` module, so do not install `recall` and `recall-rag` into one environment.
+>
+> Working from a clone instead? `pip install -e ".[fastembed]"`.
+
+## Use it
+
+```bash
+python -m recall.cli index ./notes                       # index a folder of markdown
+python -m recall.cli search "what did we decide about caching?"
+python -m recall.cli lint ./notes                        # supersession-graph health (no DB)
+python -m recall.cli lint ./notes --fix                   # propose missing edges (dry run)
+python -m recall.cli check ./notes/new-memo.md --strict    # write-time gate, for a pre-commit hook
+```
+
+For the generation path, after building, validating, calibrating, and promoting it as described
+below, query the tenant's active immutable generation:
+
+```python
+from recall.embeddings import FastEmbedEmbedder
+from recall.generation_store import GenerationStore
+from recall.trust import trusted_search
+
+emb = FastEmbedEmbedder()
+with GenerationStore(DSN, dim=emb.dim, tenant="acme", pool_size=8) as store:
+    store.check_schema()  # SELECT-only compatibility check; provisioning applied migrations
+    result = trusted_search(store, emb, "what is the rate limit?")
+    if result.abstained:
+        ...  # say you don't know — do not answer from these hits
+    for hit in result.hits:
+        hit.verdict      # ok | superseded | expired | not_yet_valid | low_confidence | …
+        hit.confidence   # calibrated; 0.5 sits exactly on the abstention boundary
+        hit.validity.superseded_by
+```
+
+Set `RECALL_SERVING_DSN` for application traffic and `RECALL_MIGRATION_DSN` only in the migration
+job. See [database migrations and roles](docs/MIGRATIONS.md). `RECALL_DSN` remains a deprecated
+development fallback for the serving DSN.
+
 ## Who is it for
 
 | you are | the problem you have | what RE-call does about it |
