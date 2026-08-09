@@ -25,6 +25,10 @@ locomo10.json
 # not lose paid-for work. A publishable artifact is copied out deliberately — it is not committed
 # by whoever happened to run the benchmark last.
 benchmarks/results/
+# Local scratch from ad hoc audits and probes.
+docs_hit50_out.json
+probe_input.jsonl
+results/_rerank_pool_scores.local.json
 # Benchmark run logs — transient. The JSON reports beside them are the artifact.
 results/locomo/*.log
 
