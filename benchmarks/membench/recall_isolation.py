@@ -31,7 +31,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable
 
-from membench.axes.isolation.adapter import (  # type: ignore[import-untyped]
+from membench.axes.isolation.adapter import (
     TenantDocument,
     TenantResponse,
 )

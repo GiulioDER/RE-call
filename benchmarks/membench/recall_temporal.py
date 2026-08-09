@@ -47,7 +47,7 @@ import tempfile
 import os
 from collections.abc import Iterable
 
-from membench.axes.temporal.adapter import (  # type: ignore[import-untyped]
+from membench.axes.temporal.adapter import (
     TemporalDocument,
     TemporalResponse,
 )
