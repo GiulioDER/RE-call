@@ -30,7 +30,13 @@ from recall.types import TrustedResult
 # `recall setup` writes its answers to .env, so the file has to be read BEFORE the DSN
 # defaults below are computed from os.environ. Without this the wizard appears to succeed
 # and the very next command silently ignores every setting it just captured.
-load_dotenv()
+try:
+    load_dotenv()
+except (OSError, UnicodeDecodeError):  # a .env that is a directory, unreadable, or not UTF-8
+    # This runs at IMPORT time, so an exception here kills `recall --help`, every command, and
+    # `import recall.cli` for library consumers and test collection. A malformed .env must
+    # degrade to "no .env" rather than take the process down.
+    pass
 
 DEFAULT_DSN = os.environ.get(
     "RECALL_SERVING_DSN",
@@ -64,7 +70,10 @@ def _make_embedder(name: str) -> Embedder:
     """
     try:
         return resolve_embedder(name)
-    except ValueError as exc:
+    except (ValueError, RuntimeError, ImportError) as exc:
+        # Not just ValueError: the spellings `choices=` used to block reach constructors that
+        # raise RuntimeError for a missing API key and ImportError for a missing extra. Those
+        # are operator errors and belong on one line, not in a traceback.
         raise SystemExit(str(exc)) from exc
 
 
@@ -264,7 +273,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("setup", help="run the first install wizard and write a local .env file")
+    sub.add_parser("setup", help="run the first install wizard and write a local .env file").set_defaults(
+        _opens_db=True  # the wizard connects when the operator accepts the calibrate prompt
+    )
 
     p_schema = sub.add_parser("schema", help="inspect or apply versioned database migrations")
 
@@ -507,7 +518,7 @@ def main(argv: list[str] | None = None) -> None:
     # The DDL-owner credential was never checked or even warned about on any path, which is the
     # wrong way round: it is the most privileged DSN this CLI accepts.
     migration_dsn = getattr(args, "migration_dsn", None)
-    if migration_dsn and args.cmd == "schema":
+    if migration_dsn and opens_db and args.cmd == "schema":  # `opens_db` so grants stays exempt
         _require_secure(migration_dsn)
 
     if args.cmd == "setup":
@@ -748,6 +759,12 @@ def main(argv: list[str] | None = None) -> None:
             for u in unfixable:
                 print(f"  SKIP {u.file}: {u.reason}")
             print(f"\n{len(proposals)} edge(s) proposable, {len(unfixable)} need a human")
+            if args.apply and args.semantic:
+                # Resolve the embedder BEFORE writing. `--semantic` needs one, and dropping
+                # argparse's `choices=` moved an unknown spelling's failure from "exit 2 before
+                # anything happened" to "after apply_proposal has already rewritten the memos".
+                # This is the only destructive path that resolved it late.
+                _make_embedder(args.embedder)
             if not args.apply:
                 # Dry run by DEFAULT: this edits the user's own documents, and a tool that
                 # rewrites your memory the first time you try it has earned distrust.
@@ -891,10 +908,19 @@ def main(argv: list[str] | None = None) -> None:
             print(f"\nnot judged: {cal.certification_reason}", file=sys.stderr)
         return
 
-    # Read the artifact `recall calibrate` writes. Without this it produced a
-    # calibration.json that no search ever loaded, so the install-time step was inert
-    # while still printing success. None stays the fallback when nothing is calibrated.
-    calibration = load_for(embedder.name)
+    # ⚠️ Deliberately NOT `load_for(embedder.name)`, and a bug audit talked me into that once.
+    #
+    # `trusted_search` only consults the generation-bound resolver when `calibration is None`
+    # (recall/trust.py). Passing a legacy artifact sets calibration_status="legacy_unbound",
+    # which the strict policy maps to CALIBRATION_UNCERTIFIED, so pre-loading it REFUSES
+    # searches on a deployment that has a properly certified, generation-bound calibration.
+    # recall/trust.py states the rule directly: legacy JSON "is deliberately never auto-loaded:
+    # it has no tenant, generation, pipeline, corpus, or labelled query-set binding".
+    #
+    # 🔑 The open consequence, which is a DESIGN question and not an oversight: the artifact
+    # `recall calibrate` writes is therefore not read back by this path. Resolve that by
+    # deciding where install-time calibration binds, not by reinstating the line below.
+    calibration = None
 
     if args.cmd == "index":
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
@@ -1026,9 +1052,11 @@ def main(argv: list[str] | None = None) -> None:
         # download. The explicit --entail flag still forces it on when the env says nothing.
         entail_judge = resolve_entailment_judge()
         if entail_judge is None and args.entail:
-            from recall.entailment import QnliEntailmentJudge
-
-            entail_judge = QnliEntailmentJudge()
+            # Force it on THROUGH the resolver, not by constructing the judge bare: the bare
+            # form ignores RECALL_ENTAILMENT_MODEL/_REVISION, which is the exact defect this
+            # block was meant to fix. `recall setup` writes RECALL_ENTAILMENT="0", so this
+            # forcing path is the common one, not the rare one.
+            entail_judge = resolve_entailment_judge({**os.environ, "RECALL_ENTAILMENT": "1"})
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
             from recall.generation_store import GenerationStore
 
@@ -1061,6 +1089,10 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "demo":
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
             raise SystemExit("the filesystem demo is unavailable in production")
+        # Resolved BEFORE the store opens and the corpus is indexed: a bad
+        # RECALL_ENTAILMENT value raises, and failing after the expensive work is the
+        # shape `search` already avoids.
+        _demo_judge = resolve_entailment_judge()
         with PgVectorStore(
             args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
         ) as store:
@@ -1077,13 +1109,17 @@ def main(argv: list[str] | None = None) -> None:
                     "how do we handle penguins on mars?",
                 ],
                 calibration,
-                resolve_entailment_judge(),
+                _demo_judge,
             )
     elif args.cmd == "code":
         if os.environ.get("RECALL_ENV", "development").lower() == "production":
             raise SystemExit("local source indexing is unavailable in production")
         # index recall's own package source (content-agnostic engine, code-aware chunking)
         src = Path(__file__).resolve().parent
+        # Resolved BEFORE the store opens and the corpus is indexed: a bad
+        # RECALL_ENTAILMENT value raises, and failing after the expensive work is the
+        # shape `search` already avoids.
+        _demo_judge = resolve_entailment_judge()
         with PgVectorStore(
             args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant
         ) as store:
@@ -1099,7 +1135,7 @@ def main(argv: list[str] | None = None) -> None:
                     "how does cross-encoder reranking reorder hits?",
                 ],
                 calibration,
-                resolve_entailment_judge(),
+                _demo_judge,
             )
 if __name__ == "__main__":
     main()
