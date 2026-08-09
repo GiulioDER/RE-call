@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
 
 from recall.calibration import Calibration, load_for
+from recall.calibration_v2 import CalibrationBindingError, CalibrationRepository
 from recall._env import load_dotenv
 from recall.entailment import resolve_entailment_judge
 from recall.embeddings import Embedder, resolve_embedder
@@ -101,6 +103,76 @@ def _cli_trust(
     return policy, calibration
 
 
+def _cmd_schema(args: argparse.Namespace) -> None:
+    from recall.schema import apply_migrations, schema_plan, schema_status, serving_grants
+
+    if args.schema_cmd == "plan":
+        pending = schema_plan(args.dsn, table=args.table, dim=args.dim)
+        for migration in pending:
+            print(f"would apply {migration.version} {migration.filename}")
+        if not pending:
+            print("schema is current")
+        return
+    if args.schema_cmd == "apply":
+        applied = apply_migrations(args.dsn, table=args.table, dim=args.dim)
+        for migration in applied:
+            print(f"applied {migration.version} {migration.filename}")
+        if not applied:
+            print("schema is current")
+        return
+    if args.schema_cmd == "status":
+        status = schema_status(args.dsn, table=args.table, dim=args.dim)
+        print(f"current: {status.current_version or 'none'}")
+        print(f"required: {status.required_version}")
+        print(f"compatible: {'yes' if status.compatible else 'no'}")
+        return
+    if args.schema_cmd == "grants":
+        for statement in serving_grants(args.role, table=args.table, enterprise=args.enterprise):
+            print(statement)
+        return
+    raise SystemExit(f"unknown schema subcommand: {args.schema_cmd}")
+
+
+def _cmd_calibrate(args: argparse.Namespace) -> None:
+    embedder = _make_embedder(args.embedder)
+    repo = CalibrationRepository(args.dsn, args.tenant)
+    try:
+        queries = json.loads(Path(args.queries).read_text(encoding="utf-8"))
+        artifact = repo.calibrate(args.generation, queries, embedder)
+        if args.publish:
+            artifact = repo.publish(artifact.calibration_id)
+    except (OSError, json.JSONDecodeError, CalibrationBindingError) as exc:
+        raise SystemExit(2) from exc
+    print(f"calibration: {artifact.calibration_id}")
+    print(f"status: {artifact.status.value}")
+    print(f"generation: {artifact.generation_id}")
+    print(f"tenant: {artifact.tenant_id}")
+
+
+def _cmd_calibration(args: argparse.Namespace) -> None:
+    repo = CalibrationRepository(args.dsn, args.tenant)
+    if args.calibration_cmd == "list":
+        for row in repo.list_records():
+            print(
+                f"{row['calibration_id']}  {row['generation_id']}  "
+                f"{row['lifecycle_state']}  certified={row['certified']}  "
+                f"{row['created_at']}"
+            )
+        return
+    if args.calibration_cmd == "show":
+        print(json.dumps(repo.show_record(args.calibration_id), indent=2, sort_keys=True))
+        return
+    if args.calibration_cmd == "export":
+        path = repo.export_bundle(args.calibration_id, args.output)
+        print(path)
+        return
+    if args.calibration_cmd == "import":
+        calibration_id = repo.import_bundle(args.path)
+        print(calibration_id)
+        return
+    raise SystemExit(f"unknown calibration subcommand: {args.calibration_cmd}")
+
+
 def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):  # clean UTF-8 output on Windows consoles
         sys.stdout.reconfigure(encoding="utf-8")
@@ -108,7 +180,14 @@ def main(argv: list[str] | None = None) -> None:
     # is how `index` came to prune rows while printing nothing about it.
     configure_logging()
     parser = argparse.ArgumentParser(prog="recall")
-    parser.add_argument("--dsn", default=DEFAULT_DSN)
+    parser.add_argument(
+        "--dsn",
+        "--serving-dsn",
+        "--migration-dsn",
+        dest="dsn",
+        default=DEFAULT_DSN,
+        help="database DSN used by the selected command",
+    )
     parser.add_argument("--embedder", default="fastembed")
     parser.add_argument(
         "--table", default="chunks",
@@ -122,6 +201,16 @@ def main(argv: list[str] | None = None) -> None:
              f"erasure request against another tenant needs this flag.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_schema = sub.add_parser("schema", help="inspect and apply versioned database migrations")
+    p_schema.add_argument("--dim", type=int, required=True)
+    schema_sub = p_schema.add_subparsers(dest="schema_cmd", required=True)
+    schema_sub.add_parser("plan", help="show pending migrations")
+    schema_sub.add_parser("apply", help="apply pending migrations")
+    schema_sub.add_parser("status", help="show migration status")
+    p_grants = schema_sub.add_parser("grants", help="print grant statements")
+    p_grants.add_argument("--role", required=True)
+    p_grants.add_argument("--enterprise", action="store_true")
 
     p_index = sub.add_parser("index", help="index a folder of markdown or code")
     p_index.add_argument("path")
@@ -209,20 +298,47 @@ def main(argv: list[str] | None = None) -> None:
         help="exit 1 when a memo needs an edge — use this in a pre-commit hook",
     )
 
-    p_cal = sub.add_parser(
+    p_calibrate = sub.add_parser(
         "calibrate",
-        help="calibrate the abstention threshold for this embedder against labeled queries",
+        help="create and optionally publish a calibration",
     )
-    p_cal.add_argument("queries", help="JSON list of {query, answerable, relevant_ids} entries")
-    p_cal.add_argument("--corpus", default=None, help="corpus dir (default: the built-in eval corpus)")
-    p_cal.add_argument("--out", default=None, help="output path (default: calibration.json)")
+    p_calibrate.add_argument("--generation", required=True)
+    p_calibrate.add_argument("--queries", required=True)
+    p_calibrate.add_argument("--publish", action="store_true")
+
+    p_calibration = sub.add_parser(
+        "calibration",
+        help="inspect and exchange calibration artifacts",
+    )
+    cal_sub = p_calibration.add_subparsers(dest="calibration_cmd", required=True)
+    cal_sub.add_parser("list", help="list calibration records")
+    p_show = cal_sub.add_parser("show", help="show a calibration record")
+    p_show.add_argument("calibration_id")
+    p_export = cal_sub.add_parser("export", help="export a calibration bundle")
+    p_export.add_argument("calibration_id")
+    p_export.add_argument("--output", required=True)
+    p_import = cal_sub.add_parser("import", help="import a calibration bundle")
+    p_import.add_argument("path")
 
     args = parser.parse_args(argv)
-    db_backed_cmds = {"index", "forget", "search", "demo", "code", "calibrate"}
+    db_backed_cmds = {
+        "schema",
+        "index",
+        "forget",
+        "search",
+        "demo",
+        "code",
+        "calibrate",
+        "calibration",
+    }
     if args.cmd in db_backed_cmds:
         require_secure_dsn(args.dsn)
     else:
         warn_if_insecure_dsn(args.dsn)  # loud stderr note if default creds target a remote host
+
+    if args.cmd == "schema":
+        _cmd_schema(args)
+        return
 
     if args.cmd == "lint":  # pure filesystem check — no embedder, no DB
         from recall.lint import lint_corpus
@@ -299,10 +415,8 @@ def main(argv: list[str] | None = None) -> None:
                 raise SystemExit(1)
         return
 
-    embedder = _make_embedder(args.embedder)
-    calibration = load_for(embedder.name)
-
     if args.cmd == "index":
+        embedder = _make_embedder(args.embedder)
         chunker = chunk_code if args.glob.endswith(".py") else chunk_text
         with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
             store.ensure_schema()
@@ -323,6 +437,7 @@ def main(argv: list[str] | None = None) -> None:
                 summary += f", pruned {stats.deleted} source(s) no longer on disk"
             print(summary)
     elif args.cmd == "forget":
+        embedder = _make_embedder(args.embedder)
         with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
             store.ensure_schema()
             requested = list(dict.fromkeys(args.sources))
@@ -341,6 +456,8 @@ def main(argv: list[str] | None = None) -> None:
                 if not_found:
                     print(f"not found (check for typos): {', '.join(not_found)}")
     elif args.cmd == "search":
+        embedder = _make_embedder(args.embedder)
+        calibration = load_for(embedder.name)
         if args.entail:
             from recall.entailment import QnliEntailmentJudge
 
@@ -355,6 +472,8 @@ def main(argv: list[str] | None = None) -> None:
                                entailment=entail_judge, policy=policy)
             )
     elif args.cmd == "demo":
+        embedder = _make_embedder(args.embedder)
+        calibration = load_for(embedder.name)
         with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
             store.ensure_schema()
             stats = Indexer(store, embedder).index_path("corpus")
@@ -366,6 +485,8 @@ def main(argv: list[str] | None = None) -> None:
                 "how do we handle penguins on mars?",
             ], calibration, entailment=resolve_entailment_judge())
     elif args.cmd == "code":
+        embedder = _make_embedder(args.embedder)
+        calibration = load_for(embedder.name)
         # index recall's own package source (content-agnostic engine, code-aware chunking)
         src = Path(__file__).resolve().parent
         with PgVectorStore(args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant) as store:
@@ -382,51 +503,9 @@ def main(argv: list[str] | None = None) -> None:
 
         run_setup_wizard(dsn=args.dsn)
     elif args.cmd == "calibrate":
-        from recall.calibration import ENV_VAR, _resolve_path
-        from recall.setup import calibrate_from_files
-
-        try:
-            result = calibrate_from_files(
-                dsn=args.dsn,
-                embedder_name=embedder.name,
-                queries_path=Path(args.queries),
-                corpus_dir=Path(args.corpus) if args.corpus else None,
-                out=Path(args.out) if args.out else None,
-            )
-        except ValueError as exc:
-            raise SystemExit(2) from exc
-        measured = result.report
-        cal = result.calibration
-        path = result.path
-        print(f"embedder:  {embedder.name}")
-        print(f"threshold: {cal.threshold} (scale {cal.scale})")
-        sep = "n/a" if cal.separability is None else f"{cal.separability:.3f}"
-        ci = cal.separability_ci
-        # The interval, not just the point, because the bar is applied to its lower bound — a
-        # reader who sees only "0.95" cannot reconstruct why a certification failed.
-        sep_ci = "" if ci is None else f" [{ci[0]:.3f}, {ci[1]:.3f}]"
-        print(f"separability (AUC): {sep}{sep_ci} over {cal.n_answerable} answerable / "
-              f"{cal.n_unanswerable} unanswerable")
-        print(f"FCR at default 0.50: {measured.fcr_at_050:.2f} -> at calibrated: "
-              f"{measured.fcr_at_suggested:.2f}")
-        print(f"saved: {path}")
-        if args.out and Path(args.out).resolve() != _resolve_path(None).resolve():
-            print(f"note: searches load {_resolve_path(None)} by default — set "
-                  f"{ENV_VAR}={path} for this file to be used")
-
-        # Exit non-zero on a threshold the data does not support. The file is still written: the
-        # artifact records `certified: false` and the reason, and refusing to write would destroy
-        # the evidence of WHY. What changes is that a calibration step can now fail — measured on
-        # LongMemEval, an uncertified threshold refused 44% of the questions retrieval had just
-        # answered correctly, and neither the API nor the file said anything was wrong.
-        if cal.certified is False:
-            print(f"\nNOT CERTIFIED: {cal.certification_reason}", file=sys.stderr)
-            print("Saved anyway — there is no better threshold for this data — but abstention on "
-                  "this corpus is not trustworthy. Do NOT read an abstention as evidence that the "
-                  "answer is absent.", file=sys.stderr)
-            raise SystemExit(1)
-        if cal.certified is None:
-            print(f"\nnot judged: {cal.certification_reason}", file=sys.stderr)
+        _cmd_calibrate(args)
+    elif args.cmd == "calibration":
+        _cmd_calibration(args)
 
 
 if __name__ == "__main__":
