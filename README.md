@@ -669,7 +669,7 @@ python -m recall.eval.scale --embedder hashing --filler 50000    # scale + laten
 
 ## Citation
 
-If you describe RE-call in a paper, post, talk, or README of your own, please cite the project and credit Giulio D'Erme. Use [`CITATION.cff`](https://github.com/GiulioDER/RE-call/blob/master/CITATION.cff) as the canonical citation source.
+If you describe RE-call in a paper, post, talk, or README of your own, cite the project and credit Giulio D'Erme. Use [`CITATION.cff`](https://github.com/GiulioDER/RE-call/blob/master/CITATION.cff) as the canonical citation source.
 
 ## License
 
