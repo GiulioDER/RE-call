@@ -75,6 +75,19 @@ print(len(rows), [round(x,4) for x in m], 'harmonic', round(len(m)/sum(1/x for x
 
 Expect `842 [0.7793, 0.7285, 0.4573] harmonic 0.6195`.
 
+⚠️ **Denominators are not always equal across the three metrics.** In `taskb.fixed` (Task B,
+`abstain` prompt) twelve RAGAS `TimeoutError`s leave `RL_F` null, so its leg averages **832** rows
+against 842 for the other two: 0.5913 all-rows, **0.5902** complete-case. Every other run is 842 on
+all three. Quote the per-metric n with the number.
+
+📎 The `.fixed.jsonl` files here were written by an earlier revision of
+`../fix_idk_conditioning.py` that skipped a metric when its raw value was null instead of
+recomputing it. A bug audit on 2026-08-09 caught it, and re-running the corrected script over all
+six `.scored` files reproduces these artifacts with **zero** changed values and all six harmonic
+means identical to four decimals. The archived files are therefore correct as they stand and have
+not been regenerated; the skip only mattered for a null-raw row that was also UNANSWERABLE or
+CONVERSATIONAL, and all twelve null rows are ANSWERABLE.
+
 ## Attribution
 
 These files embed content from **MTRAG** (IBM), used under **Apache-2.0**: the gold `targets`, the

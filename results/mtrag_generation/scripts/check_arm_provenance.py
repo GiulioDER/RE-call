@@ -22,7 +22,11 @@ print("=== run.log: every recall revision it ever recorded ===")
 log = Path(f"{D}/run.log").read_text(encoding="utf-8", errors="replace")
 revs = sorted(set(re.findall(r'"recall":\s*"([0-9a-f]{7,40})"', log)))
 print("  revisions found:", revs or "NONE (the dev run's manifest event is not in run.log)")
-starts = re.findall(r'"event":\s*"arm_start",\s*"arm":\s*"([a-z_]+)"', log)
+# [A-Za-z0-9_]+, not [a-z_]+: arm names carry digits (recall_default_recent3,
+# recall_rerank_recent3), and [a-z_]+ consumes "recall_default_recent", then needs a closing quote,
+# finds "3", and fails the match outright. A provenance report that silently omits an arm reads as
+# "that arm never started", which is the opposite of what it is for.
+starts = re.findall(r'"event":\s*"arm_start",\s*"arm":\s*"([A-Za-z0-9_]+)"', log)
 print("  arm_start events:", starts or "none")
 
 print()

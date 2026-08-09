@@ -28,11 +28,18 @@ from pathlib import Path
 
 def load(path: Path) -> dict[str, dict]:
     rows = {}
+    seen = 0
     with path.open(encoding="utf-8") as fh:
         for line in fh:
             if line.strip():
                 row = json.loads(line)
                 rows[row["task_id"]] = row
+                seen += 1
+    if seen != len(rows):
+        # Last-wins deduplication is silent, and the printed count would be the deduped size, so an
+        # appended re-run would collapse into the earlier one with nothing to show for it.
+        dupes = seen - len(rows)
+        raise SystemExit(f"{path.name}: {seen} lines but {len(rows)} unique task_ids ({dupes} duplicated)")
     return rows
 
 
@@ -58,17 +65,26 @@ def main(argv: list[str]) -> int:
             # judged. Everything else (targets, Answerability, Question Type) stays as shipped:
             # the scorer needs it and the generator never saw it.
             row["predictions"] = pred["predictions"]
-            row["contexts"] = pred.get("contexts", row.get("contexts"))
+            # Index, do NOT .get with the release row as a default. Falling back to the release's
+            # own contexts would hand the faithfulness judges passages the generator never saw and
+            # score a plausible, inflated number with nothing failing. An absent key here is a
+            # malformed prediction file and must be loud.
+            row["contexts"] = pred["contexts"]
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
             written += 1
+
+    with out_path.open(encoding="utf-8") as fh:
+        has_targets = all("targets" in json.loads(l) for l in fh if l.strip())
 
     print(json.dumps({
         "tasks": len(tasks), "predictions": len(preds), "written": written,
         "tasks_without_prediction": no_pred,
-        "has_targets": all("targets" in json.loads(l) for l in out_path.open(encoding="utf-8")),
+        "has_targets": has_targets,
         "output": str(out_path),
     }))
-    return 0
+    # A dropped task is a denominator change, not a warning: the resulting file would be scored as
+    # if it were the full 842 and compared against an 842-row published baseline.
+    return 1 if no_pred else 0
 
 
 if __name__ == "__main__":

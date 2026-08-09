@@ -68,14 +68,27 @@ quantities, and understates us precisely where a correct abstention is worth a f
 `underspecified_eval`, the raw metrics and the capitalised label. **No re-generation, no GPU, no
 API calls**: only the final combination step was broken.
 
-| contexts | prompt | harmonic (conditioned) |
-|---|---|---|
-| gold (Task B) | abstain | 0.5913 |
-| gold (Task B) | **official** | **0.6195** |
-| benchmark | abstain | 0.5228 |
-| RE-call | abstain | 0.5327 |
-| benchmark | **official** | **0.5516** |
-| RE-call | **official** | **0.5527** |
+| contexts | prompt | harmonic (conditioned) | n per metric |
+|---|---|---|---|
+| gold (Task B) | abstain | 0.5913 | ⚠️ **832 / 842 / 842** |
+| gold (Task B) | **official** | **0.6195** | 842 / 842 / 842 |
+| benchmark | abstain | 0.5228 | 842 / 842 / 842 |
+| RE-call | abstain | 0.5327 | 842 / 842 / 842 |
+| benchmark | **official** | **0.5516** | 842 / 842 / 842 |
+| RE-call | **official** | **0.5527** | 842 / 842 / 842 |
+
+⚠️ **The Task B `abstain` row mixes denominators** (found by a bug-audit of the fix script itself,
+2026-08-09, after the numbers were first published). Twelve RAGAS `TimeoutError`s leave `RL_F` null
+on 12 rows, so its leg is a mean over **832** rows while the other two legs are over **842**.
+Complete-case over the 832 rows common to all three is **0.5902**, against 0.5913 all-rows: a
+delta of **0.0011**.
+
+This changes no conclusion. That row is not the headline, every other run is 842 on all three
+metrics, and the two numbers the argument rests on (Task B official 0.6195, and the RE-call vs
+benchmark pair at 0.5527 / 0.5516) are complete-case identical. But **a rate is named by its
+denominator**, and quoting 0.5913 without saying which rows it averages is the same species of
+error as the one this document exists to correct. `fix_idk_conditioning.py` now prints
+`n_defined_per_metric` and `denominators_agree` so this cannot go unnoticed again.
 
 ### What changed in the conclusions
 

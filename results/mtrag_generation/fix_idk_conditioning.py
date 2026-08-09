@@ -68,11 +68,24 @@ def main(argv):
 
     missing_label = 0
     changed = {m: 0 for m in METRICS}
+    # Per-metric n, because the three metrics do NOT always share a denominator: RAGAS can time out
+    # on a row and leave RL_F null while RB_llm and RB_agg are fine. Reporting only len(rows) hid
+    # that the Task B abstain harmonic mean averaged RL_F over 832 rows and the other two over 842.
+    # 🔑 A rate is named by its denominator, so the denominator has to be in the output.
+    defined = {m: 0 for m in METRICS}
+    null_raw = {m: 0 for m in METRICS}
     with dst.open("w", encoding="utf-8") as fh:
         for r in rows:
             m = r.get("metrics") or {}
-            # The capitalised key, which is what the release actually ships.
-            label = first(r.get("Answerability")) or first(r.get("answerability"))
+            # Select the key by PRESENCE, not by truthiness of the unwrapped value. `or` would
+            # treat a falsy-but-present label ("" or []) as absent and fall through to None, which
+            # reinstates the exact broken fall-through this script exists to repair.
+            if "Answerability" in r:
+                label = first(r["Answerability"])
+            elif "answerability" in r:
+                label = first(r["answerability"])
+            else:
+                label = None
             if label is None:
                 missing_label += 1
             idk = first(m.get("idk_eval"))
@@ -80,12 +93,19 @@ def main(argv):
             for metric in METRICS:
                 raw = first(m.get(metric))
                 if raw is None:
-                    continue
+                    null_raw[metric] += 1
+                # Compute unconditionally, exactly as upstream `get_idk_underspec_score` does. An
+                # earlier `continue` here left the value the BROKEN scorer wrote: on an
+                # UNANSWERABLE row with a null raw metric and idk_eval == 1 that keeps 0 where the
+                # conditioned value is 1, which is the very inversion being repaired. It never
+                # fired on our data only because all 12 null-RL_F rows are ANSWERABLE.
                 fixed = idk_underspec(label, idk, und, raw)
                 key = f"{metric}_idk_underspecified"
                 before = first(m.get(key))
                 if before != fixed:
                     changed[metric] += 1
+                if fixed is not None:
+                    defined[metric] += 1
                 m[key] = [fixed]
             r["metrics"] = m
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -94,8 +114,12 @@ def main(argv):
         "input": str(src), "output": str(dst), "rows": len(rows),
         "rows_without_label": missing_label,
         "values_corrected": changed,
+        "n_defined_per_metric": defined,
+        "raw_metric_null": null_raw,
+        "denominators_agree": len(set(defined.values())) == 1,
     }))
-    return 0
+    # A missing label silently reinstates the original bug, so it is an error, not a note.
+    return 1 if missing_label else 0
 
 
 if __name__ == "__main__":
