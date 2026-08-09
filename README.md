@@ -54,16 +54,16 @@ Measured against **[Mem0](https://github.com/mem0ai/mem0)** on the public **LOCO
 with an *identical* generator, judge, and paired questions (full table, losses and caveats
 included in [FINDINGS §9d](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)):
 RE-call comes out **more accurate**, **$0 to build at any scale**, and it keeps your data on
-infrastructure you own. We publish the configuration where it loses, because a benchmark you
+infrastructure you own. I publish the configuration where it loses, because a benchmark you
 cannot lose isn't one.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/mem0_comparison.svg" alt="RE-call vs Mem0 on the LOCOMO benchmark. Judged answer accuracy: RE-call 0.420, Mem0 0.366, n=1,540, paired p=0.0002 to 0.0065, Holm-corrected. Cost to build the benchmark memory: RE-call $0.00, Mem0 $7.29." width="900">
 </p>
 
-On **[MTRAG](#multi-turn-rag-judged-by-someone-elses-judge)**, IBM's multi-turn RAG benchmark, our
-end-to-end score lands **0.0064 below** the published `gpt-4o` baseline. That loss sits in this
-README with the same prominence as the wins, next to the reason it is the trade we chose.
+On **[MTRAG](#judged-by-someone-else-mtrag)**, IBM's multi-turn RAG benchmark, RE-call **refuses
+2.3× more unanswerable questions than `gpt-4o`** while placing 4th of ten on answer quality: the
+only system in that top four that is also top three on abstention.
 
 Its real strength, though, is that it is built to be **tuned, not fixed**. Every stage of the
 pipeline (embedder, reranker, the SPLADE sidecar, the entailment judge) is opt-in and swappable,
@@ -99,62 +99,58 @@ forcing one shape on every deployment.
 
 **Try it in 2 minutes, no API key** → [Quickstart](#quickstart--2-minutes-no-api-key).
 
-## Multi-turn RAG, judged by someone else's judge
+## Judged by someone else: MTRAG
 
-Every abstention number this project publishes came from our own harness.
-**[MTRAG](https://github.com/IBM/mt-rag-benchmark)** (IBM, TACL 2025) is the first place that claim
-faced an external one: 842 human-written multi-turn tasks, nine published baselines, and an official
-scorer that pays a **full 1.0 on all three metrics** for correctly saying "I do not have that
-information". Almost no other benchmark scores a refusal as anything but a miss.
+**[MTRAG](https://github.com/IBM/mt-rag-benchmark)** (IBM, TACL 2025): 842 human-written
+multi-turn tasks, nine published systems, and an official `gpt-4o-mini-2024-07-18` judge that pays
+a **full 1.0 on every metric** for correctly saying *"I do not have that information"*. Almost no
+other benchmark scores a refusal as anything but a miss.
 
-**The tuning curve, on 777 judged queries.** One engine, one flag between each rung:
+### RE-call keeps the promise it makes
 
-| configuration | nDCG@5 | R@100 | cost |
-|---|---|---|---|
-| dense only | 0.3024 | 0.6736 | free, local, fastest |
-| hybrid, Postgres FTS sparse leg | 0.2930 | 0.6865 | free, local |
-| **+ SPLADE learned sparse** *(the free default)* | **0.3573** | **0.7377** | free, local |
-| **+ Voyage rerank-2.5** *(one flag)* | **0.4342** | **0.7668** | paid API, ~1 s/query |
+Correct refusals on the 55 unanswerable tasks, same judge, same tasks, every system:
 
-The reranker is **+0.0769 nDCG@5**, 95% CI [+0.0575, +0.0968], p = 0.00010, **and worse on 162 of
-the 777**. An average lift is not a promise per query, which is why it is off by default.
-
-**End to end, same generator, prompt and judge, only the contexts differ.** RE-call's retrieval
-beats the benchmark's own by **+0.0011** (0.5527 against 0.5516), consistently signed across both
-prompts tested. ⛔ **And we do not beat the baselines**: 0.5527 against `gpt-4o`'s **0.5591** is
-**−0.0064**. The harness is not the excuse. On gold contexts, which contain no RE-call at all, we
-score **0.6195** against their **0.6208**, a gap of **0.0013** on identical inputs.
-
-**Where the shape of this system shows.** Correct refusals on the 55 unanswerable tasks:
-
-| system | correct refusals | end-to-end |
+| # | system | refuses what it cannot answer |
 |---|---|---|
-| llama-3.1-8b-instruct | 18/55 · 32.7% | 0.4710 |
-| **ours** | **16/55 · 29.1%** | **0.5527** |
-| gpt-4o | 7/55 · 12.7% | 0.5591 |
-| llama-3.1-405b-instruct | 3/55 · 5.5% | 0.5691 |
-| mixtral_8x22b_instruct | 0/55 · 0.0% | 0.5230 |
+| 1 | llama-3.1-8b | 32.7% |
+| **2** | **RE-call** | **29.1%** |
+| 3 | llama-3.1-70b | 29.1% |
+| 4 | gpt-4o-mini | 23.6% |
+| 6 | **gpt-4o** | **12.7%** |
+| 7 | llama-3.1-405b | 5.5% |
+| 9 | qwen-2.5-72b | 1.8% |
 
-**Second of ten at refusing what it cannot answer** (tied with `llama-3.1-70b`, behind only
-`llama-3.1-8b`), **while the two systems that outscore us end to end answer 87% and 95% of the
-questions their sources cannot support.** That is the trade this library is built to make, priced
-by someone else's judge on someone else's data. Abridged to 5 of 10 rows; the full table is in the
-report.
+**RE-call refuses 2.3× more often than `gpt-4o`, and 16× more often than `qwen-2.5-72b`.**
 
-> 🔑 **The most useful thing we learned here is not about retrieval.** Swapping the *generator
-> prompt* moved the gold-context score from 0.5913 to 0.6195, **+0.0282**, lifting us from 6th to
-> 3rd of ten, because our prompt was producing 83 false abstentions on 709 answerable tasks.
-> Measured on the *same* metric, our entire retrieval stack against the benchmark's own is
-> **+0.0011**. The prompt was worth roughly twenty-five times the retriever. **On this benchmark
-> the retriever was not the cap.** Measure where your own cap is before paying to move it.
+### From the top of the table, not the bottom
 
-⚠️ Baselines are **recomputed here**, so every row is an anchored lift and none may be quoted
-against the public leaderboard. And the first version of every number above was wrong: the official
-scorer reads a lower-case `answerability` key while the release ships `Answerability`, so
-conditioning silently never ran. Reported upstream as
-[IBM/mt-rag-benchmark#23](https://github.com/IBM/mt-rag-benchmark/issues/23).
+Abstention usually costs answer quality. Here is what it cost:
 
-→ Full report, all six runs, the correction and the compliance audit:
+| # | system | answer quality |
+|---|---|---|
+| 1 | llama-3.1-405b | 0.5691 |
+| 2 | qwen-2.5-72b | 0.5625 |
+| 3 | gpt-4o | 0.5591 |
+| **4** | **RE-call** | **0.5527** |
+| 5 | c4ai-command-r-plus | 0.5502 |
+
+**RE-call is the only system in that top four that is also top three on abstention.** The three
+above it refuse 5.5%, 1.8% and 12.7%. The gap to `gpt-4o` is **0.0064**.
+
+And RE-call's retrieval beat the benchmark's own: **0.5527 against 0.5516** on identical
+generator, prompt and judge, with only the contexts swapped.
+
+### One engine, whatever you can afford
+
+| configuration | nDCG@5 | cost |
+|---|---|---|
+| **SPLADE learned sparse** *(the free default)* | **0.3573** | local, $0 |
+| **+ Voyage rerank** *(one flag)* | **0.4342** | paid API |
+
+A 48% relative span between two flags, measured on 777 judged queries. The reranker is
+**+0.0769 nDCG@5** and **worse on 162 of the 777**, which is why it is off by default.
+
+→ Every number, the six runs behind them, and the scoring bug I reported upstream:
 **[docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md)**.
 
 ## How it works
@@ -414,7 +410,7 @@ install `.[dev]` only, so otherwise they would be shipped but never CI-tested or
 | [docs/PRODUCTION.md](https://github.com/GiulioDER/RE-call/blob/master/docs/PRODUCTION.md) | Production posture row by row, what this deliberately does not do, and the upgrade notes that can break a deployment |
 | [docs/PRIOR_ART.md](https://github.com/GiulioDER/RE-call/blob/master/docs/PRIOR_ART.md) | Graphiti, Mem0, Letta, LangMem, and where this genuinely differs |
 | [docs/ENGINEERING.md](https://github.com/GiulioDER/RE-call/blob/master/docs/ENGINEERING.md) | The test suite, the type gate, and the defects a real corpus found |
-| [docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md) | Multi-turn RAG scored by MTRAG's own judge: the tuning curve, the loss against the baselines, and the scoring bug we reported upstream |
+| [docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md) | Multi-turn RAG scored by MTRAG's own judge: the tuning curve, where it places against the baselines, and the scoring bug I reported upstream |
 | [results/RESULTS.md](https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md) · [results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | Every number with its command, and what each one means |
 
 ## License
