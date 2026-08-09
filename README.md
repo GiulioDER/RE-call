@@ -113,19 +113,6 @@ A 48% relative span between two flags, measured on 777 judged queries. The reran
 → Every number, the six runs behind them, and the scoring bug I reported upstream:
 **[docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md)**.
 
-## One engine, whatever you can afford
-
-| configuration | nDCG@5 | cost |
-|---|---|---|
-| **SPLADE learned sparse** *(the free default)* | **0.3573** | local, $0 |
-| **+ Voyage rerank** *(one flag)* | **0.4342** | paid API |
-
-A 48% relative span between two flags, measured on 777 judged queries. The reranker is
-**+0.0769 nDCG@5** and **worse on 162 of the 777**, which is why it is off by default.
-
-→ Every number, the six runs behind them, and the scoring bug I reported upstream:
-**[docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md)**.
-
 ## How it works
 
 ```mermaid
