@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 from recall.calibration import Calibration, load_for
 from recall.calibration_v2 import CalibrationBindingError, CalibrationRepository
@@ -16,6 +19,7 @@ from recall.lint import DEFAULT_GLOB
 from recall.observability import configure_logging
 from recall.store import DEFAULT_TENANT, PgVectorStore, require_secure_dsn, warn_if_insecure_dsn
 from recall.trust import terminal_safe, trusted_search
+from recall.trust_policy import TrustPolicy
 from recall.types import TrustedResult
 
 load_dotenv()
@@ -37,7 +41,15 @@ def _print_result(result: TrustedResult) -> None:
         flags.append("GAP")
     if result.staleness.stale:
         flags.append("STALE")
+    if result.trust_state != "trusted":
+        flags.append(f"DEGRADED:{result.failure_code or 'unknown'}")
     print(f"[{' '.join(flags) if flags else 'ok'}] query={result.query!r}")
+    d = result.diagnostics
+    print(
+        f"  index: embedding={terminal_safe(d.embedding_profile)} "
+        f"retrieval={terminal_safe(d.retrieval_profile)} "
+        f"generation={terminal_safe(d.index_generation)}"
+    )
     if result.reason:
         print(f"  reason: {result.reason}")
     for h in result.hits:
@@ -56,6 +68,24 @@ def _print_result(result: TrustedResult) -> None:
             f"  {h.verdict:<14} conf={h.confidence:.2f} cos={h.cosine:.3f}  "
             f"{name}{redirect}  {preview!r}"
         )
+        valid_from = h.validity.valid_from.isoformat() if h.validity.valid_from else "-"
+        print(
+            f"                 chunk_id={terminal_safe(h.chunk.id)!r} "
+            f"ordinal={h.provenance.ord} valid_from={valid_from}"
+        )
+
+
+def _print_evidence(result: TrustedResult, max_items: int) -> None:
+    """Print the generator-neutral evidence bundle and the exact prompt it renders to."""
+    from recall.evidence import EvidencePolicy, build_evidence_bundle, render_evidence_prompt
+
+    bundle = build_evidence_bundle(result, EvidencePolicy(max_items=max(1, max_items)))
+    system, user = render_evidence_prompt(bundle)
+    payload = {
+        "bundle": asdict(bundle),
+        "prompt": {"system": system, "user": user},
+    }
+    print(json.dumps(payload, indent=2, default=str))
 
 
 def _run_queries(
@@ -63,7 +93,7 @@ def _run_queries(
     embedder: Embedder,
     queries: list[str],
     calibration: Calibration | None,
-    entailment=None,
+    entailment: Any | None = None,
 ) -> None:
     policy, calibration = _cli_trust(embedder, calibration)
     for q in queries:
@@ -80,15 +110,13 @@ def _run_queries(
         print()
 
 
-def _cli_policy():
-    from recall.trust_policy import TrustPolicy
-
+def _cli_policy() -> TrustPolicy:
     return TrustPolicy.from_env()
 
 
 def _cli_trust(
     embedder: Embedder, calibration: Calibration | None
-) -> tuple[object, Calibration | None]:
+) -> tuple[TrustPolicy, Calibration | None]:
     policy = _cli_policy()
     if calibration is None and not policy.strict:
         from recall.calibration import Calibration as _Calibration
@@ -173,6 +201,129 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
     raise SystemExit(f"unknown calibration subcommand: {args.calibration_cmd}")
 
 
+def _cmd_generation(args: argparse.Namespace) -> None:
+    from recall.embeddings import HashingEmbedder
+    from recall.generations import GenerationManager
+    from recall.lineage import (
+        ChunkerIdentity,
+        EmbedderIdentity,
+        IndexManifestV1,
+        ManifestObjectV1,
+        PipelineIdentity,
+    )
+    from recall.manifest import S3ObjectReader, load_manifest
+
+    manager = GenerationManager(args.dsn, args.tenant)
+    if args.generation_cmd == "list":
+        for generation in manager.list_generations():
+            print(
+                f"{generation.generation_id} {generation.state.value:<18} "
+                f"pipeline={generation.pipeline_fingerprint} "
+                f"corpus={generation.corpus_fingerprint}"
+            )
+        return
+    if args.generation_cmd == "rollback":
+        print(f"active generation: {manager.rollback()}")
+        return
+    if args.generation_cmd == "gc":
+        collected = manager.gc(
+            retention_days=args.retention_days,
+            retain_previous=args.retain_previous,
+        )
+        print(f"collected {len(collected)} generation(s): {', '.join(collected) or '(none)'}")
+        return
+    if args.generation_cmd == "validate":
+        generation_validation = manager.validate(args.generation_id)
+        print(
+            f"ready {generation_validation.generation_id}: "
+            f"{generation_validation.sources} sources, "
+            f"{generation_validation.chunks} chunks"
+        )
+        return
+    if args.generation_cmd == "promote":
+        manager.promote(
+            args.generation_id,
+            unsafe_development=args.unsafe_development_promotion,
+        )
+        print(f"active generation: {args.generation_id}")
+        return
+
+    reader = S3ObjectReader.from_environment()
+    if args.manifest.startswith("s3://"):
+        if (
+            args.manifest_version_id is None
+            or args.manifest_sha256 is None
+            or args.manifest_size is None
+        ):
+            raise SystemExit(
+                "an S3 manifest requires --manifest-version-id, --manifest-sha256 and "
+                "--manifest-size"
+            )
+        reference = ManifestObjectV1(
+            args.manifest,
+            args.manifest_version_id,
+            "application/json",
+            args.manifest_size,
+            args.manifest_sha256,
+        )
+        manifest = IndexManifestV1.from_json(reader.fetch(reference).data)
+    else:
+        if os.environ.get("RECALL_ENV", "development").lower() == "production":
+            raise SystemExit("production generation builds require a versioned S3 manifest")
+        manifest = load_manifest(args.manifest)
+    embedder = _make_embedder(args.embedder)
+    revision = args.embedder_revision
+    provider = args.embedder_provider
+    if isinstance(embedder, HashingEmbedder):
+        provider = provider or "recall"
+        revision = revision or "hashing-md5-bow-v1"
+    else:
+        provider = provider or "fastembed"
+    identity = EmbedderIdentity(
+        provider=provider,
+        model=embedder.name,
+        dimension=embedder.dim,
+        revision=revision,
+        artifact_digest=args.embedder_artifact_digest,
+        unverified_reason=(
+            "explicit development build"
+            if args.unverified_development
+            and not revision
+            and not args.embedder_artifact_digest
+            else None
+        ),
+    )
+    if args.chunker == "code":
+        generation_chunker = functools.partial(chunk_code, max_chars=args.max_chars)
+        chunker_identity = ChunkerIdentity("recall.chunk_code", 1, {"max_chars": args.max_chars})
+    else:
+        generation_chunker = functools.partial(
+            chunk_text, max_chars=args.max_chars, overlap=args.overlap
+        )
+        chunker_identity = ChunkerIdentity(
+            "recall.chunk_text",
+            1,
+            {"max_chars": args.max_chars, "overlap": args.overlap},
+        )
+    pipeline = PipelineIdentity(identity, chunker_identity)
+    generation = manager.create(
+        manifest,
+        pipeline,
+        allow_unverified=args.unverified_development,
+    )
+    generation_stats = manager.build(
+        generation.generation_id,
+        reader,
+        embedder,
+        generation_chunker,
+    )
+    print(
+        f"built {generation_stats.generation_id}: {generation_stats.objects} objects, "
+        f"{generation_stats.chunks} chunks, {generation_stats.reused_objects} objects "
+        f"reused; run `recall generation validate {generation_stats.generation_id}`"
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):  # clean UTF-8 output on Windows consoles
         sys.stdout.reconfigure(encoding="utf-8")
@@ -212,6 +363,31 @@ def main(argv: list[str] | None = None) -> None:
     p_grants.add_argument("--role", required=True)
     p_grants.add_argument("--enterprise", action="store_true")
 
+    p_generation = sub.add_parser("generation", help="manage immutable blue green generations")
+    generation_sub = p_generation.add_subparsers(dest="generation_cmd", required=True)
+    p_build = generation_sub.add_parser("build", help="create and build a generation")
+    p_build.add_argument("manifest")
+    p_build.add_argument("--manifest-version-id")
+    p_build.add_argument("--manifest-sha256")
+    p_build.add_argument("--manifest-size", type=int)
+    p_build.add_argument("--embedder-provider", default=None)
+    p_build.add_argument("--embedder-revision", default=None)
+    p_build.add_argument("--embedder-artifact-digest", default=None)
+    p_build.add_argument("--unverified-development", action="store_true")
+    p_build.add_argument("--chunker", choices=["text", "code"], default="text")
+    p_build.add_argument("--max-chars", type=int, default=800)
+    p_build.add_argument("--overlap", type=int, default=80)
+    p_validate = generation_sub.add_parser("validate", help="validate a built generation")
+    p_validate.add_argument("generation_id")
+    p_promote = generation_sub.add_parser("promote", help="promote a ready generation")
+    p_promote.add_argument("generation_id")
+    p_promote.add_argument("--unsafe-development-promotion", action="store_true")
+    generation_sub.add_parser("rollback", help="atomically restore the previous generation")
+    generation_sub.add_parser("list", help="list immutable generation history")
+    p_gc = generation_sub.add_parser("gc", help="collect expired retired generations")
+    p_gc.add_argument("--retention-days", type=int, default=7)
+    p_gc.add_argument("--retain-previous", type=int, default=2)
+
     p_index = sub.add_parser("index", help="index a folder of markdown or code")
     p_index.add_argument("path")
     p_index.add_argument(
@@ -250,6 +426,12 @@ def main(argv: list[str] | None = None) -> None:
         "--entail", action="store_true",
         help="opt-in entailment stage: demote hits that don't answer the query "
              "(requires recall[entail]; downloads the QNLI judge on first use)",
+    )
+    p_search.add_argument(
+        "--evidence",
+        action="store_true",
+        help="also print the generator-neutral evidence bundle and the exact prompt it renders "
+             "to, as JSON. Additive: the normal listing is printed either way.",
     )
 
     sub.add_parser("demo", help="index corpus/ and run sample memory queries")
@@ -323,6 +505,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     db_backed_cmds = {
         "schema",
+        "generation",
         "index",
         "forget",
         "search",
@@ -338,6 +521,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "schema":
         _cmd_schema(args)
+        return
+
+    if args.cmd == "generation":
+        _cmd_generation(args)
         return
 
     if args.cmd == "lint":  # pure filesystem check — no embedder, no DB
@@ -405,10 +592,10 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"recall check: no such file: {raw}", file=sys.stderr)
                 raise SystemExit(2)
             names = corpus_names(args.corpus or f.parent)
-            result = check_file(f, names)
-            if result.needs_attention:
+            check_result = check_file(f, names)
+            if check_result.needs_attention:
                 needs += 1
-                print(format_prompt(result))
+                print(format_prompt(check_result))
         if needs:
             print(f"\n{needs} memo(s) state a closure in prose only.")
             if args.strict:
@@ -437,40 +624,105 @@ def main(argv: list[str] | None = None) -> None:
                 summary += f", pruned {stats.deleted} source(s) no longer on disk"
             print(summary)
     elif args.cmd == "forget":
+        from recall.generation_store import GenerationStore
+        from recall.generations import NoActiveGeneration
+
         embedder = _make_embedder(args.embedder)
-        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
-            store.ensure_schema()
+        generation_mode = os.environ.get("RECALL_ENV", "development").lower() == "production"
+        gen_store: GenerationStore | None = (
+            GenerationStore(args.dsn, embedder.dim, tenant=args.tenant)
+            if generation_mode
+            else None
+        )
+        forget_store: PgVectorStore = (
+            gen_store
+            if gen_store is not None
+            else PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant)
+        )
+        with forget_store as store:
+            store.check_schema()
             requested = list(dict.fromkeys(args.sources))
-            existing = store.source_content_hashes()
-            found = [s for s in requested if s in existing]
-            not_found = [s for s in requested if s not in existing]
+            if any(not source.strip() for source in requested):
+                raise SystemExit(
+                    "forget: empty source argument (an unset shell variable?); nothing deleted"
+                )
+            if gen_store is not None:
+                known = (
+                    gen_store.sources_in_any_generation()
+                    | gen_store.manifest_uris_matching(list(requested))
+                    | gen_store.sources_in_legacy_table()
+                )
+                targets = [s for s in requested if s in known]
+                unseen = [s for s in requested if s not in known]
+                unseen_note = (
+                    "not present in any generation, manifest, or the adopted v0.8 table, so "
+                    f"NOT erased and NOT tombstoned (check for typos): {', '.join(unseen)}"
+                )
+            else:
+                try:
+                    visible_now = set(store.source_content_hashes())
+                except NoActiveGeneration:
+                    visible_now = set()
+                targets = [s for s in requested if s in visible_now]
+                unseen = [s for s in requested if s not in visible_now]
+                unseen_note = f"not found (check for typos): {', '.join(unseen)}"
             if not args.yes:
-                print(f"DRY RUN: would forget {len(found)} source(s): "
-                      f"{', '.join(found) if found else '(none)'}")
-                if not_found:
-                    print(f"not found (check for typos): {', '.join(not_found)}")
+                print(
+                    f"DRY RUN: would forget {len(targets)} source(s): "
+                    f"{', '.join(targets) if targets else '(none)'}"
+                )
+                if unseen:
+                    print(unseen_note)
                 print("nothing deleted — re-run with --yes to actually delete.")
             else:
-                removed = store.delete_sources(found)
-                print(f"forgot {removed} chunk(s) from {len(found)} source(s)")
-                if not_found:
-                    print(f"not found (check for typos): {', '.join(not_found)}")
+                removed = 0
+                erased: list[str] = []
+                try:
+                    for source in targets:
+                        removed += store.delete_sources([source])
+                        erased.append(source)
+                finally:
+                    if len(erased) == len(targets):
+                        print(f"forgot {removed} chunk(s) from {len(erased)} source(s)")
+                    else:
+                        missed = [s for s in targets if s not in set(erased)]
+                        print(
+                            f"forgot {removed} chunk(s) from {len(erased)} of {len(targets)} "
+                            f"source(s); NOT reached: {', '.join(missed)}"
+                        )
+                    if unseen:
+                        print(unseen_note)
     elif args.cmd == "search":
+        from recall.generation_store import GenerationStore
+
         embedder = _make_embedder(args.embedder)
         calibration = load_for(embedder.name)
         if args.entail:
             from recall.entailment import QnliEntailmentJudge
 
-            entail_judge = QnliEntailmentJudge()
+            entail_judge: Any | None = QnliEntailmentJudge()
         else:
             entail_judge = resolve_entailment_judge()
         policy, calibration = _cli_trust(embedder, calibration)
-        with PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant) as store:
-            store.ensure_schema()
-            _print_result(
-                trusted_search(store, embedder, args.query, k=args.k, calibration=calibration,
-                               entailment=entail_judge, policy=policy)
+        search_context: PgVectorStore = (
+            GenerationStore(args.dsn, embedder.dim, tenant=args.tenant)
+            if os.environ.get("RECALL_ENV", "development").lower() == "production"
+            else PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant)
+        )
+        with search_context as store:
+            store.check_schema()
+            result = trusted_search(
+                store,
+                embedder,
+                args.query,
+                k=max(1, args.k),
+                calibration=calibration,
+                entailment=entail_judge,
+                policy=policy,
             )
+            _print_result(result)
+            if args.evidence:
+                _print_evidence(result, max_items=args.k)
     elif args.cmd == "demo":
         embedder = _make_embedder(args.embedder)
         calibration = load_for(embedder.name)

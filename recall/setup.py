@@ -57,7 +57,7 @@ def _probe_gpu() -> str | None:
     if torch is not None:
         try:
             if torch.cuda.is_available():
-                return torch.cuda.get_device_name(0)
+                return str(torch.cuda.get_device_name(0))
         except Exception:
             pass
         try:
