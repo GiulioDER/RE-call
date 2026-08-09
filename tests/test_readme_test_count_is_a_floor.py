@@ -61,6 +61,12 @@ def test_the_readme_has_a_clear_showcase_and_surface_split() -> None:
     assert "One command, one screenshot" in text
 
 
+def test_the_readme_says_its_numbers_are_claim_gated() -> None:
+    text = README.read_text(encoding="utf-8")
+    assert "tied to committed artifacts" in text
+    assert "claim gate checks them in CI" in text
+
+
 def test_the_suite_clears_the_advertised_floor(request: pytest.FixtureRequest) -> None:
     collected = len(request.session.items)
     if collected < _FULL_RUN_FLOOR:

@@ -121,6 +121,8 @@ Every headline number below was measured, and every one carries its limit. Where
 supported, it was withdrawn rather than softened — the withdrawals are listed too, because a claims
 table without them is marketing.
 
+The published numbers are not loose prose. They are tied to committed artifacts, and the claim gate checks them in CI so a bare number without provenance is rejected.
+
 | Claim | Measurement | Limit |
 |---|---|---|
 | **Supersession beats similarity — where the edge was authored** | Superseded-trust rate **0.00**, 95% Wilson **[0.00, 0.02]**, n=250, against a baseline of **1.00** — plain search returns the stale memory *every time* on adversarially-worded queries | Generated corpus; the successor/abstain columns on it are **not** meaningful (below). **And the mechanism is only as good as its coverage: 2 of 792 real memos declared `supersedes:` while 60 closed a decision in prose** — the enforcement is exact, the corpus is sparse, and both halves are load-bearing ([below](#prior-art--and-where-this-genuinely-differs)) |
