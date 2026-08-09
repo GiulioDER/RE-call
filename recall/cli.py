@@ -21,6 +21,7 @@ from recall.observability import configure_logging
 from recall.store import (
     DEFAULT_TENANT,
     PgVectorStore,
+    _env_opt_out,
     require_secure_dsn,
     warn_if_insecure_dsn,
 )
@@ -30,6 +31,13 @@ from recall.types import TrustedResult
 # `recall setup` writes its answers to .env, so the file has to be read BEFORE the DSN
 # defaults below are computed from os.environ. Without this the wizard appears to succeed
 # and the very next command silently ignores every setting it just captured.
+#
+# The failure is RECORDED here rather than acted on: SystemExit is not safe at import time
+# (it would kill `import recall.cli` for library consumers), so refusing a command over a
+# broken .env has to happen inside `main()`, where it is. Printing a warning here and moving
+# on was tried and an audit caught what it misses: warn-and-continue still lets the exact
+# hazard through, a request that carries the wrong DSN, it just prints a line first.
+_DOTENV_ERROR: Exception | None = None
 try:
     load_dotenv()
 except Exception as _dotenv_exc:  # noqa: BLE001 - see below
@@ -38,12 +46,17 @@ except Exception as _dotenv_exc:  # noqa: BLE001 - see below
     # collection. Enumerating types was tried twice and was wrong twice — (OSError,
     # UnicodeDecodeError) missed the ValueError that a NUL byte produces, and a NUL is valid
     # UTF-8 so the read itself succeeds.
-    #
-    # It must also be LOUD. `load_dotenv` is all-or-nothing now (see recall/_env.py), so the
-    # process really is in the "no .env" state here rather than half-configured — but a
-    # silently ignored .env means the DSN falls back to the local default, passes the
-    # insecure-DSN guard precisely because it is local, and writes to the wrong database.
-    print(f"warning: ignoring .env — {type(_dotenv_exc).__name__}: {_dotenv_exc}", file=sys.stderr)
+    _DOTENV_ERROR = _dotenv_exc
+    try:
+        print(
+            f"warning: .env could not be applied — {type(_dotenv_exc).__name__}: {_dotenv_exc}",
+            file=sys.stderr,
+        )
+    except Exception:  # noqa: BLE001 - this handler must not be able to fail either
+        # A write to a closed or broken stderr (a daemonised or service-wrapped host) must not
+        # take an import down. The refusal in `main()` below does not depend on this line
+        # having printed; it depends only on `_DOTENV_ERROR` being set.
+        pass
 
 DEFAULT_DSN = os.environ.get(
     "RECALL_SERVING_DSN",
@@ -77,6 +90,11 @@ def _make_embedder(name: str) -> Embedder:
     """
     try:
         return resolve_embedder(name)
+    except (MemoryError, RecursionError):
+        # Not operator mistakes: the process is actually dying. Converting these to a tidy
+        # one-liner would hide that, so they propagate like KeyboardInterrupt/SystemExit
+        # (which are BaseException, not Exception, and were never caught below regardless).
+        raise
     except Exception as exc:  # noqa: BLE001 - see below
         # Deliberately broad, and an enumerated tuple was tried first and was wrong. The
         # spellings `choices=` used to block reach real constructors: `st:<model>` raises
@@ -84,8 +102,7 @@ def _make_embedder(name: str) -> Embedder:
         # embedders probe the API in __init__ and re-raise the vendor SDK's own exception
         # (openai.AuthenticationError inherits only from Exception), and an offline box raises
         # httpx errors on the DEFAULT path. Every one of those is an operator mistake and
-        # belongs on one line. KeyboardInterrupt and SystemExit are not Exception subclasses,
-        # so they still propagate.
+        # belongs on one line.
         raise SystemExit(f"embedder {name!r}: {type(exc).__name__}: {exc}") from exc
 
 
@@ -105,6 +122,8 @@ def _entailment_judge(force: bool = False) -> EntailmentJudge | None:
     env = {**os.environ, "RECALL_ENTAILMENT": "1"} if force else None
     try:
         return resolve_entailment_judge(env)
+    except (MemoryError, RecursionError):
+        raise  # the process is dying, not misconfigured; see _make_embedder above
     except Exception as exc:  # noqa: BLE001 - same reasoning as _make_embedder above
         # ValueError alone was not enough, and leaving the sibling narrow while broadening
         # `_make_embedder` was inconsistent: `resolve_entailment_judge` CONSTRUCTS the judge,
@@ -547,6 +566,23 @@ def main(argv: list[str] | None = None) -> None:
         opens_db = bool(getattr(args, "semantic", False))
     if args.cmd == "schema" and getattr(args, "schema_cmd", None) == "grants":
         opens_db = False  # prints SQL for an operator to run; opens nothing
+
+    if opens_db and _DOTENV_ERROR is not None and not _env_opt_out("RECALL_IGNORE_BROKEN_DOTENV"):
+        # `.env` exists but could not be applied, so any variable it would have set — most
+        # dangerously RECALL_SERVING_DSN — is silently absent from this process, and args.dsn
+        # below is the LOCAL fallback rather than whatever was configured. Warning about that
+        # at import time and proceeding anyway was tried; it still lets a request reach the
+        # wrong database, which is the exact hazard this whole guard exists to prevent, so a
+        # DB-opening command refuses instead. Reading it, fixing it, or deleting it are all
+        # legitimate; running against a database neither the operator nor the file chose is not.
+        raise SystemExit(
+            f".env exists but could not be applied "
+            f"({type(_DOTENV_ERROR).__name__}: {_DOTENV_ERROR}), and this command connects to a "
+            f"database. Fix the file, or set RECALL_IGNORE_BROKEN_DOTENV=1 to proceed anyway — "
+            f"variables the file would have set (including RECALL_SERVING_DSN) are absent, so "
+            f"the DSN in effect may not be the one you intended."
+        )
+
     if opens_db:
         if args.cmd == "setup":
             # The wizard is the command you run to REPAIR a bad configuration, so a bare

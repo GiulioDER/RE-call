@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from recall._env import load_dotenv
 
 
@@ -19,3 +21,47 @@ def test_load_dotenv_parses_and_does_not_override(tmp_path, monkeypatch):
 
 def test_load_dotenv_missing_file_is_noop(tmp_path):
     load_dotenv(tmp_path / "does_not_exist.env")  # must not raise
+
+
+def test_load_dotenv_repeated_key_resolves_to_first_occurrence(tmp_path, monkeypatch):
+    # A rewrite once collected lines into a dict and silently flipped this to last-wins,
+    # with nothing here to catch it. `recall/setup.py` appends a `# recall setup` block to
+    # the END of an existing .env, so a hand-written line above the block must keep winning.
+    env = tmp_path / ".env"
+    env.write_text("K=first\nK=second\n", encoding="utf-8")
+    monkeypatch.delenv("K", raising=False)
+
+    load_dotenv(env)
+
+    assert os.environ["K"] == "first"
+
+
+def test_load_dotenv_bad_byte_on_an_already_set_key_does_not_poison_the_rest(tmp_path, monkeypatch):
+    # A key that is already exported was never going to be applied, so a NUL on ITS line must
+    # not fail keys that would have been applied. Checking validity before checking whether a
+    # line matters previously discarded an otherwise-clean file over a byte nothing would read.
+    env = tmp_path / ".env"
+    env.write_text("ALREADY=x\x00y\nLATER=must_arrive\n", encoding="utf-8")
+    monkeypatch.setenv("ALREADY", "pre-set-by-shell")
+    monkeypatch.delenv("LATER", raising=False)
+
+    load_dotenv(env)
+
+    assert os.environ["ALREADY"] == "pre-set-by-shell"
+    assert os.environ["LATER"] == "must_arrive"
+
+
+def test_load_dotenv_bad_byte_on_a_key_that_would_apply_discards_the_whole_file(
+    tmp_path, monkeypatch
+):
+    # All-or-nothing for the keys that actually matter: a NUL on a line that WOULD have been
+    # applied must raise, and nothing from the file — including earlier valid lines — applies.
+    env = tmp_path / ".env"
+    env.write_text("EARLY=would_apply\nBROKEN=a\x00b\n", encoding="utf-8")
+    monkeypatch.delenv("EARLY", raising=False)
+    monkeypatch.delenv("BROKEN", raising=False)
+
+    with pytest.raises(ValueError, match="embedded null character"):
+        load_dotenv(env)
+
+    assert "EARLY" not in os.environ  # partial application would be worse than none

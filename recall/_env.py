@@ -22,6 +22,23 @@ def load_dotenv(path: str | Path = ".env") -> None:
 
     A NUL is the realistic trigger, from a `.env` truncated by a crash mid-write: it is valid
     UTF-8, so `read_text` succeeds and `os.environ.__setitem__` is what raises.
+
+    Two things a first version of this rewrite got wrong, found by audit, both from checking
+    a key's fate too late:
+
+    * A key already in `os.environ` was never going to be applied, so it must not be able to
+      fail the whole file. The first version ran the NUL check on every parsed key regardless,
+      so a corrupt byte on a line that would have been SKIPPED anyway still discarded a file
+      that previously loaded completely.
+    * A key repeated in the file used to resolve to its FIRST occurrence — the incremental
+      version applied line 1, then skipped line 2 because the key was already set. Collecting
+      into a dict and assigning `pending[key] = val` on every line silently flipped that to
+      LAST-wins, with no test covering a repeated key to catch it. `recall/setup.py` appends
+      its block to the end of an existing `.env`, so this is not a hypothetical: a hand-written
+      line above the block used to win and would have started losing to it.
+
+    Both are fixed the same way: decide whether a line matters (not already exported, not
+    already claimed by an earlier line in this file) BEFORE parsing its content for validity.
     """
     p = Path(path)
     if not p.exists():
@@ -34,13 +51,13 @@ def load_dotenv(path: str | Path = ".env") -> None:
         key, _, val = line.partition("=")
         key = key.strip()
         val = val.strip().strip('"').strip("'")
-        if not key:
+        if not key or key in os.environ or key in pending:
+            # An exported variable always wins over the file, and so does the file's OWN
+            # first occurrence of a key — checked before validity, so a line that was never
+            # going to apply cannot fail one that already has.
             continue
-        # `os.environ` rejects these outright, so catch them during the parse where refusing
-        # costs nothing, rather than half way through applying.
         if "\x00" in key or "\x00" in val:
             raise ValueError(f"{p}: embedded null character in {key!r}")
         pending[key] = val
     for key, val in pending.items():
-        if key not in os.environ:  # an exported variable always wins over the file
-            os.environ[key] = val
+        os.environ[key] = val
