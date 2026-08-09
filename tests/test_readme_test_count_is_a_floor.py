@@ -54,6 +54,13 @@ def test_the_schema_migrations_claim_matches_the_readme_body() -> None:
     assert "pre-tenancy tables are migrated in place" in text
 
 
+def test_the_readme_has_a_clear_showcase_and_surface_split() -> None:
+    text = README.read_text(encoding="utf-8")
+    assert "## Showcase" in text
+    assert "## Product surface" in text
+    assert "One command, one screenshot" in text
+
+
 def test_the_suite_clears_the_advertised_floor(request: pytest.FixtureRequest) -> None:
     collected = len(request.session.items)
     if collected < _FULL_RUN_FLOOR:

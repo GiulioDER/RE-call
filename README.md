@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <b>Trustworthy retrieval for an AI agent's own memory.</b><br>
-  Every hit comes back with confidence, provenance, and validity — or the honest answer is <i>"I don't know."</i>
+  <b>A retrieval library that makes an AI agent's memory trustworthy.</b><br>
+  Every hit returns confidence, provenance, and validity, and the system abstains when nothing clears the bar.
 </p>
 
 <p align="center">
@@ -20,7 +20,7 @@
   &nbsp;·&nbsp;
   <a href="#who-is-it-for">Who it's for</a>
   &nbsp;·&nbsp;
-  <a href="#see-it-in-one-screen">See it</a>
+  <a href="#showcase">Showcase</a>
   &nbsp;·&nbsp;
   <a href="#what-is-actually-verified">What's verified</a>
   &nbsp;·&nbsp;
@@ -54,8 +54,8 @@ paired questions (full table, losses and caveats included →
   already run and back up. No vendor cloud, no graph database, no per-query egress, so it works
   offline and in privacy-bound environments. (A cloud embedder is a measured *option* for
   jargon-heavy corpora, never a dependency.)
-- 🧭 **It abstains instead of guessing** — superseded or expired memories are demoted rather than
-  served. → [see it in one screen](#see-it-in-one-screen)
+- 🧭 **It abstains instead of guessing** — stale memories are demoted, and gaps return an explicit
+  abstain. → [see the showcase](#showcase)
 
 We publish the configuration where it loses, because a benchmark you can't lose isn't one.
 
@@ -87,7 +87,9 @@ supersession, expiry, and a calibrated confidence — not on distance alone, so 
 outranks the one it replaced no matter which is closer. When nothing clears the bar, the result is
 an abstention rather than the nearest match.
 
-## See it in one screen
+## Showcase
+
+One command, one screenshot, one core behavior.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/superseded-catch.png" width="740" alt="recall demo: the stale rate-limit memory has the highest cosine (0.806) but is flagged superseded and demoted below the current memory; an unanswerable query returns an explicit ABSTAIN.">
@@ -108,10 +110,10 @@ $ python -m recall.cli demo
 ```
 </details>
 
-Look at the cosines. The **stale** memory scores **higher (0.806)** than the current one — plain vector
-search returns it, and the agent builds on a limit that no longer exists. RE-call flags it
-`superseded`, points at its successor, and puts the *current* memory on top. When the memory genuinely
-has no answer, it says so. **That ordering decision is the whole thesis.**
+Look at the cosines. The **stale** memory scores **higher (0.806)** than the current one — plain
+vector search returns it, and the agent builds on a limit that no longer exists. RE-call flags it
+`superseded`, points at its successor, and puts the *current* memory on top. When the memory
+genuinely has no answer, it says so. **That ordering decision is the whole thesis.**
 
 ## What is actually verified
 
@@ -133,6 +135,17 @@ table without them is marketing.
 
 Full methodology, per-embedder tables and the negative results → **[results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md)**.
 Design rationale and the reasoning behind each guard → **[docs/WRITEUP.md](https://github.com/GiulioDER/RE-call/blob/master/docs/WRITEUP.md)**.
+
+## Product surface
+
+What ships today, and what stays deliberately out of scope.
+
+| Ships today | Deliberately open |
+|---|---|
+| Retrieval library over Postgres, CLI, MCP server, LangChain and LlamaIndex adapters | A bespoke end user app or dashboard |
+| Supersession, validity windows, calibrated abstention, and tenant isolation | Graph reasoning or agent memory synthesis beyond retrieval |
+| Token auth, RLS, erasure, and bounded indexing | High availability and replication across a fleet |
+| Benchmarks, claims gates, and regression tests around the published numbers | Treating one benchmark number as the whole product |
 
 ### Claims that were withdrawn
 
