@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it as below."
+message: "If you use this software or describe it publicly, please cite RE-call and credit Giulio D'Erme."
 title: "RE-call: Retrieval-Augmented Self-Recall"
 version: 0.9.0
 abstract: >-
@@ -9,6 +9,6 @@ abstract: >-
   retrieval via Reciprocal Rank Fusion before a calibrated trust layer judges supersession, validity
   windows, and confidence for each result.
 authors:
-  - alias: "GiulioDER"
+  - name: "Giulio D'Erme"
 repository-code: "https://github.com/GiulioDER/RE-call"
-license: MIT
+license: Apache-2.0

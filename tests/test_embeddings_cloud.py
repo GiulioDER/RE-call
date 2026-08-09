@@ -1,4 +1,5 @@
 import os
+import importlib.util
 
 import pytest
 
@@ -6,7 +7,8 @@ import recall.embeddings
 from recall.embeddings import Embedder, VoyageEmbedder, resolve_embedder
 
 requires_voyage = pytest.mark.skipif(
-    not os.environ.get("VOYAGE_API_KEY"), reason="no VOYAGE_API_KEY"
+    not os.environ.get("VOYAGE_API_KEY") or importlib.util.find_spec("voyageai") is None,
+    reason="no VOYAGE_API_KEY or voyageai SDK",
 )
 
 

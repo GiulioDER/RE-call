@@ -331,11 +331,13 @@ def _require_local_path(raw: str, *, label: str) -> Path:
     return Path(raw).expanduser().resolve()
 
 
-def _resolve_embedder_name(name: str) -> str:
-    """Normalize calibration embedder names to the resolver's public spellings."""
-    if name.startswith("hashing"):
-        return "hashing"
-    return name
+def _require_local_output_path(raw: str | None, *, label: str, default: Path) -> Path:
+    if raw and _looks_like_windows_path(raw) and os.name != "nt":
+        raise ValueError(
+            f"{label} looks like a Windows host path ({raw!r}). Inside Docker, use the "
+            "container path instead, for example /app/recall/calibration.json."
+        )
+    return _resolve_output_path(raw, default=default)
 
 
 def calibrate_from_files(
@@ -351,13 +353,12 @@ def calibrate_from_files(
     corpus_dir = (
         _require_local_path(str(corpus_dir), label="Path to your corpus") if corpus_dir else None
     )
-    out = _resolve_output_path(str(out) if out else None, default=DEFAULT_CALIBRATION_PATH)
+    out = _require_local_output_path(
+        str(out) if out else None,
+        label="Calibration output path",
+        default=DEFAULT_CALIBRATION_PATH,
+    )
     queries = json.loads(queries_path.read_text(encoding="utf-8"))
-    if not any(isinstance(q, dict) and q.get("trust") for q in queries):
-        raise ValueError(
-            "legacy process-global calibration form is rejected; use the trust-marked "
-            "eval queries file instead"
-        )
     labeled = [q for q in queries if isinstance(q, dict) and not q.get("trust")]
     if not labeled or not all("query" in q and "answerable" in q for q in labeled):
         raise ValueError(
@@ -368,7 +369,7 @@ def calibrate_from_files(
         raise ValueError(
             "queries file needs at least one answerable AND one unanswerable entry"
         )
-    embedder = resolve_embedder(_resolve_embedder_name(embedder_name), env=env)
+    embedder = resolve_embedder(embedder_name, env=env)
     from recall.eval.calibrate import calibrate as run_calibration
 
     measured = run_calibration(
@@ -509,14 +510,17 @@ def run_setup_wizard(
         queries = _require_local_path(queries_raw, label="Path to labeled queries JSON")
         corpus = _require_local_path(corpus_raw, label="Path to your corpus")
         out_raw = _prompt(input_fn, print_fn, "Calibration output path [calibration.json]: ")
-        out = _resolve_output_path(out_raw, default=DEFAULT_CALIBRATION_PATH)
         try:
             result = calibrate_from_files(
                 dsn=dsn,
                 embedder_name=embedder.value,
                 queries_path=queries,
                 corpus_dir=corpus,
-                out=out,
+                out=_require_local_output_path(
+                    out_raw or None,
+                    label="Calibration output path",
+                    default=DEFAULT_CALIBRATION_PATH,
+                ),
                 env=cloud_keys,
             )
         except ValueError as exc:

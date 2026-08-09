@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 322" width="780" height="322" role="img" aria-labelledby="t d">
-  <title id="t">recall demo — the superseded catch</title>
-  <desc id="d">A stale memory has the highest cosine (0.806) but RE-call demotes it as superseded and abstains when the corpus has no answer.</desc>
+  <title id="t">recall showcase — the superseded catch</title>
+  <desc id="d">One command shows a stale memory with the highest cosine (0.806) demoted below the current memory, and a gap returning abstain.</desc>
   <style>
     .mono{font-family:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;font-size:14.5px;}
     .dim{fill:#6e7681}.fg{fill:#adbac7}.grn{fill:#3fb950}.amb{fill:#d29922}.red{fill:#f85149}.blu{fill:#58a6ff}

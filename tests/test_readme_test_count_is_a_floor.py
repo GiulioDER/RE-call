@@ -57,6 +57,33 @@ def test_the_two_advertised_counts_agree() -> None:
     assert len(values) == 1, f"badge and prose disagree: {sorted(values)}"
 
 
+def test_the_schema_migrations_claim_matches_the_readme_body() -> None:
+    text = README.read_text(encoding="utf-8")
+    assert "no versioned upgrade path" not in text
+    assert "ordered SQL migration path" in text
+    assert "pre-tenancy tables are migrated in place" in text
+
+
+def test_the_readme_has_a_clear_showcase_and_surface_split() -> None:
+    text = README.read_text(encoding="utf-8")
+    assert "## Showcase" in text
+    assert "## Product surface" in text
+    assert "One command, one screenshot" in text
+
+
+def test_the_readme_says_its_numbers_are_claim_gated() -> None:
+    text = README.read_text(encoding="utf-8")
+    assert "tied to committed artifacts" in text
+    assert "claim gate checks them in CI" in text
+
+
+def test_the_readme_names_apache_and_the_citation_path() -> None:
+    text = README.read_text(encoding="utf-8")
+    assert "Apache 2.0 license" in text
+    assert "## Citation" in text
+    assert "NOTICE" in text
+
+
 def test_the_suite_clears_the_advertised_floor(request: pytest.FixtureRequest) -> None:
     collected = len(request.session.items)
     if collected < _FULL_RUN_FLOOR:
