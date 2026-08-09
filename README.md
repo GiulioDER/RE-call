@@ -116,7 +116,7 @@ information". Almost no other benchmark scores a refusal as anything but a miss.
 | **+ SPLADE learned sparse** *(the free default)* | **0.3573** | **0.7377** | free, local |
 | **+ Voyage rerank-2.5** *(one flag)* | **0.4342** | **0.7668** | paid API, ~1 s/query |
 
-The reranker is **+0.0769 nDCG@5**, 95% CI [+0.0571, +0.0964], p = 0.00010, **and worse on 162 of
+The reranker is **+0.0769 nDCG@5**, 95% CI [+0.0575, +0.0968], p = 0.00010, **and worse on 162 of
 the 777**. An average lift is not a promise per query, which is why it is off by default.
 
 **End to end, same generator, prompt and judge, only the contexts differ.** RE-call's retrieval
@@ -135,17 +135,18 @@ score **0.6195** against their **0.6208**, a gap of **0.0013** on identical inpu
 | llama-3.1-405b-instruct | 3/55 · 5.5% | 0.5691 |
 | mixtral_8x22b_instruct | 0/55 · 0.0% | 0.5230 |
 
-**Second of nine at refusing what it cannot answer, while the two systems that outscore us end to
-end answer 87% and 95% of the questions their sources cannot support.** That is the trade this
-library is built to make, priced by someone else's judge on someone else's data. Abridged to 5 of
-10 rows; the full table is in the report.
+**Second of ten at refusing what it cannot answer** (tied with `llama-3.1-70b`, behind only
+`llama-3.1-8b`), **while the two systems that outscore us end to end answer 87% and 95% of the
+questions their sources cannot support.** That is the trade this library is built to make, priced
+by someone else's judge on someone else's data. Abridged to 5 of 10 rows; the full table is in the
+report.
 
 > 🔑 **The most useful thing we learned here is not about retrieval.** Swapping the *generator
-> prompt* moved the gold-context score from 0.5508 to 0.6195, **+0.0687**, six places in the table,
-> because our prompt was producing 83 false abstentions on 709 answerable tasks. Set that against
-> SPLADE's +0.0512, the reranker's +0.0769, and our whole retrieval stack's +0.0011 end to end. **On
-> this benchmark the retriever was not the cap.** Measure where your own cap is before paying to
-> move it.
+> prompt* moved the gold-context score from 0.5913 to 0.6195, **+0.0282**, lifting us from 6th to
+> 3rd of ten, because our prompt was producing 83 false abstentions on 709 answerable tasks.
+> Measured on the *same* metric, our entire retrieval stack against the benchmark's own is
+> **+0.0011**. The prompt was worth roughly twenty-five times the retriever. **On this benchmark
+> the retriever was not the cap.** Measure where your own cap is before paying to move it.
 
 ⚠️ Baselines are **recomputed here**, so every row is an anchored lift and none may be quoted
 against the public leaderboard. And the first version of every number above was wrong: the official

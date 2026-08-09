@@ -84,7 +84,12 @@ here.
 The one paired test run on exactly these 777 queries:
 
 - **Voyage rerank over `hybrid_splade`**: nDCG@5 **+0.0769**, bootstrap 95% CI
-  **[+0.0571, +0.0964]**, permutation **p = 0.00010**.
+  **[+0.0575, +0.0968]**, permutation **p = 0.00010**.
+
+  Re-derived deterministically from the two arms' committed per-query scores (fixed seed, 10,000
+  resamples) so the artifact holds the same interval on every rebuild. The original run reported
+  [+0.0571, +0.0964]; the two agree to within bootstrap noise, and the point estimate, the
+  permutation p and the 302/162/313 split are identical.
 
 ⚠️ **The rerank helps on average and hurts 162 queries.** Better on 302, worse on **162**, unchanged
 on 313. An average lift is not a promise per query, which is exactly why the reranker is opt-in and
@@ -110,14 +115,21 @@ meaningless.
 | gpt-4o | 0.7576 | 0.7616 | 0.4547 | 0.6208 |
 | **ours, `gpt-4o`, official prompt** | 0.7793 | 0.7285 | 0.4573 | **0.6195** |
 | qwen-2.5-72b-instruct | 0.7239 | 0.7473 | 0.4435 | 0.6031 |
-| ours, `gpt-4o`, our own prompt | 0.7011 | 0.6283 | 0.4117 | 0.5508 |
+| c4ai-command-r-plus | 0.7595 | 0.6938 | 0.4435 | 0.5985 |
+| gpt-4o-mini | 0.7156 | 0.7499 | 0.4331 | 0.5953 |
+| ours, `gpt-4o`, our own prompt | 0.7524 | 0.6315 | 0.4628 | 0.5913 |
 
 **0.6195 against their 0.6208 on identical inputs is a gap of 0.0013.** Same model, same contexts,
-same tasks, same judge. The harness is sound, so what Task C measures is retrieval.
+same tasks, same judge. The harness is sound, so what Task C measures is retrieval. Our two rows
+place **3rd** and **6th** of ten.
 
-⚠️ The `abstain` row (0.5508 raw, **0.5913** conditioned) **mixes denominators**: twelve RAGAS
-`TimeoutError`s leave `RL_F` averaging **832** rows against 842 for the other two. Complete-case is
-**0.5902**. Every other run here is 842 on all three metrics.
+⚠️ Every cell above is the **conditioned** metric, ours and theirs alike. An earlier draft put our
+abstain row in at **0.5508**, which is its *raw* harmonic, in a column where every other number was
+conditioned. Same error as §6, inside the table meant to demonstrate it.
+
+⚠️ The `abstain` row also **mixes denominators**: twelve RAGAS `TimeoutError`s leave `RL_F`
+averaging **832** rows against 842 for the other two. Complete-case is **0.5902**. Every other run
+here is 842 on all three metrics.
 
 ---
 
@@ -176,7 +188,7 @@ scoring an exact 1.0 on `rb_agg` for an UNANSWERABLE task as a correct refusal:
 | qwen-2.5-72b-instruct | 1/55 · 1.8% | 0.5625 |
 | mixtral_8x22b_instruct | 0/55 · 0.0% | 0.5230 |
 
-**Second of nine, and the correlation runs the wrong way for the leaderboard.** The two systems that
+**Second of ten, tied with `llama-3.1-70b`, and the correlation runs the wrong way for the leaderboard.** The two systems that
 beat us end to end refuse **12.7%** and **5.5%** of what they cannot answer. The system that refuses
 best, `llama-3.1-8b`, is last on answer score. A single harmonic mean cannot express that trade, and
 this table is the reason we publish both columns rather than the one that flatters us.
@@ -228,13 +240,22 @@ verified live at HEAD `cc5b1d4` with no prior report in the tracker.
 ## 7. The finding that matters most, and it is not about retrieval
 
 Switching the generator prompt from ours to the paper's own (arXiv 2501.03468, Appendix D.2) moved
-Task B from **0.5508 to 0.6195**, a lift of **+0.0687**, which is **six places** in the recomputed
-table. Cause, measured: our prompt produced **83 false abstentions on 709 ANSWERABLE tasks**, and a
-false abstention scores near zero (RL_F 0.0726 against 0.8901 when it answered).
+Task B from **0.5913 to 0.6195**, a lift of **+0.0282**, which is **6th to 3rd of ten** in the
+recomputed table. Cause, measured: our prompt produced **83 false abstentions on 709 ANSWERABLE
+tasks**, and a false abstention scores near zero (RL_F 0.0726 against 0.8901 when it answered).
 
-Compare the size of that against every retrieval lever on the same benchmark: SPLADE +0.0303 R@100,
-Voyage rerank +0.0769 nDCG@5, RE-call's whole retrieval stack against the benchmark's own +0.0011
-end-to-end.
+⚠️ **An earlier draft of this section said +0.0687, from 0.5508.** That subtracted the **raw**
+Task B abstain figure from the **conditioned** official one, which is the very raw-vs-conditioned
+mix-up documented in §6, committed again inside the document explaining it. The lift on a single
+consistent definition is +0.0282. Caught by generating `mtrag_summary.json` from the artifacts
+instead of subtracting two numbers by hand.
+🔑 **Knowing the failure mode does not stop you repeating it; computing the number does.**
+
+Compare that against RE-call's whole retrieval stack **on the same metric**: our contexts against
+the benchmark's own move the end-to-end harmonic **+0.0011**. The prompt was worth roughly
+**twenty-five times** the retriever. (The retrieval-side levers are larger in their own units,
+SPLADE +0.0512 R@100 and Voyage rerank +0.0769 nDCG@5, but those are different metrics on a
+different task and do not belong in the same subtraction.)
 
 🔑 **On this benchmark the retriever was not the cap.** A single prompt line outweighed the entire
 retrieval stack. We publish that because the alternative is letting a reader assume a better
