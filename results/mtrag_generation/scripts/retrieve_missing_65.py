@@ -55,7 +55,7 @@ def main(argv: list[str]) -> int:
     arm = next(a for a in ALL_ARMS if a.name == arm_name)
     print(json.dumps({"event": "arm", **{k: v for k, v in vars(arm).items()}}), flush=True)
 
-    rows = [json.loads(l) for l in queries_path.open(encoding="utf-8") if l.strip()]
+    rows = [json.loads(line) for line in queries_path.open(encoding="utf-8") if line.strip()]
     print(json.dumps({"event": "queries", "n": len(rows)}), flush=True)
 
     dsn = load_dsn(env_file)

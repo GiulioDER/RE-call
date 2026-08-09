@@ -32,7 +32,7 @@ def stats(rows, getter, label):
 
 
 def main(path):
-    rows = [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+    rows = [json.loads(line) for line in open(path, encoding="utf-8") if line.strip()]
     print(f"file: {path}")
     print(f"rows: {len(rows)}")
 

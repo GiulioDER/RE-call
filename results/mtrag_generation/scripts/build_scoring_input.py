@@ -74,7 +74,7 @@ def main(argv: list[str]) -> int:
             written += 1
 
     with out_path.open(encoding="utf-8") as fh:
-        has_targets = all("targets" in json.loads(l) for l in fh if l.strip())
+        has_targets = all("targets" in json.loads(line) for line in fh if line.strip())
 
     print(json.dumps({
         "tasks": len(tasks), "predictions": len(preds), "written": written,

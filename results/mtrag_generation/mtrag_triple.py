@@ -47,7 +47,7 @@ def harmonic(vals):
 
 
 def report(path, label):
-    rows = [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+    rows = [json.loads(line) for line in open(path, encoding="utf-8") if line.strip()]
     print(f"\n=== {label}  ({len(rows)} rows) ===")
     for variant, keys in TRIPLES.items():
         per_all = [[value(r, k) for r in rows] for k in keys]

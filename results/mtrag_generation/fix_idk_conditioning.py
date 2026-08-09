@@ -64,7 +64,7 @@ def idk_underspec(answerability, idk_eval, underspec_eval, value):
 
 def main(argv):
     src, dst = Path(argv[0]), Path(argv[1])
-    rows = [json.loads(l) for l in src.open(encoding="utf-8") if l.strip()]
+    rows = [json.loads(line) for line in src.open(encoding="utf-8") if line.strip()]
 
     missing_label = 0
     changed = {m: 0 for m in METRICS}
