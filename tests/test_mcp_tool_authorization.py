@@ -28,7 +28,7 @@ Round 3 — this one — closes it from two directions, because a declaration is
 against another declaration:
 
 * **Against a published contract.** The required scope is cross-checked against the annotations
-  `build_server()` PUBLISHES. `destructiveHint` implies `SCOPE_FORGET`, `readOnlyHint` implies
+  `build_server()` PUBLISHES. `destructive_hint` implies `SCOPE_FORGET`, `read_only_hint` implies
   `SCOPE_READ`, otherwise `SCOPE_WRITE`. A downgrade must now also lie in the contract an MCP client
   reads to decide whether to auto-approve the call.
 * **Against observed BEHAVIOUR, which no declaration can edit.** A tool that mutates resolves a
@@ -56,10 +56,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import pathlib
+from types import SimpleNamespace
 
 import pytest
-from mcp.server.lowlevel.server import request_ctx
-from mcp.shared.context import RequestContext
 
 import recall_mcp.server as server_module
 import recall_mcp.service as service_module
@@ -279,14 +278,10 @@ def _invoke(
     if stop_at_service:
         _stop_at_the_service_boundary(monkeypatch)
     tools = {t.name: t for t in build_server()._tool_manager.list_tools()}
-    ctx = RequestContext(request_id="t", meta=None, session=None, lifespan_context=state)
+    ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context=state))
 
     async def run():
-        handle = request_ctx.set(ctx)
-        try:
-            return await tools[name].fn(**TOOLS[name][2])
-        finally:
-            request_ctx.reset(handle)
+        return await tools[name].fn(ctx=ctx, **TOOLS[name][2])
 
     return asyncio.run(run())
 
@@ -294,7 +289,7 @@ def _invoke(
 def _scope_advertised_by(tool) -> str:
     """The scope a tool's PUBLISHED annotations imply, independent of anything in this file.
 
-    `destructiveHint` implies `SCOPE_FORGET`, `readOnlyHint` implies `SCOPE_READ`, otherwise
+    `destructive_hint` implies `SCOPE_FORGET`, `read_only_hint` implies `SCOPE_READ`, otherwise
     `SCOPE_WRITE`. Both hints must be stated: `None` means the tool declared nothing, and defaulting
     an undeclared tool to `SCOPE_WRITE` would let a new destructive tool inherit a weaker scope
     silently — the exact failure this derivation exists to stop.
@@ -304,9 +299,9 @@ def _scope_advertised_by(tool) -> str:
         f"{tool.name} publishes no annotations, so a client cannot tell what it does and this "
         f"file cannot cross-check the scope it enforces"
     )
-    read_only, destructive = ann.readOnlyHint, ann.destructiveHint
+    read_only, destructive = ann.read_only_hint, ann.destructive_hint
     assert read_only is not None and destructive is not None, (
-        f"{tool.name} leaves readOnlyHint={read_only!r} destructiveHint={destructive!r} "
+        f"{tool.name} leaves read_only_hint={read_only!r} destructive_hint={destructive!r} "
         f"undeclared; state both"
     )
     assert not (read_only and destructive), (
@@ -440,7 +435,7 @@ def test_a_tool_resolves_every_store_it_touches_for_the_callers_own_tenant(name,
 
     Deriving from the scope also anchors the WRITE tool, which the annotation cross-check alone does
     not: a three-place downgrade of `recall_index` to `SCOPE_READ` — server body, published
-    `readOnlyHint`, and its `TOOLS` entry — is caught HERE, because the tool goes on resolving a
+    `read_only_hint`, and its `TOOLS` entry — is caught HERE, because the tool goes on resolving a
     writable shadow store while claiming to be read-only, and no edit to a declaration changes that.
     """
     required, _budget, _kwargs = TOOLS[name]
@@ -504,7 +499,7 @@ def test_the_scope_a_tool_enforces_matches_the_risk_it_advertises(name) -> None:
     `build_server()` publishes, which no edit to this file can change.
 
     What it closes: the two-place lie. A downgrade must now also flip the tool's published
-    `destructiveHint`/`readOnlyHint`, which is the contract an MCP client reads to decide whether to
+    `destructive_hint`/`read_only_hint`, which is the contract an MCP client reads to decide whether to
     auto-approve the call, so the lie becomes visible to every consumer rather than only to this
     repository.
 
