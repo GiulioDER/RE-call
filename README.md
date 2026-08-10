@@ -19,10 +19,6 @@
 </p>
 
 <p align="center">
-  <a href="https://glama.ai/mcp/servers/GiulioDER/RE-call"><img src="https://glama.ai/mcp/servers/GiulioDER/RE-call/badges/card.svg" alt="RE-call MCP server"></a>
-</p>
-
-<p align="center">
   <a href="#why-re-call">Why RE-call</a>
   &nbsp;·&nbsp;
   <a href="#five-minute-proof">Five-minute proof</a>
@@ -390,3 +386,7 @@ as the canonical citation source.
 Apache 2.0 license. See [LICENSE](https://github.com/GiulioDER/RE-call/blob/master/LICENSE), and
 keep [NOTICE](https://github.com/GiulioDER/RE-call/blob/master/NOTICE) with redistributed
 derivative works.
+
+<p align="center">
+  <a href="https://glama.ai/mcp/servers/GiulioDER/RE-call"><img src="https://glama.ai/mcp/servers/GiulioDER/RE-call/badges/card.svg" alt="RE-call MCP server"></a>
+</p>
