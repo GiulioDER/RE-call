@@ -95,11 +95,22 @@ one that honoured it.
 
 | Tool | When the agent calls it |
 |------|-------------------------|
-| **`recall_search`** | *Before* proposing an idea, forming a hypothesis, or repeating past work — to check what memory already says. Every hit carries a trust `verdict` (`ok / superseded / expired / not_yet_valid / low_confidence / invalid_metadata` — plus `not_entailed` when the opt-in entailment stage is enabled; this MCP server keeps it off), the true dense cosine (`score`), a calibrated `confidence`, `superseded_by`, `valid_until`, and `indexed_at`; the result adds `abstained`, `reason`, `calibrated`, calibration status and ID, tenant/generation/pipeline/corpus/query-set identities, `stale`, `gap_warning`, and `advice`. `calibrated` is true only for a certified exact generation binding. When `abstained` is true, the advice is explicit: say you don't know, do not answer from the hits. |
-| **`recall_evidence`** | When the agent is about to *answer* from memory rather than merely consult it. Same retrieval, returned as a citable bundle: only passages the trust layer cleared, in retrieval order, plus `system_prompt` and `user_message` — a fixed library-authored instruction and a delimited, JSON-escaped data payload. `decision: "abstain"` means the bundle is empty and the agent must not answer from memory. The server runs no generator; the client is the generator, which is why the prompt is handed back rather than consumed. Validate the answer with `recall.validate_answer`: it checks that every citation resolves to a supplied `chunk_id`, and deliberately does not check that a cited passage supports the answer. |
+| **`recall_search`** | Before proposing an idea, forming a hypothesis, or repeating past work. Use it to check what memory already says, and follow the returned `advice`. |
+| **`recall_evidence`** | When the agent is about to answer from memory. It returns a citable evidence bundle plus `system_prompt` and `user_message`; the client remains the generator. |
 | **`recall_index`** | To add a markdown file/folder to memory (bounded by `RECALL_INDEX_ROOT`). |
 | **`recall_forget`** | To permanently delete indexed memory for source values returned by `recall_search`. Requires `recall:forget` on authenticated transports; irreversible, so check the returned `sources_not_found` before assuming a request matched. |
 | **`recall_stats`** | To check how much memory exists and whether the index is stale. |
+
+`recall_search` returns `abstained`, `reason`, `calibrated`, calibration identity, tenant and
+generation identity, `stale`, `gap_warning`, `advice`, and hits carrying `verdict`, `score`,
+`confidence`, `superseded_by`, `valid_until`, and `indexed_at`. `calibrated` is true only for a
+certified exact generation binding. When `abstained` is true, say you do not know and do not answer
+from the hits.
+
+`recall_evidence` uses the same retrieval path, but admits only passages cleared by the trust layer.
+`decision: "abstain"` means the bundle is empty and the agent must not answer from memory. Validate
+generated answers with `recall.validate_answer`, which checks that every citation resolves to a
+supplied `chunk_id`.
 
 ## 4. The self-recall loop (redacted)
 
