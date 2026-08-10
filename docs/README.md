@@ -14,6 +14,7 @@ sections when you want to audit a claim or reproduce a benchmark.
 | [MIGRATIONS.md](MIGRATIONS.md) | Migration roles, serving DSNs, and schema operations. |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | Dependency floors, ceilings, extras, and packaging rationale. |
 | [AUTH.md](AUTH.md) | Authentication, scopes, tenant isolation, and deployment limits. |
+| [SECURITY_MODEL.md](SECURITY_MODEL.md) | Detailed threat model behind the root security policy. |
 | [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) | MCP setup and tool behavior. |
 
 ## Architecture
@@ -39,6 +40,7 @@ sections when you want to audit a claim or reproduce a benchmark.
 | Document | Scope |
 |---|---|
 | [RESEARCH_PROTOCOL.md](RESEARCH_PROTOCOL.md) | Rules for benchmark runs, artifact retention, and post-run review. |
+| [archive/CHANGELOG_FULL.md](archive/CHANGELOG_FULL.md) | Full historical changelog. |
 | [RAG_TRAINING_STUDY.md](RAG_TRAINING_STUDY.md) | When fine-tuning embeddings helps, and when it does not. |
 | [ENTAILMENT_SUPERSESSION_STUDY.md](ENTAILMENT_SUPERSESSION_STUDY.md) | Near-miss abstention, entailment, and write-time supersession. |
 | [REFERENCE_TIME_DESIGN.md](REFERENCE_TIME_DESIGN.md) | Reference-time handling for temporal retrieval. |

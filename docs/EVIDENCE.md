@@ -226,9 +226,9 @@ questions. On the PEPs, bge-small, 44 held-out answerable questions:
 | **hybrid** (dense + sparse + RRF) | **0.705** [0.56, 0.82] | 0.494 | 26 ms | the published number |
 
 <sub>The `p50` column is pre-fix: measured with a percentile index one rank too high (see the
-`latency_ms` entry under Fixed in `CHANGELOG.md`). A re-run returns the next sample down whenever
-the scored sample size is even, which it is here. The hit@5, interval and MRR columns are
-unaffected: the fix is to the latency percentile alone.</sub>
+`latency_ms` entry under Fixed in `archive/CHANGELOG_FULL.md`). A re-run returns the next sample
+down whenever the scored sample size is even, which it is here. The hit@5, interval and MRR columns
+are unaffected: the fix is to the latency percentile alone.</sub>
 
 **The pipeline beats BM25 by +0.25**, so the embedding stack earns its keep — and **dense is doing
 the work**: hybrid's +0.023 over dense-alone is inside the interval. On ordinary prose the fusion

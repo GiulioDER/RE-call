@@ -303,7 +303,7 @@ property of the **token file**, and the OIDC path above exists because of them:
   disk.
 - **Rate limits are per process.** Per-tenant call budgets and an indexing byte quota do ship
   (`recall_mcp/limits.py`, tuned with `RECALL_RATE_*_PER_MIN` and `RECALL_INDEX_BYTES_PER_HOUR`;
-  see [SECURITY.md](../SECURITY.md)), but the buckets are in-memory and unshared, so N worker
+  see [SECURITY_MODEL.md](SECURITY_MODEL.md)), but the buckets are in-memory and unshared, so N worker
   processes admit roughly N times each rate. A fleet needs a shared limiter.
 
 Against [the OIDC path](#taking-identity-from-an-oidc-provider), item by item, since the split is

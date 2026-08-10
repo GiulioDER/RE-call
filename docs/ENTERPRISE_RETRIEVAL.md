@@ -483,7 +483,7 @@ RECALL_MIGRATION_DSN="$RECALL_MIGRATION_DSN" recall-enterprise migrate
 > read when `RECALL_SERVING_DSN` is unset (see [MIGRATIONS.md](MIGRATIONS.md#configuration)).
 > Exporting it globally as the migration role therefore hands a schema-owner credential to
 > every serving process, which is exactly what the role split in
-> [SECURITY.md](../SECURITY.md) forbids. Set it per command, never in the serving
+> [SECURITY_MODEL.md](SECURITY_MODEL.md) forbids. Set it per command, never in the serving
 > environment.
 
 The database operator must install pgvector once in a new database before the restricted
