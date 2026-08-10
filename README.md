@@ -125,34 +125,31 @@ the smoke test: it is a sample-corpus check, not the calibrated operating path.
 
 ```mermaid
 flowchart TB
-    M(["memo · markdown + frontmatter<br/>supersedes · valid_from · valid_until"]) --> CH[chunk]
-    CH --> EW["embed · local, no API call"]
-    EW -. optional .-> SP[SPLADE encode]
+    M["Memo: markdown plus frontmatter"] --> CH["Chunk"]
+    CH --> EW["Embed locally"]
+    EW -. "optional" .-> SP["SPLADE encode"]
     EW --> DB
-    SP -. optional .-> DB
+    SP -. "optional" .-> DB
 
-    Q([query]) --> EQ["embed · query encoder"]
-    EQ --> DB[("PostgreSQL + pgvector<br/>vectors and full-text in one DB")]
+    Q["Query"] --> EQ["Query encoder"]
+    EQ --> DB[("PostgreSQL plus pgvector")]
 
-    DB --> DN["dense · pgvector cosine"]
-    DB --> SL["sparse · Postgres full-text"]
-    DB -. optional .-> LS["learned sparse · SPLADE"]
+    DB --> DN["Dense vector search"]
+    DB --> SL["Postgres full-text search"]
+    DB -. "optional" .-> LS["Learned sparse search"]
 
-    DN --> F[Reciprocal Rank Fusion]
+    DN --> F["Reciprocal Rank Fusion"]
     SL --> F
-    LS -. optional .-> F
+    LS -. "optional" .-> F
 
-    F -. optional .-> RR[cross-encoder rerank]
+    F -. "optional" .-> RR["Cross-encoder rerank"]
     RR --> GP
-    F --> GP{{"gap check · calibrated threshold"}}
-    GP --> TR{"trust layer<br/>supersession · validity · confidence"}
-    CAL[/"calibration · fitted per embedder and corpus"/] --> TR
-    TR -. optional .-> EJ{{entailment judge}}
+    F --> GP{"Gap check: calibrated threshold"}
+    GP --> TR{"Trust layer: supersession, validity, confidence"}
+    CAL["Calibration: fitted per embedder and corpus"] --> TR
+    TR -. "optional" .-> EJ{"Entailment judge"}
     EJ --> OUT
-    TR --> OUT(["verdict + confidence + provenance<br/>or ABSTAIN, with a reason"])
-
-    classDef opt stroke:#d29922,color:#d29922,stroke-dasharray:5 4
-    class SP,LS,RR,EJ opt
+    TR --> OUT["Verdict, confidence, provenance, or ABSTAIN"]
 ```
 
 ## Product surface
