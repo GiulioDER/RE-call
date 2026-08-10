@@ -446,14 +446,14 @@ dates. Releases are tagged `vMAJOR.MINOR.PATCH`; pushing the tag is what publish
   including a property-style test that raw chunk text and content hashes are byte-identical to the
   symmetric baseline over five corpus shapes, and nine asserted against real stored rows across two
   generations dual-written under different modes. See
-  [docs/ENTERPRISE_RETRIEVAL.md](docs/ENTERPRISE_RETRIEVAL.md).
+  [docs/ENTERPRISE_RETRIEVAL.md](../ENTERPRISE_RETRIEVAL.md).
 
   No mode is recommended over another, and nothing here measures retrieval quality.
 
 - **External OIDC identity for the MCP server's HTTP transports.** `RECALL_OIDC_ISSUER`,
   `RECALL_OIDC_AUDIENCE` and `RECALL_OIDC_TENANTS` (required together), plus optional
   `RECALL_OIDC_ALGORITHMS`. Revocation, rotation and expiry move to the IdP. See
-  [docs/AUTH.md](docs/AUTH.md).
+  [docs/AUTH.md](../AUTH.md).
 
   `RECALL_OIDC_TENANTS` has **no default, and absent does not mean "every tenant"**: the IdP
   vouches for identity and knows nothing about this deployment's topology, so a token naming an
@@ -1816,7 +1816,7 @@ run RE-call inside a third party's benchmark harness, and its own module docstri
   - `recall index` reports unchanged and pruned counts, and the MCP `IndexResult` carries
     `skipped` / `deleted`. Both were computed and then discarded, so a prune happened in silence.
 - **Authentication on the MCP HTTP transports** (`recall_mcp/auth.py`, `recall_mcp/stores.py`,
-  [docs/AUTH.md](docs/AUTH.md)). Static bearer tokens map to a principal with a **tenant** and
+  [docs/AUTH.md](../AUTH.md)). Static bearer tokens map to a principal with a **tenant** and
   **scopes**; the tenant selects its own `PgVectorStore` and connection pool, so a principal
   cannot reach another tenant's rows. Closes the second checkbox of issue #9.
   - **Fails closed**: starting `streamable-http` or `sse` without `RECALL_AUTH_TOKENS_FILE`

@@ -1,7 +1,7 @@
 # Pre-registration — MTRAGEval: is RB_alg length-bound?
 
 **Date:** 2026-08-05 · Written **before** any measurement. The git history of this file is the
-evidence. Related: [`benchmarks/mtrag/README.md`](mtrag/README.md) (Task A adapter, frozen arms),
+evidence. Related: [`benchmarks/mtrag/README.md`](../../mtrag/README.md) (Task A adapter, frozen arms),
 archived Task A baseline `2026-08-04-mtrag-symmetric-baseline` on VPS2. Neither is edited.
 
 **Prior work searched** — `docs_search(source_type="memory")` on "MT-RAG generation RB_alg RougeL

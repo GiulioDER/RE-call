@@ -33,7 +33,7 @@ VOYAGE_API_KEY=
 # RECALL_MIGRATION_DSN=postgresql://recall_migrator:...@localhost:5432/recall
 # RECALL_DSN=postgresql://recall:recall@localhost:5432/recall   # deprecated serving fallback
 # RECALL_EMBEDDER=fastembed          # or "hashing" for the fully-offline embedder
-# RECALL_INDEX_ROOT=.                # bounds where the MCP recall_index tool may read
+# RECALL_INDEX_ROOT=/srv/recall/corpus  # corpus-only root for the MCP recall_index tool
 # Legacy RECALL_CALIBRATION files are import-only evidence; v1 search resolves calibration from Postgres.
 
 # --- MCP transport & authentication (see docs/AUTH.md) ---
@@ -71,7 +71,7 @@ VOYAGE_API_KEY=
 # RECALL_AUTH_MODE=static                    # step 1: nothing changes. Then flip to `oidc`,
 #                                            # then remove RECALL_AUTH_TOKENS_FILE.
 
-# --- Abuse bounds (see SECURITY.md) ---
+# --- Abuse bounds (see SECURITY_MODEL.md) ---
 # Per-request caps bound ONE call; the budgets below bound the aggregate, per TENANT, so a
 # client staying under the per-request cap cannot simply issue it in a loop.
 # RECALL_INDEX_MAX_FILES=2000        # per request: candidate file count
