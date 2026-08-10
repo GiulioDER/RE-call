@@ -18,6 +18,8 @@
 <p align="center">
   <a href="#why-re-call">Why RE-call</a>
   &nbsp;·&nbsp;
+  <a href="#five-minute-proof">Five-minute proof</a>
+  &nbsp;·&nbsp;
   <a href="#quickstart">Quickstart</a>
   &nbsp;·&nbsp;
   <a href="#how-it-works">How it works</a>
@@ -36,6 +38,12 @@ retriever must say whether a memory is current, where it came from, how confiden
 the corpus does not contain an answer.
 
 RE-call is built around that contract.
+
+It is for teams putting agent memory behind real applications: support copilots, internal research
+agents, compliance assistants, and long-running workflow agents where a stale or unsupported memory
+is worse than no memory. The buyer story is simple: keep the memory layer local by default, attach
+policy to every hit, calibrate the refusal threshold on your corpus, and let the application decide
+what to do with a result that is not trustworthy enough to answer from.
 
 | Capability | What it means in practice |
 |---|---|
@@ -56,17 +64,44 @@ Measured strengths:
 | Stronger than a plain vector store | Returned hits carry verdicts, confidence, provenance, tenant scope, and validity metadata. Plain top-k retrieval returns neighbors and leaves trust to the caller. |
 | Honest about limits | The published results include negative findings on near-miss abstention, corpus sensitivity, and benchmark scope. Those limits are first-class documentation, not footnotes. |
 
-The README is the product overview. The evidence is deliberately separated:
-[results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) explains
-what the measurements support, [results/RESULTS.md](https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md)
-contains the tables, and [results/ARTIFACTS.md](https://github.com/GiulioDER/RE-call/blob/master/results/ARTIFACTS.md)
-maps result files to configurations.
+The README is the product overview. For diligence, start with
+[docs/EVIDENCE.md](https://github.com/GiulioDER/RE-call/blob/master/docs/EVIDENCE.md), then use
+[results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) for
+the full interpretation and limits.
+
+## Five-minute proof
+
+Run the bundled demo to see the product behavior before reading the benchmark archive:
+
+```bash
+docker compose up -d --wait
+pip install "recall-rag[fastembed]"
+python -m recall.cli --table recall_quickstart \
+  --migration-dsn postgresql://recall:recall@localhost:5432/recall \
+  schema --dim 384 apply
+RECALL_TRUST_MODE=development python -m recall.cli --table recall_quickstart demo
+```
+
+Expected shape:
+
+```text
+[DEGRADED:INDEX_NOT_READY] query='how many requests per second can a client make?'
+  ok          conf=1.00  cos=0.784  rate_limits_v2.md
+  superseded  conf=1.00  cos=0.806  rate_limits_v1.md -> use rate_limits_v2.md
+
+[ABSTAIN GAP DEGRADED:INDEX_NOT_READY] query='how do we handle penguins on mars?'
+  reason: no hit above the calibrated confidence threshold
+```
+
+The stale memory is more similar to the query, but it is declared superseded and loses to the
+current memory. The unrelated query returns an abstention. The degraded marker is intentional here:
+this is a sample-corpus demonstration, not a certified production calibration.
 
 ## Quickstart
 
-Install with the local embedder extra, start PostgreSQL, apply the schema, then run the guided setup
-wizard. The wizard records the selected embedder, retrieval options, and an optional calibration
-that is fitted to your labeled queries and your corpus.
+After the demo, run the guided setup wizard for your own corpus. The wizard records the selected
+embedder, retrieval options, and an optional calibration that is fitted to your labeled queries and
+your corpus.
 
 ```bash
 docker compose up -d --wait
@@ -101,25 +136,6 @@ Working from a clone:
 ```bash
 pip install -e ".[fastembed]"
 ```
-
-For a smoke test with the bundled sample corpus, run:
-
-```bash
-RECALL_TRUST_MODE=development python -m recall.cli --table recall_quickstart demo
-```
-
-```text
-[DEGRADED:INDEX_NOT_READY] query='how many requests per second can a client make?'
-  ok          conf=1.00  cos=0.784  rate_limits_v2.md
-  superseded  conf=1.00  cos=0.806  rate_limits_v1.md -> use rate_limits_v2.md
-
-[ABSTAIN GAP DEGRADED:INDEX_NOT_READY] query='how do we handle penguins on mars?'
-  reason: no hit above the calibrated confidence threshold
-```
-
-The stale memory is more similar to the query, but it is declared superseded and loses to the
-current memory. The unrelated query returns an abstention. The degraded marker is intentional in
-the smoke test: it is a sample-corpus check, not the calibrated operating path.
 
 ## How it works
 
@@ -317,6 +333,7 @@ Important benchmark documents:
 |---|---|
 | [results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) | Interpretation, limits, and negative results. |
 | [results/RESULTS.md](https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md) | Complete result tables. |
+| [results/ARTIFACTS.md](https://github.com/GiulioDER/RE-call/blob/master/results/ARTIFACTS.md) | Checksum and artifact map for readers auditing a claim. |
 | [docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md) | MTRAG setup, results, and scope boundaries. |
 | [benchmarks/REVIEW.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md) | Adversarial review of the LOCOMO comparison. |
 | [benchmarks/PREREGISTRATION.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/PREREGISTRATION.md) | Pre-registered rules for the memory benchmark. |
