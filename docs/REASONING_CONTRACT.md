@@ -241,3 +241,43 @@ Label audit:
 * Contradiction, ambiguity, stale, empty, and missing edge cases are not counted as direct answer
   wins.
 * Baseline outputs are recorded as control observations, not as ground truth.
+
+## Session 6 Evaluation Controls
+
+The Session 6 fixture set is frozen in `recall/eval/reasoning_session6.json`.
+
+It must contain cases for:
+
+* Direct question answering.
+* Multi hop composition.
+* Temporal reasoning.
+* Supersession recovery.
+* Near miss abstention.
+* Contradiction detection.
+* Entity disambiguation.
+* Missing evidence detection.
+* Clarification decisions.
+
+It compares:
+
+* Current retrieval.
+* Retrieval plus entailment.
+* Retrieval plus authored graph traversal.
+* Retrieval plus proposal assisted exploration.
+* Retrieval plus full bounded planner.
+* Nearest neighbor control.
+* Shuffled edge control.
+* Removed edge control.
+
+It reports answer accuracy, citation precision, unsupported claim rate, correct abstention rate,
+false abstention rate, proposal precision and recall, contradiction detection precision, latency,
+model calls, token use, and cross generation reproducibility.
+
+Synthetic controls and real corpus controls must remain separated in the artifact. Pre registered
+thresholds must be loaded from fixture data before scoring. Per query observations must remain
+available alongside aggregate metrics. Every claimed improvement must survive nearest neighbor,
+shuffled edge, removed edge, and heldout controls.
+
+The loader must reject exact expected answer facts leaked into supporting memory metadata. Labels
+remain fixture data, not observation outputs. Provider and generation identities must be recorded
+with every observation. Benchmark gains that come only from unsupported inference are rejected.

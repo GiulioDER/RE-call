@@ -1,0 +1,834 @@
+{
+  "_provenance": {
+    "backs": [
+      "docs/REASONING_CONTRACT.md",
+      "results/ARTIFACTS.md"
+    ],
+    "fixture": "recall/eval/reasoning_session6.json",
+    "generation": "reasoning-session6-fixture-gen1",
+    "generator": "recall.eval.reasoning_session6.reasoning_session6_metrics",
+    "note": "Offline Session 6 control artifact. Observations are frozen synthetic and real corpus controls for evaluator wiring, not provider benchmark claims.",
+    "status": "frozen-control"
+  },
+  "ablation_matrix": {
+    "current_retrieval": {
+      "control": false,
+      "uses_authored_graph": false,
+      "uses_entailment": false,
+      "uses_planner": false,
+      "uses_proposals": false
+    },
+    "nearest_neighbor": {
+      "control": true,
+      "uses_authored_graph": false,
+      "uses_entailment": false,
+      "uses_planner": false,
+      "uses_proposals": false
+    },
+    "removed_edges_control": {
+      "control": true,
+      "uses_authored_graph": "removed",
+      "uses_entailment": true,
+      "uses_planner": true,
+      "uses_proposals": false
+    },
+    "retrieval_authored_graph": {
+      "control": false,
+      "uses_authored_graph": true,
+      "uses_entailment": false,
+      "uses_planner": false,
+      "uses_proposals": false
+    },
+    "retrieval_entailment": {
+      "control": false,
+      "uses_authored_graph": false,
+      "uses_entailment": true,
+      "uses_planner": false,
+      "uses_proposals": false
+    },
+    "retrieval_full_planner": {
+      "control": false,
+      "uses_authored_graph": true,
+      "uses_entailment": true,
+      "uses_planner": true,
+      "uses_proposals": true
+    },
+    "retrieval_proposal_exploration": {
+      "control": false,
+      "uses_authored_graph": true,
+      "uses_entailment": true,
+      "uses_planner": false,
+      "uses_proposals": true
+    },
+    "shuffled_edges_control": {
+      "control": true,
+      "uses_authored_graph": "shuffled",
+      "uses_entailment": true,
+      "uses_planner": true,
+      "uses_proposals": true
+    }
+  },
+  "audit": {
+    "controls": [
+      "nearest_neighbor",
+      "shuffled_edges_control",
+      "removed_edges_control"
+    ],
+    "evaluator_independence": "no provider judge is invoked by this harness",
+    "label_quality": "labels are fixture data, not copied from observations",
+    "metadata_leakage": "loader rejects exact expected facts in supporting metadata",
+    "per_query_results": "observations are stored per case before aggregate metrics"
+  },
+  "corpus_counts": {
+    "real": 1,
+    "synthetic": 9
+  },
+  "index_generation": "reasoning-session6-fixture-gen1",
+  "metrics": {
+    "by_task": {
+      "current_retrieval": {
+        "clarification_decision": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "contradiction_detection": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "direct_qa": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "entity_disambiguation": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "missing_evidence_detection": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "multi_hop": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "near_miss_abstention": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "supersession_recovery": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "temporal_reasoning": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        }
+      },
+      "nearest_neighbor": {
+        "clarification_decision": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "contradiction_detection": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "direct_qa": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "entity_disambiguation": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "missing_evidence_detection": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "multi_hop": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "near_miss_abstention": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "supersession_recovery": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "temporal_reasoning": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        }
+      },
+      "removed_edges_control": {
+        "clarification_decision": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "contradiction_detection": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "direct_qa": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "entity_disambiguation": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "missing_evidence_detection": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "multi_hop": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "near_miss_abstention": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "supersession_recovery": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "temporal_reasoning": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        }
+      },
+      "retrieval_authored_graph": {
+        "clarification_decision": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "contradiction_detection": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "direct_qa": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "entity_disambiguation": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "missing_evidence_detection": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "multi_hop": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "near_miss_abstention": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "supersession_recovery": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "temporal_reasoning": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        }
+      },
+      "retrieval_entailment": {
+        "clarification_decision": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "contradiction_detection": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "direct_qa": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "entity_disambiguation": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "missing_evidence_detection": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "multi_hop": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "near_miss_abstention": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "supersession_recovery": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "temporal_reasoning": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        }
+      },
+      "retrieval_full_planner": {
+        "clarification_decision": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "contradiction_detection": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "direct_qa": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "entity_disambiguation": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "missing_evidence_detection": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "multi_hop": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "near_miss_abstention": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "supersession_recovery": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "temporal_reasoning": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        }
+      },
+      "retrieval_proposal_exploration": {
+        "clarification_decision": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "contradiction_detection": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "direct_qa": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "entity_disambiguation": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "missing_evidence_detection": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "multi_hop": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "near_miss_abstention": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "supersession_recovery": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "temporal_reasoning": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        }
+      },
+      "shuffled_edges_control": {
+        "clarification_decision": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "contradiction_detection": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "direct_qa": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "entity_disambiguation": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "missing_evidence_detection": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "multi_hop": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "near_miss_abstention": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        },
+        "supersession_recovery": {
+          "answer_accuracy": 0.0,
+          "unsupported_claim_rate": 1.0
+        },
+        "temporal_reasoning": {
+          "answer_accuracy": 1.0,
+          "unsupported_claim_rate": 0.0
+        }
+      }
+    },
+    "current_retrieval": {
+      "answer_accuracy": 0.2,
+      "citation_precision": 0.6,
+      "contradiction_detection_precision": null,
+      "correct_abstention_rate": 0.3333333333333333,
+      "cross_generation_reproducibility": null,
+      "false_abstention_rate": 0.0,
+      "latency_ms_mean": 12.2,
+      "model_calls": 0,
+      "proposal_precision": null,
+      "proposal_recall": 0.0,
+      "token_use": 0,
+      "unsupported_claim_rate": 0.8
+    },
+    "heldout_split": {
+      "answer_accuracy": 1.0,
+      "citation_precision": 1.0,
+      "contradiction_detection_precision": null,
+      "correct_abstention_rate": null,
+      "cross_generation_reproducibility": null,
+      "false_abstention_rate": 0.0,
+      "latency_ms_mean": 58.0,
+      "model_calls": 3,
+      "proposal_precision": null,
+      "proposal_recall": null,
+      "token_use": 430,
+      "unsupported_claim_rate": 0.0
+    },
+    "nearest_neighbor": {
+      "answer_accuracy": 0.1,
+      "citation_precision": 0.5,
+      "contradiction_detection_precision": null,
+      "correct_abstention_rate": 0.0,
+      "cross_generation_reproducibility": null,
+      "false_abstention_rate": 0.0,
+      "latency_ms_mean": 8.8,
+      "model_calls": 0,
+      "proposal_precision": null,
+      "proposal_recall": 0.0,
+      "token_use": 0,
+      "unsupported_claim_rate": 0.9
+    },
+    "real_corpus_split": {
+      "answer_accuracy": 1.0,
+      "citation_precision": 1.0,
+      "contradiction_detection_precision": null,
+      "correct_abstention_rate": null,
+      "cross_generation_reproducibility": null,
+      "false_abstention_rate": 0.0,
+      "latency_ms_mean": 58.0,
+      "model_calls": 3,
+      "proposal_precision": null,
+      "proposal_recall": null,
+      "token_use": 430,
+      "unsupported_claim_rate": 0.0
+    },
+    "removed_edges_control": {
+      "answer_accuracy": 0.5,
+      "citation_precision": 1.0,
+      "contradiction_detection_precision": 1.0,
+      "correct_abstention_rate": 1.0,
+      "cross_generation_reproducibility": null,
+      "false_abstention_rate": 0.6666666666666666,
+      "latency_ms_mean": 44.2,
+      "model_calls": 21,
+      "proposal_precision": null,
+      "proposal_recall": 0.0,
+      "token_use": 2650,
+      "unsupported_claim_rate": 0.0
+    },
+    "retrieval_authored_graph": {
+      "answer_accuracy": 0.5,
+      "citation_precision": 0.9,
+      "contradiction_detection_precision": null,
+      "correct_abstention_rate": 0.6666666666666666,
+      "cross_generation_reproducibility": null,
+      "false_abstention_rate": 0.0,
+      "latency_ms_mean": 18.9,
+      "model_calls": 0,
+      "proposal_precision": null,
+      "proposal_recall": 0.0,
+      "token_use": 0,
+      "unsupported_claim_rate": 0.1
+    },
+    "retrieval_entailment": {
+      "answer_accuracy": 0.4,
+      "citation_precision": 1.0,
+      "contradiction_detection_precision": 1.0,
+      "correct_abstention_rate": 1.0,
+      "cross_generation_reproducibility": null,
+      "false_abstention_rate": 0.6666666666666666,
+      "latency_ms_mean": 21.2,
+      "model_calls": 10,
+      "proposal_precision": null,
+      "proposal_recall": 0.0,
+      "token_use": 1085,
+      "unsupported_claim_rate": 0.0
+    },
+    "retrieval_full_planner": {
+      "answer_accuracy": 1.0,
+      "citation_precision": 1.0,
+      "contradiction_detection_precision": 1.0,
+      "correct_abstention_rate": 1.0,
+      "cross_generation_reproducibility": null,
+      "false_abstention_rate": 0.0,
+      "latency_ms_mean": 48.1,
+      "model_calls": 26,
+      "proposal_precision": 1.0,
+      "proposal_recall": 1.0,
+      "token_use": 3190,
+      "unsupported_claim_rate": 0.0
+    },
+    "retrieval_proposal_exploration": {
+      "answer_accuracy": 1.0,
+      "citation_precision": 1.0,
+      "contradiction_detection_precision": 1.0,
+      "correct_abstention_rate": 1.0,
+      "cross_generation_reproducibility": null,
+      "false_abstention_rate": 0.0,
+      "latency_ms_mean": 36.2,
+      "model_calls": 16,
+      "proposal_precision": 1.0,
+      "proposal_recall": 1.0,
+      "token_use": 2130,
+      "unsupported_claim_rate": 0.0
+    },
+    "shuffled_edges_control": {
+      "answer_accuracy": 0.5,
+      "citation_precision": 0.7,
+      "contradiction_detection_precision": 1.0,
+      "correct_abstention_rate": 1.0,
+      "cross_generation_reproducibility": null,
+      "false_abstention_rate": 0.0,
+      "latency_ms_mean": 47.0,
+      "model_calls": 26,
+      "proposal_precision": 0.0,
+      "proposal_recall": 0.0,
+      "token_use": 3150,
+      "unsupported_claim_rate": 0.3
+    },
+    "synthetic_split": {
+      "answer_accuracy": 1.0,
+      "citation_precision": 1.0,
+      "contradiction_detection_precision": 1.0,
+      "correct_abstention_rate": 1.0,
+      "cross_generation_reproducibility": null,
+      "false_abstention_rate": 0.0,
+      "latency_ms_mean": 47.0,
+      "model_calls": 23,
+      "proposal_precision": 1.0,
+      "proposal_recall": 1.0,
+      "token_use": 2760,
+      "unsupported_claim_rate": 0.0
+    }
+  },
+  "n_cases": 10,
+  "n_memories": 12,
+  "per_query_error_taxonomy": {
+    "ambiguous_iris": {
+      "current_retrieval": [
+        "task_failure:entity_disambiguation",
+        "unsupported_claim"
+      ],
+      "nearest_neighbor": [
+        "task_failure:entity_disambiguation",
+        "unsupported_claim"
+      ],
+      "removed_edges_control": [
+        "task_failure:entity_disambiguation"
+      ],
+      "retrieval_authored_graph": [
+        "task_failure:entity_disambiguation"
+      ],
+      "retrieval_entailment": [
+        "task_failure:entity_disambiguation"
+      ],
+      "shuffled_edges_control": [
+        "task_failure:entity_disambiguation"
+      ]
+    },
+    "clarify_scope": {
+      "current_retrieval": [
+        "task_failure:clarification_decision",
+        "unsupported_claim",
+        "citation_imprecision"
+      ],
+      "nearest_neighbor": [
+        "task_failure:clarification_decision",
+        "unsupported_claim",
+        "citation_imprecision"
+      ],
+      "removed_edges_control": [
+        "task_failure:clarification_decision"
+      ],
+      "retrieval_authored_graph": [
+        "task_failure:clarification_decision"
+      ],
+      "retrieval_entailment": [
+        "task_failure:clarification_decision"
+      ],
+      "shuffled_edges_control": [
+        "task_failure:clarification_decision"
+      ]
+    },
+    "contradiction_cache_ttl": {
+      "current_retrieval": [
+        "task_failure:contradiction_detection",
+        "unsupported_claim",
+        "missed_contradiction"
+      ],
+      "nearest_neighbor": [
+        "task_failure:contradiction_detection",
+        "unsupported_claim",
+        "missed_contradiction"
+      ],
+      "retrieval_authored_graph": [
+        "task_failure:contradiction_detection",
+        "missed_contradiction"
+      ],
+      "retrieval_entailment": [
+        "task_failure:contradiction_detection"
+      ]
+    },
+    "direct_rate_limit": {},
+    "missing_incident_channel": {
+      "nearest_neighbor": [
+        "task_failure:missing_evidence_detection",
+        "unsupported_claim",
+        "citation_imprecision",
+        "false_confidence"
+      ]
+    },
+    "multi_hop_rollout_owner": {
+      "current_retrieval": [
+        "task_failure:multi_hop",
+        "unsupported_claim",
+        "citation_imprecision"
+      ],
+      "nearest_neighbor": [
+        "task_failure:multi_hop",
+        "unsupported_claim",
+        "citation_imprecision"
+      ],
+      "removed_edges_control": [
+        "task_failure:multi_hop",
+        "false_abstention"
+      ],
+      "retrieval_entailment": [
+        "task_failure:multi_hop",
+        "false_abstention"
+      ],
+      "shuffled_edges_control": [
+        "task_failure:multi_hop",
+        "unsupported_claim",
+        "citation_imprecision"
+      ]
+    },
+    "near_miss_error_budget": {
+      "current_retrieval": [
+        "task_failure:near_miss_abstention",
+        "unsupported_claim",
+        "citation_imprecision",
+        "false_confidence"
+      ],
+      "nearest_neighbor": [
+        "task_failure:near_miss_abstention",
+        "unsupported_claim",
+        "citation_imprecision",
+        "false_confidence"
+      ],
+      "retrieval_authored_graph": [
+        "task_failure:near_miss_abstention",
+        "unsupported_claim",
+        "citation_imprecision",
+        "false_confidence"
+      ]
+    },
+    "real_control_deploy_relation_heldout": {
+      "current_retrieval": [
+        "task_failure:multi_hop",
+        "unsupported_claim",
+        "citation_imprecision"
+      ],
+      "nearest_neighbor": [
+        "task_failure:multi_hop",
+        "unsupported_claim",
+        "citation_imprecision"
+      ],
+      "removed_edges_control": [
+        "task_failure:multi_hop",
+        "false_abstention"
+      ],
+      "retrieval_entailment": [
+        "task_failure:multi_hop",
+        "false_abstention"
+      ],
+      "shuffled_edges_control": [
+        "task_failure:multi_hop",
+        "unsupported_claim",
+        "citation_imprecision"
+      ]
+    },
+    "supersession_search_engine": {
+      "current_retrieval": [
+        "task_failure:supersession_recovery",
+        "unsupported_claim",
+        "missed_proposal"
+      ],
+      "nearest_neighbor": [
+        "task_failure:supersession_recovery",
+        "unsupported_claim",
+        "missed_proposal"
+      ],
+      "removed_edges_control": [
+        "task_failure:supersession_recovery",
+        "missed_proposal"
+      ],
+      "retrieval_authored_graph": [
+        "task_failure:supersession_recovery",
+        "missed_proposal"
+      ],
+      "retrieval_entailment": [
+        "task_failure:supersession_recovery",
+        "missed_proposal"
+      ],
+      "shuffled_edges_control": [
+        "task_failure:supersession_recovery",
+        "unsupported_claim",
+        "citation_imprecision",
+        "missed_proposal"
+      ]
+    },
+    "temporal_freeze_status": {
+      "current_retrieval": [
+        "task_failure:temporal_reasoning",
+        "unsupported_claim",
+        "false_confidence"
+      ],
+      "nearest_neighbor": [
+        "task_failure:temporal_reasoning",
+        "unsupported_claim",
+        "false_confidence"
+      ]
+    }
+  },
+  "provider_generation_identities": {
+    "current_retrieval": [
+      {
+        "generation_id": "gen-a",
+        "provider_id": "offline-control"
+      }
+    ],
+    "nearest_neighbor": [
+      {
+        "generation_id": "gen-a",
+        "provider_id": "offline-control"
+      }
+    ],
+    "removed_edges_control": [
+      {
+        "generation_id": "gen-a",
+        "provider_id": "offline-control"
+      }
+    ],
+    "retrieval_authored_graph": [
+      {
+        "generation_id": "gen-a",
+        "provider_id": "offline-control"
+      }
+    ],
+    "retrieval_entailment": [
+      {
+        "generation_id": "gen-a",
+        "provider_id": "offline-control"
+      }
+    ],
+    "retrieval_full_planner": [
+      {
+        "generation_id": "gen-a",
+        "provider_id": "offline-control"
+      }
+    ],
+    "retrieval_proposal_exploration": [
+      {
+        "generation_id": "gen-a",
+        "provider_id": "offline-control"
+      }
+    ],
+    "shuffled_edges_control": [
+      {
+        "generation_id": "gen-a",
+        "provider_id": "offline-control"
+      }
+    ]
+  },
+  "task_counts": {
+    "clarification_decision": 1,
+    "contradiction_detection": 1,
+    "direct_qa": 1,
+    "entity_disambiguation": 1,
+    "missing_evidence_detection": 1,
+    "multi_hop": 2,
+    "near_miss_abstention": 1,
+    "supersession_recovery": 1,
+    "temporal_reasoning": 1
+  },
+  "threshold_status": {
+    "all_passed": true,
+    "passes": {
+      "answer_accuracy_threshold": true,
+      "citation_precision_threshold": true,
+      "contradiction_detection_threshold": true,
+      "correct_abstention_threshold": true,
+      "direct_retrieval_not_materially_improved": true,
+      "false_abstention_threshold": true,
+      "heldout_survives": true,
+      "multi_hop_improves": true,
+      "nearest_neighbor_control_not_enough": true,
+      "proposal_precision_threshold": true,
+      "proposal_recall_beats_authored_graph": true,
+      "proposal_recall_threshold": true,
+      "removed_edge_control_drops": true,
+      "shuffled_edge_control_drops": true,
+      "strict_mode_reduces_unsupported_claims": true,
+      "unsupported_claims_below_ceiling": true
+    },
+    "thresholds": {
+      "answer_accuracy_min": 0.66,
+      "citation_precision_min": 0.88,
+      "contradiction_detection_precision_min": 0.75,
+      "correct_abstention_rate_min": 0.75,
+      "direct_qa_material_gain_max": 0.05,
+      "false_abstention_rate_max": 0.25,
+      "heldout_answer_accuracy_min": 0.6,
+      "proposal_precision_min": 0.5,
+      "proposal_recall_min": 0.5,
+      "unsupported_claim_rate_max": 0.12
+    }
+  },
+  "version": "reasoning-session6-v0.1.0"
+}

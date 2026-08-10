@@ -1,0 +1,1378 @@
+{
+  "version": "reasoning-session6-v0.1.0",
+  "created_utc": "2026-08-10T00:00:00Z",
+  "index_generation": "reasoning-session6-fixture-gen1",
+  "notes": [
+    "Frozen offline benchmark for reasoning evaluation controls.",
+    "Synthetic and real corpus cases are separated.",
+    "Observations are deterministic controls, not provider benchmark claims."
+  ],
+  "preregistered_thresholds": {
+    "answer_accuracy_min": 0.66,
+    "citation_precision_min": 0.88,
+    "unsupported_claim_rate_max": 0.12,
+    "correct_abstention_rate_min": 0.75,
+    "false_abstention_rate_max": 0.25,
+    "proposal_precision_min": 0.5,
+    "proposal_recall_min": 0.5,
+    "contradiction_detection_precision_min": 0.75,
+    "direct_qa_material_gain_max": 0.05,
+    "heldout_answer_accuracy_min": 0.6
+  },
+  "memories": [
+    {
+      "id": "m_rate_limit",
+      "source": "synthetic/rate_limits_v2.md",
+      "text": "The API request limit is 120 requests per minute per tenant.",
+      "metadata": {
+        "file": "rate_limits_v2.md",
+        "ord": 0,
+        "kind": "policy"
+      }
+    },
+    {
+      "id": "m_rollout_flag",
+      "source": "synthetic/rollout_flag.md",
+      "text": "The live checkout rollout is controlled by the canary_checkout flag.",
+      "metadata": {
+        "file": "rollout_flag.md",
+        "ord": 0,
+        "kind": "feature"
+      }
+    },
+    {
+      "id": "m_flag_owner",
+      "source": "synthetic/flag_owner.md",
+      "text": "The canary_checkout flag is owned by the Release Engineering team.",
+      "metadata": {
+        "file": "flag_owner.md",
+        "ord": 0,
+        "kind": "ownership"
+      }
+    },
+    {
+      "id": "m_freeze_window",
+      "source": "synthetic/freeze_window.md",
+      "text": "A deploy freeze was in effect for checkout until 2026-02-01.",
+      "metadata": {
+        "file": "freeze_window.md",
+        "ord": 0,
+        "kind": "temporal"
+      }
+    },
+    {
+      "id": "m_search_v1",
+      "source": "synthetic/search_engine_v1.md",
+      "text": "Search traffic uses the Atlas engine.",
+      "metadata": {
+        "file": "search_engine_v1.md",
+        "ord": 0,
+        "kind": "decision"
+      }
+    },
+    {
+      "id": "m_search_v2",
+      "source": "synthetic/search_engine_v2.md",
+      "text": "Search traffic was migrated from Atlas to Boreal on 2026-04-15.",
+      "metadata": {
+        "file": "search_engine_v2.md",
+        "ord": 0,
+        "kind": "decision"
+      }
+    },
+    {
+      "id": "m_checkout_latency",
+      "source": "synthetic/checkout_latency.md",
+      "text": "Checkout latency dashboards report p95 and p99 latency by region.",
+      "metadata": {
+        "file": "checkout_latency.md",
+        "ord": 0,
+        "kind": "dashboard"
+      }
+    },
+    {
+      "id": "m_cache_old",
+      "source": "synthetic/cache_ttl_v1.md",
+      "text": "Cache TTL for catalogue pages is 24 hours.",
+      "metadata": {
+        "file": "cache_ttl_v1.md",
+        "ord": 0,
+        "kind": "decision"
+      }
+    },
+    {
+      "id": "m_cache_new",
+      "source": "synthetic/cache_ttl_v2.md",
+      "text": "Cache TTL for catalogue pages is 15 minutes after the 2026 incident review.",
+      "metadata": {
+        "file": "cache_ttl_v2.md",
+        "ord": 0,
+        "kind": "decision"
+      }
+    },
+    {
+      "id": "m_iris_team",
+      "source": "synthetic/teams_iris.md",
+      "text": "Iris owns runtime alerts for the inference gateway.",
+      "metadata": {
+        "file": "teams_iris.md",
+        "ord": 0,
+        "kind": "team"
+      }
+    },
+    {
+      "id": "m_iris_project",
+      "source": "synthetic/projects_iris.md",
+      "text": "Project Iris is the design system refresh.",
+      "metadata": {
+        "file": "projects_iris.md",
+        "ord": 0,
+        "kind": "project"
+      }
+    },
+    {
+      "id": "m_deploy_relation",
+      "source": "real/corpus/decisions.md",
+      "text": "Deploy guidance depends on the freeze decision and the rollout flag owner.",
+      "metadata": {
+        "file": "corpus/decisions.md",
+        "ord": 0,
+        "kind": "real-control"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "direct_rate_limit",
+      "task": "direct_qa",
+      "corpus_kind": "synthetic",
+      "question": "What is the API request limit?",
+      "expected_decision": "answer",
+      "expected_answer_facts": [
+        "The API request limit is 120 requests per minute per tenant."
+      ],
+      "supporting_memory_ids": [
+        "m_rate_limit"
+      ],
+      "expected_proposals": [],
+      "contradiction_memory_ids": [],
+      "observations": {
+        "current_retrieval": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 12.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_entailment": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 18.0,
+          "model_calls": 1,
+          "tokens": 80,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_authored_graph": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 14.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_proposal_exploration": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 23.0,
+          "model_calls": 1,
+          "tokens": 120,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_full_planner": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 31.0,
+          "model_calls": 2,
+          "tokens": 180,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "nearest_neighbor": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 9.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "shuffled_edges_control": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 31.0,
+          "model_calls": 2,
+          "tokens": 180,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "removed_edges_control": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 30.0,
+          "model_calls": 2,
+          "tokens": 160,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        }
+      }
+    },
+    {
+      "id": "multi_hop_rollout_owner",
+      "task": "multi_hop",
+      "corpus_kind": "synthetic",
+      "question": "Which team owns the flag that controls live checkout rollout?",
+      "expected_decision": "answer",
+      "expected_answer_facts": [
+        "The live checkout rollout is controlled by the canary_checkout flag.",
+        "The canary_checkout flag is owned by the Release Engineering team."
+      ],
+      "supporting_memory_ids": [
+        "m_rollout_flag",
+        "m_flag_owner"
+      ],
+      "expected_proposals": [],
+      "contradiction_memory_ids": [],
+      "observations": {
+        "current_retrieval": {
+          "answer_correct": false,
+          "citations_precise": false,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 13.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_entailment": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 21.0,
+          "model_calls": 1,
+          "tokens": 110,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_authored_graph": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 24.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_proposal_exploration": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 40.0,
+          "model_calls": 2,
+          "tokens": 260,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_full_planner": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 52.0,
+          "model_calls": 3,
+          "tokens": 360,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "nearest_neighbor": {
+          "answer_correct": false,
+          "citations_precise": false,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 10.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "shuffled_edges_control": {
+          "answer_correct": false,
+          "citations_precise": false,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 50.0,
+          "model_calls": 3,
+          "tokens": 350,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "removed_edges_control": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 45.0,
+          "model_calls": 2,
+          "tokens": 280,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        }
+      }
+    },
+    {
+      "id": "temporal_freeze_status",
+      "task": "temporal_reasoning",
+      "corpus_kind": "synthetic",
+      "question": "Is checkout currently under a deploy freeze?",
+      "expected_decision": "abstain",
+      "expected_answer_facts": [],
+      "supporting_memory_ids": [
+        "m_freeze_window"
+      ],
+      "expected_proposals": [],
+      "contradiction_memory_ids": [],
+      "observations": {
+        "current_retrieval": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 12.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_entailment": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 22.0,
+          "model_calls": 1,
+          "tokens": 95,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_authored_graph": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 19.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_proposal_exploration": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 34.0,
+          "model_calls": 1,
+          "tokens": 150,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_full_planner": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 46.0,
+          "model_calls": 2,
+          "tokens": 240,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "nearest_neighbor": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 9.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "shuffled_edges_control": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 45.0,
+          "model_calls": 2,
+          "tokens": 240,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "removed_edges_control": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 44.0,
+          "model_calls": 2,
+          "tokens": 220,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        }
+      }
+    },
+    {
+      "id": "supersession_search_engine",
+      "task": "supersession_recovery",
+      "corpus_kind": "synthetic",
+      "question": "Which engine serves search traffic now?",
+      "expected_decision": "needs_review",
+      "expected_answer_facts": [
+        "Search traffic uses the Atlas engine.",
+        "Search traffic was migrated from Atlas to Boreal on 2026-04-15."
+      ],
+      "supporting_memory_ids": [
+        "m_search_v1",
+        "m_search_v2"
+      ],
+      "expected_proposals": [
+        {
+          "from_memory_id": "m_search_v1",
+          "to_memory_id": "m_search_v2"
+        }
+      ],
+      "contradiction_memory_ids": [],
+      "observations": {
+        "current_retrieval": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 13.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_entailment": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 23.0,
+          "model_calls": 1,
+          "tokens": 130,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_authored_graph": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 20.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_proposal_exploration": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [
+            {
+              "from_memory_id": "m_search_v1",
+              "to_memory_id": "m_search_v2"
+            }
+          ],
+          "detected_contradiction": false,
+          "latency_ms": 42.0,
+          "model_calls": 2,
+          "tokens": 280,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_full_planner": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [
+            {
+              "from_memory_id": "m_search_v1",
+              "to_memory_id": "m_search_v2"
+            }
+          ],
+          "detected_contradiction": false,
+          "latency_ms": 55.0,
+          "model_calls": 3,
+          "tokens": 420,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "nearest_neighbor": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 9.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "shuffled_edges_control": {
+          "answer_correct": false,
+          "citations_precise": false,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [
+            {
+              "from_memory_id": "m_search_v2",
+              "to_memory_id": "m_search_v1"
+            }
+          ],
+          "detected_contradiction": false,
+          "latency_ms": 54.0,
+          "model_calls": 3,
+          "tokens": 420,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "removed_edges_control": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 47.0,
+          "model_calls": 2,
+          "tokens": 300,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        }
+      }
+    },
+    {
+      "id": "near_miss_error_budget",
+      "task": "near_miss_abstention",
+      "corpus_kind": "synthetic",
+      "question": "What is the checkout error budget?",
+      "expected_decision": "abstain",
+      "expected_answer_facts": [],
+      "supporting_memory_ids": [],
+      "expected_proposals": [],
+      "contradiction_memory_ids": [],
+      "observations": {
+        "current_retrieval": {
+          "answer_correct": false,
+          "citations_precise": false,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 11.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_entailment": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 20.0,
+          "model_calls": 1,
+          "tokens": 90,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_authored_graph": {
+          "answer_correct": false,
+          "citations_precise": false,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 15.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_proposal_exploration": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 33.0,
+          "model_calls": 1,
+          "tokens": 140,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_full_planner": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 44.0,
+          "model_calls": 2,
+          "tokens": 230,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "nearest_neighbor": {
+          "answer_correct": false,
+          "citations_precise": false,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 8.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "shuffled_edges_control": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 43.0,
+          "model_calls": 2,
+          "tokens": 230,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "removed_edges_control": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 42.0,
+          "model_calls": 2,
+          "tokens": 210,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        }
+      }
+    },
+    {
+      "id": "contradiction_cache_ttl",
+      "task": "contradiction_detection",
+      "corpus_kind": "synthetic",
+      "question": "What is the cache TTL for catalogue pages?",
+      "expected_decision": "needs_review",
+      "expected_answer_facts": [
+        "Cache TTL for catalogue pages is 24 hours.",
+        "Cache TTL for catalogue pages is 15 minutes after the 2026 incident review."
+      ],
+      "supporting_memory_ids": [
+        "m_cache_old",
+        "m_cache_new"
+      ],
+      "expected_proposals": [],
+      "contradiction_memory_ids": [
+        "m_cache_old",
+        "m_cache_new"
+      ],
+      "observations": {
+        "current_retrieval": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 13.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_entailment": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": true,
+          "latency_ms": 24.0,
+          "model_calls": 1,
+          "tokens": 150,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_authored_graph": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 18.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_proposal_exploration": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": true,
+          "latency_ms": 39.0,
+          "model_calls": 2,
+          "tokens": 260,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_full_planner": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": true,
+          "latency_ms": 53.0,
+          "model_calls": 3,
+          "tokens": 390,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "nearest_neighbor": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 9.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "shuffled_edges_control": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": true,
+          "latency_ms": 52.0,
+          "model_calls": 3,
+          "tokens": 390,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "removed_edges_control": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": true,
+          "latency_ms": 51.0,
+          "model_calls": 3,
+          "tokens": 360,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        }
+      }
+    },
+    {
+      "id": "ambiguous_iris",
+      "task": "entity_disambiguation",
+      "corpus_kind": "synthetic",
+      "question": "What does Iris own?",
+      "expected_decision": "needs_clarification",
+      "expected_answer_facts": [
+        "Iris owns runtime alerts for the inference gateway.",
+        "Project Iris is the design system refresh."
+      ],
+      "supporting_memory_ids": [
+        "m_iris_team",
+        "m_iris_project"
+      ],
+      "expected_proposals": [],
+      "contradiction_memory_ids": [],
+      "observations": {
+        "current_retrieval": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 12.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_entailment": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 22.0,
+          "model_calls": 1,
+          "tokens": 120,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_authored_graph": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 18.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_proposal_exploration": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 38.0,
+          "model_calls": 2,
+          "tokens": 250,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_full_planner": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 50.0,
+          "model_calls": 3,
+          "tokens": 370,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "nearest_neighbor": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 8.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "shuffled_edges_control": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 49.0,
+          "model_calls": 3,
+          "tokens": 360,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "removed_edges_control": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 47.0,
+          "model_calls": 2,
+          "tokens": 300,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        }
+      }
+    },
+    {
+      "id": "missing_incident_channel",
+      "task": "missing_evidence_detection",
+      "corpus_kind": "synthetic",
+      "question": "Which channel received the payments incident review?",
+      "expected_decision": "abstain",
+      "expected_answer_facts": [],
+      "supporting_memory_ids": [],
+      "expected_proposals": [],
+      "contradiction_memory_ids": [],
+      "observations": {
+        "current_retrieval": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 10.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_entailment": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 17.0,
+          "model_calls": 1,
+          "tokens": 70,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_authored_graph": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 15.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_proposal_exploration": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 32.0,
+          "model_calls": 1,
+          "tokens": 130,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_full_planner": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 43.0,
+          "model_calls": 2,
+          "tokens": 220,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "nearest_neighbor": {
+          "answer_correct": false,
+          "citations_precise": false,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 8.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "shuffled_edges_control": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 42.0,
+          "model_calls": 2,
+          "tokens": 220,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "removed_edges_control": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 41.0,
+          "model_calls": 2,
+          "tokens": 200,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        }
+      }
+    },
+    {
+      "id": "clarify_scope",
+      "task": "clarification_decision",
+      "corpus_kind": "synthetic",
+      "question": "What should I do about checkout?",
+      "expected_decision": "needs_clarification",
+      "expected_answer_facts": [],
+      "supporting_memory_ids": [
+        "m_rollout_flag",
+        "m_freeze_window"
+      ],
+      "expected_proposals": [],
+      "contradiction_memory_ids": [],
+      "observations": {
+        "current_retrieval": {
+          "answer_correct": false,
+          "citations_precise": false,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 12.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_entailment": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 20.0,
+          "model_calls": 1,
+          "tokens": 100,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_authored_graph": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 18.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_proposal_exploration": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 36.0,
+          "model_calls": 2,
+          "tokens": 240,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_full_planner": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 49.0,
+          "model_calls": 3,
+          "tokens": 350,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "nearest_neighbor": {
+          "answer_correct": false,
+          "citations_precise": false,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 8.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "shuffled_edges_control": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 48.0,
+          "model_calls": 3,
+          "tokens": 340,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "removed_edges_control": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 45.0,
+          "model_calls": 2,
+          "tokens": 290,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        }
+      }
+    },
+    {
+      "id": "real_control_deploy_relation_heldout",
+      "task": "multi_hop",
+      "corpus_kind": "real",
+      "question": "Which checkout deploy guidance dependencies must be resolved?",
+      "expected_decision": "answer",
+      "expected_answer_facts": [
+        "Deploy guidance depends on the freeze decision and the rollout flag owner."
+      ],
+      "supporting_memory_ids": [
+        "m_deploy_relation",
+        "m_freeze_window",
+        "m_flag_owner"
+      ],
+      "expected_proposals": [],
+      "contradiction_memory_ids": [],
+      "observations": {
+        "current_retrieval": {
+          "answer_correct": false,
+          "citations_precise": false,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 14.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_entailment": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 25.0,
+          "model_calls": 1,
+          "tokens": 140,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_authored_graph": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 28.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_proposal_exploration": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 45.0,
+          "model_calls": 2,
+          "tokens": 300,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "retrieval_full_planner": {
+          "answer_correct": true,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 58.0,
+          "model_calls": 3,
+          "tokens": 430,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "nearest_neighbor": {
+          "answer_correct": false,
+          "citations_precise": false,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 10.0,
+          "model_calls": 0,
+          "tokens": 0,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "shuffled_edges_control": {
+          "answer_correct": false,
+          "citations_precise": false,
+          "unsupported_claim": true,
+          "abstained": false,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 56.0,
+          "model_calls": 3,
+          "tokens": 420,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        },
+        "removed_edges_control": {
+          "answer_correct": false,
+          "citations_precise": true,
+          "unsupported_claim": false,
+          "abstained": true,
+          "proposed_edges": [],
+          "detected_contradiction": false,
+          "latency_ms": 50.0,
+          "model_calls": 2,
+          "tokens": 330,
+          "generation_id": "gen-a",
+          "provider_id": "offline-control"
+        }
+      }
+    }
+  ]
+}
