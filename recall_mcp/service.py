@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -40,15 +40,26 @@ from recall.reasoning import (
     GenerationSelection,
     REASONING_API_VERSION,
     ReasoningDiagnostics,
+    ReasoningGraphProvider,
     ReasoningPolicy,
+    ReasoningProposalProvider,
     ReasoningProviderPorts,
     ReasoningRequest,
     ReasoningResponse,
+    ReasoningRetriever,
     reason,
 )
-from recall.reasoning_graph import build_reasoning_graph, project_store_graph
+from recall.reasoning_graph import (
+    ReasoningGraphProjection,
+    build_reasoning_graph,
+    project_store_graph,
+)
 from recall.reasoning_planner import ReasoningBudget
-from recall.reasoning_proposals import deterministic_inference_proposals
+from recall.reasoning_proposals import (
+    InferenceProposal,
+    ProposalProtocolReport,
+    deterministic_inference_proposals,
+)
 from recall.rerank import DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION, Reranker
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
@@ -394,10 +405,10 @@ class ReasoningProposalItem(BaseModel):
     relation: str = Field(description="Proposed relationship between subject and object.")
     subject_id: str = Field(description="Subject graph node or evidence identifier.")
     object_id: str = Field(description="Object graph node or evidence identifier.")
-    confidence: float = Field(
-        description="Deterministic confidence score in the closed interval 0..1."
+    confidence: float | None = Field(
+        description="Confidence score in the closed interval 0..1, or null when unavailable."
     )
-    rule_id: str = Field(description="Rule or provider rule that produced the proposal.")
+    rule_id: str | None = Field(description="Rule or provider rule that produced the proposal.")
     generation_id: str = Field(description="Generation identity attached to the proposal.")
     pipeline_id: str = Field(description="Pipeline identity attached to the proposal.")
     provider_id: str | None = Field(description="Provider id for model generated proposals.")
@@ -1231,7 +1242,9 @@ def reasoning_proposals(store: PgVectorStore, *, limit: int = 100) -> ReasoningP
     )
 
 
-def _retrieval_graph(retrieval: TrustedResult, *, include_text: bool = True):
+def _retrieval_graph(
+    retrieval: TrustedResult, *, include_text: bool = True
+) -> ReasoningGraphProjection:
     chunks = [hit.chunk for hit in retrieval.hits if hit.verdict == "ok"]
     return build_reasoning_graph(
         chunks,
@@ -1329,7 +1342,8 @@ def reasoning_query(
         generation = _reasoning_generation(store)
         retrieval_cache: dict[str, TrustedResult] = {}
 
-        def retrieve(_request: ReasoningRequest):
+        def retrieve(request: ReasoningRequest) -> TrustedResult:
+            del request
             if "result" not in retrieval_cache:
                 result = _retrieve_trusted(
                     store, embedder, query, source, k, calibration, policy
@@ -1344,24 +1358,36 @@ def reasoning_query(
                 )
             return retrieval_cache["result"]
 
-        def graph_provider(_request: ReasoningRequest, retrieval):
+        def graph_provider(
+            request: ReasoningRequest, retrieval: TrustedResult
+        ) -> ReasoningGraphProjection:
+            del request
             if source is not None:
                 return _retrieval_graph(retrieval, include_text=True)
             return project_store_graph(store, include_text=True)
 
-        def proposal_provider(_request: ReasoningRequest, graph, _retrieval):
+        def proposal_provider(
+            request: ReasoningRequest,
+            graph: ReasoningGraphProjection,
+            retrieval: TrustedResult,
+        ) -> Sequence[InferenceProposal] | ProposalProtocolReport:
+            del request, retrieval
             return deterministic_inference_proposals(
                 graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
             )
+
+        retriever_port: ReasoningRetriever = retrieve
+        graph_port: ReasoningGraphProvider = graph_provider
+        proposal_port: ReasoningProposalProvider = proposal_provider
 
         request = ReasoningRequest(
             query=query,
             tenant_id=store.tenant,
             generation=generation,
             providers=ReasoningProviderPorts(
-                retriever=retrieve,
-                graph_provider=graph_provider,
-                proposal_provider=proposal_provider,
+                retriever=retriever_port,
+                graph_provider=graph_port,
+                proposal_provider=proposal_port,
             ),
             policy=reasoning_policy,
             budget=budget,

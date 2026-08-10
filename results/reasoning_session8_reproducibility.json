@@ -1,0 +1,113 @@
+{
+  "_provenance": {
+    "generator": "manual Session 8 audit",
+    "generation": "reasoning-session8-final-audit",
+    "status": "current",
+    "backs": [
+      "docs/REASONING_SESSION8_AUDIT.md"
+    ],
+    "note": "Session 8 release audit record for reasoning operations, generated on 2026-08-10."
+  },
+  "source": {
+    "base_revision": "bfc2739294f8fecac9535df4605702112eb84395",
+    "branch": "codex/reasoning-session-8",
+    "changed_files": [
+      "recall/cli.py",
+      "recall/eval/reasoning_session6.py",
+      "recall/reasoning.py",
+      "recall/reasoning_graph.py",
+      "recall_mcp/service.py",
+      "tests/test_mcp_concurrency.py",
+      "tests/test_mcp_tool_authorization.py",
+      "tests/test_reasoning_api.py",
+      "docs/REASONING_SESSION8_AUDIT.md",
+      "results/reasoning_session8_reproducibility.json"
+    ]
+  },
+  "environment": {
+    "date": "2026-08-10",
+    "platform": "win32",
+    "python": "3.12.9",
+    "database": "docker compose postgres service recall-db-1 healthy"
+  },
+  "dependency_versions": {
+    "aiohttp": "3.14.3",
+    "cryptography": "50.0.0",
+    "fastembed": "0.8.0",
+    "mcp": "1.28.1",
+    "mypy": "2.3.0",
+    "pgvector": "0.5.0",
+    "pip_audit": "2.10.1",
+    "psycopg": "3.3.4",
+    "pytest": "9.1.1",
+    "pytest-cov": "7.1.0",
+    "recall-rag": "0.9.0",
+    "ruff": "0.15.20",
+    "torch": "2.13.0",
+    "transformers": "5.13.0",
+    "uv": "0.11.30",
+    "voyageai": "0.4.1"
+  },
+  "dependency_artifacts": {
+    "pyproject_sha256": "62A29D5D028B2C34C553875BD83E2C9B72C71F142324FDB38C9E80FFFE72B403",
+    "uv_lock_sha256": "E0B2574C8100A0793AC8F1B9622699496295AD7AB780B2A0CDBA4632C50411DF"
+  },
+  "model_revisions": {
+    "default_reasoning_provider": "deterministic provider neutral rules",
+    "model_backed_reasoning_provider": null,
+    "hashing_embedder": "library implementation",
+    "fastembed_installed": "0.8.0",
+    "voyageai_installed": "0.4.1",
+    "torch_installed": "2.13.0",
+    "transformers_installed": "5.13.0"
+  },
+  "corpus_and_generation": {
+    "session1_fixture_sha256": "451CCDCDAA22CCF7BCCC1D86B2229077A2642780044B4402F8447CA47472EFC0",
+    "session6_fixture_sha256": "4D551A0874BE71F408F417B35749A99632E10B89EF6D89BF0E76295583A9076C",
+    "session1_artifact_sha256": "A15D82ABA81E33DF7ED3A4C610CAFECE09D6588534A118957A83082C5E44EA2E",
+    "session3_artifact_sha256": "9F4C0F0BD95DF3067A8C5D5485FEA0B0B64727ACB536FDF3F5368B5EC9DB5FC7",
+    "session6_artifact_sha256": "483E3BC7C871DBE8D34C285FD2E6DE86B6C06DEF329315DAC6ADFEB6C4A02C2A",
+    "session1_regenerated_sha256": "B01FA522276E61ACBC21784EBAE5CE27E4517A6DAA35672C278E114C8EFEE5A7",
+    "session3_regenerated_sha256": "3C6BCC43AA3FF17292B8842A85C207A592D9B7DF6250A91969A48D2468E89A27",
+    "session6_regenerated_sha256": "551BCF957F03B3D167AEAF3EC1AFA1F863054779E4001EB228A0A1E2B354A9B6"
+  },
+  "evaluation_results": {
+    "release_decision": "Retrieval plus experimental reasoning",
+    "session6_thresholds_all_passed": true,
+    "current_retrieval_answer_accuracy": 0.2,
+    "retrieval_full_planner_answer_accuracy": 1.0,
+    "retrieval_full_planner_citation_precision": 1.0,
+    "retrieval_full_planner_unsupported_claim_rate": 0.0,
+    "retrieval_full_planner_latency_ms_mean": 48.1,
+    "retrieval_full_planner_model_calls": 26,
+    "retrieval_full_planner_token_use": 3190,
+    "heldout_answer_accuracy": 1.0,
+    "nearest_neighbor_control_not_enough": true,
+    "shuffled_edge_control_drops": true,
+    "removed_edge_control_drops": true
+  },
+  "validation": {
+    "ruff": "passed",
+    "mypy": "passed, 191 source files",
+    "pytest_full": "3599 passed, 33 skipped, 1 xfailed, coverage 86.67 percent",
+    "reasoning_artifacts": "Session 1, Session 3, and Session 6 regenerated with no diffs against committed artifacts",
+    "uv_lock_check": "passed",
+    "uv_export_pip_audit": "passed",
+    "direct_pip_audit": "passed",
+    "pip_check": "passed",
+    "build": "passed",
+    "twine_check": "passed",
+    "fresh_wheel_import": "passed"
+  },
+  "distribution_artifacts": {
+    "wheel_sha256": "FEE8FC1E6849CC785B3A52746A89B0104166B02D6ECDC9C90EFDB561459360E7",
+    "sdist_sha256": "2A7FD401C59437AD242724D27B13AD684D2DDB416E0A533E9835A8CB0FD85D22"
+  },
+  "limitations": [
+    "No general reasoning claim is supported.",
+    "Broader beta needs held out external evaluation and provider backed adversarial controls.",
+    "Default MCP reasoning query has no answer provider.",
+    "Provider monetary cost is not normalized by core metrics.",
+    "Inference proposals remain review candidates, not trusted corpus metadata."
+  ]
+}

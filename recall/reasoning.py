@@ -561,6 +561,27 @@ def _proposal_report(
             ),
         )
     if isinstance(raw, ProposalProtocolReport):
+        pipeline = request.generation.pipeline_fingerprint or retrieval.pipeline_fingerprint
+        if raw.generation_id != graph.generation_id:
+            return (), (
+                ProviderFailure(
+                    kind="malformed_output",
+                    provider_id="unknown",
+                    model_id="unknown",
+                    provider_revision="unknown",
+                    message="report_generation_mismatch",
+                ),
+            )
+        if pipeline is not None and raw.pipeline_id != pipeline:
+            return (), (
+                ProviderFailure(
+                    kind="malformed_output",
+                    provider_id="unknown",
+                    model_id="unknown",
+                    provider_revision="unknown",
+                    message="report_pipeline_mismatch",
+                ),
+            )
         return raw.proposals, raw.provider_failures
     try:
         proposals = tuple(raw)
@@ -594,6 +615,8 @@ def _validate_proposals(
     for proposal in proposals:
         if proposal.generation_id != graph.generation_id:
             raise ReasoningValidationError("proposal generation_id does not match graph")
+        if graph.pipeline_fingerprint is not None and proposal.pipeline_id != graph.pipeline_fingerprint:
+            raise ReasoningValidationError("proposal pipeline_id does not match graph")
         missing = sorted(set(proposal.source_evidence_ids) - evidence_ids)
         if missing:
             raise ReasoningValidationError(
@@ -692,12 +715,12 @@ def _response(
 
 
 def _record_reasoning_metrics(response: ReasoningResponse) -> None:
-    labels = {
-        "outcome": response.outcome,
-        "trust_state": response.trust_state,
-        "refusal_reason": response.refusal_reason or "none",
-    }
-    METRICS.increment("recall_reasoning_outcome_total", **labels)
+    METRICS.increment(
+        "recall_reasoning_outcome_total",
+        outcome=response.outcome,
+        trust_state=response.trust_state,
+        refusal_reason=response.refusal_reason or "none",
+    )
     METRICS.observe("recall_reasoning_latency_ms", float(response.diagnostics.latency_ms))
     if response.inference_proposals:
         METRICS.increment("recall_reasoning_proposals_total", len(response.inference_proposals))

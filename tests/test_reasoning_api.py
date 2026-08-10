@@ -18,7 +18,7 @@ from recall.reasoning import (
 )
 from recall.reasoning_graph import ReasoningGraphNode, build_reasoning_graph
 from recall.reasoning_planner import ReasoningBudgetUsage, ReasoningTrace
-from recall.reasoning_proposals import InferenceProposal
+from recall.reasoning_proposals import InferenceProposal, ProposalProtocolReport
 from recall.types import (
     Chunk,
     Provenance,
@@ -391,6 +391,85 @@ def test_review_required_policy_distinguishes_review_from_abstain() -> None:
     assert response.outcome == "needs_review"
     assert response.refusal_reason == "review_required_policy"
     assert response.diagnostics.generator_invoked is False
+
+
+def test_reasoning_rejects_foreign_proposal_report_identity_before_answering() -> None:
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+    graph = build_reasoning_graph(
+        [chunk],
+        tenant_id="acme",
+        generation_id="gen_1",
+        pipeline_fingerprint="pipe-a",
+        corpus_fingerprint="corpus-a",
+        include_text=True,
+    )
+    called = False
+
+    def answer(_system: str, _user: str) -> dict[str, object]:
+        nonlocal called
+        called = True
+        return {"answer": "Ada owns rollout.", "citations": ["c1"], "insufficient_evidence": False}
+
+    response = reason(
+        _request(
+            _result(_hit(chunk)),
+            policy=ReasoningPolicy(name="proposal_assisted"),
+            graph=graph,
+            proposals=ProposalProtocolReport(
+                schema_version=1,
+                generation_id="gen_1",
+                pipeline_id="other-pipeline",
+                proposals=(),
+                rejected_proposals=(),
+                provider_failures=(),
+            ),
+            answer=answer,
+        )
+    )
+
+    assert response.outcome == "needs_review"
+    assert response.refusal_reason == "provider_failure"
+    assert response.provider_failures[0].message == "report_pipeline_mismatch"
+    assert called is False
+
+
+def test_reasoning_rejects_proposal_pipeline_mismatch() -> None:
+    old = _chunk("old", "rollout_v1.md", "decision: rollout owner. Ada owns it.")
+    new = _chunk("new", "rollout_v2.md", "decision: rollout owner. Bea owns it.")
+    graph = build_reasoning_graph(
+        [old, new],
+        tenant_id="acme",
+        generation_id="gen_1",
+        pipeline_fingerprint="pipe-a",
+        corpus_fingerprint="corpus-a",
+        include_text=True,
+    )
+    evidence_ids = tuple(node.id for node in graph.nodes if node.kind == "source")[:2]
+    proposal = InferenceProposal(
+        id="foreign_pipeline",
+        source_evidence_ids=evidence_ids,
+        proposed_relation="supersedes",
+        subject_id="rollout_v1.md",
+        object_id="rollout_v2.md",
+        explanation="candidate only",
+        model_id="rules",
+        pipeline_id="other-pipeline",
+        provider_id="test",
+        provider_revision="rev",
+        confidence=0.8,
+        uncertainty=(),
+        generation_id="gen_1",
+    )
+
+    with pytest.raises(ReasoningValidationError, match="proposal pipeline_id"):
+        reason(
+            _request(
+                _result(_hit(old)),
+                policy=ReasoningPolicy(name="proposal_assisted"),
+                graph=graph,
+                proposals=(proposal,),
+            )
+        )
 
 
 def test_reasoning_rejects_malformed_provider_response() -> None:

@@ -7,6 +7,7 @@ import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from recall._env import load_dotenv
 from recall.calibration import Calibration, load_for
@@ -27,6 +28,9 @@ from recall.store import (
 )
 from recall.trust import terminal_safe, trusted_search
 from recall.types import TrustedResult
+
+if TYPE_CHECKING:
+    from recall.reasoning import ReasoningResponse
 
 # `recall setup` writes its answers to .env, so the file has to be read BEFORE the DSN
 # defaults below are computed from os.environ. Without this the wizard appears to succeed
@@ -273,7 +277,7 @@ def _refuse_untrusted_reasoning_inspection(trust_state: str, policy: "TrustPolic
         )
 
 
-def _reasoning_trace_export(response) -> dict[str, object]:
+def _reasoning_trace_export(response: "ReasoningResponse") -> dict[str, object]:
     trace = response.to_dict()["reasoning_trace"]
     if trace is None:
         reason = (
@@ -1085,10 +1089,12 @@ def main(argv: list[str] | None = None) -> None:
                 print(projection.model_dump_json(indent=2))
                 return
             if args.reasoning_cmd == "proposals":
-                proposals = reasoning_proposals(store)
-                trust_state = "trusted" if proposals.generation_id != "legacy" else "degraded"
+                proposal_result = reasoning_proposals(store)
+                trust_state = (
+                    "trusted" if proposal_result.generation_id != "legacy" else "degraded"
+                )
                 _refuse_untrusted_reasoning_inspection(trust_state, _reasoning_policy)
-                print(proposals.model_dump_json(indent=2))
+                print(proposal_result.model_dump_json(indent=2))
                 return
 
             if args.reasoning_cmd in {"query", "trace"}:
