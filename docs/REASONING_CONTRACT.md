@@ -10,6 +10,10 @@ RE-call remains a retrieval system first. The planned reasoning layer may assemb
 relationships across retrieved memories, but it must preserve the existing retrieval, trust,
 evidence, generation, calibration, and MCP contracts.
 
+Current release posture is documented in
+[`docs/REASONING_RELEASE_NOTES.md`](REASONING_RELEASE_NOTES.md): reasoning is experimental, opt in,
+provider neutral by default, citation constrained, and not a general reasoning claim.
+
 The reasoning layer will be provider neutral. Typed Python APIs are the primary interface. MCP and
 CLI integrations consume those APIs and must not define separate semantics.
 

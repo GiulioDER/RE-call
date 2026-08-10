@@ -282,7 +282,8 @@ def test_merge_only_rebuilds_the_artifact_and_its_aggregate_without_scoring(
     # schema-identical to a normally-produced artifact, plus the salvage markers
     assert set(payload) == {
         "arm", "model", "config", "conversations", "questions", "skipped_questions",
-        "usage", "aggregate", "outcomes", "salvaged", "salvage",
+        "usage", "provider_metadata", "cost_claims", "aggregate", "outcomes", "salvaged",
+        "salvage",
     }
     assert payload["arm"] == "recall"
     assert payload["conversations"] == 3
@@ -294,6 +295,8 @@ def test_merge_only_rebuilds_the_artifact_and_its_aggregate_without_scoring(
     assert payload["aggregate"] == aggregate([to_outcome(r) for r in records])
     assert payload["aggregate"]["answerable_accuracy"]["n"] == 3
     assert payload["aggregate"]["adversarial_abstention"]["n"] == 1
+    assert payload["provider_metadata"] == []
+    assert payload["cost_claims"] == []
     assert payload["salvage"]["records_rescored"] == 0
     assert payload["salvage"]["questions_still_unscored"] == []
     # nothing was ingested, so the config's per-arm block is empty rather than invented

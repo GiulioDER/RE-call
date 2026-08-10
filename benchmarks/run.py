@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.llm import Completer, OpenRouterLLM
+from benchmarks.artifact_contract import reject_unauditable_cost_claims
 from benchmarks.usage import install_openai_meter
 from benchmarks.usage import reset as reset_usage
 from benchmarks.usage import snapshot as usage_snapshot
@@ -357,6 +358,7 @@ def _results_payload(
     config: dict[str, Any],
     skipped: dict[str, Any],
     usage: dict[str, Any],
+    provider_metadata: list[dict[str, object]] | None = None,
 ) -> dict[str, Any]:
     """The publishable artifact: run identity, config, the aggregate, and every per-question record.
 
@@ -372,6 +374,8 @@ def _results_payload(
         "questions": len(outcomes),
         "skipped_questions": skipped,
         "usage": usage,
+        "provider_metadata": provider_metadata or [],
+        "cost_claims": [],
         "aggregate": aggregate_,
         "outcomes": [_outcome_record(o, text_by_id, gold_by_id) for o in outcomes],
     }
@@ -554,6 +558,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         "harness_generator_judge": harness_usage,
         "memory_layer": memory_usage,
     }
+    provider_metadata = [llm.provider_metadata().to_dict()]
     payload = _results_payload(
         args.arm,
         args.model,
@@ -565,6 +570,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         _run_config(args.arm, args.model, args.k, llm, system),
         skipped,
         usage_block,
+        provider_metadata,
     )
     payload["ablation_preflight"] = {
         "verdicts": ablation,
@@ -575,6 +581,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     path = args.out / f"{stamp}.json"
     # `aggregate` already sanitises its empty rate blocks to None, so this never emits the bare
     # `NaN` token that no non-Python JSON parser accepts.
+    reject_unauditable_cost_claims(payload)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(json.dumps(agg, indent=2))
     print(f"full results -> {path}")

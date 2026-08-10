@@ -34,6 +34,7 @@ from recall.reasoning_planner import (
     plan_multi_hop_evidence,
 )
 from recall.observability import METRICS
+from recall.provider_metadata import ProviderMetadata
 from recall.reasoning_proposals import InferenceProposal, ProposalProtocolReport, ProviderFailure
 from recall.types import TrustedResult
 from recall.trust import is_trusted
@@ -73,6 +74,12 @@ class ReasoningProposalProvider(Protocol):
 
 
 ReasoningAnswerProvider = Callable[[str, str], str | dict[str, object] | AnswerEnvelope]
+
+
+class ProviderMetadataSource(Protocol):
+    """Optional provider hook for best effort reasoning execution metadata."""
+
+    def provider_metadata(self) -> ProviderMetadata: ...
 
 
 @dataclass(frozen=True)
@@ -154,6 +161,7 @@ class ReasoningDiagnostics:
     generator_invoked: bool
     citations_normalized: bool
     provider_failures: tuple[ProviderFailure, ...] = ()
+    provider_metadata: tuple[ProviderMetadata, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -454,6 +462,10 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
             _provider_failure_from_dict(_mapping(item))
             for item in _sequence(diagnostics_payload.get("provider_failures", ()))
         ),
+        provider_metadata=tuple(
+            _provider_metadata_from_dict(_mapping(item))
+            for item in _sequence(diagnostics_payload.get("provider_metadata", ()))
+        ),
     )
     return ReasoningResponse(
         schema_version=_required_int(payload["schema_version"]),
@@ -710,8 +722,23 @@ def _response(
             generator_invoked=generator_invoked,
             citations_normalized=citations_normalized,
             provider_failures=tuple(provider_failures),
+            provider_metadata=_provider_metadata(request),
         ),
     )
+
+
+def _provider_metadata(request: ReasoningRequest) -> tuple[ProviderMetadata, ...]:
+    values: list[ProviderMetadata] = []
+    for provider in (
+        request.providers.proposal_provider,
+        request.providers.answer_provider,
+    ):
+        if provider is None:
+            continue
+        metadata = getattr(provider, "provider_metadata", None)
+        if callable(metadata):
+            values.append(metadata())
+    return tuple(values)
 
 
 def _record_reasoning_metrics(response: ReasoningResponse) -> None:
@@ -849,6 +876,13 @@ def _provider_failure_from_dict(payload: Mapping[str, object]) -> ProviderFailur
         provider_revision=str(payload["provider_revision"]),
         message=str(payload["message"]),
     )
+
+
+def _provider_metadata_from_dict(payload: Mapping[str, object]) -> ProviderMetadata:
+    try:
+        return ProviderMetadata.from_mapping(payload)
+    except ValueError as exc:
+        raise EvidenceValidationError(str(exc)) from exc
 
 
 def _budget_from_dict(payload: Mapping[str, object]) -> ReasoningBudget:
