@@ -19,6 +19,10 @@ PostgreSQL 16, 17, and 18 are supported with pgvector. The local Docker default 
 18 through `pgvector/pgvector:pg18`, while CI keeps migration coverage for 16 and 17 as older
 supported majors.
 
+The Compose file declares a named `recall_pgdata` volume for new PostgreSQL 18 containers. Existing
+local data created by a PostgreSQL 16 Compose container is not upgraded in place by changing the
+image tag; dump it from the old container and restore it into the PostgreSQL 18 container.
+
 `pgvector>=0.4` is required because `from pgvector import Vector` is a top-level export starting in
 0.4. On 0.3.x, importing `recall.store` fails.
 

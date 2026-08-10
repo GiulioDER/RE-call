@@ -6,13 +6,16 @@ import threading
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, TypeVar, cast
+from typing import Literal, Protocol, TypeVar
+from urllib.parse import urlsplit
 
 import anyio.to_thread
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
-from mcp.server.mcpserver.server import Context, MCPServer
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
 
@@ -115,9 +118,8 @@ def _read_int_env(name: str, default: int, *, min_value: int, max_value: int | N
 
 
 TRANSPORT: Transport = _read_transport()
-#: Bind address for the HTTP transports. Exposed as RECALL_* because the SDK's own FASTMCP_HOST /
-#: FASTMCP_PORT are read when the FastMCP object is constructed at import time, which makes them
-#: unreliable to set from a wrapper — and every other knob in this server is RECALL_*.
+#: Bind address for the HTTP transports. Exposed as RECALL_* so wrappers can set the same
+#: prefix used by every other knob in this server before `mcp.run` starts the listener.
 #: Default is loopback, NOT 0.0.0.0: binding every interface should be a decision someone makes,
 #: not something they inherit.
 HTTP_HOST = os.environ.get("RECALL_HOST", "127.0.0.1")
@@ -456,16 +458,24 @@ def build_auth(
     return RecallTokenVerifier(registry), settings, registry
 
 
+def _transport_security_settings(resource_url: str) -> TransportSecuritySettings:
+    parsed = urlsplit(resource_url)
+    if not parsed.scheme or not parsed.netloc:
+        raise AuthConfigError(
+            "RECALL_AUTH_RESOURCE_URL must be an absolute URL so HTTP transport security can "
+            "validate Host and Origin headers"
+        )
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    return TransportSecuritySettings(allowed_hosts=[parsed.netloc], allowed_origins=[origin])
+
+
 async def _to_thread(fn: Callable[[], _T]) -> _T:
     """Run a blocking tool body off the event loop.
 
-    FastMCP awaits an async tool and calls a sync one INLINE (`func_metadata.py`:
-    ``return await fn(...)`` vs ``return fn(...)``) — there is no thread offload. A sync tool that
-    embeds a query, makes two database round trips and maybe runs a cross-encoder therefore blocks
-    the whole loop for its duration: one request at a time, with no response to anything else —
-    not even a ping — until it finishes. `recall_index` blocks it for an entire corpus index.
+    MCPServer executes async tool bodies on the event loop, so each tool explicitly offloads its
+    blocking embedder, database, reranker and indexing work before it can monopolize the loop.
 
-    `anyio.to_thread` rather than `asyncio.to_thread` because FastMCP runs on AnyIO: this inherits
+    `anyio.to_thread` rather than `asyncio.to_thread` because the MCP SDK runs on AnyIO: this inherits
     its worker-thread limiter and cancellation scope instead of starting a second, unmanaged pool
     beside it.
     """
@@ -1162,8 +1172,24 @@ def main() -> None:
         )
     else:
         _log.info("starting stdio server", extra={"tenant": TENANT, "embedder": EMBEDDER_NAME})
-    kwargs = {"host": HTTP_HOST, "port": HTTP_PORT} if TRANSPORT in HTTP_TRANSPORTS else {}
-    mcp.run(transport=cast(Any, TRANSPORT), **kwargs)
+    if TRANSPORT == "stdio":
+        mcp.run()
+    elif TRANSPORT == "sse":
+        security = _transport_security_settings(os.environ["RECALL_AUTH_RESOURCE_URL"])
+        mcp.run(
+            transport="sse",
+            host=HTTP_HOST,
+            port=HTTP_PORT,
+            transport_security=security,
+        )
+    else:
+        security = _transport_security_settings(os.environ["RECALL_AUTH_RESOURCE_URL"])
+        mcp.run(
+            transport="streamable-http",
+            host=HTTP_HOST,
+            port=HTTP_PORT,
+            transport_security=security,
+        )
 
 
 if __name__ == "__main__":

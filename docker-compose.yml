@@ -5,6 +5,8 @@ services:
       POSTGRES_USER: recall
       POSTGRES_PASSWORD: recall
       POSTGRES_DB: recall
+    volumes:
+      - recall_pgdata:/var/lib/postgresql
     ports:
       - "5432:5432"
     healthcheck:
@@ -12,3 +14,6 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+
+volumes:
+  recall_pgdata:
