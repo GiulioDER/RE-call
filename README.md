@@ -66,23 +66,67 @@ maps result files to configurations.
 Run the built-in demo:
 
 ```bash
-python -m recall.cli demo
+RECALL_TRUST_MODE=development python -m recall.cli --table recall_quickstart demo
 ```
 
-It indexes the sample corpus, searches for the active rate-limit decision, and then asks a question
-the corpus cannot answer.
+PowerShell:
+
+```powershell
+$env:RECALL_TRUST_MODE = "development"
+python -m recall.cli --table recall_quickstart demo
+```
+
+Strict trust is the production default. The demo uses explicit development mode because it indexes
+the sample corpus directly, without first building a generation and publishing a certified
+calibration. It still shows the trust layer: superseded memories are marked as such, and an
+unanswerable query abstains.
 
 ```text
-[ok] query='how many requests per second can a client make?'
+[DEGRADED:INDEX_NOT_READY] query='how many requests per second can a client make?'
   ok          conf=1.00  cos=0.784  rate_limits_v2.md
-  superseded  conf=1.00  cos=0.806  rate_limits_v1.md  superseded_by=rate_limits_v2
+  superseded  conf=1.00  cos=0.806  rate_limits_v1.md -> use rate_limits_v2.md
 
-[ABSTAIN · gap] query='how do we handle penguins on mars?'
+[ABSTAIN GAP DEGRADED:INDEX_NOT_READY] query='how do we handle penguins on mars?'
   reason: no hit above the calibrated confidence threshold
 ```
 
 The stale memory is more similar to the query, but it is declared superseded and loses to the
-current memory. The unrelated query returns an abstention. That is the core behavior.
+current memory. The unrelated query returns an abstention. The degraded marker means this is a
+local demonstration threshold, not a production calibration.
+
+## How it works
+
+```mermaid
+flowchart TB
+    M(["memo · markdown + frontmatter<br/>supersedes · valid_from · valid_until"]) --> CH[chunk]
+    CH --> EW["embed · local, no API call"]
+    EW -. optional .-> SP[SPLADE encode]
+    EW --> DB
+    SP -. optional .-> DB
+
+    Q([query]) --> EQ["embed · query encoder"]
+    EQ --> DB[("PostgreSQL + pgvector<br/>vectors and full-text in one DB")]
+
+    DB --> DN["dense · pgvector cosine"]
+    DB --> SL["sparse · Postgres full-text"]
+    DB -. optional .-> LS["learned sparse · SPLADE"]
+
+    DN --> F[Reciprocal Rank Fusion]
+    SL --> F
+    LS -. optional .-> F
+
+    F -. optional .-> RR[cross-encoder rerank]
+    RR --> GP
+    F --> GP{{"gap check · calibrated threshold"}}
+    GP --> TR{"trust layer<br/>supersession · validity · confidence"}
+    CAL[/"calibration · fitted per embedder and corpus"/] --> TR
+    TR -. optional .-> EJ{{entailment judge}}
+    EJ --> OUT
+    TR --> OUT(["verdict + confidence + provenance<br/>or ABSTAIN, with a reason"])
+
+    classDef opt stroke:#d29922,color:#d29922,stroke-dasharray:5 4
+    class SP,LS,RR,EJ opt
+```
 
 ## How it works
 
@@ -140,9 +184,22 @@ The ordered SQL migration path is versioned now, pre-tenancy tables are migrated
 ```bash
 docker compose up -d --wait
 pip install "recall-rag[fastembed]"
-python -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall \
+python -m recall.cli --table recall_quickstart \
+  --migration-dsn postgresql://recall:recall@localhost:5432/recall \
   schema --dim 384 apply
-python -m recall.cli demo
+RECALL_TRUST_MODE=development python -m recall.cli --table recall_quickstart demo
+```
+
+PowerShell:
+
+```powershell
+docker compose up -d --wait
+pip install "recall-rag[fastembed]"
+python -m recall.cli --table recall_quickstart `
+  --migration-dsn postgresql://recall:recall@localhost:5432/recall `
+  schema --dim 384 apply
+$env:RECALL_TRUST_MODE = "development"
+python -m recall.cli --table recall_quickstart demo
 ```
 
 The distribution is `recall-rag`; the import is `recall`. The name `recall` on PyPI belongs to an
@@ -162,11 +219,24 @@ python -m recall.cli setup
 
 ## Use it
 
+For an ad hoc local markdown folder, create a table for that index and opt in to development trust
+mode until you have built and calibrated a production generation. Replace `./notes` with your memo
+folder.
+
 ```bash
-python -m recall.cli index ./notes
-python -m recall.cli search "what did we decide about caching?"
+python -m recall.cli --table recall_notes \
+  --migration-dsn postgresql://recall:recall@localhost:5432/recall \
+  schema --dim 384 apply
+RECALL_TRUST_MODE=development python -m recall.cli --table recall_notes index ./notes
+RECALL_TRUST_MODE=development python -m recall.cli --table recall_notes search "what did we decide about caching?"
 python -m recall.cli lint ./notes
 python -m recall.cli check ./notes/new-memo.md --strict
+```
+
+PowerShell uses the same commands, but set development mode first:
+
+```powershell
+$env:RECALL_TRUST_MODE = "development"
 ```
 
 For production generation mode, build, validate, calibrate, and promote an immutable generation.
@@ -203,6 +273,17 @@ Operational safety notes:
 
 ## MCP
 
+The MCP server uses the default `chunks` table. Apply that schema for the embedder the server will
+run, then point the client at `recall_mcp.server`.
+
+```bash
+python -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall \
+  schema --dim 384 apply
+```
+
+If an existing `chunks` table was created with another vector dimension, use a fresh database or an
+embedder with the matching dimension. The MCP stdio server does not take a `--table` flag.
+
 ```json
 {
   "mcpServers": {
@@ -211,14 +292,19 @@ Operational safety notes:
       "args": ["-m", "recall_mcp.server"],
       "env": {
         "RECALL_SERVING_DSN": "postgresql://...",
-        "RECALL_TENANT": "acme"
+        "RECALL_TENANT": "acme",
+        "RECALL_TRUST_MODE": "development"
       }
     }
   }
 }
 ```
 
-Tools: `recall_search`, `recall_index`, `recall_forget`, and `recall_stats`.
+Omit `RECALL_TRUST_MODE` in production after you have built, calibrated, and promoted a generation.
+Local uncalibrated MCP work needs the explicit development setting for the same reason the CLI demo
+does.
+
+Tools: `recall_search`, `recall_evidence`, `recall_index`, `recall_forget`, and `recall_stats`.
 
 Full guide: [docs/USING_WITH_CLAUDE.md](https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md).
 Authentication and tenancy: [docs/AUTH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/AUTH.md).
