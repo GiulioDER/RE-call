@@ -108,3 +108,15 @@ it cannot promote a stale hit into `ok`.
 Known limit: source and chunk graph projection uses chunk metadata and store supplied supersession
 candidate dates. If a caller bypasses the store and calls `build_reasoning_graph()` with only bare
 `Chunk` values, authored edge dates are unknown unless passed through `authored_edge_candidates`.
+
+## Session 3 Proposal Edges
+
+Session 3 fills the previously reserved candidate channel through `recall.reasoning_proposals`.
+`proposal_to_graph_edge()` converts only `supersedes` proposals into
+`inferred_candidate_supersedes` edges. Candidate edges keep proposal provenance, provider identity,
+confidence, uncertainty, and explanation in edge metadata. They do not enter
+`authored_supersession_map()` and are not consumed by trust evaluation.
+
+Chunk projection now carries chunk text inside node metadata so deterministic proposal rules can
+trace direct textual references to concrete evidence. Node and graph identities remain derived from
+the same stable identity fields, not from proposal output.
