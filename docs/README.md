@@ -1,8 +1,8 @@
 # RE-call documentation
 
 This directory separates the product documentation from the evaluation record. Start with the
-operating guides when you are deciding whether to use RE-call. Use the evidence and research
-sections when you want to audit a claim or reproduce a benchmark.
+operating guides when you are deciding whether to use RE-call. Use the evidence sections when you
+want to audit a claim or reproduce a benchmark.
 
 ## Product path
 
@@ -12,6 +12,8 @@ sections when you want to audit a claim or reproduce a benchmark.
 | [PRODUCTION.md](PRODUCTION.md) | Production posture, supported boundaries, and known limits. |
 | [CALIBRATION.md](CALIBRATION.md) | Calibration workflow and generation-aware serving. |
 | [MIGRATIONS.md](MIGRATIONS.md) | Migration roles, serving DSNs, and schema operations. |
+| [OPERATING_MODES.md](OPERATING_MODES.md) | Local, production, quality, hosted, and evaluation operating modes. |
+| [ENVIRONMENT.md](ENVIRONMENT.md) | Full environment variable reference behind the root template. |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | Dependency floors, ceilings, extras, and packaging rationale. |
 | [AUTH.md](AUTH.md) | Authentication, scopes, tenant isolation, and deployment limits. |
 | [SECURITY_MODEL.md](SECURITY_MODEL.md) | Detailed threat model behind the root security policy. |
