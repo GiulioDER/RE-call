@@ -265,6 +265,28 @@ def _cli_trust(
     return policy, calibration
 
 
+def _refuse_untrusted_reasoning_inspection(trust_state: str, policy: "TrustPolicy") -> None:
+    if trust_state != "trusted" and policy.strict:
+        raise SystemExit(
+            "reasoning inspection refused in strict mode: generation identity or calibration is "
+            "missing. Set RECALL_TRUST_MODE=development to inspect degraded artifacts."
+        )
+
+
+def _reasoning_trace_export(response) -> dict[str, object]:
+    trace = response.to_dict()["reasoning_trace"]
+    if trace is None:
+        reason = (
+            response.refusal_reason or response.trusted_evidence.failure_code or response.outcome
+        )
+        raise SystemExit(f"reasoning trace unavailable: {reason}")
+    assert isinstance(trace, dict)
+    initial = trace.get("initial_retrieval")
+    if isinstance(initial, dict):
+        initial.pop("reason", None)
+    return trace
+
+
 def _run_queries(
     store: PgVectorStore,
     embedder: Embedder,
@@ -329,7 +351,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("setup", help="run the first install wizard and write a local .env file").set_defaults(
+    sub.add_parser(
+        "setup", help="run the first install wizard and write a local .env file"
+    ).set_defaults(
         _opens_db=True  # the wizard connects when the operator accepts the calibrate prompt
     )
 
@@ -456,8 +480,54 @@ def main(argv: list[str] | None = None) -> None:
         "produces an empty bundle. Additive: the normal listing is printed either way.",
     )
 
-    sub.add_parser("demo", help="index corpus/ and run sample memory queries").set_defaults(_opens_db=True)
-    sub.add_parser("code", help="index recall's own source and run sample code queries").set_defaults(_opens_db=True)
+    p_reasoning = sub.add_parser(
+        "reasoning",
+        help="explicit opt-in reasoning projection, proposals, query, trace and audit tools",
+    )
+    p_reasoning.set_defaults(_opens_db=True)
+    reasoning_sub = p_reasoning.add_subparsers(dest="reasoning_cmd", required=True)
+    p_reasoning_projection = reasoning_sub.add_parser(
+        "projection", help="build and inspect the derived reasoning projection"
+    )
+    p_reasoning_projection.add_argument(
+        "--include-text",
+        action="store_true",
+        help="include evidence text in the projection summary input. Defaults off for privacy.",
+    )
+    reasoning_sub.add_parser("proposals", help="inspect deterministic inference proposals")
+    p_reasoning_query = reasoning_sub.add_parser("query", help="run a bounded reasoning query")
+    p_reasoning_query.add_argument("query")
+    p_reasoning_query.add_argument("-k", type=int, default=5)
+    p_reasoning_query.add_argument("--source")
+    p_reasoning_query.add_argument(
+        "--mode",
+        choices=["evidence_assembly", "proposal_assisted", "review_required", "retrieval_only"],
+        default="proposal_assisted",
+    )
+    p_reasoning_query.add_argument("--max-steps", type=int, default=12)
+    p_reasoning_query.add_argument("--max-graph-nodes", type=int, default=32)
+    p_reasoning_query.add_argument("--max-evidence-tokens", type=int, default=2048)
+    p_reasoning_trace = reasoning_sub.add_parser(
+        "trace", help="run a bounded query and export only the reasoning trace"
+    )
+    p_reasoning_trace.add_argument("query")
+    p_reasoning_trace.add_argument("--output", required=True)
+    p_reasoning_trace.add_argument("-k", type=int, default=5)
+    p_reasoning_trace.add_argument("--source")
+    p_reasoning_trace.add_argument("--max-steps", type=int, default=12)
+    p_reasoning_trace.add_argument("--max-graph-nodes", type=int, default=32)
+    p_reasoning_trace.add_argument("--max-evidence-tokens", type=int, default=2048)
+    p_reasoning_audit = reasoning_sub.add_parser(
+        "audit", help="run the reasoning integration audit"
+    )
+    p_reasoning_audit.add_argument("--query", default="reasoning audit sentinel")
+
+    sub.add_parser("demo", help="index corpus/ and run sample memory queries").set_defaults(
+        _opens_db=True
+    )
+    sub.add_parser(
+        "code", help="index recall's own source and run sample code queries"
+    ).set_defaults(_opens_db=True)
 
     p_lint = sub.add_parser(
         "lint",
@@ -520,7 +590,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_cal.set_defaults(_opens_db=True)
     p_cal.add_argument("queries", help="JSON list of {query, answerable, relevant_ids} entries")
-    p_cal.add_argument("--corpus", default=None, help="corpus dir (default: the built-in eval corpus)")
+    p_cal.add_argument(
+        "--corpus", default=None, help="corpus dir (default: the built-in eval corpus)"
+    )
     p_cal.add_argument("--out", default=None, help="output path (default: calibration.json)")
 
     p_calibration = sub.add_parser("calibration", help="inspect or transfer calibration artifacts")
@@ -982,7 +1054,80 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(str(exc)) from exc
         return
 
+    # Legacy process-global calibration is deliberately never auto-loaded here. See the longer
+    # note below, kept beside the search/calibrate path where the design question originated.
+    calibration = None
+
     embedder = _make_embedder(args.embedder)
+    if args.cmd == "reasoning":
+        from recall.generation_store import GenerationStore
+        from recall_mcp.service import (
+            reasoning_audit,
+            reasoning_projection,
+            reasoning_proposals,
+            reasoning_query,
+        )
+
+        if os.environ.get("RECALL_ENV", "development").lower() == "production":
+            reasoning_store_context: PgVectorStore = GenerationStore(
+                args.dsn, embedder.dim, tenant=args.tenant
+            )
+        else:
+            reasoning_store_context = PgVectorStore(
+                args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
+            )
+        with reasoning_store_context as store:
+            store.check_schema()
+            _reasoning_policy, _reasoning_calibration = _cli_trust(embedder, calibration)
+            if args.reasoning_cmd == "projection":
+                projection = reasoning_projection(store, include_text=args.include_text)
+                _refuse_untrusted_reasoning_inspection(projection.trust_state, _reasoning_policy)
+                print(projection.model_dump_json(indent=2))
+                return
+            if args.reasoning_cmd == "proposals":
+                proposals = reasoning_proposals(store)
+                trust_state = "trusted" if proposals.generation_id != "legacy" else "degraded"
+                _refuse_untrusted_reasoning_inspection(trust_state, _reasoning_policy)
+                print(proposals.model_dump_json(indent=2))
+                return
+
+            if args.reasoning_cmd in {"query", "trace"}:
+                response = reasoning_query(
+                    store,
+                    embedder,
+                    args.query,
+                    source=args.source,
+                    k=args.k,
+                    mode=getattr(args, "mode", "proposal_assisted"),
+                    max_steps=args.max_steps,
+                    max_graph_nodes=args.max_graph_nodes,
+                    max_evidence_tokens=args.max_evidence_tokens,
+                    policy=_reasoning_policy,
+                    calibration=_reasoning_calibration,
+                )
+                if args.reasoning_cmd == "trace":
+                    payload = _reasoning_trace_export(response)
+                    Path(args.output).write_text(
+                        json.dumps(payload, indent=2, default=str),
+                        encoding="utf-8",
+                    )
+                    print(f"trace: {args.output}")
+                    return
+                print(json.dumps(response.to_dict(), indent=2, default=str))
+                return
+            if args.reasoning_cmd == "audit":
+                print(
+                    reasoning_audit(
+                        store,
+                        embedder,
+                        query=args.query,
+                        policy=_reasoning_policy,
+                        calibration=_reasoning_calibration,
+                    ).model_dump_json(indent=2)
+                )
+                return
+            raise SystemExit(f"unknown reasoning subcommand: {args.reasoning_cmd}")
+
     if args.cmd == "calibrate":
         from recall.calibration import ENV_VAR, _resolve_path
         from recall.setup import calibrate_from_files
@@ -1007,14 +1152,20 @@ def main(argv: list[str] | None = None) -> None:
         # The interval, not just the point, because the bar is applied to its lower bound — a
         # reader who sees only "0.95" cannot reconstruct why a certification failed.
         sep_ci = "" if ci is None else f" [{ci[0]:.3f}, {ci[1]:.3f}]"
-        print(f"separability (AUC): {sep}{sep_ci} over {cal.n_answerable} answerable / "
-              f"{cal.n_unanswerable} unanswerable")
-        print(f"FCR at default 0.50: {measured.fcr_at_050:.2f} -> at calibrated: "
-              f"{measured.fcr_at_suggested:.2f}")
+        print(
+            f"separability (AUC): {sep}{sep_ci} over {cal.n_answerable} answerable / "
+            f"{cal.n_unanswerable} unanswerable"
+        )
+        print(
+            f"FCR at default 0.50: {measured.fcr_at_050:.2f} -> at calibrated: "
+            f"{measured.fcr_at_suggested:.2f}"
+        )
         print(f"saved: {path}")
         if args.out and Path(args.out).resolve() != _resolve_path(None).resolve():
-            print(f"note: searches load {_resolve_path(None)} by default — set "
-                  f"{ENV_VAR}={path} for this file to be used")
+            print(
+                f"note: searches load {_resolve_path(None)} by default — set "
+                f"{ENV_VAR}={path} for this file to be used"
+            )
 
         # Exit non-zero on a threshold the data does not support. The file is still written: the
         # artifact records `certified: false` and the reason, and refusing to write would destroy
@@ -1023,9 +1174,12 @@ def main(argv: list[str] | None = None) -> None:
         # answered correctly, and neither the API nor the file said anything was wrong.
         if cal.certified is False:
             print(f"\nNOT CERTIFIED: {cal.certification_reason}", file=sys.stderr)
-            print("Saved anyway — there is no better threshold for this data — but abstention on "
-                  "this corpus is not trustworthy. Do NOT read an abstention as evidence that the "
-                  "answer is absent.", file=sys.stderr)
+            print(
+                "Saved anyway — there is no better threshold for this data — but abstention on "
+                "this corpus is not trustworthy. Do NOT read an abstention as evidence that the "
+                "answer is absent.",
+                file=sys.stderr,
+            )
             raise SystemExit(1)
         if cal.certified is None:
             print(f"\nnot judged: {cal.certification_reason}", file=sys.stderr)
@@ -1080,9 +1234,7 @@ def main(argv: list[str] | None = None) -> None:
         # Keep a GenerationStore-typed handle alongside the widened one: the corpus probe below
         # exists only on the subclass, and narrowing here is what lets the type checker see it.
         gen_store: GenerationStore | None = (
-            GenerationStore(args.dsn, embedder.dim, tenant=args.tenant)
-            if generation_mode
-            else None
+            GenerationStore(args.dsn, embedder.dim, tenant=args.tenant) if generation_mode else None
         )
         forget_store: PgVectorStore = (
             gen_store
@@ -1260,5 +1412,7 @@ def main(argv: list[str] | None = None) -> None:
                 calibration,
                 _demo_judge,
             )
+
+
 if __name__ == "__main__":
     main()
