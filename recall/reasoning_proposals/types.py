@@ -43,6 +43,8 @@ def _freeze_value(value: Any) -> Any:
 
 @dataclass(frozen=True)
 class ProposalContext:
+    """Stable execution identity supplied to deterministic and model proposal providers."""
+
     tenant_id: str
     generation_id: str
     pipeline_id: str
@@ -53,6 +55,8 @@ class ProposalContext:
 
 @dataclass(frozen=True)
 class EvidenceClaim:
+    """A provider-neutral claim extracted from one evidence item."""
+
     id: str
     evidence_id: str
     text: str
@@ -68,6 +72,8 @@ class EvidenceClaim:
 
 @dataclass(frozen=True)
 class EntityResolution:
+    """A proposed canonical entity grouping for extracted evidence claims."""
+
     id: str
     evidence_ids: tuple[str, ...]
     canonical_entity: str
@@ -78,6 +84,8 @@ class EntityResolution:
 
 @dataclass(frozen=True)
 class InferenceProposal:
+    """A side effect free candidate relationship between two evidence-backed subjects."""
+
     id: str
     source_evidence_ids: tuple[str, ...]
     proposed_relation: ProposedRelation
@@ -103,6 +111,8 @@ class InferenceProposal:
 
 @dataclass(frozen=True)
 class ProviderFailure:
+    """A sanitized failure record for an optional model-backed proposal provider."""
+
     kind: ProviderFailureKind
     provider_id: str
     model_id: str
@@ -112,6 +122,8 @@ class ProviderFailure:
 
 @dataclass(frozen=True)
 class ProposalProtocolReport:
+    """Complete proposal output for one graph generation and pipeline identity."""
+
     schema_version: int
     generation_id: str
     pipeline_id: str
@@ -128,6 +140,8 @@ class ProposalProtocolReport:
 
 
 class ClaimExtractor(Protocol):
+    """Port for extracting claims from projected reasoning graph evidence."""
+
     def extract_claims(
         self, evidence: Sequence[ReasoningGraphNode], context: ProposalContext
     ) -> Sequence[EvidenceClaim]:
@@ -135,6 +149,8 @@ class ClaimExtractor(Protocol):
 
 
 class EntityResolver(Protocol):
+    """Port for clustering extracted claims into canonical entity candidates."""
+
     def resolve_entities(
         self, claims: Sequence[EvidenceClaim], context: ProposalContext
     ) -> Sequence[EntityResolution]:
@@ -142,6 +158,8 @@ class EntityResolver(Protocol):
 
 
 class RelationProposer(Protocol):
+    """Port for proposing relationships between claims and resolved entities."""
+
     def propose_relations(
         self,
         claims: Sequence[EvidenceClaim],
@@ -152,6 +170,8 @@ class RelationProposer(Protocol):
 
 
 class ContradictionDetector(Protocol):
+    """Port for proposing contradictions among extracted claims."""
+
     def detect_contradictions(
         self, claims: Sequence[EvidenceClaim], context: ProposalContext
     ) -> Sequence[InferenceProposal]:

@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from recall.calibration import Calibration
-from recall.reasoning_graph import build_reasoning_graph
+from recall.reasoning_graph import ReasoningGraphProjection, build_reasoning_graph
 from recall.reasoning_graph import EVIDENCE_TEXT_METADATA_KEY
 from recall.reasoning_proposals import (
     DETERMINISTIC_PROVIDER_ID,
@@ -59,7 +59,7 @@ def _chunk(
     return Chunk(cid, f"/corpus/{file}", text, metadata)
 
 
-def _graph():
+def _build_graph() -> ReasoningGraphProjection:
     return build_reasoning_graph(
         [
             _chunk(
@@ -102,9 +102,14 @@ def _graph():
     )
 
 
-def test_deterministic_rules_find_synthetic_missing_supersession_edges() -> None:
-    graph = _graph()
+@pytest.fixture
+def graph() -> ReasoningGraphProjection:
+    return _build_graph()
 
+
+def test_deterministic_rules_find_synthetic_missing_supersession_edges(
+    graph: ReasoningGraphProjection,
+) -> None:
     proposals = deterministic_inference_proposals(graph)
     metrics = proposal_precision_recall(
         proposals,
@@ -123,8 +128,9 @@ def test_deterministic_rules_find_synthetic_missing_supersession_edges() -> None
     }
 
 
-def test_every_proposal_is_traceable_to_projected_evidence() -> None:
-    graph = _graph()
+def test_every_proposal_is_traceable_to_projected_evidence(
+    graph: ReasoningGraphProjection,
+) -> None:
     evidence_ids = {node.id for node in graph.nodes}
 
     for proposal in deterministic_inference_proposals(graph):
@@ -160,11 +166,11 @@ def test_adversarial_corpus_text_remains_data_not_instructions() -> None:
     )
 
 
-def test_proposals_are_reproducible_for_provider_revision_and_generation() -> None:
-    graph = _graph()
-
+def test_proposals_are_reproducible_for_provider_revision_and_generation(
+    graph: ReasoningGraphProjection,
+) -> None:
     first = proposal_report(graph)
-    second = proposal_report(_graph())
+    second = proposal_report(_build_graph())
 
     assert [proposal.id for proposal in first.proposals] == [
         proposal.id for proposal in second.proposals
@@ -230,8 +236,9 @@ class _Provider:
         return self.output
 
 
-def test_model_provider_accepts_typed_output_and_conflicting_results_require_review() -> None:
-    graph = _graph()
+def test_model_provider_accepts_typed_output_and_conflicting_results_require_review(
+    graph: ReasoningGraphProjection,
+) -> None:
     evidence = tuple(node.id for node in graph.nodes[:2])
     provider = _Provider(
         [
@@ -259,8 +266,9 @@ def test_model_provider_accepts_typed_output_and_conflicting_results_require_rev
     assert model_proposals[0].uncertainty == ("conflicts with deterministic candidates",)
 
 
-def test_rejected_model_proposals_are_recorded_not_silently_dropped() -> None:
-    graph = _graph()
+def test_rejected_model_proposals_are_recorded_not_silently_dropped(
+    graph: ReasoningGraphProjection,
+) -> None:
     evidence = (graph.nodes[0].id,)
     provider = _Provider(
         [
@@ -337,16 +345,18 @@ def test_rejected_model_proposals_are_recorded_not_silently_dropped() -> None:
         (RuntimeError("boom"), "provider_error"),
     ],
 )
-def test_provider_failure_matrix(output: Any, kind: str) -> None:
-    graph = _graph()
+def test_provider_failure_matrix(
+    graph: ReasoningGraphProjection, output: Any, kind: str
+) -> None:
     report = proposal_report(graph, model_provider=_Provider(output))
 
     assert report.failure_matrix[kind] == 1
     assert report.proposals
 
 
-def test_provider_typed_output_is_validated_against_generation() -> None:
-    graph = _graph()
+def test_provider_typed_output_is_validated_against_generation(
+    graph: ReasoningGraphProjection,
+) -> None:
     bad = InferenceProposal(
         id="model_bad",
         source_evidence_ids=(graph.nodes[0].id,),
@@ -368,8 +378,9 @@ def test_provider_typed_output_is_validated_against_generation() -> None:
     assert report.failure_matrix["malformed_output"] == 1
 
 
-def test_provider_typed_output_is_validated_against_provider_identity() -> None:
-    graph = _graph()
+def test_provider_typed_output_is_validated_against_provider_identity(
+    graph: ReasoningGraphProjection,
+) -> None:
     provider_context = ProposalContext(
         tenant_id=graph.tenant_id,
         generation_id=graph.generation_id,
@@ -400,8 +411,9 @@ def test_provider_typed_output_is_validated_against_provider_identity() -> None:
     assert all(proposal.provider_id != "wrong.provider" for proposal in report.proposals)
 
 
-def test_provider_batch_is_atomic_on_malformed_later_output() -> None:
-    graph = _graph()
+def test_provider_batch_is_atomic_on_malformed_later_output(
+    graph: ReasoningGraphProjection,
+) -> None:
     provider = _Provider(
         [
             {
@@ -423,8 +435,9 @@ def test_provider_batch_is_atomic_on_malformed_later_output() -> None:
     assert all(proposal.provider_id != "test.provider" for proposal in report.proposals)
 
 
-def test_provider_duplicate_ids_are_malformed_not_silent_overwrites() -> None:
-    graph = _graph()
+def test_provider_duplicate_ids_are_malformed_not_silent_overwrites(
+    graph: ReasoningGraphProjection,
+) -> None:
     deterministic = deterministic_inference_proposals(graph)[0]
     spoof = InferenceProposal(
         id=deterministic.id,
@@ -449,8 +462,7 @@ def test_provider_duplicate_ids_are_malformed_not_silent_overwrites() -> None:
     assert report.failure_matrix["malformed_output"] == 1
 
 
-def test_provider_rejects_non_finite_confidence() -> None:
-    graph = _graph()
+def test_provider_rejects_non_finite_confidence(graph: ReasoningGraphProjection) -> None:
     provider = _Provider(
         [
             {
