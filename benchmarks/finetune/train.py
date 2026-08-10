@@ -12,10 +12,10 @@ its pool to the core count regardless of `nice`, which lowers priority without l
 cores are grabbed: on a 12-core host this took 629% CPU across 63 threads and drove load to ~20,
 next to unrelated production processes. It also got *slower* as it thrashed. Prefer:
 
-    OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 python finetune/train.py ...
-    python finetune/train.py                                       # null (rich corpus) -> delta ~ +0.00
-    python finetune/train.py --corpus finetune/confusable_corpus \
-        --queries finetune/confusable_queries.json --epochs 10     # positive (opaque-jargon corpus)
+    OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 python benchmarks/finetune/train.py ...
+    python benchmarks/finetune/train.py                                       # null (rich corpus) -> delta ~ +0.00
+    python benchmarks/finetune/train.py --corpus benchmarks/finetune/confusable_corpus \
+        --queries benchmarks/finetune/confusable_queries.json --epochs 10     # positive (opaque-jargon corpus)
 """
 from __future__ import annotations
 
@@ -24,12 +24,14 @@ import json
 import random
 from pathlib import Path
 from statistics import mean
+from typing import Any
 
 from recall.eval.metrics import mrr, ndcg_at_k
 from recall.index import chunk_text
 
 ROOT = Path(__file__).resolve().parent
-CORPUS = ROOT.parent / "recall" / "eval" / "corpus"
+REPO = ROOT.parents[1]
+CORPUS = REPO / "recall" / "eval" / "corpus"
 HARD = ROOT / "hard_queries.json"
 OUT = ROOT / "model"
 
@@ -47,7 +49,9 @@ def load_chunks(corpus_dir: Path) -> tuple[list[str], list[str]]:
     return ids, texts
 
 
-def evaluate(model, ids: list[str], texts: list[str], queries: list[dict]) -> tuple[float, float]:
+def evaluate(
+    model: Any, ids: list[str], texts: list[str], queries: list[dict[str, Any]]
+) -> tuple[float, float]:
     import numpy as np
 
     chunk_emb = model.encode(texts, normalize_embeddings=True)

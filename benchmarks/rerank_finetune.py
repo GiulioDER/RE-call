@@ -154,7 +154,7 @@ def main() -> int:
     ap.add_argument("--max-length", type=int, default=192, help="pairs are p95=93 tokens")
     ap.add_argument("--smoke", action="store_true", help="tiny run to validate plumbing")
     ap.add_argument("--out", type=Path, default=REPO / "results" / "rerank_finetune.json")
-    ap.add_argument("--model-out", type=Path, default=REPO / "finetune" / "model_rerank")
+    ap.add_argument("--model-out", type=Path, default=REPO / "benchmarks" / "finetune" / "model_rerank")
     args = ap.parse_args()
 
     import torch
@@ -250,7 +250,7 @@ def main() -> int:
     )
     loss = BinaryCrossEntropyLoss(model)
     targs = CrossEncoderTrainingArguments(
-        output_dir=str(REPO / "finetune" / "_ce_run"),
+        output_dir=str(REPO / "benchmarks" / "finetune" / "_ce_run"),
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
         learning_rate=args.lr,

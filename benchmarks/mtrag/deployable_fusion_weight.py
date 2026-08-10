@@ -1,6 +1,6 @@
 """Does down-weighting the harmful variant rescue the DEPLOYABLE query fusion?
 
-Preregistration: `benchmarks/PREREGISTRATION-deployable-fusion-weight.md`, frozen before this ran.
+Preregistration: `benchmarks/archive/preregistrations/PREREGISTRATION-deployable-fusion-weight.md`, frozen before this ran.
 
 Prior work (searched 2026-08-06, `docs_search(source_type="memory")`, no gap warning):
   - [[project-recall-mtrag-retrieval-coverage-bottleneck-2026-08-06]] -- do NOT build an LLM

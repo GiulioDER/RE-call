@@ -2,7 +2,7 @@
 
 These are the scripts that produced [`results/mtrag/PROBE_VERDICT.md`](../../../results/mtrag/PROBE_VERDICT.md),
 committed so the verdict can be re-derived rather than trusted. Pre-registration:
-[`benchmarks/PREREGISTRATION-mtrag-rbalg.md`](../../PREREGISTRATION-mtrag-rbalg.md).
+[`benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-rbalg.md`](../../archive/preregistrations/PREREGISTRATION-mtrag-rbalg.md).
 
 ## Input
 

@@ -4,7 +4,7 @@ Prior work: [[project-recall-abstention-bounded-domain-2026-07-24]] — six abst
 measured, all failed; this measures the axis they were measured on, not a seventh signal.
 
 **Written before the v3 arm finished, deliberately.** The analysis is part of the pre-registration
-(`benchmarks/PREREGISTRATION-ladder-v3.md`), not a choice made after seeing numbers. An analysis
+(`benchmarks/archive/preregistrations/PREREGISTRATION-ladder-v3.md`), not a choice made after seeing numbers. An analysis
 selected once the data is visible is a free parameter, and this project has already paid for one
 of those.
 

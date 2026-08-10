@@ -13,7 +13,7 @@ Prior work: none found on RB_alg / MTRAGEval generation / length calibration
 calibration answer verbosity benchmark", gap_warning false). Two adjacent hits:
 [[project-recall-token-f1-harness-offset-2026-07-29]] and
 [[project-recall-mtrag-symmetric-baseline-2026-08-04]]. Full search recorded in
-benchmarks/PREREGISTRATION-mtrag-rbalg.md.
+benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-rbalg.md.
 """
 
 import json

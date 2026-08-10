@@ -199,7 +199,7 @@ def test_two_legacy_embedders_with_different_names_do_not_share_entries() -> Non
             return [[0.0, 0.0] for _ in texts]
 
     a = legacy_embedding_profile(_Legacy("hashing-64"))
-    b = legacy_embedding_profile(_Legacy("st:finetune/model"))
+    b = legacy_embedding_profile(_Legacy("st:benchmarks/finetune/model"))
     assert cache_key(a, 2, "t") != cache_key(b, 2, "t")
 
 

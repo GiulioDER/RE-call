@@ -56,7 +56,7 @@ _BASIS_POINTS = 10_000
 
 @dataclass(frozen=True)
 class RingSpec:
-    """Ring widths, fixed in `benchmarks/PREREGISTRATION-ladder.md` before the builder ran.
+    """Ring widths, fixed in `benchmarks/archive/preregistrations/PREREGISTRATION-ladder.md` before the builder ran.
 
     A width is a count of NEIGHBOURS excised on top of gold, so width 0 is "gold only".
     """

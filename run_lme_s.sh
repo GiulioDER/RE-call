@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Build + score the merged-S LongMemEval arm, crash-tolerantly.
 #
+# This remains at repository root because the historical run anchored its output paths beside
+# `s_out/`; moving it would make old reproduction commands ambiguous. It is benchmark
+# infrastructure, not part of the supported library API.
+#
 # Two facts about this host shape the script, both measured rather than assumed:
 #
 #   1. Postgres died once mid-index (backend exit 2, 2026-07-26 10:52 UTC) with the host at

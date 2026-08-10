@@ -5,12 +5,12 @@ knows.** On a semantically-rich corpus a modern small embedder leaves *zero* hea
 opaque-jargon corpus, fine-tuning lifts retrieval by ~79%. This is a controlled demonstration of
 both, with the same pipeline, so the difference is the corpus — not the method.
 
-> Reproduce everything below with `finetune/train.py` (see the commands at the end). Weights are
+> Reproduce everything below with `benchmarks/finetune/train.py` (see the commands at the end). Weights are
 > gitignored; the numbers are committed.
 
 ## Method
 
-`finetune/train.py` domain-adapts **`all-MiniLM-L6-v2`** for retrieval:
+`benchmarks/finetune/train.py` domain-adapts **`all-MiniLM-L6-v2`** for retrieval:
 
 - **Loss**: `OnlineContrastiveLoss` over `(query, gold-chunk)` positives and `(query, wrong-chunk)`
   hard negatives (3 per query).
@@ -101,13 +101,13 @@ the gap; don't fine-tune on faith.**
 pip install -e ".[finetune]"
 
 # Result 1 — the null (rich corpus)            -> Δ ≈ +0.00
-python finetune/train.py
+python benchmarks/finetune/train.py
 
 # Result 2 — the positive (opaque-jargon corpus) -> base MRR ~0.31, fine-tuned ~0.55
-python finetune/train.py \
-  --corpus finetune/confusable_corpus \
-  --queries finetune/confusable_queries.json \
-  --epochs 10 --out finetune/model_confusable
+python benchmarks/finetune/train.py \
+  --corpus benchmarks/finetune/confusable_corpus \
+  --queries benchmarks/finetune/confusable_queries.json \
+  --epochs 10 --out benchmarks/finetune/model_confusable
 ```
 
 — See the [engineering writeup](WRITEUP.md) · the retrieval [evaluation findings](../results/FINDINGS.md)

@@ -135,7 +135,7 @@ answerable/unanswerable distributions overlap, so no threshold separates them.
 
 ### Finding 3 — domain fine-tuning: an honest null result (see also Finding 4)
 
-`finetune/train.py` fine-tunes `all-MiniLM-L6-v2` (OnlineContrastiveLoss on query/gold-chunk
+`benchmarks/finetune/train.py` fine-tunes `all-MiniLM-L6-v2` (OnlineContrastiveLoss on query/gold-chunk
 positives and query/wrong-chunk negatives, recipe adapted from a production trainer), then measures
 on a **held-out** set of differently-phrased queries:
 

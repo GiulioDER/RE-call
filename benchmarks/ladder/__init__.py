@@ -3,6 +3,6 @@
 Prior work: [[project-recall-abstention-bounded-domain-2026-07-24]] — six abstention signals
 measured, all failed; this measures the axis they were measured on, not a seventh signal.
 
-Pre-registration: benchmarks/PREREGISTRATION-ladder.md
+Pre-registration: benchmarks/archive/preregistrations/PREREGISTRATION-ladder.md
 """
 from __future__ import annotations

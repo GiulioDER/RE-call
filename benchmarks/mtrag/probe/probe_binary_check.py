@@ -14,7 +14,7 @@ Two things, both of which a pre-registration then rests on:
 
 Prior work: the abstention design is governed by [[project-recall-abstention-bounded-domain-2026-07-24]]
 -- six cheap signals already measured and CLOSED, two named dead ends. Full searches recorded in
-benchmarks/PREREGISTRATION-mtrag-rbalg.md and benchmarks/PREREGISTRATION-mtrag-abstention.md.
+benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-rbalg.md and benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-abstention.md.
 
 Exits non-zero if either premise fails OR if the population is empty, because a check that cannot
 tell "nothing was wrong" from "nothing was examined" is not a check.

@@ -14,7 +14,7 @@ of this file conflated them:
 * the IN-SAMPLE optimum over the actual score breakpoints, which is an upper bound and is
   labelled as such: it is chosen on the same samples it is scored on.
 
-Payoffs are PREREGISTERED (benchmarks/PREREGISTRATION-mtrag-abstention.md sec.3) and not
+Payoffs are PREREGISTERED (benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-abstention.md sec.3) and not
 re-derived: correct abstention 1.0, false abstention 0.0, answering an unanswerable 0.0, answering
 pays a = 0.4199. That constant is measured over ANSWERABLE + PARTIAL, so the population here MUST
 be the same one -- an earlier draft used the constant while dropping the 68 PARTIAL tasks.
@@ -24,7 +24,7 @@ making it payoff-neutral.
 Prior work: governed by [[project-recall-abstention-bounded-domain-2026-07-24]] (six cheap signals
 measured and CLOSED, two named dead ends) and [[project-recall-threshold-embedder-fragile-2026-07-28]]
 (the 0.50 floor is inert on bge-small). Full search recorded in
-benchmarks/PREREGISTRATION-mtrag-abstention.md.
+benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-abstention.md.
 """
 
 from __future__ import annotations

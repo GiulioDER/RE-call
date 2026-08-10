@@ -9,6 +9,7 @@ want to audit a claim or reproduce a benchmark.
 | Document | Use it for |
 |---|---|
 | [../README.md](../README.md) | Product overview, five-minute proof, setup, and integrations. |
+| [API.md](API.md) | Supported Python, CLI, and MCP surface. |
 | [PRODUCTION.md](PRODUCTION.md) | Production posture, supported boundaries, and known limits. |
 | [CALIBRATION.md](CALIBRATION.md) | Calibration workflow and generation-aware serving. |
 | [MIGRATIONS.md](MIGRATIONS.md) | Migration roles, serving DSNs, and schema operations. |
@@ -47,16 +48,6 @@ want to audit a claim or reproduce a benchmark.
 | [ENTAILMENT_SUPERSESSION_STUDY.md](ENTAILMENT_SUPERSESSION_STUDY.md) | Near-miss abstention, entailment, and write-time supersession. |
 | [REFERENCE_TIME_DESIGN.md](REFERENCE_TIME_DESIGN.md) | Reference-time handling for temporal retrieval. |
 | [their-harness-parity.md](their-harness-parity.md) | Running RE-call inside Mem0's benchmark harness. |
-
-## Draft papers and generated artifacts
-
-The MTRAG draft files are research artifacts, not product documentation:
-
-| File | Status |
-|---|---|
-| [MTRAG_ARXIV_DRAFT.md](MTRAG_ARXIV_DRAFT.md) | Draft manuscript. |
-| [MTRAG_ARXIV_PAPER.md](MTRAG_ARXIV_PAPER.md) | Paper text. |
-| [MTRAG_ARXIV_PAPER.tex](MTRAG_ARXIV_PAPER.tex) | LaTeX source. |
 
 Generated binaries and local render outputs should stay out of narrative documentation unless a
 document explicitly depends on them.
