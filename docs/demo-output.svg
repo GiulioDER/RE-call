@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="310" viewBox="0 0 960 310" role="img" aria-labelledby="title desc">
+  <title id="title">RE-call demo output</title>
+  <desc id="desc">Terminal capture showing trusted search, supersession, and abstention output.</desc>
+  <rect width="960" height="310" rx="8" fill="#0f172a"/>
+  <rect x="0" y="0" width="960" height="36" rx="8" fill="#111827"/>
+  <circle cx="22" cy="18" r="5" fill="#ef4444"/>
+  <circle cx="40" cy="18" r="5" fill="#f59e0b"/>
+  <circle cx="58" cy="18" r="5" fill="#10b981"/>
+  <text x="80" y="22" font-family="Consolas, Menlo, monospace" font-size="13" fill="#cbd5e1">python -m recall.cli demo</text>
+  <text x="24" y="72" font-family="Consolas, Menlo, monospace" font-size="18" fill="#e5e7eb">[DEGRADED:INDEX_NOT_READY] query='how many requests per second can a client make?'</text>
+  <text x="48" y="110" font-family="Consolas, Menlo, monospace" font-size="18" fill="#86efac">ok</text>
+  <text x="170" y="110" font-family="Consolas, Menlo, monospace" font-size="18" fill="#e5e7eb">conf=1.00  cos=0.784  rate_limits_v2.md</text>
+  <text x="48" y="148" font-family="Consolas, Menlo, monospace" font-size="18" fill="#fbbf24">superseded</text>
+  <text x="170" y="148" font-family="Consolas, Menlo, monospace" font-size="18" fill="#e5e7eb">conf=1.00  cos=0.806  rate_limits_v1.md -&gt; use rate_limits_v2.md</text>
+  <text x="24" y="218" font-family="Consolas, Menlo, monospace" font-size="18" fill="#e5e7eb">[ABSTAIN GAP DEGRADED:INDEX_NOT_READY] query='how do we handle penguins on mars?'</text>
+  <text x="48" y="256" font-family="Consolas, Menlo, monospace" font-size="18" fill="#93c5fd">reason: no hit above the calibrated confidence threshold</text>
+</svg>

@@ -1,6 +1,6 @@
 """MTRAGEval RB_alg probe -- STEP 1, the invariant.
 
-Pre-registration: RE-call/benchmarks/PREREGISTRATION-mtrag-rbalg.md sec.1
+Pre-registration: RE-call/benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-rbalg.md sec.1
 
 Recompute the per-model Task C harmonic mean from IBM's published RAG.json and check it
 reproduces the published MTRAG table to within +/-0.01. If it does not, the apparatus is
@@ -11,7 +11,7 @@ Prior work: none found on RB_alg / MTRAGEval generation / length calibration
 calibration answer verbosity benchmark", gap_warning false). Two adjacent hits:
 [[project-recall-token-f1-harness-offset-2026-07-29]] and
 [[project-recall-mtrag-symmetric-baseline-2026-08-04]]. Full search recorded in
-benchmarks/PREREGISTRATION-mtrag-rbalg.md.
+benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-rbalg.md.
 """
 
 import json

@@ -28,7 +28,7 @@
   &nbsp;·&nbsp;
   <a href="#documentation">Documentation</a>
   &nbsp;·&nbsp;
-  <a href="#benchmarks">Benchmarks</a>
+  <a href="#evidence">Evidence</a>
 </p>
 
 ## Why RE-call
@@ -62,16 +62,16 @@ Measured strengths:
 | External abstention check | On MTRAG, IBM's multi-turn RAG benchmark, RE-call is second on correct refusals among the recomputed systems and stays near the top answer-quality rows. See [docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md). |
 | Validity beats nearest-match retrieval | The stale rate-limit memory is more similar to the query in the demo, but declared supersession makes the current memory win. The larger trust study is in [results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md). |
 | Stronger than a plain vector store | Returned hits carry verdicts, confidence, provenance, tenant scope, and validity metadata. Plain top-k retrieval returns neighbors and leaves trust to the caller. |
-| Honest about limits | The published results include negative findings on near-miss abstention, corpus sensitivity, and benchmark scope. Those limits are first-class documentation, not footnotes. |
+| Clear limits | The evidence states where RE-call works, where it does not, and when a corpus-specific measurement is required. |
 
-The README is the product overview. For diligence, start with
+The README is the product overview. For evidence behind these claims, start with
 [docs/EVIDENCE.md](https://github.com/GiulioDER/RE-call/blob/master/docs/EVIDENCE.md), then use
 [results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) for
 the full interpretation and limits.
 
 ## Five-minute proof
 
-Run the bundled demo to see the product behavior before reading the benchmark archive:
+Run the bundled demo to see the product behavior before reading the evidence docs:
 
 ```bash
 docker compose up -d --wait
@@ -83,6 +83,8 @@ RECALL_TRUST_MODE=development python -m recall.cli --table recall_quickstart dem
 ```
 
 Expected shape:
+
+![RE-call demo output](docs/demo-output.svg)
 
 ```text
 [DEGRADED:INDEX_NOT_READY] query='how many requests per second can a client make?'
@@ -96,6 +98,8 @@ Expected shape:
 The stale memory is more similar to the query, but it is declared superseded and loses to the
 current memory. The unrelated query returns an abstention. The degraded marker is intentional here:
 this is a sample-corpus demonstration, not a certified production calibration.
+
+Runnable examples: [examples/README.md](https://github.com/GiulioDER/RE-call/blob/master/examples/README.md).
 
 ## Quickstart
 
@@ -232,6 +236,8 @@ with GenerationStore(DSN, dim=emb.dim, tenant="acme", pool_size=8) as store:
 Set `RECALL_SERVING_DSN` for application traffic and `RECALL_MIGRATION_DSN` only in the migration
 job. `RECALL_DSN` remains a deprecated development fallback for the serving DSN. See
 [docs/MIGRATIONS.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MIGRATIONS.md).
+Configuration modes are summarized in
+[docs/OPERATING_MODES.md](https://github.com/GiulioDER/RE-call/blob/master/docs/OPERATING_MODES.md).
 
 Operational safety notes:
 
@@ -305,15 +311,17 @@ Core documents:
 | Document | Purpose |
 |---|---|
 | [docs/WRITEUP.md](https://github.com/GiulioDER/RE-call/blob/master/docs/WRITEUP.md) | Architecture and design rationale. |
+| [docs/API.md](https://github.com/GiulioDER/RE-call/blob/master/docs/API.md) | Supported Python, CLI, and MCP surface. |
 | [docs/AUTH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/AUTH.md) | Authentication, scopes, and tenant isolation. |
 | [docs/MIGRATIONS.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MIGRATIONS.md) | Migration roles, serving DSNs, and schema operations. |
+| [docs/OPERATING_MODES.md](https://github.com/GiulioDER/RE-call/blob/master/docs/OPERATING_MODES.md) | Local, production, quality, hosted, and evaluation deployment modes. |
 | [docs/CALIBRATION.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md) | Calibration workflow and generation-aware serving. |
 | [docs/CASE_STUDY.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CASE_STUDY.md) | Where the system came from and what is public versus private. |
 | [docs/RESEARCH_PROTOCOL.md](https://github.com/GiulioDER/RE-call/blob/master/docs/RESEARCH_PROTOCOL.md) | How benchmark runs are controlled and audited. |
 
 Release notes and upgrade warnings live in [CHANGELOG.md](https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md).
 
-## Benchmarks
+## Evidence
 
 Start with [benchmarks/README.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/README.md).
 
@@ -336,7 +344,14 @@ Important benchmark documents:
 | [results/ARTIFACTS.md](https://github.com/GiulioDER/RE-call/blob/master/results/ARTIFACTS.md) | Checksum and artifact map for readers auditing a claim. |
 | [docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md) | MTRAG setup, results, and scope boundaries. |
 | [benchmarks/REVIEW.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md) | Adversarial review of the LOCOMO comparison. |
-| [benchmarks/PREREGISTRATION.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/PREREGISTRATION.md) | Pre-registered rules for the memory benchmark. |
+| [benchmarks/PREREGISTRATION.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/PREREGISTRATION.md) | Pre-registered rules for the main memory benchmark. |
+| [benchmarks/archive/preregistrations/README.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/archive/preregistrations/README.md) | Archived preregistrations for follow-up benchmark arms. |
+
+## When not to use RE-call
+
+Use something else if you need managed hosting, per-chunk ACLs, graph reasoning, automatic truth
+extraction from prose, or a memory system that rewrites facts for you. RE-call is a retrieval
+library over your PostgreSQL database, not a hosted memory platform.
 
 ## What this does not do
 

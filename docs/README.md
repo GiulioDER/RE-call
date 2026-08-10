@@ -1,19 +1,23 @@
 # RE-call documentation
 
 This directory separates the product documentation from the evaluation record. Start with the
-operating guides when you are deciding whether to use RE-call. Use the evidence and research
-sections when you want to audit a claim or reproduce a benchmark.
+operating guides when you are deciding whether to use RE-call. Use the evidence sections when you
+want to audit a claim or reproduce a benchmark.
 
 ## Product path
 
 | Document | Use it for |
 |---|---|
 | [../README.md](../README.md) | Product overview, five-minute proof, setup, and integrations. |
+| [API.md](API.md) | Supported Python, CLI, and MCP surface. |
 | [PRODUCTION.md](PRODUCTION.md) | Production posture, supported boundaries, and known limits. |
 | [CALIBRATION.md](CALIBRATION.md) | Calibration workflow and generation-aware serving. |
 | [MIGRATIONS.md](MIGRATIONS.md) | Migration roles, serving DSNs, and schema operations. |
+| [OPERATING_MODES.md](OPERATING_MODES.md) | Local, production, quality, hosted, and evaluation operating modes. |
+| [ENVIRONMENT.md](ENVIRONMENT.md) | Full environment variable reference behind the root template. |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | Dependency floors, ceilings, extras, and packaging rationale. |
 | [AUTH.md](AUTH.md) | Authentication, scopes, tenant isolation, and deployment limits. |
+| [SECURITY_MODEL.md](SECURITY_MODEL.md) | Detailed threat model behind the root security policy. |
 | [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) | MCP setup and tool behavior. |
 
 ## Architecture
@@ -39,20 +43,11 @@ sections when you want to audit a claim or reproduce a benchmark.
 | Document | Scope |
 |---|---|
 | [RESEARCH_PROTOCOL.md](RESEARCH_PROTOCOL.md) | Rules for benchmark runs, artifact retention, and post-run review. |
+| [archive/CHANGELOG_FULL.md](archive/CHANGELOG_FULL.md) | Full historical changelog. |
 | [RAG_TRAINING_STUDY.md](RAG_TRAINING_STUDY.md) | When fine-tuning embeddings helps, and when it does not. |
 | [ENTAILMENT_SUPERSESSION_STUDY.md](ENTAILMENT_SUPERSESSION_STUDY.md) | Near-miss abstention, entailment, and write-time supersession. |
 | [REFERENCE_TIME_DESIGN.md](REFERENCE_TIME_DESIGN.md) | Reference-time handling for temporal retrieval. |
 | [their-harness-parity.md](their-harness-parity.md) | Running RE-call inside Mem0's benchmark harness. |
-
-## Draft papers and generated artifacts
-
-The MTRAG draft files are research artifacts, not product documentation:
-
-| File | Status |
-|---|---|
-| [MTRAG_ARXIV_DRAFT.md](MTRAG_ARXIV_DRAFT.md) | Draft manuscript. |
-| [MTRAG_ARXIV_PAPER.md](MTRAG_ARXIV_PAPER.md) | Paper text. |
-| [MTRAG_ARXIV_PAPER.tex](MTRAG_ARXIV_PAPER.tex) | LaTeX source. |
 
 Generated binaries and local render outputs should stay out of narrative documentation unless a
 document explicitly depends on them.

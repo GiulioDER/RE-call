@@ -26,7 +26,7 @@ more. Those choices are explicit profiles and startup checks, not silent per-req
 | **Observability** | ✅ `logging` (text/JSON), counters and latency percentiles for abstention, verdicts, reconnects; surfaced through the MCP `recall_stats` tool | The library never attaches handlers — that is the host's job |
 | **Incremental indexing** | ✅ content-hash skip, bounded-memory batched writes, prunes files deleted from disk | 5,100 chunks / 1,120 files: full **7.4 s**, unchanged re-index **0.22 s** |
 | **Scale characteristics** | ✅ measured at **50,600 chunks**: recall@5 1.00 filtered and unfiltered, search p50/p95/p99 | Templated text; absolute retrieval quality is optimistic |
-| **Real-corpus operation** | ✅ 794 hand-written memos → 6,491 chunks, p50 **78 ms** (pre-fix, see `CHANGELOG.md` `latency_ms`) | Works at this size; see the retrieval row for how well |
+| **Real-corpus operation** | ✅ 794 hand-written memos → 6,491 chunks, p50 **78 ms** (pre-fix, see `archive/CHANGELOG_FULL.md` `latency_ms`) | Works at this size; see the retrieval row for how well |
 | **Retrieval quality, real questions** | ✅ **hit@5 0.705** [0.56, 0.82] on a public 746-doc corpus with the free local embedder · ⚠️ **0.348** on an idiosyncratic private one — see [the tables in EVIDENCE](EVIDENCE.md#retrieval-quality-it-depends-on-your-corpus-and-here-is-the-rule) | Measured on 110 hand-labelled questions per corpus, not on headings. Corpus vocabulary dominates: a cloud embedder is worth +0.28 on the hard corpus and +0.02 on the ordinary one |
 | **Data erasure** | ✅ `recall forget` / `recall_forget` permanently delete a source's chunks; previews by default, `--yes` to act | The right-to-erasure path — irreversible, so it refuses to act unattended without the flag |
 | **Abuse bounds** | ✅ `recall_index` refuses before embedding anything if a request exceeds `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` | A client-callable indexer with no cap is an unbounded spend on a cloud embedder |
@@ -103,9 +103,9 @@ Stated plainly, because the failure mode this library exists to prevent is confi
 
 ## Upgrading
 
-Full detail for every release is in
-[CHANGELOG.md](../CHANGELOG.md). Only the changes that
-can make something currently working start failing are listed here.
+Recent release detail is in [CHANGELOG.md](../CHANGELOG.md), and the full historical changelog is in
+[archive/CHANGELOG_FULL.md](archive/CHANGELOG_FULL.md). Only the changes that can make something
+currently working start failing are listed here.
 
 **→ 0.6.0 — your retrieval results will change on the same corpus and the same queries.** The first
 non-additive release since 0.5.1, because three defects each made retrieval return *less* than it

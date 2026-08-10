@@ -16,7 +16,8 @@ docs/superpowers/
 benchmarks/article.html
 benchmarks/ARTICLE_DRAFT.md
 benchmarks/PLAN-*.md
-finetune/model*/
+benchmarks/finetune/model*/
+benchmarks/finetune/_ce_run/
 calibration.json
 .claude/
 results/scale*/corpus/

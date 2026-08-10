@@ -15,12 +15,15 @@ Published result tables live in `results/`; benchmark code and protocols live he
 | [ladder/](ladder/) | Answerability ladder benchmark. |
 | [beam/](beam/) | BEAM harness integration and related probes. |
 | [labelling/](labelling/) | Human arbitration data and scoring utilities. |
+| [finetune/](finetune/) | Experimental embedding fine-tuning study support. |
+| [../run_lme_s.sh](../run_lme_s.sh) | Crash-tolerant LongMemEval S runner kept at repository root because it anchors paths beside its output directory. |
 
 ## Protocol documents
 
 | Document | Purpose |
 |---|---|
 | [PREREGISTRATION.md](PREREGISTRATION.md) | Rules fixed before the main RE-call versus Mem0 memory benchmark. |
+| [archive/preregistrations/README.md](archive/preregistrations/README.md) | Archived preregistrations for follow-up benchmark arms. |
 | [REVIEW.md](REVIEW.md) | Adversarial review of the LOCOMO article claims. |
 | [SUITE-DESIGN.md](SUITE-DESIGN.md) | Evaluation suite design and benchmark tracks. |
 | [EXPERIMENT-CONVENTION.md](EXPERIMENT-CONVENTION.md) | Prior-work search convention for new experiments. |

@@ -1,7 +1,7 @@
 # Pre-registration — the currency benchmark (RE-call vs Mem0)
 
 Written **before** the corpus is built or any arm is run. As with
-[PREREGISTRATION.md](PREREGISTRATION.md), the git history of this file is the evidence.
+[PREREGISTRATION.md](../../PREREGISTRATION.md), the git history of this file is the evidence.
 
 ## 0. Why a new benchmark, and the trap it must avoid
 

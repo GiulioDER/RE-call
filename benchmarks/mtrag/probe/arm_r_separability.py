@@ -19,7 +19,7 @@ PREREGISTERED, before running (sec.2 P1):
 0.90 is also `recall.calibration.MIN_SEPARABILITY`, the bar the library certifies against.
 
 Prior work: governed by [[project-recall-abstention-bounded-domain-2026-07-24]]; full search
-recorded in benchmarks/PREREGISTRATION-mtrag-abstention.md.
+recorded in benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-abstention.md.
 
 PROVENANCE, and why it is not master. The pgvector index was written by RE-call
 3d3c905044bbc8b714a6173b1879a5b4e70e16b6, and query-side and document-side embeddings must come

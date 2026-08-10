@@ -1,6 +1,6 @@
 # The RE-call evaluation suite — design
 
-Companion to [PREREGISTRATION-currency.md](PREREGISTRATION-currency.md), which pre-registers
+Companion to [PREREGISTRATION-currency.md](archive/preregistrations/PREREGISTRATION-currency.md), which pre-registers
 Track A. This file specifies the whole suite and the rules that apply to every track.
 
 ## What "incontestable" actually means, and what it cannot mean
@@ -114,7 +114,7 @@ track is not yet runnable.
 >
 > Unchanged from the earlier correction: Mem0's cell is **0.536**, derived from FINDINGS §9h's own
 > n=70 table as (38 × 0.974 + 32 × 0.016) / 70. Our own cell is quoted as 0.467 <!--@ citation-pending: no committed artifact retains this cell; re-derive or retract --> in
-> `PREREGISTRATION-currency.md` but is **not derivable from any committed artifact**, so it stays
+> `archive/preregistrations/PREREGISTRATION-currency.md` but is **not derivable from any committed artifact**, so it stays
 > citation-pending here rather than propagating into a second planning document.
 
 ### D. Attribution

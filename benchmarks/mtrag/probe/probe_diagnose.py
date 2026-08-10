@@ -1,6 +1,6 @@
 """MTRAGEval RB_alg probe -- STEP 2, diagnose the invariant failure, then P1-P4.
 
-Pre-registration: RE-call/benchmarks/PREREGISTRATION-mtrag-rbalg.md
+Pre-registration: RE-call/benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-rbalg.md
 STEP 1 result: HM-of-means over RAG.json does NOT reproduce the published MTRAG table
 (systematic +0.018..+0.043 on models, -0.015 on Target). Before any P1-P5 number is
 reported, establish WHICH part is wrong: the aggregation formula, or the instance set.
@@ -10,7 +10,7 @@ Prior work: none found on RB_alg / MTRAGEval generation / length calibration
 calibration answer verbosity benchmark", gap_warning false). Two adjacent hits:
 [[project-recall-token-f1-harness-offset-2026-07-29]] and
 [[project-recall-mtrag-symmetric-baseline-2026-08-04]]. Full search recorded in
-benchmarks/PREREGISTRATION-mtrag-rbalg.md.
+benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-rbalg.md.
 """
 
 import json

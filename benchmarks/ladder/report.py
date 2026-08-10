@@ -20,7 +20,7 @@ contrast plus explicitly the widest contrast whose corpus is not empty, a qualif
 derived from those numbers rather than hardcoded, and a disclosure of the uncalibrated bge-small
 abstention floor this arm actually ran with.
 
-v1 vs v2 — the confound above is a v1-ONLY defect. v2 (`benchmarks/PREREGISTRATION-ladder-v2.md`
+v1 vs v2 — the confound above is a v1-ONLY defect. v2 (`benchmarks/archive/preregistrations/PREREGISTRATION-ladder-v2.md`
 §0) widens the ingested slice to the question's own conversation plus its distractor conversations
 (`Instance.scope_cluster_ids`), so even v2's top rung (fraction 1.00, stored as basis points 10000)
 still holds roughly 1,200 distractor documents — an abstention there is not explained by "the index

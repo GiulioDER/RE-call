@@ -109,7 +109,7 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=None, help="first N instances, for a smoke run")
     ap.add_argument("--out", type=Path, default=REPO / "results" / "rerank_pool_arms.json")
     # The 10,000 per-chunk scores are ~440 KB and reproducible from this script in ~5 min, so they
-    # are opt-in rather than committed -- `finetune/README.md`'s "commit the numbers, not the
+    # are opt-in rather than committed -- `benchmarks/finetune/README.md`'s "commit the numbers, not the
     # weights" applied to scores.
     ap.add_argument("--scores-out", type=Path, default=None, help="dump per-chunk MiniLM scores")
     ap.add_argument("--locomo", type=Path, default=REPO / "locomo10.json")
