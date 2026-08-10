@@ -34,6 +34,12 @@ when it meant "the older one".
 
 ## The artifacts
 
+### Reasoning Session 1 control
+
+| artifact | backs |
+|---|---|
+| `reasoning_session1_baseline.json` | `docs/REASONING_CONTRACT.md` Session 1 control harness. Synthetic, frozen baseline observations before reasoning is enabled. Records direct, multi hop, near miss, contradiction, missing supersession, ambiguous entity, empty corpus, and stale corpus cases. |
+
 ### Post-#81/#84 — the configuration the published tables describe
 
 | artifact | backs |
