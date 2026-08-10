@@ -318,7 +318,7 @@ def _chunk_nodes(
                 calibration=dict(chunk.metadata.get("calibration", {}))
                 if isinstance(chunk.metadata.get("calibration"), dict)
                 else {},
-                metadata=dict(sorted(chunk.metadata.items())),
+                metadata={"text": chunk.text, **dict(sorted(chunk.metadata.items()))},
             )
         )
     return nodes, diagnostics
