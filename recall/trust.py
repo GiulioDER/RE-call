@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from recall.observability import METRICS
+from recall.promotion import reviewed_promotion_is_trusted_metadata
 
 if TYPE_CHECKING:  # avoid a runtime import cycle: entailment imports trust's abstain wording
     from recall.entailment import EntailmentJudge
@@ -371,6 +372,12 @@ def safe_ref(value: str | None) -> str:
 def is_trusted(hit: TrustedHit) -> bool:
     """Whether a hit may be relied on — the single definition of ``ok`` the adapters share."""
     return hit.verdict == "ok"
+
+
+def metadata_is_trusted(value: object) -> bool:
+    """Only reviewed promotions may be treated as trusted inferred metadata."""
+
+    return reviewed_promotion_is_trusted_metadata(value)
 
 
 def marked_text(hit: TrustedHit) -> str:

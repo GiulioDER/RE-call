@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from benchmarks.llm import Completer, OpenRouterLLM
+from benchmarks.llm import Completer, OpenRouterLLM, _usage_cost_usd
 
 
 def _identity_completer(system: str, user: str) -> str:
@@ -27,7 +27,7 @@ def test_openrouter_llm_builds_with_defaults() -> None:
 
 
 def _install_fake_openai(
-    monkeypatch: pytest.MonkeyPatch, content: str | None
+    monkeypatch: pytest.MonkeyPatch, content: str | None, usage: object | None = None
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Insert a fake `openai` module into sys.modules for the duration of a test, standing in for
     the real SDK (not installed / not required). Returns (construction_calls, create_calls) —
@@ -41,7 +41,7 @@ def _install_fake_openai(
             create_calls.append(kwargs)
             message = types.SimpleNamespace(content=content)
             choice = types.SimpleNamespace(message=message)
-            return types.SimpleNamespace(choices=[choice])
+            return types.SimpleNamespace(choices=[choice], usage=usage, model="provider/rev")
 
     class _FakeChat:
         def __init__(self) -> None:
@@ -83,6 +83,32 @@ def test_complete_coalesces_none_content_to_empty_string(monkeypatch: pytest.Mon
     result = llm.complete("s", "u")
 
     assert result == ""
+
+
+def test_openrouter_provider_metadata_records_tokens_revision_latency_and_cost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    usage = types.SimpleNamespace(prompt_tokens=12, completion_tokens=8, total_cost_usd=0.003)
+    _install_fake_openai(monkeypatch, content="answer", usage=usage)
+
+    llm = OpenRouterLLM(model="openai/gpt-4o-mini", api_key="sk-test")
+    assert llm.complete("s", "u") == "answer"
+
+    metadata = llm.provider_metadata()
+    assert metadata.provider_id == "openrouter"
+    assert metadata.model_id == "openai/gpt-4o-mini"
+    assert metadata.model_revision == "provider/rev"
+    assert metadata.prompt_tokens == 12
+    assert metadata.completion_tokens == 8
+    assert metadata.total_tokens == 20
+    assert metadata.latency_ms is not None
+    assert metadata.monetary_cost_usd == 0.003
+
+
+def test_usage_cost_preserves_zero_usd_from_provider_cost_dict() -> None:
+    usage = types.SimpleNamespace(cost={"usd": 0.0, "total_usd": 0.25})
+
+    assert _usage_cost_usd(usage) == 0.0
 
 
 def test_complete_reuses_client_across_calls(monkeypatch: pytest.MonkeyPatch) -> None:

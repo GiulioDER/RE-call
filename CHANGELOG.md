@@ -8,7 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
-No unreleased package changes yet.
+### Added
+
+* Added provider execution metadata for reasoning diagnostics and benchmark artifacts, including
+  provider id, model id, model revision when available, token counts, latency, and monetary cost
+  when providers expose it.
+* Added a reviewed inference proposal promotion workflow with separate promoted fact records.
+* Added experimental reasoning release notes covering opt in use, provider neutrality, citation
+  constraints, CLI and MCP migration notes, serialized fields, limitations, and evaluation posture.
 
 ## [0.9.2] (2026-08-10)
 

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Protocol
 
 from recall.embeddings import retry_with_backoff
+from recall.provider_metadata import ProviderMetadata
 
 #: The injected-LLM seam: (system_prompt, user_prompt) -> completion text. Everything downstream
 #: depends on this, not on any SDK, so the pipeline is testable with a plain function.
@@ -94,11 +95,29 @@ class OpenRouterLLM:
         #: retrieval path spends no tokens. An undercount in the subtrahend invents cost that
         #: was never incurred, in the one field that is supposed to prove the opposite.
         self._usage = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+        self._latency_ms = 0
+        self._monetary_cost_usd: float | None = None
+        self._model_revision: str | None = None
         self._usage_lock = threading.Lock()
 
     def usage(self) -> dict[str, int]:
         with self._usage_lock:
             return dict(self._usage)
+
+    def provider_metadata(self) -> ProviderMetadata:
+        with self._usage_lock:
+            prompt = self._usage["prompt_tokens"]
+            completion = self._usage["completion_tokens"]
+            return ProviderMetadata(
+                provider_id="openrouter",
+                model_id=self.model,
+                model_revision=self._model_revision,
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                total_tokens=prompt + completion,
+                latency_ms=self._latency_ms,
+                monetary_cost_usd=self._monetary_cost_usd,
+            )
 
     def complete(self, system: str, user: str) -> str:
         def _once() -> str:
@@ -112,15 +131,24 @@ class OpenRouterLLM:
         if self._client is None:
             self._client = OpenAI(api_key=self._api_key, base_url=self.base_url)
         extra = {} if self.max_tokens is None else {"max_tokens": self.max_tokens}
+        started = time.perf_counter()
         resp = self._client.chat.completions.create(  # type: ignore[union-attr]
             model=self.model,
             temperature=self.temperature,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             **extra,
         )
+        elapsed_ms = max(0, int((time.perf_counter() - started) * 1000))
         resp_usage = getattr(resp, "usage", None)
-        if resp_usage is not None:
-            with self._usage_lock:
+        with self._usage_lock:
+            self._latency_ms += elapsed_ms
+            revision = getattr(resp, "model", None)
+            if isinstance(revision, str) and revision:
+                self._model_revision = revision
+            cost = _usage_cost_usd(resp_usage)
+            if cost is not None:
+                self._monetary_cost_usd = (self._monetary_cost_usd or 0.0) + cost
+            if resp_usage is not None:
                 self._usage["calls"] += 1
                 self._usage["prompt_tokens"] += int(getattr(resp_usage, "prompt_tokens", 0) or 0)
                 self._usage["completion_tokens"] += int(
@@ -135,3 +163,19 @@ class OpenRouterLLM:
             )
         content = resp.choices[0].message.content
         return content or ""
+
+
+def _usage_cost_usd(usage: object | None) -> float | None:
+    if usage is None:
+        return None
+    for name in ("cost", "total_cost", "total_cost_usd"):
+        raw = getattr(usage, name, None)
+        if raw is not None and not isinstance(raw, dict):
+            return float(raw)
+    details = getattr(usage, "cost", None)
+    if isinstance(details, dict):
+        if "usd" in details:
+            return float(details["usd"])
+        if "total_usd" in details:
+            return float(details["total_usd"])
+    return None

@@ -3,8 +3,15 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from datetime import datetime
 from math import isfinite
 from statistics import mean
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from recall.reasoning_proposals import InferenceProposal
+
+AcceptedProposalState = Literal["proposed", "reviewed", "accepted", "rejected", "promoted"]
 
 
 @dataclass(frozen=True)
@@ -54,6 +61,153 @@ class PromotionDecision:
     corpus_hit5_delta: dict[str, float]
     holm_p_values: dict[str, float]
     failures: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ReviewedProposal:
+    proposal: InferenceProposal
+    state: AcceptedProposalState
+    reviewer_id: str | None = None
+    reviewed_at: datetime | None = None
+    audit_note: str | None = None
+
+
+@dataclass(frozen=True)
+class PromotedFact:
+    """Reviewed proposal stored separately from raw inference proposals."""
+
+    fact_id: str
+    proposal_id: str
+    relation: str
+    subject_id: str
+    object_id: str
+    reviewer_id: str
+    source_generation_id: str
+    source_provider_id: str
+    source_model_id: str
+    source_model_revision: str
+    proposal_evidence_ids: tuple[str, ...]
+    promoted_at: datetime
+    audit_note: str
+    state: AcceptedProposalState = "promoted"
+
+
+def review_proposal(
+    proposal: InferenceProposal,
+    *,
+    reviewer_id: str,
+    reviewed_at: datetime | None,
+    audit_note: str,
+) -> ReviewedProposal:
+    """Move a raw proposal into review after recording reviewer, time, and audit evidence."""
+
+    _require_review_fields(reviewer_id, reviewed_at, audit_note)
+    return ReviewedProposal(
+        proposal=proposal,
+        state="reviewed",
+        reviewer_id=reviewer_id,
+        reviewed_at=reviewed_at,
+        audit_note=audit_note,
+    )
+
+
+def accept_reviewed_proposal(review: ReviewedProposal) -> ReviewedProposal:
+    """Accept a reviewed proposal without creating trusted metadata yet."""
+
+    if review.state != "reviewed":
+        raise ValueError("proposal must be reviewed before it can be accepted")
+    _require_review_fields(review.reviewer_id, review.reviewed_at, review.audit_note)
+    return ReviewedProposal(
+        proposal=review.proposal,
+        state="accepted",
+        reviewer_id=review.reviewer_id,
+        reviewed_at=review.reviewed_at,
+        audit_note=review.audit_note,
+    )
+
+
+def reject_reviewed_proposal(review: ReviewedProposal) -> ReviewedProposal:
+    """Reject a reviewed proposal while preserving its review identity and audit note."""
+
+    if review.state != "reviewed":
+        raise ValueError("proposal must be reviewed before it can be rejected")
+    _require_review_fields(review.reviewer_id, review.reviewed_at, review.audit_note)
+    return ReviewedProposal(
+        proposal=review.proposal,
+        state="rejected",
+        reviewer_id=review.reviewer_id,
+        reviewed_at=review.reviewed_at,
+        audit_note=review.audit_note,
+    )
+
+
+def promote_accepted_proposal(
+    review: ReviewedProposal,
+    *,
+    promoted_at: datetime,
+    audit_note: str | None = None,
+) -> PromotedFact:
+    """Create a trusted promoted fact from an accepted proposal.
+
+    Promotion requires reviewer identity, review timestamp, audit note, source evidence ids, and
+    source provider generation identity. The raw proposal remains separate from the promoted fact.
+    """
+
+    if review.state != "accepted":
+        raise ValueError("proposal must be accepted before promotion")
+    _require_review_fields(review.reviewer_id, review.reviewed_at, review.audit_note)
+    note = audit_note or review.audit_note
+    if note is None or not note.strip():
+        raise ValueError("promotion audit note is required")
+    proposal = review.proposal
+    if not proposal.source_evidence_ids:
+        raise ValueError("promotion requires proposal evidence ids")
+    if not proposal.provider_id or not proposal.model_id or not proposal.provider_revision:
+        raise ValueError("promotion requires source generation identity")
+    return PromotedFact(
+        fact_id=f"promoted:{proposal.id}",
+        proposal_id=proposal.id,
+        relation=proposal.proposed_relation,
+        subject_id=proposal.subject_id,
+        object_id=proposal.object_id,
+        reviewer_id=str(review.reviewer_id),
+        source_generation_id=proposal.generation_id,
+        source_provider_id=proposal.provider_id,
+        source_model_id=proposal.model_id,
+        source_model_revision=proposal.provider_revision,
+        proposal_evidence_ids=proposal.source_evidence_ids,
+        promoted_at=promoted_at,
+        audit_note=note,
+    )
+
+
+def reviewed_promotion_is_trusted_metadata(value: object) -> bool:
+    """Trust retrieval metadata only when it is a fully reviewed promoted fact."""
+
+    return (
+        isinstance(value, PromotedFact)
+        and value.state == "promoted"
+        and bool(value.reviewer_id)
+        and bool(value.audit_note.strip())
+        and bool(value.proposal_evidence_ids)
+        and bool(value.source_generation_id)
+        and bool(value.source_provider_id)
+        and bool(value.source_model_id)
+        and bool(value.source_model_revision)
+    )
+
+
+def _require_review_fields(
+    reviewer_id: str | None,
+    reviewed_at: datetime | None,
+    audit_note: str | None,
+) -> None:
+    if reviewer_id is None or not reviewer_id.strip():
+        raise ValueError("reviewer identity is required")
+    if reviewed_at is None:
+        raise ValueError("review timestamp is required")
+    if audit_note is None or not audit_note.strip():
+        raise ValueError("audit note is required")
 
 
 def _groups(outcomes: tuple[QuestionOutcome, ...]) -> dict[str, list[QuestionOutcome]]:

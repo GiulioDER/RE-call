@@ -16,6 +16,7 @@ from recall.reasoning import (
     reason,
     reasoning_response_from_dict,
 )
+from recall.provider_metadata import ProviderMetadata
 from recall.reasoning_graph import ReasoningGraphNode, build_reasoning_graph
 from recall.reasoning_planner import ReasoningBudgetUsage, ReasoningTrace
 from recall.reasoning_proposals import InferenceProposal, ProposalProtocolReport
@@ -516,6 +517,37 @@ def test_reasoning_response_serializes_to_strict_json_and_round_trips() -> None:
     assert decoded.outcome == response.outcome
     assert decoded.citations == response.citations
     assert decoded.trusted_evidence.items == response.trusted_evidence.items
+
+
+def test_reasoning_diagnostics_round_trip_provider_metadata() -> None:
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+
+    class _Answer:
+        def __call__(self, _system: str, _user: str) -> dict[str, object]:
+            return {
+                "answer": "Ada owns rollout.",
+                "citations": ["c1"],
+                "insufficient_evidence": False,
+            }
+
+        def provider_metadata(self) -> ProviderMetadata:
+            return ProviderMetadata(
+                provider_id="fixture",
+                model_id="fixture-model",
+                model_revision="rev-1",
+                prompt_tokens=11,
+                completion_tokens=7,
+                total_tokens=18,
+                latency_ms=5,
+                monetary_cost_usd=0.001,
+            )
+
+    response = reason(_request(_result(_hit(chunk)), answer=_Answer()))
+    decoded = reasoning_response_from_dict(json.loads(json.dumps(response.to_dict())))
+
+    assert decoded.diagnostics.provider_metadata[0].provider_id == "fixture"
+    assert decoded.diagnostics.provider_metadata[0].model_revision == "rev-1"
+    assert decoded.diagnostics.provider_metadata[0].monetary_cost_usd == 0.001
 
 
 def test_planner_trace_and_budget_usage_round_trip_as_typed_objects() -> None:
