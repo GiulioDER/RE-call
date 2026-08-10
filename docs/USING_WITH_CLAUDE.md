@@ -18,6 +18,10 @@ The migration command is a deployment/provisioning step, not part of server star
 schema-owner DSN for it and an unprivileged `RECALL_SERVING_DSN` for the server; see
 [MIGRATIONS.md](MIGRATIONS.md).
 
+The MCP server opens the default `chunks` table. If you used a named table for a local CLI demo,
+apply the default-table schema separately before starting MCP, or use an embedder whose dimension
+matches the existing `chunks` table.
+
 ## 2. Register the server
 
 Both clients use the same `mcpServers` block; only the entry point differs.
@@ -28,7 +32,11 @@ Both clients use the same `mcpServers` block; only the entry point differs.
     "recall": {
       "command": "python",
       "args": ["-m", "recall_mcp.server"],
-      "env": { "RECALL_SERVING_DSN": "postgresql://recall:recall@localhost:5432/recall" }
+      "env": {
+        "RECALL_SERVING_DSN": "postgresql://recall:recall@localhost:5432/recall",
+        "RECALL_TENANT": "default",
+        "RECALL_TRUST_MODE": "development"
+      }
     }
   }
 }
@@ -43,6 +51,9 @@ Both clients use the same `mcpServers` block; only the entry point differs.
 > database, supply the DSN (and the optional `VOYAGE_API_KEY` for the cloud embedder) through your
 > shell environment or a **gitignored** `.env` — **never commit credentials to the config file or the
 > repo.** The server reads them from the environment.
+
+Remove `RECALL_TRUST_MODE` for production after the tenant has an active generation with a
+published certified calibration. It is included above only for local, uncalibrated stdio use.
 
 Optional env: `RECALL_EMBEDDER=hashing` for the fully-offline embedder (default `fastembed`);
 `RECALL_INDEX_ROOT` bounds where the development-only `recall_index` may read (default: the
@@ -87,6 +98,7 @@ one that honoured it.
 | **`recall_search`** | *Before* proposing an idea, forming a hypothesis, or repeating past work — to check what memory already says. Every hit carries a trust `verdict` (`ok / superseded / expired / not_yet_valid / low_confidence / invalid_metadata` — plus `not_entailed` when the opt-in entailment stage is enabled; this MCP server keeps it off), the true dense cosine (`score`), a calibrated `confidence`, `superseded_by`, `valid_until`, and `indexed_at`; the result adds `abstained`, `reason`, `calibrated`, calibration status and ID, tenant/generation/pipeline/corpus/query-set identities, `stale`, `gap_warning`, and `advice`. `calibrated` is true only for a certified exact generation binding. When `abstained` is true, the advice is explicit: say you don't know, do not answer from the hits. |
 | **`recall_evidence`** | When the agent is about to *answer* from memory rather than merely consult it. Same retrieval, returned as a citable bundle: only passages the trust layer cleared, in retrieval order, plus `system_prompt` and `user_message` — a fixed library-authored instruction and a delimited, JSON-escaped data payload. `decision: "abstain"` means the bundle is empty and the agent must not answer from memory. The server runs no generator; the client is the generator, which is why the prompt is handed back rather than consumed. Validate the answer with `recall.validate_answer`: it checks that every citation resolves to a supplied `chunk_id`, and deliberately does not check that a cited passage supports the answer. |
 | **`recall_index`** | To add a markdown file/folder to memory (bounded by `RECALL_INDEX_ROOT`). |
+| **`recall_forget`** | To permanently delete indexed memory for source values returned by `recall_search`. Requires `recall:forget` on authenticated transports; irreversible, so check the returned `sources_not_found` before assuming a request matched. |
 | **`recall_stats`** | To check how much memory exists and whether the index is stale. |
 
 ## 4. The self-recall loop (redacted)
