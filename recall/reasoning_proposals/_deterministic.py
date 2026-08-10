@@ -1,187 +1,38 @@
-"""Side effect free inference proposal APIs for reasoning over evidence graphs."""
+"""Deterministic inference proposal rules."""
 
 from __future__ import annotations
 
 import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Any, Literal, Protocol, cast
+from typing import Any
 
 from recall.frontmatter import supersedes_key
 from recall.lineage import canonical_sha256
-from recall.reasoning_graph import (
-    ReasoningGraphEdge,
-    ReasoningGraphNode,
-    ReasoningGraphProjection,
+from recall.reasoning_graph import EVIDENCE_TEXT_METADATA_KEY, ReasoningGraphNode, ReasoningGraphProjection
+from recall.reasoning_proposals.types import (
+    DETERMINISTIC_MODEL_ID,
+    DETERMINISTIC_PROVIDER_ID,
+    DETERMINISTIC_PROVIDER_REVISION,
+    PROPOSAL_SCHEMA_VERSION,
+    EvidenceClaim,
+    InferenceProposal,
+    ProposalContext,
+    ProposalStatus,
+    ProposedRelation,
 )
-
-PROPOSAL_SCHEMA_VERSION = 1
-DETERMINISTIC_PROVIDER_ID = "recall.deterministic"
-DETERMINISTIC_MODEL_ID = "rules"
-DETERMINISTIC_PROVIDER_REVISION = "session3-v1"
-
-ProposalStatus = Literal["candidate", "rejected", "requires_review"]
-ProposedRelation = Literal["supersedes", "contradicts", "same_entity", "references"]
-ProviderFailureKind = Literal["timeout", "malformed_output", "wrong_cardinality", "provider_error"]
-PROVIDER_FAILURE_KINDS: tuple[ProviderFailureKind, ...] = (
-    "timeout",
-    "malformed_output",
-    "wrong_cardinality",
-    "provider_error",
-)
-
-
-def _freeze_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {
-                key: _freeze_value(item)
-                for key, item in sorted(value.items(), key=lambda entry: str(entry[0]))
-            }
-        )
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return tuple(_freeze_value(item) for item in value)
-    if isinstance(value, (set, frozenset)):
-        return tuple(sorted((_freeze_value(item) for item in value), key=repr))
-    return value
-
-
-@dataclass(frozen=True)
-class ProposalContext:
-    tenant_id: str
-    generation_id: str
-    pipeline_id: str
-    provider_id: str
-    model_id: str
-    provider_revision: str
-
-
-@dataclass(frozen=True)
-class EvidenceClaim:
-    id: str
-    evidence_id: str
-    text: str
-    entity_id: str | None = None
-    subject: str | None = None
-    valid_from: datetime | None = None
-    valid_until: datetime | None = None
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "metadata", _freeze_value(self.metadata))
-
-
-@dataclass(frozen=True)
-class EntityResolution:
-    id: str
-    evidence_ids: tuple[str, ...]
-    canonical_entity: str
-    aliases: tuple[str, ...] = ()
-    confidence: float | None = None
-    uncertainty: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class InferenceProposal:
-    id: str
-    source_evidence_ids: tuple[str, ...]
-    proposed_relation: ProposedRelation
-    subject_id: str
-    object_id: str
-    explanation: str
-    model_id: str
-    pipeline_id: str
-    provider_id: str
-    provider_revision: str
-    confidence: float | None
-    uncertainty: tuple[str, ...]
-    generation_id: str
-    status: ProposalStatus = "candidate"
-    rule_id: str | None = None
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "source_evidence_ids", tuple(self.source_evidence_ids))
-        object.__setattr__(self, "uncertainty", tuple(self.uncertainty))
-        object.__setattr__(self, "metadata", _freeze_value(self.metadata))
-
-
-@dataclass(frozen=True)
-class ProviderFailure:
-    kind: ProviderFailureKind
-    provider_id: str
-    model_id: str
-    provider_revision: str
-    message: str
-
-
-@dataclass(frozen=True)
-class ProposalProtocolReport:
-    schema_version: int
-    generation_id: str
-    pipeline_id: str
-    proposals: tuple[InferenceProposal, ...]
-    rejected_proposals: tuple[InferenceProposal, ...]
-    provider_failures: tuple[ProviderFailure, ...]
-
-    @property
-    def failure_matrix(self) -> Mapping[str, int]:
-        counts: dict[str, int] = {kind: 0 for kind in PROVIDER_FAILURE_KINDS}
-        for failure in self.provider_failures:
-            counts[failure.kind] += 1
-        return MappingProxyType(counts)
-
-
-class ClaimExtractor(Protocol):
-    def extract_claims(
-        self, evidence: Sequence[ReasoningGraphNode], context: ProposalContext
-    ) -> Sequence[EvidenceClaim]:
-        ...
-
-
-class EntityResolver(Protocol):
-    def resolve_entities(
-        self, claims: Sequence[EvidenceClaim], context: ProposalContext
-    ) -> Sequence[EntityResolution]:
-        ...
-
-
-class RelationProposer(Protocol):
-    def propose_relations(
-        self,
-        claims: Sequence[EvidenceClaim],
-        entities: Sequence[EntityResolution],
-        context: ProposalContext,
-    ) -> Sequence[InferenceProposal]:
-        ...
-
-
-class ContradictionDetector(Protocol):
-    def detect_contradictions(
-        self, claims: Sequence[EvidenceClaim], context: ProposalContext
-    ) -> Sequence[InferenceProposal]:
-        ...
-
-
-class ModelBackedProposalProvider(Protocol):
-    """Optional provider port. Implementations may call a model, this module never does."""
-
-    provider_id: str
-    model_id: str
-    provider_revision: str
-    max_proposals: int
-
-    def propose(
-        self, graph: ReasoningGraphProjection, context: ProposalContext
-    ) -> Sequence[InferenceProposal | Mapping[str, Any]]:
-        ...
-
 
 def _proposal_id(payload: Mapping[str, Any]) -> str:
     return f"ip_{canonical_sha256({'schema_version': PROPOSAL_SCHEMA_VERSION, **payload})[:24]}"
+
+
+def _resolve_pipeline_id(graph: ReasoningGraphProjection, pipeline_id: str | None) -> str:
+    resolved = pipeline_id or graph.pipeline_fingerprint
+    if not resolved:
+        raise ValueError("pipeline_id is required when graph.pipeline_fingerprint is absent")
+    return resolved
 
 
 def _context(
@@ -195,7 +46,7 @@ def _context(
     return ProposalContext(
         tenant_id=graph.tenant_id,
         generation_id=graph.generation_id,
-        pipeline_id=pipeline_id or graph.pipeline_fingerprint or "unknown-pipeline",
+        pipeline_id=_resolve_pipeline_id(graph, pipeline_id),
         provider_id=provider_id,
         model_id=model_id,
         provider_revision=provider_revision,
@@ -226,7 +77,7 @@ def _chunk_texts_by_file(graph: ReasoningGraphProjection) -> Mapping[str, str]:
     for node in graph.nodes:
         if node.kind != "chunk" or node.file is None:
             continue
-        text = node.metadata.get("text")
+        text = node.metadata.get(EVIDENCE_TEXT_METADATA_KEY)
         if not isinstance(text, str):
             text = ""
         order = node.ord if node.ord is not None else 0
@@ -619,224 +470,4 @@ def _opposing_validity_text(left: str, right: str) -> bool:
     return bool(
         (positive.search(left) and negative.search(right))
         or (negative.search(left) and positive.search(right))
-    )
-
-
-def _coerce_provider_proposal(
-    raw: InferenceProposal | Mapping[str, Any],
-    *,
-    graph: ReasoningGraphProjection,
-    context: ProposalContext,
-    known_evidence_ids: set[str],
-) -> InferenceProposal:
-    if isinstance(raw, InferenceProposal):
-        proposal = raw
-    else:
-        required = {
-            "source_evidence_ids",
-            "proposed_relation",
-            "subject_id",
-            "object_id",
-            "explanation",
-            "confidence",
-            "uncertainty",
-        }
-        missing = sorted(key for key in required if key not in raw)
-        if missing:
-            raise ValueError(f"provider proposal missing fields: {', '.join(missing)}")
-        proposal = _make_proposal(
-            graph=graph,
-            context=context,
-            source_evidence_ids=tuple(str(item) for item in raw["source_evidence_ids"]),
-            proposed_relation=_checked_relation(raw["proposed_relation"]),
-            subject_id=str(raw["subject_id"]),
-            object_id=str(raw["object_id"]),
-            explanation=str(raw["explanation"]),
-            confidence=_checked_confidence(raw["confidence"]),
-            uncertainty=tuple(str(item) for item in raw["uncertainty"]),
-            status=_checked_status(raw.get("status", "candidate")),
-            rule_id=str(raw["rule_id"]) if raw.get("rule_id") is not None else None,
-            metadata=raw["metadata"] if isinstance(raw.get("metadata"), Mapping) else {},
-        )
-    if proposal.generation_id != graph.generation_id:
-        raise ValueError("provider proposal generation_id does not match graph generation")
-    if proposal.pipeline_id != context.pipeline_id:
-        raise ValueError("provider proposal pipeline_id does not match request context")
-    if not proposal.source_evidence_ids:
-        raise ValueError("provider proposal has no source evidence")
-    unknown = sorted(set(proposal.source_evidence_ids) - known_evidence_ids)
-    if unknown:
-        raise ValueError(f"provider proposal cites unknown evidence ids: {', '.join(unknown)}")
-    return proposal
-
-
-def _checked_relation(value: Any) -> ProposedRelation:
-    if value not in {"supersedes", "contradicts", "same_entity", "references"}:
-        raise ValueError(f"unknown proposed_relation: {value!r}")
-    return cast(ProposedRelation, value)
-
-
-def _checked_status(value: Any) -> ProposalStatus:
-    if value not in {"candidate", "rejected", "requires_review"}:
-        raise ValueError(f"unknown status: {value!r}")
-    return cast(ProposalStatus, value)
-
-
-def _checked_confidence(value: Any) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        raise ValueError("confidence must be a number or null")
-    score = float(value)
-    if score < 0.0 or score > 1.0:
-        raise ValueError("confidence must be between 0 and 1")
-    return score
-
-
-def proposal_report(
-    graph: ReasoningGraphProjection,
-    *,
-    pipeline_id: str | None = None,
-    model_provider: ModelBackedProposalProvider | None = None,
-) -> ProposalProtocolReport:
-    """Run deterministic and optional model backed proposal generation.
-
-    Provider failures are returned in band. A malformed provider cannot silently add or drop
-    proposals, and deterministic proposals still survive provider failure.
-    """
-    pipeline = pipeline_id or graph.pipeline_fingerprint or "unknown-pipeline"
-    deterministic = deterministic_inference_proposals(graph, pipeline_id=pipeline)
-    accepted: list[InferenceProposal] = list(deterministic)
-    rejected: list[InferenceProposal] = []
-    failures: list[ProviderFailure] = []
-    if model_provider is not None:
-        provider_context = _context(
-            graph,
-            pipeline_id=pipeline,
-            provider_id=model_provider.provider_id,
-            model_id=model_provider.model_id,
-            provider_revision=model_provider.provider_revision,
-        )
-        try:
-            raw_proposals = tuple(model_provider.propose(graph, provider_context))
-            if len(raw_proposals) > model_provider.max_proposals:
-                raise ValueError(
-                    f"provider returned {len(raw_proposals)} proposals, "
-                    f"maximum is {model_provider.max_proposals}"
-                )
-            known_evidence_ids = {node.id for node in graph.nodes}
-            for raw in raw_proposals:
-                proposal = _coerce_provider_proposal(
-                    raw,
-                    graph=graph,
-                    context=provider_context,
-                    known_evidence_ids=known_evidence_ids,
-                )
-                if proposal.status == "rejected":
-                    rejected.append(proposal)
-                else:
-                    accepted.append(proposal)
-        except TimeoutError as exc:
-            failures.append(_provider_failure(model_provider, "timeout", str(exc)))
-        except ValueError as exc:
-            message = str(exc)
-            kind: ProviderFailureKind = (
-                "wrong_cardinality" if "maximum is" in message else "malformed_output"
-            )
-            failures.append(_provider_failure(model_provider, kind, message))
-        except Exception as exc:  # noqa: BLE001
-            failures.append(_provider_failure(model_provider, "provider_error", str(exc)))
-    by_id = {proposal.id: proposal for proposal in accepted}
-    rejected_by_id = {proposal.id: proposal for proposal in rejected}
-    return ProposalProtocolReport(
-        schema_version=PROPOSAL_SCHEMA_VERSION,
-        generation_id=graph.generation_id,
-        pipeline_id=pipeline,
-        proposals=tuple(by_id[key] for key in sorted(by_id)),
-        rejected_proposals=tuple(rejected_by_id[key] for key in sorted(rejected_by_id)),
-        provider_failures=tuple(failures),
-    )
-
-
-def _provider_failure(
-    provider: ModelBackedProposalProvider, kind: ProviderFailureKind, message: str
-) -> ProviderFailure:
-    return ProviderFailure(
-        kind=kind,
-        provider_id=provider.provider_id,
-        model_id=provider.model_id,
-        provider_revision=provider.provider_revision,
-        message=message,
-    )
-
-
-def proposal_to_graph_edge(
-    graph: ReasoningGraphProjection, proposal: InferenceProposal
-) -> ReasoningGraphEdge:
-    """Represent a supersession proposal as a graph candidate edge.
-
-    Only `supersedes` proposals can become candidate edges. The returned edge remains separate from
-    authored edges and is not a trust input unless a caller explicitly passes it as proposal data.
-    """
-    if proposal.proposed_relation != "supersedes":
-        raise ValueError("only supersedes proposals can be represented as candidate graph edges")
-    node_by_file = {node.file: node for node in _source_nodes(graph)}
-    from_node = node_by_file.get(proposal.subject_id)
-    to_node = node_by_file.get(proposal.object_id)
-    payload = {
-        "schema_version": PROPOSAL_SCHEMA_VERSION,
-        "tenant_id": graph.tenant_id,
-        "generation_id": graph.generation_id,
-        "proposal_id": proposal.id,
-        "from_file": proposal.subject_id,
-        "to_file": proposal.object_id,
-    }
-    return ReasoningGraphEdge(
-        id=f"rg_edge_candidate_{canonical_sha256(payload)[:24]}",
-        kind="inferred_candidate_supersedes",
-        tenant_id=graph.tenant_id,
-        generation_id=graph.generation_id,
-        from_node_id=from_node.id if from_node is not None else "",
-        to_node_id=to_node.id if to_node is not None else None,
-        from_file=proposal.subject_id,
-        to_file=proposal.object_id,
-        authored_reference=None,
-        asserted_at=None,
-        provenance={
-            "proposal_id": proposal.id,
-            "provider_id": proposal.provider_id,
-            "model_id": proposal.model_id,
-            "provider_revision": proposal.provider_revision,
-            "source_evidence_ids": proposal.source_evidence_ids,
-        },
-        metadata={
-            "status": proposal.status,
-            "confidence": proposal.confidence,
-            "uncertainty": proposal.uncertainty,
-            "explanation": proposal.explanation,
-        },
-    )
-
-
-def proposal_precision_recall(
-    proposals: Sequence[InferenceProposal], expected_pairs: set[tuple[str, str]]
-) -> Mapping[str, float | int]:
-    predicted = {
-        (proposal.subject_id, proposal.object_id)
-        for proposal in proposals
-        if proposal.proposed_relation == "supersedes" and proposal.status != "rejected"
-    }
-    true_positive = len(predicted & expected_pairs)
-    false_positive = len(predicted - expected_pairs)
-    false_negative = len(expected_pairs - predicted)
-    precision = true_positive / len(predicted) if predicted else 0.0
-    recall = true_positive / len(expected_pairs) if expected_pairs else 1.0
-    return MappingProxyType(
-        {
-            "true_positive": true_positive,
-            "false_positive": false_positive,
-            "false_negative": false_negative,
-            "precision": precision,
-            "recall": recall,
-        }
     )

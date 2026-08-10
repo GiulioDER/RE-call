@@ -19,6 +19,7 @@ from recall.store import EdgeCandidates, resolve_supersession_candidates
 from recall.types import Chunk
 
 GRAPH_SCHEMA_VERSION = 1
+EVIDENCE_TEXT_METADATA_KEY = "_recall_evidence_text"
 
 GraphNodeKind = Literal["chunk", "source"]
 GraphEdgeKind = Literal["authored_supersedes", "inferred_candidate_supersedes"]
@@ -259,6 +260,7 @@ def _chunk_nodes(
     *,
     tenant_id: str,
     generation_id: str,
+    include_text: bool = False,
 ) -> tuple[list[ReasoningGraphNode], list[ReasoningGraphDiagnostic]]:
     nodes: list[ReasoningGraphNode] = []
     diagnostics: list[ReasoningGraphDiagnostic] = []
@@ -293,6 +295,9 @@ def _chunk_nodes(
                     message=str(exc),
                 )
             )
+        metadata = dict(sorted(chunk.metadata.items()))
+        if include_text:
+            metadata[EVIDENCE_TEXT_METADATA_KEY] = chunk.text
         nodes.append(
             ReasoningGraphNode(
                 id=_node_id(
@@ -318,7 +323,7 @@ def _chunk_nodes(
                 calibration=dict(chunk.metadata.get("calibration", {}))
                 if isinstance(chunk.metadata.get("calibration"), dict)
                 else {},
-                metadata={"text": chunk.text, **dict(sorted(chunk.metadata.items()))},
+                metadata=metadata,
             )
         )
     return nodes, diagnostics
@@ -586,6 +591,7 @@ def build_reasoning_graph(
     authored_edge_candidates: EdgeCandidates | None = None,
     unresolved_references: frozenset[str] | None = None,
     inferred_candidate_edges: tuple[ReasoningGraphEdge, ...] = (),
+    include_text: bool = False,
 ) -> ReasoningGraphProjection:
     """Project chunks and authored metadata into an immutable graph value."""
     ordered_chunks = sorted(chunks, key=lambda item: item.id)
@@ -598,7 +604,10 @@ def build_reasoning_graph(
         if node.file is not None
     }
     chunk_nodes, metadata_diagnostics = _chunk_nodes(
-        ordered_chunks, tenant_id=tenant_id, generation_id=generation_id
+        ordered_chunks,
+        tenant_id=tenant_id,
+        generation_id=generation_id,
+        include_text=include_text,
     )
     if authored_edge_candidates is None or unresolved_references is None:
         _winner, unresolved, candidates = resolve_supersession_candidates(
@@ -690,6 +699,7 @@ def project_store_graph(
     *,
     pipeline_fingerprint: str | None = None,
     corpus_fingerprint: str | None = None,
+    include_text: bool = False,
 ) -> ReasoningGraphProjection:
     """Project the chunks visible through a store into a graph without mutating the store."""
     snapshot = getattr(store, "snapshot", None)
@@ -709,6 +719,7 @@ def project_store_graph(
                 corpus_fingerprint=corpus,
                 authored_edge_candidates=candidates,
                 unresolved_references=unresolved,
+                include_text=include_text,
             )
     pipeline, corpus = _store_binding_fingerprints(
         store,
@@ -724,4 +735,5 @@ def project_store_graph(
         corpus_fingerprint=corpus,
         authored_edge_candidates=candidates,
         unresolved_references=unresolved,
+        include_text=include_text,
     )

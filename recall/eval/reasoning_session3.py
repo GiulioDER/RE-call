@@ -108,6 +108,7 @@ def _fixture_graph() -> ReasoningGraphProjection:
         tenant_id="session3",
         generation_id="reasoning-session3-fixture-gen1",
         pipeline_fingerprint="reasoning-session3-pipeline-v1",
+        include_text=True,
     )
 
 
