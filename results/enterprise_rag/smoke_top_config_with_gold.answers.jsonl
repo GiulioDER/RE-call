@@ -1,0 +1,1 @@
+{"question_id": "qst_0001", "answer": "The default size limits for the new multipart upload support on the OpenAI-compatible API endpoints are 10MiB per file and 50MiB per request.", "document_ids": ["dsid_ae068ee4aa9640159427cd941bef0238", "dsid_03945652609045ed841cb7f09902de02", "dsid_026bbc0fbb97423ab9de20d8f99402d6"]}

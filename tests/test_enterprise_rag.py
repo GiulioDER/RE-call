@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+import json
+import zipfile
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from benchmarks.enterprise_rag import (
+    EnterpriseDoc,
+    apply_top_config,
+    build_parser,
+    doc_chunks,
+    generated_answer,
+    load_documents,
+    load_questions,
+    write_answers,
+)
+from recall.types import ScoredChunk
+
+
+def test_loads_enterprise_release_shapes_from_zip(tmp_path: Path) -> None:
+    archive = tmp_path / "docs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(
+            "a.jsonl",
+            json.dumps(
+                {
+                    "doc_id": "dsid_1",
+                    "source_type": "slack",
+                    "title": "Launch thread",
+                    "content": "The launch owner is Mira.",
+                }
+            )
+            + "\n",
+        )
+        zf.writestr(
+            "b.json",
+            json.dumps(
+                {
+                    "doc_id": "dsid_2",
+                    "source_type": "confluence",
+                    "title": "Runbook",
+                    "content": "Rollback uses the silver lane.",
+                }
+            ),
+        )
+
+    docs = list(load_documents([archive]))
+
+    assert [doc.doc_id for doc in docs] == ["dsid_1", "dsid_2"]
+    assert docs[0].source_type == "slack"
+
+
+def test_loads_official_text_zip_shape(tmp_path: Path) -> None:
+    archive = tmp_path / "all_documents.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(
+            "confluence/applied-ml/dsid_abc123__rollout-playbook.txt",
+            "The rollout owner is Mira.",
+        )
+        zf.writestr(
+            "questions.jsonl",
+            json.dumps({"question_id": "qst_1", "question": "Ignored?"}) + "\n",
+        )
+
+    docs = list(load_documents([archive]))
+
+    assert len(docs) == 1
+    assert docs[0] == EnterpriseDoc(
+        doc_id="dsid_abc123",
+        source_type="confluence",
+        title="rollout playbook",
+        content="The rollout owner is Mira.",
+    )
+
+
+def test_chunks_preserve_document_id_for_leaderboard_citations() -> None:
+    chunks = doc_chunks(
+        EnterpriseDoc(
+            doc_id="dsid_keep",
+            source_type="gmail",
+            title="Customer thread",
+            content="The answer is in this document.",
+        )
+    )
+
+    assert chunks
+    assert chunks[0].id.startswith("dsid_keep#")
+    assert chunks[0].source == "dsid_keep"
+    assert chunks[0].metadata["doc_id"] == "dsid_keep"
+
+
+def test_loads_questions_and_writes_answer_jsonl(tmp_path: Path) -> None:
+    questions_path = tmp_path / "questions.jsonl"
+    questions_path.write_text(
+        json.dumps({"question_id": "qst_1", "question": "Who owns launch?"}) + "\n",
+        encoding="utf-8",
+    )
+    questions = load_questions(questions_path)
+    out = tmp_path / "answers.jsonl"
+
+    count = write_answers(
+        out,
+        [{"question_id": questions[0].question_id, "answer": "Mira", "document_ids": ["dsid_1"]}],
+        overwrite=False,
+    )
+
+    assert count == 1
+    assert json.loads(out.read_text(encoding="utf-8")) == {
+        "question_id": "qst_1",
+        "answer": "Mira",
+        "document_ids": ["dsid_1"],
+    }
+
+
+def test_top_config_enables_lexical_splade_voyage_rerank_and_openrouter() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--questions",
+            "questions.jsonl",
+            "--documents",
+            "docs.zip",
+            "--out",
+            "answers.jsonl",
+            "--top-config",
+        ]
+    )
+
+    apply_top_config(args)
+
+    assert args.embedder == "voyage:voyage-4-large"
+    assert args.sparse_backend == "both"
+    assert args.backfill_splade is True
+    assert args.reranker == "voyage:rerank-2.5"
+    assert args.answer_mode == "openrouter"
+    assert args.model == "openai/gpt-4o"
+    assert args.k == 8
+    assert args.candidate_k == 200
+    assert args.max_context_chars == 12_000
+
+
+def test_generated_answer_prompt_includes_question_type_and_strict_abstention(
+    monkeypatch: Any,
+) -> None:
+    calls = []
+
+    class _FakeLLM:
+        def __init__(self, model: str, api_key: str) -> None:
+            self.model = model
+            self.api_key = api_key
+
+        def complete(self, system: str, user: str) -> str:
+            calls.append({"system": system, "user": user, "model": self.model})
+            return "10 MiB per file and 50 MiB per request."
+
+    monkeypatch.setattr("benchmarks.llm.OpenRouterLLM", _FakeLLM)
+    hits = doc_chunks(
+        EnterpriseDoc(
+            doc_id="dsid_1",
+            source_type="github",
+            title="multipart limits",
+            content="max_file_size is 10 MiB and max_total_request_size is 50 MiB.",
+        )
+    )
+    scored = [ScoredChunk(chunk=hits[0], score=1.0, indexed_at=datetime(2026, 1, 1, tzinfo=UTC))]
+
+    answer = generated_answer(
+        "What are the upload limits?",
+        scored,
+        model="openai/gpt-4o",
+        api_key="test",
+        max_chars=1000,
+        question_type="basic",
+    )
+
+    assert answer == "10 MiB per file and 50 MiB per request."
+    assert calls[0]["model"] == "openai/gpt-4o"
+    assert "Question type: basic" in calls[0]["user"]
+    assert "Source type: github" in calls[0]["user"]
+    assert "available documents do not contain the answer" in calls[0]["system"]
+    assert "exact facts, quantities, dates, names" in calls[0]["system"]
