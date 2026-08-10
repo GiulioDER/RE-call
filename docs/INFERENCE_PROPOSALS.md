@@ -63,16 +63,19 @@ authored edge already exists, deterministic rules do not duplicate it.
 ## Provider Failure Matrix
 
 Optional providers are validated before their output is accepted. A provider cannot silently add or
-drop proposals. Failures are returned as:
+drop proposals. Provider batches are atomic: if any item in a batch is malformed, no proposal from
+that batch is accepted. Duplicate proposal ids are malformed rather than silently collapsed.
+Failures are returned as:
 
 * `timeout`.
 * `malformed_output`.
 * `wrong_cardinality`.
 * `provider_error`.
 
-Malformed output includes missing required fields, unknown relations, invalid confidence values,
-wrong generation identity, wrong pipeline identity, absent evidence ids, or citations to unknown
-evidence.
+Malformed output includes missing required fields, unknown relations, invalid or non-finite
+confidence values, wrong generation identity, wrong pipeline identity, wrong provider identity,
+absent evidence ids, duplicate proposal ids, non-canonical typed proposal ids, or citations to
+unknown evidence.
 
 ## Safety Invariants
 
@@ -82,6 +85,9 @@ metadata, but explanations are library authored and do not copy adversarial inst
 Every accepted proposal cites at least one projected evidence id. Provider proposals citing unknown
 evidence are rejected as malformed provider output.
 
+`proposal_report()` requires either an explicit `pipeline_id` or a graph `pipeline_fingerprint`.
+It does not substitute a shared sentinel pipeline identity.
+
 Rejected model proposals are recorded in `rejected_proposals`. They are not silently dropped.
 
 Conflicting proposals can coexist as `requires_review`. Confidence alone is not sufficient for
@@ -90,6 +96,9 @@ promotion to trusted evidence.
 `proposal_to_graph_edge()` can represent a supersession proposal as an
 `inferred_candidate_supersedes` graph edge. That edge remains separate from authored graph edges and
 is not consumed by trust evaluation.
+
+Deterministic text rules require graphs built with `include_text=True`. The text is projected under
+a reserved metadata key and remains opt in so ordinary graph callers do not duplicate chunk bodies.
 
 ## Session 3 Control Artifact
 

@@ -7,9 +7,15 @@ import pytest
 
 from recall.calibration import Calibration
 from recall.reasoning_graph import build_reasoning_graph
+from recall.reasoning_graph import EVIDENCE_TEXT_METADATA_KEY
 from recall.reasoning_proposals import (
+    DETERMINISTIC_PROVIDER_ID,
     InferenceProposal,
+    PROPOSAL_SCHEMA_VERSION,
+    PROVIDER_FAILURE_KINDS,
     ProposalContext,
+    ProposalStatus,
+    ProposedRelation,
     deterministic_inference_proposals,
     proposal_precision_recall,
     proposal_report,
@@ -21,6 +27,17 @@ from recall.types import Chunk, RetrievalDiagnostics, RetrievalResult, ScoredChu
 JAN_1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 FEB_1 = datetime(2026, 2, 1, tzinfo=timezone.utc)
 MAR_1 = datetime(2026, 3, 1, tzinfo=timezone.utc)
+
+
+def test_proposal_package_preserves_public_imports_after_split() -> None:
+    status: ProposalStatus = "candidate"
+    relation: ProposedRelation = "supersedes"
+
+    assert status == "candidate"
+    assert relation == "supersedes"
+    assert PROPOSAL_SCHEMA_VERSION == 1
+    assert DETERMINISTIC_PROVIDER_ID == "recall.deterministic"
+    assert "malformed_output" in PROVIDER_FAILURE_KINDS
 
 
 def _chunk(
@@ -81,6 +98,7 @@ def _graph():
         tenant_id="acme",
         generation_id="gen_1",
         pipeline_fingerprint="pipe-a",
+        include_text=True,
     )
 
 
@@ -128,9 +146,10 @@ def test_adversarial_corpus_text_remains_data_not_instructions() -> None:
         ],
         tenant_id="acme",
         generation_id="gen_1",
+        include_text=True,
     )
 
-    proposals = deterministic_inference_proposals(graph)
+    proposals = deterministic_inference_proposals(graph, pipeline_id="pipe-a")
 
     assert proposals
     assert all(proposal.provider_id == "recall.deterministic" for proposal in proposals)
@@ -161,10 +180,11 @@ def test_proposal_candidate_edge_stays_out_of_authored_edges_and_trust() -> None
         ],
         tenant_id="acme",
         generation_id="gen_1",
+        include_text=True,
     )
     proposal = next(
         proposal
-        for proposal in deterministic_inference_proposals(graph)
+        for proposal in deterministic_inference_proposals(graph, pipeline_id="pipe-a")
         if proposal.subject_id == "feature_v1.md"
     )
     candidate_edge = proposal_to_graph_edge(graph, proposal)
@@ -346,3 +366,140 @@ def test_provider_typed_output_is_validated_against_generation() -> None:
     report = proposal_report(graph, model_provider=_Provider([bad]))
 
     assert report.failure_matrix["malformed_output"] == 1
+
+
+def test_provider_typed_output_is_validated_against_provider_identity() -> None:
+    graph = _graph()
+    provider_context = ProposalContext(
+        tenant_id=graph.tenant_id,
+        generation_id=graph.generation_id,
+        pipeline_id="pipe-a",
+        provider_id="wrong.provider",
+        model_id="test-model",
+        provider_revision="rev-a",
+    )
+    bad = InferenceProposal(
+        id="model_bad",
+        source_evidence_ids=(graph.nodes[0].id,),
+        proposed_relation="references",
+        subject_id="a",
+        object_id="b",
+        explanation="spoofed provider",
+        model_id=provider_context.model_id,
+        pipeline_id=provider_context.pipeline_id,
+        provider_id=provider_context.provider_id,
+        provider_revision=provider_context.provider_revision,
+        confidence=None,
+        uncertainty=(),
+        generation_id=graph.generation_id,
+    )
+
+    report = proposal_report(graph, model_provider=_Provider([bad]))
+
+    assert report.failure_matrix["malformed_output"] == 1
+    assert all(proposal.provider_id != "wrong.provider" for proposal in report.proposals)
+
+
+def test_provider_batch_is_atomic_on_malformed_later_output() -> None:
+    graph = _graph()
+    provider = _Provider(
+        [
+            {
+                "source_evidence_ids": (graph.nodes[0].id,),
+                "proposed_relation": "references",
+                "subject_id": "search_policy_v1.md",
+                "object_id": "retry_policy.md",
+                "explanation": "valid first item",
+                "confidence": 0.5,
+                "uncertainty": [],
+            },
+            {"source_evidence_ids": []},
+        ]
+    )
+
+    report = proposal_report(graph, model_provider=provider)
+
+    assert report.failure_matrix["malformed_output"] == 1
+    assert all(proposal.provider_id != "test.provider" for proposal in report.proposals)
+
+
+def test_provider_duplicate_ids_are_malformed_not_silent_overwrites() -> None:
+    graph = _graph()
+    deterministic = deterministic_inference_proposals(graph)[0]
+    spoof = InferenceProposal(
+        id=deterministic.id,
+        source_evidence_ids=deterministic.source_evidence_ids,
+        proposed_relation=deterministic.proposed_relation,
+        subject_id=deterministic.subject_id,
+        object_id=deterministic.object_id,
+        explanation="duplicate id",
+        model_id="test-model",
+        pipeline_id="pipe-a",
+        provider_id="test.provider",
+        provider_revision="rev-a",
+        confidence=0.1,
+        uncertainty=(),
+        generation_id=graph.generation_id,
+        status=deterministic.status,
+        rule_id=deterministic.rule_id,
+    )
+
+    report = proposal_report(graph, model_provider=_Provider([spoof]))
+
+    assert report.failure_matrix["malformed_output"] == 1
+
+
+def test_provider_rejects_non_finite_confidence() -> None:
+    graph = _graph()
+    provider = _Provider(
+        [
+            {
+                "source_evidence_ids": (graph.nodes[0].id,),
+                "proposed_relation": "references",
+                "subject_id": "a",
+                "object_id": "b",
+                "explanation": "nan",
+                "confidence": float("nan"),
+                "uncertainty": [],
+            }
+        ]
+    )
+
+    report = proposal_report(graph, model_provider=provider)
+
+    assert report.failure_matrix["malformed_output"] == 1
+
+
+def test_pipeline_id_is_required_without_graph_fingerprint() -> None:
+    graph = build_reasoning_graph(
+        [_chunk("a", "a.md", "decision: a.")],
+        tenant_id="acme",
+        generation_id="gen_1",
+        include_text=True,
+    )
+
+    with pytest.raises(ValueError, match="pipeline_id is required"):
+        proposal_report(graph)
+
+    assert proposal_report(graph, pipeline_id="fixture-pipeline").pipeline_id == "fixture-pipeline"
+
+
+def test_graph_text_projection_is_opt_in_and_reserved() -> None:
+    default_graph = build_reasoning_graph(
+        [Chunk("a", "/a.md", "body", {"file": "a.md", "text": "shadow"})],
+        tenant_id="acme",
+        generation_id="gen_1",
+    )
+    text_graph = build_reasoning_graph(
+        [Chunk("a", "/a.md", "body", {"file": "a.md", "text": "shadow"})],
+        tenant_id="acme",
+        generation_id="gen_1",
+        include_text=True,
+    )
+
+    default_chunk = next(node for node in default_graph.nodes if node.kind == "chunk")
+    text_chunk = next(node for node in text_graph.nodes if node.kind == "chunk")
+
+    assert EVIDENCE_TEXT_METADATA_KEY not in default_chunk.metadata
+    assert text_chunk.metadata["text"] == "shadow"
+    assert text_chunk.metadata[EVIDENCE_TEXT_METADATA_KEY] == "body"

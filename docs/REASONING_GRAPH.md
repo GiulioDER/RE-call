@@ -117,6 +117,8 @@ Session 3 fills the previously reserved candidate channel through `recall.reason
 confidence, uncertainty, and explanation in edge metadata. They do not enter
 `authored_supersession_map()` and are not consumed by trust evaluation.
 
-Chunk projection now carries chunk text inside node metadata so deterministic proposal rules can
-trace direct textual references to concrete evidence. Node and graph identities remain derived from
-the same stable identity fields, not from proposal output.
+Chunk projection carries chunk text only when a caller explicitly passes `include_text=True`.
+The body text is stored under a reserved metadata key so corpus metadata cannot shadow the evidence
+body. The default projection remains lightweight for graph callers that do not run proposal rules.
+Node and graph identities remain derived from the same stable identity fields, not from proposal
+output.
