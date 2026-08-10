@@ -143,7 +143,14 @@ headings, on the **same** held-out split throughout. Two corpora, one embedder s
 
 ### So which configuration should you actually run?
 
-Two, and the honest answer is that most people should start with the first.
+RE-call is meant to be configured, not merely installed. Legal constraints, hardware, latency
+budgets, retrieval quality, and per-query cost are first-class deployment choices. The default is
+the conservative one: local, offline, and free at the memory layer. Hosted embedders, rerankers,
+learned sparse retrieval, and stricter calibration gates are opt-in policy choices, not hidden
+defaults.
+
+Two starting points cover most deployments, and the honest answer is that most people should start
+with the first.
 
 **Default — free, local, offline, nothing leaves your machine.** No flags. `bge-small` via
 fastembed, hybrid dense+sparse, no reranker. $0 per memory at any scale, and the configuration
