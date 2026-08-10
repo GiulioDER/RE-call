@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
+from itertools import combinations
 from types import MappingProxyType
 from typing import Any
 
@@ -380,29 +381,28 @@ def _contradictory_validity_window_proposals(
             claims_by_subject[claim.subject].append(claim)
     for subject, subject_claims in sorted(claims_by_subject.items()):
         ordered = sorted(subject_claims, key=lambda claim: str(claim.metadata.get("file")))
-        for index, left in enumerate(ordered):
-            for right in ordered[index + 1 :]:
-                if _windows_overlap(left, right) and _opposing_validity_text(left.text, right.text):
-                    left_file = str(left.metadata["file"])
-                    right_file = str(right.metadata["file"])
-                    proposals.append(
-                        _make_proposal(
-                            graph=graph,
-                            context=context,
-                            source_evidence_ids=(left.evidence_id, right.evidence_id),
-                            proposed_relation="contradicts",
-                            subject_id=left_file,
-                            object_id=right_file,
-                            explanation=(
-                                f"{left_file} and {right_file} discuss {subject} in overlapping "
-                                "validity windows with opposing status language."
-                            ),
-                            confidence=0.78,
-                            uncertainty=("textual polarity is heuristic",),
-                            status="requires_review",
-                            rule_id="deterministic.contradictory_validity_windows",
-                        )
+        for left, right in combinations(ordered, 2):
+            if _windows_overlap(left, right) and _opposing_validity_text(left.text, right.text):
+                left_file = str(left.metadata["file"])
+                right_file = str(right.metadata["file"])
+                proposals.append(
+                    _make_proposal(
+                        graph=graph,
+                        context=context,
+                        source_evidence_ids=(left.evidence_id, right.evidence_id),
+                        proposed_relation="contradicts",
+                        subject_id=left_file,
+                        object_id=right_file,
+                        explanation=(
+                            f"{left_file} and {right_file} discuss {subject} in overlapping "
+                            "validity windows with opposing status language."
+                        ),
+                        confidence=0.78,
+                        uncertainty=("textual polarity is heuristic",),
+                        status="requires_review",
+                        rule_id="deterministic.contradictory_validity_windows",
                     )
+                )
     return proposals
 
 

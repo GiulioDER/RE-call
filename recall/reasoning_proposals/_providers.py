@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 
 from recall.reasoning_graph import ReasoningGraphProjection
@@ -164,62 +165,15 @@ def proposal_report(
     rejected: list[InferenceProposal] = []
     failures: list[ProviderFailure] = []
     if model_provider is not None:
-        provider_context = _context(
-            graph,
-            pipeline_id=pipeline,
-            provider_id=model_provider.provider_id,
-            model_id=model_provider.model_id,
-            provider_revision=model_provider.provider_revision,
+        provider_result = _run_provider(
+            graph=graph,
+            pipeline=pipeline,
+            model_provider=model_provider,
+            existing_ids={proposal.id for proposal in (*accepted, *rejected)},
         )
-        try:
-            raw_proposals = tuple(model_provider.propose(graph, provider_context))
-            if len(raw_proposals) > model_provider.max_proposals:
-                raise ValueError(
-                    f"provider returned {len(raw_proposals)} proposals, "
-                    f"maximum is {model_provider.max_proposals}"
-                )
-            known_evidence_ids = {node.id for node in graph.nodes}
-            provider_accepted: list[InferenceProposal] = []
-            provider_rejected: list[InferenceProposal] = []
-            for raw in raw_proposals:
-                proposal = _coerce_provider_proposal(
-                    raw,
-                    graph=graph,
-                    context=provider_context,
-                    known_evidence_ids=known_evidence_ids,
-                )
-                if proposal.status == "rejected":
-                    provider_rejected.append(proposal)
-                else:
-                    provider_accepted.append(proposal)
-            _reject_duplicate_ids(
-                {proposal.id for proposal in (*accepted, *rejected)},
-                [*provider_accepted, *provider_rejected],
-            )
-            accepted.extend(provider_accepted)
-            rejected.extend(provider_rejected)
-        except TimeoutError as exc:
-            failures.append(
-                _provider_failure(
-                    model_provider, "timeout", _safe_failure_message("timeout", exc)
-                )
-            )
-        except ValueError as exc:
-            message = str(exc)
-            kind: ProviderFailureKind = (
-                "wrong_cardinality" if "maximum is" in message else "malformed_output"
-            )
-            failures.append(
-                _provider_failure(model_provider, kind, _safe_failure_message(kind, exc))
-            )
-        except Exception as exc:  # noqa: BLE001
-            failures.append(
-                _provider_failure(
-                    model_provider,
-                    "provider_error",
-                    _safe_failure_message("provider_error", exc),
-                )
-            )
+        accepted.extend(provider_result.accepted)
+        rejected.extend(provider_result.rejected)
+        failures.extend(provider_result.failures)
     return ProposalProtocolReport(
         schema_version=PROPOSAL_SCHEMA_VERSION,
         generation_id=graph.generation_id,
@@ -228,6 +182,100 @@ def proposal_report(
         rejected_proposals=tuple(sorted(rejected, key=lambda proposal: proposal.id)),
         provider_failures=tuple(failures),
     )
+
+
+@dataclass(frozen=True)
+class _ProviderResult:
+    accepted: tuple[InferenceProposal, ...] = ()
+    rejected: tuple[InferenceProposal, ...] = ()
+    failures: tuple[ProviderFailure, ...] = ()
+
+
+def _run_provider(
+    *,
+    graph: ReasoningGraphProjection,
+    pipeline: str,
+    model_provider: ModelBackedProposalProvider,
+    existing_ids: set[str],
+) -> _ProviderResult:
+    provider_context = _context(
+        graph,
+        pipeline_id=pipeline,
+        provider_id=model_provider.provider_id,
+        model_id=model_provider.model_id,
+        provider_revision=model_provider.provider_revision,
+    )
+    try:
+        raw_proposals = _checked_provider_cardinality(model_provider, provider_context, graph)
+        accepted, rejected = _coerce_provider_batch(
+            raw_proposals,
+            graph=graph,
+            context=provider_context,
+            known_evidence_ids={node.id for node in graph.nodes},
+        )
+        _reject_duplicate_ids(existing_ids, (*accepted, *rejected))
+        return _ProviderResult(accepted=accepted, rejected=rejected)
+    except TimeoutError as exc:
+        return _ProviderResult(
+            failures=(
+                _provider_failure(model_provider, "timeout", _safe_failure_message("timeout", exc)),
+            )
+        )
+    except ValueError as exc:
+        message = str(exc)
+        kind: ProviderFailureKind = (
+            "wrong_cardinality" if "maximum is" in message else "malformed_output"
+        )
+        return _ProviderResult(
+            failures=(_provider_failure(model_provider, kind, _safe_failure_message(kind, exc)),)
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _ProviderResult(
+            failures=(
+                _provider_failure(
+                    model_provider,
+                    "provider_error",
+                    _safe_failure_message("provider_error", exc),
+                ),
+            )
+        )
+
+
+def _checked_provider_cardinality(
+    model_provider: ModelBackedProposalProvider,
+    provider_context: ProposalContext,
+    graph: ReasoningGraphProjection,
+) -> tuple[InferenceProposal | Mapping[str, Any], ...]:
+    raw_proposals = tuple(model_provider.propose(graph, provider_context))
+    if len(raw_proposals) > model_provider.max_proposals:
+        raise ValueError(
+            f"provider returned {len(raw_proposals)} proposals, maximum is "
+            f"{model_provider.max_proposals}"
+        )
+    return raw_proposals
+
+
+def _coerce_provider_batch(
+    raw_proposals: Sequence[InferenceProposal | Mapping[str, Any]],
+    *,
+    graph: ReasoningGraphProjection,
+    context: ProposalContext,
+    known_evidence_ids: set[str],
+) -> tuple[tuple[InferenceProposal, ...], tuple[InferenceProposal, ...]]:
+    accepted: list[InferenceProposal] = []
+    rejected: list[InferenceProposal] = []
+    for raw in raw_proposals:
+        proposal = _coerce_provider_proposal(
+            raw,
+            graph=graph,
+            context=context,
+            known_evidence_ids=known_evidence_ids,
+        )
+        if proposal.status == "rejected":
+            rejected.append(proposal)
+        else:
+            accepted.append(proposal)
+    return tuple(accepted), tuple(rejected)
 
 
 def _provider_failure(
