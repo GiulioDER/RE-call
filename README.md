@@ -2,6 +2,8 @@
   <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/banner.png" alt="RE-call: Retrieval-Augmented Self-Recall" width="900">
 </p>
 
+<!-- mcp-name: io.github.GiulioDER/re-call -->
+
 <p align="center">
   <b>Trustworthy memory for AI agents.</b><br>
   RE-call gives retrieval results confidence, provenance, validity, tenant isolation, and an explicit abstention path when the memory does not support an answer.

@@ -10,6 +10,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 No unreleased package changes yet.
 
+## [0.9.2] (2026-08-10)
+
+### Added
+
+- Added official MCP Registry metadata in `server.json`.
+- Added the PyPI ownership marker required by the MCP Registry.
+- Added the `recall-mcp` console script for registry clients using `uvx`.
+
 ## [0.9.1] - 2026-08-10
 
 ### Fixed
