@@ -1,4 +1,4 @@
-# MTRAG Tasks B and C — the complete run pack
+# MTRAG Tasks B and C — archived run pack
 
 > **Prior work.** This file archives runs that already exist; it proposes no new measurement, so no
 > fresh search was run for it. The searches that governed these runs are recorded where the claims
@@ -10,22 +10,22 @@
 > diagnosis stands), `[[reference-mtrag-official-judge-is-gpt4o-mini-2026-08-08]]`,
 > `[[incident-mtrag-raw-vs-conditioned-metric-comparison-2026-08-09]]`.
 
-Every artifact from the six generation runs, gzipped, 68 MB. Each file is sha256-verified against
-`SHA256SUMS.txt`, which was written on the machine that produced them and checked again after
+Every artifact from the six generation runs is listed in `SHA256SUMS.txt`. The raw payloads and
+logs are archived outside the source tree; restore that archive beside this README before replaying
+the commands below. The files were written on the machine that produced them and checked again after
 transfer (48/48 clean).
 
-## Why this is committed rather than ignored
+## Why the payloads are not committed
 
-These outputs were originally gitignored, on the reasoning that `MANIFEST.md` recorded a sha256 for
-each one and that made a result checkable without vendoring tens of megabytes.
+The first public archive committed the gzipped payload pack to git because the files had no durable
+home. That fixed the immediate loss risk but made the repository feel like a lab archive instead of
+a library.
 
-That reasoning did not survive contact with where the files actually lived. When it came time to
-publish, four of the six runs had **no copy on any developer machine**. Their only copy was
-`/var/tmp/mtrag_gen` on VPS2, a temp directory on a host that had thrown filesystem I/O errors the
-week before. The LLM-judge pass over each run is a paid API call, so "reproducible in principle"
-would have meant paying again to recover a number already measured.
+The source tree now keeps the index, checksums, run notes, and derived summaries. The bulky rows and
+logs belong in release assets or a dataset bucket. A restored archive is still verifiable against
+`SHA256SUMS.txt`, but the checksum file is not the archive itself.
 
-🔑 **A hash proves an artifact is unchanged. It does not keep the artifact alive.** An artifact whose
+**A hash proves an artifact is unchanged. It does not keep the artifact alive.** An artifact whose
 only copy is a temp directory is not archived, however well its provenance is documented.
 
 ## The six runs

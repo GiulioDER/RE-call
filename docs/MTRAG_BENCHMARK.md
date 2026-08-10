@@ -288,12 +288,13 @@ once a run is over.
 
 ## 9. Reproduce
 
-Every artifact from all six generation runs is committed, 68 MB gzipped from ~430 MB, each file
-sha256-verified: [`results/mtrag_generation/runs/`](../results/mtrag_generation/runs/README.md).
-That includes the judge logs carrying the 2,526-error evidence.
+The six generation runs are indexed by checksum in
+[`results/mtrag_generation/runs/`](../results/mtrag_generation/runs/README.md). Download or restore
+the archived payloads beside that README before replaying the command below. The source tree keeps
+the checksum index and run notes, not the 68 MB payload pack.
 
 ```bash
-# the headline number, straight from the committed artifact
+# the headline number, after restoring the archived payload
 cd results/mtrag_generation/runs
 python -c "
 import gzip,json,statistics

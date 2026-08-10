@@ -2,9 +2,9 @@
 
 **Date:** 2026-07-29 · **System:** RE-call at shipped defaults · **Corpus:** LOCOMO + 2 distractor
 conversations per question
-**Manifest:** `results/ladder/manifest_v2.jsonl`, digest
+**Archived manifest:** `results/ladder/manifest_v2.jsonl`, digest
 `5534c61356acaa7b62ac5a79dbec7383674fc052984d10c1d0cc89e26a532bd5`, 1 200 instances (200 × 6)
-**Responses:** `results/ladder/responses_v2.jsonl`, 1 200 scored, none missing
+**Archived responses:** `results/ladder/responses_v2.jsonl`, 1 200 scored, none missing
 **Pre-registration:** [`benchmarks/PREREGISTRATION-ladder-v2.md`](../../benchmarks/PREREGISTRATION-ladder-v2.md) + its dated pre-run addendum
 **Predecessor:** [`H1_VERDICT.md`](H1_VERDICT.md) (v1)
 
@@ -60,7 +60,7 @@ Monotone, every CI excluding zero, and non-increasing **per question** far more 
 **Correction, 2026-07-29 (post-publication audit):** the original text of this section reported
 these four per-step counts as "decreases" — they are **non-increases** (`<=`), which is not the
 same claim: a flat top-1 cosine between two rungs counts toward "non-increase" but is not a
-decrease. Both columns, recomputed from `results/ladder/manifest_v2.jsonl` +
+decrease. Both columns, recomputed from the archived `results/ladder/manifest_v2.jsonl` +
 `responses_v2.jsonl`, n=200:
 
 ```

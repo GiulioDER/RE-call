@@ -52,15 +52,19 @@ oracle_out/
 results/ladder/*_smoke.jsonl
 results/ladder/*.log
 
-# MTRAG generation artifacts. The UNCOMPRESSED working copies stay out of git: ~430 MB across six
-# runs, and byte-identical to the gzipped pack.
+# Source control keeps result summaries, checksums, and compact JSON artifacts. Raw per-question
+# payloads and logs belong in release assets or an external dataset archive, not in the library
+# checkout.
+results/**/*.jsonl
+results/**/*.jsonl.gz
+results/**/*.log
+results/**/*.log.gz
+
+# MTRAG generation artifacts. The uncompressed working copies are ~430 MB across six runs, and the
+# gzipped pack is still 68 MB. Keep those payloads outside git and use the checksum index in
+# results/mtrag_generation/runs/ when restoring an archived copy.
 #
-# ⚠️ The pack itself IS committed, at results/mtrag_generation/runs/*.gz (68 MB, each file
-# sha256-verified against runs/SHA256SUMS.txt). These outputs used to be ignored outright, on the
-# reasoning that a MANIFEST hash kept a result checkable without vendoring the payload. That
-# reasoning failed in practice: the only copy of four of the six runs was /var/tmp on a host that
-# had filesystem I/O errors the week before, and the LLM-judge passes cost real money to redo.
-# An artifact whose sole copy is a temp directory is not archived. See runs/README.md.
+# A hash proves a restored artifact is unchanged. It is not a storage location. See runs/README.md.
 results/mtrag_generation/*.predictions.jsonl
 results/mtrag_generation/*.scored.jsonl
 results/mtrag_generation/*.scoring.jsonl

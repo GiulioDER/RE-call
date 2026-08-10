@@ -4,7 +4,12 @@
 configuration that produced it**, because two of them are one character apart in name and five
 versions apart in meaning.
 
-Every artifact below also carries the same information **inside the file**, as a leading
+Small JSON artifacts remain in this repository. Raw per-question payloads, logs, and gzipped run
+packs are archived outside the source tree and represented here by filenames, checksums, and
+summary documents. That keeps the Python library checkout small while preserving the verification
+contract.
+
+Every retained JSON artifact below also carries the same information **inside the file**, as a leading
 `_provenance` block — so a file that gets opened, copied or linked on its own still says what it
 is. The block never touches a measured value.
 
@@ -60,8 +65,8 @@ that could have caught it.
 | artifact | backs |
 |---|---|
 | `head_to_head/paired_accuracy.json` | §9d's five-row table, the Holm maximum, and the `text-embedding-3-small` as-shipped paragraph. Derived by `benchmarks/h2h_artifact.py` **through `benchmarks/analyze.py`** — the same code that produced the published table, not a second implementation of McNemar. Carries the sha256 of both raw runs per row, so a re-scored run cannot be substituted silently |
-| `head_to_head/outcomes/*.jsonl` | one line per paired question, `{q, recall, mem0}`. This is what makes the paired test **recomputable by a reader** without the raw runs, an API key, or trust. 1,540 lines per row, ~60 KB each |
-| ⚠️ `head_to_head/outcomes/as_shipped__*.jsonl` | **two replicates of one configuration**, 25 seconds apart, byte-identical configs, 0.4117 and 0.4221. The README's `0.42` was the higher one. Keyed by the run FILENAME's stem, and a repeated key is an error rather than a last-writer-wins — the loss of a replicate is how a measured spread silently becomes a point estimate. `write_artifact` also prunes any vector this build did not write, so the directory is a function of the build and cannot accumulate files that back nothing |
+| external raw rows: `head_to_head/outcomes/*.jsonl` | one line per paired question, `{q, recall, mem0}`. These rows make the paired test **recomputable by a reader** without the raw runs, an API key, or trust, but they are no longer part of the library checkout. The retained artifact is `head_to_head/paired_accuracy.json` |
+| external raw rows: `head_to_head/outcomes/as_shipped__*.jsonl` | **two replicates of one configuration**, 25 seconds apart, byte-identical configs, 0.4117 and 0.4221. The README's `0.42` was the higher one. Keyed by the run FILENAME's stem, and a repeated key is an error rather than a last-writer-wins — the loss of a replicate is how a measured spread silently becomes a point estimate |
 
 `tests/test_h2h_artifact_backs_findings.py` asserts the committed artifact and the §9d table agree,
 so the two cannot drift apart again. The raw runs stay out of the repository; what the claim rests
@@ -75,8 +80,8 @@ them is an artifact in this file's sense:
 
 | file | kind | |
 |---|---|---|
-| `promotion/labelled.manifest.jsonl` | **input**, frozen | question ids and input hashes, fixed BEFORE either arm ran. Carries its own digest and refuses an edited body. No `_provenance`, deliberately: a timestamp inside a digest-covered body makes the digest a function of the clock |
-| `promotion/{baseline,candidate}.*.jsonl` | **raw rows** | one record per question per arm. The filename carries the arm label, the embedding profile id, and the first 16 hex of the profile FINGERPRINT, so two arms sharing a profile id and differing in artifact digest cannot land in one ledger |
+| external raw input: `promotion/labelled.manifest.jsonl` | **input**, frozen | question ids and input hashes, fixed BEFORE either arm ran. Carries its own digest and refuses an edited body. No `_provenance`, deliberately: a timestamp inside a digest-covered body makes the digest a function of the clock |
+| external raw rows: `promotion/{baseline,candidate}.*.jsonl` | **raw rows** | one record per question per arm. The filename carries the arm label, the embedding profile id, and the first 16 hex of the profile FINGERPRINT, so two arms sharing a profile id and differing in artifact digest cannot land in one ledger |
 | `promotion/decision.null-difference.json` | **artifact** | the decision, with `_provenance` |
 
 | artifact | backs |
