@@ -268,6 +268,31 @@ The Session 3 control artifact is `results/reasoning_session3_proposals.json`, g
 and recall on synthetic missing relationships, rejected examples, provider failure matrix, and
 side effect audit flags.
 
+## Session 4 Multi Hop Evidence Planner
+
+Session 4 adds `recall.reasoning_planner.plan_multi_hop_evidence()`, a typed, provider neutral
+planner that starts from `TrustedResult` and a `ReasoningGraphProjection`. It expands only through
+explicit graph operations:
+
+* Retrieve related claims from the same projected source.
+* Follow authored graph relationships.
+* Compare candidate memories selected by inference proposals.
+* Search for missing intermediate evidence.
+* Check temporal consistency.
+* Check contradiction proposals.
+
+The planner has hard budgets for reasoning steps, graph nodes, model calls, evidence tokens, and
+wall time. Budget failures return `outcome="failed_closed"` and never convert inferred proposals
+into trusted evidence. Proposal assisted expansion is recorded separately in the trace as
+exploration, with `trusted_evidence=False`.
+
+The returned `ReasoningPlan` contains the initial retrieval, expansion steps, accepted evidence,
+rejected evidence, unresolved gaps, proposal exploration traces, and typed budget usage. Budget usage
+fields are `steps`, `graph_nodes`, `model_calls`, `evidence_tokens`, and `wall_time_ms`, with units
+matching `ReasoningBudget`. Retrieval abstention, retrieval to graph binding mismatch, missing graph
+support, ambiguous graph diagnostics, unsupported proposal citations, temporal inconsistency,
+contradictions, and budget exhaustion all fail closed.
+
 ## Session 6 Evaluation Controls
 
 The Session 6 fixture set is frozen in `recall/eval/reasoning_session6.json`.
