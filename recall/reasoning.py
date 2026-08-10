@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime
 from enum import Enum
+import math
 from typing import Any, Literal, Protocol, cast
 
 from recall.evidence import (
@@ -14,12 +15,21 @@ from recall.evidence import (
     EvidencePolicy,
     EvidenceValidationError,
     build_evidence_bundle,
-    generate_from_evidence,
+    normalize_citations,
+    parse_answer_envelope,
+    render_evidence_prompt,
+    validate_answer,
 )
 from recall.reasoning_graph import ReasoningGraphProjection
 from recall.reasoning_planner import (
+    EvidenceDecision,
+    ExpansionStep,
+    InferenceProposalTrace,
+    PlannerInitialRetrieval,
     ReasoningBudget,
+    ReasoningBudgetUsage,
     ReasoningPlan,
+    ReasoningTrace,
     UnresolvedGap,
     plan_multi_hop_evidence,
 )
@@ -141,7 +151,7 @@ class Contradiction:
 class ReasoningDiagnostics:
     latency_ms: int
     budget: ReasoningBudget
-    budget_used: object | None
+    budget_used: ReasoningBudgetUsage | None
     retrieval_stage_ms: Mapping[str, float]
     generator_invoked: bool
     citations_normalized: bool
@@ -157,7 +167,7 @@ class ReasoningResponse:
     clarification_request: str | None
     trusted_evidence: EvidenceBundle
     inference_proposals: tuple[InferenceProposal, ...]
-    reasoning_trace: object | None
+    reasoning_trace: ReasoningTrace | None
     contradictions: tuple[Contradiction, ...]
     unsupported_gaps: tuple[UnresolvedGap, ...]
     citations: tuple[Citation, ...]
@@ -317,36 +327,38 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             started=started,
         )
 
-    generated = generate_from_evidence(
-        retrieval,
-        request.providers.answer_provider,
-        request.evidence_policy,
-    )
-    if generated.envelope.insufficient_evidence:
+    system, user = render_evidence_prompt(bundle)
+    raw = parse_answer_envelope(request.providers.answer_provider(system, user))
+    envelope = normalize_citations(raw)
+    validation = validate_answer(envelope, bundle)
+    if not validation.valid:
+        raise EvidenceValidationError("; ".join(validation.errors))
+    citations_normalized = envelope.citations != raw.citations
+    if envelope.insufficient_evidence:
         return _response(
             request=request,
             retrieval=retrieval,
-            bundle=generated.evidence,
+            bundle=bundle,
             outcome="abstained",
             answer=None,
             proposals=proposals,
             plan=plan,
             refusal_reason="provider_abstained",
-            generator_invoked=generated.generator_invoked,
-            citations_normalized=generated.citations_normalized,
+            generator_invoked=True,
+            citations_normalized=citations_normalized,
             started=started,
         )
     return _response(
         request=request,
         retrieval=retrieval,
-        bundle=generated.evidence,
+        bundle=bundle,
         outcome="answered",
-        answer=generated.envelope.answer,
+        answer=envelope.answer,
         proposals=proposals,
         plan=plan,
-        citations=generated.envelope.citations,
-        generator_invoked=generated.generator_invoked,
-        citations_normalized=generated.citations_normalized,
+        citations=envelope.citations,
+        generator_invoked=True,
+        citations_normalized=citations_normalized,
         started=started,
     )
 
@@ -354,6 +366,9 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
 def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResponse:
     """Deserialize the JSON form emitted by :meth:`ReasoningResponse.to_dict`."""
     bundle = _evidence_bundle_from_dict(_mapping(payload["trusted_evidence"]))
+    trust_state = _trust_state(payload["trust_state"])
+    if bundle.trust_state != trust_state:
+        raise EvidenceValidationError("trust_state mismatch between response and trusted_evidence")
     proposals = tuple(
         _proposal_from_dict(_mapping(item)) for item in _sequence(payload["inference_proposals"])
     )
@@ -379,7 +394,7 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
     diagnostics = ReasoningDiagnostics(
         latency_ms=_required_int(diagnostics_payload["latency_ms"]),
         budget=_budget_from_dict(_mapping(diagnostics_payload["budget"])),
-        budget_used=diagnostics_payload.get("budget_used"),
+        budget_used=_optional_budget_usage_from_dict(diagnostics_payload.get("budget_used")),
         retrieval_stage_ms={
             key: _required_float(value)
             for key, value in _mapping(diagnostics_payload["retrieval_stage_ms"]).items()
@@ -394,7 +409,7 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         clarification_request=_optional_str(payload.get("clarification_request")),
         trusted_evidence=bundle,
         inference_proposals=proposals,
-        reasoning_trace=payload.get("reasoning_trace"),
+        reasoning_trace=_optional_trace_from_dict(payload.get("reasoning_trace")),
         contradictions=contradictions,
         unsupported_gaps=tuple(
             _gap_from_dict(_mapping(item)) for item in _sequence(payload["unsupported_gaps"])
@@ -407,7 +422,7 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         pipeline_fingerprint=_optional_str(payload.get("pipeline_fingerprint")),
         corpus_fingerprint=_optional_str(payload.get("corpus_fingerprint")),
         query_set_digest=_optional_str(payload.get("query_set_digest")),
-        trust_state=str(payload["trust_state"]),
+        trust_state=trust_state,
         refusal_reason=_optional_str(payload.get("refusal_reason")),
         diagnostics=diagnostics,
     )
@@ -425,7 +440,7 @@ def _validate_retrieval_binding(request: ReasoningRequest, retrieval: TrustedRes
         ("corpus_fingerprint", request.generation.corpus_fingerprint, retrieval.corpus_fingerprint),
     )
     for name, expected, actual in checks:
-        if expected is not None and actual is not None and expected != actual:
+        if expected is not None and actual != expected:
             raise ReasoningValidationError(f"retrieval {name} does not match request {name}")
     if request.policy.require_certified_evidence and retrieval.trust_state != "trusted":
         return
@@ -452,8 +467,9 @@ def _validate_graph_binding(
         ),
     )
     for name, expected, actual in checks:
-        if expected is not None and actual is not None and expected != actual:
+        if expected is not None and actual != expected:
             raise ReasoningValidationError(f"reasoning graph {name} does not match request")
+    _validate_graph_members(graph)
 
 
 def _proposal_tuple(
@@ -482,6 +498,34 @@ def _validate_proposals(
             raise ReasoningValidationError(
                 "proposal cites evidence outside the reasoning graph: " + ", ".join(missing)
             )
+
+
+def _validate_graph_members(graph: ReasoningGraphProjection) -> None:
+    for node in graph.nodes:
+        _check_member_identity("node", node.id, node.tenant_id, node.generation_id, graph)
+    for edge in (*graph.authored_edges, *graph.inferred_candidate_edges):
+        _check_member_identity("edge", edge.id, edge.tenant_id, edge.generation_id, graph)
+    for diagnostic in graph.diagnostics:
+        _check_member_identity(
+            "diagnostic",
+            diagnostic.id,
+            diagnostic.tenant_id,
+            diagnostic.generation_id,
+            graph,
+        )
+
+
+def _check_member_identity(
+    kind: str,
+    member_id: str,
+    tenant_id: str,
+    generation_id: str,
+    graph: ReasoningGraphProjection,
+) -> None:
+    if tenant_id != graph.tenant_id:
+        raise ReasoningValidationError(f"{kind} {member_id} tenant_id does not match graph")
+    if generation_id != graph.generation_id:
+        raise ReasoningValidationError(f"{kind} {member_id} generation_id does not match graph")
 
 
 def _response(
@@ -592,6 +636,9 @@ def _to_json_value(value: Any) -> Any:
 def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
     from recall.evidence import EvidenceItem
 
+    if "trust_state" not in payload:
+        raise EvidenceValidationError("trusted_evidence trust_state is required")
+    trust_state = _trust_state(payload["trust_state"])
     items = tuple(
         EvidenceItem(
             chunk_id=str(item["chunk_id"]),
@@ -616,7 +663,7 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
         retrieval_profile=str(payload["retrieval_profile"]),
         index_generation=str(payload["index_generation"]),
         items=items,
-        trust_state=str(payload.get("trust_state", "trusted")),
+        trust_state=trust_state,
         failure_code=_optional_str(payload.get("failure_code")),
     )
 
@@ -652,6 +699,19 @@ def _budget_from_dict(payload: Mapping[str, object]) -> ReasoningBudget:
     )
 
 
+def _optional_budget_usage_from_dict(value: object) -> ReasoningBudgetUsage | None:
+    if value is None:
+        return None
+    payload = _mapping(value)
+    return ReasoningBudgetUsage(
+        steps=_required_int(payload["steps"]),
+        graph_nodes=_required_int(payload["graph_nodes"]),
+        model_calls=_required_int(payload["model_calls"]),
+        evidence_tokens=_required_int(payload["evidence_tokens"]),
+        wall_time_ms=_required_int(payload["wall_time_ms"]),
+    )
+
+
 def _gap_from_dict(payload: Mapping[str, object]) -> UnresolvedGap:
     return UnresolvedGap(
         id=str(payload["id"]),
@@ -659,6 +719,89 @@ def _gap_from_dict(payload: Mapping[str, object]) -> UnresolvedGap:
         node_ids=tuple(str(item) for item in _sequence(payload.get("node_ids", ()))),
         proposal_ids=tuple(str(item) for item in _sequence(payload.get("proposal_ids", ()))),
         reason=str(payload.get("reason", "")),
+    )
+
+
+def _optional_trace_from_dict(value: object) -> ReasoningTrace | None:
+    if value is None:
+        return None
+    payload = _mapping(value)
+    return ReasoningTrace(
+        initial_retrieval=_initial_retrieval_from_dict(
+            _mapping(payload["initial_retrieval"])
+        ),
+        expansion_steps=tuple(
+            _expansion_step_from_dict(_mapping(item))
+            for item in _sequence(payload["expansion_steps"])
+        ),
+        evidence_accepted=tuple(
+            _evidence_decision_from_dict(_mapping(item))
+            for item in _sequence(payload["evidence_accepted"])
+        ),
+        evidence_rejected=tuple(
+            _evidence_decision_from_dict(_mapping(item))
+            for item in _sequence(payload["evidence_rejected"])
+        ),
+        unresolved_gaps=tuple(
+            _gap_from_dict(_mapping(item)) for item in _sequence(payload["unresolved_gaps"])
+        ),
+        inference_proposals_used_for_exploration=tuple(
+            _proposal_trace_from_dict(_mapping(item))
+            for item in _sequence(payload["inference_proposals_used_for_exploration"])
+        ),
+    )
+
+
+def _initial_retrieval_from_dict(payload: Mapping[str, object]) -> PlannerInitialRetrieval:
+    return PlannerInitialRetrieval(
+        query=str(payload["query"]),
+        generation_id=_optional_str(payload.get("generation_id")),
+        trusted_hit_ids=tuple(str(item) for item in _sequence(payload["trusted_hit_ids"])),
+        rejected_hit_ids=tuple(str(item) for item in _sequence(payload["rejected_hit_ids"])),
+        abstained=_required_bool(payload["abstained"]),
+        reason=str(payload["reason"]),
+    )
+
+
+def _expansion_step_from_dict(payload: Mapping[str, object]) -> ExpansionStep:
+    return ExpansionStep(
+        step_index=_required_int(payload["step_index"]),
+        operation=cast(Any, payload["operation"]),
+        input_node_ids=tuple(str(item) for item in _sequence(payload["input_node_ids"])),
+        output_node_ids=tuple(str(item) for item in _sequence(payload["output_node_ids"])),
+        accepted_node_ids=tuple(str(item) for item in _sequence(payload["accepted_node_ids"])),
+        rejected_node_ids=tuple(str(item) for item in _sequence(payload["rejected_node_ids"])),
+        inference_proposal_ids=tuple(
+            str(item) for item in _sequence(payload.get("inference_proposal_ids", ()))
+        ),
+        gap_ids=tuple(str(item) for item in _sequence(payload.get("gap_ids", ()))),
+        notes=tuple(str(item) for item in _sequence(payload.get("notes", ()))),
+    )
+
+
+def _evidence_decision_from_dict(payload: Mapping[str, object]) -> EvidenceDecision:
+    return EvidenceDecision(
+        kind=cast(Any, payload["kind"]),
+        node_id=_optional_str(payload.get("node_id")),
+        chunk_id=_optional_str(payload.get("chunk_id")),
+        source=_optional_str(payload.get("source")),
+        file=_optional_str(payload.get("file")),
+        reason=str(payload["reason"]),
+    )
+
+
+def _proposal_trace_from_dict(payload: Mapping[str, object]) -> InferenceProposalTrace:
+    return InferenceProposalTrace(
+        proposal_id=str(payload["proposal_id"]),
+        relation=cast(Any, payload["relation"]),
+        subject_id=str(payload["subject_id"]),
+        object_id=str(payload["object_id"]),
+        source_evidence_ids=tuple(
+            str(item) for item in _sequence(payload["source_evidence_ids"])
+        ),
+        used_for_exploration=_required_bool(payload["used_for_exploration"]),
+        trusted_evidence=_required_bool(payload["trusted_evidence"]),
+        reason=str(payload["reason"]),
     )
 
 
@@ -701,7 +844,13 @@ def _required_float(value: object) -> float:
         raise EvidenceValidationError("expected number")
     if not isinstance(value, (str, bytes, bytearray, int, float)):
         raise EvidenceValidationError("expected number")
-    return float(value)
+    try:
+        parsed = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise EvidenceValidationError("expected finite number") from exc
+    if not math.isfinite(parsed):
+        raise EvidenceValidationError("expected finite number")
+    return parsed
 
 
 def _optional_float(value: object) -> float | None:
@@ -721,6 +870,12 @@ def _optional_str(value: object) -> str | None:
         return None
     if not isinstance(value, str):
         raise EvidenceValidationError("expected string or null")
+    return value
+
+
+def _trust_state(value: object) -> str:
+    if value not in {"trusted", "degraded"}:
+        raise EvidenceValidationError("trust_state must be trusted or degraded")
     return value
 
 

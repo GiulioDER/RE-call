@@ -16,7 +16,8 @@ from recall.reasoning import (
     reason,
     reasoning_response_from_dict,
 )
-from recall.reasoning_graph import build_reasoning_graph
+from recall.reasoning_graph import ReasoningGraphNode, build_reasoning_graph
+from recall.reasoning_planner import ReasoningBudgetUsage, ReasoningTrace
 from recall.reasoning_proposals import InferenceProposal
 from recall.types import (
     Chunk,
@@ -173,6 +174,88 @@ def test_reasoning_rejects_cross_tenant_or_generation_retrieval() -> None:
 
     with pytest.raises(ReasoningValidationError, match="generation_id"):
         reason(_request(_result(_hit(chunk), generation="gen_2")))
+
+
+def test_reasoning_rejects_missing_requested_retrieval_boundaries() -> None:
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+    retrieval = _result(_hit(chunk))
+    missing_tenant = TrustedResult(
+        query=retrieval.query,
+        hits=retrieval.hits,
+        abstained=retrieval.abstained,
+        reason=retrieval.reason,
+        gap_warning=retrieval.gap_warning,
+        staleness=retrieval.staleness,
+        diagnostics=retrieval.diagnostics,
+        calibration_id=retrieval.calibration_id,
+        calibration_status=retrieval.calibration_status,
+        tenant_id=None,
+        generation_id=retrieval.generation_id,
+        pipeline_fingerprint=retrieval.pipeline_fingerprint,
+        corpus_fingerprint=retrieval.corpus_fingerprint,
+    )
+    missing_pipeline = TrustedResult(
+        query=retrieval.query,
+        hits=retrieval.hits,
+        abstained=retrieval.abstained,
+        reason=retrieval.reason,
+        gap_warning=retrieval.gap_warning,
+        staleness=retrieval.staleness,
+        diagnostics=retrieval.diagnostics,
+        calibration_id=retrieval.calibration_id,
+        calibration_status=retrieval.calibration_status,
+        tenant_id=retrieval.tenant_id,
+        generation_id=retrieval.generation_id,
+        pipeline_fingerprint=None,
+        corpus_fingerprint=retrieval.corpus_fingerprint,
+    )
+
+    with pytest.raises(ReasoningValidationError, match="tenant_id"):
+        reason(_request(missing_tenant))
+    with pytest.raises(ReasoningValidationError, match="pipeline_fingerprint"):
+        reason(_request(missing_pipeline))
+
+
+def test_reasoning_rejects_foreign_identity_inside_graph() -> None:
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+    graph = build_reasoning_graph(
+        [chunk],
+        tenant_id="acme",
+        generation_id="gen_1",
+        pipeline_fingerprint="pipe-a",
+        corpus_fingerprint="corpus-a",
+        include_text=True,
+    )
+    foreign = ReasoningGraphNode(
+        id="foreign-node",
+        kind="chunk",
+        tenant_id="other",
+        generation_id="gen_1",
+        source="/corpus/foreign.md",
+        chunk_id="foreign",
+        file="foreign.md",
+    )
+    forged = type(graph)(
+        schema_version=graph.schema_version,
+        graph_id=graph.graph_id,
+        tenant_id=graph.tenant_id,
+        generation_id=graph.generation_id,
+        pipeline_fingerprint=graph.pipeline_fingerprint,
+        corpus_fingerprint=graph.corpus_fingerprint,
+        nodes=(*graph.nodes, foreign),
+        authored_edges=graph.authored_edges,
+        inferred_candidate_edges=graph.inferred_candidate_edges,
+        diagnostics=graph.diagnostics,
+    )
+
+    with pytest.raises(ReasoningValidationError, match="node foreign-node tenant_id"):
+        reason(
+            _request(
+                _result(_hit(chunk)),
+                policy=ReasoningPolicy(name="proposal_assisted"),
+                graph=forged,
+            )
+        )
 
 
 def test_retrieval_only_policy_does_not_invoke_answer_provider() -> None:
@@ -354,3 +437,84 @@ def test_reasoning_response_serializes_to_strict_json_and_round_trips() -> None:
     assert decoded.outcome == response.outcome
     assert decoded.citations == response.citations
     assert decoded.trusted_evidence.items == response.trusted_evidence.items
+
+
+def test_planner_trace_and_budget_usage_round_trip_as_typed_objects() -> None:
+    old = _chunk("old", "rollout_v1.md", "decision: rollout owner. Ada owns it.")
+    new = _chunk("new", "rollout_v2.md", "decision: rollout owner. Bea owns it.")
+    graph = build_reasoning_graph(
+        [old, new],
+        tenant_id="acme",
+        generation_id="gen_1",
+        pipeline_fingerprint="pipe-a",
+        corpus_fingerprint="corpus-a",
+        include_text=True,
+    )
+    response = reason(
+        _request(
+            _result(_hit(old)),
+            policy=ReasoningPolicy(name="proposal_assisted"),
+            graph=graph,
+            answer=lambda _system, _user: {
+                "answer": "Ada owns rollout.",
+                "citations": ["old"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+
+    decoded = reasoning_response_from_dict(json.loads(json.dumps(response.to_dict())))
+
+    assert isinstance(decoded.reasoning_trace, ReasoningTrace)
+    assert isinstance(decoded.diagnostics.budget_used, ReasoningBudgetUsage)
+    assert decoded.reasoning_trace.initial_retrieval.trusted_hit_ids == ("old",)
+    assert decoded.diagnostics.budget_used.graph_nodes >= 1
+
+
+def test_deserialization_requires_nested_trust_state_to_match_top_level() -> None:
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+    response = reason(
+        _request(
+            _result(_hit(chunk)),
+            answer=lambda _system, _user: {
+                "answer": "Ada owns rollout.",
+                "citations": ["c1"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+    payload = response.to_dict()
+    trusted_evidence = payload["trusted_evidence"]
+    assert isinstance(trusted_evidence, dict)
+    trusted_evidence.pop("trust_state")
+
+    with pytest.raises(EvidenceValidationError, match="trust_state"):
+        reasoning_response_from_dict(payload)
+
+    trusted_evidence["trust_state"] = "degraded"
+    payload["trust_state"] = "trusted"
+    with pytest.raises(EvidenceValidationError, match="trust_state mismatch"):
+        reasoning_response_from_dict(payload)
+
+
+def test_deserialization_rejects_nonfinite_float_strings() -> None:
+    chunk = _chunk("c1", "rollout.md", "Ada owns rollout.")
+    response = reason(
+        _request(
+            _result(_hit(chunk)),
+            answer=lambda _system, _user: {
+                "answer": "Ada owns rollout.",
+                "citations": ["c1"],
+                "insufficient_evidence": False,
+            },
+        )
+    )
+    payload = response.to_dict()
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, dict)
+    stage_ms = diagnostics["retrieval_stage_ms"]
+    assert isinstance(stage_ms, dict)
+    stage_ms["dense_retrieval"] = "NaN"
+
+    with pytest.raises(EvidenceValidationError, match="finite"):
+        reasoning_response_from_dict(payload)
