@@ -35,7 +35,13 @@ def _tools(server):
 #: — "a tool was ADDED, none was changed or removed" — is a control this test asserts rather than
 #: something a reader has to infer from a rewritten set literal.
 ORIGINAL_TOOLS = {"recall_search", "recall_index", "recall_forget", "recall_stats"}
-ALL_TOOLS = ORIGINAL_TOOLS | {"recall_evidence"}
+ALL_TOOLS = ORIGINAL_TOOLS | {
+    "recall_evidence",
+    "recall_reasoning_audit",
+    "recall_reasoning_projection",
+    "recall_reasoning_proposals",
+    "recall_reasoning_query",
+}
 
 
 def test_every_tool_is_async():

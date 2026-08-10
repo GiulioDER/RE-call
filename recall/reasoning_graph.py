@@ -50,8 +50,11 @@ def _freeze_projection_value(value: Any) -> Any:
 
 
 class ChunkIterable(Protocol):
-    tenant: str
-    generation_id: str
+    @property
+    def tenant(self) -> str: ...
+
+    @property
+    def generation_id(self) -> str: ...
 
     def iter_chunks(self, batch_size: int = 1000) -> Any:
         ...

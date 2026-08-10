@@ -505,9 +505,6 @@ def _threshold_status(
     strict = cast(MetricMap, metrics["retrieval_entailment"])
     proposal = cast(MetricMap, metrics["retrieval_proposal_exploration"])
     authored_graph = cast(MetricMap, metrics["retrieval_authored_graph"])
-    nearest = cast(MetricMap, metrics["nearest_neighbor"])
-    shuffled = cast(MetricMap, metrics["shuffled_edges_control"])
-    removed = cast(MetricMap, metrics["removed_edges_control"])
     heldout = cast(MetricMap, metrics["heldout_split"])
     by_task = cast(dict[str, dict[str, dict[str, float | None]]], metrics["by_task"])
     unsupported_ceiling = thresholds["unsupported_claim_rate_max"]
@@ -518,7 +515,6 @@ def _threshold_status(
             raise ValueError(f"{metric} is required for Session 6 threshold checks")
         return float(value)
 
-    full_answer = required_number(full, "answer_accuracy")
     def required_task_number(system: str, task: str, metric: str) -> float:
         value = by_task[system][task][metric]
         if value is None:
