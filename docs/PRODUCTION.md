@@ -120,9 +120,9 @@ capped dense leg and were corrected in the same pass
 
 **→ 0.5.1 — five changes that can break a working deployment.** `RECALL_ALLOW_INSECURE_DSN` became
 an explicit allowlist, so only `1|true|yes|on` disable the guard and **every other value, including
-`0`, keeps it ON** — the likeliest of these to bite. The `mcp` extra now requires `mcp>=1.27.2`
-(1.10–1.27.1 installed cleanly then failed on every authenticated call). `recall index` refuses a
-re-index that would prune ≥50% of a root (`PruneGuardTripped`; re-run with `--allow-prune`), so a
+`0`, keeps it ON** — the likeliest of these to bite. The `mcp` extra now requires `mcp>=2,<3`;
+1.10-1.27.1 installed cleanly but does not expose the MCPServer API this server uses. `recall index`
+refuses a re-index that would prune ≥50% of a root (`PruneGuardTripped`; re-run with `--allow-prune`), so a
 *missing* corpus stops being indistinguishable from a *deleted* one. The MCP HTTP transports refuse
 to boot without `RECALL_AUTH_TOKENS_FILE` and meter per tenant by default; `stdio` is unchanged.
 Schema DDL gives up after 5 s of lock contention (`RECALL_SCHEMA_LOCK_TIMEOUT_MS`).

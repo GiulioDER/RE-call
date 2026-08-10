@@ -1,14 +1,14 @@
 """The MCP server must not do its work on the event loop.
 
-FastMCP awaits an async tool and CALLS A SYNC ONE INLINE — see
-`mcp/server/fastmcp/utilities/func_metadata.py`:
+MCPServer executes async tool bodies on the event loop, so a sync tool would run its blocking body
+there too:
 
     if fn_is_async:
         return await fn(**arguments_parsed_dict)
     else:
         return fn(**arguments_parsed_dict)
 
-There is no thread offload. So a sync tool that embeds a query, makes two database round trips
+There is no implicit thread offload. So a sync tool that embeds a query, makes two database round trips
 and optionally runs a cross-encoder blocks the entire loop for its whole duration: effective
 concurrency is one, and the server cannot even answer a ping meanwhile. `recall_index` blocks it
 for the length of a corpus index.
@@ -45,7 +45,7 @@ ALL_TOOLS = ORIGINAL_TOOLS | {
 
 
 def test_every_tool_is_async():
-    """A sync tool is awaited inline by FastMCP — the whole point of the change.
+    """A sync tool would block the event loop — the whole point of the change.
 
     The set is asserted EXACTLY, not as a superset, so a tool added later still trips this and has
     to be shown async on purpose. `recall_evidence` did trip it, which is the test working:

@@ -86,6 +86,10 @@ benchmark modules import it directly.
 
 `pytest-timeout` is part of the dev extra so a nonterminating test fails instead of hanging CI.
 
+`python-dotenv` is part of the dev extra because mypy checks the benchmark harnesses and two MTRAG
+modules import `dotenv_values` for optional `--dsn-env-file` support. It is not a runtime dependency
+for the library or MCP server.
+
 `ruff` is capped below 0.17. Ruff 0.16 is supported, but the project pins the pre-0.16 default rule
 selection explicitly in `pyproject.toml` so a linter upgrade is not also a repository-wide style
 rewrite. Adopting additional 0.16 rules should be a targeted cleanup.
