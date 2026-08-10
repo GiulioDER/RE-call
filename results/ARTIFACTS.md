@@ -39,6 +39,8 @@ when it meant "the older one".
 | artifact | backs |
 |---|---|
 | `reasoning_session1_baseline.json` | `docs/REASONING_CONTRACT.md` Session 1 control harness. Synthetic, frozen baseline observations before reasoning is enabled. Records direct, multi hop, near miss, contradiction, missing supersession, ambiguous entity, empty corpus, and stale corpus cases. |
+| `reasoning_session6_controls.json` | `docs/REASONING_CONTRACT.md` Session 6 control harness. Frozen offline benchmark with direct QA, multi hop, temporal reasoning, supersession recovery, near miss abstention, contradiction detection, entity disambiguation, missing evidence, and clarification decisions. Separates synthetic and real corpus controls, records pre registered thresholds, ablation arms, nearest neighbor, shuffled edge, removed edge controls, per query observations, and evaluator leakage audits. |
+| `reasoning_session8_reproducibility.json` | `docs/REASONING_SESSION8_AUDIT.md` Session 8 final audit bundle. Records code base revision, dependency versions, model stack identifiers, corpus and generation fingerprints, validation commands, regenerated reasoning artifact hashes, evaluation results, release decision, and remaining limitations. |
 
 ### Post-#81/#84 — the configuration the published tables describe
 

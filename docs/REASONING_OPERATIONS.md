@@ -1,0 +1,122 @@
+# Reasoning Operations
+
+This document is the Session 7 control artifact for the reasoning layer. It covers integration
+compatibility, operational policy, failure and outage behavior, and exported metrics.
+
+## Integration compatibility report
+
+Existing retrieval clients remain compatible.
+
+* `recall_search` is unchanged.
+* `recall_evidence` is unchanged.
+* New MCP tools are additive: `recall_reasoning_query`, `recall_reasoning_projection`,
+  `recall_reasoning_proposals`, and `recall_reasoning_audit`.
+* New CLI commands are additive under `recall reasoning`: `projection`, `proposals`, `query`,
+  `trace`, and `audit`.
+* Reasoning is explicit opt in. No retrieval command enters reasoning mode by omission.
+* Reasoning responses carry trust state, tenant id, generation id, calibration status, proposal
+  status, refusal reason, and diagnostics.
+* Reasoning proposals are review candidates only. They are never promoted into corpus metadata by
+  the API, CLI, or MCP server.
+
+The core library does not require a managed database or a managed reasoning service. The core uses
+typed Python APIs and provider ports. PostgreSQL is one supported durable store for RE-call
+retrieval and generation serving, not a managed reasoning dependency.
+
+## Operational policy
+
+Strict production mode:
+
+* Default trust policy is strict.
+* Missing calibration, stale calibration, missing generation identity, lineage mismatch, or database
+  unavailability produces a typed refusal or exception before an unverified answer is emitted.
+* Production generation builds require immutable manifest inputs.
+* Local filesystem indexing is development only.
+
+Development exploration mode:
+
+* Development mode requires explicit `RECALL_TRUST_MODE=development` or a direct
+  `TrustPolicy.development()` object.
+* Development mode may return degraded evidence for inspection, but the payload labels
+  `trust_state="degraded"` and carries the failure code.
+* Development mode responses must not be treated as production answers.
+
+Human review queues:
+
+* `requires_review` proposals enter review, not the trusted corpus.
+* `review_required` policy converts any proposal assisted result with proposals into
+  `needs_review`.
+* Provider failures during proposal generation return `needs_review` with
+  `refusal_reason="provider_failure"`.
+
+Provider outages:
+
+* Optional provider failures are represented as `ProviderFailure` records.
+* A provider outage cannot produce an answer.
+* The reasoning response carries provider id, model id, provider revision, failure kind, and
+  sanitized message.
+
+Generation retirement:
+
+* Reasoning projections are derived from the visible store generation.
+* A generation change changes the projection identity.
+* Retired generations may be inspected only when the store explicitly pins or exposes that
+  generation.
+
+Privacy erasure and rebuild:
+
+* `recall_forget` remains the erasure path.
+* Reasoning projections are rebuilt from current store visibility.
+* Inferred proposals are recomputed from the rebuilt projection and are not durable trusted corpus
+  metadata.
+* If erasure changes the corpus fingerprint, strict production mode requires recalibration before a
+  trusted answer.
+
+## Failure and outage matrix
+
+| Condition | Outcome | Refusal reason or code | Corpus text in error |
+| --- | --- | --- | --- |
+| Empty query | needs clarification | `empty_query` | no |
+| Retrieval only policy | abstained | `retrieval_only_policy` | citable evidence may be returned as data |
+| Missing calibration in strict mode | abstained or `TrustRefusal` | `CALIBRATION_MISSING` or `uncertified_evidence` | no strict error text |
+| Stale or uncertified calibration | abstained or `TrustRefusal` | `CALIBRATION_STALE` or `CALIBRATION_UNCERTIFIED` | no strict error text |
+| Missing generation identity in production | refusal | `INDEX_NOT_READY` | no |
+| Database outage | dependency failure | `DEPENDENCY_UNAVAILABLE` or raised store exception | no deliberate corpus echo |
+| Proposal provider timeout | needs review | `provider_failure` | no |
+| Proposal provider malformed output | needs review | `provider_failure` | no |
+| Reasoning budget exhausted | abstained or needs review | `budget_exhausted` | trace ids only |
+| Ambiguous graph evidence | needs review | `ambiguous_evidence` | trace ids only |
+| Privacy erasure before rebuild | strict refusal until rebuilt and calibrated | lineage or calibration failure code | no |
+
+Terminal output and structured output are treated separately. Human CLI summaries are terminal
+safe. Structured JSON may include corpus text only in explicit evidence fields, never in advice or
+error channels.
+
+## Metric specification
+
+Reasoning metrics are in the in process `METRICS` registry and are exposed through `recall_stats`.
+
+Counters:
+
+* `recall_reasoning_outcome_total{outcome,trust_state,refusal_reason}` counts answered, abstained,
+  clarification, and review outcomes.
+* `recall_reasoning_proposals_total` counts emitted inference proposals.
+* `recall_reasoning_review_total{reason}` counts review outcomes.
+* `recall_reasoning_budget_exhausted_total` counts runs that ended with the explicit
+  `budget_exhausted` stop reason.
+* `recall_reasoning_provider_failure_total{kind,provider_id,model_id}` counts optional provider
+  failures.
+
+Histograms:
+
+* `recall_reasoning_latency_ms` records end to end reasoning latency.
+* Existing retrieval histograms continue to record retrieval stage latency.
+* Existing MCP tool latency histograms include the new reasoning tools with `tool` labels:
+  `reasoning_query`, `reasoning_projection`, `reasoning_proposals`, and `reasoning_audit`.
+
+Cost:
+
+* The core library records model call budget usage in `ReasoningBudgetUsage.model_calls`.
+* No managed model provider is required by the default reasoning tools.
+* Provider specific monetary cost should be added by provider adapters as library authored numeric
+  fields or metrics, never as corpus controlled text.

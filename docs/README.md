@@ -27,7 +27,7 @@ want to audit a claim or reproduce a benchmark.
 |---|---|
 | [WRITEUP.md](WRITEUP.md) | Architecture, trust semantics, and evaluation summary. |
 | [CASE_STUDY.md](CASE_STUDY.md) | Origin story, redacted production context, and public/private boundary. |
-| [REASONING_CONTRACT.md](REASONING_CONTRACT.md) | Session 1 reasoning vocabulary, invariants, baseline fixture, and non goals. |
+| [REASONING_CONTRACT.md](REASONING_CONTRACT.md) | Reasoning vocabulary, invariants, Session 1 baseline fixture, and Session 6 evaluation controls. |
 
 ## Evidence and limits
 
