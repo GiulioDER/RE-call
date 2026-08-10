@@ -33,7 +33,8 @@ from recall.reasoning_planner import (
     UnresolvedGap,
     plan_multi_hop_evidence,
 )
-from recall.reasoning_proposals import InferenceProposal, ProposalProtocolReport
+from recall.observability import METRICS
+from recall.reasoning_proposals import InferenceProposal, ProposalProtocolReport, ProviderFailure
 from recall.types import TrustedResult
 from recall.trust import is_trusted
 
@@ -53,15 +54,13 @@ class ReasoningValidationError(ValueError):
 
 
 class ReasoningRetriever(Protocol):
-    def __call__(self, request: "ReasoningRequest") -> TrustedResult:
-        ...
+    def __call__(self, request: "ReasoningRequest") -> TrustedResult: ...
 
 
 class ReasoningGraphProvider(Protocol):
     def __call__(
         self, request: "ReasoningRequest", retrieval: TrustedResult
-    ) -> ReasoningGraphProjection:
-        ...
+    ) -> ReasoningGraphProjection: ...
 
 
 class ReasoningProposalProvider(Protocol):
@@ -70,8 +69,7 @@ class ReasoningProposalProvider(Protocol):
         request: "ReasoningRequest",
         graph: ReasoningGraphProjection,
         retrieval: TrustedResult,
-    ) -> Sequence[InferenceProposal] | ProposalProtocolReport:
-        ...
+    ) -> Sequence[InferenceProposal] | ProposalProtocolReport: ...
 
 
 ReasoningAnswerProvider = Callable[[str, str], str | dict[str, object] | AnswerEnvelope]
@@ -155,6 +153,7 @@ class ReasoningDiagnostics:
     retrieval_stage_ms: Mapping[str, float]
     generator_invoked: bool
     citations_normalized: bool
+    provider_failures: tuple[ProviderFailure, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -167,6 +166,7 @@ class ReasoningResponse:
     clarification_request: str | None
     trusted_evidence: EvidenceBundle
     inference_proposals: tuple[InferenceProposal, ...]
+    provider_failures: tuple[ProviderFailure, ...]
     reasoning_trace: ReasoningTrace | None
     contradictions: tuple[Contradiction, ...]
     unsupported_gaps: tuple[UnresolvedGap, ...]
@@ -201,7 +201,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
     started = datetime.now().timestamp()
     if not request.query.strip():
         empty_bundle = _empty_bundle(request)
-        return _response(
+        response = _response(
             request=request,
             retrieval=None,
             bundle=empty_bundle,
@@ -215,13 +215,15 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             citations_normalized=False,
             started=started,
         )
+        _record_reasoning_metrics(response)
+        return response
 
     retrieval = request.providers.retriever(request)
     _validate_retrieval_binding(request, retrieval)
     bundle = build_evidence_bundle(retrieval, request.evidence_policy)
 
     if request.policy.require_certified_evidence and bundle.trust_state != "trusted":
-        return _response(
+        response = _response(
             request=request,
             retrieval=retrieval,
             bundle=bundle,
@@ -234,9 +236,11 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             citations_normalized=False,
             started=started,
         )
+        _record_reasoning_metrics(response)
+        return response
 
     if request.policy.name == "retrieval_only":
-        return _response(
+        response = _response(
             request=request,
             retrieval=retrieval,
             bundle=bundle,
@@ -249,17 +253,37 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             citations_normalized=False,
             started=started,
         )
+        _record_reasoning_metrics(response)
+        return response
 
     graph: ReasoningGraphProjection | None = None
     proposals: tuple[InferenceProposal, ...] = ()
+    provider_failures: tuple[ProviderFailure, ...] = ()
     plan: ReasoningPlan | None = None
     if request.policy.allow_proposal_guided_expansion:
         if request.providers.graph_provider is None:
             raise ReasoningValidationError("proposal assisted reasoning requires graph_provider")
         graph = request.providers.graph_provider(request, retrieval)
         _validate_graph_binding(request, retrieval, graph)
-        proposals = _proposal_tuple(request, graph, retrieval)
+        proposals, provider_failures = _proposal_report(request, graph, retrieval)
         _validate_proposals(graph, proposals)
+        if provider_failures:
+            response = _response(
+                request=request,
+                retrieval=retrieval,
+                bundle=bundle,
+                outcome="needs_review",
+                answer=None,
+                proposals=proposals,
+                provider_failures=provider_failures,
+                plan=None,
+                refusal_reason="provider_failure",
+                generator_invoked=False,
+                citations_normalized=False,
+                started=started,
+            )
+            _record_reasoning_metrics(response)
+            return response
         plan = plan_multi_hop_evidence(
             retrieval,
             graph,
@@ -270,62 +294,74 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
             outcome: ReasoningOutcome = (
                 "needs_review" if plan.stop_reason == "ambiguous_evidence" else "abstained"
             )
-            return _response(
+            response = _response(
                 request=request,
                 retrieval=retrieval,
                 bundle=bundle,
                 outcome=outcome,
                 answer=None,
                 proposals=proposals,
+                provider_failures=provider_failures,
                 plan=plan,
                 refusal_reason=plan.stop_reason,
                 generator_invoked=False,
                 citations_normalized=False,
                 started=started,
             )
+            _record_reasoning_metrics(response)
+            return response
         if request.policy.require_human_review_on_proposals and proposals:
-            return _response(
+            response = _response(
                 request=request,
                 retrieval=retrieval,
                 bundle=bundle,
                 outcome="needs_review",
                 answer=None,
                 proposals=proposals,
+                provider_failures=provider_failures,
                 plan=plan,
                 refusal_reason="review_required_policy",
                 generator_invoked=False,
                 citations_normalized=False,
                 started=started,
             )
+            _record_reasoning_metrics(response)
+            return response
 
     if bundle.decision == "abstain":
-        return _response(
+        response = _response(
             request=request,
             retrieval=retrieval,
             bundle=bundle,
             outcome="abstained",
             answer=None,
             proposals=proposals,
+            provider_failures=provider_failures,
             plan=plan,
             refusal_reason=bundle.reason_code,
             generator_invoked=False,
             citations_normalized=False,
             started=started,
         )
+        _record_reasoning_metrics(response)
+        return response
     if request.providers.answer_provider is None:
-        return _response(
+        response = _response(
             request=request,
             retrieval=retrieval,
             bundle=bundle,
             outcome="abstained",
             answer=None,
             proposals=proposals,
+            provider_failures=provider_failures,
             plan=plan,
             refusal_reason="no_answer_provider",
             generator_invoked=False,
             citations_normalized=False,
             started=started,
         )
+        _record_reasoning_metrics(response)
+        return response
 
     system, user = render_evidence_prompt(bundle)
     raw = parse_answer_envelope(request.providers.answer_provider(system, user))
@@ -335,32 +371,38 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
         raise EvidenceValidationError("; ".join(validation.errors))
     citations_normalized = envelope.citations != raw.citations
     if envelope.insufficient_evidence:
-        return _response(
+        response = _response(
             request=request,
             retrieval=retrieval,
             bundle=bundle,
             outcome="abstained",
             answer=None,
             proposals=proposals,
+            provider_failures=provider_failures,
             plan=plan,
             refusal_reason="provider_abstained",
             generator_invoked=True,
             citations_normalized=citations_normalized,
             started=started,
         )
-    return _response(
+        _record_reasoning_metrics(response)
+        return response
+    response = _response(
         request=request,
         retrieval=retrieval,
         bundle=bundle,
         outcome="answered",
         answer=envelope.answer,
         proposals=proposals,
+        provider_failures=provider_failures,
         plan=plan,
         citations=envelope.citations,
         generator_invoked=True,
         citations_normalized=citations_normalized,
         started=started,
     )
+    _record_reasoning_metrics(response)
+    return response
 
 
 def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResponse:
@@ -369,8 +411,15 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
     trust_state = _trust_state(payload["trust_state"])
     if bundle.trust_state != trust_state:
         raise EvidenceValidationError("trust_state mismatch between response and trusted_evidence")
+    refusal_reason = _optional_str(payload.get("refusal_reason"))
+    if trust_state == "refused" and (bundle.items or not (refusal_reason or bundle.failure_code)):
+        raise EvidenceValidationError("refused responses must carry no evidence and a refusal code")
     proposals = tuple(
         _proposal_from_dict(_mapping(item)) for item in _sequence(payload["inference_proposals"])
+    )
+    provider_failures = tuple(
+        _provider_failure_from_dict(_mapping(item))
+        for item in _sequence(payload.get("provider_failures", ()))
     )
     contradictions = tuple(
         Contradiction(
@@ -401,6 +450,10 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         },
         generator_invoked=_required_bool(diagnostics_payload["generator_invoked"]),
         citations_normalized=_required_bool(diagnostics_payload["citations_normalized"]),
+        provider_failures=tuple(
+            _provider_failure_from_dict(_mapping(item))
+            for item in _sequence(diagnostics_payload.get("provider_failures", ()))
+        ),
     )
     return ReasoningResponse(
         schema_version=_required_int(payload["schema_version"]),
@@ -409,6 +462,7 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         clarification_request=_optional_str(payload.get("clarification_request")),
         trusted_evidence=bundle,
         inference_proposals=proposals,
+        provider_failures=provider_failures,
         reasoning_trace=_optional_trace_from_dict(payload.get("reasoning_trace")),
         contradictions=contradictions,
         unsupported_gaps=tuple(
@@ -423,7 +477,7 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         corpus_fingerprint=_optional_str(payload.get("corpus_fingerprint")),
         query_set_digest=_optional_str(payload.get("query_set_digest")),
         trust_state=trust_state,
-        refusal_reason=_optional_str(payload.get("refusal_reason")),
+        refusal_reason=refusal_reason,
         diagnostics=diagnostics,
     )
 
@@ -454,7 +508,11 @@ def _validate_graph_binding(
 ) -> None:
     checks = (
         ("tenant_id", request.tenant_id, graph.tenant_id),
-        ("generation_id", request.generation.generation_id or retrieval.generation_id, graph.generation_id),
+        (
+            "generation_id",
+            request.generation.generation_id or retrieval.generation_id,
+            graph.generation_id,
+        ),
         (
             "pipeline_fingerprint",
             request.generation.pipeline_fingerprint or retrieval.pipeline_fingerprint,
@@ -472,18 +530,61 @@ def _validate_graph_binding(
     _validate_graph_members(graph)
 
 
-def _proposal_tuple(
+def _proposal_report(
     request: ReasoningRequest,
     graph: ReasoningGraphProjection,
     retrieval: TrustedResult,
-) -> tuple[InferenceProposal, ...]:
+) -> tuple[tuple[InferenceProposal, ...], tuple[ProviderFailure, ...]]:
     provider = request.providers.proposal_provider
     if provider is None:
-        return ()
-    raw = provider(request, graph, retrieval)
+        return (), ()
+    try:
+        raw = provider(request, graph, retrieval)
+    except TimeoutError as exc:
+        return (), (
+            ProviderFailure(
+                kind="timeout",
+                provider_id="unknown",
+                model_id="unknown",
+                provider_revision="unknown",
+                message=type(exc).__name__,
+            ),
+        )
+    except Exception as exc:
+        return (), (
+            ProviderFailure(
+                kind="provider_error",
+                provider_id="unknown",
+                model_id="unknown",
+                provider_revision="unknown",
+                message=type(exc).__name__,
+            ),
+        )
     if isinstance(raw, ProposalProtocolReport):
-        return raw.proposals
-    return tuple(raw)
+        return raw.proposals, raw.provider_failures
+    try:
+        proposals = tuple(raw)
+    except (TypeError, ValueError) as exc:
+        return (), (
+            ProviderFailure(
+                kind="malformed_output",
+                provider_id="unknown",
+                model_id="unknown",
+                provider_revision="unknown",
+                message=type(exc).__name__,
+            ),
+        )
+    if not all(isinstance(proposal, InferenceProposal) for proposal in proposals):
+        return (), (
+            ProviderFailure(
+                kind="malformed_output",
+                provider_id="unknown",
+                model_id="unknown",
+                provider_revision="unknown",
+                message="non_proposal_item",
+            ),
+        )
+    return proposals, ()
 
 
 def _validate_proposals(
@@ -536,6 +637,7 @@ def _response(
     outcome: ReasoningOutcome,
     answer: str | None,
     proposals: Sequence[InferenceProposal],
+    provider_failures: Sequence[ProviderFailure] = (),
     plan: ReasoningPlan | None,
     started: float,
     clarification_request: str | None = None,
@@ -563,6 +665,7 @@ def _response(
         clarification_request=clarification_request,
         trusted_evidence=bundle,
         inference_proposals=tuple(proposals),
+        provider_failures=tuple(provider_failures),
         reasoning_trace=plan.trace if plan is not None else None,
         contradictions=contradictions,
         unsupported_gaps=plan.trace.unresolved_gaps if plan is not None else (),
@@ -583,8 +686,34 @@ def _response(
             retrieval_stage_ms=bundle_stage_ms(retrieval),
             generator_invoked=generator_invoked,
             citations_normalized=citations_normalized,
+            provider_failures=tuple(provider_failures),
         ),
     )
+
+
+def _record_reasoning_metrics(response: ReasoningResponse) -> None:
+    labels = {
+        "outcome": response.outcome,
+        "trust_state": response.trust_state,
+        "refusal_reason": response.refusal_reason or "none",
+    }
+    METRICS.increment("recall_reasoning_outcome_total", **labels)
+    METRICS.observe("recall_reasoning_latency_ms", float(response.diagnostics.latency_ms))
+    if response.inference_proposals:
+        METRICS.increment("recall_reasoning_proposals_total", len(response.inference_proposals))
+    if response.outcome == "needs_review":
+        METRICS.increment(
+            "recall_reasoning_review_total", reason=response.refusal_reason or "unknown"
+        )
+    if response.refusal_reason == "budget_exhausted":
+        METRICS.increment("recall_reasoning_budget_exhausted_total")
+    for failure in response.provider_failures:
+        METRICS.increment(
+            "recall_reasoning_provider_failure_total",
+            kind=failure.kind,
+            provider_id=failure.provider_id,
+            model_id=failure.model_id,
+        )
 
 
 def bundle_stage_ms(retrieval: TrustedResult | None) -> Mapping[str, float]:
@@ -689,6 +818,16 @@ def _proposal_from_dict(payload: Mapping[str, object]) -> InferenceProposal:
     )
 
 
+def _provider_failure_from_dict(payload: Mapping[str, object]) -> ProviderFailure:
+    return ProviderFailure(
+        kind=cast(Any, payload["kind"]),
+        provider_id=str(payload["provider_id"]),
+        model_id=str(payload["model_id"]),
+        provider_revision=str(payload["provider_revision"]),
+        message=str(payload["message"]),
+    )
+
+
 def _budget_from_dict(payload: Mapping[str, object]) -> ReasoningBudget:
     return ReasoningBudget(
         max_steps=_required_int(payload["max_steps"]),
@@ -727,9 +866,7 @@ def _optional_trace_from_dict(value: object) -> ReasoningTrace | None:
         return None
     payload = _mapping(value)
     return ReasoningTrace(
-        initial_retrieval=_initial_retrieval_from_dict(
-            _mapping(payload["initial_retrieval"])
-        ),
+        initial_retrieval=_initial_retrieval_from_dict(_mapping(payload["initial_retrieval"])),
         expansion_steps=tuple(
             _expansion_step_from_dict(_mapping(item))
             for item in _sequence(payload["expansion_steps"])
@@ -796,9 +933,7 @@ def _proposal_trace_from_dict(payload: Mapping[str, object]) -> InferenceProposa
         relation=cast(Any, payload["relation"]),
         subject_id=str(payload["subject_id"]),
         object_id=str(payload["object_id"]),
-        source_evidence_ids=tuple(
-            str(item) for item in _sequence(payload["source_evidence_ids"])
-        ),
+        source_evidence_ids=tuple(str(item) for item in _sequence(payload["source_evidence_ids"])),
         used_for_exploration=_required_bool(payload["used_for_exploration"]),
         trusted_evidence=_required_bool(payload["trusted_evidence"]),
         reason=str(payload["reason"]),
@@ -874,8 +1009,8 @@ def _optional_str(value: object) -> str | None:
 
 
 def _trust_state(value: object) -> str:
-    if value not in {"trusted", "degraded"}:
-        raise EvidenceValidationError("trust_state must be trusted or degraded")
+    if value not in {"trusted", "degraded", "refused"}:
+        raise EvidenceValidationError("trust_state must be trusted, degraded, or refused")
     return value
 
 
@@ -895,6 +1030,7 @@ __all__ = [
     "ReasoningResponse",
     "ReasoningRetriever",
     "ReasoningValidationError",
+    "ProviderFailure",
     "reason",
     "reasoning_response_from_dict",
 ]

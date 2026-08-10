@@ -34,7 +34,9 @@ Provider ports:
 
 Response type: `ReasoningResponse`
 
-Fields include outcome, answer or clarification request, trusted evidence, inference proposals, reasoning trace, contradictions, unsupported gaps, citations, calibration identity, generation identity, trust state, refusal reason, and diagnostics.
+Fields include outcome, answer or clarification request, trusted evidence, inference proposals, provider failures, reasoning trace, contradictions, unsupported gaps, citations, calibration identity, generation identity, trust state, refusal reason, and diagnostics.
+
+Provider failures are structured records rather than exceptions in the public response. A proposal provider outage, timeout, or malformed provider report returns `outcome="needs_review"` with `refusal_reason="provider_failure"`, includes `provider_failures`, and does not invoke the answer provider.
 
 Outcomes are distinct:
 

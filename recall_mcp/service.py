@@ -4,14 +4,14 @@ import os
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from recall.calibration import Calibration
-from recall.trust_policy import TrustPolicy
+from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall.embedding_registry import find_registered_profile, registered_profile_ids
 from recall.embeddings import (
     Embedder,
@@ -36,6 +36,19 @@ from recall.evidence import (
     build_evidence_bundle,
     render_evidence_prompt,
 )
+from recall.reasoning import (
+    GenerationSelection,
+    REASONING_API_VERSION,
+    ReasoningDiagnostics,
+    ReasoningPolicy,
+    ReasoningProviderPorts,
+    ReasoningRequest,
+    ReasoningResponse,
+    reason,
+)
+from recall.reasoning_graph import build_reasoning_graph, project_store_graph
+from recall.reasoning_planner import ReasoningBudget
+from recall.reasoning_proposals import deterministic_inference_proposals
 from recall.rerank import DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION, Reranker
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
@@ -151,7 +164,9 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
             _log.warning(
                 "embedding profile %s was REJECTED on %s (%s) and is being loaded anyway; "
                 "the measured reason was %s",
-                entry.profile_id, record.decided_on, record.reason,
+                entry.profile_id,
+                record.decided_on,
+                record.reason,
                 ", ".join(f"{k}={v}" for k, v in record.measurements),
             )
         return entry.build(artifact_path=artifact_path, artifact_digest=artifact_digest)
@@ -353,6 +368,72 @@ class EvidenceResult(BaseModel):
     budget_exceeded: bool = False
 
 
+class ReasoningProjectionResult(BaseModel):
+    schema_version: int = Field(description="Reasoning graph projection schema version.")
+    graph_id: str = Field(description="Immutable identity for this derived graph projection.")
+    tenant_id: str = Field(description="Tenant boundary used for every projected graph member.")
+    generation_id: str = Field(description="Index generation identity projected into the graph.")
+    pipeline_fingerprint: str | None = Field(
+        description="Pipeline fingerprint for the generation, or null for legacy projections."
+    )
+    corpus_fingerprint: str | None = Field(
+        description="Corpus fingerprint for the generation, or null for legacy projections."
+    )
+    node_count: int = Field(description="Number of graph nodes in the projection.")
+    authored_edge_count: int = Field(description="Number of authored supersession edges.")
+    inferred_candidate_edge_count: int = Field(
+        description="Number of inferred candidate edges included in the projection."
+    )
+    diagnostic_count: int = Field(description="Number of graph construction diagnostics.")
+    trust_state: str = Field(description="trusted | degraded. Legacy projections are degraded.")
+
+
+class ReasoningProposalItem(BaseModel):
+    id: str = Field(description="Stable proposal identifier.")
+    status: str = Field(description="Proposal status, for example proposed or requires_review.")
+    relation: str = Field(description="Proposed relationship between subject and object.")
+    subject_id: str = Field(description="Subject graph node or evidence identifier.")
+    object_id: str = Field(description="Object graph node or evidence identifier.")
+    confidence: float = Field(
+        description="Deterministic confidence score in the closed interval 0..1."
+    )
+    rule_id: str = Field(description="Rule or provider rule that produced the proposal.")
+    generation_id: str = Field(description="Generation identity attached to the proposal.")
+    pipeline_id: str = Field(description="Pipeline identity attached to the proposal.")
+    provider_id: str | None = Field(description="Provider id for model generated proposals.")
+    model_id: str | None = Field(description="Model id for model generated proposals.")
+    provider_revision: str | None = Field(
+        description="Provider revision for model generated proposals."
+    )
+    source_evidence_ids: list[str] = Field(
+        description="Evidence identifiers supporting this proposal."
+    )
+    uncertainty: list[str] = Field(description="Known uncertainty reasons for this proposal.")
+
+
+class ReasoningProposalResult(BaseModel):
+    tenant_id: str = Field(description="Tenant boundary used for proposal generation.")
+    generation_id: str = Field(description="Generation identity attached to every proposal.")
+    pipeline_fingerprint: str | None = Field(description="Pipeline fingerprint, when available.")
+    corpus_fingerprint: str | None = Field(description="Corpus fingerprint, when available.")
+    proposal_count: int = Field(description="Total proposals produced before output limiting.")
+    review_count: int = Field(description="Total proposals that require human review.")
+    returned_count: int = Field(description="Number of proposal items returned in this payload.")
+    truncated: bool = Field(description="True when more proposals exist than were returned.")
+    proposals: list[ReasoningProposalItem] = Field(description="Bounded proposal inspection page.")
+
+
+class ReasoningAuditResult(BaseModel):
+    tenant_id: str = Field(description="Tenant boundary audited by this result.")
+    generation_id: str = Field(description="Generation identity audited by this result.")
+    trust_state: str = Field(description="trusted | degraded | refused.")
+    proposal_count: int = Field(description="Total proposal count observed during audit.")
+    review_count: int = Field(description="Total human review count observed during audit.")
+    diagnostic_count: int = Field(description="Graph diagnostic count observed during audit.")
+    refusal_reasons: list[str] = Field(description="Structured refusal or abstention reasons.")
+    checks: dict[str, bool] = Field(description="Boolean operational checks for the audit path.")
+
+
 class IndexResult(BaseModel):
     files: int = Field(
         description="Number of files (re)indexed by this call. Unchanged files are counted in "
@@ -484,9 +565,7 @@ def _validate_quality_reranker_config(values: dict[str, str]) -> tuple[str, str]
     model_path = values.get("RECALL_RERANK_PATH", "").strip()
     digest = values.get("RECALL_RERANK_SHA256", "").strip().lower()
     if not model_path or not digest:
-        raise ValueError(
-            "quality profile requires RECALL_RERANK_PATH and RECALL_RERANK_SHA256"
-        )
+        raise ValueError("quality profile requires RECALL_RERANK_PATH and RECALL_RERANK_SHA256")
     if digest != PINNED_RERANKER_SHA256:
         raise ValueError(
             f"RECALL_RERANK_SHA256 does not match the reranker pinned to the quality profile "
@@ -692,9 +771,16 @@ def _retrieve_trusted(
             # problems, and a single number cannot tell them apart.
             admission_wait_ms = (time.perf_counter() - request_started) * 1000.0
             result = trusted_search(
-                store, timed, query, k=k, source=source, calibration=calibration,
-                reranker=_build_reranker(profile), candidate_k=profile.candidate_k,
-                retrieval_profile=profile.name, index_generation=generation,
+                store,
+                timed,
+                query,
+                k=k,
+                source=source,
+                calibration=calibration,
+                reranker=_build_reranker(profile),
+                candidate_k=profile.candidate_k,
+                retrieval_profile=profile.name,
+                index_generation=generation,
                 policy=policy,
             )
     # ORDER MATTERS. A shed request is matched here and never reaches the handler below, so it is
@@ -738,9 +824,7 @@ def _cost_surface(
     profile = retrieval.profile
     stage_ms = dict(retrieval.result.diagnostics.stage_ms)
     stage_ms["admission_wait"] = round(retrieval.admission_wait_ms, 3)
-    stage_ms["evidence_assembly"] = round(
-        (time.perf_counter() - assembly_started) * 1000.0, 3
-    )
+    stage_ms["evidence_assembly"] = round((time.perf_counter() - assembly_started) * 1000.0, 3)
     elapsed_ms = (time.perf_counter() - retrieval.request_started) * 1000.0
     total_ms = round(elapsed_ms, 3)
     # The budget is charged ONCE. It is the admission timeout, so a request may legitimately wait
@@ -759,9 +843,7 @@ def _cost_surface(
     for stage, value in stage_ms.items():
         # Labels are library constants (`profile.name` is a Literal, stage names are ours). No
         # corpus-derived string can reach a metric label through here.
-        METRICS.observe(
-            "recall_retrieval_stage_ms", value, profile=profile.name, stage=stage
-        )
+        METRICS.observe("recall_retrieval_stage_ms", value, profile=profile.name, stage=stage)
     METRICS.observe("recall_retrieval_total_ms", total_ms, profile=profile.name)
     if budget_exceeded:
         METRICS.increment("recall_retrieval_budget_exceeded_total", profile=profile.name)
@@ -770,7 +852,11 @@ def _cost_surface(
         _log.warning(
             "retrieval served in %.1f ms against the %d ms budget of profile %r "
             "(%.1f ms queued, %.1f ms total)",
-            served_ms, budget, profile.name, retrieval.admission_wait_ms, total_ms,
+            served_ms,
+            budget,
+            profile.name,
+            retrieval.admission_wait_ms,
+            total_ms,
         )
     return stage_ms, total_ms, budget_exceeded
 
@@ -1062,6 +1148,288 @@ def evidence_memory(
     )
 
 
+def _reasoning_policy(mode: str) -> ReasoningPolicy:
+    if mode == "retrieval_only":
+        return ReasoningPolicy(name="retrieval_only")
+    if mode == "review_required":
+        return ReasoningPolicy(name="review_required")
+    if mode == "proposal_assisted":
+        return ReasoningPolicy(name="proposal_assisted")
+    if mode == "evidence_assembly":
+        return ReasoningPolicy(name="evidence_assembly")
+    raise ValueError("unknown reasoning mode")
+
+
+def _reasoning_generation(store: PgVectorStore) -> GenerationSelection:
+    binding = getattr(store, "generation_binding", None)
+    if callable(binding):
+        payload = binding()
+        return GenerationSelection(
+            generation_id=str(payload["generation_id"]),
+            pipeline_fingerprint=str(payload["pipeline_fingerprint"]),
+            corpus_fingerprint=str(payload["corpus_fingerprint"]),
+        )
+    generation_id = str(getattr(store, "generation_id", "legacy"))
+    return GenerationSelection(generation_id=generation_id if generation_id != "legacy" else None)
+
+
+def reasoning_projection(
+    store: PgVectorStore, *, include_text: bool = False
+) -> ReasoningProjectionResult:
+    graph = project_store_graph(store, include_text=include_text)
+    return ReasoningProjectionResult(
+        schema_version=graph.schema_version,
+        graph_id=graph.graph_id,
+        tenant_id=graph.tenant_id,
+        generation_id=graph.generation_id,
+        pipeline_fingerprint=graph.pipeline_fingerprint,
+        corpus_fingerprint=graph.corpus_fingerprint,
+        node_count=len(graph.nodes),
+        authored_edge_count=len(graph.authored_edges),
+        inferred_candidate_edge_count=len(graph.inferred_candidate_edges),
+        diagnostic_count=len(graph.diagnostics),
+        trust_state="trusted" if graph.generation_id != "legacy" else "degraded",
+    )
+
+
+def reasoning_proposals(store: PgVectorStore, *, limit: int = 100) -> ReasoningProposalResult:
+    if limit < 1:
+        raise ValueError("proposal limit must be positive")
+    graph = project_store_graph(store, include_text=True)
+    proposals = deterministic_inference_proposals(
+        graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
+    )
+    returned = proposals[:limit]
+    return ReasoningProposalResult(
+        tenant_id=graph.tenant_id,
+        generation_id=graph.generation_id,
+        pipeline_fingerprint=graph.pipeline_fingerprint,
+        corpus_fingerprint=graph.corpus_fingerprint,
+        proposal_count=len(proposals),
+        review_count=sum(1 for proposal in proposals if proposal.status == "requires_review"),
+        returned_count=len(returned),
+        truncated=len(proposals) > len(returned),
+        proposals=[
+            ReasoningProposalItem(
+                id=proposal.id,
+                status=proposal.status,
+                relation=proposal.proposed_relation,
+                subject_id=proposal.subject_id,
+                object_id=proposal.object_id,
+                confidence=proposal.confidence,
+                rule_id=proposal.rule_id,
+                generation_id=proposal.generation_id,
+                pipeline_id=proposal.pipeline_id,
+                provider_id=proposal.provider_id,
+                model_id=proposal.model_id,
+                provider_revision=proposal.provider_revision,
+                source_evidence_ids=list(proposal.source_evidence_ids),
+                uncertainty=list(proposal.uncertainty),
+            )
+            for proposal in returned
+        ],
+    )
+
+
+def _retrieval_graph(retrieval: TrustedResult, *, include_text: bool = True):
+    chunks = [hit.chunk for hit in retrieval.hits if hit.verdict == "ok"]
+    return build_reasoning_graph(
+        chunks,
+        tenant_id=retrieval.tenant_id or "default",
+        generation_id=retrieval.generation_id or "legacy",
+        pipeline_fingerprint=retrieval.pipeline_fingerprint,
+        corpus_fingerprint=retrieval.corpus_fingerprint,
+        include_text=include_text,
+    )
+
+
+def _strict_reasoning_refusal(
+    refusal: TrustRefusal,
+    *,
+    tenant_id: str,
+    generation: GenerationSelection,
+    budget: ReasoningBudget,
+) -> ReasoningResponse:
+    bundle = EvidenceBundle(
+        query="",
+        decision="abstain",
+        reason_code=refusal.code.value,
+        calibrated=False,
+        stale=False,
+        embedding_profile="legacy",
+        retrieval_profile="legacy",
+        index_generation=refusal.generation_id or generation.generation_id or "legacy",
+        items=(),
+        trust_state="refused",
+        failure_code=refusal.code.value,
+    )
+    response = ReasoningResponse(
+        schema_version=REASONING_API_VERSION,
+        outcome="abstained",
+        answer=None,
+        clarification_request=None,
+        trusted_evidence=bundle,
+        inference_proposals=(),
+        provider_failures=(),
+        reasoning_trace=None,
+        contradictions=(),
+        unsupported_gaps=(),
+        citations=(),
+        calibration_id=refusal.calibration_id,
+        calibration_status=refusal.calibration_status,
+        tenant_id=refusal.tenant_id or tenant_id,
+        generation_id=refusal.generation_id or generation.generation_id,
+        pipeline_fingerprint=refusal.pipeline_fingerprint or generation.pipeline_fingerprint,
+        corpus_fingerprint=refusal.corpus_fingerprint or generation.corpus_fingerprint,
+        query_set_digest=refusal.query_set_digest,
+        trust_state="refused",
+        refusal_reason=refusal.code.value,
+        diagnostics=ReasoningDiagnostics(
+            latency_ms=0,
+            budget=budget,
+            budget_used=None,
+            retrieval_stage_ms={},
+            generator_invoked=False,
+            citations_normalized=False,
+        ),
+    )
+    METRICS.increment(
+        "recall_reasoning_outcome_total",
+        outcome=response.outcome,
+        trust_state=response.trust_state,
+        refusal_reason=refusal.code.value,
+    )
+    return response
+
+
+def reasoning_query(
+    store: PgVectorStore,
+    embedder: Embedder,
+    query: str,
+    *,
+    source: str | None = None,
+    k: int = 5,
+    mode: str = "proposal_assisted",
+    max_steps: int = 12,
+    max_graph_nodes: int = 32,
+    max_evidence_tokens: int = 2048,
+    policy: TrustPolicy | None = None,
+    calibration: Calibration | None = None,
+) -> ReasoningResponse:
+    budget = ReasoningBudget(
+        max_steps=max_steps,
+        max_graph_nodes=max_graph_nodes,
+        max_evidence_tokens=max_evidence_tokens,
+    )
+    reasoning_policy = _reasoning_policy(mode)
+    if policy is not None and not policy.strict:
+        reasoning_policy = replace(reasoning_policy, require_certified_evidence=False)
+
+    def execute() -> ReasoningResponse:
+        generation = _reasoning_generation(store)
+        retrieval_cache: dict[str, TrustedResult] = {}
+
+        def retrieve(_request: ReasoningRequest):
+            if "result" not in retrieval_cache:
+                result = _retrieve_trusted(
+                    store, embedder, query, source, k, calibration, policy
+                ).result
+                generation_id = result.generation_id or str(
+                    getattr(store, "generation_id", "legacy")
+                )
+                retrieval_cache["result"] = replace(
+                    result,
+                    tenant_id=result.tenant_id or store.tenant,
+                    generation_id=generation_id,
+                )
+            return retrieval_cache["result"]
+
+        def graph_provider(_request: ReasoningRequest, retrieval):
+            if source is not None:
+                return _retrieval_graph(retrieval, include_text=True)
+            return project_store_graph(store, include_text=True)
+
+        def proposal_provider(_request: ReasoningRequest, graph, _retrieval):
+            return deterministic_inference_proposals(
+                graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
+            )
+
+        request = ReasoningRequest(
+            query=query,
+            tenant_id=store.tenant,
+            generation=generation,
+            providers=ReasoningProviderPorts(
+                retriever=retrieve,
+                graph_provider=graph_provider,
+                proposal_provider=proposal_provider,
+            ),
+            policy=reasoning_policy,
+            budget=budget,
+        )
+        try:
+            return reason(request)
+        except TrustRefusal as exc:
+            return _strict_reasoning_refusal(
+                exc,
+                tenant_id=store.tenant,
+                generation=generation,
+                budget=budget,
+            )
+
+    snapshot = getattr(store, "snapshot", None)
+    if callable(snapshot):
+        with snapshot():
+            return execute()
+    return execute()
+
+
+def reasoning_audit(
+    store: PgVectorStore,
+    embedder: Embedder,
+    *,
+    query: str = "reasoning audit sentinel",
+    policy: TrustPolicy | None = None,
+    calibration: Calibration | None = None,
+) -> ReasoningAuditResult:
+    projection = reasoning_projection(store, include_text=False)
+    proposals = reasoning_proposals(store)
+    response = reasoning_query(
+        store,
+        embedder,
+        query,
+        mode="proposal_assisted",
+        max_steps=4,
+        policy=policy,
+        calibration=calibration,
+    )
+    refusal_reasons = sorted(
+        {
+            reason
+            for reason in [
+                response.refusal_reason,
+                response.trusted_evidence.failure_code,
+            ]
+            if reason
+        }
+    )
+    return ReasoningAuditResult(
+        tenant_id=projection.tenant_id,
+        generation_id=projection.generation_id,
+        trust_state=response.trust_state,
+        proposal_count=proposals.proposal_count,
+        review_count=proposals.review_count,
+        diagnostic_count=projection.diagnostic_count,
+        refusal_reasons=refusal_reasons,
+        checks={
+            "tenant_scoped": response.tenant_id == store.tenant,
+            "generation_identity_present": bool(response.generation_id),
+            "trust_metadata_present": bool(response.trust_state and response.calibration_status),
+            "trace_metadata_present": response.reasoning_trace is not None,
+            "development_mode_explicit": policy is not None or response.trust_state == "trusted",
+        },
+    )
+
+
 def index_memory(
     store: PgVectorStore,
     embedder: Embedder,
@@ -1241,9 +1609,7 @@ def forget_memory(
     not_found = [s for s in requested if s not in resolved]
     to_delete = sorted({src for ident in found for src in resolved[ident]})
     if to_delete and shadow_store is not None:
-        chunks_removed = store.delete_sources_across(
-            [store.table, shadow_store.table], to_delete
-        )
+        chunks_removed = store.delete_sources_across([store.table, shadow_store.table], to_delete)
     else:
         chunks_removed = store.delete_sources(to_delete) if to_delete else 0
     outbox_events_scrubbed = 0

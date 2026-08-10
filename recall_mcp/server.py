@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import threading
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -49,6 +50,10 @@ from recall_mcp.service import (
     make_embedder,
     make_profile_embedder,
     memory_stats,
+    reasoning_audit,
+    reasoning_projection,
+    reasoning_proposals,
+    reasoning_query,
     search_memory,
     startup_retrieval_profile,
 )
@@ -567,7 +572,10 @@ def _make_lifespan(
                     f"database migrations pending: {pending}; run `recall schema apply`"
                 )
             enterprise = os.environ.get("RECALL_ENTERPRISE_CONTROL_PLANE", "").lower() in {
-                "1", "true", "yes", "on"
+                "1",
+                "true",
+                "yes",
+                "on",
             }
             if enterprise and token_registry is None:
                 raise RuntimeError("enterprise control plane requires authenticated tenant routing")
@@ -886,6 +894,110 @@ def build_server() -> FastMCP:
             )
 
     @mcp.tool(
+        name="recall_reasoning_query",
+        annotations=ToolAnnotations(
+            title="Run a bounded reasoning query",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+    )
+    async def recall_reasoning_query(
+        query: str,
+        source: str | None = None,
+        k: int = 5,
+        mode: str = "proposal_assisted",
+        max_steps: int = 12,
+        max_graph_nodes: int = 32,
+        max_evidence_tokens: int = 2048,
+    ) -> str:
+        """Run explicit opt-in reasoning over trusted retrieval and a derived graph.
+
+        Existing retrieval clients should keep using `recall_search` or `recall_evidence`.
+        This tool is additive and returns a full reasoning response: trust state, generation
+        identity, proposals, trace, refusal reason, and diagnostics. It does not call a generator,
+        so an answer is returned only if a future server explicitly wires an answer provider.
+        """
+        state = _state()
+        store = _require(SCOPE_READ)
+        with METRICS.timer("recall_tool_latency_ms", tool="reasoning_query"):
+            return await _to_thread(
+                lambda: json.dumps(
+                    reasoning_query(
+                        store,
+                        state["embedder"],
+                        query,
+                        source=source,
+                        k=k,
+                        mode=mode,
+                        max_steps=max_steps,
+                        max_graph_nodes=max_graph_nodes,
+                        max_evidence_tokens=max_evidence_tokens,
+                    ).to_dict(),
+                    indent=2,
+                    default=str,
+                )
+            )
+
+    @mcp.tool(
+        name="recall_reasoning_projection",
+        annotations=ToolAnnotations(
+            title="Inspect reasoning graph projection",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+    )
+    async def recall_reasoning_projection(include_text: bool = False) -> str:
+        """Inspect the immutable reasoning projection for this tenant and generation."""
+        store = _require(SCOPE_READ)
+        with METRICS.timer("recall_tool_latency_ms", tool="reasoning_projection"):
+            return await _to_thread(
+                lambda: reasoning_projection(store, include_text=include_text).model_dump_json(
+                    indent=2
+                )
+            )
+
+    @mcp.tool(
+        name="recall_reasoning_proposals",
+        annotations=ToolAnnotations(
+            title="Inspect reasoning proposals",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+    )
+    async def recall_reasoning_proposals() -> str:
+        """List side effect free inference proposals for human review."""
+        store = _require(SCOPE_READ)
+        with METRICS.timer("recall_tool_latency_ms", tool="reasoning_proposals"):
+            return await _to_thread(lambda: reasoning_proposals(store).model_dump_json(indent=2))
+
+    @mcp.tool(
+        name="recall_reasoning_audit",
+        annotations=ToolAnnotations(
+            title="Audit reasoning integration state",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+    )
+    async def recall_reasoning_audit(query: str = "reasoning audit sentinel") -> str:
+        """Run the bounded integration audit without disclosing corpus or query text in errors."""
+        state = _state()
+        store = _require(SCOPE_READ)
+        with METRICS.timer("recall_tool_latency_ms", tool="reasoning_audit"):
+            return await _to_thread(
+                lambda: reasoning_audit(store, state["embedder"], query=query).model_dump_json(
+                    indent=2
+                )
+            )
+
+    @mcp.tool(
         name="recall_index",
         annotations=ToolAnnotations(
             title="Add to agent memory",
@@ -916,12 +1028,13 @@ def build_server() -> FastMCP:
         tenant = _current_tenant(state)
         registry: StoreRegistry | None = state.get("stores")
         shadow_store = (
-            registry.get_shadow(tenant)
-            if registry is not None and tenant is not None else None
+            registry.get_shadow(tenant) if registry is not None and tenant is not None else None
         )
         shadow_embedder = None
         if shadow_store is not None:
-            assert registry is not None and registry.control_plane is not None and tenant is not None
+            assert (
+                registry is not None and registry.control_plane is not None and tenant is not None
+            )
             route = registry.control_plane.route(tenant)
             if route is None or route.shadow is None:
                 raise RuntimeError("shadow store was acquired without shadow generation metadata")
@@ -949,7 +1062,10 @@ def build_server() -> FastMCP:
         with METRICS.timer("recall_tool_latency_ms", tool="index"):
             return await _to_thread(
                 lambda: index_memory(
-                    store, state["embedder"], path, on_measured=_debit,
+                    store,
+                    state["embedder"],
+                    path,
+                    on_measured=_debit,
                     shadow_store=shadow_store,
                     shadow_embedder=shadow_embedder,
                     control_plane=registry.control_plane if registry is not None else None,
@@ -986,13 +1102,13 @@ def build_server() -> FastMCP:
         store = _require(SCOPE_FORGET)
         registry: StoreRegistry | None = state.get("stores")
         tenant = _current_tenant(state)
-        shadow = registry.get_shadow(tenant) if registry is not None and tenant is not None else None
+        shadow = (
+            registry.get_shadow(tenant) if registry is not None and tenant is not None else None
+        )
         control = registry.control_plane if registry is not None else None
         with METRICS.timer("recall_tool_latency_ms", tool="forget"):
             return await _to_thread(
-                lambda: forget_memory(
-                    store, sources, shadow, control
-                ).model_dump_json(indent=2)
+                lambda: forget_memory(store, sources, shadow, control).model_dump_json(indent=2)
             )
 
     @mcp.tool(
