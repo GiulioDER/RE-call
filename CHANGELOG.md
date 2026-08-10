@@ -10,6 +10,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 No unreleased package changes yet.
 
+## [0.9.1] - 2026-08-10
+
+### Fixed
+
+- Rebuilt the package description from the current GitHub README so PyPI no longer shows the stale
+  pre-cleanup product copy or the incorrect MIT license sentence from the old buyer table.
+
 ## [0.9.0] - 2026-08-09
 
 ### Added
