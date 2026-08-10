@@ -45,7 +45,7 @@ Outcomes are distinct:
 
 Policies:
 
-1. `retrieval_only`: returns trusted evidence and never invokes the answer provider.
+1. `retrieval_only`: returns the evidence bundle after certification checks pass and never invokes the answer provider. If certification fails, it abstains with the original trust failure.
 2. `evidence_assembly`: assembles trusted evidence and may call the answer provider.
 3. `proposal_assisted`: requires a graph provider, records proposals, and runs bounded planning.
 4. `review_required`: same as proposal assisted, but returns `needs_review` when proposals are present.
@@ -57,7 +57,7 @@ Policies:
 | `trusted_search` | No signature change. Direct retrieval callers see no behavior change. |
 | `TrustedResult` | No field changes. Reasoning consumes it as input. |
 | `EvidenceBundle` | No field changes. Reasoning reuses `build_evidence_bundle`. |
-| `generate_from_evidence` | No behavior change. Reasoning delegates answer parsing and citation validation to it. |
+| `generate_from_evidence` | No behavior change. Reasoning uses the same prompt rendering, answer parsing, citation normalization, and citation validation helpers without invoking the wrapper that rebuilds evidence. |
 | LangChain and LlamaIndex adapters | No changes required. Existing trust state tests still pass. |
 | MCP search and evidence tools | No response shape change in this session. They can consume `recall.reasoning` later. |
 | Package exports | Additive exports only, sorted `__all__` retained. |
@@ -85,6 +85,8 @@ Covered cases:
 9. Empty query returns `needs_clarification` before retrieval.
 10. Malformed answer provider output is rejected.
 11. Response serialization is strict JSON safe and round trips through `reasoning_response_from_dict`.
+12. Deserialization rejects missing or mismatched nested trust state.
+13. Deserialization rejects nonfinite numeric strings in diagnostics, evidence, and proposal confidence fields.
 
 Lint command:
 
