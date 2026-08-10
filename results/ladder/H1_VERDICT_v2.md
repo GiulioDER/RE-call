@@ -5,7 +5,7 @@ conversations per question
 **Archived manifest:** `results/ladder/manifest_v2.jsonl`, digest
 `5534c61356acaa7b62ac5a79dbec7383674fc052984d10c1d0cc89e26a532bd5`, 1 200 instances (200 × 6)
 **Archived responses:** `results/ladder/responses_v2.jsonl`, 1 200 scored, none missing
-**Pre-registration:** [`benchmarks/PREREGISTRATION-ladder-v2.md`](../../benchmarks/PREREGISTRATION-ladder-v2.md) + its dated pre-run addendum
+**Pre-registration:** [`benchmarks/archive/preregistrations/PREREGISTRATION-ladder-v2.md`](../../benchmarks/archive/preregistrations/PREREGISTRATION-ladder-v2.md) + its dated pre-run addendum
 **Predecessor:** [`H1_VERDICT.md`](H1_VERDICT.md) (v1)
 
 **Prior work searched** before the design was fixed — see the pre-registration's own header.

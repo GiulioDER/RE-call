@@ -10,6 +10,7 @@ want to audit a claim or reproduce a benchmark.
 |---|---|
 | [../README.md](../README.md) | Product overview, five-minute proof, setup, and integrations. |
 | [API.md](API.md) | Supported Python, CLI, and MCP surface. |
+| [REPOSITORY_MAP.md](REPOSITORY_MAP.md) | Product, evidence, benchmark support, and archive boundaries. |
 | [PRODUCTION.md](PRODUCTION.md) | Production posture, supported boundaries, and known limits. |
 | [CALIBRATION.md](CALIBRATION.md) | Calibration workflow and generation-aware serving. |
 | [MIGRATIONS.md](MIGRATIONS.md) | Migration roles, serving DSNs, and schema operations. |
@@ -34,6 +35,7 @@ want to audit a claim or reproduce a benchmark.
 |---|---|
 | [EVIDENCE.md](EVIDENCE.md) | The shortest evidence path: claims, measurements, limits, and withdrawn claims. |
 | [../results/FINDINGS.md](../results/FINDINGS.md) | What the measurements establish, where they stop, and which claims were corrected. |
+| [../results/README.md](../results/README.md) | Map of committed result summaries and compact artifacts. |
 | [../results/RESULTS.md](../results/RESULTS.md) | Published tables and result summaries. |
 | [../results/ARTIFACTS.md](../results/ARTIFACTS.md) | Checksum and artifact map for readers auditing a claim. |
 | [../CHANGELOG.md](../CHANGELOG.md) | Release notes and upgrade warnings moved out of the README. |
