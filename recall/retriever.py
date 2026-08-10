@@ -191,8 +191,7 @@ class HybridRetriever:
                 "erasure paths (generations.forget, control_plane.erase_sources_from_pending) "
                 "predate it, so a forgotten chunk would leave its SPLADE weights behind. Those "
                 "weights are term weights over the vocabulary, i.e. partially reconstructable "
-                "content. Wiring erasure is the precondition for lifting this refusal. "
-                "See docs/superpowers/specs/2026-08-06-learned-sparse-splade-design.md."
+                "content. Wiring erasure is the precondition for lifting this refusal."
             )
         self._store = store
         self._embedder = embedder

@@ -1,25 +1,0 @@
-fatal: detected dubious ownership in repository at '/var/tmp/re_call_mtrag_20260803/mt-rag-benchmark'
-To add an exception for this directory, call:
-
-	git config --global --add safe.directory /var/tmp/re_call_mtrag_20260803/mt-rag-benchmark
-{"event": "validated", "split": "dev", "query_mode_validated": "last", "task_count": 777, "tasks_by_domain": {"clapnq": 208, "cloud": 188, "fiqa": 180, "govt": 201}, "scored_query_count": 777, "unscored_query_count": 0, "qrels_by_domain": {"clapnq": 208, "cloud": 188, "fiqa": 180, "govt": 201}, "input_sha256": {"tasks_clapnq": "df1313e94929f32d8c3b9b70b2e045a129db2f2fc7bec0adb5d20828b112178e", "tasks_cloud": "85851a3d24fd09d07b6817ad023604f42ed3313af34dc95431c039890ddda1cb", "tasks_fiqa": "c491ac98e0ae1bc9f5db26e42fdcbb815ef7111b1fcf26794a7481d6c19ee2e6", "tasks_govt": "d24b26f4488f3416a84db8bb150b01095d0894b4274e3750f193ab4c38b09a75", "qrels_clapnq": "0766bc3e8fb6f515c34b33a97e568394303214915a2f835533705979b2303d97", "qrels_cloud": "925635635bf0e60b20d8ea0b18160cff878897acf8e0bf54e7096cc0ade8bd3b", "qrels_fiqa": "a10ec0b5cba634d6c4ad02dd86de715a258ebd313dbcf5fa2d0a77bb0e121abc", "qrels_govt": "46acb9b882297b6ff68978a56fd4ec57ea1c340cd604c62787a9ad69ac880d34", "corpus_clapnq": "3f4bd79341b176070a83b6281bf380d7d6958270c137913f7377121b85a0747e", "corpus_cloud": "a0c5427013c65556aeddfdc246dd6068f3a7fad08ce6ae7adddaa9e87aae246d", "corpus_fiqa": "59f7cf5b043abe007fdb6521eb281bf055524de4376466e9cb4808466e761ee9", "corpus_govt": "09adcc5a1a8d11e362c66d7dbf0ef2ea338df4327d655102bf91ea8e258399f6"}, "at": "2026-08-08T10:04:37.165542+00:00"}
-{"event": "arm_start", "arm": "hybrid_splade_voyage", "split": "dev", "at": "2026-08-08T10:04:45.149923+00:00"}
-Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Loading weights:   0%|          | 0/204 [00:00<?, ?it/s]Loading weights: 100%|██████████| 204/204 [00:00<00:00, 8761.04it/s]
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 50, "total": 777, "at": "2026-08-08T10:29:59.047819+00:00"}
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 100, "total": 777, "at": "2026-08-08T10:55:01.870093+00:00"}
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 150, "total": 777, "at": "2026-08-08T11:20:32.006049+00:00"}
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 200, "total": 777, "at": "2026-08-08T11:46:58.402448+00:00"}
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 250, "total": 777, "at": "2026-08-08T12:05:33.156863+00:00"}
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 300, "total": 777, "at": "2026-08-08T12:27:49.819703+00:00"}
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 350, "total": 777, "at": "2026-08-08T12:48:24.311637+00:00"}
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 400, "total": 777, "at": "2026-08-08T13:08:12.543480+00:00"}
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 450, "total": 777, "at": "2026-08-08T13:29:37.790573+00:00"}
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 500, "total": 777, "at": "2026-08-08T13:48:58.767150+00:00"}
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 550, "total": 777, "at": "2026-08-08T14:05:28.739700+00:00"}
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 600, "total": 777, "at": "2026-08-08T14:24:10.318814+00:00"}
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 650, "total": 777, "at": "2026-08-08T14:38:47.434677+00:00"}
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 700, "total": 777, "at": "2026-08-08T14:54:32.810101+00:00"}
-{"event": "query_progress", "arm": "hybrid_splade_voyage", "completed": 750, "total": 777, "at": "2026-08-08T15:12:17.318297+00:00"}
-{"event": "arm_complete", "arm": "hybrid_splade_voyage", "nDCG@5": 0.43421315518994663, "at": "2026-08-08T15:22:21.140171+00:00"}
-{"event": "complete", "at": "2026-08-08T15:22:21.322723+00:00"}

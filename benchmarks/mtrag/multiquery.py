@@ -1,8 +1,7 @@
 """Multi-query diversity with nested RRF on MTRAG-human dev, with no LLM and no GPU.
 
-Preregistration: `docs/superpowers/specs/2026-08-06-multi-query-diversity-design.md`. The arms,
-contrasts, decision rule and predicted outcome were frozen there before any score was observed;
-`MQ_ARMS` below is the executable copy and `tests/test_multiquery.py` pins it.
+The arms, contrasts, decision rule and predicted outcome were frozen before any score was
+observed; `MQ_ARMS` below is the executable copy and `tests/test_multiquery.py` pins it.
 
 Prior work (searched 2026-08-06, `docs_search(source_type="memory")`, no gap warning):
 

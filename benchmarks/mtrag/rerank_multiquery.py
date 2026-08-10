@@ -1,7 +1,5 @@
 """Does the multi-query coverage gain CONVERT under reranking? Equal-width, on frozen pools.
 
-Preregistration: `docs/superpowers/specs/2026-08-06-multi-query-rerank-design.md`.
-
 Prior work (searched 2026-08-06, `docs_search(source_type="memory")`, no gap warning):
 
   - [[project-recall-splade-learned-sparse-measured-2026-08-06]] -- the precedent this exists to

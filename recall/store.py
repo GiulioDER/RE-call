@@ -83,8 +83,8 @@ LEG_SPARSE = "sparse"
 LEG_LEARNED_SPARSE = "learned_sparse"
 
 #: Global sidecar holding learned sparse vectors for every chunk table. See migration 0012 for why
-#: it is global rather than per-target, and `docs/superpowers/specs/2026-08-06-learned-sparse-
-#: splade-design.md` for the erasure consequence that follows from having no foreign key.
+#: it is global rather than per-target. Without a foreign key to the chunk table, erasure must
+#: explicitly clean this table before the learned sparse path can be enabled in production.
 SPARSE_TABLE = "recall_sparse_v1"
 
 #: Vocabulary width of both supported checkpoints (bert-base-uncased). Fixed in the `sparsevec`

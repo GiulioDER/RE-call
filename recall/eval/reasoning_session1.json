@@ -1,0 +1,239 @@
+{
+  "version": "reasoning-session1-v0.1.0",
+  "created_utc": "2026-08-10T00:00:00Z",
+  "index_generation": "reasoning-session1-fixture-gen1",
+  "notes": [
+    "Synthetic public fixture. No private corpus text.",
+    "Baseline outcomes are frozen observations for the control harness, not labels.",
+    "Missing supersession edges are represented only as expected proposals."
+  ],
+  "memories": [
+    {
+      "id": "mem_rate_limit_v2",
+      "source": "rate_limits_v2.md",
+      "text": "The API request limit is 120 requests per minute per tenant.",
+      "metadata": {
+        "file": "rate_limits_v2.md",
+        "ord": 0,
+        "valid_from": "2026-01-01T00:00:00Z"
+      }
+    },
+    {
+      "id": "mem_rollout_flag",
+      "source": "rollout_flag.md",
+      "text": "The live checkout rollout is controlled by the canary_checkout flag.",
+      "metadata": {
+        "file": "rollout_flag.md",
+        "ord": 0
+      }
+    },
+    {
+      "id": "mem_flag_owner",
+      "source": "flag_owner.md",
+      "text": "The canary_checkout flag is owned by the Release Engineering team.",
+      "metadata": {
+        "file": "flag_owner.md",
+        "ord": 0
+      }
+    },
+    {
+      "id": "mem_checkout_latency",
+      "source": "checkout_latency.md",
+      "text": "Checkout latency dashboards report p95 and p99 latency by region.",
+      "metadata": {
+        "file": "checkout_latency.md",
+        "ord": 0
+      }
+    },
+    {
+      "id": "mem_cache_ttl_old",
+      "source": "cache_ttl_old.md",
+      "text": "Cache TTL for catalogue pages is 24 hours.",
+      "metadata": {
+        "file": "cache_ttl_old.md",
+        "ord": 0
+      }
+    },
+    {
+      "id": "mem_cache_ttl_new",
+      "source": "cache_ttl_new.md",
+      "text": "Cache TTL for catalogue pages is 15 minutes after the 2026 incident review.",
+      "metadata": {
+        "file": "cache_ttl_new.md",
+        "ord": 0
+      }
+    },
+    {
+      "id": "mem_search_v1",
+      "source": "search_engine_v1.md",
+      "text": "Search traffic uses the Atlas engine.",
+      "metadata": {
+        "file": "search_engine_v1.md",
+        "ord": 0
+      }
+    },
+    {
+      "id": "mem_search_v2",
+      "source": "search_engine_v2.md",
+      "text": "Search traffic was migrated from Atlas to Boreal on 2026-04-15.",
+      "metadata": {
+        "file": "search_engine_v2.md",
+        "ord": 0
+      }
+    },
+    {
+      "id": "mem_iris_runtime",
+      "source": "teams/iris.md",
+      "text": "Iris owns runtime alerts for the inference gateway.",
+      "metadata": {
+        "file": "teams/iris.md",
+        "ord": 0
+      }
+    },
+    {
+      "id": "mem_iris_design",
+      "source": "projects/iris.md",
+      "text": "Project Iris is the design system refresh.",
+      "metadata": {
+        "file": "projects/iris.md",
+        "ord": 0
+      }
+    },
+    {
+      "id": "mem_deploy_freeze",
+      "source": "deploy_freeze.md",
+      "text": "A deploy freeze was in effect for checkout until 2026-02-01.",
+      "metadata": {
+        "file": "deploy_freeze.md",
+        "ord": 0,
+        "valid_until": "2026-02-01T00:00:00Z"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "direct_rate_limit",
+      "category": "direct_answer",
+      "question": "What is the API request limit?",
+      "expected_outcome": "answer",
+      "expected_answer_facts": ["The API request limit is 120 requests per minute per tenant."],
+      "supporting_memory_ids": ["mem_rate_limit_v2"],
+      "baseline_retrieval": {
+        "retrieved_memory_ids": ["mem_rate_limit_v2", "mem_checkout_latency"],
+        "abstained": false,
+        "reason": ""
+      }
+    },
+    {
+      "id": "multi_hop_rollout_owner",
+      "category": "multi_hop",
+      "question": "Which team owns the flag that controls live checkout rollout?",
+      "expected_outcome": "answer",
+      "expected_answer_facts": [
+        "The live checkout rollout is controlled by the canary_checkout flag.",
+        "The canary_checkout flag is owned by the Release Engineering team."
+      ],
+      "supporting_memory_ids": ["mem_rollout_flag", "mem_flag_owner"],
+      "baseline_retrieval": {
+        "retrieved_memory_ids": ["mem_rollout_flag", "mem_checkout_latency"],
+        "abstained": false,
+        "reason": ""
+      }
+    },
+    {
+      "id": "near_miss_checkout_latency",
+      "category": "near_miss",
+      "question": "What is the checkout error budget?",
+      "expected_outcome": "abstain",
+      "expected_answer_facts": [],
+      "supporting_memory_ids": [],
+      "baseline_retrieval": {
+        "retrieved_memory_ids": ["mem_checkout_latency"],
+        "abstained": false,
+        "reason": ""
+      }
+    },
+    {
+      "id": "contradictory_cache_ttl",
+      "category": "contradiction",
+      "question": "What is the cache TTL for catalogue pages?",
+      "expected_outcome": "needs_review",
+      "expected_answer_facts": [
+        "Cache TTL for catalogue pages is 24 hours.",
+        "Cache TTL for catalogue pages is 15 minutes after the 2026 incident review."
+      ],
+      "supporting_memory_ids": ["mem_cache_ttl_old", "mem_cache_ttl_new"],
+      "baseline_retrieval": {
+        "retrieved_memory_ids": ["mem_cache_ttl_old", "mem_cache_ttl_new"],
+        "abstained": false,
+        "reason": ""
+      }
+    },
+    {
+      "id": "missing_supersession_search_engine",
+      "category": "missing_supersession",
+      "question": "Which engine serves search traffic now?",
+      "expected_outcome": "needs_review",
+      "expected_answer_facts": [
+        "Search traffic uses the Atlas engine.",
+        "Search traffic was migrated from Atlas to Boreal on 2026-04-15."
+      ],
+      "supporting_memory_ids": ["mem_search_v1", "mem_search_v2"],
+      "expected_proposals": [
+        {
+          "type": "proposed_supersession",
+          "from_memory_id": "mem_search_v1",
+          "to_memory_id": "mem_search_v2",
+          "reason": "The later memory describes a migration away from the earlier engine."
+        }
+      ],
+      "baseline_retrieval": {
+        "retrieved_memory_ids": ["mem_search_v1", "mem_search_v2"],
+        "abstained": false,
+        "reason": ""
+      }
+    },
+    {
+      "id": "ambiguous_iris_owner",
+      "category": "ambiguous_entity",
+      "question": "What does Iris own?",
+      "expected_outcome": "needs_clarification",
+      "expected_answer_facts": [
+        "Iris owns runtime alerts for the inference gateway.",
+        "Project Iris is the design system refresh."
+      ],
+      "supporting_memory_ids": ["mem_iris_runtime", "mem_iris_design"],
+      "baseline_retrieval": {
+        "retrieved_memory_ids": ["mem_iris_runtime", "mem_iris_design"],
+        "abstained": false,
+        "reason": ""
+      }
+    },
+    {
+      "id": "empty_corpus_incident_channel",
+      "category": "empty_corpus",
+      "question": "Which channel received the payments incident review?",
+      "expected_outcome": "abstain",
+      "expected_answer_facts": [],
+      "supporting_memory_ids": [],
+      "baseline_retrieval": {
+        "retrieved_memory_ids": [],
+        "abstained": true,
+        "reason": "no memory retrieved at all"
+      }
+    },
+    {
+      "id": "stale_deploy_freeze",
+      "category": "stale_corpus",
+      "question": "Is checkout currently under a deploy freeze?",
+      "expected_outcome": "abstain",
+      "expected_answer_facts": [],
+      "supporting_memory_ids": ["mem_deploy_freeze"],
+      "baseline_retrieval": {
+        "retrieved_memory_ids": ["mem_deploy_freeze"],
+        "abstained": true,
+        "reason": "best candidate is outside its validity window"
+      }
+    }
+  ]
+}

@@ -12,6 +12,11 @@ configuration: `bge-small` via fastembed, hybrid dense+sparse, no reranker, noth
 machine. See
 [which configuration to run](EVIDENCE.md#so-which-configuration-should-you-actually-run).
 
+Configuration is part of the product surface. A deployment can stay fully local for legal or data
+residency reasons, choose a hosted embedder when quality is worth the dependency, enable reranking
+when a human is waiting for the answer, or run the fast profile when hardware and throughput matter
+more. Those choices are explicit profiles and startup checks, not silent per-request tuning.
+
 | Property | Status | Evidence |
 |---|---|---|
 | **Multi-tenancy** | ✅ `tenant_id` on every row and every query, plus a row-level-security policy (`ENABLE` + `FORCE`) | Verified as a `NOSUPERUSER NOBYPASSRLS` role — a superuser bypasses RLS, so testing it as one would have passed vacuously |

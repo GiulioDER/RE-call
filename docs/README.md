@@ -12,6 +12,7 @@ The README stays short; detailed evidence and limits live here or in `results/`.
 | [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) | MCP setup and tool behavior. |
 | [CASE_STUDY.md](CASE_STUDY.md) | Origin story, redacted production context, and public/private boundary. |
 | [RESEARCH_PROTOCOL.md](RESEARCH_PROTOCOL.md) | Rules for benchmark runs, artifact retention, and post-run review. |
+| [REASONING_CONTRACT.md](REASONING_CONTRACT.md) | Session 1 reasoning vocabulary, invariants, baseline fixture, and non goals. |
 
 ## Evidence and limits
 

@@ -1,8 +1,7 @@
 # A cloud embedder wins almost everywhere — and the gap grows with your haystack
 
 **Run:** 2026-07-27 · 17 BEIR / CQADupStack corpora · `bge-small-en-v1.5` vs `voyage-3` · hit@5
-**Preregistered:** 2026-07-26, before any gap was measured —
-`docs/superpowers/specs/2026-07-26-embedder-gap-predictor-design.md`
+**Preregistered:** 2026-07-26, before any gap was measured.
 **Artifacts:** one JSON per corpus in this directory · `analysis.json` · reproduces from them exactly
 on a different machine.
 
@@ -156,5 +155,4 @@ write_json(Path('results/gap/analysis.json'), out)   # NaN -> null; a bare NaN i
 print(json.dumps(out, indent=2, default=str))"
 ```
 
-Regenerating the corpora and scores from scratch:
-`docs/superpowers/specs/2026-07-26-embedder-gap-RUNBOOK.md`.
+Regenerate the corpora and scores from scratch with `python -m recall.eval.gap_run`.

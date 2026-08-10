@@ -3147,8 +3147,8 @@ session on this machine should expect both.
 | 4 | Produce the ordered backlog mapped to sessions 3 to 11 | done, 37 items |
 | 5 | Rebase onto #194, which landed the prior session's status file first | done, both entries kept |
 
-Read-only against the code. Nothing was fixed. Deliverable:
-[docs/superpowers/plans/2026-08-05-enterprise-gap-matrix.md](superpowers/plans/2026-08-05-enterprise-gap-matrix.md).
+Read-only against the code. Nothing was fixed. The internal planning note is not part of the
+public library tree.
 
 ### A concurrent session wrote the entry below, and it landed first
 

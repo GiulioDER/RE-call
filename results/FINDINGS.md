@@ -828,9 +828,10 @@ is the memory. Paired **McNemar** over per-question outcomes, full **n=1,540** a
 
 Every figure in this table is now derived, checkable and committed:
 [`results/head_to_head/paired_accuracy.json`](head_to_head/paired_accuracy.json), with the
-per-question outcome vectors in `head_to_head/outcomes/` so the paired test is recomputable
-without the raw runs (far too large to commit), an API key, or trust. `tests/test_h2h_artifact_backs_findings.py`
-fails if this table and that artifact ever disagree again.
+per-question outcome vectors archived outside the source tree so the paired test is recomputable
+without the raw runs (far too large to commit), an API key, or trust.
+`tests/test_h2h_artifact_backs_findings.py` fails if this table and that artifact ever disagree
+again.
 
 RE-call is the more accurate of the two on every row, and the margin survives **Holm–Bonferroni**
 across all five (largest adjusted p = **0.012**). It also holds on the 1,369 questions where the two

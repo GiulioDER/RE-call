@@ -1,7 +1,5 @@
 """Late-interaction (ColBERT/MaxSim) reranking arms for MTRAG-human dev.
 
-Preregistration: `docs/superpowers/specs/2026-08-07-late-interaction-rerank-design.md`.
-
 Why this reuses `rerank_offload.cmd_dump` rather than re-running retrieval. Pool width alone
 moves reranker results here (`closed-hypothesis-recall-rerank-pool-interaction-2026-08-05`: the
 same MiniLM got WORSE as the pool widened, entire 95% CI below threshold). Scoring the same frozen

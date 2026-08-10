@@ -1,9 +1,8 @@
 # Engineering
 
-**1,300+ tests.** The database-touching ones run against a real pgvector container — no mock
-DB. CI runs `ruff`, `mypy`, the suite against PostgreSQL under coverage, the suite *again* at the
-declared dependency floor, and `pip-audit` over a checked-in `uv.lock` — each as a gate rather than
-a report.
+The database-touching tests run against a real pgvector container, not a mock DB. CI runs `ruff`,
+`mypy`, the suite against PostgreSQL under coverage, the suite again at the declared dependency
+floor, and `pip-audit` over a checked-in `uv.lock`. These are gates, not reports.
 
 Type checking arrived late and is worth being specific about, because "we added mypy" is usually a
 non-event. 81% of functions here already carried a return annotation and **nothing verified any of

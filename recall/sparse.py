@@ -1,7 +1,4 @@
-"""Learned sparse (SPLADE) retrieval: encoder, identity, and pruning.
-
-See `docs/superpowers/specs/2026-08-06-learned-sparse-splade-design.md`.
-"""
+"""Learned sparse (SPLADE) retrieval: encoder, identity, and pruning."""
 
 from __future__ import annotations
 

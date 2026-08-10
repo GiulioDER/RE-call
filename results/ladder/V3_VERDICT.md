@@ -1,10 +1,10 @@
 # The Answerability Ladder v3 — embedder generality
 
 **Date:** 2026-07-29 · **System:** RE-call at shipped defaults, embedder `thenlper/gte-base`
-**Manifest:** `results/ladder/manifest_v2.jsonl` — **the same frozen manifest as v2**, digest
+**Archived manifest:** `results/ladder/manifest_v2.jsonl` — **the same frozen manifest as v2**, digest
 `5534c61356acaa7b62ac5a79dbec7383674fc052984d10c1d0cc89e26a532bd5`, verified at run start via
 `--expected-digest`
-**Responses:** `results/ladder/responses_v3_gte.jsonl`, 1 200 scored, none missing
+**Archived responses:** `results/ladder/responses_v3_gte.jsonl`, 1 200 scored, none missing
 **Pre-registration:** [`benchmarks/PREREGISTRATION-ladder-v3.md`](../../benchmarks/PREREGISTRATION-ladder-v3.md)
 **Analysis:** `benchmarks/ladder/analyze_v3.py`, **committed before this arm finished** and
 validated by reproducing every published v2 figure

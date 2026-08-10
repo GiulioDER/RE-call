@@ -7,8 +7,8 @@ Usage on the rented box, after the BEIR zips are extracted under `--beir-root`::
 Each corpus writes `<out>/<dataset>.json` as it finishes, so the job resumes where it died rather
 than re-embedding everything. Re-running is safe and cheap.
 
-The parameters below are frozen in `docs/superpowers/specs/2026-07-26-embedder-gap-predictor-design.md`
-and were fixed before any gap was measured. Changing one is a restatement, not a tweak.
+The parameters below were fixed before any gap was measured. Changing one is a restatement, not a
+tweak.
 """
 from __future__ import annotations
 

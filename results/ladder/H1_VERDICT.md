@@ -1,9 +1,9 @@
 # The Answerability Ladder v1 — H1 verdict
 
 **Date:** 2026-07-29 · **System:** RE-call at shipped defaults · **Corpus:** LOCOMO
-**Manifest:** `results/ladder/manifest.jsonl`, digest
+**Archived manifest:** `results/ladder/manifest.jsonl`, digest
 `6bfe2d2b094eefaf64409a3eddbb26d62b9e7709346540b2d068a4be300632b1`, 1 800 instances
-**Responses:** `results/ladder/responses_recall.jsonl`, 1 800 scored, none missing
+**Archived responses:** `results/ladder/responses_recall.jsonl`, 1 800 scored, none missing
 **Pre-registration:** [`benchmarks/PREREGISTRATION-ladder.md`](../../benchmarks/PREREGISTRATION-ladder.md) + its dated addendum
 
 **Prior work searched** — `docs_search(source_type="memory")` on "BEAM benchmark evaluation results

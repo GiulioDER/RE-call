@@ -1,7 +1,5 @@
 """Family B power precondition: can the 123-document cell detect anything?
 
-Preregistration: `docs/superpowers/specs/2026-08-07-late-interaction-rerank-design.md`.
-
 This BLOCKS freezing Family B, and the standard it serves is specific:
 `feedback-check-the-deciding-cell-has-power-2026-08-06` records a prior session that built three
 guards which could not fire, could not pass, or rested on n=8. A design whose deciding cell cannot
