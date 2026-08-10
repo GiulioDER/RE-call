@@ -30,6 +30,14 @@ from recall.lineage import (
     IndexManifestV1,
     PipelineIdentity,
 )
+from recall.reasoning_graph import (
+    ReasoningGraphDiagnostic,
+    ReasoningGraphEdge,
+    ReasoningGraphNode,
+    ReasoningGraphProjection,
+    build_reasoning_graph,
+    project_store_graph,
+)
 
 __version__ = "0.9.0"
 
@@ -47,12 +55,18 @@ __all__ = [
     "GenerationState",
     "IndexManifestV1",
     "PipelineIdentity",
+    "ReasoningGraphDiagnostic",
+    "ReasoningGraphEdge",
+    "ReasoningGraphNode",
+    "ReasoningGraphProjection",
     "Tokenizer",
     "ValidationResult",
     "build_evidence_bundle",
+    "build_reasoning_graph",
     "generate_from_evidence",
     "normalize_citations",
     "parse_answer_envelope",
+    "project_store_graph",
     "render_evidence_prompt",
     "validate_answer",
 ]
