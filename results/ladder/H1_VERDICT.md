@@ -4,7 +4,7 @@
 **Archived manifest:** `results/ladder/manifest.jsonl`, digest
 `6bfe2d2b094eefaf64409a3eddbb26d62b9e7709346540b2d068a4be300632b1`, 1 800 instances
 **Archived responses:** `results/ladder/responses_recall.jsonl`, 1 800 scored, none missing
-**Pre-registration:** [`benchmarks/PREREGISTRATION-ladder.md`](../../benchmarks/PREREGISTRATION-ladder.md) + its dated addendum
+**Pre-registration:** [`benchmarks/archive/preregistrations/PREREGISTRATION-ladder.md`](../../benchmarks/archive/preregistrations/PREREGISTRATION-ladder.md) + its dated addendum
 
 **Prior work searched** — `docs_search(source_type="memory")` on "BEAM benchmark evaluation results
 answerability abstention" and on "distractor corpus far gap versus near miss abstention regime
@@ -113,7 +113,7 @@ accuracy here is an upper bound.
 
 ## What v2 changes
 
-[`benchmarks/PREREGISTRATION-ladder-v2.md`](../../benchmarks/PREREGISTRATION-ladder-v2.md), written
+[`benchmarks/archive/preregistrations/PREREGISTRATION-ladder-v2.md`](../../benchmarks/archive/preregistrations/PREREGISTRATION-ladder-v2.md), written
 before any v2 arm ran: the ingested slice gains **2 distractor conversations** so the top rung is a
 real far gap rather than an empty index, and rungs become **fractions of the question's own
 cluster** so they cannot be mis-scaled by corpus size. Its P1 is explicitly demoted to a **positive

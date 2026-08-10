@@ -1,7 +1,7 @@
 # Verdict — Arm R: which regime is MTRAG?
 
 **Date:** 2026-08-05 · Pre-registration:
-[`benchmarks/PREREGISTRATION-mtrag-abstention.md`](../../benchmarks/PREREGISTRATION-mtrag-abstention.md)
+[`benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-abstention.md`](../../benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-abstention.md)
 §1–§2, written before this ran and **not edited**. Runner:
 [`benchmarks/mtrag/probe/arm_r_separability.py`](../../benchmarks/mtrag/probe/arm_r_separability.py).
 Artifact archived on VPS2 at `/var/lib/recall-benchmarks/2026-08-05-mtrag-armR-separability/`

@@ -1,7 +1,7 @@
 # Verdict — MTRAGEval RB_alg probe
 
 **Date:** 2026-08-05 · Pre-registration:
-[`benchmarks/PREREGISTRATION-mtrag-rbalg.md`](../../benchmarks/PREREGISTRATION-mtrag-rbalg.md),
+[`benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-rbalg.md`](../../benchmarks/archive/preregistrations/PREREGISTRATION-mtrag-rbalg.md),
 written before any measurement and **not edited**. This file records what happened.
 
 **Headline: the thesis the probe was built to test is FALSIFIED, and the probe found a larger

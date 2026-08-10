@@ -3,8 +3,8 @@
 **Date:** 2026-07-29 · Written **before** the v3 arm runs. The git history of this file is the
 evidence. Predecessors: [`PREREGISTRATION-ladder.md`](PREREGISTRATION-ladder.md),
 [`PREREGISTRATION-ladder-v2.md`](PREREGISTRATION-ladder-v2.md); results in
-[`results/ladder/H1_VERDICT.md`](../results/ladder/H1_VERDICT.md) and
-[`H1_VERDICT_v2.md`](../results/ladder/H1_VERDICT_v2.md). Neither is edited.
+[`results/ladder/H1_VERDICT.md`](../../../results/ladder/H1_VERDICT.md) and
+[`H1_VERDICT_v2.md`](../../../results/ladder/H1_VERDICT_v2.md). Neither is edited.
 
 **Prior work searched** — `docs_search(source_type="memory")` on "voyage calibrated abstention
 threshold arm ladder rerank best configuration". Load-bearing hits, and both **changed this

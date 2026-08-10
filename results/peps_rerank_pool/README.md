@@ -6,7 +6,7 @@ better.
 
 | | |
 |---|---|
-| preregistration (written 2026-08-04, before any arm ran) | [`benchmarks/PREREGISTRATION-peps-rerank-pool.md`](../../benchmarks/PREREGISTRATION-peps-rerank-pool.md) |
+| preregistration (written 2026-08-04, before any arm ran) | [`benchmarks/archive/preregistrations/PREREGISTRATION-peps-rerank-pool.md`](../../benchmarks/archive/preregistrations/PREREGISTRATION-peps-rerank-pool.md) |
 | runner (produces the reports) | [`scripts/run_peps_arms.sh`](../../scripts/run_peps_arms.sh) |
 | scorer (re-derives every figure below) | [`benchmarks/score_peps_rerank_pool.py`](../../benchmarks/score_peps_rerank_pool.py) |
 | verdict memo | `closed-hypothesis-recall-rerank-pool-interaction-2026-08-05` |

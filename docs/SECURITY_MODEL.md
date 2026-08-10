@@ -340,7 +340,7 @@ one.
 - **"The cloud embedder sends chunk text to Voyage."** Documented above; it is what you asked for
   when you selected `VoyageEmbedder`. Not a vulnerability.
 - **Token revocation requiring a restart.** Known and documented in
-  [docs/AUTH.md](docs/AUTH.md) — the token file is read at startup. A concrete exploit path
+  [docs/AUTH.md](AUTH.md) — the token file is read at startup. A concrete exploit path
   beyond that is very much in scope; the lifecycle limitation itself is known.
 - **Retrieval quality issues** (a query returning the wrong chunk, a low `hit@5`) are correctness
   bugs, not security issues — file those as regular GitHub issues, ideally with the `bug_report`

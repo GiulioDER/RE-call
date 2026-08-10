@@ -16,9 +16,18 @@ from __future__ import annotations
 
 import os
 
+from recall.embeddings import Embedder, FastEmbedEmbedder, HashingEmbedder
 from recall.store import PgVectorStore
+from recall.trust import trusted_search
 from recall.trust_policy import TrustPolicy
-from recall_mcp.service import make_embedder, search_memory
+
+
+def make_embedder(name: str) -> Embedder:
+    if name == "hashing":
+        return HashingEmbedder(dim=64)
+    if name == "fastembed":
+        return FastEmbedEmbedder()
+    raise ValueError(f"unknown embedder: {name!r} (use 'fastembed' or 'hashing')")
 
 
 def main() -> None:
@@ -27,7 +36,7 @@ def main() -> None:
 
     embedder = make_embedder(os.environ.get("RECALL_EMBEDDER", "fastembed"))
     with PgVectorStore(dsn, dim=embedder.dim, table=table) as store:
-        result = search_memory(
+        result = trusted_search(
             store,
             embedder,
             "how many requests per second can a client make?",
@@ -35,9 +44,17 @@ def main() -> None:
             policy=TrustPolicy.development(),
         )
 
-    print(result.advice)
+    if result.abstained:
+        print(f"ABSTAIN: {result.reason}")
+    elif result.trust_state == "degraded":
+        print(f"DEGRADED: {result.failure_code or result.calibration_status}")
+    else:
+        print("OK")
     for hit in result.hits:
-        print(f"{hit.verdict:10} confidence={hit.confidence:.2f} source={hit.source}")
+        print(
+            f"{hit.verdict:10} confidence={hit.confidence:.2f} "
+            f"source={hit.provenance.source}"
+        )
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-05 · Written **before** any measurement. The git history of this file is the
 evidence. Predecessor: [`PREREGISTRATION-mtrag-rbalg.md`](PREREGISTRATION-mtrag-rbalg.md), verdict
-in [`results/mtrag/PROBE_VERDICT.md`](../results/mtrag/PROBE_VERDICT.md). Neither is edited.
+in [`results/mtrag/PROBE_VERDICT.md`](../../../results/mtrag/PROBE_VERDICT.md). Neither is edited.
 
 **Prior work searched** — `docs_search(source_type="memory")` on "abstention detector unanswerable
 classifier threshold false abstention retrieval score entailment signal". `gap_warning: false`,
@@ -130,7 +130,7 @@ it into `a` contaminates the answer branch with the abstain branch.
 
 **The struck row is what this file said in its first draft**, and it was wrong for the quantity §3's
 own words define. A `bug-auditor` pass caught it before commit; the corrected figure was already
-sitting in [`PROBE_VERDICT.md`](../results/mtrag/PROBE_VERDICT.md) §1 as subset (d). The error
+sitting in [`PROBE_VERDICT.md`](../../../results/mtrag/PROBE_VERDICT.md) §1 as subset (d). The error
 biased `p*` **low**, which would have made the detector abstain more readily than break-even and
 biased the run *against* P3.
 
