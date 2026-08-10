@@ -10,7 +10,7 @@ retained for reproducibility.
 | `recall_mcp/` | MCP server and tool implementation. | Supported MCP tools are listed in [API.md](API.md). |
 | `recall_interop/` | Interop adapters used by benchmark harnesses. | Repository support, not packaged library API. |
 | `examples/` | Runnable product examples. | Stable enough for users to copy and adapt. |
-| `corpus/` | Small demo corpus for the five minute proof. | Example data only. |
+| `corpus/` | Small example corpus for local retrieval checks. | Example data only. |
 | `docs/` | Product, operating, architecture, and evidence guides. | Product docs are the public entry path. |
 | `benchmarks/` | Benchmark harnesses, protocols, and reproduction helpers. | Evidence support, not library API. |
 | `benchmarks/archive/` | Older preregistrations and benchmark protocol records. | Audit archive. |
@@ -23,7 +23,7 @@ retained for reproducibility.
 
 | Goal | Start here |
 |---|---|
-| Try the product | [README.md](../README.md#five-minute-proof), then [examples/README.md](../examples/README.md). |
+| Try the product | [README.md](../README.md#quickstart), then [examples/README.md](../examples/README.md). |
 | Integrate the library | [API.md](API.md), [PRODUCTION.md](PRODUCTION.md), and [OPERATING_MODES.md](OPERATING_MODES.md). |
 | Configure deployment | [ENVIRONMENT.md](ENVIRONMENT.md), [MIGRATIONS.md](MIGRATIONS.md), and [AUTH.md](AUTH.md). |
 | Audit public claims | [EVIDENCE.md](EVIDENCE.md), [../results/README.md](../results/README.md), and [../benchmarks/README.md](../benchmarks/README.md). |

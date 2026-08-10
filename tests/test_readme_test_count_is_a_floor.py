@@ -26,7 +26,8 @@ def test_the_readme_has_a_clear_quickstart_and_surface_split() -> None:
     assert "## Product surface" in text
     assert "python -m recall.cli setup" in text
     assert "When the wizard asks whether to calibrate" in text
-    assert "The stale memory is more similar to the query" in text
+    assert "Run the guided setup wizard for your own corpus" in text
+    assert "Declared supersession makes the current memory win" in text
 
 
 def test_the_readme_says_its_numbers_are_claim_gated() -> None:

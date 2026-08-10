@@ -8,7 +8,7 @@ want to audit a claim or reproduce a benchmark.
 
 | Document | Use it for |
 |---|---|
-| [../README.md](../README.md) | Product overview, five-minute proof, setup, and integrations. |
+| [../README.md](../README.md) | Product overview, setup, and integrations. |
 | [API.md](API.md) | Supported Python, CLI, and MCP surface. |
 | [REPOSITORY_MAP.md](REPOSITORY_MAP.md) | Product, evidence, benchmark support, and archive boundaries. |
 | [PRODUCTION.md](PRODUCTION.md) | Production posture, supported boundaries, and known limits. |

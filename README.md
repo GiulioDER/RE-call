@@ -21,8 +21,6 @@
 <p align="center">
   <a href="#why-re-call">Why RE-call</a>
   &nbsp;·&nbsp;
-  <a href="#five-minute-proof">Five-minute proof</a>
-  &nbsp;·&nbsp;
   <a href="#quickstart">Quickstart</a>
   &nbsp;·&nbsp;
   <a href="#how-it-works">How it works</a>
@@ -63,7 +61,7 @@ Measured strengths:
 |---|---|
 | Lower memory-layer cost | The LOCOMO head-to-head records no RE-call memory-layer LLM calls, while the comparator pays for extraction calls. See [benchmarks/REVIEW.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md). |
 | External abstention check | On MTRAG, IBM's multi-turn RAG benchmark, RE-call is second on correct refusals among the recomputed systems and stays near the top answer-quality rows. See [docs/MTRAG_BENCHMARK.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md). |
-| Validity beats nearest-match retrieval | The stale rate-limit memory is more similar to the query in the demo, but declared supersession makes the current memory win. The larger trust study is in [results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md). |
+| Validity beats nearest-match retrieval | Declared supersession makes the current memory win over stale but similar memory. The larger trust study is in [results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md). |
 | Stronger than a plain vector store | Returned hits carry verdicts, confidence, provenance, tenant scope, and validity metadata. Plain top-k retrieval returns neighbors and leaves trust to the caller. |
 | Clear limits | The evidence states where RE-call works, where it does not, and when a corpus-specific measurement is required. |
 
@@ -72,41 +70,9 @@ The README is the product overview. For evidence behind these claims, start with
 [results/FINDINGS.md](https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md) for
 the full interpretation and limits.
 
-## Five-minute proof
-
-Run the bundled demo to see the product behavior before reading the evidence docs:
-
-```bash
-docker compose up -d --wait
-pip install "recall-rag[fastembed]"
-python -m recall.cli --table recall_quickstart \
-  --migration-dsn postgresql://recall:recall@localhost:5432/recall \
-  schema --dim 384 apply
-RECALL_TRUST_MODE=development python -m recall.cli --table recall_quickstart demo
-```
-
-Expected shape:
-
-![RE-call demo output](docs/demo-output.svg)
-
-```text
-[DEGRADED:INDEX_NOT_READY] query='how many requests per second can a client make?'
-  ok          conf=1.00  cos=0.784  rate_limits_v2.md
-  superseded  conf=1.00  cos=0.806  rate_limits_v1.md -> use rate_limits_v2.md
-
-[ABSTAIN GAP DEGRADED:INDEX_NOT_READY] query='how do we handle penguins on mars?'
-  reason: no hit above the calibrated confidence threshold
-```
-
-The stale memory is more similar to the query, but it is declared superseded and loses to the
-current memory. The unrelated query returns an abstention. The degraded marker is intentional here:
-this is a sample-corpus demonstration, not a certified production calibration.
-
-Runnable examples: [examples/README.md](https://github.com/GiulioDER/RE-call/blob/master/examples/README.md).
-
 ## Quickstart
 
-After the demo, run the guided setup wizard for your own corpus. The wizard records the selected
+Run the guided setup wizard for your own corpus. The wizard records the selected
 embedder, retrieval options, and an optional calibration that is fitted to your labeled queries and
 your corpus.
 
@@ -196,7 +162,7 @@ The ordered SQL migration path is versioned now, pre-tenancy tables are migrated
 ## Use it
 
 For an ad hoc local markdown folder, create a table for that index, index the corpus, and search it.
-If you did not calibrate during setup, use development mode only for local evaluation and demos.
+If you did not calibrate during setup, use development mode only for local evaluation.
 Replace `./notes` with your memo folder.
 
 ```bash
@@ -280,8 +246,8 @@ embedder with the matching dimension. The MCP stdio server does not take a `--ta
 ```
 
 Omit `RECALL_TRUST_MODE` in production after you have built, calibrated, and promoted a generation.
-Local uncalibrated MCP work needs the explicit development setting for the same reason the CLI demo
-does.
+Local uncalibrated MCP work needs the explicit development setting because it has not gone through
+production calibration.
 
 Tools: `recall_search`, `recall_evidence`, `recall_index`, `recall_forget`, and `recall_stats`.
 
