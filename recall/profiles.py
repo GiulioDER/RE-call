@@ -242,7 +242,7 @@ class RetrievalAdmission:
         # cannot currently fire. The real window is INSIDE `Semaphore.acquire`, after it
         # decrements its counter and before it returns, which is not reachable from here. The
         # guard is kept because it is correct and costs nothing if CPython's codegen changes; it
-        # is not a fix, and the residual leak is recorded in ENTERPRISE_PROGRAM_STATUS.md.
+        # is not a fix, and the residual leak is recorded in docs/archive/ENTERPRISE_PROGRAM_STATUS.md.
         admitted = False
         try:
             admitted = self._running.acquire(

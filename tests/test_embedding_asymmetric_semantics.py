@@ -9,7 +9,7 @@ that needed the real package would skip in exactly the environment that runs it.
 `fastembed` module: the subject is our dispatch, our offline preconditions and our identity
 plumbing, all of which are ours to get wrong. What the stub cannot prove, that the real loader
 honours `local_files_only`, is measured separately against the provisioned artifact on VPS2 and
-recorded in `docs/ENTERPRISE_PROGRAM_STATUS.md`.
+recorded in `docs/archive/ENTERPRISE_PROGRAM_STATUS.md`.
 """
 from __future__ import annotations
 

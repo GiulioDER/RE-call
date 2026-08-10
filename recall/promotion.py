@@ -40,7 +40,7 @@ class RetrievalGateInput:
     #: PENDING is a FAILURE, not an exemption. The alternative encodings were both worse — a
     #: default of 0.0 makes an unmeasured latency the fastest possible one, and omitting the check
     #: makes a missing measurement indistinguishable from a passing one. This program has no idle
-    #: reference host (see docs/ENTERPRISE_PROGRAM_STATUS.md's standing blockers), so PENDING is
+    #: reference host (see docs/archive/ENTERPRISE_PROGRAM_STATUS.md's standing blockers), so PENDING is
     #: the state every real decision is in today, and it must block rather than pass silently.
     latency_p95_ms: float | None
     latency_budget_ms: float

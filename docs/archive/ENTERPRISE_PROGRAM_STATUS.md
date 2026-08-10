@@ -3304,7 +3304,7 @@ the AUD-1 fix (item 6) was authorised separately after the audit surfaced it.
 Two facts in the session brief did not survive verification, and are corrected here so the next
 session does not inherit them again.
 
-- **`docs/ENTERPRISE_PROGRAM_STATUS.md` did not exist.** It was described as the authoritative
+- **`docs/archive/ENTERPRISE_PROGRAM_STATUS.md` did not exist.** It was described as the authoritative
   prior-session handoff. It was absent from `origin/master` and from every ref. This file is its
   first version, not an update.
 - **`summary.json` reports gap warnings on two arms, not one.** The brief named the single warning

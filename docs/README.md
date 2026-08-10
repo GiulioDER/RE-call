@@ -12,6 +12,7 @@ sections when you want to audit a claim or reproduce a benchmark.
 | [PRODUCTION.md](PRODUCTION.md) | Production posture, supported boundaries, and known limits. |
 | [CALIBRATION.md](CALIBRATION.md) | Calibration workflow and generation-aware serving. |
 | [MIGRATIONS.md](MIGRATIONS.md) | Migration roles, serving DSNs, and schema operations. |
+| [DEPENDENCIES.md](DEPENDENCIES.md) | Dependency floors, ceilings, extras, and packaging rationale. |
 | [AUTH.md](AUTH.md) | Authentication, scopes, tenant isolation, and deployment limits. |
 | [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) | MCP setup and tool behavior. |
 
