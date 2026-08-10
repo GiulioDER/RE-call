@@ -59,7 +59,7 @@ RESULTS_ROOT = REPO_ROOT / "results"
 #: rewriting it under audit, not a structural property, and a reference document is expected to
 #: settle. If it does not settle, it belongs out of this tuple for the same reason the status doc is.
 #:
-#: ⚠️ `docs/ENTERPRISE_PROGRAM_STATUS.md` is deliberately NOT here, and the reason is mechanical
+#: `docs/archive/ENTERPRISE_PROGRAM_STATUS.md` is deliberately NOT here, and the reason is mechanical
 #: rather than editorial. It is a rolling handoff that gains a large entry every session, so its
 #: unmarked-number multiset grows every session BY DESIGN rather than incidentally.
 #: `build_baseline()` regenerates EVERY entry of `CLAIMS_BASELINE.json` in one pass, so gating a

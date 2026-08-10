@@ -11,7 +11,7 @@ points and our whole startup path runs to completion, so nothing WE do reaches t
 model loader itself is stubbed here, because `fastembed` is an optional extra that CI's `test` job
 deliberately does not install, and a test that skipped in CI would prove nothing at all. The real
 loader was exercised against the provisioned artifact on VPS2; see
-`docs/ENTERPRISE_PROGRAM_STATUS.md` for that measurement.
+`docs/archive/ENTERPRISE_PROGRAM_STATUS.md` for that measurement.
 """
 from __future__ import annotations
 

@@ -164,7 +164,7 @@ def script_sha256() -> str:
 
     Normalised because git stores this file with LF while a Windows working copy holds CRLF.
     Comparing a working copy against a git blob across that boundary is precisely the mistake that
-    made one claim in `docs/ENTERPRISE_PROGRAM_STATUS.md` wrong three times, so this value is
+    made one claim in `docs/archive/ENTERPRISE_PROGRAM_STATUS.md` wrong three times, so this value is
     defined to be the one that matches on either platform.
     """
     crlf, lf = bytes([13, 10]), bytes([10])

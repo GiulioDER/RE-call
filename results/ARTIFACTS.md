@@ -112,7 +112,7 @@ a reader never has to assume they are the same.
 ⚠️ **`latency` is PENDING, not measured.** `gate_input_p95_ms` is `null`, and that BLOCKS
 promotion. The figures under `observed_diagnostic_only` come from a developer laptop and describe
 it, not a reference environment; the program has no idle 16-vCPU reference host (see
-`docs/ENTERPRISE_PROGRAM_STATUS.md`'s standing blockers).
+`docs/archive/ENTERPRISE_PROGRAM_STATUS.md`'s standing blockers).
 
 ### Deliberately contaminated — evidence for the §9a retraction, never results
 

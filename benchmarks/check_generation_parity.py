@@ -14,7 +14,7 @@ runs here rather than a second implementation of the same comparison written for
 already asserts this invariant over four independently indexed generations against real PostgreSQL
 rows, and it is STRICTER than this script on what it compares: stored text, `content_hash`,
 `text_start`/`text_end` and `heading_hierarchy`, where this script compares source sets, raw
-hashes and chunk counts. `docs/ENTERPRISE_PROGRAM_STATUS.md` records that invariant as "held".
+hashes and chunk counts. `docs/archive/ENTERPRISE_PROGRAM_STATUS.md` records that invariant as "held".
 
 The claim "Prior work: NONE FOUND" was written from `docs_search(source_type="memory")` for
 "generation parity raw content hash identical across context modes RE-call" on 2026-08-06, which

@@ -4,7 +4,7 @@ The behaviours pinned here are the ones an operator is promised by
 `docs/ENTERPRISE_RETRIEVAL.md`: a process serves exactly one cost profile, a client cannot buy
 its way onto the expensive one, and the process refuses work it cannot afford *before* it spends
 anything on it. Each test below was shown red by mutating the module it covers; the mutations are
-recorded in `docs/ENTERPRISE_PROGRAM_STATUS.md`.
+recorded in `docs/archive/ENTERPRISE_PROGRAM_STATUS.md`.
 """
 from __future__ import annotations
 
