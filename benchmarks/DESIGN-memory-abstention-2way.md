@@ -139,5 +139,4 @@ table underneath.
 
 1. The reproducible harness (one command, full raw dump).
 2. Results JSON + the honesty-frontier table (both columns, per category, all arms).
-3. The real 2-way article — **replaces the "open invitation" ending** of
-   `launch/blog-the-question-benchmarks-skip.md` / `launch/devto-post.md` with measured data.
+3. The real 2-way article, using the measured data rather than an open invitation.

@@ -27,8 +27,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_ROOT = REPO_ROOT / "results"
 
 #: The documents that carry load-bearing numbers a reader could act on. Process records
-#: (PREREGISTRATION, REVIEW, ARTICLE_DRAFT, CHANGELOG) are deliberately absent: they are not
-#: published results, and a guard that ships mostly-exempted stays that way.
+#: (PREREGISTRATION, REVIEW, CHANGELOG) are deliberately absent: they are not published results,
+#: and a guard that ships mostly-exempted stays that way.
 #:
 #: `docs/ENTERPRISE_RETRIEVAL.md` was added on 2026-08-07. It is the OPERATOR RUNBOOK, so a wrong
 #: number in it is a wrong instruction executed against a production database. Three consecutive

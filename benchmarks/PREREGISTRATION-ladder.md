@@ -1,7 +1,6 @@
 # Pre-registration — the Answerability Ladder
 
 Written **before** the builder exists. The git history of this file is the evidence.
-Design: `docs/superpowers/specs/2026-07-29-answerability-ladder-design.md`.
 Prior work: [[project-recall-abstention-bounded-domain-2026-07-24]] — six abstention signals
 measured, all failed; this measures the axis they were measured on, not a seventh signal.
 

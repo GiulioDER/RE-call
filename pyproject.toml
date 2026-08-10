@@ -171,6 +171,7 @@ recall-enterprise = "recall.enterprise_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["recall", "recall_mcp"]
+artifacts = ["recall/py.typed", "recall_mcp/py.typed"]
 
 [tool.pytest.ini_options]
 # `pytest-timeout` was a declared dependency with nothing configuring it, which made it inert:

@@ -12,17 +12,17 @@
   <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/PostgreSQL-16%2F17%20%C2%B7%20pgvector-336791" alt="PostgreSQL + pgvector">
-  <img src="https://img.shields.io/badge/tests-1300%2B%20·%20real%20pgvector-brightgreen" alt="1300+ tests">
+  <img src="https://img.shields.io/badge/CI-real%20pgvector%20·%20types%20·%20audit-brightgreen" alt="CI: real pgvector, types, audit">
 </p>
 
 <p align="center">
   <a href="#why-re-call">Why RE-call</a>
   &nbsp;·&nbsp;
-  <a href="#showcase">Showcase</a>
+  <a href="#quickstart">Quickstart</a>
+  &nbsp;·&nbsp;
+  <a href="#how-it-works">How it works</a>
   &nbsp;·&nbsp;
   <a href="#product-surface">Product surface</a>
-  &nbsp;·&nbsp;
-  <a href="#quickstart">Quickstart</a>
   &nbsp;·&nbsp;
   <a href="#documentation">Documentation</a>
   &nbsp;·&nbsp;
@@ -61,25 +61,51 @@ what the measurements support, [results/RESULTS.md](https://github.com/GiulioDER
 contains the tables, and [results/ARTIFACTS.md](https://github.com/GiulioDER/RE-call/blob/master/results/ARTIFACTS.md)
 maps result files to configurations.
 
-## Showcase
+## Quickstart
 
-Run the built-in demo:
+Install with the local embedder extra, start PostgreSQL, apply the schema, then run the guided setup
+wizard. The wizard records the selected embedder, retrieval options, and an optional calibration
+that is fitted to your labeled queries and your corpus.
 
 ```bash
-RECALL_TRUST_MODE=development python -m recall.cli --table recall_quickstart demo
+docker compose up -d --wait
+pip install "recall-rag[fastembed]"
+python -m recall.cli --table recall_quickstart \
+  --migration-dsn postgresql://recall:recall@localhost:5432/recall \
+  schema --dim 384 apply
+python -m recall.cli setup
 ```
 
 PowerShell:
 
 ```powershell
-$env:RECALL_TRUST_MODE = "development"
-python -m recall.cli --table recall_quickstart demo
+docker compose up -d --wait
+pip install "recall-rag[fastembed]"
+python -m recall.cli --table recall_quickstart `
+  --migration-dsn postgresql://recall:recall@localhost:5432/recall `
+  schema --dim 384 apply
+python -m recall.cli setup
 ```
 
-Strict trust is the production default. The demo uses explicit development mode because it indexes
-the sample corpus directly, without first building a generation and publishing a certified
-calibration. It still shows the trust layer: superseded memories are marked as such, and an
-unanswerable query abstains.
+When the wizard asks whether to calibrate, provide a labeled query JSON and the corpus directory.
+Use [recall/eval/queries.json](https://github.com/GiulioDER/RE-call/blob/master/recall/eval/queries.json)
+as the input shape. Calibration is per embedder and per corpus, so a new model or substantially
+changed corpus should be calibrated again.
+
+The distribution is `recall-rag`; the import is `recall`. The name `recall` on PyPI belongs to an
+unrelated package, so do not install both into the same environment.
+
+Working from a clone:
+
+```bash
+pip install -e ".[fastembed]"
+```
+
+For a smoke test with the bundled sample corpus, run:
+
+```bash
+RECALL_TRUST_MODE=development python -m recall.cli --table recall_quickstart demo
+```
 
 ```text
 [DEGRADED:INDEX_NOT_READY] query='how many requests per second can a client make?'
@@ -91,8 +117,8 @@ unanswerable query abstains.
 ```
 
 The stale memory is more similar to the query, but it is declared superseded and loses to the
-current memory. The unrelated query returns an abstention. The degraded marker means this is a
-local demonstration threshold, not a production calibration.
+current memory. The unrelated query returns an abstention. The degraded marker is intentional in
+the smoke test: it is a sample-corpus check, not the calibrated operating path.
 
 ## How it works
 
@@ -137,7 +163,7 @@ flowchart TB
 | Agent integration | CLI, MCP server, LangChain retriever, LlamaIndex retriever, and injectable search seams for tests. |
 | Security | Tenant isolation, row-level security checks, serving and migration DSNs, bearer-token HTTP transports, scopes, quotas, and unsafe-DSN refusal. |
 | Operations | Timeouts, reconnect policy, structured logging, counters, latency percentiles, and MCP stats. |
-| Quality gates | **1,300+ tests**, real pgvector integration tests, type checking, linting, dependency audit, claim-artifact checks, and regression fixtures for known failure modes. |
+| Quality gates | Real pgvector integration tests, type checking, linting, dependency audit, claim-artifact checks, and regression fixtures for known failure modes. |
 
 Deliberately out of scope: an end-user dashboard, graph reasoning, entity synthesis, high
 availability orchestration, and automatic truth inference from prose.
@@ -145,49 +171,11 @@ availability orchestration, and automatic truth inference from prose.
 The ordered SQL migration path is versioned now, pre-tenancy tables are migrated in place, and runtime
 `CREATE TABLE IF NOT EXISTS` remains bootstrap only.
 
-## Quickstart
-
-```bash
-docker compose up -d --wait
-pip install "recall-rag[fastembed]"
-python -m recall.cli --table recall_quickstart \
-  --migration-dsn postgresql://recall:recall@localhost:5432/recall \
-  schema --dim 384 apply
-RECALL_TRUST_MODE=development python -m recall.cli --table recall_quickstart demo
-```
-
-PowerShell:
-
-```powershell
-docker compose up -d --wait
-pip install "recall-rag[fastembed]"
-python -m recall.cli --table recall_quickstart `
-  --migration-dsn postgresql://recall:recall@localhost:5432/recall `
-  schema --dim 384 apply
-$env:RECALL_TRUST_MODE = "development"
-python -m recall.cli --table recall_quickstart demo
-```
-
-The distribution is `recall-rag`; the import is `recall`. The name `recall` on PyPI belongs to an
-unrelated package, so do not install both into the same environment.
-
-Working from a clone:
-
-```bash
-pip install -e ".[fastembed]"
-```
-
-For a guided local setup:
-
-```bash
-python -m recall.cli setup
-```
-
 ## Use it
 
-For an ad hoc local markdown folder, create a table for that index and opt in to development trust
-mode until you have built and calibrated a production generation. Replace `./notes` with your memo
-folder.
+For an ad hoc local markdown folder, create a table for that index, index the corpus, and search it.
+If you did not calibrate during setup, use development mode only for local evaluation and demos.
+Replace `./notes` with your memo folder.
 
 ```bash
 python -m recall.cli --table recall_notes \
@@ -199,7 +187,8 @@ python -m recall.cli lint ./notes
 python -m recall.cli check ./notes/new-memo.md --strict
 ```
 
-PowerShell uses the same commands, but set development mode first:
+PowerShell uses the same commands, but set development mode first when you are running an
+uncalibrated local evaluation:
 
 ```powershell
 $env:RECALL_TRUST_MODE = "development"

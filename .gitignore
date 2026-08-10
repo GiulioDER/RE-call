@@ -11,6 +11,11 @@ dist/
 .venv/
 .venv-ci/
 .env
+launch/
+docs/superpowers/
+benchmarks/article.html
+benchmarks/ARTICLE_DRAFT.md
+benchmarks/PLAN-*.md
 finetune/model*/
 calibration.json
 .claude/

@@ -1,4 +1,4 @@
-# Adversarial review — `ARTICLE_DRAFT.md` (RE-call vs Mem0 on LOCOMO)
+# Adversarial review of the RE-call vs Mem0 LOCOMO comparison
 
 **Stance:** hostile. The brief was to *disqualify* the two headline edges — "zero API tokens" and
 "more accurate than Mem0 on a public benchmark" — the way a Mem0 maintainer or an HN skeptic would.
