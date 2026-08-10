@@ -468,8 +468,8 @@ def test_the_evidence_tool_is_registered_read_only_and_the_old_tools_are_untouch
     for existing in ("recall_search", "recall_index", "recall_forget", "recall_stats"):
         assert f'name="{existing}"' in source, f"{existing} disappeared from the tool surface"
     evidence_block = source.split('name="recall_evidence"', 1)[1].split("async def", 1)[0]
-    assert "readOnlyHint=True" in evidence_block
-    assert "destructiveHint=False" in evidence_block
+    assert "read_only_hint=True" in evidence_block
+    assert "destructive_hint=False" in evidence_block
 
 
 # --------------------------------------------------------------------------------------------

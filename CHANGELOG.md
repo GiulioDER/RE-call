@@ -17,6 +17,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 * Added experimental reasoning release notes covering opt in use, provider neutrality, citation
   constraints, CLI and MCP migration notes, serialized fields, limitations, and evaluation posture.
 
+### Changed
+
+* PostgreSQL 18 compliance is now declared and tested: local Docker uses
+  `pgvector/pgvector:pg18`, CI runs schema migrations on PostgreSQL 16, 17, and 18, and the main
+  integration job runs on PostgreSQL 18.
+* Ported the MCP server to MCP Python SDK 2.x and raised the `mcp` extra floor to `mcp>=2,<3`.
+* Raised the development Ruff range to `ruff>=0.16,<0.17` while keeping the prior lint baseline
+  explicit in `pyproject.toml`.
+
 ## [0.9.2] (2026-08-10)
 
 ### Added

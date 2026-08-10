@@ -7,12 +7,15 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypeVar
+from urllib.parse import urlsplit
 
 import anyio.to_thread
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
 
@@ -115,9 +118,8 @@ def _read_int_env(name: str, default: int, *, min_value: int, max_value: int | N
 
 
 TRANSPORT: Transport = _read_transport()
-#: Bind address for the HTTP transports. Exposed as RECALL_* because the SDK's own FASTMCP_HOST /
-#: FASTMCP_PORT are read when the FastMCP object is constructed at import time, which makes them
-#: unreliable to set from a wrapper — and every other knob in this server is RECALL_*.
+#: Bind address for the HTTP transports. Exposed as RECALL_* so wrappers can set the same
+#: prefix used by every other knob in this server before `mcp.run` starts the listener.
 #: Default is loopback, NOT 0.0.0.0: binding every interface should be a decision someone makes,
 #: not something they inherit.
 HTTP_HOST = os.environ.get("RECALL_HOST", "127.0.0.1")
@@ -456,16 +458,24 @@ def build_auth(
     return RecallTokenVerifier(registry), settings, registry
 
 
+def _transport_security_settings(resource_url: str) -> TransportSecuritySettings:
+    parsed = urlsplit(resource_url)
+    if not parsed.scheme or not parsed.netloc:
+        raise AuthConfigError(
+            "RECALL_AUTH_RESOURCE_URL must be an absolute URL so HTTP transport security can "
+            "validate Host and Origin headers"
+        )
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    return TransportSecuritySettings(allowed_hosts=[parsed.netloc], allowed_origins=[origin])
+
+
 async def _to_thread(fn: Callable[[], _T]) -> _T:
     """Run a blocking tool body off the event loop.
 
-    FastMCP awaits an async tool and calls a sync one INLINE (`func_metadata.py`:
-    ``return await fn(...)`` vs ``return fn(...)``) — there is no thread offload. A sync tool that
-    embeds a query, makes two database round trips and maybe runs a cross-encoder therefore blocks
-    the whole loop for its duration: one request at a time, with no response to anything else —
-    not even a ping — until it finishes. `recall_index` blocks it for an entire corpus index.
+    MCPServer executes async tool bodies on the event loop, so each tool explicitly offloads its
+    blocking embedder, database, reranker and indexing work before it can monopolize the loop.
 
-    `anyio.to_thread` rather than `asyncio.to_thread` because FastMCP runs on AnyIO: this inherits
+    `anyio.to_thread` rather than `asyncio.to_thread` because the MCP SDK runs on AnyIO: this inherits
     its worker-thread limiter and cancellation scope instead of starting a second, unmanaged pool
     beside it.
     """
@@ -512,7 +522,7 @@ def apply_worker_thread_budget(profile: RetrievalProfile) -> None:
 
 def _make_lifespan(
     token_registry: TenantProvisioning | None,
-) -> Callable[[FastMCP], AbstractAsyncContextManager[dict]]:
+) -> Callable[[MCPServer], AbstractAsyncContextManager[dict]]:
     """Build the lifespan.
 
     Two shapes, decided by whether auth is on:
@@ -526,7 +536,7 @@ def _make_lifespan(
     """
 
     @asynccontextmanager
-    async def _lifespan(_server: FastMCP) -> AsyncIterator[dict]:
+    async def _lifespan(_server: MCPServer) -> AsyncIterator[dict]:
         from recall.store import require_secure_dsn
 
         # FIRST, before any I/O. Resolving the cost profile is pure environment parsing, so a
@@ -708,16 +718,14 @@ def _make_lifespan(
     return _lifespan
 
 
-def build_server() -> FastMCP:
-    """Construct the recall_mcp FastMCP server with its five tools registered."""
+def build_server() -> MCPServer:
+    """Construct the recall_mcp MCP server with its tools registered."""
     verifier, auth_settings, token_registry = build_auth()
-    mcp = FastMCP(
+    mcp = MCPServer(
         "recall_mcp",
         lifespan=_make_lifespan(token_registry),
         token_verifier=verifier,
         auth=auth_settings,
-        host=HTTP_HOST,
-        port=HTTP_PORT,
     )
 
     def _current_tenant(state: dict) -> str | None:
@@ -733,16 +741,16 @@ def build_server() -> FastMCP:
             return None
         return (token.claims or {}).get("tenant")
 
-    def _state() -> dict:
-        ctx = mcp.get_context().request_context.lifespan_context
-        if not isinstance(ctx, dict) or "embedder" not in ctx:
+    def _state(ctx: Context[dict, object]) -> dict:
+        state = ctx.request_context.lifespan_context
+        if not isinstance(state, dict) or "embedder" not in state:
             raise RuntimeError(
                 "recall_mcp lifespan context is not initialized — tools must be invoked within "
                 "the running server (store/embedder are opened in the lifespan)."
             )
-        return ctx
+        return state
 
-    def _require(scope: str) -> PgVectorStore:
+    def _require(scope: str, ctx: Context[dict, object]) -> PgVectorStore:
         """Authorise this call and return the store for the caller's OWN tenant.
 
         Every tool body goes through here. The store it hands back is the only one that tool can
@@ -752,7 +760,7 @@ def build_server() -> FastMCP:
         This is also where the per-tenant call budget is debited, for the same reason: one choke
         point that a new tool cannot forget to call, because it cannot get a store without it.
         """
-        state = _state()
+        state = _state(ctx)
         registry: StoreRegistry | None = state.get("stores")
         if registry is None:
             # Unauthenticated stdio: one caller, one tenant, a private pipe. There is no principal
@@ -785,13 +793,15 @@ def build_server() -> FastMCP:
         name="recall_search",
         annotations=ToolAnnotations(
             title="Search agent memory",
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=False,
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
         ),
     )
-    async def recall_search(query: str, source: str | None = None, k: int = 5) -> str:
+    async def recall_search(
+        query: str, ctx: Context[dict, object], source: str | None = None, k: int = 5
+    ) -> str:
         """Search the agent's OWN memory before acting, and get actionable guidance.
 
         Call this before proposing an idea, forming a hypothesis, or repeating past work:
@@ -819,8 +829,8 @@ def build_server() -> FastMCP:
                 latency budget. Retryable and free: nothing was embedded and no state changed.
                 Carries `reason` (`queue_full` | `budget_exhausted`) and `retry_after_seconds`.
         """
-        state = _state()
-        store = _require(SCOPE_READ)
+        state = _state(ctx)
+        store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="search"):
             return await _to_thread(
                 lambda: search_memory(
@@ -836,14 +846,18 @@ def build_server() -> FastMCP:
         name="recall_evidence",
         annotations=ToolAnnotations(
             title="Build a citable evidence bundle",
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=False,
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
         ),
     )
     async def recall_evidence(
-        query: str, source: str | None = None, k: int = 5, max_items: int | None = None
+        query: str,
+        ctx: Context[dict, object],
+        source: str | None = None,
+        k: int = 5,
+        max_items: int | None = None,
     ) -> str:
         """Get memory as CITABLE EVIDENCE plus the exact prompt to answer it with.
 
@@ -879,8 +893,8 @@ def build_server() -> FastMCP:
                 embedded and nothing was read. Carries `reason` (`queue_full` | `budget_exhausted`)
                 and `retry_after_seconds`.
         """
-        state = _state()
-        store = _require(SCOPE_READ)
+        state = _state(ctx)
+        store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="evidence"):
             return await _to_thread(
                 lambda: evidence_memory(
@@ -897,14 +911,15 @@ def build_server() -> FastMCP:
         name="recall_reasoning_query",
         annotations=ToolAnnotations(
             title="Run a bounded reasoning query",
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=False,
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
         ),
     )
     async def recall_reasoning_query(
         query: str,
+        ctx: Context[dict, object],
         source: str | None = None,
         k: int = 5,
         mode: str = "proposal_assisted",
@@ -919,8 +934,8 @@ def build_server() -> FastMCP:
         identity, proposals, trace, refusal reason, and diagnostics. It does not call a generator,
         so an answer is returned only if a future server explicitly wires an answer provider.
         """
-        state = _state()
-        store = _require(SCOPE_READ)
+        state = _state(ctx)
+        store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_query"):
             return await _to_thread(
                 lambda: json.dumps(
@@ -944,15 +959,17 @@ def build_server() -> FastMCP:
         name="recall_reasoning_projection",
         annotations=ToolAnnotations(
             title="Inspect reasoning graph projection",
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=False,
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
         ),
     )
-    async def recall_reasoning_projection(include_text: bool = False) -> str:
+    async def recall_reasoning_projection(
+        ctx: Context[dict, object], include_text: bool = False
+    ) -> str:
         """Inspect the immutable reasoning projection for this tenant and generation."""
-        store = _require(SCOPE_READ)
+        store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_projection"):
             return await _to_thread(
                 lambda: reasoning_projection(store, include_text=include_text).model_dump_json(
@@ -964,15 +981,15 @@ def build_server() -> FastMCP:
         name="recall_reasoning_proposals",
         annotations=ToolAnnotations(
             title="Inspect reasoning proposals",
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=False,
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
         ),
     )
-    async def recall_reasoning_proposals() -> str:
+    async def recall_reasoning_proposals(ctx: Context[dict, object]) -> str:
         """List side effect free inference proposals for human review."""
-        store = _require(SCOPE_READ)
+        store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_proposals"):
             return await _to_thread(lambda: reasoning_proposals(store).model_dump_json(indent=2))
 
@@ -980,16 +997,18 @@ def build_server() -> FastMCP:
         name="recall_reasoning_audit",
         annotations=ToolAnnotations(
             title="Audit reasoning integration state",
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=False,
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
         ),
     )
-    async def recall_reasoning_audit(query: str = "reasoning audit sentinel") -> str:
+    async def recall_reasoning_audit(
+        ctx: Context[dict, object], query: str = "reasoning audit sentinel"
+    ) -> str:
         """Run the bounded integration audit without disclosing corpus or query text in errors."""
-        state = _state()
-        store = _require(SCOPE_READ)
+        state = _state(ctx)
+        store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_audit"):
             return await _to_thread(
                 lambda: reasoning_audit(store, state["embedder"], query=query).model_dump_json(
@@ -1001,13 +1020,13 @@ def build_server() -> FastMCP:
         name="recall_index",
         annotations=ToolAnnotations(
             title="Add to agent memory",
-            readOnlyHint=False,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=False,
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
         ),
     )
-    async def recall_index(path: str) -> str:
+    async def recall_index(path: str, ctx: Context[dict, object]) -> str:
         """Index a markdown file or folder into the agent's memory so it can be recalled later.
 
         Re-indexing a file REPLACES its chunks completely (safe to re-run after edits; a shrunk
@@ -1022,8 +1041,8 @@ def build_server() -> FastMCP:
         Returns:
             JSON of {files, chunks, message}.
         """
-        state = _state()
-        store = _require(SCOPE_WRITE)
+        state = _state(ctx)
+        store = _require(SCOPE_WRITE, ctx)
         limiter = state.get("limiter")
         tenant = _current_tenant(state)
         registry: StoreRegistry | None = state.get("stores")
@@ -1076,13 +1095,13 @@ def build_server() -> FastMCP:
         name="recall_forget",
         annotations=ToolAnnotations(
             title="Forget agent memory",
-            readOnlyHint=False,
-            destructiveHint=True,
-            idempotentHint=True,
-            openWorldHint=False,
+            read_only_hint=False,
+            destructive_hint=True,
+            idempotent_hint=True,
+            open_world_hint=False,
         ),
     )
-    async def recall_forget(sources: list[str]) -> str:
+    async def recall_forget(sources: list[str], ctx: Context[dict, object]) -> str:
         """Permanently delete indexed memory for the given source(s). IRREVERSIBLE.
 
         This is the right-to-erasure path: use it to make the agent forget a memory that should
@@ -1098,8 +1117,8 @@ def build_server() -> FastMCP:
         Returns:
             JSON of {chunks_removed, sources_removed, sources_not_found, message}.
         """
-        state = _state()
-        store = _require(SCOPE_FORGET)
+        state = _state(ctx)
+        store = _require(SCOPE_FORGET, ctx)
         registry: StoreRegistry | None = state.get("stores")
         tenant = _current_tenant(state)
         shadow = (
@@ -1115,13 +1134,13 @@ def build_server() -> FastMCP:
         name="recall_stats",
         annotations=ToolAnnotations(
             title="Memory freshness & size",
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=False,
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
         ),
     )
-    async def recall_stats() -> str:
+    async def recall_stats(ctx: Context[dict, object]) -> str:
         """Report how much memory exists and whether it is stale (freshness check).
 
         `stale` is True when the newest indexed content is older than 2 days.
@@ -1129,7 +1148,7 @@ def build_server() -> FastMCP:
         Returns:
             JSON of {chunks, newest_indexed_at, stale}.
         """
-        store = _require(SCOPE_READ)
+        store = _require(SCOPE_READ, ctx)
         return await _to_thread(lambda: memory_stats(store).model_dump_json(indent=2))
 
     return mcp
@@ -1148,12 +1167,29 @@ def main() -> None:
         _log.info(
             "starting %s server on %s:%s (authenticated)",
             TRANSPORT,
-            mcp.settings.host,
-            mcp.settings.port,
+            HTTP_HOST,
+            HTTP_PORT,
         )
     else:
         _log.info("starting stdio server", extra={"tenant": TENANT, "embedder": EMBEDDER_NAME})
-    mcp.run(transport=TRANSPORT)
+    if TRANSPORT == "stdio":
+        mcp.run()
+    elif TRANSPORT == "sse":
+        security = _transport_security_settings(os.environ["RECALL_AUTH_RESOURCE_URL"])
+        mcp.run(
+            transport="sse",
+            host=HTTP_HOST,
+            port=HTTP_PORT,
+            transport_security=security,
+        )
+    else:
+        security = _transport_security_settings(os.environ["RECALL_AUTH_RESOURCE_URL"])
+        mcp.run(
+            transport="streamable-http",
+            host=HTTP_HOST,
+            port=HTTP_PORT,
+            transport_security=security,
+        )
 
 
 if __name__ == "__main__":

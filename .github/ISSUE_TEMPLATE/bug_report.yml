@@ -31,7 +31,7 @@ body:
     attributes:
       label: PostgreSQL version
       description: "`SELECT version();` — or the tag from your `pgvector/pgvector:pgNN` image."
-      placeholder: "PostgreSQL 16 (pgvector/pgvector:pg16), or PostgreSQL 17 if a bare-metal install"
+      placeholder: "PostgreSQL 18 (pgvector/pgvector:pg18), or PostgreSQL 16 or 17 if reproducing an older supported major"
     validations:
       required: true
 

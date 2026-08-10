@@ -17,6 +17,8 @@ import sys
 
 import pytest
 
+from recall_mcp import server
+
 
 def _import_server_with(**env_overrides: str) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
@@ -56,3 +58,34 @@ def test_out_of_range_knob_is_rejected_at_import(var, bad):
     r = _import_server_with(**{var: bad})
     assert r.returncode != 0, f"{var}={bad} should be rejected at import, not accepted"
     assert f"{var}=" in r.stderr and "out of range" in r.stderr, r.stderr[-600:]
+
+
+def test_transport_security_settings_follow_resource_url():
+    settings = server._transport_security_settings("https://recall.example.com:8443")
+
+    assert settings.enable_dns_rebinding_protection is True
+    assert settings.allowed_hosts == ["recall.example.com:8443"]
+    assert settings.allowed_origins == ["https://recall.example.com:8443"]
+
+
+def test_streamable_http_run_passes_transport_security(monkeypatch):
+    calls = {}
+
+    class FakeServer:
+        def run(self, **kwargs):
+            calls.update(kwargs)
+
+    monkeypatch.setattr(server, "mcp", FakeServer())
+    monkeypatch.setattr(server, "TRANSPORT", "streamable-http")
+    monkeypatch.setattr(server, "HTTP_HOST", "0.0.0.0")
+    monkeypatch.setattr(server, "HTTP_PORT", 9000)
+    monkeypatch.setenv("RECALL_AUTH_RESOURCE_URL", "https://recall.example.com")
+
+    server.main()
+
+    assert calls["transport"] == "streamable-http"
+    assert calls["host"] == "0.0.0.0"
+    assert calls["port"] == 9000
+    assert calls["transport_security"].enable_dns_rebinding_protection is True
+    assert calls["transport_security"].allowed_hosts == ["recall.example.com"]
+    assert calls["transport_security"].allowed_origins == ["https://recall.example.com"]

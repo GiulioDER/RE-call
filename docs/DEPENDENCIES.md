@@ -15,6 +15,14 @@ provide a top-level `recall` module and the last installed distribution wins the
 
 ## Runtime Floors
 
+PostgreSQL 16, 17, and 18 are supported with pgvector. The local Docker default tracks PostgreSQL
+18 through `pgvector/pgvector:pg18`, while CI keeps migration coverage for 16 and 17 as older
+supported majors.
+
+The Compose file declares a named `recall_pgdata` volume for new PostgreSQL 18 containers. Existing
+local data created by a PostgreSQL 16 Compose container is not upgraded in place by changing the
+image tag; dump it from the old container and restore it into the PostgreSQL 18 container.
+
 `pgvector>=0.4` is required because `from pgvector import Vector` is a top-level export starting in
 0.4. On 0.3.x, importing `recall.store` fails.
 
@@ -23,14 +31,15 @@ install the `pool` extra or an extra that includes it.
 
 ## MCP Extra
 
-The `mcp` floor is 1.27.2. Earlier versions do not carry all authenticated server fields RE-call
-uses:
+The `mcp` floor is 2.0.0. RE-call uses the MCP 2 server import path, context injection, and
+snake_case tool annotation fields:
 
 | Version boundary | Why it matters |
 |---|---|
 | `>=1.10.0` | Adds the resource-server auth split needed by `recall_mcp.auth`. |
 | `>=1.27.2` | Adds `AccessToken.subject` and `.claims`, used to carry tenant identity. |
-| `<2` | `mcp` 2.0 moves or renames APIs used by `recall_mcp.server`; raising this cap is a port. |
+| `>=2.0.0` | Provides `MCPServer`, typed request `Context` injection, and snake_case `ToolAnnotations` fields used by `recall_mcp.server`. |
+| `<3` | Next major is reserved as a port until its server, auth, and context APIs are tested here. |
 
 `PyJWT[crypto]` is declared directly rather than inherited transitively from `mcp`, because
 `recall_mcp.oidc` imports RSA support at module import time.
@@ -77,6 +86,10 @@ benchmark modules import it directly.
 
 `pytest-timeout` is part of the dev extra so a nonterminating test fails instead of hanging CI.
 
-`ruff` is capped below 0.16 because new stabilized lint rules changed the result of `ruff check .`
-on unchanged code. Adopting those rules should be a repository-wide sweep, not a side effect of an
-unrelated dependency resolution.
+`python-dotenv` is part of the dev extra because mypy checks the benchmark harnesses and two MTRAG
+modules import `dotenv_values` for optional `--dsn-env-file` support. It is not a runtime dependency
+for the library or MCP server.
+
+`ruff` is capped below 0.17. Ruff 0.16 is supported, but the project pins the pre-0.16 default rule
+selection explicitly in `pyproject.toml` so a linter upgrade is not also a repository-wide style
+rewrite. Adopting additional 0.16 rules should be a targeted cleanup.

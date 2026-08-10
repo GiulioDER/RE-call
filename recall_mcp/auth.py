@@ -58,8 +58,9 @@ from recall.store import DEFAULT_TENANT
 _log = get_logger("mcp.auth")
 
 #: Scope required by each tool. These mirror the tools' own MCP annotations — `recall_search`,
-#: `recall_evidence` and `recall_stats` are `readOnlyHint`, `recall_index` is a write, `recall_forget` is
-#: `destructiveHint` — so a principal's scopes line up with the risk the tool actually carries.
+#: `recall_evidence` and `recall_stats` are `read_only_hint`, `recall_index` is a write,
+#: `recall_forget` is `destructive_hint`, so a principal's scopes line up with the risk the tool
+#: actually carries.
 #: They are separate rather than a single "write" because the two writes fail differently:
 #: `recall_index` burns embedding spend, `recall_forget` destroys memory irreversibly.
 SCOPE_READ = "recall:read"

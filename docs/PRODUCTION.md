@@ -20,7 +20,7 @@ more. Those choices are explicit profiles and startup checks, not silent per-req
 | Property | Status | Evidence |
 |---|---|---|
 | **Multi-tenancy** | ✅ `tenant_id` on every row and every query, plus a row-level-security policy (`ENABLE` + `FORCE`) | Verified as a `NOSUPERUSER NOBYPASSRLS` role — a superuser bypasses RLS, so testing it as one would have passed vacuously |
-| **Concurrency** | ✅ async MCP tools + `psycopg_pool`; the server previously served exactly **one** request at a time | FastMCP awaits async tools and calls sync ones *inline* — there is no thread offload |
+| **Concurrency** | ✅ async MCPServer tools + `psycopg_pool`; blocking embedder, database, reranker and indexing work is explicitly offloaded | Tool schemas keep the injected MCP context out of client arguments, and blocking bodies use AnyIO's worker-thread limiter |
 | **Timeouts / resilience** | ✅ `statement_timeout`, `connect_timeout`, narrow reconnect-and-retry | The retry refuses to re-run a `QueryCanceled`, which would escape the very timeout that fired |
 | **Security posture** | ✅ fail-closed on published default credentials; index-root confinement that survives symlinks on 3.11/3.12 | `pathlib` only gained `recurse_symlinks` in 3.13 |
 | **Observability** | ✅ `logging` (text/JSON), counters and latency percentiles for abstention, verdicts, reconnects; surfaced through the MCP `recall_stats` tool | The library never attaches handlers — that is the host's job |
@@ -31,7 +31,7 @@ more. Those choices are explicit profiles and startup checks, not silent per-req
 | **Data erasure** | ✅ `recall forget` / `recall_forget` permanently delete a source's chunks; previews by default, `--yes` to act | The right-to-erasure path — irreversible, so it refuses to act unattended without the flag |
 | **Abuse bounds** | ✅ `recall_index` refuses before embedding anything if a request exceeds `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` | A client-callable indexer with no cap is an unbounded spend on a cloud embedder |
 | **Authentication** | ✅ bearer tokens on the HTTP transports, three scopes, one tenant per principal — see [docs/AUTH.md](AUTH.md) | Starting an HTTP transport without tokens **refuses to boot** rather than warning. stdio stays unauthenticated by design: it is a private pipe, not a listener |
-| **Schema migrations** | ✅ ordered SQL, committed cryptographic checksums, advisory lock, resumable concurrent indexes, separate migration/serving roles | MCP startup is SELECT-only and refuses pending, drifted, or unknown versions; both supported PostgreSQL majors are tested |
+| **Schema migrations** | ✅ ordered SQL, committed cryptographic checksums, advisory lock, resumable concurrent indexes, separate migration/serving roles | MCP startup is SELECT-only and refuses pending, drifted, or unknown versions; supported PostgreSQL majors 16<!--@ citation-pending: CI schema matrix in .github/workflows/ci.yml -->, 17<!--@ citation-pending: CI schema matrix in .github/workflows/ci.yml --> and 18<!--@ citation-pending: CI schema matrix in .github/workflows/ci.yml --> are tested |
 | **Trust policy** | ✅ **fails closed**: an absent, stale, mismatched or uncertified calibration refuses the search rather than answering from the 0.50 <!--@ citation-pending: source constant, not a measurement — `DEFAULT_GAP_THRESHOLD` in recall/guards.py --> default. Six stable failure codes; development mode must be asked for by name | The refusal is raised *before* retrieval runs, so it cannot carry corpus bytes — asserted with a store whose read methods raise if they are reached at all. See [docs/CALIBRATION.md](CALIBRATION.md) |
 | **Readiness** | ✅ reported per tenant and per process, separately | One tenant's stale calibration cannot fail the process probe and evict a pod that is still serving every other tenant |
 | **Index generations and cutover** | ✅ registered generations, shadow route, dual write behind a durable ordered outbox, transactional route swap with a content-free `NOTIFY`; `cutover` refuses while any event is pending or the shadow is not ready | `parity` now **refuses** two empty generations rather than printing `OK`, because two empty generations cannot disagree and that vacuous pass was indistinguishable from a real one; there is no override flag. A shadow partially filled relative to the active still fails parity on missing sources or differing chunk counts. ⚠️ What nothing catches is a pair that agrees with **each other** while both are short of the corpus on disk, so read the chunk counts `parity` prints against your own measurement; nor does parity detect two generations whose rows all lack a content hash, which compare equal while certifying nothing. `_prune_vanished` keys its candidate set on the active generation, so a source only the shadow holds survives the prune and rides the cutover |
@@ -120,9 +120,9 @@ capped dense leg and were corrected in the same pass
 
 **→ 0.5.1 — five changes that can break a working deployment.** `RECALL_ALLOW_INSECURE_DSN` became
 an explicit allowlist, so only `1|true|yes|on` disable the guard and **every other value, including
-`0`, keeps it ON** — the likeliest of these to bite. The `mcp` extra now requires `mcp>=1.27.2`
-(1.10–1.27.1 installed cleanly then failed on every authenticated call). `recall index` refuses a
-re-index that would prune ≥50% of a root (`PruneGuardTripped`; re-run with `--allow-prune`), so a
+`0`, keeps it ON** — the likeliest of these to bite. The `mcp` extra now requires `mcp>=2,<3`;
+1.10-1.27.1 installed cleanly but does not expose the MCPServer API this server uses. `recall index`
+refuses a re-index that would prune ≥50% of a root (`PruneGuardTripped`; re-run with `--allow-prune`), so a
 *missing* corpus stops being indistinguishable from a *deleted* one. The MCP HTTP transports refuse
 to boot without `RECALL_AUTH_TOKENS_FILE` and meter per tenant by default; `stdio` is unchanged.
 Schema DDL gives up after 5 s of lock contention (`RECALL_SCHEMA_LOCK_TIMEOUT_MS`).

@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres: [16, 17]
+        postgres: [16, 17, 18]
     services:
       db:
         image: pgvector/pgvector:pg${{ matrix.postgres }}
@@ -54,7 +54,7 @@ jobs:
     # Integration tests hit a real pgvector database — no mock DB. Spin one up as a service.
     services:
       db:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_USER: recall
           POSTGRES_PASSWORD: recall
@@ -127,16 +127,17 @@ jobs:
   # The declared floors, actually installed and actually run.
   #
   # Every other job resolves the NEWEST of everything, so the `>=` bounds in pyproject.toml were
-  # never exercised: `mcp>=1.7`, `>=1.10` and `>=1.27.2` are indistinguishable to a green build,
-  # and two of those three were wrong — 1.10-1.27.1 installs cleanly and then fails on every
-  # authenticated call, because `AccessToken.claims` only exists from 1.27.2. `pgvector>=0.3` was
-  # wrong the same way: `from pgvector import Vector` is a 0.4.0 export, so the declared floor
-  # named versions where `import recall.store` raises ImportError. A floor nothing resolves at is
-  # documentation, not a constraint, and it is documentation that was false.
+  # never exercised: an old MCP floor and the current `mcp>=2` floor are indistinguishable to a
+  # green build once the newest resolver has moved on. MCP 2 is the supported server API now
+  # because it provides the `MCPServer` import path and typed request context injection used by
+  # `recall_mcp.server`.
+  # `pgvector>=0.3` was wrong the same way: `from pgvector import Vector` is a 0.4.0 export, so the
+  # declared floor named versions where `import recall.store` raises ImportError. A floor nothing
+  # resolves at is documentation, not a constraint, and it is documentation that was false.
   #
   # Lowest supported Python as well as lowest dependencies: this is the whole floor, not half of
-  # it. Verified green at py3.11.15 + mcp 1.27.2 + pgvector 0.4.0 + psycopg 3.3.4 + pytest 8.0.0,
-  # and verified RED against the previous `mcp>=1.10` (auth wiring fails at collection).
+  # it. Verified green at py3.11.15 + mcp 2.0.0 + pgvector 0.4.0 + psycopg 3.3.4 + pytest 8.0.0,
+  # and verified RED against MCP 1 after the MCP 2 port.
   floor:
     runs-on: ubuntu-latest
 

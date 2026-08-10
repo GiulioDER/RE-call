@@ -4,7 +4,7 @@ Why this exists when `test_mcp_auth_wiring.py` already passes
 -------------------------------------------------------------
 Those tests prove `RecallTokenVerifier.verify_token` returns None for a bad token. They do NOT
 prove the SDK ever calls it. Every one of them would stay green if `token_verifier` were dropped
-from the `FastMCP(...)` call, if the auth middleware were never mounted, or if the transport
+from the `MCPServer(...)` call, if the auth middleware were never mounted, or if the transport
 served tool requests before reaching it — and in each of those cases the server would be wide
 open while the suite reported success.
 
