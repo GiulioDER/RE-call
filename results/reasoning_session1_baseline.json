@@ -1,0 +1,36 @@
+{
+  "_provenance": {
+    "backs": [
+      "docs/REASONING_CONTRACT.md"
+    ],
+    "fixture": "recall/eval/reasoning_session1.json",
+    "generation": "reasoning-session1-baseline",
+    "generator": "recall.eval.reasoning_session1.baseline_metrics",
+    "note": "Synthetic Session 1 control observations recorded before the reasoning layer is enabled. These are fixture-derived baseline metrics, not a model run.",
+    "status": "current"
+  },
+  "category_counts": {
+    "ambiguous_entity": 1,
+    "contradiction": 1,
+    "direct_answer": 1,
+    "empty_corpus": 1,
+    "missing_supersession": 1,
+    "multi_hop": 1,
+    "near_miss": 1,
+    "stale_corpus": 1
+  },
+  "direct_hit_rate": 1.0,
+  "expected_abstention_accuracy": 0.6666666666666666,
+  "index_generation": "reasoning-session1-fixture-gen1",
+  "missing_supersession_unresolved_rate": 1.0,
+  "multi_hop_complete_support_rate": 0.0,
+  "n_cases": 8,
+  "n_memories": 11,
+  "near_miss_false_confident_rate": 1.0,
+  "observations": [
+    "Direct retrieval succeeds more often than complete multi hop support retrieval.",
+    "The near miss case is answered confidently by the baseline observation.",
+    "The missing supersession edge remains an unresolved proposal, not authored metadata."
+  ],
+  "version": "reasoning-session1-v0.1.0"
+}
