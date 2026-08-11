@@ -62,6 +62,22 @@ def _terminator(line: bytes, default: bytes) -> bytes:
     return default  # the final line of a file with no trailing newline
 
 
+def _is_fence(line: bytes, *, allow_bom: bool = False) -> bool:
+    """Whether `line` is a ``---`` fence, judged exactly as `parse_frontmatter` judges it.
+
+    The comparison is done on `str` rather than `bytes` on purpose. `bytes.strip()` removes only
+    ASCII whitespace, while `str.strip()` removes Unicode whitespace, so a fence behind a
+    non-breaking space is a fence to the reader and not to a bytes-only writer. A writer that
+    disagrees with the reader about where the block starts inserts a SECOND block above the first,
+    and every key in the original then sits below the reader's stopping point: still in the file,
+    no longer metadata. A silently dropped `valid_until` is a memo that never expires.
+    """
+    text = line.decode("utf-8", "replace")
+    if allow_bom:
+        text = text.lstrip("﻿")
+    return text.strip() == "---"
+
+
 def insert_frontmatter_line(raw: bytes, key: str, value: str) -> bytes:
     """`key: value` into the frontmatter block, adding one if the file has none.
 
@@ -80,14 +96,20 @@ def insert_frontmatter_line(raw: bytes, key: str, value: str) -> bytes:
     states in prose; a second writer of the user's own memos must import this rather than carry its
     own copy, because a second copy is how one of them ends up back on `split("\\n")`.
     """
+    if any(c in key or c in value for c in ("\n", "\r")):
+        # The value reaches here from `fix.py`'s passive branch as a file's relative PATH, verbatim,
+        # and a POSIX filename may contain a newline. One would write arbitrary keys, or a second
+        # `---`, into a memo the user never edited. Refusing here closes it for every writer at
+        # once; refusing per caller is how the next caller gets it wrong.
+        raise ValueError(f"a frontmatter line may not contain a line break: {key!r}: {value!r}")
     bom = _BOM if raw.startswith(_BOM) else b""
     body = raw[len(bom) :]
     newline = _newline(body)
     entry = f"{key}: {value}".encode("utf-8")
     lines = body.splitlines(keepends=True)
-    if lines and lines[0].strip() == b"---":
+    if lines and _is_fence(lines[0], allow_bom=True):
         for index, line in enumerate(lines[1:], start=1):
-            if line.strip() == b"---":
+            if _is_fence(line):
                 lines.insert(index, entry + _terminator(line, newline))
                 return bom + b"".join(lines)
         # unclosed block: treat as no frontmatter rather than corrupt it further

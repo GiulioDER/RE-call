@@ -219,10 +219,19 @@ def propose_fixes(
 
     existing: dict[str, str] = {}
     bodies: dict[str, str] = {}
+    #: Files this tool could not read. They stay in `by_key`, so the passive branch can still
+    #: RESOLVE a reference to one; what they must never become is the file that gets edited.
+    #: Skipping them here without recording them is how an unreadable memo reached the writer with
+    #: no `existing` entry, so the "refusing to overwrite" rule could not fire for it either.
+    unreadable: dict[str, str] = {}
     for f in files:
         try:
             meta, body = parse_frontmatter(f.read_text(encoding="utf-8-sig"))
-        except (UnicodeDecodeError, OSError):
+        except UnicodeDecodeError:
+            unreadable[rel[f]] = "could not be decoded as UTF-8"
+            continue
+        except OSError:
+            unreadable[rel[f]] = "could not be read"
             continue
         bodies[rel[f]] = body
         if meta.get("supersedes"):
@@ -259,6 +268,11 @@ def propose_fixes(
             # passive voice: the OTHER file is the one that supersedes this memo
             writer = edit_file if edit_file is not None else resolved
             value = target_name if edit_file is not None else name
+            if writer in unreadable:
+                unfixable.append(Unfixable(
+                    writer, f"{unreadable[writer]}, so this tool will not write into it",
+                ))
+                continue
             if writer in existing:
                 unfixable.append(Unfixable(
                     writer,
@@ -289,5 +303,12 @@ def apply_proposal(root: Path, p: Proposal) -> None:
     applies no translation of its own.
     """
     f = root / p.edit_file if root.is_dir() else root
-    atomic_write_bytes(f, insert_frontmatter_line(f.read_bytes(), "supersedes", p.target))
+    raw = f.read_bytes()
+    # Reading bytes removed a gate nobody had named as one: the old `read_text(encoding="utf-8-sig")`
+    # RAISED on a memo this tool cannot decode, and that raise was the last thing between the writer
+    # and a file it does not understand. Prepending an ASCII block to a UTF-16 memo does not
+    # reformat it, it destroys it. `propose_fixes` refuses these too, but this function is public
+    # and `cli.py` calls it in a loop, so the gate belongs at the write site as well.
+    raw.decode("utf-8-sig")
+    atomic_write_bytes(f, insert_frontmatter_line(raw, "supersedes", p.target))
     _log.info("declared supersedes: %s in %s", p.target, p.edit_file)

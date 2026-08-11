@@ -376,6 +376,98 @@ def test_apply_preserves_bytes_when_the_file_has_no_frontmatter(tmp_path):
     assert body.startswith("# note")
 
 
+# --- memos this tool must not touch at all ------------------------------------------------------
+#
+# Reading bytes instead of text removed a gate nobody had named as one. `read_text(utf-8-sig)`
+# RAISED on a memo it could not decode, and that raise was the last thing standing between the
+# writer and a file it does not understand. `propose_fixes` swallows the same error (fix.py:225)
+# and moves on, but the skipped file stays in `by_key`, so the passive branch can still choose it
+# as the file to EDIT — and it is missing from `existing`, so the "refusing to overwrite" rule
+# cannot fire for it either.
+
+
+def _passive_corpus(tmp_path, victim_bytes):
+    """`a` says it is superseded by `b`, so the edge is written on `b`. `b` is the victim."""
+    _write(tmp_path, "a_note_2026-01-01.md", "Superseded by [[b_note_2026-02-02]].")
+    (tmp_path / "b_note_2026-02-02.md").write_bytes(victim_bytes)
+    return tmp_path / "b_note_2026-02-02.md"
+
+
+def test_a_memo_that_cannot_be_decoded_is_never_written(tmp_path):
+    """A UTF-16 memo is not a UTF-8 memo with odd bytes; prepending ASCII destroys it.
+
+    The written file no longer decodes as UTF-16 at all, so the content is not merely reformatted,
+    it is unrecoverable by the encoding that produced it.
+    """
+    victim = _passive_corpus(
+        tmp_path, "---\nvalid_until: 2030-01-01\n---\nimportant notes\n".encode("utf-16")
+    )
+    before = victim.read_bytes()
+
+    proposals, unfixable = propose_fixes(tmp_path)
+
+    assert proposals == [], "an undecodable memo must never be proposed as the file to edit"
+    assert any("could not be decoded" in u.reason for u in unfixable), unfixable
+    assert victim.read_bytes() == before
+
+
+def test_apply_refuses_an_undecodable_memo_even_if_a_proposal_names_one(tmp_path):
+    """The refusal belongs at the write site too, not only in the proposer.
+
+    `apply_proposal` is public and `cli.py` calls it in a loop; a guard that lives only in the
+    module that usually builds the argument is a guard the next caller does not get.
+    """
+    victim = _passive_corpus(
+        tmp_path, "---\nvalid_until: 2030-01-01\n---\nnotes\n".encode("utf-16")
+    )
+    before = victim.read_bytes()
+    forged = Proposal(
+        edit_file="b_note_2026-02-02.md",
+        target="a_note_2026-01-01.md",
+        evidence_file="a_note_2026-01-01.md",
+        evidence="Superseded by [[b_note_2026-02-02]].",
+    )
+
+    with pytest.raises(UnicodeDecodeError):
+        apply_proposal(tmp_path, forged)
+
+    assert victim.read_bytes() == before
+
+
+def test_an_undecodable_memos_existing_edge_is_not_silently_replaced(tmp_path):
+    """The bypass with the worst outcome: a declared edge overwritten with no diagnostic.
+
+    `existing` is only populated for memos that decoded, so "already declares supersedes: ...
+    refusing to overwrite" never fires here. The insertion then lands a SECOND `supersedes:` line
+    inside the same block, and `parse_frontmatter` is last-wins, so the author's edge is gone.
+    """
+    victim = _passive_corpus(
+        tmp_path,
+        "---\nsupersedes: old_thing_2025-01-01\n---\nCaf\xe9\n".encode("latin-1"),
+    )
+    before = victim.read_bytes()
+
+    proposals, _ = propose_fixes(tmp_path)
+
+    assert proposals == []
+    assert victim.read_bytes() == before
+    meta, _ = parse_frontmatter(before.decode("latin-1"))
+    assert meta["supersedes"] == "old_thing_2025-01-01", "the author's own edge must survive"
+
+
+def test_a_decodable_memo_is_still_proposed_and_written(tmp_path):
+    """The refusal must not swallow the ordinary case it sits next to."""
+    victim = _passive_corpus(tmp_path, "---\nvalid_until: 2030-01-01\n---\nnotes\n".encode("utf-8"))
+
+    proposals, _ = propose_fixes(tmp_path)
+    assert len(proposals) == 1
+    apply_proposal(tmp_path, proposals[0])
+
+    meta, _ = parse_frontmatter(victim.read_text(encoding="utf-8"))
+    assert meta["supersedes"] == "a_note_2026-01-01.md"
+    assert meta["valid_until"] == "2030-01-01"
+
+
 def test_apply_proposal_preserves_the_memo_when_the_write_fails(tmp_path, monkeypatch):
     """A crash / disk-full mid-write must not corrupt the user's memo (DAT-001).
 
