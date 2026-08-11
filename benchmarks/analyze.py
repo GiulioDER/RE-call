@@ -27,13 +27,14 @@ not) is 0.0 for that system, which is the whole point of reporting it beside the
 from __future__ import annotations
 
 import argparse
-import json
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from fractions import Fraction
 from glob import glob
 from pathlib import Path
 from typing import Any
+
+from benchmarks.artifact_contract import load_published_artifact
 
 #: Below this many discordant pairs the chi-square approximation to the binomial is unreliable
 #: (the usual textbook rule of thumb; b+c is the effective sample size of a McNemar test, not the
@@ -279,7 +280,7 @@ def curve_points(paths: Iterable[Path | str]) -> list[dict[str, Any]]:
     points: list[dict[str, Any]] = []
     for path in paths:
         path = Path(path)
-        doc: dict[str, Any] = _load_published(path)
+        doc: dict[str, Any] = load_published_artifact(path)
         aggregate: dict[str, Any] = doc.get("aggregate") or {}
         points.append(
             {
@@ -398,8 +399,8 @@ def _format_test(title: str, result: Mapping[str, Any]) -> list[str]:
 
 
 def _compare_report(a_path: Path, b_path: Path) -> list[str]:
-    a_doc: dict[str, Any] = _load_published(a_path)
-    b_doc: dict[str, Any] = _load_published(b_path)
+    a_doc: dict[str, Any] = load_published_artifact(a_path)
+    b_doc: dict[str, Any] = load_published_artifact(b_path)
     a_arm, b_arm = str(a_doc.get("arm", "A")), str(b_doc.get("arm", "B"))
 
     lines = [
@@ -446,23 +447,6 @@ def _curve_report(points: Sequence[Mapping[str, Any]]) -> list[str]:
     return lines
 
 
-
-def _load_published(path: Path) -> dict[str, Any]:
-    """Load a results artifact, refusing one `benchmarks.run` marked as never published.
-
-    A refused artifact is quarantined outside the `results/*.json` glob AND marked in band, and
-    this is the half that makes the mark mean something. Without it the mark is a comment: a
-    quarantined file handed here directly, or reached by a `results/**/*.json` glob, is byte
-    identical to a real measurement and gets tabulated as one.
-    """
-
-    doc: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-    if doc.get("unpublished"):
-        raise SystemExit(
-            f"{path} was REFUSED publication by benchmarks.run and is not a measurement: "
-            f"{doc.get('unpublished_reason', 'no reason recorded')}"
-        )
-    return doc
 
 
 def _expand(patterns: Sequence[str]) -> list[Path]:

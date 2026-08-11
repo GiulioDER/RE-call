@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence, Set as AbstractSet
+import json
+from pathlib import Path
 import re
 
 from recall.provider_metadata import ProviderMetadata, provider_metadata_from_any, validate_cost_claim
@@ -35,6 +37,29 @@ _MONETARY_PROSE = re.compile(
 #: is `describe()` output from a duck typed adapter, so a nested key that happens to be named
 #: `outcomes` would silently exempt its whole subtree, and that key namespace is not ours to trust.
 VERBATIM_SOURCE_KEYS = frozenset({"outcomes"})
+
+
+
+def load_published_artifact(path: Path) -> dict[str, object]:
+    """Load a benchmark artifact, refusing one `benchmarks.run` marked as never published.
+
+    The other half of the quarantine. `benchmarks.run` keeps a refused artifact out of the
+    `results/*.json` glob AND marks it in band, and this is what makes the mark mean something:
+    without a reader that honours it, a quarantined file handed over directly — which is how
+    every one of these tools is invoked — is byte identical to a real measurement and gets
+    tabulated as one.
+
+    `SystemExit` rather than `ValueError` because every caller is a CLI entry point, and it
+    matches what `analyze._expand` already raises for an unusable input.
+    """
+
+    doc: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    if doc.get("unpublished"):
+        raise SystemExit(
+            f"{path} was REFUSED publication by benchmarks.run and is not a measurement: "
+            f"{doc.get('unpublished_reason', 'no reason recorded')}"
+        )
+    return doc
 
 
 def provider_metadata_from_payload(payload: Mapping[str, object]) -> tuple[ProviderMetadata, ...]:
@@ -105,6 +130,7 @@ def reject_unauditable_cost_claims(payload: Mapping[str, object]) -> None:
 
 __all__ = [
     "VERBATIM_SOURCE_KEYS",
+    "load_published_artifact",
     "provider_metadata_from_payload",
     "reject_unauditable_cost_claims",
 ]

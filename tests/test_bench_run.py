@@ -1241,7 +1241,6 @@ def _quarantine_case(
     out: Path,
     *,
     reject: bool,
-    before: object = None,
 ) -> int:
     monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
     _patch_recall_stub(monkeypatch)
@@ -1328,7 +1327,7 @@ def test_the_rescue_writes_the_artifact_before_it_reports(
     import sys as _sys
 
     out = tmp_path / "results"
-    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True, before=lambda: None)
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
     assert code == run_module.QUARANTINE_EXIT  # sanity: the healthy-stderr baseline
 
     out2 = tmp_path / "results2"
@@ -1459,3 +1458,86 @@ def test_the_rescue_never_leaks_diagnostics_into_stdout_when_stderr_is_none(
     assert code == run_module.QUARANTINE_EXIT
     assert (out / "unpublished" / f"{_STAMP_1CONV}.json").exists()
     assert "artifact NOT published" not in capsys.readouterr().out
+
+
+def test_say_refuses_a_stream_that_is_explicitly_none() -> None:
+    """`None` must mean "this stream is unusable", never "use the default".
+
+    Conflating the two is how the last resort ends up writing the artifact body to stderr while
+    reporting it went to stdout and counting it as preserved.
+    """
+    assert run_module._say("x", stream=None) is False
+    assert run_module._say("x") is True  # no argument still defaults to stderr
+
+
+def test_say_lets_a_keyboard_interrupt_through() -> None:
+    """Swallowing Ctrl+C during the multi-MB last-resort dump would report a total loss.
+
+    A broken stream is an expected failure and is swallowed; an interrupt is the operator
+    talking, and must not be turned into "the artifact could not be preserved anywhere".
+    """
+
+    class _Interrupting:
+        def write(self, _data: str) -> int:
+            raise KeyboardInterrupt
+
+        def flush(self) -> None:
+            pass
+
+    assert run_module._say("x", stream=_BrokenStream()) is False  # OSError: swallowed
+    with pytest.raises(KeyboardInterrupt):
+        run_module._say("x", stream=_Interrupting())
+
+
+def test_a_run_whose_artifact_reaches_nowhere_reports_a_genuine_loss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exit 3 claims the work is salvageable. When nothing was saved, that claim is a lie.
+
+    Both file candidates blocked AND stdout unusable: the honest answer is 1.
+    """
+    import sys as _sys
+
+    out = tmp_path / "results"
+    real_write = Path.write_text
+
+    def _refuse(self: Path, data: str, *a: object, **k: object) -> int:
+        if "unpublished" in str(self):
+            raise OSError(28, "No space left on device")
+        return real_write(self, data, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _refuse)
+    # None, the real pythonw shape: `print()` to a None stdout is a silent no-op, so the run's
+    # own progress lines still work and only the last resort is starved. A broken stream would
+    # instead blow up on the first progress print, long before the write site.
+    monkeypatch.setattr(_sys, "stdout", None)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == 1, "nothing was preserved, so this is a loss and not a quarantine"
+
+
+def test_a_partially_written_quarantine_candidate_is_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The corpse rule applies to the rescue's own writes too.
+
+    A truncated `<out>/unpublished/<stamp>.json` breaks any `results/**/*.json` reader, and
+    `_load_published` parses before it can consult the mark, so the mark cannot rescue it.
+    """
+    out = tmp_path / "results"
+    real_write = Path.write_text
+
+    def _die_midway(self: Path, data: str, *a: object, **k: object) -> int:
+        if self.parent.name == "unpublished":
+            real_write(self, data[:30], encoding="utf-8")
+            raise OSError(28, "No space left on device")
+        return real_write(self, data, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _die_midway)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert not (out / "unpublished" / f"{_STAMP_1CONV}.json").exists(), "truncated corpse left"
+    assert (out / f"{_STAMP_1CONV}.unpublished.json.txt").exists()

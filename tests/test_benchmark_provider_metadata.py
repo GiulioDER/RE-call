@@ -247,3 +247,66 @@ def test_benchmark_without_monetary_claim_may_report_token_metadata_only() -> No
             ],
         }
     )
+
+
+def test_a_refused_artifact_is_refused_by_every_reader(tmp_path) -> None:
+    """The in-band mark is only a contract if the readers enforce it.
+
+    `benchmarks.run` quarantines a refused artifact outside the publishable glob AND marks it,
+    but the glob only protects the documented invocation. A reader handed the file directly —
+    which is how all of these are invoked — is the case the mark exists for, and it was honoured
+    by exactly one of them.
+    """
+    import json
+
+    from benchmarks.artifact_contract import load_published_artifact
+
+    path = tmp_path / "refused.json"
+    path.write_text(
+        json.dumps(
+            {
+                "arm": "recall",
+                "aggregate": {"answerable_accuracy": {"rate": 0.99, "n": 2}},
+                "unpublished": True,
+                "unpublished_reason": "benchmark cost claims require provider_metadata",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="REFUSED publication"):
+        load_published_artifact(path)
+
+    ordinary = tmp_path / "fine.json"
+    ordinary.write_text(json.dumps({"arm": "recall"}), encoding="utf-8")
+    assert load_published_artifact(ordinary)["arm"] == "recall"
+
+
+def test_no_benchmark_tool_reads_a_results_artifact_without_the_publication_check() -> None:
+    """A grep guard, because this contract decays one convenient `json.loads` at a time.
+
+    Every module that reads a `benchmarks.run` artifact must go through
+    `load_published_artifact`. Reading one directly is how four of five readers ended up
+    tabulating a refused artifact as a measurement.
+    """
+    from pathlib import Path
+
+    readers = {
+        "analyze.py": 0,
+        "token_f1.py": 0,
+        "judge_quality.py": 0,
+        "rejudge.py": 0,
+    }
+    root = Path(__file__).resolve().parents[1] / "benchmarks"
+    offenders = []
+    for name in readers:
+        for number, line in enumerate(
+            (root / name).read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if "json.loads(" in line and "read_text(" in line:
+                offenders.append(f"{name}:{number}: {line.strip()}")
+
+    assert not offenders, (
+        "these read an artifact without the publication check; use "
+        "`load_published_artifact`:\n" + "\n".join(offenders)
+    )

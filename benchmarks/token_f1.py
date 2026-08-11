@@ -54,6 +54,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from benchmarks.artifact_contract import load_published_artifact
+
 #: Resamples for the paired bootstrap. Large enough that the 2.5/97.5 percentiles are stable to
 #: the third decimal across seeds, which is the precision these numbers are quoted at.
 BOOTSTRAP_RESAMPLES = 10_000
@@ -120,8 +122,8 @@ def paired_bootstrap(
 
 def compare(a_path: Path, b_path: Path) -> dict[str, Any]:
     """Paired token-F1 comparison of two artifacts over the questions they share."""
-    a_artifact = json.loads(a_path.read_text(encoding="utf-8"))
-    b_artifact = json.loads(b_path.read_text(encoding="utf-8"))
+    a_artifact = load_published_artifact(a_path)
+    b_artifact = load_published_artifact(b_path)
     a_rows, b_rows = _answerable(a_artifact), _answerable(b_artifact)
 
     shared = sorted(set(a_rows) & set(b_rows))

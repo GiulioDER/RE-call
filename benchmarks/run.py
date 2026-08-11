@@ -26,10 +26,11 @@ Two properties of the output exist because the money is real:
 
 Exit status: 0 published, 2 a usage error from argparse, and 3 means the run finished but its
 artifact was REFUSED publication (an unauditable cost claim, or a failed write) and quarantined
-under ``<out>/unpublished/``. 1 means the artifact could not be preserved anywhere at all, a
-genuine loss rather than a salvageable one, and is also what the interpreter itself exits with on
-an uncaught exception. 3 is distinct from 1 deliberately, so a wrapper can tell "salvageable, do
-not re-run" from "crashed".
+somewhere OUTSIDE the publishable glob, with the exact location printed on stderr: normally
+``<out>/unpublished/<stamp>.json``, else a ``.json.txt`` sibling, and if no file could be written
+at all, printed to stdout. 1 means it reached none of those, a genuine loss rather than a
+salvageable one, and is also what the interpreter itself exits with on an uncaught exception. 3 is
+distinct from 1 deliberately, so a wrapper can tell "salvageable, do not re-run" from "crashed".
 
 The artifact also carries the run's full `config` block — retrieval budget, per-arm embedder,
 `mem0ai` version, Mem0's vector-store settings, both system prompts verbatim, temperature and the
@@ -627,7 +628,10 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
             # JSONDecodeError rather than skip one file.
             try:
                 path.unlink(missing_ok=True)
-            except OSError:  # pragma: no cover - best effort; the quarantine still runs
+            except OSError:
+                # Reached whenever `path` is a DIRECTORY: both the write and the unlink raise
+                # PermissionError there. Best effort — `exc` is already bound, so the real error
+                # still reaches the quarantine reason and nothing is masked.
                 pass
             preserved = _quarantine(
                 args.out, stamp, payload, encoded, partial_path,
@@ -726,6 +730,14 @@ def _quarantine(
         except OSError as exc:
             # `exist_ok=True` does NOT tolerate the path existing as a FILE, so the preferred
             # subdirectory is one `touch` away from being unusable. Fall back, do not give up.
+            #
+            # Take the corpse with us. `write_text` truncates at open, so a mid-write ENOSPC
+            # leaves a half JSON file behind, and `_load_published` parses before it can consult
+            # the `unpublished` mark — so the mark cannot save a reader from this one.
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                pass
             notes.append(f"  {candidate} could not be written: {exc}")
             continue
         written = candidate
@@ -754,20 +766,33 @@ def _quarantine(
     return preserved
 
 
-def _say(message: str, stream: TextIO | None = None) -> bool:
-    """Print without ever raising. Returns whether the message actually went anywhere.
+#: Sentinel for "no stream argument", so `None` can keep its own meaning: THIS STREAM IS
+#: UNUSABLE. Defaulting `stream=None` conflated the two, and the bug that produced was ugly —
+#: `_say(body, stream=sys.stdout)` with a None stdout took the default branch, wrote the artifact
+#: body to STDERR, reported "printed to stdout above", and counted it as preserved.
+_NO_STREAM: Any = object()
+
+
+def _say(message: str, stream: TextIO | None = _NO_STREAM) -> bool:
+    """Print without raising on a broken stream. Returns whether the message went anywhere.
 
     `print(file=None)` writes to STDOUT rather than raising, and `sys.stderr` really is None
     under pythonw, so a bare `file=sys.stderr` would silently interleave diagnostics into the
     artifact body. Refusing a None stream is what keeps the last resort's return value honest.
+
+    `Exception`, NOT `BaseException`. A broken pipe is an expected failure of reporting and is
+    swallowed. A `KeyboardInterrupt` is the operator talking, and the last resort dumps the whole
+    payload — every per-question record — to a possibly slow pipe, so an interrupt there is
+    likely rather than exotic. Swallowing it would report "the artifact could not be preserved
+    anywhere" and hand back the exit code that tells a wrapper to re-run and re-spend.
     """
 
-    target = sys.stderr if stream is None else stream
+    target = sys.stderr if stream is _NO_STREAM else stream
     if target is None:
         return False
     try:
         print(message, file=target, flush=True)
-    except BaseException:  # noqa: BLE001 - reporting a failure may not become one
+    except Exception:  # noqa: BLE001 - reporting a failure may not become one
         return False
     return True
 

@@ -55,6 +55,7 @@ from typing import Any
 
 from benchmarks.llm import Completer, OpenRouterLLM
 from benchmarks.pipeline import Outcome, aggregate, judge_correct
+from benchmarks.artifact_contract import load_published_artifact
 
 
 def to_outcome(record: Mapping[str, Any]) -> Outcome:
@@ -189,7 +190,7 @@ def rejudge_document(
 
 
 def _load_document(path: Path) -> dict[str, Any]:
-    doc: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    doc: dict[str, Any] = load_published_artifact(path)
     if "outcomes" not in doc:
         raise ValueError(f"{path} has no 'outcomes' array — it is not a results artifact")
     return doc
