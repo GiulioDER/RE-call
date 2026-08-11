@@ -935,60 +935,81 @@ def test_a_sentence_quoting_a_key_inline_is_prose_not_a_metadata_line() -> None:
     assert rejected == ()
     assert len(accepted) == 1
 
-
-def _continuation_shapes() -> dict[str, tuple[str, str]]:
-    """Documents where the metadata payload is NOT on the key line, mapped to the quote a
-    faithful model would produce. In the first two the target name exists only on the
-    continuation line, so an honest verbatim quote cannot include the key."""
-    return {
-        "yaml list under the key": (
-            "---\nsupersedes:\n  - archive_policy_2026-01-05.md\n\n# Retention\n\nWe keep records.\n",
-            "  - archive_policy_2026-01-05.md",
-        ),
-        "indented scalar under the key": (
-            "---\nsupersedes:\n  archive_policy_2026-01-05.md\n\n# Retention\n\nWe keep records.\n",
-            "  archive_policy_2026-01-05.md",
-        ),
-        "the value half of an ordinary key line": (
-            "---\nsupersedes: archive_policy_2026-01-05.md\nvalid_from: 2026-02-01\n\n" + BODY,
-            "archive_policy_2026-01-05.md",
-        ),
+def test_quoting_only_the_value_half_of_a_key_line_is_still_metadata() -> None:
+    """The rung judges where the quote SITS, so dropping the key from the quote does not drop
+    the declaration. This is the shape that matters: `supersedes: X` on one line IS a
+    declaration the trust layer reads."""
+    document = "---\nsupersedes: archive_policy_2026-01-05.md\nvalid_from: 2026-02-01\n\n" + BODY
+    body = human_body_of(document)
+    forged = {
+        "kind": "supersession",
+        "superseded": "archive_policy_2026-01-05",
+        "quote": "archive_policy_2026-01-05.md",
     }
 
+    accepted, rejected = normalize_extraction(
+        _payload(forged), file=FILE, human_body=body, corpus_names=CORPUS
+    )
 
-def test_metadata_is_refused_even_when_the_quote_does_not_start_at_the_key() -> None:
-    """The rung judges where the quote SITS in the body, not the quote text alone. A payload on
-    a continuation line, or the value half of a key line, is still metadata."""
-    for shape, (document, quote) in _continuation_shapes().items():
-        body = human_body_of(document)
-        forged = {
-            "kind": "supersession",
-            "superseded": "archive_policy_2026-01-05",
-            "quote": quote,
-        }
+    assert accepted == ()
+    assert [rejection.rung for rejection in rejected] == ["quote_is_frontmatter"]
 
+
+def test_every_occurrence_is_checked_not_only_the_first() -> None:
+    """Judging the first occurrence alone would make the verdict depend on document order:
+    a prose mention above the metadata would excuse the metadata, and one below it would
+    condemn the prose."""
+    metadata_first = "supersedes: archive_policy_2026-01-05.md\n\nSee archive_policy_2026-01-05.md.\n"
+    prose_first = "See archive_policy_2026-01-05.md.\n\nsupersedes: archive_policy_2026-01-05.md\n"
+    forged = {
+        "kind": "supersession",
+        "superseded": "archive_policy_2026-01-05",
+        "quote": "archive_policy_2026-01-05.md",
+    }
+
+    for body in (metadata_first, prose_first):
         accepted, rejected = normalize_extraction(
             _payload(forged), file=FILE, human_body=body, corpus_names=CORPUS
         )
 
-        assert accepted == (), shape
-        assert [rejection.rung for rejection in rejected] == ["quote_is_frontmatter"], shape
+        assert accepted == (), body
+        assert [rejection.rung for rejection in rejected] == ["quote_is_frontmatter"], body
 
 
-def test_indented_prose_below_a_key_line_is_not_treated_as_a_continuation() -> None:
-    """The over rejection guard for the upward walk. An indented code sample separated from
-    the block by real prose belongs to the prose, not to the key above it."""
+def test_a_markdown_bullet_list_below_a_key_line_is_prose() -> None:
+    """The over rejection guard. An earlier version walked upward from an indented or bulleted
+    line looking for an owning key, and so refused every bullet under a stray key line. A
+    bullet list is prose, and `supersedes: X` already carries its own value anyway."""
     body = (
-        "valid_from: 2026-01-01\n"
+        "supersedes: archive_policy_2026-01-05.md\n"
         "\n"
-        "The retention window is documented below.\n"
-        "\n"
-        "    archive_policy_2026-01-05.md is the superseded memo.\n"
+        "- We keep records for seven years, per legal.\n"
+        "- The vendor contract is now active.\n"
     )
     claim = {
         "kind": "status",
         "value": "active",
-        "quote": "    archive_policy_2026-01-05.md is the superseded memo.",
+        "quote": "- The vendor contract is now active.",
+    }
+
+    accepted, rejected = normalize_extraction(
+        _payload(claim), file=FILE, human_body=body, corpus_names=CORPUS
+    )
+
+    assert rejected == ()
+    assert len(accepted) == 1
+
+
+def test_a_trailing_newline_in_a_quote_does_not_drag_in_the_next_line() -> None:
+    """The region is the lines the quote's TEXT occupies. Searching for the line end from past
+    the quote's own trailing newline lands on the end of the following line, so a neighbouring
+    key line the quote never touched would trigger the refusal."""
+    body = "The migration completed on 2026-02-01.\nvalid_until: 2026-12-31\n\nMore prose.\n"
+    claim = {
+        "kind": "validity",
+        "key": "valid_from",
+        "date": "2026-02-01",
+        "quote": "The migration completed on 2026-02-01.\n",
     }
 
     accepted, rejected = normalize_extraction(
