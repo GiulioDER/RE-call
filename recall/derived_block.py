@@ -363,3 +363,46 @@ def verify_derived_block(text: str) -> DerivedBlock:
             f"its structure hashes to {expected}"
         )
     return block
+
+
+def diagnose_derived_block(derived_text: str) -> list[tuple[str, str]]:
+    """Lint's view of a block. Returns at most one `(code, message)`; raises nothing.
+
+    Takes the BLOCK text (`DerivedSplit.block_text`), not the whole body, because everything a
+    diagnosis needs is inside it: `split_derived_block` cuts from the first open fence to EOF, so
+    a second fence and any trailing prose are both in scope.
+
+    Precedence is most-specific first — duplicated, not-last, tampered, malformed — and exactly
+    one code comes back. A single mistake reported four ways is four times the noise and none of
+    the signal.
+    """
+    if not derived_text:
+        return []
+    lines = derived_text.replace("\r\n", "\n").split("\n")
+    opens = [i for i, line in enumerate(lines) if line.strip() == OPEN_FENCE]
+    if len(opens) > 1:
+        return [
+            (
+                "derived-block-duplicated",
+                f"{len(opens)} derived blocks in one file; at most one is allowed, and the "
+                f"machine's writer replaces its block rather than appending another",
+            )
+        ]
+    closes = [i for i, line in enumerate(lines) if line.strip() == CLOSE_FENCE]
+    if closes:
+        tail = "\n".join(lines[closes[0] + 1 :]).strip()
+        if tail:
+            return [
+                (
+                    "derived-block-not-last",
+                    f"{len(tail.encode('utf-8'))} bytes follow the close fence and are excluded "
+                    f"from retrieval; move them above the block",
+                )
+            ]
+    try:
+        verify_derived_block(derived_text)
+    except DerivedDigestMismatch as exc:
+        return [("derived-block-tampered", str(exc))]
+    except DerivedBlockError as exc:
+        return [("derived-block-malformed", str(exc))]
+    return []

@@ -29,6 +29,7 @@ from recall.derived_block import (
     DerivedDigestMismatch,
     DerivedEntry,
     derived_digest,
+    diagnose_derived_block,
     parse_derived_block,
     render_derived_block,
     split_derived_block,
@@ -450,3 +451,66 @@ def test_a_fully_populated_well_formed_block_parses() -> None:
 def test_parse_refuses(text: str, match: str) -> None:
     with pytest.raises(DerivedBlockError, match=match):
         parse_derived_block(text)
+
+
+def _codes(body: str) -> list[str]:
+    return [code for code, _ in diagnose_derived_block(split_derived_block(body).block_text)]
+
+
+def test_a_clean_file_diagnoses_nothing() -> None:
+    assert _codes("# A\n\nprose.\n") == []
+    assert _codes("# A\n\nprose.\n\n" + _block(_entry())) == []
+
+
+def test_two_blocks_are_duplicated() -> None:
+    body = "# A\n\nprose.\n\n" + _block(_entry()) + "\n" + _block(_entry("status", "adopted"))
+    assert _codes(body) == ["derived-block-duplicated"]
+
+
+def test_content_after_the_close_fence_is_not_last() -> None:
+    body = "# A\n\nprose.\n\n" + _block(_entry()) + "\nA human appended this.\n"
+    codes = diagnose_derived_block(split_derived_block(body).block_text)
+    assert [code for code, _ in codes] == ["derived-block-not-last"]
+
+
+def test_not_last_names_the_bytes_it_costs() -> None:
+    """The error must state its own consequence: this text is excluded from retrieval."""
+    tail = "A human appended this."
+    body = "# A\n\nprose.\n\n" + _block(_entry()) + f"\n{tail}\n"
+    ((_, message),) = diagnose_derived_block(split_derived_block(body).block_text)
+    assert str(len(tail.encode("utf-8"))) in message
+    assert "retrieval" in message
+
+
+def test_a_tampered_digest_is_tampered_not_malformed() -> None:
+    body = "# A\n\nprose.\n\n" + _block(_entry()).replace("reviewer: giulio", "reviewer: nobody")
+    assert _codes(body) == ["derived-block-tampered"]
+
+
+def test_a_half_written_block_is_malformed_not_tampered() -> None:
+    """An unclosed fence has no digest to disagree with. Calling it tampering sends the reader
+    looking for an attacker who is not there."""
+    body = f"# A\n\nprose.\n\n{OPEN_FENCE}\nstatus: adopted\n"
+    assert _codes(body) == ["derived-block-malformed"]
+
+
+def test_a_forbidden_head_is_malformed() -> None:
+    body = (
+        f"# A\n\nprose.\n\n{OPEN_FENCE}\nsupersedes: other_memo_2026-01-01\n"
+        f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+        f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n"
+    )
+    assert _codes(body) == ["derived-block-malformed"]
+
+
+def test_at_most_one_code_per_file() -> None:
+    """A single mistake reported four ways is four times the noise and none of the signal."""
+    body = (
+        "# A\n\nprose.\n\n"
+        + _block(_entry()).replace("reviewer: giulio", "reviewer: nobody")
+        + "\n"
+        + _block(_entry("status", "adopted"))
+        + "\ntrailing prose\n"
+    )
+    assert len(diagnose_derived_block(split_derived_block(body).block_text)) == 1
+    assert _codes(body) == ["derived-block-duplicated"]
