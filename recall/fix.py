@@ -36,7 +36,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from recall.atomic_write import atomic_write_bytes
-from recall.frontmatter import insert_frontmatter_line, parse_frontmatter, supersedes_key
+from recall.frontmatter import (
+    has_line_break,
+    insert_frontmatter_line,
+    parse_frontmatter,
+    supersedes_key,
+)
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
 
@@ -268,6 +273,16 @@ def propose_fixes(
             # passive voice: the OTHER file is the one that supersedes this memo
             writer = edit_file if edit_file is not None else resolved
             value = target_name if edit_file is not None else name
+            if has_line_break(value):
+                # The helper raises on this, but a raise at WRITE time lands halfway through the
+                # apply loop, after earlier memos have been rewritten. Every other refusal here is
+                # reported by the dry run before a byte is touched; this one must be too. Same
+                # predicate as the helper, imported rather than restated, because the last time a
+                # writer restated the reader's rule the two drifted and a `valid_until` was lost.
+                unfixable.append(Unfixable(
+                    writer, f"names {value!r}, which contains a line break",
+                ))
+                continue
             if writer in unreadable:
                 unfixable.append(Unfixable(
                     writer, f"{unreadable[writer]}, so this tool will not write into it",

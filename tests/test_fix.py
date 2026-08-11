@@ -468,6 +468,31 @@ def test_a_decodable_memo_is_still_proposed_and_written(tmp_path):
     assert meta["valid_until"] == "2030-01-01"
 
 
+def test_a_path_with_a_line_separator_is_refused_before_anything_is_written(tmp_path):
+    """A refusal must be reported by the dry run, not raised halfway through `--apply`.
+
+    Every other refusal in this tool prints a SKIP line before a byte is touched. The helper's
+    `ValueError` fires at WRITE time, so without a matching screen in `propose_fixes` the edge is
+    advertised as proposable and then kills the apply loop (`cli.py` has no per-proposal
+    containment) after earlier memos have already been rewritten. A half-applied corpus and a raw
+    traceback is the worst available outcome for a tool whose entire premise is refusing to guess.
+    """
+    evidence = tmp_path / "note x_2026-01-01.md"
+    try:
+        evidence.write_text("Superseded by [[victim_2026-02-02]].", encoding="utf-8")
+    except OSError:  # pragma: no cover - filesystem dependent
+        pytest.skip("this filesystem rejects U+2028 in a filename")
+    _write(tmp_path, "victim_2026-02-02.md", "---\nvalid_until: 2030-01-01\n---\n# Victim\n")
+    victim = tmp_path / "victim_2026-02-02.md"
+    before = victim.read_bytes()
+
+    proposals, unfixable = propose_fixes(tmp_path)
+
+    assert proposals == [], "a value that cannot be written must not be proposed"
+    assert any("line break" in u.reason for u in unfixable), unfixable
+    assert victim.read_bytes() == before
+
+
 def test_apply_proposal_preserves_the_memo_when_the_write_fails(tmp_path, monkeypatch):
     """A crash / disk-full mid-write must not corrupt the user's memo (DAT-001).
 

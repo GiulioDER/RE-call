@@ -78,6 +78,23 @@ def _is_fence(line: bytes, *, allow_bom: bool = False) -> bool:
     return text.strip() == "---"
 
 
+def has_line_break(text: str) -> bool:
+    """True when `text` holds anything `str.splitlines()` treats as the end of a line.
+
+    Deliberately NOT a hand-listed subset. The first version of this check tested only ``\\n`` and
+    ``\\r``, which is the notion of a line break `parse_frontmatter` uses, and it was too narrow:
+    `context.document_title` scans the same block with `splitlines()`, which honours eight more
+    characters (``\\x0b \\x0c \\x1c \\x1d \\x1e \\x85 \\u2028 \\u2029``). A value carrying one of
+    those passed the guard and still split the written line for that reader, so a crafted filename
+    could set a memo's indexed title. U+2028 is legal in a filename on NTFS as well as POSIX.
+
+    Phrasing it as "the text must survive `splitlines()` unchanged" keeps it correct for any reader
+    that uses `splitlines()`, and the joined comparison also catches a *trailing* separator, which
+    a `len(...) > 1` test misses.
+    """
+    return text != "".join(text.splitlines())
+
+
 def insert_frontmatter_line(raw: bytes, key: str, value: str) -> bytes:
     """`key: value` into the frontmatter block, adding one if the file has none.
 
@@ -96,11 +113,7 @@ def insert_frontmatter_line(raw: bytes, key: str, value: str) -> bytes:
     states in prose; a second writer of the user's own memos must import this rather than carry its
     own copy, because a second copy is how one of them ends up back on `split("\\n")`.
     """
-    if any(c in key or c in value for c in ("\n", "\r")):
-        # The value reaches here from `fix.py`'s passive branch as a file's relative PATH, verbatim,
-        # and a POSIX filename may contain a newline. One would write arbitrary keys, or a second
-        # `---`, into a memo the user never edited. Refusing here closes it for every writer at
-        # once; refusing per caller is how the next caller gets it wrong.
+    if has_line_break(key) or has_line_break(value):
         raise ValueError(f"a frontmatter line may not contain a line break: {key!r}: {value!r}")
     bom = _BOM if raw.startswith(_BOM) else b""
     body = raw[len(bom) :]

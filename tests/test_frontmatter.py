@@ -113,9 +113,42 @@ def test_a_value_carrying_a_line_break_is_refused(bad):
     """A newline in the value writes arbitrary keys, or a fake fence, into someone else's memo.
 
     `fix.py`'s passive branch sets the value to the *evidence file's relative path*, verbatim. A
-    POSIX filename may contain a newline, and `pathlib`'s glob still collects it, so this is
+    filename may contain a line separator, and `pathlib`'s glob still collects it, so this is
     reachable without the user writing anything unusual in prose. Refusing at the shared helper
     closes it for every writer at once rather than once per caller.
     """
     with pytest.raises(ValueError, match="line break"):
         insert_frontmatter_line(b"---\nvalid_until: 2030-01-01\n---\nbody\n", "supersedes", bad)
+
+
+#: Every separator `str.splitlines()` honours beyond ``\n`` and ``\r``. `parse_frontmatter` splits
+#: on ``"\n"`` and does not care, but `context.document_title` uses `splitlines()`, so to that
+#: reader each of these DOES end the line.
+_SPLITLINES_ONLY = ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", " ", " "]
+
+
+@pytest.mark.parametrize("sep", _SPLITLINES_ONLY)
+def test_every_separator_splitlines_honours_is_refused(sep):
+    """Guarding only ``\\n`` and ``\\r`` was too narrow for the readers this package already has.
+
+    `context.document_title` scans the same block with `str.splitlines()`, which treats eight more
+    characters as line ends. A value carrying one passed the first version of this guard and split
+    the written line for that scanner, letting a crafted filename set the indexed title. U+2028 is
+    a legal filename character on NTFS as well as POSIX, so this is not a Unix-only concern.
+
+    The check is now "the text must survive `splitlines()` unchanged", which is the same notion of
+    a line break the reader uses rather than a hand-listed subset of it.
+    """
+    with pytest.raises(ValueError, match="line break"):
+        insert_frontmatter_line(
+            b"---\nvalid_until: 2030-01-01\n---\nbody\n", "supersedes", f"note{sep}title: INJECTED"
+        )
+
+
+def test_an_ordinary_value_is_still_accepted():
+    """The widened refusal must not swallow the values this tool actually writes."""
+    out = insert_frontmatter_line(
+        b"---\nvalid_until: 2030-01-01\n---\nbody\n", "supersedes", "sub dir/old_plan_2026-01-01.md"
+    )
+    assert parse_frontmatter(out.decode("utf-8"))[0]["supersedes"] == \
+        "sub dir/old_plan_2026-01-01.md"
