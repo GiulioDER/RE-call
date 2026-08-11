@@ -31,16 +31,20 @@ reported as needing a human, never guessed at.
 """
 from __future__ import annotations
 
-import os
 import re
-import shutil
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from recall.atomic_write import atomic_write_text
 from recall.frontmatter import parse_frontmatter, supersedes_key
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
+
+#: Kept as a module-level name because this module used to own the implementation. It now lives in
+#: `recall/atomic_write.py`, shared with `recall/rewrite.py`: two independent writers of the user's
+#: own memos must not each carry their own copy of the mkstemp/fsync/copymode/os.replace sequence,
+#: because that is how one of them ends up without the `copymode`.
+_atomic_write_text = atomic_write_text
 
 _log = get_logger("fix")
 
@@ -279,7 +283,14 @@ def apply_proposal(root: Path, p: Proposal) -> None:
     """Insert `supersedes: <target>` into `p.edit_file`'s frontmatter, preserving everything else.
 
     Rewrites only the frontmatter block: a file without one gains a minimal block above its
-    existing content, and a file with one keeps its other keys, order and body byte-for-byte.
+    existing content, and a file with one keeps its other keys, order and body.
+
+    ⚠️ "Byte-for-byte" is what this used to claim and it is not true. Reading `utf-8-sig` and
+    writing `utf-8` drops a Windows-authored memo's BOM, which `parse_frontmatter` tolerates
+    precisely because editors add one; and splitting on ``"\\n"`` normalises every line ending in
+    the file. `recall/rewrite.py` edits the same block on bytes and keeps both, and
+    `tests/test_corpus_rewrite_contract.py` pins that. Bringing this path over is a behaviour
+    change to a writer with its own settled test contract, so it is deliberately not done here.
     """
     f = root / p.edit_file if root.is_dir() else root
     text = f.read_text(encoding="utf-8-sig")
@@ -296,33 +307,3 @@ def apply_proposal(root: Path, p: Proposal) -> None:
         lines = ["---", line, "---", *lines]
     _atomic_write_text(f, "\n".join(lines))
     _log.info("declared %s in %s", line, p.edit_file)
-
-
-def _atomic_write_text(path: Path, data: str) -> None:
-    """Write `data` to `path` atomically: on any failure the original file is left intact.
-
-    `Path.write_text` opens the target with mode ``'w'``, which truncates it to zero bytes at
-    open — before a single byte of new content is written. For `apply_proposal`, the one path in
-    this package that rewrites a user's own memo in place, a crash / disk-full / I/O error in
-    that window leaves the original truncated or half-written and unrecoverable. Instead, stage
-    the new content in a sibling temp file (same directory, so the swap is a same-filesystem
-    atomic rename) and replace the target in a single ``os.replace``. If anything fails, the temp
-    file is removed and the original is never touched.
-    """
-    tmp_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-        if path.exists():
-            # The temp file is created 0600 by mkstemp; carry the original's permission bits over
-            # so the atomic swap does not silently tighten (or, as root, re-own) the user's memo.
-            shutil.copymode(path, tmp_name)
-        os.replace(tmp_name, path)  # atomic on POSIX and on Windows for a same-directory target
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
