@@ -935,7 +935,7 @@ def main(argv: list[str] | None = None) -> None:
         _validated_emb: Embedder | None = None
 
         if args.fix:
-            from recall.fix import apply_proposal, propose_fixes
+            from recall.fix import UnreadableMemo, apply_proposal, propose_fixes
 
             proposals, unfixable = propose_fixes(args.path, glob=args.glob)
             print()
@@ -957,9 +957,19 @@ def main(argv: list[str] | None = None) -> None:
                 print("dry run — nothing written. Re-run with --apply to write these edges.")
             else:
                 root = Path(args.path)
+                written = 0
                 for p in proposals:
-                    apply_proposal(root, p)
-                print(f"wrote {len(proposals)} edge(s).")
+                    try:
+                        apply_proposal(root, p)
+                    except UnreadableMemo as exc:
+                        # One memo the writer refuses must not discard the rest of the run. The
+                        # loop previously had no guard, so a single undecodable file aborted with
+                        # a traceback AFTER the earlier proposals had already been written — the
+                        # worst of both, a partial apply the user has to reconstruct by hand.
+                        print(f"  SKIP {exc}")
+                        continue
+                    written += 1
+                print(f"wrote {written} edge(s), skipped {len(proposals) - written}.")
 
         chains = []
         if args.semantic:  # opt-in retrieval-based missing-edge check (needs DB + embedder)

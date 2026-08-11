@@ -35,16 +35,10 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from recall.atomic_write import atomic_write_text
-from recall.frontmatter import parse_frontmatter, supersedes_key
+from recall.atomic_write import atomic_write_bytes
+from recall.frontmatter import insert_frontmatter_line, parse_frontmatter, supersedes_key
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
-
-#: Kept as a module-level name because this module used to own the implementation. It now lives in
-#: `recall/atomic_write.py`, shared with `recall/rewrite.py`: two independent writers of the user's
-#: own memos must not each carry their own copy of the mkstemp/fsync/copymode/os.replace sequence,
-#: because that is how one of them ends up without the `copymode`.
-_atomic_write_text = atomic_write_text
 
 _log = get_logger("fix")
 
@@ -77,6 +71,10 @@ _PASSIVE_RE = re.compile(
 _ACTIVE_RE = re.compile(
     rf"\b(?P<marker>{_ACTIVE})[^\n.;]{{0,40}}?(?:{_REF})", re.IGNORECASE
 )
+
+
+class UnreadableMemo(ValueError):
+    """`apply_proposal` was pointed at a memo it will not rewrite, and said which and why."""
 
 
 @dataclass(frozen=True)
@@ -283,27 +281,33 @@ def apply_proposal(root: Path, p: Proposal) -> None:
     """Insert `supersedes: <target>` into `p.edit_file`'s frontmatter, preserving everything else.
 
     Rewrites only the frontmatter block: a file without one gains a minimal block above its
-    existing content, and a file with one keeps its other keys, order and body.
+    existing content, and a file with one keeps its other keys, order and body BYTE FOR BYTE.
 
-    ⚠️ "Byte-for-byte" is what this used to claim and it is not true. Reading `utf-8-sig` and
-    writing `utf-8` drops a Windows-authored memo's BOM, which `parse_frontmatter` tolerates
-    precisely because editors add one; and splitting on ``"\\n"`` normalises every line ending in
-    the file. `recall/rewrite.py` edits the same block on bytes and keeps both, and
-    `tests/test_corpus_rewrite_contract.py` pins that. Bringing this path over is a behaviour
-    change to a writer with its own settled test contract, so it is deliberately not done here.
+    That last part was a false claim for a long time. This decoded `utf-8-sig` and wrote `utf-8`,
+    which drops a Windows-authored memo's BOM — one `parse_frontmatter` tolerates precisely
+    because editors add it — and split on ``"\\n"``, which normalised every line ending in the
+    file. Both are invisible to a test that reads back through `read_text`, which is why they
+    survived a 28-test suite. The insertion now goes through `recall/frontmatter.py`, so the two
+    writers of the user's own memos and the parser that reads them share one definition of a line
+    and one of a leading BOM.
     """
     f = root / p.edit_file if root.is_dir() else root
-    text = f.read_text(encoding="utf-8-sig")
+    raw = f.read_bytes()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        # `propose_fixes` skips a file it cannot decode, so such a file never appears in
+        # `existing` and its authored `supersedes:` is invisible to the overwrite refusal — but it
+        # can still be the TARGET of a passive-voice marker in some other memo, and so still be
+        # chosen as `edit_file`. Writing then replaces a declared edge (`parse_frontmatter` is
+        # last-wins) and, because the file still will not decode next run, appends another line
+        # every time. The old `read_text` raised here; keep refusing, with a message that says
+        # which file and why.
+        raise UnreadableMemo(f"{p.edit_file} is not valid UTF-8 ({exc.reason})") from exc
+    if parse_frontmatter(text)[0].get("supersedes"):
+        # Re-checked against THIS file rather than the corpus-wide scan, for the same reason:
+        # the scan's view can be missing a file it could not read at the time.
+        raise UnreadableMemo(f"{p.edit_file} already declares supersedes — refusing to overwrite")
     line = f"supersedes: {p.target}"
-    lines = text.split("\n")
-    if lines and lines[0].lstrip("﻿").strip() == "---":
-        for i, ln in enumerate(lines[1:], start=1):
-            if ln.strip() == "---":
-                lines.insert(i, line)
-                break
-        else:  # unclosed block — treat as no frontmatter rather than corrupt it further
-            lines = ["---", line, "---", *lines]
-    else:
-        lines = ["---", line, "---", *lines]
-    _atomic_write_text(f, "\n".join(lines))
+    atomic_write_bytes(f, insert_frontmatter_line(raw, "supersedes", p.target))
     _log.info("declared %s in %s", line, p.edit_file)

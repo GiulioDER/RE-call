@@ -526,16 +526,18 @@ def test_an_empty_supersedes_is_a_declaration_and_not_an_invitation(tmp_path: Pa
     assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == declared
 
 
-def test_a_cr_terminated_memo_is_not_spliced_where_the_parser_cannot_look(tmp_path: Path) -> None:
-    """The byte writer's idea of a line must be `parse_frontmatter`'s idea of a line.
+def test_a_cr_terminated_memo_keeps_its_block_and_its_terminators(tmp_path: Path) -> None:
+    """The byte writer's idea of a line must match how a memo is actually READ.
 
-    `parse_frontmatter` splits on `"\\n"` alone, so a CR-terminated file has no frontmatter as far
-    as recall is concerned. `bytes.splitlines` also splits on a lone CR, and a writer using it
-    finds an opening `---`, splices the key into a block the parser cannot see, and — because the
-    parser still reports nothing declared — does it again on every subsequent run.
+    Not how `parse_frontmatter` splits its argument — it splits on `"\\n"` alone, but every reader
+    (`lint.py`, `index.py`, `check.py`, `semantic_lint.py`, `fix.py`) hands it text from
+    `Path.read_text(newline=None)`, which has already turned a lone CR into LF. So a CR-terminated
+    memo DOES have frontmatter, and its authored keys have to survive: an LF-only split read the
+    file as one long line, found no block and prepended a second one, orphaning `valid_until`
+    into the body where the trust layer cannot see it. A memo expired since 2020 went live again.
     """
     _memo(tmp_path, "old_decision_2026-01-01.md", _OLD)
-    cr_only = b"---\rtitle: x\r---\rbody\r"
+    cr_only = b"---\rvalid_until: 2020-01-01\r---\rbody\r"
     _memo(tmp_path, "new_decision_2026-06-01.md", cr_only)
 
     apply_rewrite(tmp_path, _fact(), apply=True)
@@ -543,12 +545,79 @@ def test_a_cr_terminated_memo_is_not_spliced_where_the_parser_cannot_look(tmp_pa
     apply_rewrite(tmp_path, _fact(), apply=True)
     twice = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
 
-    assert once.endswith(cr_only), "the CR-terminated prose must survive whole"
-    meta, _ = parse_frontmatter(once.decode("utf-8"))
-    assert meta["supersedes"] == "old_decision_2026-01-01.md", (
-        "the key was written somewhere the parser cannot read it"
+    assert once.count(b"---") == 2, "a second frontmatter block was prepended"
+    assert b"supersedes: old_decision_2026-01-01.md\r" in once, "the inserted line is not CR"
+    assert once.endswith(b"body\r"), "the CR-terminated prose must survive whole"
+    meta, _ = parse_frontmatter(once.decode("utf-8").replace("\r", "\n"))
+    assert meta["valid_until"] == "2020-01-01", "the authored validity bound was orphaned"
+    assert meta["supersedes"] == "old_decision_2026-01-01.md"
+    assert twice == once, "a second run wrote again, so the first was invisible"
+
+
+def test_a_form_feed_is_not_a_line_boundary(tmp_path: Path) -> None:
+    """`str.splitlines` breaks on VT, FF and the ASCII separators; `bytes.splitlines` does not.
+
+    Universal-newline decoding does not translate any of them either, so `parse_frontmatter` sees
+    ``\\x0c---`` as one line and strips the form feed off the fence — a block. A splitter that
+    treated FF as a boundary would see a first line of just ``\\x0c``, decide the memo has no
+    frontmatter, and prepend a second block over the top of the real one. Same failure as the
+    non-breaking space, one definition over: this pins the LINE boundary, that one pins the strip.
+    """
+    _memo(tmp_path, "old_decision_2026-01-01.md", _OLD)
+    form_feed = b"\x0c---\nvalid_until: 2020-01-01\n---\nbody\n"
+    _memo(tmp_path, "new_decision_2026-06-01.md", form_feed)
+
+    apply_rewrite(tmp_path, _fact(), apply=True)
+
+    raw = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+    assert raw.count(b"---") == 2, "a second frontmatter block was prepended"
+    meta, _ = parse_frontmatter(raw.decode("utf-8"))
+    assert meta["valid_until"] == "2020-01-01", "the authored validity bound was orphaned"
+    assert meta["supersedes"] == "old_decision_2026-01-01.md"
+
+
+def test_the_inserted_line_copies_its_neighbour_not_the_files_majority(tmp_path: Path) -> None:
+    """The terminator is borrowed from the closing fence, not from the file's dominant one.
+
+    In a memo with consistent line endings the two agree, which is why this needs a mixed one — a
+    bad merge, or a hand edit in an editor configured differently. The line is being inserted
+    directly above the closing fence, so the fence's own terminator is the one that keeps the
+    block internally consistent; the file-wide default is only the fallback for a last line that
+    has no terminator at all.
+    """
+    _memo(tmp_path, "old_decision_2026-01-01.md", _OLD)
+    mixed = b"---\nvalid_until: 2020-01-01\n---\rbody\n"
+    _memo(tmp_path, "new_decision_2026-06-01.md", mixed)
+
+    apply_rewrite(tmp_path, _fact(), apply=True)
+
+    raw = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+    assert b"supersedes: old_decision_2026-01-01.md\r---\r" in raw, (
+        "the inserted line took the file's dominant LF instead of the fence's CR"
     )
-    assert twice == once, "a second run appended a duplicate, so the first was invisible"
+    meta, _ = parse_frontmatter(raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n"))
+    assert meta["valid_until"] == "2020-01-01"
+    assert meta["supersedes"] == "old_decision_2026-01-01.md"
+
+
+def test_a_fence_wearing_a_non_breaking_space_is_still_a_fence(tmp_path: Path) -> None:
+    """`str.strip` removes NBSP and U+3000; `bytes.strip` removes ASCII whitespace only.
+
+    A fence that picked up a trailing NBSP — which is what pasting out of a browser or a word
+    processor does — was a block to `parse_frontmatter` and prose to the byte writer, which then
+    prepended a second block and orphaned the real one. Comparing the fence as text is what keeps
+    the two answers the same.
+    """
+    _memo(tmp_path, "old_decision_2026-01-01.md", _OLD)
+    padded = "--- \nvalid_until: 2020-01-01\n---\nbody\n".encode("utf-8")
+    _memo(tmp_path, "new_decision_2026-06-01.md", padded)
+
+    apply_rewrite(tmp_path, _fact(), apply=True)
+
+    raw = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+    meta, _ = parse_frontmatter(raw.decode("utf-8"))
+    assert meta["valid_until"] == "2020-01-01", "the authored validity bound was orphaned"
+    assert meta["supersedes"] == "old_decision_2026-01-01.md"
 
 
 def test_a_memo_that_is_not_utf8_text_is_refused_rather_than_appended_to(tmp_path: Path) -> None:
@@ -896,39 +965,6 @@ def test_a_false_opener_does_not_invert_the_flags_into_the_users_code(tmp_path: 
         marker_open + b"\ncontradicts: old_decision_2026-01-01.md\n" + marker_close + b"\n"
     )
 
-
-def test_a_cr_only_memo_is_refused_by_a_message_that_names_the_real_cause(tmp_path: Path) -> None:
-    """The refusal is correct here; only its explanation was not.
-
-    `_lines` splits on LF alone, matching `parse_frontmatter`, so a CR-terminated memo is ONE line
-    to this module. If that line opens with a fence marker the fence never closes, and appending
-    really would produce a block the next run cannot see — verified: the markers of an appended
-    block score zero visible hits on the following scan, so it would regrow every run. But a human
-    reading the file sees a properly closed fence, so a message about an unclosed fence sends them
-    looking for something that is not there. The refusal has to name the line endings.
-
-    The fence is `~~~` rather than ``` on purpose. Squashed onto one line, a CR-only file's later
-    ``` runs land in what this module reads as the first line's info string, and a backtick fence
-    may not have a backtick there — so the backtick spelling is no longer read as a fence at all,
-    and it converges instead (pinned below). Tildes carry no such restriction, which is what keeps
-    this branch reachable.
-    """
-    _memo(tmp_path, "old_decision_2026-01-01.md", _OLD)
-    cr_only = b"~~~\rcode\r~~~\rprose\r"
-    _memo(tmp_path, "new_decision_2026-06-01.md", cr_only)
-
-    with pytest.raises(RewriteRefused, match="CR-only"):
-        apply_rewrite(
-            tmp_path,
-            _fact(
-                relation="contradicts",
-                subject_id="new_decision_2026-06-01.md",
-                object_id="old_decision_2026-01-01.md",
-            ),
-            apply=True,
-        )
-
-    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == cr_only
 
 
 def test_a_cr_only_memo_with_backtick_fences_converges_instead(tmp_path: Path) -> None:

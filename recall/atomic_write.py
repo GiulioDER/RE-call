@@ -10,6 +10,13 @@ platter before the rename claims they are, `copymode` so the swap does not silen
 as root, re-own) the user's file, and `os.replace` so the target is either the old file or the new
 one and never a truncation in between. A second copy of that sequence is how one of them ends up
 without the `copymode` — so there is one copy, here, and the callers import it.
+
+**Bytes only, deliberately.** There was an `atomic_write_text` here and it is gone. Text mode
+applies the platform's newline translation, so an identical `str` becomes a different file on
+Windows than on Linux — which is exactly how `recall/fix.py` came to rewrite every line ending in
+a memo it was asked only to add one line to. A caller that has measured a document's existing
+terminators must not have them silently replaced on the way out, and the way to guarantee that is
+to give callers no text-mode door to walk through.
 """
 from __future__ import annotations
 
@@ -90,15 +97,4 @@ def _flush_directory(directory: Path) -> None:
         os.close(dir_fd)
 
 
-def atomic_write_text(path: Path, data: str) -> None:
-    """`atomic_write_bytes` for a caller holding a `str`, encoded UTF-8 with no translation.
-
-    The line endings in `data` are the line endings written. That is a change in behaviour from
-    the text-mode write this replaced, which on Windows turned every ``\\n`` in the string into
-    ``\\r\\n`` on disk — so the same input produced different bytes depending on where the tool
-    ran, and a caller could not tell what it had written without reading the file back.
-    """
-    atomic_write_bytes(path, data.encode("utf-8"))
-
-
-__all__ = ["atomic_write_bytes", "atomic_write_text"]
+__all__ = ["atomic_write_bytes"]

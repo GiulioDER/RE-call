@@ -64,7 +64,16 @@ from pathlib import Path
 from typing import Literal
 
 from recall.atomic_write import atomic_write_bytes
-from recall.frontmatter import VALIDITY_KEYS, parse_frontmatter, supersedes_key
+from recall.frontmatter import (
+    VALIDITY_KEYS,
+    dominant_newline,
+    insert_frontmatter_line,
+    line_terminator,
+    parse_frontmatter,
+    split_bom,
+    split_lines,
+    supersedes_key,
+)
 from recall.lineage import canonical_sha256
 from recall.observability import get_logger
 from recall.promotion import PromotedFact
@@ -85,7 +94,6 @@ DERIVED_CLOSE = "<!-- /recall:derived -->"
 
 Destination = Literal["frontmatter", "derived"]
 
-_BOM = b"\xef\xbb\xbf"
 _LEDGER_DIR = ".recall"
 _LEDGER_NAME = "rejections.sqlite3"
 
@@ -349,9 +357,14 @@ def _readable_text(raw: bytes, rel: str) -> str:
             f"refusing to write: {rel} contains NUL bytes, so it is not a UTF-8 text memo"
         )
     try:
-        return raw.decode("utf-8-sig")
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise RewriteRefused(f"refusing to write: {rel} is not valid UTF-8 ({exc.reason})") from exc
+    # Universal newlines, applied by hand, because every other reader of a memo gets it for free
+    # from `Path.read_text(newline=None)` and this path decodes bytes it already holds. Skipping
+    # it made `parse_frontmatter` report no block for a CR-terminated memo here while reporting
+    # one everywhere else, and the two answers drive the same write.
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _resolve(root: Path, ref: str) -> str:
@@ -429,7 +442,7 @@ def apply_rewrite(
             return RewriteResult(
                 plan, False, f"{plan.edit_file} already declares {plan.key}: {meta[plan.key]!r}"
             )
-        updated = _insert_frontmatter_line(raw, plan.key, plan.value)
+        updated = insert_frontmatter_line(raw, plan.key, plan.value)
     else:
         derived = _upsert_derived_entry(raw, plan.key, plan.value)
         if derived is None:
@@ -458,46 +471,7 @@ def apply_rewrite(
 # LF-only line inside a CRLF file: both are invisible in an editor and present in every diff.
 
 
-def _newline(raw: bytes) -> bytes:
-    """The file's line terminator, taken from its first line rather than from the platform."""
-    index = raw.find(b"\n")
-    if index == -1:
-        return b"\n"
-    return b"\r\n" if raw[index - 1 : index] == b"\r" else b"\n"
 
-
-def _lines(data: bytes) -> list[bytes]:
-    """Split on LF only, keeping terminators — the same line boundary `parse_frontmatter` uses.
-
-    Deliberately NOT `bytes.splitlines`, which also splits on a lone CR. `parse_frontmatter`
-    splits on ``"\\n"`` alone, so a CR-terminated file has no frontmatter as far as recall is
-    concerned. A writer that disagreed would find an opening ``---``, splice the key into a block
-    the parser cannot see, and — because the parser still reports nothing declared — do it again
-    on every subsequent run. Two parsers with two ideas of a line is the defect; sharing one is
-    the fix.
-
-    `keepends` is the other half: rejoining with ``b"".join`` reproduces the input exactly.
-    """
-    parts = data.split(b"\n")
-    lines = [part + b"\n" for part in parts[:-1]]
-    if parts[-1]:
-        lines.append(parts[-1])  # a final line with no trailing newline
-    return lines
-
-
-def _split_bom(raw: bytes) -> tuple[bytes, bytes]:
-    """`(leading BOMs, the rest)`, counting them the way `parse_frontmatter` does.
-
-    It uses `lstrip("\\ufeff")`, which removes ANY number. A writer that removed exactly one saw
-    the second BOM sitting ahead of the fence, concluded the file had no frontmatter and prepended
-    a fresh block — orphaning the authored `valid_until` into the body, where the trust layer can
-    no longer read it, so an expired memo silently became live again. One definition of "leading
-    BOM", shared, for the same reason there is one definition of a line.
-    """
-    end = 0
-    while raw.startswith(_BOM, end):
-        end += len(_BOM)
-    return raw[:end], raw[end:]
 
 
 def _fenced_flags(lines: list[bytes]) -> tuple[list[bool], bool]:
@@ -585,39 +559,6 @@ def _derived_span(lines: list[bytes]) -> tuple[int, int, list[bool]] | None:
     return opens[0], closes[0], flags
 
 
-def _terminator(line: bytes, default: bytes) -> bytes:
-    """A line's own ending, so an insertion beside it matches it exactly."""
-    if line.endswith(b"\r\n"):
-        return b"\r\n"
-    if line.endswith(b"\n"):
-        return b"\n"
-    return default  # the final line of a file with no trailing newline
-
-
-def _insert_frontmatter_line(raw: bytes, key: str, value: str) -> bytes:
-    """`key: value` into the frontmatter block, adding one if the file has none.
-
-    The BOM is carried across untouched rather than decoded away, and the inserted line borrows
-    the closing fence's terminator, so a CRLF memo gains a CRLF line.
-
-    The search for the closing fence is unbounded, and deliberately so. A memo whose body happens
-    to contain a `---` thematic break within what looks like a block gets the key written next to
-    prose, which is startling — but `parse_frontmatter` makes exactly the same reading, and a
-    writer that disagreed with the parser would put the key somewhere the trust layer cannot see
-    it and rewrite it again on every run. `parse_frontmatter` defines what the block is; this
-    follows it. Tighten both together or neither.
-    """
-    bom, body = _split_bom(raw)
-    newline = _newline(body)
-    entry = f"{key}: {value}".encode("utf-8")
-    lines = _lines(body)
-    if lines and lines[0].strip() == b"---":
-        for index, line in enumerate(lines[1:], start=1):
-            if line.strip() == b"---":
-                lines.insert(index, entry + _terminator(line, newline))
-                return bom + b"".join(lines)
-        # unclosed block — treat as no frontmatter rather than corrupt it further
-    return bom + b"---" + newline + entry + newline + b"---" + newline + body
 
 
 def _upsert_derived_entry(raw: bytes, key: str, value: str) -> bytes | None:
@@ -627,11 +568,11 @@ def _upsert_derived_entry(raw: bytes, key: str, value: str) -> bytes | None:
     way to strip the machine's annotations back off. `key: value` is the identity, not `key` alone
     — a memo may legitimately contradict more than one other memo.
     """
-    bom, body = _split_bom(raw)
-    newline = _newline(body)
+    bom, body = split_bom(raw)
+    newline = dominant_newline(body)
     entry = f"{key}: {value}".encode("utf-8")
     open_marker, close_marker = DERIVED_OPEN.encode("utf-8"), DERIVED_CLOSE.encode("utf-8")
-    lines = _lines(body)
+    lines = split_lines(body)
 
     span = _derived_span(lines)
     if span is not None:
@@ -647,7 +588,7 @@ def _upsert_derived_entry(raw: bytes, key: str, value: str) -> bytes | None:
             if not fenced[index]
         ):
             return None
-        lines.insert(closed, entry + _terminator(lines[closed], newline))
+        lines.insert(closed, entry + line_terminator(lines[closed], newline))
         return bom + b"".join(lines)
 
     if _fenced_flags(lines)[1]:
@@ -655,18 +596,12 @@ def _upsert_derived_entry(raw: bytes, key: str, value: str) -> bytes | None:
         # here really would put the machine's annotations inside the user's code block — where
         # the next run cannot see them, and appends another. Three runs, three blocks. The file's
         # structure is ambiguous and a human has to close the fence.
-        if b"\r" in body and b"\n" not in body:
-            # ...and a CR-terminated memo is ONE line to `_lines`, which splits on LF alone to
-            # stay in step with `parse_frontmatter`. So a fence marker at its start opens a fence
-            # spanning the whole file. Refusing is right — an appended block genuinely would be
-            # invisible to the next scan — but a human looking at this file sees a properly closed
-            # fence, and a message about an unclosed one sends them hunting for something that is
-            # not there. Name the line endings, which is the thing they can actually fix.
-            raise RewriteRefused(
-                "refusing to write: this memo uses CR-only line endings, which this module reads "
-                "as a single line (matching `parse_frontmatter`), so a fence marker at its start "
-                "spans the whole file and an appended block would be invisible to the next run"
-            )
+        # A CR-only special case used to live here, explaining that such a memo reads as a single
+        # line so a leading fence marker spans the file. That was true only while `split_lines`
+        # split on LF alone; it now splits on a lone CR too, matching the universal-newline
+        # decoding every reader of a memo already gets. A CR-only file with a CLOSED fence is now
+        # simply fine, and one with an open fence has an open fence — so the line endings are no
+        # longer the cause and naming them would send a reader after the wrong thing.
         raise RewriteRefused(
             "refusing to write: a code fence is still open at the end of the file, so an "
             "appended derived block would land inside it and be invisible to the next run"
