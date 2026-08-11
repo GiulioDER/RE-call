@@ -290,6 +290,92 @@ def test_an_unhedged_claim_is_still_accepted():
     assert extract_edges("Superseded by [[new_plan_2026-02-02]].")[1] == ["new_plan_2026-02-02"]
 
 
+# --- the memo's own bytes -----------------------------------------------------------------------
+#
+# Every assertion below reads `read_bytes()`. The `read_text()` assertions above cannot see these
+# defects at all: universal-newline decoding turns CRLF into "\n" on the way in, and `utf-8-sig`
+# eats a BOM, so a writer that destroys both still satisfies every test in the section above.
+
+
+def _supersedes_note_md() -> Proposal:
+    """A proposal that edits `note.md`, so a test can control that file's exact bytes."""
+    return Proposal(
+        edit_file="note.md",
+        target="new_decision_2026",
+        evidence_file="other.md",
+        evidence="This supersedes [[note]].",
+    )
+
+
+def test_apply_preserves_a_utf8_bom(tmp_path):
+    """A Windows-authored memo must not silently lose its BOM.
+
+    `parse_frontmatter` goes out of its way to tolerate a leading BOM (`frontmatter.py:24`)
+    precisely because editors add one — a BOM that disabled frontmatter would mean validity
+    metadata lost without a signal. Reading `utf-8-sig` and writing plain `utf-8` quietly deletes
+    the thing that tolerance exists for: the tool that declares an edge also rewrites the file's
+    encoding, and the user finds out from a diff touching a line nobody edited.
+    """
+    memo = tmp_path / "note.md"
+    memo.write_bytes("﻿---\ntitle: keep me\n---\n# note\n\nbody\n".encode("utf-8"))
+
+    apply_proposal(tmp_path, _supersedes_note_md())
+
+    raw = memo.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf"), "the BOM must survive the rewrite"
+    assert raw.count(b"\xef\xbb\xbf") == 1, "and must not be duplicated into the body"
+    meta, body = parse_frontmatter(raw.decode("utf-8-sig"))
+    assert meta["supersedes"] == "new_decision_2026"
+    assert body.startswith("# note"), "the body must survive untouched"
+
+
+def test_apply_preserves_crlf_line_endings(tmp_path):
+    """A CRLF memo must gain a CRLF line, not an LF one.
+
+    Splitting on ``"\\n"`` and rejoining on ``"\\n"`` normalises the whole file, so declaring one
+    edge rewrites every line ending in the document. On a corpus under git that is a one-line
+    change presented as a total rewrite, and the real edit becomes unreviewable.
+    """
+    memo = tmp_path / "note.md"
+    memo.write_bytes(b"---\r\ntitle: keep me\r\n---\r\n# note\r\n\r\nbody\r\n")
+
+    apply_proposal(tmp_path, _supersedes_note_md())
+
+    raw = memo.read_bytes()
+    assert b"supersedes: new_decision_2026\r\n" in raw, "the inserted line must end CRLF"
+    assert raw.replace(b"\r\n", b"").count(b"\n") == 0, "no lone LF may be left in the file"
+
+
+def test_apply_does_not_give_an_lf_memo_crlf_endings(tmp_path):
+    """The converse guard: borrowing the file's terminator must not mean writing the platform's.
+
+    Without this, "preserve line endings" could be satisfied on Windows by a text-mode write that
+    translates every ``\\n`` to ``\\r\\n`` — passing the CRLF test above for the wrong reason and
+    corrupting every LF memo instead.
+    """
+    memo = tmp_path / "note.md"
+    memo.write_bytes(b"---\ntitle: keep me\n---\n# note\n\nbody\n")
+
+    apply_proposal(tmp_path, _supersedes_note_md())
+
+    assert b"\r\n" not in memo.read_bytes()
+
+
+def test_apply_preserves_bytes_when_the_file_has_no_frontmatter(tmp_path):
+    """The block-creating branch has the same two defects and needs the same guard."""
+    memo = tmp_path / "note.md"
+    memo.write_bytes("﻿# note\r\n\r\nbody\r\n".encode("utf-8"))
+
+    apply_proposal(tmp_path, _supersedes_note_md())
+
+    raw = memo.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")
+    assert raw.replace(b"\r\n", b"").count(b"\n") == 0
+    meta, body = parse_frontmatter(raw.decode("utf-8-sig"))
+    assert meta["supersedes"] == "new_decision_2026"
+    assert body.startswith("# note")
+
+
 def test_apply_proposal_preserves_the_memo_when_the_write_fails(tmp_path, monkeypatch):
     """A crash / disk-full mid-write must not corrupt the user's memo (DAT-001).
 

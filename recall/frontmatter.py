@@ -39,6 +39,61 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     return {}, text  # unclosed block: treat the whole text as body
 
 
+#: A UTF-8 BOM. `parse_frontmatter` above tolerates one before the opening fence because Windows
+#: editors add it; a writer that reads `utf-8-sig` and writes plain `utf-8` deletes the very thing
+#: that tolerance exists for.
+_BOM = b"\xef\xbb\xbf"
+
+
+def _newline(raw: bytes) -> bytes:
+    """The file's line terminator, taken from its first line rather than from the platform."""
+    index = raw.find(b"\n")
+    if index == -1:
+        return b"\n"
+    return b"\r\n" if raw[index - 1 : index] == b"\r" else b"\n"
+
+
+def _terminator(line: bytes, default: bytes) -> bytes:
+    """A line's own ending, so an insertion beside it matches it exactly."""
+    if line.endswith(b"\r\n"):
+        return b"\r\n"
+    if line.endswith(b"\n"):
+        return b"\n"
+    return default  # the final line of a file with no trailing newline
+
+
+def insert_frontmatter_line(raw: bytes, key: str, value: str) -> bytes:
+    """`key: value` into the frontmatter block, adding one if the file has none.
+
+    Bytes in, bytes out, and that signature is the guard. Every byte-level defect this replaces
+    came from a writer that decoded to `str` first: `utf-8-sig` silently ate a Windows memo's BOM,
+    splitting and rejoining on ``"\\n"`` normalised every line ending in the document, and a
+    text-mode write then translated the result back to the *platform's* endings, so the same input
+    produced different files depending on where the tool ran. None of the three is visible in an
+    editor; all three are visible in every subsequent diff, which is how a one-line edge
+    declaration arrives for review as a total rewrite.
+
+    So: the BOM is carried across untouched rather than decoded away, and the inserted line borrows
+    the closing fence's own terminator, so a CRLF memo gains a CRLF line and an LF memo does not.
+
+    This is the one implementation. `recall/fix.py` declares a `supersedes:` edge a memo already
+    states in prose; a second writer of the user's own memos must import this rather than carry its
+    own copy, because a second copy is how one of them ends up back on `split("\\n")`.
+    """
+    bom = _BOM if raw.startswith(_BOM) else b""
+    body = raw[len(bom) :]
+    newline = _newline(body)
+    entry = f"{key}: {value}".encode("utf-8")
+    lines = body.splitlines(keepends=True)
+    if lines and lines[0].strip() == b"---":
+        for index, line in enumerate(lines[1:], start=1):
+            if line.strip() == b"---":
+                lines.insert(index, entry + _terminator(line, newline))
+                return bom + b"".join(lines)
+        # unclosed block: treat as no frontmatter rather than corrupt it further
+    return bom + b"---" + newline + entry + newline + b"---" + newline + body
+
+
 def _parse_date(value: str, key: str) -> datetime:
     try:
         d = datetime.strptime(value, "%Y-%m-%d")
