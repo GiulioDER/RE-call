@@ -642,14 +642,30 @@ def test_lint_is_clean_on_a_well_formed_block(tmp_path: Path) -> None:
 
 
 def test_a_block_does_not_trip_the_prose_closure_warning(tmp_path: Path) -> None:
-    """`status: superseded` is in CLOSURE_MARKERS' neighbourhood by design.
+    """A block's own text must be invisible to CLOSURE_MARKERS.
 
-    A block carrying it must not make the file look like prose closure with a missing edge —
-    that is the exact false positive the strip exists to prevent.
+    The payload is a `note:` carrying "replaces", a word the regex really matches. NOT
+    `status: superseded` — that looks like the obvious choice and is a guard that cannot fail:
+    CLOSURE_MARKERS (`recall/lint.py:36`) alternates on "superseded by" and "supersedes", and
+    the bare word "superseded" matches neither, so such a test stays green even if the strip
+    regresses. A `note:` is free text and is never normalised, so it reaches the rendered block
+    verbatim; unstripped, this file would earn a `closure-marker-unlinked` warning it does not
+    deserve.
     """
     _write(
         tmp_path,
         "memo_2026-06-01.md",
-        "# Memo\n\nA settled question.\n\n" + _block(_entry("status", "superseded")),
+        "# Memo\n\nA settled question.\n\n"
+        + _block(_entry(note="replaces the earlier retention window")),
     )
     assert [i.code for i in lint_corpus(tmp_path)] == []
+
+
+def test_the_closure_warning_still_fires_on_real_prose(tmp_path: Path) -> None:
+    """Paired with the test above, so it cannot pass against a linter that warns about nothing."""
+    _write(
+        tmp_path,
+        "memo_2026-06-01.md",
+        "# Memo\n\nThis replaces the earlier retention window.\n",
+    )
+    assert [i.code for i in lint_corpus(tmp_path)] == ["closure-marker-unlinked"]
