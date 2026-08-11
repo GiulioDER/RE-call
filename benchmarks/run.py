@@ -24,6 +24,12 @@ Two properties of the output exist because the money is real:
   flight, not the six already paid for.
 - the filename carries a UTC timestamp, so a second run never overwrites the first one's artifact.
 
+Exit status: 0 published, 2 a usage error from argparse, and 3 means the run finished but its
+artifact was REFUSED publication (an unauditable cost claim, or a failed write) and quarantined
+under ``<out>/unpublished/``. 3 is distinct from 1 deliberately: 1 is what the interpreter exits
+with on an uncaught exception, and a wrapper has to be able to tell "salvageable, do not re-run"
+from "crashed".
+
 The artifact also carries the run's full `config` block — retrieval budget, per-arm embedder,
 `mem0ai` version, Mem0's vector-store settings, both system prompts verbatim, temperature and the
 model string — plus the count of `qa` rows the loader could not score. Between them, a reader can
@@ -168,6 +174,12 @@ def _load(
 #: OpenRouter issues keys with this prefix. Checking it is free and turns a placeholder or a
 #: mistyped key into an immediate failure instead of one discovered mid-run.
 OPENROUTER_KEY_PREFIX = "sk-or-"
+
+#: Exit status for "the run finished, its artifact was refused publication and quarantined".
+#: Deliberately not 1: that is the interpreter's own uncaught-exception status, and a wrapper
+#: must be able to tell a salvageable run from a crashed one before deciding to re-run and
+#: re-spend. 2 is taken by argparse's usage error.
+QUARANTINE_EXIT = 3
 
 
 def validate_openrouter_key(key: str | None) -> str:
@@ -579,40 +591,134 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         "ran": ablation_ran,
     }
     path = args.out / f"{stamp}.json"
-    # `aggregate` already sanitises its empty rate blocks to None, so this never emits the bare
-    # `NaN` token that no non-Python JSON parser accepts.
-    reject_unauditable_cost_claims(payload)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(json.dumps(agg, indent=2))
-    print(f"full results -> {path}")
-    print(f"incremental  -> {partial_path}")
-    # Release the arm's handles while the interpreter is still healthy. A `Mem0System` holds
-    # exclusive Qdrant locks for as long as it lives (see `Mem0System.close`), including one on a
-    # machine-global telemetry path that no `run_id` disambiguates. Process exit would drop them
-    # anyway; the point is to do it here rather than during finalisation, where qdrant-client's own
-    # finaliser dies with `ModuleNotFoundError: import of msvcrt halted`.
-    #
-    # SUCCESS PATH ONLY, deliberately, and it is not a guarantee: there is no `try/finally`, so an
-    # exception on the way here skips this and falls back to process exit. The honest fix, if that
-    # ever stops being good enough, is `with _build_system(...) as system:` around the body — not a
-    # second close bolted on elsewhere. Duck-typed because `MemorySystem` is a three-member
-    # protocol and `RecallSystem` has nothing to release: it holds a DSN string, not a connection.
-    #
-    # Guarded: by this point the artifact and its sidecar are written and their paths printed, so
-    # a teardown failure must not change the run's verdict. Unguarded, a complete run would exit
-    # non-zero and a wrapper reading that status would re-run it, re-spending LLM credit on work
-    # that already succeeded.
-    close = getattr(system, "close", None)
-    if callable(close):
+    # Everything below runs AFTER the last billed call, so nothing here may throw the artifact
+    # away. What is at stake is narrower than it looks: every scored answer is already in the
+    # incremental sidecar, and `python -m benchmarks.salvage --merge-only` rebuilds a runnable
+    # artifact from it without re-spending a cent. What a dropped artifact really costs is the
+    # envelope the sidecar does NOT carry — the usage block, `provider_metadata`, the config and
+    # the ablation preflight — plus a manual salvage step. Cheap to keep, so keep it.
+    try:
+        # Serialise BEFORE the contract runs, so the bytes are in hand whichever way it goes.
+        # `aggregate` already sanitises its empty rate blocks to None, so this never emits the
+        # bare `NaN` token that no non-Python JSON parser accepts.
+        #
+        # A payload json cannot encode loses to `TypeError` here, before the contract runs, and
+        # that is the right winner: an unencodable payload cannot be quarantined either, so the
+        # serializer's error is the actionable one rather than a contract message chained behind
+        # it. It also means `json.dumps` now detects circular references first.
+        encoded = json.dumps(payload, indent=2)
         try:
-            close()
-        except Exception as exc:  # noqa: BLE001 - a wedged handle is not a failed benchmark run
-            # The REPORT is guarded as carefully as the call, for the two reasons
-            # `Mem0System.close` documents: `warnings.warn` raises under `-W error`, and `repr()`
-            # of an arbitrary exception can raise. Either one, unguarded, would skip `return 0`
-            # and produce exactly the non-zero exit this handler exists to prevent.
-            _warn_teardown_failed(system, exc)
-    return 0
+            reject_unauditable_cost_claims(payload)
+        except ValueError as exc:
+            _quarantine(args.out, stamp, payload, encoded, partial_path, reason=str(exc))
+            return QUARANTINE_EXIT
+        try:
+            path.write_text(encoded, encoding="utf-8")
+        except OSError as exc:
+            # Likelier than the contract firing: a full disk, a >260-char path, an antivirus or
+            # indexer lock. The bytes are already in hand, so losing them here is gratuitous.
+            _quarantine(
+                args.out, stamp, payload, encoded, partial_path,
+                reason=f"the published artifact could not be written to {path}: {exc}",
+            )
+            return QUARANTINE_EXIT
+        print(json.dumps(agg, indent=2))
+        print(f"full results -> {path}")
+        print(f"incremental  -> {partial_path}")
+        return 0
+    finally:
+        # Release the arm's handles while the interpreter is still healthy. A `Mem0System` holds
+        # exclusive Qdrant locks for as long as it lives (see `Mem0System.close`), including one
+        # on a machine-global telemetry path that no `run_id` disambiguates. Process exit would
+        # drop them anyway; the point is to do it here rather than during finalisation, where
+        # qdrant-client's own finaliser dies with `ModuleNotFoundError: import of msvcrt halted`.
+        #
+        # SCOPE: this `finally` covers the write site only, not the whole run. An exception
+        # during ingest or scoring still skips it and falls back to process exit. Widening it is
+        # `with _build_system(...) as system:` around the body, not a second close bolted on
+        # elsewhere. Duck-typed because `MemorySystem` is a three-member protocol and
+        # `RecallSystem` has nothing to release: it holds a DSN string, not a connection.
+        #
+        # Guarded, and doubly so now that this runs on failure paths too. Teardown must never
+        # change the outcome, whether that outcome is a written artifact or an in-flight
+        # exception. Unguarded on success, a complete run would exit non-zero and a wrapper
+        # reading that status would re-run it, re-spending credit on work that already
+        # succeeded; unguarded on failure, a raise in here would MASK the exception that got us
+        # here, which is a possibility that did not exist while this was success-path-only.
+        close = getattr(system, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception as exc:  # noqa: BLE001 - a wedged handle is not a failed run
+                # The REPORT is guarded as carefully as the call, for the two reasons
+                # `Mem0System.close` documents: `warnings.warn` raises under `-W error`, and
+                # `repr()` of an arbitrary exception can raise. The outer `except BaseException`
+                # is belt and braces for being inside a `finally`: the helper is written never
+                # to raise, and if that ever stops being true it must still not replace the
+                # return value, nor mask an exception already on its way out.
+                try:
+                    _warn_teardown_failed(system, exc)
+                except BaseException:  # noqa: BLE001 - nothing in teardown may escape a finally
+                    pass
+
+
+def _quarantine(
+    out: Path,
+    stamp: str,
+    payload: dict[str, Any],
+    encoded: str,
+    partial_path: Path,
+    *,
+    reason: str,
+) -> None:
+    """Preserve an artifact that must not be published, without ever raising while doing it.
+
+    A rescue that can itself throw the artifact away is not a rescue, so every filesystem call in
+    here is guarded and there is a last resort that needs no filesystem at all.
+
+    It goes in a subdirectory rather than beside the published artifacts because the operator's
+    `results/*.json` glob is what feeds `analyze`, and a refused artifact must not be readable as
+    a published one. The subdirectory only protects the documented glob though, so the payload is
+    ALSO marked in band: handed this file directly, a reader would otherwise find it byte
+    identical to a publishable artifact. Republishing means fixing the cause and dropping the two
+    marker keys.
+    """
+
+    print(f"artifact NOT published: {reason}", file=sys.stderr, flush=True)
+    marked = dict(payload, unpublished=True, unpublished_reason=reason)
+    try:
+        body = json.dumps(marked, indent=2)
+    except (TypeError, ValueError):  # pragma: no cover - `encoded` already proved it serialises
+        body = encoded
+
+    for candidate in (out / "unpublished" / f"{stamp}.json", out / f"{stamp}.unpublished.json"):
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.write_text(body, encoding="utf-8")
+        except OSError as exc:
+            # `exist_ok=True` does NOT tolerate the path existing as a FILE, so the preferred
+            # subdirectory is one `touch` away from being unusable. Fall back, do not give up.
+            print(f"  {candidate} could not be written: {exc}", file=sys.stderr, flush=True)
+            continue
+        print(f"unpublished  -> {candidate}", file=sys.stderr, flush=True)
+        break
+    else:
+        # Nowhere on disk would take it. stdout still might be a file or a pipe.
+        print(body)
+        print(
+            "the artifact could not be written anywhere; it was printed to stdout above",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    print(f"incremental  -> {partial_path}", file=sys.stderr, flush=True)
+    print(
+        "the scored answers are safe either way: they are in that sidecar, and "
+        "`python -m benchmarks.salvage --merge-only` rebuilds an artifact from it without "
+        "re-spending. Fix the cause and republish rather than re-running the arm.",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _warn_teardown_failed(subject: object, exc: BaseException) -> None:

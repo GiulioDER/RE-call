@@ -430,11 +430,12 @@ def test_main_closes_the_system_it_built(
     finalisation, where qdrant-client's own finaliser dies with `ModuleNotFoundError: import of
     msvcrt halted`.
 
-    Scope, stated so nobody reads more into it: this covers the SUCCESS path only. `main` has no
-    `try/finally`, so an exception on the way to `return 0` still skips the close and relies on
-    process exit. That is the deliberate trade — the alternative is re-indenting ~96 lines — and if
-    it ever stops being acceptable the fix is `with _build_system(...) as system:`, not another
-    close call somewhere else.
+    Scope, stated so nobody reads more into it: this is the SUCCESS path. The write site is now
+    wrapped in `try/finally`, so a raise there releases the handles too (see
+    `test_a_rejected_cost_claim_still_releases_the_arms_handles`), but that `finally` starts at
+    the write site — an exception during ingest or scoring still skips the close and relies on
+    process exit. Widening it further is `with _build_system(...) as system:` around the body,
+    not another close call somewhere else.
     """
     from benchmarks.systems import RecallSystem
 
@@ -1065,3 +1066,233 @@ def test_validate_openrouter_key_error_never_echoes_the_key() -> None:
     message = str(excinfo.value)
     assert secret not in message
     assert "supersecret" not in message
+
+
+def test_a_rejected_cost_claim_quarantines_the_run_instead_of_losing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A contract raise must not destroy the artifact it refuses to publish.
+
+    The scored answers themselves are not what is at risk: they are already in the incremental
+    sidecar and `benchmarks.salvage --merge-only` rebuilds a runnable artifact from it without
+    re-spending. What a discarded artifact costs is the envelope the sidecar does NOT hold, the
+    usage block, `provider_metadata`, the config and the ablation preflight, plus a manual
+    salvage step. The contract's job is to keep an unauditable artifact out of the PUBLISHED
+    filename, not to throw that envelope away.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    def _reject(payload: dict[str, Any]) -> None:
+        raise ValueError("benchmark cost claims require provider_metadata")
+
+    monkeypatch.setattr(run_module, "reject_unauditable_cost_claims", _reject)
+
+    out = tmp_path / "results"
+    code = main(
+        ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+         "--conversations", "1", "--out", str(out)],
+        now=_NOW,
+    )
+
+    # The exact code, not merely non-zero: 1 is what the interpreter itself exits with on an
+    # uncaught exception, so a wrapper could not tell "quarantined, salvageable, do NOT re-run"
+    # from "crashed mid-run". A mutant returning 2 also collides with argparse's usage error.
+    assert code == run_module.QUARANTINE_EXIT == 3
+    # Nothing published: the operator's `results/*.json` glob feeds `analyze`, so a quarantined
+    # artifact must not sit beside real ones under a name that glob would pick up.
+    assert list(out.glob("*.json")) == []
+    quarantined = out / "unpublished" / f"{_STAMP_1CONV}.json"
+    assert quarantined.exists(), "the artifact was destroyed rather than quarantined"
+
+    recovered = json.loads(quarantined.read_text(encoding="utf-8"))
+    assert recovered["arm"] == "recall"
+    assert recovered["questions"] == len(recovered["outcomes"]) > 0
+    assert recovered["aggregate"]
+    # In band marker: handed this file directly, a reader must be able to tell it was refused.
+    # Byte-identical to a publishable artifact, it is indistinguishable from one.
+    assert recovered["unpublished"] is True
+    assert "provider_metadata" in recovered["unpublished_reason"]
+    # the incremental sidecar is untouched by the rejection
+    assert (out / f"{_STAMP_1CONV}.partial.jsonl").exists()
+
+    # The operator-facing diagnostics are the whole point of the rescue; without asserting them
+    # a mutant that quarantines in total silence stays green.
+    err = capsys.readouterr().err
+    assert str(quarantined) in err
+    assert "salvage" in err
+    assert "provider_metadata" in err
+
+
+def test_a_rejected_cost_claim_still_releases_the_arms_handles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure path releases handles too, and only after the run is safely on disk."""
+    from benchmarks.systems import RecallSystem
+
+    out = tmp_path / "results"
+    closed: list[bool] = []
+
+    class _ClosableSystem(RecallSystem):
+        name = "recall"
+
+        def ingest(self, conversation: dict[str, Any]) -> None:
+            return None
+
+        def retrieve(self, question: str) -> str:
+            return "ctx"
+
+        def ablation_preflight(
+            self, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+        ) -> list[dict[str, Any]]:
+            return []
+
+        def close(self) -> None:
+            # Records whether the quarantined artifact was ALREADY on disk, so a mutant that
+            # releases before the rescue write does not survive.
+            closed.append((out / "unpublished" / f"{_STAMP_1CONV}.json").exists())
+
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str,
+        embedder: str = "fastembed", **_extra: object,
+    ) -> MemorySystem:
+        return _ClosableSystem("postgresql://x/y", embedder_name="hashing", k=k)
+
+    def _reject(payload: dict[str, Any]) -> None:
+        raise ValueError("benchmark cost claims require provider_metadata")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+    monkeypatch.setattr(run_module, "reject_unauditable_cost_claims", _reject)
+
+    code = main(
+        ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+         "--conversations", "1", "--out", str(out)],
+        now=_NOW,
+    )
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert closed == [True]  # released exactly once, and AFTER the rescue write
+
+
+def test_an_unserialisable_payload_still_releases_the_arms_handles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`json.dumps` is the other raise at the write site, and it must not skip teardown either."""
+    from benchmarks.systems import RecallSystem
+
+    out = tmp_path / "results"
+    closed: list[str] = []
+
+    class _ClosableSystem(RecallSystem):
+        name = "recall"
+
+        def ingest(self, conversation: dict[str, Any]) -> None:
+            return None
+
+        def retrieve(self, question: str) -> str:
+            return "ctx"
+
+        def ablation_preflight(
+            self, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+        ) -> list[dict[str, Any]]:
+            return []
+
+        def close(self) -> None:
+            closed.append("released")
+
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str,
+        embedder: str = "fastembed", **_extra: object,
+    ) -> MemorySystem:
+        return _ClosableSystem("postgresql://x/y", embedder_name="hashing", k=k)
+
+    real_payload = run_module._results_payload
+
+    def _unserialisable_payload(*args: object, **kwargs: object) -> dict[str, Any]:
+        # A real payload carrying one member json cannot encode. Patching `json.dumps` itself
+        # would not test the write site: `json` is the shared module object, so the stub would
+        # fire earlier in the run and never reach the code under test.
+        payload = real_payload(*args, **kwargs)  # type: ignore[arg-type]
+        payload["config"] = {"unserialisable": {object()}}
+        return payload
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+    monkeypatch.setattr(run_module, "_results_payload", _unserialisable_payload)
+
+    with pytest.raises(TypeError):
+        main(
+            ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+             "--conversations", "1", "--out", str(out)],
+            now=_NOW,
+        )
+
+    assert closed == ["released"]
+
+
+def _quarantine_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, out: Path, *, reject: bool
+) -> int:
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+    if reject:
+        def _reject(payload: dict[str, Any]) -> None:
+            raise ValueError("benchmark cost claims require provider_metadata")
+
+        monkeypatch.setattr(run_module, "reject_unauditable_cost_claims", _reject)
+    return main(
+        ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+         "--conversations", "1", "--out", str(out)],
+        now=_NOW,
+    )
+
+
+def test_the_rescue_falls_back_when_the_quarantine_directory_cannot_be_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`mkdir(exist_ok=True)` raises FileExistsError when the path exists as a FILE.
+
+    A rescue that can itself throw away the artifact is not a rescue, so it falls back to a
+    sibling name rather than letting the OSError escape.
+    """
+    out = tmp_path / "results"
+    out.mkdir(parents=True)
+    (out / "unpublished").write_text("not a directory", encoding="utf-8")
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    fallback = out / f"{_STAMP_1CONV}.unpublished.json"
+    assert fallback.exists(), "the artifact was lost when the subdirectory was blocked"
+    assert json.loads(fallback.read_text(encoding="utf-8"))["unpublished"] is True
+    assert str(fallback) in capsys.readouterr().err
+
+
+def test_a_failed_published_write_quarantines_the_artifact_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The published write is likelier to fail than the contract is to fire.
+
+    A full disk, a long path or an antivirus lock all raise OSError there, and the encoded bytes
+    are already in hand, so losing them would be gratuitous.
+    """
+    out = tmp_path / "results"
+    out.mkdir(parents=True)
+    (out / f"{_STAMP_1CONV}.json").mkdir()  # a directory where the artifact wants to go
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=False)
+
+    assert code == run_module.QUARANTINE_EXIT
+    quarantined = out / "unpublished" / f"{_STAMP_1CONV}.json"
+    assert quarantined.exists(), "a failed publish threw the artifact away"
+    recovered = json.loads(quarantined.read_text(encoding="utf-8"))
+    assert recovered["unpublished"] is True
+    assert recovered["aggregate"]
+    assert "could not be written" in capsys.readouterr().err.lower()

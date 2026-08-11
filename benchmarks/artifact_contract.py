@@ -11,11 +11,12 @@ from recall.provider_metadata import ProviderMetadata, provider_metadata_from_an
 #: Figures are what auditability needs; a wordy "costs about five dollars" is not caught, and
 #: that limit is deliberate rather than an oversight. A bare number under a cost named key is
 #: NOT caught either, which is a real gap, but closing it would make every run that reports a
-#: provider cost raise at the write site and is therefore not a change to make in passing.
+#: provider cost trip the contract and is therefore not a change to make in passing.
 #:
 #: `pounds` is deliberately absent as a BARE word while `£`, `GBP` and `pounds sterling` are
-#: present: "weighs 5 pounds" is not a cost claim, and a false positive here aborts a completed
-#: paid run at the write site. The disambiguated form reclaims the money case at a cost of one
+#: present: "weighs 5 pounds" is not a cost claim, and a false positive costs the operator a
+#: republish (`benchmarks.run` quarantines a refused artifact rather than destroying it, but it
+#: still does not publish it). The disambiguated form reclaims the money case at a cost of one
 #: remaining weight phrasing, "N pounds sterling silver", which this project will not publish.
 #: `dollars` and `euros` carry no unit ambiguity at all.
 _MONETARY_PROSE = re.compile(
@@ -28,7 +29,7 @@ _MONETARY_PROSE = re.compile(
 
 #: TOP LEVEL keys whose subtrees hold benchmark SOURCE text copied in verbatim, not claims the
 #: artifact makes. A LOCOMO conversation that mentions a price is not a cost claim, and rejecting
-#: one would fail a completed multi-minute run at the write site for a number nobody published.
+#: one would refuse to publish a completed multi-minute run over a number nobody claimed.
 #:
 #: Root only, deliberately. Applied at every depth this becomes an audit BYPASS: `config["system"]`
 #: is `describe()` output from a duck typed adapter, so a nested key that happens to be named
@@ -46,9 +47,10 @@ def provider_metadata_from_payload(payload: Mapping[str, object]) -> tuple[Provi
 def _publishes_monetary_prose(value: object, seen: set[int] | None = None) -> bool:
     """Walk the artifact's own claim surface looking for a published monetary figure.
 
-    `seen` guards against a self referential payload. This walk runs BEFORE `json.dumps`, so
-    without it a cycle surfaces as a RecursionError from the contract instead of the clean
-    `ValueError: Circular reference detected` the serializer would have raised.
+    `seen` guards against a self referential payload, so a cycle cannot surface as a
+    RecursionError from the contract. `benchmarks.run` now serialises before calling the
+    contract, so at that call site `json.dumps` reports the cycle first and this guard never
+    fires; it remains for direct callers, which have no such ordering.
     """
 
     if isinstance(value, str):

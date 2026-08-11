@@ -196,8 +196,8 @@ def test_sterling_written_in_words_is_still_a_cost_claim() -> None:
 
 
 def test_pounds_as_a_unit_of_weight_is_not_a_cost_claim() -> None:
-    """A false positive here aborts a completed paid run at the write site, so the bare word
-    `pounds` is deliberately not a currency form. The £ symbol and `GBP` still are."""
+    """A false positive costs the operator a republish, so the bare word `pounds` is
+    deliberately not a currency form. The £ symbol and `GBP` still are."""
 
     reject_unauditable_cost_claims(
         {"cost_claims": [], "provider_metadata": [], "aggregate": {"note": "the box weighs 5 pounds"}}
@@ -205,7 +205,8 @@ def test_pounds_as_a_unit_of_weight_is_not_a_cost_claim() -> None:
 
 
 def test_self_referential_payload_does_not_blow_the_stack() -> None:
-    """The walk runs before `json.dumps`, so a cycle must not surface as a RecursionError."""
+    """A cycle must not surface as a RecursionError from the contract. `benchmarks.run`
+    serialises first, so json reports the cycle there; this covers direct callers."""
 
     payload: dict[str, object] = {"cost_claims": []}
     payload["self"] = payload
