@@ -57,6 +57,27 @@ def human_body_of(text: str) -> str:
     return body
 
 
+def refuse_unclosed_frontmatter(text: str) -> None:
+    """Refuse a document that opens a frontmatter block and never closes it.
+
+    `parse_frontmatter` documents its behaviour here: an unclosed block is returned as body.
+    That is the right call for retrieval, and the wrong one for extraction, because it hands
+    the metadata lines to the ladder as prose. The verbatim quote guard would then accept
+    `supersedes: X` as evidence for a supersession claim, which is exactly the thing the guard
+    exists to prevent. A malformed document is refused rather than half read.
+    """
+    lines = text.split("\n")
+    if not lines or lines[0].lstrip("﻿").strip() != "---":
+        return
+    if any(line.strip() == "---" for line in lines[1:]):
+        return
+    raise ExtractionBatchRejected(
+        "unclosed_frontmatter",
+        "the document opens a frontmatter block that is never closed, so its metadata cannot "
+        "be separated from its prose",
+    )
+
+
 def normalize_extraction(
     raw: str,
     *,
@@ -88,8 +109,11 @@ def _batch_rungs(raw: str) -> tuple[Mapping[str, Any], ...]:
     """Rungs 1 to 4. Any failure refuses the file's whole output."""
     try:
         decoded = json.loads(raw)
-    except (ValueError, TypeError) as exc:
-        raise ExtractionBatchRejected("json", f"output is not JSON: {exc}") from exc
+    except (ValueError, TypeError, RecursionError) as exc:
+        # RecursionError is not a ValueError. Output nested past the interpreter's limit is
+        # still just malformed output, and it must refuse like any other malformed output
+        # rather than unwind through the caller's corpus loop.
+        raise ExtractionBatchRejected("json", f"output is not JSON: {exc!r}") from exc
     if not isinstance(decoded, Mapping):
         raise ExtractionBatchRejected("top_level_shape", "output is not a JSON object")
     claims = decoded.get("claims")
@@ -107,7 +131,9 @@ def _shape(index: int, claim: Any) -> Mapping[str, Any]:
     if not isinstance(claim, Mapping):
         raise ExtractionBatchRejected("claim_shape", f"claim {index} is not an object")
     kind = claim.get("kind")
-    if kind not in _REQUIRED_FIELDS:
+    # `isinstance` first: `kind` arrives unvalidated from model JSON, and an unhashable value
+    # such as a list or an object would raise TypeError out of the membership test below.
+    if not isinstance(kind, str) or kind not in _REQUIRED_FIELDS:
         raise ExtractionBatchRejected("claim_shape", f"claim {index} has unknown kind {kind!r}")
     expected = _REQUIRED_FIELDS[str(kind)]
     present = frozenset(str(key) for key in claim)
@@ -152,7 +178,11 @@ def _shaped_validity(index: int, claim: Mapping[str, Any]) -> None:
 def _corpus_index(corpus_names: Sequence[str]) -> Mapping[str, tuple[str, ...]]:
     index: dict[str, list[str]] = {}
     for name in corpus_names:
-        index.setdefault(supersedes_key(name), []).append(name)
+        names = index.setdefault(supersedes_key(name), [])
+        # Deduplicate. A caller passing the same file name twice is not two files, and
+        # counting it as two would turn a resolvable target into a false ambiguity refusal.
+        if name not in names:
+            names.append(name)
     return {key: tuple(names) for key, names in index.items()}
 
 
@@ -234,4 +264,4 @@ def _clipped(value: str, limit: int = 60) -> str:
     return value if len(value) <= limit else f"{value[:limit]}..."
 
 
-__all__ = ["human_body_of", "normalize_extraction"]
+__all__ = ["human_body_of", "normalize_extraction", "refuse_unclosed_frontmatter"]

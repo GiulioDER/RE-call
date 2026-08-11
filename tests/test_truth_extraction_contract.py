@@ -736,3 +736,95 @@ def test_an_undeclared_extra_field_rejects_the_whole_batch() -> None:
     """The model supplies semantics only. A field nobody declared is a field nobody validates."""
     with pytest.raises(ExtractionBatchRejected, match="claim_shape"):
         _normalize(_payload({**SUPERSESSION, "confidence": "0.9"}))
+
+
+# --- refusals the ladder must not turn into crashes ---------------------------------------------
+#
+# Every rung below refuses a REFUSAL that was escaping as an exception instead. The module
+# docstring for `extract.py` claims "a refusal is a RESULT, never an exception that escapes";
+# these pin that claim against the inputs that broke it.
+
+
+def test_a_non_string_kind_rejects_the_batch_rather_than_raising_type_error() -> None:
+    """`kind` reaches a dict membership test straight from model JSON. An unhashable value
+    raised TypeError out of the ladder instead of refusing the batch."""
+    with pytest.raises(ExtractionBatchRejected, match="claim_shape"):
+        _normalize(_payload({"kind": [], "quote": SUPERSESSION["quote"]}))
+
+
+def test_one_crashing_file_does_not_abort_the_rest_of_the_corpus() -> None:
+    engine = FakeExtractionEngine({FILE: json.dumps({"claims": [{"kind": {}, "quote": "x"}]})})
+
+    results = {result.file: result for result in extract_corpus_claims(DOCUMENTS, engine=engine)}
+
+    assert set(results) == set(DOCUMENTS)
+    assert results[FILE].batch_rejection is not None
+    assert results[FILE].batch_rejection.rung == "claim_shape"
+
+
+def test_json_nested_past_the_recursion_limit_rejects_the_batch(monkeypatch) -> None:
+    """`RecursionError` is not a `ValueError`, so it escaped rung 1 and unwound through the
+    caller's corpus loop. A real payload deep enough to trigger it (~100k nested arrays) also
+    destabilises the test harness when the guard is off, so raise it directly instead: the
+    property under test is that this exception type becomes a refusal, not that CPython's
+    parser has a particular depth limit."""
+    def deep(_raw: str) -> object:
+        raise RecursionError("maximum recursion depth exceeded while decoding a JSON object")
+
+    monkeypatch.setattr("recall.truth_extraction._normalize.json.loads", deep)
+
+    with pytest.raises(ExtractionBatchRejected, match="json"):
+        _normalize(_payload(SUPERSESSION))
+
+
+def test_an_unclosed_frontmatter_block_refuses_the_file_before_the_engine_runs() -> None:
+    """`parse_frontmatter` hands an unclosed block back as body, which would make the metadata
+    lines quotable prose and let a model justify `supersedes: X` with the string `supersedes: X`
+    after all. Refuse the document instead, and do not pay for an engine call on it."""
+    engine = _fake(_payload(SUPERSESSION))
+    unclosed = "---\nsupersedes: archive_policy_2026-01-05.md\nvalid_from: 2026-02-01\n\n" + BODY
+
+    result = extract_file_claims(file=FILE, text=unclosed, corpus_names=CORPUS, engine=engine)
+
+    assert result.claims == ()
+    assert result.batch_rejection is not None
+    assert result.batch_rejection.rung == "unclosed_frontmatter"
+    assert engine.call_count == 0
+
+
+def test_a_closed_frontmatter_block_is_not_refused() -> None:
+    engine = _fake(_payload(SUPERSESSION))
+
+    result = extract_file_claims(file=FILE, text=DOCUMENT, corpus_names=CORPUS, engine=engine)
+
+    assert result.batch_rejection is None
+    assert engine.call_count == 1
+
+
+def test_a_corpus_name_listed_twice_is_not_a_false_ambiguity() -> None:
+    accepted, rejected = _normalize(_payload(SUPERSESSION), corpus_names=(*CORPUS, CORPUS[0]))
+
+    assert rejected == ()
+    assert accepted[0].superseded == "archive_policy_2026-01-05.md"
+
+
+def test_a_supersession_target_outside_this_graph_generation_is_skipped() -> None:
+    """Targets resolve against `corpus_names`, which can name files this graph has no node for.
+    Emitting the proposal anyway gives `proposal_to_graph_edge` an empty `from_node_id`."""
+    partial = build_reasoning_graph(
+        [
+            Chunk(
+                "alpha", f"/corpus/{NEW_FILE}", PAIR_DOCUMENTS[NEW_FILE],
+                {"file": NEW_FILE, "ord": 0},
+            )
+        ],
+        tenant_id="acme",
+        generation_id="gen_1",
+        pipeline_fingerprint="pipe-a",
+        include_text=True,
+    )
+
+    proposals = _extracted(partial, _pair_provider())
+
+    assert [p for p in proposals if p.proposed_relation == "supersedes"] == []
+    assert [p for p in proposals if p.proposed_relation == "declares_status"]

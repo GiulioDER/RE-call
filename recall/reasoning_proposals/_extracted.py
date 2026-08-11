@@ -122,9 +122,12 @@ class ExtractedClaimProposalProvider:
         evidence_id: str,
         node_id_by_file: Mapping[str, str],
     ) -> InferenceProposal | None:
-        relation, subject_id, object_id, explanation, evidence = _shape_of(
+        shape = _shape_of(
             claim, file=file, evidence_id=evidence_id, node_id_by_file=node_id_by_file
         )
+        if shape is None:
+            return None
+        relation, subject_id, object_id, explanation, evidence = shape
         return _make_proposal(
             graph=graph,
             context=context,
@@ -150,19 +153,22 @@ def _shape_of(
     file: str,
     evidence_id: str,
     node_id_by_file: Mapping[str, str],
-) -> tuple[ProposedRelation, str, str, str, tuple[str, ...]]:
+) -> tuple[ProposedRelation, str, str, str, tuple[str, ...]] | None:
     if isinstance(claim, SupersessionClaim):
         target_evidence = node_id_by_file.get(claim.superseded)
-        evidence = (
-            (evidence_id,) if target_evidence is None else (target_evidence, evidence_id)
-        )
+        if target_evidence is None:
+            # The ladder resolves a target against `corpus_names`, which can name a file this
+            # graph generation has no source node for. Emitting the proposal anyway would give
+            # `proposal_to_graph_edge` an empty `from_node_id`: a candidate supersession edge
+            # pointing at nothing. The claim stays in the extraction record for review.
+            return None
         return (
             "supersedes",
             # subject is the SUPERSEDED document; object is the one doing the superseding.
             claim.superseded,
             file,
             f"{file} states in prose that it supersedes {claim.superseded}.",
-            evidence,
+            (target_evidence, evidence_id),
         )
     if isinstance(claim, ValidityClaim):
         return (
