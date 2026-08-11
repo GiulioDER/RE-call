@@ -41,11 +41,9 @@ def validate_census(payload: Mapping[str, object]) -> None:
             f"{len(restatements)} entries in restatements"
         )
 
-    # The recall ceiling is a proportion of the header edges. A restated count that reaches or
-    # passes the edge count means the restatement detector matched something that is not
-    # distinctly inside the gold set — with zero edges and one restatement, or an equal count
-    # squeezed down to a single shared edge, the ratio is at or past 100% either way.
-    if len(restatements) >= len(edges) and len(restatements) > 0:
+    # The recall ceiling is a proportion of the header edges. A value above 1.0 means the
+    # restatement detector matched something that is not in the gold set at all.
+    if len(restatements) > len(edges):
         raise ValueError(
             f"n_restated_in_prose ({len(restatements)}) cannot exceed n_header_edges "
             f"({len(edges)}) — the recall ceiling cannot exceed 100%"
