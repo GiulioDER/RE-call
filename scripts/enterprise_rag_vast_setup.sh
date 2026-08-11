@@ -125,6 +125,9 @@ fi
 cat <<EOF
 ready
 root=$ROOT
+smoke:
+  cd $ROOT
+  ./scripts/enterprise_rag_vast_smoke.sh
 run:
   cd $ROOT
   nohup ./scripts/enterprise_rag_vast_run.sh > logs/enterprise_rag_vast_top_splade.log 2>&1 & echo \\$! > enterprise_rag_vast_top_splade.pid

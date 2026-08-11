@@ -49,6 +49,24 @@ The setup script:
 
 The preflight refuses to proceed unless CUDA is actually usable for SPLADE.
 
+## Smoke
+
+Before the full run, execute one real end-to-end GPU smoke:
+
+```bash
+cd /workspace/RE-call
+./scripts/enterprise_rag_vast_smoke.sh
+```
+
+This builds a five-document ZIP from the official release, including the first question's gold
+document, then runs the full model stack on CUDA. It spends one answer call and a tiny number of
+Voyage retrieval calls. The expected output is:
+
+```bash
+results/enterprise_rag/vast_top_splade_smoke.answers.jsonl
+results/enterprise_rag/vast_top_splade_smoke.answers.jsonl.manifest.json
+```
+
 ## Launch
 
 ```bash
@@ -108,5 +126,4 @@ Useful work still possible without the GPU:
 
 1. Keep monitoring the VPS2 dense plus lexical arm.
 2. Prepare the leaderboard submission email draft after the Vast artifacts exist.
-3. Decide whether to run a smaller Vast smoke first with `--limit-docs` and `--limit-questions`
-   before the full SPLADE run.
+3. Run `scripts/enterprise_rag_vast_smoke.sh` immediately after setup on the rented instance.
