@@ -111,3 +111,20 @@ The reproducible artifact generator is:
 The checked in artifact is `results/reasoning_session3_proposals.json`. It contains the proposal
 protocol reference, precision and recall on authored synthetic missing relationships, rejected
 proposal examples, provider failure matrix, and side effect audit flags.
+
+### How proposals are scored
+
+`proposal_precision_recall` scores one `proposed_relation` at a time, so the four claim kinds are
+never averaged into a single number. Two rules keep the score honest.
+
+**Referrals are not assertions.** Only `candidate` proposals are scored. A `requires_review`
+proposal is reported separately as `referred`, alongside `asserted` and a `referral_rate`, and is
+never folded into precision. Counting referrals as predictions would let a provider buy precision
+by relabelling every shaky proposal `requires_review`. The policy is the `counted_statuses` and
+`referred_statuses` parameters rather than a hard coded constant, and the two must stay disjoint.
+
+**A rate with no data is not a score.** Precision is `NaN` when nothing was asserted and recall is
+`NaN` when nothing was expected, matching `recall.eval.metrics.fraction_true`. This matters for the
+rule based baseline, which proposes zero edges: precision `0.0` would read as "the rules were
+wrong" when the truth is "the rules declined to answer", and recall `1.0` against an empty
+expectation set is a perfect score derived from nothing.
