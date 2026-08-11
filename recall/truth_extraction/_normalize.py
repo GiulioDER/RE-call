@@ -18,6 +18,7 @@ one corpus file is refused, never guessed at. Ambiguity is a refusal, not a coin
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
@@ -35,6 +36,13 @@ from recall.truth_extraction.types import (
     SupersessionClaim,
     ValidityClaim,
 )
+
+#: A frontmatter key line: anything up to the first colon that is not itself a colon and does
+#: not open a markdown heading. Deliberately loose. A narrow pattern misses the keys a real
+#: block carries around the one that matters — `Last updated: ...`, `2026_review: pending` —
+#: and stopping the scan there loses the refusal entirely. Precision comes from the
+#: VALIDITY_KEYS gate below, not from this pattern.
+_KEY_LINE_RE = re.compile(r"^\s*[^\s:#][^:]*:")
 
 #: Field names each kind must carry, exactly. Extra fields are a shape failure: the model
 #: supplies semantics only, and a field nobody declared is a field nobody validates.
@@ -75,10 +83,26 @@ def refuse_unclosed_frontmatter(text: str) -> None:
     # with one would reject valid memos and record them as malformed, losing genuine prose
     # claims. Refuse only when the opened block carries a key `recall.frontmatter` acts on,
     # which is exactly the metadata that must not become quotable.
+    #
+    # The block runs from the fence to the first line of real prose, not to the end of the
+    # file. Scanning the whole document would refuse a memo that merely documents frontmatter
+    # or quotes a key in an example, which is the same over refusal in a different disguise.
+    #
+    # A blank line does NOT end the run. `parse_frontmatter` has no notion of a run at all —
+    # for it the block is everything up to the closing fence — so anything narrower here is a
+    # false negative waiting to happen, and a false negative hands `supersedes: X` back to the
+    # ladder as quotable prose.
+    block: list[str] = []
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        if not _KEY_LINE_RE.match(line):
+            break
+        block.append(line)
     declared = sorted(
         key
         for key in VALIDITY_KEYS
-        if any(line.split(":", 1)[0].strip() == key for line in lines[1:] if ":" in line)
+        if any(line.split(":", 1)[0].strip() == key for line in block)
     )
     if not declared:
         return

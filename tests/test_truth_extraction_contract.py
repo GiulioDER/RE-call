@@ -841,3 +841,91 @@ def test_a_markdown_thematic_break_is_not_mistaken_for_an_unclosed_block() -> No
 
     assert result.batch_rejection is None
     assert [claim.kind for claim in result.claims] == ["supersession"]
+
+
+def test_a_thematic_break_document_that_merely_mentions_a_key_is_not_refused() -> None:
+    """The block is the CONTIGUOUS run of key lines after the opening fence, not every line
+    in the file. A memo that documents frontmatter, or quotes a key in an example, is not a
+    memo with frontmatter, and refusing it loses the claims its prose really does state."""
+    engine = DeterministicExtractionEngine()
+    mentions_a_key = (
+        "---\n"
+        "\n"
+        "# How to write frontmatter\n"
+        "\n"
+        "Put a line like\n"
+        "\n"
+        "    supersedes: archive_policy_2026-01-05.md\n"
+        "\n"
+        "at the top. This release supersedes archive_policy_2026-01-05.md.\n"
+    )
+
+    result = extract_file_claims(
+        file=FILE, text=mentions_a_key, corpus_names=CORPUS, engine=engine
+    )
+
+    assert result.batch_rejection is None
+    assert [claim.kind for claim in result.claims] == ["supersession"]
+
+
+def test_a_blank_line_inside_an_unclosed_block_does_not_lose_the_refusal() -> None:
+    """The run of a real block is not always uninterrupted: an unrecognised key, a blank line,
+    or a key name with a space can sit above the one that matters. Stopping at the first of
+    those hands `supersedes: X` back to the ladder as quotable prose, which is a false negative
+    on the strongest guard in the design."""
+    engine = _fake(_payload(SUPERSESSION))
+    interrupted = (
+        "---\n"
+        "title: Retention policy\n"
+        "\n"
+        "supersedes: archive_policy_2026-01-05.md\n"
+        "valid_from: 2026-02-01\n"
+        "\n"
+        "We keep records for seven years.\n"
+    )
+
+    result = extract_file_claims(file=FILE, text=interrupted, corpus_names=CORPUS, engine=engine)
+
+    assert result.claims == ()
+    assert result.batch_rejection is not None
+    assert result.batch_rejection.rung == "unclosed_frontmatter"
+    assert engine.call_count == 0
+
+
+def test_a_key_name_the_pattern_does_not_recognise_does_not_lose_the_refusal() -> None:
+    """`parse_frontmatter` has no notion of a well formed key: every line up to the closing
+    fence is in the block. So the scan must not stop on a key shape it happens not to match,
+    such as one with a space in its name, when the validity key sits below it."""
+    engine = _fake(_payload(SUPERSESSION))
+    odd_key_above = (
+        "---\n"
+        "Last updated: 2026-01-01\n"
+        "supersedes: archive_policy_2026-01-05.md\n"
+    )
+
+    result = extract_file_claims(file=FILE, text=odd_key_above, corpus_names=CORPUS, engine=engine)
+
+    assert result.batch_rejection is not None
+    assert result.batch_rejection.rung == "unclosed_frontmatter"
+    assert engine.call_count == 0
+
+
+def test_a_markdown_heading_ends_the_block_even_when_it_contains_a_colon() -> None:
+    """A heading is prose, and prose ends the block. Without that, a heading such as
+    `# Retention: what changed` reads as a key line, the run continues past it, and a later
+    prose line shaped like a key drags the whole memo into a refusal."""
+    engine = _fake(_payload(SUPERSESSION))
+    heading_with_colon = (
+        "---\n"
+        "# Retention: what changed\n"
+        "valid_from: we never agreed one, see the thread\n"
+        "\n"
+        "This memo supersedes archive_policy_2026-01-05.md after the January review.\n"
+    )
+
+    result = extract_file_claims(
+        file=FILE, text=heading_with_colon, corpus_names=CORPUS, engine=engine
+    )
+
+    assert result.batch_rejection is None
+    assert engine.call_count == 1
