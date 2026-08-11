@@ -78,6 +78,24 @@ def test_sentences_joins_hard_wrapped_lines_before_splitting():
     assert got[0].strip() == "It has been superseded by :pep:`287`."
 
 
+def test_sentences_never_glues_across_a_blank_line():
+    # A paragraph with no terminal punctuation must not run into the next section. Gluing here
+    # is whole-body co-occurrence arriving through the back door.
+    got = sentences("Heading\n\nThis is deprecated\n\nSee :pep:`287` for formatting.")
+    assert not any("deprecated" in s and "287" in s for s in got)
+
+
+def test_sentences_keeps_a_trailing_fragment_with_no_terminator():
+    # pep-0634's real restatement ends in a colon. Dropping it loses a true positive.
+    got = sentences("It replaces :pep:`622`, which is hereby split in three parts:")
+    assert any(":pep:`622`" in s for s in got)
+
+
+def test_restates_finds_an_unterminated_restatement():
+    body = "It replaces :pep:`622`, which is hereby split in three parts:"
+    assert restates(body, "pep-0622") is not None
+
+
 def test_restates_returns_the_evidence_sentence():
     assert restates("It has been superseded by :pep:`287`.", "pep-0287") == (
         "It has been superseded by :pep:`287`."

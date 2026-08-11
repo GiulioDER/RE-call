@@ -86,14 +86,30 @@ def edges_from_fields(stem: str, fields: Mapping[str, str]) -> set[Edge]:
 
 
 def sentences(body: str) -> list[str]:
-    """Sentences, with hard line wrapping undone first.
+    """Sentences, unwrapping hard line breaks WITHIN a paragraph but never across one.
+
+    Three properties, each of which was measured to matter on this corpus:
 
     RST wraps prose at column ~79, so a restatement routinely spans two lines. Splitting on
-    newlines cut `"It has been\\nsuperseded by :pep:`287`."` in half and lost the reference,
-    undercounting the recall ceiling — the one number this whole set exists to publish.
+    newlines cut `"It has been\\nsuperseded by :pep:`287`."` in half and lost the reference.
+
+    Unwrapping every newline instead — including blank lines — glues a paragraph to the heading
+    and body that follow it, so a marker in one section can pair with a reference in another.
+    That is the whole-body co-occurrence this module exists to exclude, arriving through the back
+    door. Paragraphs are therefore split first and unwrapped individually.
+
+    The `[^.!?]+` alternative keeps a trailing fragment that has no terminator. Without it,
+    `pep-0634`'s `"It replaces :pep:`622`, which is hereby split in three parts:"` — a real
+    restatement, ending in a colon — is silently discarded. Before this was fixed the edge was
+    still counted, but only because the blank-line gluing ran the fragment into the next
+    paragraph: two defects cancelling, on one edge, by luck.
     """
-    flat = re.sub(r"\s*\n\s*", " ", body)
-    return re.findall(r"[^.!?]*[.!?]", flat)
+    out: list[str] = []
+    for paragraph in re.split(r"\n\s*\n", body):
+        flat = re.sub(r"\s*\n\s*", " ", paragraph).strip()
+        if flat:
+            out.extend(re.findall(r"[^.!?]*[.!?]|[^.!?]+", flat))
+    return out
 
 
 def restates(body: str, partner: str) -> str | None:
