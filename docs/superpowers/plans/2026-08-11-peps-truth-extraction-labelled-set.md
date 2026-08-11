@@ -50,9 +50,9 @@ whole-body number is an upper bracket no precision-respecting extractor should r
 
 The load-bearing consequence, which must be stated in the artifact: **the positive class usable
 for prose-extraction recall is 8, not 47.** Wilson on n=8 is about as uninterpretable as the n=4
-this plan's trust set exists to fix. So this set measures **precision** well (175 adjudicable
-negatives, good power) and **recall** poorly (n=8), and the census is what makes that visible
-instead of letting a 17% recall read as a model failure.
+this plan's trust set exists to fix. So this set measures **precision** well (38 adjudicable
+candidate pairs, good power) and **recall** poorly (n=8), and the census is what makes that
+visible instead of letting a 17% recall read as a model failure.
 
 The 47 edges remain fully sound for the downstream trust query set, where the label is the
 supersession relation itself rather than whether prose states it.
@@ -1841,7 +1841,7 @@ restated in prose with the marker and the partner PEP in the same sentence. A pe
 extractor therefore scores recall **8/47 = 0.170** against the header denominator, and the usable
 positive class for recall is **8, not 47** — an n on which a Wilson interval is about as
 uninterpretable as the n=4 this set's trust arm was built to fix. Precision is the axis this set
-measures with power, from 175 adjudicable prose markers that no header confirms.
+measures with power, from the 38 adjudicable candidate pairs drawn from those markers.
 
 **PEPs are not memos.** They cite each other as `PEP 3106`, not `[[wikilink]]`, and they are
 written under an editorial process a personal memo corpus does not have. A precision measured
