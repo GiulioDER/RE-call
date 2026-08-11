@@ -136,7 +136,7 @@ select = ["E4", "E7", "E9", "F"]
 # above), but it is type-checked anyway: it is the code path that produces PUBLISHED benchmark
 # numbers, and a shape mismatch against the third-party harness it feeds does not raise — it
 # degrades into a worse score that reads as a retrieval result.
-files = ["recall", "recall_mcp", "recall_interop", "benchmarks"]
+files = ["recall", "recall_mcp", "recall_interop", "recall_consistency", "benchmarks"]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 warn_return_any = true
