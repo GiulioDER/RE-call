@@ -514,6 +514,13 @@ def _fenced_flags(lines: list[bytes]) -> tuple[list[bool], bool]:
     So a closing fence must use its opener's character with a run at least as long and carry
     nothing else, an opener may carry an info string, and neither may be indented four or more
     columns, which is an indented code block rather than a fence.
+
+    One more rule, and it is the one that bites: **a backtick fence's info string may not contain
+    a backtick.** ``` ```yaml``` is the fence ``` is therefore a paragraph with an inline code
+    span in it, not an opener. Reading it as one starts a fence that never closes, which both
+    hides the memo's real derived block (so the file becomes unwritable) and, when a genuine fence
+    follows, inverts every later flag so the entry is written INSIDE the user's code. A tilde
+    fence has no such restriction: `~~~` info strings may contain backticks and tildes alike.
     """
     flags: list[bool] = []
     fence: tuple[bytes, int] | None = None
@@ -522,13 +529,15 @@ def _fenced_flags(lines: list[bytes]) -> tuple[list[bool], bool]:
         stripped = bare.lstrip(b" ")
         indent = len(bare) - len(stripped)
         marker = stripped[:1]
-        run = len(stripped) - len(stripped.lstrip(marker)) if marker in (b"`", b"~") else 0
+        rest = stripped.lstrip(marker) if marker in (b"`", b"~") else b""
+        run = len(stripped) - len(rest) if marker in (b"`", b"~") else 0
         if indent <= 3 and run >= 3:
             if fence is None:
-                fence = (marker, run)
-                flags.append(True)  # the opening fence line is part of the block
-                continue
-            if marker == fence[0] and run >= fence[1] and not stripped.lstrip(marker).strip():
+                if marker != b"`" or b"`" not in rest:
+                    fence = (marker, run)
+                    flags.append(True)  # the opening fence line is part of the block
+                    continue
+            elif marker == fence[0] and run >= fence[1] and not rest.strip():
                 fence = None
                 flags.append(True)  # so is the closing one
                 continue
@@ -646,6 +655,18 @@ def _upsert_derived_entry(raw: bytes, key: str, value: str) -> bytes | None:
         # here really would put the machine's annotations inside the user's code block — where
         # the next run cannot see them, and appends another. Three runs, three blocks. The file's
         # structure is ambiguous and a human has to close the fence.
+        if b"\r" in body and b"\n" not in body:
+            # ...and a CR-terminated memo is ONE line to `_lines`, which splits on LF alone to
+            # stay in step with `parse_frontmatter`. So a fence marker at its start opens a fence
+            # spanning the whole file. Refusing is right — an appended block genuinely would be
+            # invisible to the next scan — but a human looking at this file sees a properly closed
+            # fence, and a message about an unclosed one sends them hunting for something that is
+            # not there. Name the line endings, which is the thing they can actually fix.
+            raise RewriteRefused(
+                "refusing to write: this memo uses CR-only line endings, which this module reads "
+                "as a single line (matching `parse_frontmatter`), so a fence marker at its start "
+                "spans the whole file and an appended block would be invisible to the next run"
+            )
         raise RewriteRefused(
             "refusing to write: a code fence is still open at the end of the file, so an "
             "appended derived block would land inside it and be invisible to the next run"

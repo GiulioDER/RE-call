@@ -832,6 +832,192 @@ def test_an_indented_backtick_line_does_not_open_a_fence(tmp_path: Path) -> None
     assert b"contradicts: old_decision_2026-01-01.md\n" + marker_close in raw
 
 
+def test_an_inline_code_span_does_not_open_a_fence(tmp_path: Path) -> None:
+    """A backtick fence's info string may not contain a backtick — so this line is a paragraph.
+
+    ```` ```yaml``` is the fence ```` is prose containing an inline code span, and CommonMark says
+    so. Reading it as an opener starts a fence that never closes, which hides the memo's real
+    derived block and makes the file permanently unwritable through the unclosed-fence refusal.
+    Tilde fences are exempt: `~~~` info strings may contain backticks, and may contain tildes.
+    """
+    _corpus(tmp_path)
+    marker_open, marker_close = DERIVED_OPEN.encode("utf-8"), DERIVED_CLOSE.encode("utf-8")
+    prose = (
+        b"```yaml``` is the fence marker, in case you forget.\n"
+        b"\n" + marker_open + b"\ncontradicts: something_else_2025-12-01.md\n" + marker_close + b"\n"
+    )
+    _memo(tmp_path, "new_decision_2026-06-01.md", prose)
+
+    result = apply_rewrite(
+        tmp_path,
+        _fact(
+            relation="contradicts",
+            subject_id="new_decision_2026-06-01.md",
+            object_id="old_decision_2026-01-01.md",
+        ),
+        apply=True,
+    )
+
+    assert result.written is True
+    raw = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+    assert raw.count(marker_open) == 1, "the real block was hidden and a second one appended"
+    assert b"contradicts: old_decision_2026-01-01.md\n" + marker_close in raw
+
+
+def test_a_false_opener_does_not_invert_the_flags_into_the_users_code(tmp_path: Path) -> None:
+    """The harmful direction of the same bug: one phantom fence flips every later line.
+
+    With a real fenced block after the inline code span, the parity inverts and the module writes
+    its entry INSIDE the user's genuine code block — the one thing it promises never to do. The
+    entry must instead be appended after the fence, in a block of its own.
+    """
+    _corpus(tmp_path)
+    marker_open, marker_close = DERIVED_OPEN.encode("utf-8"), DERIVED_CLOSE.encode("utf-8")
+    documented = (
+        b"```yaml``` here is prose, not a fence.\n"
+        b"```\n" + marker_open + b"\nsupersedes: example.md\n" + marker_close + b"\n"
+        b"```\n"
+    )
+    _memo(tmp_path, "new_decision_2026-06-01.md", documented)
+
+    apply_rewrite(
+        tmp_path,
+        _fact(
+            relation="contradicts",
+            subject_id="new_decision_2026-06-01.md",
+            object_id="old_decision_2026-01-01.md",
+        ),
+        apply=True,
+    )
+
+    raw = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+    assert raw.startswith(documented), "the entry was written inside the user's code block"
+    assert raw.endswith(
+        marker_open + b"\ncontradicts: old_decision_2026-01-01.md\n" + marker_close + b"\n"
+    )
+
+
+def test_a_cr_only_memo_is_refused_by_a_message_that_names_the_real_cause(tmp_path: Path) -> None:
+    """The refusal is correct here; only its explanation was not.
+
+    `_lines` splits on LF alone, matching `parse_frontmatter`, so a CR-terminated memo is ONE line
+    to this module. If that line opens with a fence marker the fence never closes, and appending
+    really would produce a block the next run cannot see — verified: the markers of an appended
+    block score zero visible hits on the following scan, so it would regrow every run. But a human
+    reading the file sees a properly closed fence, so a message about an unclosed fence sends them
+    looking for something that is not there. The refusal has to name the line endings.
+
+    The fence is `~~~` rather than ``` on purpose. Squashed onto one line, a CR-only file's later
+    ``` runs land in what this module reads as the first line's info string, and a backtick fence
+    may not have a backtick there — so the backtick spelling is no longer read as a fence at all,
+    and it converges instead (pinned below). Tildes carry no such restriction, which is what keeps
+    this branch reachable.
+    """
+    _memo(tmp_path, "old_decision_2026-01-01.md", _OLD)
+    cr_only = b"~~~\rcode\r~~~\rprose\r"
+    _memo(tmp_path, "new_decision_2026-06-01.md", cr_only)
+
+    with pytest.raises(RewriteRefused, match="CR-only"):
+        apply_rewrite(
+            tmp_path,
+            _fact(
+                relation="contradicts",
+                subject_id="new_decision_2026-06-01.md",
+                object_id="old_decision_2026-01-01.md",
+            ),
+            apply=True,
+        )
+
+    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == cr_only
+
+
+def test_a_cr_only_memo_with_backtick_fences_converges_instead(tmp_path: Path) -> None:
+    """The other half, and the reason the refusal above needs tildes to reach it.
+
+    Squashed to one line, the file's later ``` runs sit in the first line's info string, which a
+    backtick fence may not contain — so nothing opens, the block is appended once and recognised
+    thereafter. Applying twice must add exactly one block, not one per run.
+    """
+    _memo(tmp_path, "old_decision_2026-01-01.md", _OLD)
+    _memo(tmp_path, "new_decision_2026-06-01.md", b"```\rcode\r```\rprose\r")
+    fact = _fact(
+        relation="contradicts",
+        subject_id="new_decision_2026-06-01.md",
+        object_id="old_decision_2026-01-01.md",
+    )
+
+    first = apply_rewrite(tmp_path, fact, apply=True)
+    second = apply_rewrite(tmp_path, fact, apply=True)
+
+    assert first.written is True
+    assert second.written is False
+    raw = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+    assert raw.count(DERIVED_OPEN.encode("utf-8")) == 1
+
+
+def test_a_crlf_memo_with_an_unclosed_fence_gets_the_ordinary_message(tmp_path: Path) -> None:
+    """The CR-only message must be reserved for the CR-only cause.
+
+    A CRLF memo has real line endings this module handles correctly, so an unclosed fence in one
+    is exactly what it looks like. Widening the CR-only branch to "contains a CR" would send every
+    Windows-authored memo a message about line endings that are not the problem.
+    """
+    _memo(tmp_path, "old_decision_2026-01-01.md", _OLD)
+    crlf = (_NEW + b"\nSee the command below:\n\n```bash\nrecall index --root .\n").replace(
+        b"\n", b"\r\n"
+    )
+    _memo(tmp_path, "new_decision_2026-06-01.md", crlf)
+    fact = _fact(
+        relation="contradicts",
+        subject_id="new_decision_2026-06-01.md",
+        object_id="old_decision_2026-01-01.md",
+    )
+
+    with pytest.raises(RewriteRefused) as caught:
+        apply_rewrite(tmp_path, fact, apply=True)
+
+    assert "still open at the end of the file" in str(caught.value)
+    assert "CR-only" not in str(caught.value)
+    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == crlf
+
+
+def test_a_line_carrying_an_info_string_does_not_close_a_fence(tmp_path: Path) -> None:
+    """A closing fence carries fence characters and nothing else.
+
+    Inside an open fence, a ```python line is content. Accepting it as a closer ends the block
+    early and turns the REAL closing fence into a fresh opener, which then hides everything after
+    it — including the memo's own derived block, so a second one is appended beside it.
+    """
+    _corpus(tmp_path)
+    marker_open, marker_close = DERIVED_OPEN.encode("utf-8"), DERIVED_CLOSE.encode("utf-8")
+    sample = (
+        b"# new decision\n"
+        b"\n"
+        b"```\n"
+        b"a shell line\n"
+        b"```python\n"
+        b"still inside the same block\n"
+        b"```\n"
+        b"\n"
+        + marker_open + b"\ncontradicts: something_else_2025-12-01.md\n" + marker_close + b"\n"
+    )
+    _memo(tmp_path, "new_decision_2026-06-01.md", sample)
+
+    apply_rewrite(
+        tmp_path,
+        _fact(
+            relation="contradicts",
+            subject_id="new_decision_2026-06-01.md",
+            object_id="old_decision_2026-01-01.md",
+        ),
+        apply=True,
+    )
+
+    raw = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+    assert raw.count(marker_open) == 1, "the real block was hidden and a second one appended"
+    assert b"contradicts: old_decision_2026-01-01.md\n" + marker_close in raw
+
+
 def test_an_example_entry_inside_the_block_does_not_count_as_declared(tmp_path: Path) -> None:
     """The two scans in one function must agree about what counts as content.
 
