@@ -39,6 +39,7 @@ from recall.derived_block import (
     verify_derived_block,
 )
 from recall.document import parse_document
+from recall.lint import lint_corpus
 
 
 def test_no_fence_yields_the_whole_body_rstripped() -> None:
@@ -593,3 +594,62 @@ def test_the_seam_guard_can_see_a_violation() -> None:
         "from recall.frontmatter import supersedes_key, validity_bounds\n"
     )
     assert not _imports_parse_frontmatter("from recall.document import parse_document\n")
+
+
+def _write(directory: Path, name: str, text: str) -> None:
+    (directory / name).write_text(text, encoding="utf-8", newline="\n")
+
+
+def test_lint_reports_a_tampered_block(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "memo_2026-06-01.md",
+        "# Memo\n\nprose.\n\n" + _block(_entry()).replace("reviewer: giulio", "reviewer: nobody"),
+    )
+    issues = lint_corpus(tmp_path)
+    assert [(i.level, i.code) for i in issues] == [("error", "derived-block-tampered")]
+
+
+def test_lint_reports_a_duplicated_block(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "memo_2026-06-01.md",
+        "# Memo\n\nprose.\n\n" + _block(_entry()) + "\n" + _block(_entry("status", "adopted")),
+    )
+    assert [i.code for i in lint_corpus(tmp_path)] == ["derived-block-duplicated"]
+
+
+def test_lint_reports_a_block_that_is_not_last(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "memo_2026-06-01.md",
+        "# Memo\n\nprose.\n\n" + _block(_entry()) + "\nappended by a human\n",
+    )
+    (issue,) = lint_corpus(tmp_path)
+    assert issue.code == "derived-block-not-last"
+    assert issue.level == "error"
+    assert "retrieval" in issue.message
+
+
+def test_lint_reports_a_malformed_block(tmp_path: Path) -> None:
+    _write(tmp_path, "memo_2026-06-01.md", f"# Memo\n\nprose.\n\n{OPEN_FENCE}\nstatus: adopted\n")
+    assert [i.code for i in lint_corpus(tmp_path)] == ["derived-block-malformed"]
+
+
+def test_lint_is_clean_on_a_well_formed_block(tmp_path: Path) -> None:
+    _write(tmp_path, "memo_2026-06-01.md", "# Memo\n\nprose.\n\n" + _block(_entry()))
+    assert lint_corpus(tmp_path) == []
+
+
+def test_a_block_does_not_trip_the_prose_closure_warning(tmp_path: Path) -> None:
+    """`status: superseded` is in CLOSURE_MARKERS' neighbourhood by design.
+
+    A block carrying it must not make the file look like prose closure with a missing edge —
+    that is the exact false positive the strip exists to prevent.
+    """
+    _write(
+        tmp_path,
+        "memo_2026-06-01.md",
+        "# Memo\n\nA settled question.\n\n" + _block(_entry("status", "superseded")),
+    )
+    assert [i.code for i in lint_corpus(tmp_path)] == []
