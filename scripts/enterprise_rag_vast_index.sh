@@ -30,6 +30,8 @@ python -m benchmarks.enterprise_rag \
   --candidate-k 200 \
   --gap-threshold 0.5 \
   --max-context-chars 12000 \
+  --chunk-chars "${ENTERPRISE_RAG_CHUNK_CHARS:-12000}" \
+  --chunk-overlap "${ENTERPRISE_RAG_CHUNK_OVERLAP:-200}" \
   --splade-batch-size "${SPLADE_BATCH_SIZE:-32}" \
   --reset-index \
   --index-only \

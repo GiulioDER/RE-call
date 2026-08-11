@@ -93,6 +93,21 @@ def test_chunks_preserve_document_id_for_leaderboard_citations() -> None:
     assert chunks[0].metadata["doc_id"] == "dsid_keep"
 
 
+def test_doc_chunks_accept_benchmark_scale_chunking() -> None:
+    doc = EnterpriseDoc(
+        doc_id="dsid_long",
+        source_type="confluence",
+        title="Long policy",
+        content=("alpha " * 5000).strip(),
+    )
+
+    tiny = doc_chunks(doc, chunk_chars=800, chunk_overlap=80)
+    large = doc_chunks(doc, chunk_chars=12_000, chunk_overlap=200)
+
+    assert len(large) < len(tiny)
+    assert all(len(chunk.text) <= 12_200 for chunk in large)
+
+
 def test_loads_questions_and_writes_answer_jsonl(tmp_path: Path) -> None:
     questions_path = tmp_path / "questions.jsonl"
     questions_path.write_text(
@@ -141,6 +156,8 @@ def test_top_config_enables_lexical_splade_voyage_rerank_and_openrouter() -> Non
     assert args.k == 8
     assert args.candidate_k == 200
     assert args.max_context_chars == 12_000
+    assert args.chunk_chars == 12_000
+    assert args.chunk_overlap == 200
 
 
 def test_generated_answer_prompt_includes_question_type_and_strict_abstention(

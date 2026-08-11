@@ -42,6 +42,8 @@ DEFAULT_K = 8
 DEFAULT_CANDIDATE_K = 80
 DEFAULT_MAX_CHARS = 3500
 DEFAULT_BATCH_CHUNKS = 256
+DEFAULT_CHUNK_CHARS = 800
+DEFAULT_CHUNK_OVERLAP = 80
 DEFAULT_MODEL = "openai/gpt-4o"
 DEFAULT_SPLADE_MODEL = "prithivida/Splade_PP_en_v1"
 DEFAULT_VOYAGE_RERANKER = "rerank-2.5"
@@ -49,6 +51,8 @@ DEFAULT_DSN = "postgresql://recall:recall@localhost:5432/recall"
 TOP_CONFIG_K = 8
 TOP_CONFIG_CANDIDATE_K = 200
 TOP_CONFIG_MAX_CHARS = 12_000
+TOP_CONFIG_CHUNK_CHARS = 12_000
+TOP_CONFIG_CHUNK_OVERLAP = 200
 TOP_CONFIG_EMBEDDER = "voyage:voyage-4-large"
 TOP_CONFIG_SPARSE_BACKEND = "both"
 TOP_CONFIG_RERANKER = f"voyage:{DEFAULT_VOYAGE_RERANKER}"
@@ -218,9 +222,14 @@ def _text(value: Any) -> str:
     return "" if value is None else str(value).strip()
 
 
-def doc_chunks(doc: EnterpriseDoc) -> list[Chunk]:
+def doc_chunks(
+    doc: EnterpriseDoc,
+    *,
+    chunk_chars: int = DEFAULT_CHUNK_CHARS,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+) -> list[Chunk]:
     body = f"Title: {doc.title}\nSource type: {doc.source_type}\n\n{doc.content}"
-    parts = chunk_text(body)
+    parts = chunk_text(body, max_chars=chunk_chars, overlap=chunk_overlap)
     return [
         Chunk(
             id=f"{doc.doc_id}#{i:04d}",
@@ -243,8 +252,14 @@ def index_documents(
     docs: Iterable[EnterpriseDoc],
     *,
     batch_chunks: int = DEFAULT_BATCH_CHUNKS,
+    chunk_chars: int = DEFAULT_CHUNK_CHARS,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     reset: bool = False,
 ) -> dict[str, int]:
+    if chunk_chars < 1:
+        raise ValueError("chunk_chars must be >= 1")
+    if chunk_overlap < 0:
+        raise ValueError("chunk_overlap must be >= 0")
     if reset:
         sources = sorted({chunk.source for chunk in store.iter_chunks()})
         if sources:
@@ -254,7 +269,7 @@ def index_documents(
     indexed_chunks = 0
     for doc in docs:
         indexed_docs += 1
-        batch.extend(doc_chunks(doc))
+        batch.extend(doc_chunks(doc, chunk_chars=chunk_chars, chunk_overlap=chunk_overlap))
         if len(batch) >= batch_chunks:
             indexed_chunks += _write_batch(store, embedder, batch)
             batch = []
@@ -792,6 +807,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-k", type=int, default=DEFAULT_CANDIDATE_K)
     parser.add_argument("--gap-threshold", type=float, default=DEFAULT_GAP_THRESHOLD)
     parser.add_argument("--batch-chunks", type=int, default=DEFAULT_BATCH_CHUNKS)
+    parser.add_argument(
+        "--chunk-chars",
+        type=int,
+        default=DEFAULT_CHUNK_CHARS,
+        help=(
+            "target characters per indexed chunk. EnterpriseRAG scores document ids, so the "
+            "launch preset uses near-document chunks to avoid turning a 512k document corpus "
+            "into millions of tiny vectors."
+        ),
+    )
+    parser.add_argument("--chunk-overlap", type=int, default=DEFAULT_CHUNK_OVERLAP)
     parser.add_argument("--sparse-backend", choices=sorted(SPARSE_BACKENDS), default="lexical")
     parser.add_argument("--splade-model", default=DEFAULT_SPLADE_MODEL)
     parser.add_argument("--splade-batch-size", type=int, default=32)
@@ -836,6 +862,8 @@ def apply_top_config(args: argparse.Namespace) -> None:
     args.answer_mode = "openrouter"
     args.model = DEFAULT_MODEL
     args.max_context_chars = TOP_CONFIG_MAX_CHARS
+    args.chunk_chars = TOP_CONFIG_CHUNK_CHARS
+    args.chunk_overlap = TOP_CONFIG_CHUNK_OVERLAP
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -882,6 +910,8 @@ def main(argv: Iterable[str] | None = None) -> int:
                 embedder,
                 docs,
                 batch_chunks=args.batch_chunks,
+                chunk_chars=args.chunk_chars,
+                chunk_overlap=args.chunk_overlap,
                 reset=args.reset_index,
             )
         if args.backfill_splade:
