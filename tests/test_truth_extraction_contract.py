@@ -929,3 +929,26 @@ def test_a_markdown_heading_ends_the_block_even_when_it_contains_a_colon() -> No
 
     assert result.batch_rejection is None
     assert engine.call_count == 1
+
+
+def test_a_yaml_continuation_line_does_not_end_the_block() -> None:
+    """A list item or an indented continuation carries no colon, so it is not a key line, but
+    it is plainly still inside the block. Ending the scan there loses the refusal for every
+    key below it, which is how `supersedes: X` becomes quotable prose again."""
+    engine = _fake(_payload(SUPERSESSION))
+    with_a_list = (
+        "---\n"
+        "title: Retention policy\n"
+        "tags:\n"
+        "  - policy\n"
+        "  - retention\n"
+        "supersedes: archive_policy_2026-01-05.md\n"
+        "\n"
+        "We keep records for seven years.\n"
+    )
+
+    result = extract_file_claims(file=FILE, text=with_a_list, corpus_names=CORPUS, engine=engine)
+
+    assert result.batch_rejection is not None
+    assert result.batch_rejection.rung == "unclosed_frontmatter"
+    assert engine.call_count == 0

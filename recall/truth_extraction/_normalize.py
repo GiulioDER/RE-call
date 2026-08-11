@@ -92,13 +92,20 @@ def refuse_unclosed_frontmatter(text: str) -> None:
     # for it the block is everything up to the closing fence — so anything narrower here is a
     # false negative waiting to happen, and a false negative hands `supersedes: X` back to the
     # ladder as quotable prose.
+    # Once the block HAS started, an indented line or a comment is a continuation of it — a
+    # list item, a nested map, a folded scalar — and must not end it, or every key below the
+    # continuation is missed. Before the block has started, the same line is prose (a heading,
+    # an indented example) and does end it. `block and` is the whole difference.
     block: list[str] = []
     for line in lines[1:]:
         if not line.strip():
             continue
-        if not _KEY_LINE_RE.match(line):
-            break
-        block.append(line)
+        if _KEY_LINE_RE.match(line):
+            block.append(line)
+            continue
+        if block and (line[:1].isspace() or line.lstrip().startswith("#")):
+            continue
+        break
     declared = sorted(
         key
         for key in VALIDITY_KEYS
