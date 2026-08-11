@@ -934,3 +934,66 @@ def test_a_sentence_quoting_a_key_inline_is_prose_not_a_metadata_line() -> None:
 
     assert rejected == ()
     assert len(accepted) == 1
+
+
+def _continuation_shapes() -> dict[str, tuple[str, str]]:
+    """Documents where the metadata payload is NOT on the key line, mapped to the quote a
+    faithful model would produce. In the first two the target name exists only on the
+    continuation line, so an honest verbatim quote cannot include the key."""
+    return {
+        "yaml list under the key": (
+            "---\nsupersedes:\n  - archive_policy_2026-01-05.md\n\n# Retention\n\nWe keep records.\n",
+            "  - archive_policy_2026-01-05.md",
+        ),
+        "indented scalar under the key": (
+            "---\nsupersedes:\n  archive_policy_2026-01-05.md\n\n# Retention\n\nWe keep records.\n",
+            "  archive_policy_2026-01-05.md",
+        ),
+        "the value half of an ordinary key line": (
+            "---\nsupersedes: archive_policy_2026-01-05.md\nvalid_from: 2026-02-01\n\n" + BODY,
+            "archive_policy_2026-01-05.md",
+        ),
+    }
+
+
+def test_metadata_is_refused_even_when_the_quote_does_not_start_at_the_key() -> None:
+    """The rung judges where the quote SITS in the body, not the quote text alone. A payload on
+    a continuation line, or the value half of a key line, is still metadata."""
+    for shape, (document, quote) in _continuation_shapes().items():
+        body = human_body_of(document)
+        forged = {
+            "kind": "supersession",
+            "superseded": "archive_policy_2026-01-05",
+            "quote": quote,
+        }
+
+        accepted, rejected = normalize_extraction(
+            _payload(forged), file=FILE, human_body=body, corpus_names=CORPUS
+        )
+
+        assert accepted == (), shape
+        assert [rejection.rung for rejection in rejected] == ["quote_is_frontmatter"], shape
+
+
+def test_indented_prose_below_a_key_line_is_not_treated_as_a_continuation() -> None:
+    """The over rejection guard for the upward walk. An indented code sample separated from
+    the block by real prose belongs to the prose, not to the key above it."""
+    body = (
+        "valid_from: 2026-01-01\n"
+        "\n"
+        "The retention window is documented below.\n"
+        "\n"
+        "    archive_policy_2026-01-05.md is the superseded memo.\n"
+    )
+    claim = {
+        "kind": "status",
+        "value": "active",
+        "quote": "    archive_policy_2026-01-05.md is the superseded memo.",
+    }
+
+    accepted, rejected = normalize_extraction(
+        _payload(claim), file=FILE, human_body=body, corpus_names=CORPUS
+    )
+
+    assert rejected == ()
+    assert len(accepted) == 1

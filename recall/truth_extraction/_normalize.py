@@ -37,24 +37,21 @@ from recall.truth_extraction.types import (
     ValidityClaim,
 )
 
-#: A frontmatter key line: anything up to the first colon that is not itself a colon and does
-#: not open a markdown heading. Deliberately loose. A narrow pattern misses the keys a real
-#: block carries around the one that matters — `Last updated: ...`, `2026_review: pending` —
-#: and stopping the scan there loses the refusal entirely. Precision comes from the
-#: VALIDITY_KEYS gate below, not from this pattern.
-_KEY_LINE_RE = re.compile(r"^\s*[^\s:#][^:]*:")
-
-#: Field names each kind must carry, exactly. Extra fields are a shape failure: the model
-#: supplies semantics only, and a field nobody declared is a field nobody validates.
-#: A quote that IS a frontmatter key line. `parse_frontmatter` strips a block only when it
-#: opens on line 0 and closes; every other shape leaves `key: value` lines in the body, where
-#: they are verbatim substrings and pass rung 5. Built from VALIDITY_KEYS so the two cannot
-#: drift, and MULTILINE so a key line anywhere inside a multi line quote counts.
+#: A frontmatter key line. `parse_frontmatter` strips a block only when it opens on line 0 and
+#: closes; every other shape leaves `key: value` lines in the body, where they are verbatim
+#: substrings and pass rung 5. Built from VALIDITY_KEYS so the two cannot drift, and MULTILINE
+#: so a key line anywhere in a multi line region counts.
 _FRONTMATTER_QUOTE_RE = re.compile(
     r"^[ \t]*(?:" + "|".join(re.escape(key) for key in VALIDITY_KEYS) + r")[ \t]*:",
     re.MULTILINE,
 )
 
+#: A line that continues the key above it rather than starting something new: an indented
+#: scalar, or a list item. Used only to walk UPWARD from a quote that sits on one.
+_CONTINUATION_RE = re.compile(r"^(?:[ \t]+\S|[ \t]*-[ \t])")
+
+#: Field names each kind must carry, exactly. Extra fields are a shape failure: the model
+#: supplies semantics only, and a field nobody declared is a field nobody validates.
 _REQUIRED_FIELDS: Mapping[str, frozenset[str]] = {
     "supersession": frozenset({"kind", "superseded", "quote"}),
     "validity": frozenset({"kind", "key", "date", "quote"}),
@@ -200,7 +197,7 @@ def _claim_rungs(
             rung="quote_not_verbatim",
             reason=f"quote {_clipped(quote)!r} is not a verbatim substring of the body",
         )
-    if _FRONTMATTER_QUOTE_RE.search(quote):
+    if _quote_sits_in_frontmatter(human_body, quote):
         # Verbatim, and still not evidence. Justifying `supersedes: X` with the string
         # `supersedes: X` proves only that the line exists, which is what the claim was
         # supposed to establish. Refuse the CLAIM, not the document: the document's real
@@ -265,6 +262,40 @@ def _validity(
             reason=f"date {date!r} does not appear literally in the body",
         )
     return ValidityClaim(key=payload["key"], date=date, quote=quote)
+
+
+def _quote_sits_in_frontmatter(human_body: str, quote: str) -> bool:
+    """True when the quote is part of a metadata line rather than of prose.
+
+    Judged by WHERE the quote sits, not by the quote text alone. A model quoting honestly may
+    never include the key at all: under `supersedes:` written as a YAML list, the target name
+    exists only on the `  - name.md` line below it, so any faithful verbatim quote misses a
+    check that reads the quote in isolation. Quoting just the value half of an ordinary
+    `key: value` line evades it the same way.
+
+    So: widen to the whole lines the quote touches, and, when the quote sits on a continuation
+    line, walk up to the key that owns it. The walk stops at the first line that is not a
+    continuation, which is why indented prose under a paragraph is not captured by a key
+    further up the document.
+    """
+    start = human_body.find(quote)
+    if start == -1:  # pragma: no cover - rung 5 has already proven the quote is a substring
+        return False
+    line_start = human_body.rfind("\n", 0, start) + 1
+    line_end = human_body.find("\n", start + len(quote))
+    region = human_body[line_start : len(human_body) if line_end == -1 else line_end]
+    if _FRONTMATTER_QUOTE_RE.search(region):
+        return True
+    if not _CONTINUATION_RE.match(human_body[line_start:].split("\n", 1)[0]):
+        return False
+    cursor = line_start
+    while cursor > 0:
+        previous_start = human_body.rfind("\n", 0, cursor - 1) + 1
+        line = human_body[previous_start : cursor - 1]
+        if line.strip() and not _CONTINUATION_RE.match(line):
+            return bool(_FRONTMATTER_QUOTE_RE.match(line))
+        cursor = previous_start
+    return False
 
 
 def _clipped(value: str, limit: int = 60) -> str:
