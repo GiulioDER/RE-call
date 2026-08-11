@@ -57,6 +57,17 @@ visible instead of letting a 17% recall read as a model failure.
 The 47 edges remain fully sound for the downstream trust query set, where the label is the
 supersession relation itself rather than whether prose states it.
 
+**Correction, recorded rather than quietly overwritten.** The trust set was first built one row
+per header edge: 47 edges in, 47 successor rows out, one per `(superseded, successor)` pair. Five
+superseded PEPs have two successors each, so that builder emitted two rows sharing identical
+query text and identical `stale_ids`, differing only in which single successor each expected.
+Identical query text retrieves identically, so at most one row of each such pair could ever score
+correct, five pairs were unwinnable by construction, and the successor arm's ceiling was
+42/47 = 89.4% without the artifact saying so. The set was regrouped to one row per superseded PEP,
+with every successor collected into that row's `successor_ids` so a row is correct when retrieval
+prefers ANY of its successors: 42 successor rows, one per distinct superseded PEP, plus the same
+20 abstain rows, for 62 queries in total.
+
 ## Global Constraints
 
 - Tests live flat as `tests/test_<area>_<subject>.py`. No new test subdirectories.
@@ -1609,9 +1620,18 @@ Second, query text is the superseded PEP's `Title:` header, **mechanically**, ne
 authored. All 733 PEPs carry a Title, so this needs no judgement and no exceptions. It is a
 weaker query than a real user question, and the artifact must say so.
 
-Abstain rows come from PEPs with `Status:` Withdrawn or Rejected and no successor — 188 are
-available, sampled with a fixed seed. 47 successor rows + 20 abstain = **67 queries**, inside the
-40–70 target, against a shipped set of 6 whose successor arm is n=4.
+Third, rows are grouped **one per superseded PEP, not one per header edge**. Five superseded
+PEPs have two successors each, so a row per edge would emit two rows with identical `query` text
+and identical `stale_ids`, differing only in which single successor each expects. Identical query
+text retrieves identically, so at most one row of each such pair could ever score correct,
+capping the successor arm's ceiling below 100% without saying so. Grouping by the superseded PEP
+and collecting every successor into one row's `successor_ids` removes that cap: a row is correct
+when retrieval prefers ANY of its successors over the stale document.
+
+Abstain rows come from PEPs with `Status:` Withdrawn or Rejected and no successor: 188 are
+available, sampled with a fixed seed. 42 successor rows (one per distinct superseded PEP) + 20
+abstain = **62 queries**, inside the 40 to 70 target, against a shipped set of 6 whose successor
+arm is n=4.
 
 - [ ] **Step 1: Add the test**
 
@@ -1644,24 +1664,44 @@ def test_successor_rows_have_a_successor_and_abstain_rows_do_not():
             assert row["expect"] == "abstain" and row["successor_ids"] == []
 
 
-def test_successor_row_count_equals_census_header_edges(census: dict):
+def test_successor_row_count_equals_distinct_superseded_peps(census: dict):
+    # NOT `n_header_edges`: five superseded PEPs have two successors each, so grouping by the
+    # superseded PEP yields fewer rows than edges. This is the test that replaced the one that
+    # pinned the defect in place: a row-per-edge builder passed the old, wrong version of it.
+    distinct_superseded = {e["superseded"] for e in census["edges"]}
     rows = json.loads(TRUST.read_text(encoding="utf-8"))
     successors = [r for r in rows if r["expect"] == "successor"]
-    assert len(successors) == census["n_header_edges"]
+    assert len(successors) == len(distinct_superseded)
+
+
+def test_no_two_successor_rows_share_stale_ids():
+    # This is the property a row-per-edge builder violates: two rows with identical query text
+    # and identical stale_ids, differing only in which single successor each expects. Identical
+    # query text retrieves identically, so at most one of such a pair could ever score correct.
+    rows = json.loads(TRUST.read_text(encoding="utf-8"))
+    successors = [r for r in rows if r["expect"] == "successor"]
+    stale_id_lists = [tuple(r["stale_ids"]) for r in successors]
+    assert len(stale_id_lists) == len(set(stale_id_lists)), (
+        "two successor rows share identical stale_ids, the property that made a pair of rows "
+        "unwinnable by construction"
+    )
 
 
 def test_stale_and_successor_are_not_inverted(census: dict):
-    # `stale_ids` must hold the SUPERSEDED document and `successor_ids` the SUCCESSOR. Swapping
-    # them scores a system correct exactly when it prefers the stale document — the failure the
-    # trust layer exists to prevent, written into the labels every later number is graded on.
+    # `stale_ids` must hold the SUPERSEDED document and `successor_ids` the SUCCESSOR(s).
+    # Swapping them scores a system correct exactly when it prefers the stale document, the
+    # failure the trust layer exists to prevent, written into the labels every later number is
+    # graded on.
     #
     # This test exists because the suite was measured blind to it: an inverted builder still
-    # emits 67 rows, 47 of them `successor`, with matching schema keys and non-empty
+    # emits 62 rows, 42 of them `successor`, with matching schema keys and non-empty
     # `successor_ids`, and passes every other test in this file. Counting rows and checking
     # shape says nothing about direction.
     #
     # The comparison is against `census.json`'s edge list, which is independently frozen and
-    # whose own direction was verified against the PEP headers.
+    # whose own direction was verified against the PEP headers. Every row's stale id paired with
+    # EVERY id in its successor_ids must be a census edge, and the union over all rows must equal
+    # the census edge set exactly; a row's successor_ids can legitimately hold more than one id.
     edges = {(e["superseded"], e["successor"]) for e in census["edges"]}
     rows = json.loads(TRUST.read_text(encoding="utf-8"))
 
@@ -1671,12 +1711,14 @@ def test_stale_and_successor_are_not_inverted(census: dict):
 
     seen = set()
     for row in (r for r in rows if r["expect"] == "successor"):
-        pair = (stem(row["stale_ids"][0]), stem(row["successor_ids"][0]))
-        assert pair in edges, (
-            f"{row['id']}: {pair[0]} -> {pair[1]} is not a census edge. "
-            f"Reversed pair present in census: {(pair[1], pair[0]) in edges}"
-        )
-        seen.add(pair)
+        stale = stem(row["stale_ids"][0])
+        for successor_id in row["successor_ids"]:
+            pair = (stale, stem(successor_id))
+            assert pair in edges, (
+                f"{row['id']}: {pair[0]} -> {pair[1]} is not a census edge. "
+                f"Reversed pair present in census: {(pair[1], pair[0]) in edges}"
+            )
+            seen.add(pair)
     assert seen == edges, "successor rows do not cover the census edges exactly"
 ```
 
@@ -1686,7 +1728,7 @@ def test_stale_and_successor_are_not_inverted(census: dict):
 python -m pytest tests/test_truth_extraction_census.py -q
 ```
 
-Expected: 4 FAILs — `peps_trust_queries.json` does not exist.
+Expected: 6 FAILs: `peps_trust_queries.json` does not exist.
 
 - [ ] **Step 3: Write the builder**
 
@@ -1695,9 +1737,17 @@ Create `benchmarks/labelling/truth_extraction/build_trust_queries.py`:
 ```python
 """The downstream trust query set: does retrieval prefer the successor over the stale document?
 
-Each `(superseded, successor)` header edge is a natural `(stale_ids, successor_ids)` row. The
-shipped set in `recall/eval/queries.json` has 6 trust rows, of which only 4 expect a successor,
-and a Wilson interval on n=4 is uninterpretable.
+One row per superseded PEP, not one row per header edge. Five superseded PEPs have TWO
+successors each (pep-0563, for one, is superseded by both pep-0649 and pep-0749), so a row per
+edge would emit two rows with identical `query` text and identical `stale_ids`, differing only in
+which single successor each expects. Identical query text retrieves identically, so at most one
+row of each such pair could ever score correct, capping the successor arm's ceiling below 100%
+without saying so. Grouping by the superseded PEP and collecting every successor into one row's
+`successor_ids` removes that ceiling: a row is correct when retrieval prefers ANY of its
+successors over the stale document.
+
+The shipped set in `recall/eval/queries.json` has 6 trust rows, of which only 4 expect a
+successor, and a Wilson interval on n=4 is uninterpretable.
 
 A NEW file rather than an edit to `queries.json`: that file's ids address the synthetic memo
 corpus under `recall/eval/corpus`, so appending PEP rows would build a query set no single corpus
@@ -1728,15 +1778,22 @@ def build_queries(peps_dir: Path, *, n_abstain: int, seed: int) -> list[dict]:
     census = compute_census(peps_dir)
     rows: list[dict] = []
 
-    for i, edge in enumerate(census.edges, 1):
-        title = _fields(peps_dir, edge.superseded).get("Title", "")
+    # Group by the superseded PEP: a PEP with two successors gets ONE row whose successor_ids
+    # holds both, rather than two rows sharing identical query text and disjoint successor_ids.
+    by_superseded: dict[str, list[str]] = {}
+    for edge in census.edges:
+        by_superseded.setdefault(edge.superseded, []).append(edge.successor)
+
+    for i, stale in enumerate(sorted(by_superseded), 1):
+        successors = sorted(by_superseded[stale])
+        title = _fields(peps_dir, stale).get("Title", "")
         rows.append({
             "id": f"pt{i:02d}",
             "query": title.lower(),
             "trust": True,
             "expect": "successor",
-            "stale_ids": [f"{edge.superseded}.rst:0"],
-            "successor_ids": [f"{edge.successor}.rst:0"],
+            "stale_ids": [f"{stale}.rst:0"],
+            "successor_ids": [f"{s}.rst:0" for s in successors],
         })
 
     in_an_edge = {e.superseded for e in census.edges} | {e.successor for e in census.edges}
@@ -1787,26 +1844,27 @@ if __name__ == "__main__":
 python -m benchmarks.labelling.truth_extraction.build_trust_queries --peps-dir /tmp/peps/peps --n-abstain 20
 ```
 
-Expected: `67 queries (47 successor / 20 abstain)`.
+Expected: `62 queries (42 successor / 20 abstain)`.
 
 ```bash
 RECALL_PEPS_DIR=/tmp/peps/peps python -m pytest tests/test_truth_extraction_census.py -q
 ```
 
-Expected: `12 passed` (7 from Task 4 plus 5 here).
+Expected: `13 passed` (7 from Task 4 plus 6 here).
 
 - [ ] **Step 5: Mutate and watch red**
 
-Regenerate with `--n-abstain 40` (yielding 87 rows) and re-run. Expected:
+Regenerate with `--n-abstain 40` (yielding 82 rows) and re-run. Expected:
 `test_trust_set_is_between_40_and_70_queries` FAILS. Regenerate with `20`.
 
 Then the direction mutation, which is the one that matters. Swap `stale_ids` and `successor_ids`
 in the builder's successor-row block, regenerate to a SCRATCH path, and point the tests at it.
 Expected: `test_stale_and_successor_are_not_inverted` FAILS on the first row, reporting
 `Reversed pair present in census: True`, while
-`test_successor_row_count_equals_census_header_edges` and the schema and shape tests all still
-PASS. That contrast is the evidence: it was measured that the suite without this test passes an
-inverted set unchanged. Restore and confirm the committed file is byte-identical.
+`test_successor_row_count_equals_distinct_superseded_peps`, `test_no_two_successor_rows_share_stale_ids`
+and the schema and shape tests all still PASS. That contrast is the evidence: it was measured that
+the suite without this test passes an inverted set unchanged. Restore and confirm the committed
+file is byte-identical.
 
 - [ ] **Step 6: Commit**
 
@@ -1834,7 +1892,7 @@ Append a section under `## The artifacts`, matching the existing table style:
 | `results/truth_extraction/census.json` | the 17.0% prose recall ceiling; counts recomputable from `python/peps` at the recorded SHA |
 | `benchmarks/labelling/truth_extraction/gold.manifest.jsonl` | 47 gold positives (authored PEP headers) + 4 transplanted negatives, frozen |
 | `benchmarks/labelling/truth_extraction/adjudication.csv` | the blind negative-adjudication pack, 38 rows from the 30 of 175 marker-without-header PEPs that name a target; `adjudication_key.json` un-blinds it and must not be opened until labelling is finished |
-| `recall/eval/peps_trust_queries.json` | 67 trust queries (47 successor / 20 abstain), replacing a shipped successor arm of n=4 |
+| `recall/eval/peps_trust_queries.json` | 62 trust queries (42 successor / 20 abstain), one row per superseded PEP rather than one row per edge, replacing a shipped successor arm of n=4 |
 
 **What this set measures well, and what it does not.** Of 47 authored header edges, only **8** are
 restated in prose with the marker and the partner PEP in the same sentence. A perfect prose
@@ -1911,7 +1969,7 @@ git add results/ARTIFACTS.md benchmarks/archive/preregistrations/PREREGISTRATION
 | Blank is data | Task 5 docstring; `score_beam_labels.read_verdict` unchanged |
 | Four transplanted fixtures | Task 3 |
 | Freeze with `manifest.py` unchanged, `newline="\n"` | Task 4; every writer opens with `newline="\n"` |
-| Trust set 40–70 queries in `queries.json`'s schema | Task 6, 67 queries |
+| Trust set 40 to 70 queries in `queries.json`'s schema | Task 6, 62 queries |
 | `_provenance` with `generated_at()`/`model_stack()`, PEPs SHA, clone date, RE-call commit, per-file digests, counts, exact invocation | Task 2, `census_payload` |
 | Listed in `results/ARTIFACTS.md` in the same change | Task 7 |
 | State the PEPs-versus-memos caveat | Task 7 Step 1 |

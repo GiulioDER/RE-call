@@ -38,9 +38,18 @@ Properties:
       one `edges_from_fields`, so a wholesale inversion there flips all three together and every
       guard still passes. This test ties direction to a header field `edges_from_fields` never
       reads, so it cannot be fooled by the same inversion.
+  13. The gold manifest's `corpus_hashes.census` names the exact bytes of the committed
+      `census.json`, and the census's own recorded `peps_sha` matches what the manifest header
+      carries. `corpus_hashes.census` is the manifest's only tie to the census it was frozen
+      against, and re-freezing after a census edit is a manual step: without this test, an edited
+      census leaves the manifest naming a file no longer on disk, and every other test in this
+      file still passes.
+  14. No abstain row's stale PEP appears in any census edge, in either position. A stale PEP that
+      actually has a successor is not an abstention case.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -301,3 +310,32 @@ def test_stale_and_successor_are_not_inverted(census: dict):
             )
             seen.add(pair)
     assert seen == edges, "successor rows do not cover the census edges exactly"
+
+
+def test_manifest_census_hash_matches_the_committed_census():
+    # `corpus_hashes.census` is the manifest's only tie to the census it was frozen against, and
+    # re-freezing after a census edit is a manual step. Without this, an edited census leaves the
+    # manifest naming a file that is no longer on disk and every other test still passes.
+    _, header = read_manifest(GOLD)
+    assert header["corpus_hashes"]["census"] == hashlib.sha256(CENSUS.read_bytes()).hexdigest()
+    assert header["corpus_hashes"]["peps_sha"] == json.loads(
+        CENSUS.read_text(encoding="utf-8"))["_provenance"]["peps_sha"]
+
+
+def test_no_abstain_stale_pep_appears_in_a_census_edge(census: dict):
+    # An abstain row's premise is that its stale PEP has no successor. If that PEP actually names
+    # or is named by an edge, in either position, it is not an abstention case: it is either a
+    # superseded PEP with a successor (a successor case mislabelled abstain) or a live successor
+    # (which should never have been sampled as a stale document at all).
+    in_an_edge = {e["superseded"] for e in census["edges"]} | {e["successor"] for e in census["edges"]}
+    rows = json.loads(TRUST.read_text(encoding="utf-8"))
+
+    def stem(chunk_id: str) -> str:
+        name = chunk_id.rsplit(":", 1)[0]
+        return name[:-4] if name.endswith(".rst") else name
+
+    for row in (r for r in rows if r["expect"] == "abstain"):
+        stale = stem(row["stale_ids"][0])
+        assert stale not in in_an_edge, (
+            f"{row['id']}: {stale} appears in a census edge, so it is not an abstention case"
+        )
