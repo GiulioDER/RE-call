@@ -1,3 +1,4 @@
+import json
 import math
 
 import pytest
@@ -159,3 +160,51 @@ def test_wilson_ci_empty_is_nan():
 
     lo, hi = wilson_ci([])
     assert math.isnan(lo) and math.isnan(hi)
+
+
+def test_nan_to_null_sanitises_the_mapping_types_this_repo_actually_returns():
+    """`proposal_precision_recall` returns a MappingProxyType, not a dict.
+
+    A sanitiser that only recognises `dict` passes the proxy through untouched, so the NaN
+    survives and `json.dumps` then dies on the proxy itself rather than on the NaN.
+    """
+    from types import MappingProxyType
+
+    from recall.eval.metrics import nan_to_null
+    from recall.reasoning_proposals import proposal_precision_recall
+
+    proxy = nan_to_null(MappingProxyType({"precision": float("nan")}))
+    assert proxy == {"precision": None}
+
+    scored = nan_to_null({"precision_recall": proposal_precision_recall([], {("a", "b")})})
+    assert scored["precision_recall"]["precision"] is None
+    assert json.dumps(scored, allow_nan=False)
+
+
+def test_nan_to_null_sanitises_sets_and_nested_tuples():
+    from recall.eval.metrics import nan_to_null
+
+    assert nan_to_null({float("nan")}) == [None]
+    assert nan_to_null({"counts": (1, float("-inf"))}) == {"counts": [1, None]}
+
+
+def test_nan_to_null_survives_a_self_referential_payload():
+    """The sibling walk in benchmarks/artifact_contract.py guards cycles; so must this one."""
+    from recall.eval.metrics import nan_to_null
+
+    cyclic = {"precision": float("nan")}
+    cyclic["self"] = cyclic
+
+    sanitised = nan_to_null(cyclic)
+
+    assert sanitised["precision"] is None
+
+
+def test_nan_to_null_leaves_strings_and_finite_numbers_alone():
+    from recall.eval.metrics import nan_to_null
+
+    assert nan_to_null({"arm": "recall", "k": 5, "rate": 0.42}) == {
+        "arm": "recall",
+        "k": 5,
+        "rate": 0.42,
+    }

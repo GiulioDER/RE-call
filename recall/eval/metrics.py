@@ -1,6 +1,7 @@
 """Retrieval metrics (pure functions over id lists) + the guard false-confident rate."""
 from __future__ import annotations
 
+from collections.abc import Mapping, Set as AbstractSet
 import math
 import random
 from statistics import NormalDist
@@ -102,20 +103,33 @@ def fraction_true(flags: list[bool]) -> float:
     return sum(1 for f in flags if f) / len(flags)
 
 
-def nan_to_null(value: Any) -> Any:
+def nan_to_null(value: Any, seen: frozenset[int] = frozenset()) -> Any:
     """Recursively replace non-finite floats with None, so `allow_nan=False` can stay on.
 
     The NaN convention above is what makes this necessary: every rate here reports NaN rather
     than a fake score on no data, and `json.dumps` renders that as a bare `NaN` token which is
     not valid JSON and which no non-Python parser will read. Sanitise, then serialise strictly,
     so a missed one is a loud failure instead of an unparseable artifact.
+
+    Matches on the ABCs, not on `dict`/`list`. `proposal_precision_recall` returns a
+    `MappingProxyType`, which is a Mapping but NOT a dict, so a `dict`-only test would hand the
+    proxy straight back with its NaN intact and `json.dumps` would then die on the proxy rather
+    than on the number. Containers are normalised to plain dict/list on the way out.
+
+    `seen` is path scoped, so a cycle returns None instead of blowing the stack here, before the
+    serializer gets its chance to report the circular reference cleanly.
     """
     if isinstance(value, float) and not math.isfinite(value):
         return None
-    if isinstance(value, dict):
-        return {k: nan_to_null(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [nan_to_null(v) for v in value]
+    if isinstance(value, (str, bytes, bytearray)):
+        return value
+    if isinstance(value, (Mapping, list, tuple, AbstractSet)):
+        if id(value) in seen:
+            return None
+        seen = seen | {id(value)}
+        if isinstance(value, Mapping):
+            return {k: nan_to_null(v, seen) for k, v in value.items()}
+        return [nan_to_null(v, seen) for v in value]
     return value
 
 

@@ -12,10 +12,14 @@ from recall.provider_metadata import ProviderMetadata, provider_metadata_from_an
 #: that limit is deliberate rather than an oversight. A bare number under a cost named key is
 #: NOT caught either, which is a real gap, but closing it would make every run that reports a
 #: provider cost raise at the write site and is therefore not a change to make in passing.
+#:
+#: `pounds` is deliberately absent as a bare word while `£` and `GBP` are present: "weighs 5
+#: pounds" is not a cost claim, and a false positive here aborts a completed paid run at the
+#: write site. `dollars` and `euros` carry no such unit ambiguity, so they stay.
 _MONETARY_PROSE = re.compile(
     r"[$€£]\s*\d"
     r"|\b(?:USD|EUR|GBP)\s*\d"
-    r"|\d\s*(?:USD\b|EUR\b|GBP\b|dollars?\b|euros?\b|pounds?\b)",
+    r"|\d\s*(?:USD\b|EUR\b|GBP\b|dollars?\b|euros?\b)",
     re.IGNORECASE,
 )
 
@@ -47,6 +51,8 @@ def _publishes_monetary_prose(value: object, seen: set[int] | None = None) -> bo
     if isinstance(value, str):
         return _MONETARY_PROSE.search(value) is not None
     if isinstance(value, (bytes, bytearray)):
+        # Defensive only: bytes are not JSON serialisable, so a payload carrying them cannot be
+        # published either way. Non-UTF-8 encodings are a known miss, not covered coverage.
         return _MONETARY_PROSE.search(value.decode("utf-8", "replace")) is not None
 
     seen = set() if seen is None else seen

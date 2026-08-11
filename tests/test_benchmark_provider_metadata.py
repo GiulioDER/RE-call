@@ -184,6 +184,15 @@ def test_monetary_prose_covers_the_other_currencies_this_project_could_publish()
             reject_unauditable_cost_claims({"cost_claims": [], "headline": prose})
 
 
+def test_pounds_as_a_unit_of_weight_is_not_a_cost_claim() -> None:
+    """A false positive here aborts a completed paid run at the write site, so the bare word
+    `pounds` is deliberately not a currency form. The £ symbol and `GBP` still are."""
+
+    reject_unauditable_cost_claims(
+        {"cost_claims": [], "provider_metadata": [], "aggregate": {"note": "the box weighs 5 pounds"}}
+    )
+
+
 def test_self_referential_payload_does_not_blow_the_stack() -> None:
     """The walk runs before `json.dumps`, so a cycle must not surface as a RecursionError."""
 

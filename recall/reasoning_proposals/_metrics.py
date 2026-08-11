@@ -34,6 +34,15 @@ def _validated_statuses(
     values = tuple(statuses)
     if not values and not allow_empty:
         raise ValueError(f"{name} must name at least one status")
+    # Before any set or sort touches them: a non-string entry would otherwise surface as a
+    # TypeError raised from inside the error message builder, escaping every caller that guards
+    # this misconfiguration with `except ValueError`.
+    non_strings = [item for item in values if not isinstance(item, str)]
+    if non_strings:
+        raise ValueError(
+            f"{name} entries must be strings, got: "
+            + ", ".join(repr(item) for item in non_strings)
+        )
     unknown = sorted(set(values) - _VALID_STATUSES)
     if unknown:
         raise ValueError(

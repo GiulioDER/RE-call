@@ -202,6 +202,15 @@ def test_bare_string_status_policy_is_rejected() -> None:
         proposal_precision_recall([], {SEARCH_PAIR}, counted_statuses="candidate")
 
 
+@pytest.mark.parametrize("policy", [(1,), (1, "nope"), ([],), (None,)])
+def test_non_string_statuses_are_rejected_as_value_errors(policy: tuple[object, ...]) -> None:
+    """The documented failure vocabulary is ValueError; a TypeError from the message builder
+    escapes any caller that guards the misconfiguration with `except ValueError`."""
+
+    with pytest.raises(ValueError, match="must be strings"):
+        proposal_precision_recall([], {SEARCH_PAIR}, counted_statuses=policy)  # type: ignore[arg-type]
+
+
 def test_empty_counted_statuses_is_rejected() -> None:
     with pytest.raises(ValueError, match="at least one"):
         proposal_precision_recall([], {SEARCH_PAIR}, counted_statuses=())
