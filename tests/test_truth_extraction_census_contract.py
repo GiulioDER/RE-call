@@ -17,7 +17,9 @@ Properties, one test each:
 """
 from __future__ import annotations
 
+import csv
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -129,3 +131,60 @@ def test_writer_emits_lf_not_crlf(tmp_path: Path):
     raw = path.read_bytes()
     assert b"\r\n" not in raw
     assert json.loads(raw.decode("utf-8"))["n_files"] == 733
+
+
+_TE = Path(__file__).resolve().parents[1] / "benchmarks" / "labelling" / "truth_extraction"
+CSV_PATH = _TE / "adjudication.csv"
+KEY_PATH = _TE / "adjudication_key.json"
+
+
+def _csv_rows() -> list[dict[str, str]]:
+    with CSV_PATH.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def test_blind_csv_leaks_no_arm_model_or_judge_column():
+    with CSV_PATH.open(encoding="utf-8", newline="") as handle:
+        header = next(csv.reader(handle))
+    leaky = [
+        column
+        for column in header
+        if any(token in column.lower() for token in ("arm", "model", "judge", "score", "rule", "system"))
+    ]
+    assert not leaky, f"blind CSV exposes {leaky} — the adjudicator would see what produced the row"
+
+
+def test_the_key_is_a_separate_file_from_the_csv():
+    assert KEY_PATH.exists() and KEY_PATH != CSV_PATH
+    key = json.loads(KEY_PATH.read_text(encoding="utf-8"))
+    assert key, "key file is empty — nothing could be un-blinded after labelling"
+
+
+def test_every_csv_item_has_a_key_entry():
+    items = {row["item"] for row in _csv_rows()}
+    assert items == set(json.loads(KEY_PATH.read_text(encoding="utf-8")))
+
+
+def test_verdict_column_ships_blank():
+    rows = _csv_rows()
+    assert rows and all(row["your_verdict_Y_or_N"] == "" for row in rows)
+
+
+def test_every_row_names_a_candidate_target():
+    # The pool is 175 FILES but only the 30 that name a target in the marker's sentence are
+    # adjudicable. A row with an empty target would be asking a human to guess at an unprovable
+    # one, which is the class fix.py refuses to guess at rather than the class it adjudicates.
+    assert all(row["candidate_target"].startswith("pep-") for row in _csv_rows())
+
+
+def test_row_count_recomputes_from_the_corpus():
+    peps_dir = os.environ.get("RECALL_PEPS_DIR")
+    if not peps_dir:
+        pytest.skip(
+            "RECALL_PEPS_DIR unset — the committed row count is UNVERIFIED against the corpus. "
+            "Clone python/peps and point it at the nested peps/ dir."
+        )
+    from benchmarks.labelling.truth_extraction.build_adjudication import build_rows
+
+    rebuilt, _ = build_rows(Path(peps_dir), seed=0, limit=None)
+    assert len(rebuilt) == len(_csv_rows())
