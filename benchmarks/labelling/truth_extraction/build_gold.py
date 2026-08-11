@@ -11,7 +11,6 @@ body, which changes the digest, so `read_manifest` refuses the file rather than 
 from __future__ import annotations
 
 import argparse
-import subprocess
 from pathlib import Path
 
 from benchmarks.labelling.truth_extraction.census import compute_census
@@ -78,22 +77,31 @@ def _split(path: Path) -> tuple[str, str]:
     return split_header(path.read_text(encoding="utf-8", errors="replace"))
 
 
+#: Repo root, from this module's location. Every path below is anchored to it, so the freeze
+#: produces the same manifest regardless of the directory it is invoked from.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--peps-dir", type=Path, required=True)
+    # Taken explicitly, exactly as `census.py` takes it, and NOT derived by running
+    # `git -C <peps_dir>/.. rev-parse HEAD`. Git discovers repositories upwards: if the clone is
+    # ever laid out differently from the assumed nested `peps/peps`, that command succeeds
+    # against some enclosing repository and records an unrelated commit as the corpus
+    # provenance. A frozen artifact that silently names the wrong corpus is the precise failure
+    # the freeze exists to prevent, and it would be undetectable after the fact.
+    parser.add_argument("--peps-sha", required=True, help="git rev-parse HEAD of that clone")
     parser.add_argument(
         "--out", type=Path,
-        default=Path("benchmarks/labelling/truth_extraction/gold.manifest.jsonl"),
+        default=_REPO_ROOT / "benchmarks" / "labelling" / "truth_extraction" / "gold.manifest.jsonl",
     )
     args = parser.parse_args()
 
     questions = build_gold_questions(args.peps_dir)
     corpus_hashes = {
-        "peps_sha": subprocess.run(
-            ["git", "-C", str(args.peps_dir.parent), "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip(),
-        "census": file_digest(Path("results/truth_extraction/census.json")),
+        "peps_sha": args.peps_sha,
+        "census": file_digest(_REPO_ROOT / "results" / "truth_extraction" / "census.json"),
     }
     digest = write_manifest(args.out, questions, corpus_hashes=corpus_hashes)
     positives = sum(1 for q in questions if q.expected_relevance_labels)
