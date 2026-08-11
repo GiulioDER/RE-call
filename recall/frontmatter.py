@@ -23,8 +23,11 @@ VALIDITY_KEYS = ("valid_from", "valid_until", "supersedes")
 #: excluding them is what stops ``**Warning**: text``, ``[spec]: https://x`` and ``> quoted: x``
 #: from reading as keys. That matters more than it looks: see `frontmatter_span` on how one key
 #: unlocks the rest of a block.
+#: ``-`` and ``+`` are readmitted when the next character is not a space, because a markdown
+#: bullet REQUIRES the space: ``-k: x`` is a mapping and ``- k`` is a list item, and the two are
+#: distinguishable. ``*`` gets no such reprieve, since ``*emphasis*: text`` is ordinary markdown.
 _KEY_LINE = re.compile(r"""(?x)
-    (?: ["'] [^"']* ["'] | [^\s:\#\-*+`\[>|] [^:]* )
+    (?: ["'] [^"']* ["'] | (?: [-+](?=\S) | [^\s:\#\-*+`\[>|] ) [^:]* )
     \s* :
 """)
 
@@ -85,13 +88,17 @@ def frontmatter_span(text: str) -> int | None:
     generous than the truth:
 
     - **One key unlocks the rest of the block.** After any key, every comment and sequence item
-      is accepted, so a prose section led by ``Note: ...`` and followed by a heading and a
+      is accepted, so a prose section led by a key shaped line and followed by a heading and a
       bullet list is still paired and still deleted. Identical to the old behaviour, so
-      `legacy_pairing_differs` is correctly False and nothing is re-indexed. What IS fixed is
-      the section whose first non-blank line is a heading, a bullet, a blockquote, a link
-      reference definition or ordinary prose, which is the reported defect.
-    - ``Note: something`` and a bare ``http://example.com`` read as keys. Without a real parser
-      a first word followed by a colon is a key.
+      `legacy_pairing_differs` is correctly False and nothing is re-indexed.
+    - **The bar for "key shaped" is low, and that is the price of the line above it.** Spaces
+      are allowed inside a key so that ``date created:`` parses, which means ANY sentence with
+      a colon anywhere in it is a key. So is a bare ``http://example.com``, and so is a line
+      opening ``:`` or ``?``, both of which render as ordinary paragraphs.
+
+    What IS fixed, then, is narrower than it first looks: a section whose first non-blank line
+    is a heading, a bullet, a blockquote, a link reference definition, a table row, or a
+    sentence with **no colon in it**. That is the reported defect and the common shape.
     - A ``#`` comment BEFORE the first key is refused: at that position it cannot be told apart
       from a markdown heading, and a heading right after a rule is the commoner document.
     - An unquoted key containing a space is fine, but ``%YAML 1.2`` and a key whose colon is on
@@ -140,7 +147,12 @@ def legacy_pairing_differs(text: str) -> bool:
     second re-index, so it is not a migration shim and must not be labelled one.
     """
     head, _, rest = text.partition("\n")
-    if head.lstrip(chr(0xFEFF)).strip() != "---":
+    # The fence is tested BOTH ways the two scans split. Testing only `partition("\n")` lets an
+    # exotic break sitting on the first physical line hide the very divergence the next check
+    # exists for: that split sees no fence and returns, while the old title scan split with
+    # `splitlines`, saw one, and read the block.
+    physical = (text.splitlines() or [""])[0]
+    if not any(c.lstrip(chr(0xFEFF)).strip() == "---" for c in (head, physical)):
         return False  # no opening fence, so the old rule did not pair it either
     if any(ch in text for ch in _EXOTIC_BREAKS):
         # The old title scan split on these and the span does not, so the two could address

@@ -1244,7 +1244,10 @@ def test_a_generation_is_built_with_the_passage_encoder(manager) -> None:
 # its truncated chunk set into every future generation. `recall.index`'s own trigger does not
 # reach this path: it is a different freshness guard entirely.
 #
-# These are pure. The wiring into the build loop is covered by the DB-gated tests above.
+# These three are pure. The call site is covered by the DB-gated test directly below them: the
+# two pre-existing reuse tests do NOT reach it, because neither uses a payload for which
+# `_body_rule_changed` is True, so without that test the guard could be deleted outright and the
+# whole suite would stay green, database or no database.
 
 
 def test_a_markdown_object_whose_pairing_changed_refuses_reuse() -> None:
@@ -1263,3 +1266,26 @@ def test_a_non_markdown_object_is_never_reparsed_so_it_always_reuses() -> None:
     # carrying the same bytes never had a frontmatter block to lose.
     text = "---\n\n# Release notes\n\nProse.\n\n---\n\nTail.\n"
     assert _body_rule_changed("text/plain", text) is False
+
+
+@requires_db
+def test_a_thematic_break_object_is_never_reused_into_a_new_generation(manager) -> None:
+    """The assertion that dies if `_body_rule_changed` is removed from the build loop.
+
+    Reuse is keyed on the object's bytes, and those did not change when the frontmatter pairing
+    rule did. Without the guard this object would carry the chunk set built under the old rule,
+    with its whole first section missing, into every generation built afterwards.
+    """
+    data = b"---\n\n# Release notes\n\nProse the old rule deleted.\n\n---\n\nTail.\n"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+
+    must_run = _Embedder(9)
+    second = manager.create(manifest, pipeline)
+    stats = manager.build(second.generation_id, reader, must_run, lambda text: [text])
+
+    assert stats.reused_objects == 0, "an object whose body moved must not be reused"
+    assert must_run.calls == 1, "it must be re-chunked and re-embedded, not copied"

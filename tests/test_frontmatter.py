@@ -335,6 +335,14 @@ def test_a_quoted_key_is_a_key():
     assert parse_frontmatter(text)[0] == {"valid_until": "2020-01-01"}
 
 
+def test_a_key_leading_with_a_dash_or_plus_is_a_key():
+    # `-k:` and `+k:` load as mappings. A markdown bullet needs a SPACE after its marker, so the
+    # two ARE distinguishable, and refusing these costs the whole block for nothing.
+    for block in ("-k: x", "+k: x"):
+        text = f"---\n{block}\nvalid_until: 2020-01-01\n---\nbody\n"
+        assert parse_frontmatter(text)[0] == {"valid_until": "2020-01-01"}, block
+
+
 def test_a_wholly_indented_block_is_still_frontmatter():
     # `parse_frontmatter` has always read an indented validity key as top level. Whether that is
     # right is a separate question; refusing the whole block over it is not.
@@ -424,6 +432,33 @@ def test_a_key_shaped_lead_in_still_unlocks_a_whole_prose_section():
     assert legacy_pairing_differs(text) is False
 
 
+def test_a_sentence_containing_a_colon_is_a_key_and_unlocks_the_block():
+    """The price of allowing spaces inside a key, pinned rather than left to be discovered.
+
+    Spaces are what buy ``date created:``, and they also make any sentence with a colon in it a
+    key. Equal to the old behaviour, so not a regression and correctly not flagged, but it means
+    the fix protects a section led by a colon-free sentence, not one led by any sentence.
+    """
+    text = (
+        "---\n\nIn June we changed this: rotate quarterly.\n\n# Procedure\n\n"
+        "- step\n\n---\n\nTail.\n"
+    )
+    assert parse_frontmatter(text) == ({}, "Tail.\n")
+    assert legacy_pairing_differs(text) is False
+
+
+def test_a_sentence_without_a_colon_is_protected():
+    # The counterpart, and the shape the reported defect actually had.
+    text = "---\n\nIn June we changed the rotation.\n\n# Procedure\n\n- step\n\n---\n\nTail.\n"
+    assert parse_frontmatter(text) == ({}, text)
+    assert legacy_pairing_differs(text) is True
+
+
+def test_a_table_row_is_protected():
+    text = "---\n\n| a | b |\n| - | - |\n\n---\n\nTail.\n"
+    assert parse_frontmatter(text) == ({}, text)
+
+
 def test_a_bullet_list_is_prose_even_when_a_later_line_looks_like_a_key():
     text = "---\n\n- ship the migration\n- tell the team\n\nDeadline: Friday\n\n---\n\nTail.\n"
     assert parse_frontmatter(text) == ({}, text)
@@ -475,6 +510,17 @@ def test_legacy_pairing_differs_on_an_exotic_line_separator():
     # separator alone, independent of which key moved.
     assert legacy_pairing_differs("---\ntitle: A\u2028title: B\n---\nbody") is True
     assert legacy_pairing_differs("---\nz: 1\x0ctitle: C") is True
+
+
+def test_legacy_pairing_differs_when_the_separator_is_on_the_first_line():
+    """The separator guard must not be skippable by the separator it exists for.
+
+    Its fence precondition splits on ``\\n``. When the exotic break falls on the FIRST physical
+    line, that precondition sees no fence and returns before the separator test runs, while the
+    old title scan (which split with `splitlines`) saw a fence and read the block.
+    """
+    assert legacy_pairing_differs("---\x0ctitle: X\n\nbody\n") is True
+    assert legacy_pairing_differs("---\u2028title: X\u2028---\u2028body") is True
 
 
 def test_legacy_pairing_is_unchanged_for_a_residual_shape():

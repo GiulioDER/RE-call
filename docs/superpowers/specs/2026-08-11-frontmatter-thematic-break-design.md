@@ -137,15 +137,21 @@ and asserted in tests.
 **One key unlocks the rest of the block.** After any key, every comment and sequence item is
 accepted. A prose section led by `Note: ...` and followed by a heading and a bullet list is still
 paired and still deleted. That is identical to the old behaviour, so it is not a regression and
-`legacy_pairing_differs` is correctly `False`. What *is* fixed is the section whose first
-non-blank line is a heading, a bullet, a blockquote, a link reference definition or ordinary
-prose, which is the reported defect.
+`legacy_pairing_differs` is correctly `False`.
 
-The remaining residuals, each needing the *entire* candidate block to look like it:
+**The bar for "key shaped" is low, and that is the price of the paragraph above.** Spaces are
+allowed inside a key so `date created:` parses, which means *any* sentence with a colon anywhere
+in it is a key. So is a bare `http://example.com`, and so is a line opening `:` or `?`, both of
+which render as ordinary paragraphs.
 
-- `Note: something` and a bare `http://example.com` read as keys. Without a real parser, a first
-  word followed by a colon is a key.
-- A `#` comment **before** the first key is refused. At that position it cannot be told apart from
+So what *is* fixed is narrower than it first looks: a section whose first non-blank line is a
+heading, a bullet, a blockquote, a link reference definition, a table row, or a sentence **with no
+colon in it**. That is the reported defect and the common shape, and each of those is asserted in
+a test.
+
+Two shapes of valid YAML remain refused, both recorded rather than fixed:
+
+- A `#` comment **before** the first key. At that position it cannot be told apart from
   the markdown heading in the reported defect, and a heading right after a rule is much the more
   common document. A comment after a key is accepted.
 - `%YAML 1.2` refuses the block. A YAML directive belongs before the opening fence, not inside
@@ -268,21 +274,22 @@ Run on 2026-08-11, on this branch.
 
 | Check | Result |
 | --- | --- |
-| Full suite | 3166 passed, 516 skipped, 1 xfailed, exit 0 |
+| Full suite | 3171 passed, 517 skipped, 1 xfailed, exit 0 |
 | `python -m ruff check` | All checks passed (ruff 0.16.2) |
 | Old versus new body diff, 140 `.md` files | 0 bodies moved, 0 meta changed, 0 flagged for re-index |
-| YAML shape sweep | 17 of 18 shapes parse; only `%YAML 1.2` refused |
-| Markdown prose sweep | 8 of 8 sections correctly left in the body |
-| Guard mutation | 17 of 17 mutations produced a failure |
-| Adversarial audit | two rounds, 7 findings, all acted on |
+| YAML shape sweep | every shape swept parses except `%YAML 1.2` and a `#` comment before the first key |
+| Markdown prose sweep | every section swept correctly left in the body |
+| Guard mutation | 19 of 19 mutations produced a failure |
+| Adversarial audit | three rounds, 11 findings, all acted on |
 
 Four things the table does not say on its own.
 
 **The 516 skips are the `requires_db` tests.** No PostgreSQL is configured in this worktree. The
 index skip guard was verified through `_body_derivation_hash` as a pure function in both
-directions, and the generations reuse guard through `_body_rule_changed`, also pure. Neither was
-exercised through a real store round trip, and the wiring of `_body_rule_changed` into the build
-loop has no local coverage at all.
+directions, and the generations reuse guard through `_body_rule_changed`, also pure.
+`test_a_thematic_break_object_is_never_reused_into_a_new_generation` covers the call site, and it
+is the assertion that dies if the guard is deleted, but it is `@requires_db` and **did not execute
+here**. It runs for the first time in CI.
 
 **Zero moved bodies is the absence of a regression, not evidence the fix works.** None of this
 repository's 140 markdown files opens with a thematic break, so the corpus diff proves only that
@@ -296,12 +303,18 @@ passing on the at-least-one-key rule instead. Two tests were added in which a la
 the key, so the ordering rule is now the only thing refusing the block. This is the reason the
 mutation pass exists and it is worth recording that it paid.
 
-**The audit is what made this correct, and it cost two rounds.** The first found that the draft
-predicate refused six shapes of valid YAML; the second, after the repair, found three more plus
-the overclaiming docstring. Both rounds were adversarial, both produced concrete failing inputs,
-and I verified every finding against the real code before acting. The lesson generalised into the
-asymmetry principle above, which is the thing to carry forward: a rule that decides whether to
-parse something must be judged on what it *refuses*, not only on what it accepts.
+**The audit is what made this correct, and it cost three rounds.** The first found that the draft
+predicate refused six shapes of valid YAML. The second, after the repair, found three more plus an
+overclaiming docstring. The third found a hole in the separator guard the second round had just
+prompted (its fence precondition split one way while the divergence it models comes from the
+other, so the separator could skip the check that existed for it), a second overclaiming
+docstring, and a false claim in a test comment. Every round produced concrete failing inputs, and
+every finding was verified against the real code before being acted on.
+
+The lesson to carry forward is the asymmetry principle above: a rule that decides whether to parse
+something must be judged on what it *refuses*, not only on what it accepts. The second lesson is
+that a fix prompted by a review needs the same scrutiny as the original code, since round three's
+main finding was a defect introduced by round two's repair.
 
 The 17 mutations covered: the at-least-one-key rule, the key line test in both directions, the
 markdown lead-in exclusions, the key pattern narrowed back to ASCII-letter-leading, indented
