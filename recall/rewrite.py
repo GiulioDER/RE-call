@@ -199,6 +199,14 @@ class RejectionLedger:
             # Both halves of this class have to agree on their error contract. Translating only
             # `is_rejected` meant the same ledger in the same state raised two different exception
             # types depending on which way you touched it.
+            try:
+                # Translating the failure is not the same as undoing it. A COMMIT that fails
+                # leaves the INSERT pending, and the next successful `reject` commits both — so a
+                # rejection the reviewer was told was refused becomes durable anyway, or not,
+                # depending on whether the process exits first.
+                self._conn.rollback()
+            except sqlite3.Error:
+                pass
             raise RewriteRefused(
                 f"rejection ledger at {self._path} could not be written: {exc}"
             ) from exc
@@ -492,14 +500,53 @@ def _split_bom(raw: bytes) -> tuple[bytes, bytes]:
     return raw[:end], raw[end:]
 
 
-def _derived_span(lines: list[bytes]) -> tuple[int, int] | None:
-    """The one derived block's `(open, close)` line indices, `None` if there is none.
+def _fenced_flags(lines: list[bytes]) -> tuple[list[bool], bool]:
+    """`(is this line inside a code fence, is a fence still open at the end)`.
 
-    Fence aware, because a memo DOCUMENTING this format contains these markers, and a scan
-    without that finds the example inside a ``` block, calls it the machine-owned region and
-    writes the new entry into the user's code — editing human prose, which is the one thing this
+    Matched the way CommonMark matches them, not toggled. A parity toggle gets both directions
+    wrong and one of them is severe:
+
+    * an inner ``` closes an outer ````, so wrapping an example in a longer fence — the only way
+      to document this format at all — inverts the parity and exposes the markers inside it;
+    * a fence left open swallows the rest of the file, so the module cannot see the block it
+      wrote itself and appends a fresh one on every run.
+
+    So a closing fence must use its opener's character with a run at least as long and carry
+    nothing else, an opener may carry an info string, and neither may be indented four or more
+    columns, which is an indented code block rather than a fence.
+    """
+    flags: list[bool] = []
+    fence: tuple[bytes, int] | None = None
+    for line in lines:
+        bare = line.rstrip(b"\r\n")
+        stripped = bare.lstrip(b" ")
+        indent = len(bare) - len(stripped)
+        marker = stripped[:1]
+        run = len(stripped) - len(stripped.lstrip(marker)) if marker in (b"`", b"~") else 0
+        if indent <= 3 and run >= 3:
+            if fence is None:
+                fence = (marker, run)
+                flags.append(True)  # the opening fence line is part of the block
+                continue
+            if marker == fence[0] and run >= fence[1] and not stripped.lstrip(marker).strip():
+                fence = None
+                flags.append(True)  # so is the closing one
+                continue
+        flags.append(fence is not None)
+    return flags, fence is not None
+
+
+def _derived_span(lines: list[bytes]) -> tuple[int, int, list[bool]] | None:
+    """The one derived block's `(open, close, fenced-flags)`, `None` if there is none.
+
+    Fence aware, because a memo DOCUMENTING this format contains these markers and a scan without
+    that writes the new entry into the user's example — editing human prose, the one thing this
     module promises never to do. Markers must also start at column 0: accepting an indented one
-    lets an indented code block supply it.
+    lets an indented code block supply one.
+
+    The flags are returned rather than recomputed so the caller's dedup reads the same view. When
+    only the marker scan skipped fenced lines, an entry shown as an EXAMPLE inside the block
+    suppressed the real annotation, and said so with a refusal that was untrue.
 
     Anything other than exactly one open followed by one close is refused rather than guessed at.
     A half-open region cannot be appended past (that writes a second opening marker), a stray
@@ -507,16 +554,13 @@ def _derived_span(lines: list[bytes]) -> tuple[int, int] | None:
     complete blocks would have their entries deduped against only the first — writing a duplicate
     of something already recorded a few lines below.
     """
+    flags, _ = _fenced_flags(lines)
     opens: list[int] = []
     closes: list[int] = []
-    fenced = False
     for index, line in enumerate(lines):
+        if flags[index]:
+            continue
         bare = line.rstrip(b"\r\n")
-        if bare.strip().startswith((b"```", b"~~~")):
-            fenced = not fenced
-            continue
-        if fenced:
-            continue
         if bare == DERIVED_OPEN.encode("utf-8"):
             opens.append(index)
         elif bare == DERIVED_CLOSE.encode("utf-8"):
@@ -529,7 +573,7 @@ def _derived_span(lines: list[bytes]) -> tuple[int, int] | None:
             f"{DERIVED_OPEN} and {len(closes)} {DERIVED_CLOSE}, expected exactly one of each "
             f"in that order (an unclosed or duplicated block needs a human)"
         )
-    return opens[0], closes[0]
+    return opens[0], closes[0], flags
 
 
 def _terminator(line: bytes, default: bytes) -> bytes:
@@ -582,15 +626,30 @@ def _upsert_derived_entry(raw: bytes, key: str, value: str) -> bytes | None:
 
     span = _derived_span(lines)
     if span is not None:
-        opened, closed = span
+        opened, closed, fenced = span
         # `strip`, not `rstrip`: a human who hand-indented an entry still wrote that entry, and
         # matching it is what keeps a second run from adding a near-duplicate beside it. Values
         # carrying their own surrounding whitespace are refused upstream, so the two readings
-        # differ only for lines this module did not write.
-        if any(line.strip() == entry for line in lines[opened + 1 : closed]):
+        # differ only for lines this module did not write. Fenced lines are skipped for the same
+        # reason the marker scan skips them: an example is not a declaration.
+        if any(
+            line.strip() == entry
+            for index, line in enumerate(lines[opened + 1 : closed], start=opened + 1)
+            if not fenced[index]
+        ):
             return None
         lines.insert(closed, entry + _terminator(lines[closed], newline))
         return bom + b"".join(lines)
+
+    if _fenced_flags(lines)[1]:
+        # CommonMark reads an unclosed fence as running to the end of the document, so appending
+        # here really would put the machine's annotations inside the user's code block — where
+        # the next run cannot see them, and appends another. Three runs, three blocks. The file's
+        # structure is ambiguous and a human has to close the fence.
+        raise RewriteRefused(
+            "refusing to write: a code fence is still open at the end of the file, so an "
+            "appended derived block would land inside it and be invisible to the next run"
+        )
 
     tail = body if (not body or body.endswith(b"\n")) else body + newline
     return (

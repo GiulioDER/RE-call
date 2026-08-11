@@ -698,6 +698,175 @@ def test_an_indented_marker_is_prose_and_not_a_derived_block(tmp_path: Path) -> 
     )
 
 
+def test_an_unclosed_fence_is_refused_rather_than_appended_past(tmp_path: Path) -> None:
+    """A fence still open at EOF swallows the end of the file, including anything appended there.
+
+    A parity toggle reads an unclosed ```bash as "everything after this is code", so the module
+    cannot see the block it wrote itself and appends a fresh one on every run, reporting success
+    each time — the unbounded growth the dedup exists to prevent, reached through an ordinary
+    truncated fence. CommonMark agrees an unclosed fence runs to the end of the document, so
+    appending there really would put machine content inside the user's code block. Refusing is the
+    only honest option: the file's structure is ambiguous and a human has to look.
+    """
+    _corpus(tmp_path)
+    truncated = _NEW + b"\nHere is the command I ran:\n\n```bash\nrecall index --root .\n"
+    _memo(tmp_path, "new_decision_2026-06-01.md", truncated)
+    fact = _fact(
+        relation="contradicts",
+        subject_id="new_decision_2026-06-01.md",
+        object_id="old_decision_2026-01-01.md",
+    )
+
+    with pytest.raises(RewriteRefused, match="fence"):
+        apply_rewrite(tmp_path, fact, apply=True)
+
+    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == truncated
+
+
+def test_a_nested_fence_does_not_expose_the_example_inside_it(tmp_path: Path) -> None:
+    """Wrapping a ``` example in a ```` fence is how the format gets documented at all.
+
+    A toggle that ignores which fence opened lets the inner ``` close the outer ````, inverting
+    the parity so the example's markers read as the real block — and the entry is written into
+    the user's illustration. A closing fence has to match its opener's character and run length.
+    """
+    _corpus(tmp_path)
+    documented = (
+        b"# How recall annotates memos\n"
+        b"\n"
+        b"````markdown\n"
+        b"```\n" + DERIVED_OPEN.encode("utf-8") + b"\n"
+        b"contradicts: example.md\n" + DERIVED_CLOSE.encode("utf-8") + b"\n"
+        b"```\n"
+        b"````\n"
+        b"\n"
+        b"real prose after the fence\n"
+    )
+    _memo(tmp_path, "new_decision_2026-06-01.md", documented)
+
+    apply_rewrite(
+        tmp_path,
+        _fact(
+            relation="same_entity",
+            subject_id="new_decision_2026-06-01.md",
+            object_id="old_decision_2026-01-01.md",
+        ),
+        apply=True,
+    )
+
+    raw = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+    assert raw.startswith(documented), "the nested example was edited"
+    assert raw.endswith(
+        DERIVED_OPEN.encode("utf-8") + b"\nsame_entity: old_decision_2026-01-01.md\n"
+        + DERIVED_CLOSE.encode("utf-8") + b"\n"
+    )
+
+
+def test_a_tilde_fence_is_not_closed_by_a_backtick_one(tmp_path: Path) -> None:
+    """The other half of "a closing fence must match its opener".
+
+    Run length alone catches ```` around ```; it does not catch `~~~` around ```, where the runs
+    are equal and only the character differs. `~~~` is the conventional outer fence precisely
+    because it cannot collide with the backticks inside it.
+    """
+    _corpus(tmp_path)
+    documented = (
+        b"# How recall annotates memos\n"
+        b"\n"
+        b"~~~markdown\n"
+        b"```\n" + DERIVED_OPEN.encode("utf-8") + b"\n"
+        b"contradicts: example.md\n" + DERIVED_CLOSE.encode("utf-8") + b"\n"
+        b"```\n"
+        b"~~~\n"
+        b"\n"
+        b"real prose after the fence\n"
+    )
+    _memo(tmp_path, "new_decision_2026-06-01.md", documented)
+
+    apply_rewrite(
+        tmp_path,
+        _fact(
+            relation="same_entity",
+            subject_id="new_decision_2026-06-01.md",
+            object_id="old_decision_2026-01-01.md",
+        ),
+        apply=True,
+    )
+
+    raw = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+    assert raw.startswith(documented), "the tilde-fenced example was edited"
+
+
+def test_an_indented_backtick_line_does_not_open_a_fence(tmp_path: Path) -> None:
+    """Four spaces of indent is an indented code block, so its content cannot open a fence.
+
+    Letting it open one hides everything after it — including the real derived block at column 0
+    — so the module appends a second block beside the one it already wrote.
+    """
+    _corpus(tmp_path)
+    marker_open, marker_close = DERIVED_OPEN.encode("utf-8"), DERIVED_CLOSE.encode("utf-8")
+    with_indented_ticks = (
+        b"# new decision\n"
+        b"\n"
+        b"An indented code sample, not a fence:\n"
+        b"\n"
+        b"    ```\n"
+        b"    some literal text\n"
+        b"\n"
+        + marker_open + b"\ncontradicts: something_else_2025-12-01.md\n" + marker_close + b"\n"
+    )
+    _memo(tmp_path, "new_decision_2026-06-01.md", with_indented_ticks)
+
+    apply_rewrite(
+        tmp_path,
+        _fact(
+            relation="contradicts",
+            subject_id="new_decision_2026-06-01.md",
+            object_id="old_decision_2026-01-01.md",
+        ),
+        apply=True,
+    )
+
+    raw = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+    assert raw.count(marker_open) == 1, "the real block was hidden and a second one appended"
+    assert b"contradicts: old_decision_2026-01-01.md\n" + marker_close in raw
+
+
+def test_an_example_entry_inside_the_block_does_not_count_as_declared(tmp_path: Path) -> None:
+    """The two scans in one function must agree about what counts as content.
+
+    `_derived_span` skips fenced lines and the dedup did not, so an entry shown as an example
+    inside the machine-owned block suppressed the real annotation — and said so with a refusal
+    message that was simply untrue.
+    """
+    _corpus(tmp_path)
+    marker_open, marker_close = DERIVED_OPEN.encode("utf-8"), DERIVED_CLOSE.encode("utf-8")
+    illustrated = (
+        _NEW + marker_open + b"\n"
+        b"Example of what recall writes here:\n"
+        b"\n"
+        b"```\n"
+        b"contradicts: old_decision_2026-01-01.md\n"
+        b"```\n" + marker_close + b"\n"
+    )
+    _memo(tmp_path, "new_decision_2026-06-01.md", illustrated)
+
+    result = apply_rewrite(
+        tmp_path,
+        _fact(
+            relation="contradicts",
+            subject_id="new_decision_2026-06-01.md",
+            object_id="old_decision_2026-01-01.md",
+        ),
+        apply=True,
+    )
+
+    assert result.written is True, "a fenced example was mistaken for a declaration"
+    raw = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+    assert raw.count(b"contradicts: old_decision_2026-01-01.md") == 2
+    assert raw.count(marker_open) == 1
+
+
 def test_two_derived_blocks_are_refused_rather_than_written_into(tmp_path: Path) -> None:
     """One block per file is the stated rule; pairing only the first open with the first close
     writes a duplicate entry into block one that already exists in block two."""
@@ -891,6 +1060,56 @@ def test_writing_to_an_unusable_ledger_refuses_the_way_reading_one_does(tmp_path
     with pytest.raises(RewriteRefused, match="ledger"):
         ledger.reject("claim_x", reviewer_id="r", reason="no", rejected_at=_WHEN)
     assert not isinstance(RewriteRefused("x"), sqlite3.Error)
+
+
+def test_a_refused_rejection_is_not_committed_by_the_next_successful_one(tmp_path: Path) -> None:
+    """Translating the failure is not the same as undoing it.
+
+    A `reject` whose COMMIT fails leaves the INSERT pending on the connection, and the next
+    successful `reject` commits both. The reviewer was told the first one was not recorded, and it
+    becomes durable anyway — nondeterministically, since it is lost if the process exits first.
+    """
+    import sqlite3
+
+    class FailFirstCommit:
+        """A real connection with its FIRST commit made to fail, the way a lock contention does.
+
+        `sqlite3.Connection.commit` is a read-only C attribute, so the fault is injected around
+        the connection rather than into it. Everything else — the INSERT, the rollback, the
+        second commit, the reads — is the real database.
+        """
+
+        def __init__(self, real: sqlite3.Connection) -> None:
+            self._real, self._commits = real, 0
+
+        def execute(self, *a: object, **k: object) -> object:
+            return self._real.execute(*a, **k)  # type: ignore[arg-type]
+
+        def commit(self) -> None:
+            self._commits += 1
+            if self._commits == 1:
+                raise sqlite3.OperationalError("database is locked")
+            self._real.commit()
+
+        def rollback(self) -> None:
+            self._real.rollback()
+
+        @property
+        def in_transaction(self) -> bool:
+            return self._real.in_transaction
+
+    with RejectionLedger(tmp_path / "ledger.sqlite3") as ledger:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(ledger, "_conn", FailFirstCommit(ledger._conn))
+            with pytest.raises(RewriteRefused, match="ledger"):
+                ledger.reject("claim_BLOCKED", reviewer_id="r", reason="no", rejected_at=_WHEN)
+            assert ledger._conn.in_transaction is False, "the failed insert is still pending"
+            ledger.reject("claim_LATER", reviewer_id="r", reason="no", rejected_at=_WHEN)
+
+        assert ledger.is_rejected("claim_LATER") is True
+        assert ledger.is_rejected("claim_BLOCKED") is False, (
+            "a rejection reported as refused was committed by a later one"
+        )
 
 
 def test_a_ledger_directory_that_cannot_be_created_is_refused(tmp_path: Path) -> None:
