@@ -22,7 +22,15 @@ from __future__ import annotations
 
 import pytest
 
-from recall.derived_block import CLOSE_FENCE, OPEN_FENCE, split_derived_block
+from recall.derived_block import (
+    CLOSE_FENCE,
+    OPEN_FENCE,
+    DerivedBlockError,
+    DerivedEntry,
+    derived_digest,
+    render_derived_block,
+    split_derived_block,
+)
 
 
 def test_no_fence_yields_the_whole_body_rstripped() -> None:
@@ -93,3 +101,127 @@ def test_split_never_raises_on_malformed_input() -> None:
     """index.py and generations.py do not run lint. A half-written file must not crash a build."""
     for body in (f"{OPEN_FENCE}", f"{CLOSE_FENCE}\nstray\n", f"{OPEN_FENCE}\n{OPEN_FENCE}\n"):
         split_derived_block(body)
+
+
+_PROPOSAL_A = "a" * 64
+_PROPOSAL_B = "b" * 64
+_PROPOSAL_C = "c" * 64
+
+
+def _entry(
+    head: str = "contradicts",
+    value: str = "project_alpha_2026-03-02",
+    proposal: str = _PROPOSAL_A,
+    note: str = "",
+) -> DerivedEntry:
+    return DerivedEntry(
+        head=head,
+        value=value,
+        proposal=proposal,
+        provider="recall.deterministic@session3-v1",
+        reviewer="giulio",
+        at="2026-08-11T09:14:22Z",
+        note=note,
+    )
+
+
+def test_render_emits_the_documented_grammar() -> None:
+    text = render_derived_block([_entry(note="both state a retention window")])
+    assert text == (
+        f"{OPEN_FENCE}\n"
+        "contradicts: project_alpha_2026-03-02\n"
+        f"  proposal: {_PROPOSAL_A}\n"
+        "  provider: recall.deterministic@session3-v1\n"
+        "  reviewer: giulio\n"
+        "  at: 2026-08-11T09:14:22Z\n"
+        "  note: both state a retention window\n"
+        f"digest: {derived_digest([_entry(note='both state a retention window')])}\n"
+        f"{CLOSE_FENCE}\n"
+    )
+
+
+def test_render_omits_an_absent_note() -> None:
+    assert "note:" not in render_derived_block([_entry()])
+
+
+def test_render_sorts_entries_by_head_then_value() -> None:
+    """Sorted output is what makes a re-render byte identical, so a re-run never churns."""
+    shuffled = [
+        _entry("status", "adopted", _PROPOSAL_C),
+        _entry("same_entity", "project_beta_2026-04-01", _PROPOSAL_B),
+        _entry("contradicts", "project_alpha_2026-03-02", _PROPOSAL_A),
+    ]
+    heads = [
+        line.split(":")[0]
+        for line in render_derived_block(shuffled).split("\n")
+        if line and not line.startswith((" ", "<", "digest:"))
+    ]
+    assert heads == ["contradicts", "same_entity", "status"]
+
+
+def test_render_normalises_deprecated_and_obsolete_to_superseded() -> None:
+    """The one place a repair is correct: a proposal's vocabulary arriving at the boundary.
+
+    `deprecated` and `obsolete` are in CLOSURE_MARKERS (`recall/lint.py:36`). Written literally,
+    the machine's own block would trip the linter built to find prose closure.
+    """
+    for alias in ("deprecated", "obsolete"):
+        assert "status: superseded\n" in render_derived_block([_entry("status", alias)])
+
+
+def test_render_refuses_an_empty_entry_list() -> None:
+    with pytest.raises(DerivedBlockError, match="no entries"):
+        render_derived_block([])
+
+
+def test_render_refuses_duplicate_entries() -> None:
+    """A duplicate (head, value) makes the sort non-total, so input order would leak into bytes."""
+    with pytest.raises(DerivedBlockError, match="duplicate"):
+        render_derived_block([_entry(proposal=_PROPOSAL_A), _entry(proposal=_PROPOSAL_B)])
+
+
+def test_render_refuses_more_than_one_status() -> None:
+    with pytest.raises(DerivedBlockError, match="status"):
+        render_derived_block([_entry("status", "adopted"), _entry("status", "closed")])
+
+
+def test_digest_covers_every_field() -> None:
+    """A field outside the digest is a field an editor can change without detection."""
+    base = _entry()
+    for changed in (
+        DerivedEntry("same_entity", base.value, base.proposal, base.provider, base.reviewer,
+                     base.at, base.note),
+        DerivedEntry(base.head, "other_memo_2026-05-05", base.proposal, base.provider,
+                     base.reviewer, base.at, base.note),
+        DerivedEntry(base.head, base.value, _PROPOSAL_B, base.provider, base.reviewer, base.at,
+                     base.note),
+        DerivedEntry(base.head, base.value, base.proposal, "other.provider", base.reviewer,
+                     base.at, base.note),
+        DerivedEntry(base.head, base.value, base.proposal, base.provider, "someone-else",
+                     base.at, base.note),
+        DerivedEntry(base.head, base.value, base.proposal, base.provider, base.reviewer,
+                     "2020-01-01T00:00:00Z", base.note),
+        DerivedEntry(base.head, base.value, base.proposal, base.provider, base.reviewer,
+                     base.at, "a note that was not there"),
+    ):
+        assert derived_digest([changed]) != derived_digest([base])
+
+
+def test_digest_carries_the_grammar_version() -> None:
+    """A v2 grammar must not be able to collide with a v1 hash of the same entries."""
+    from recall.derived_block import DERIVED_BLOCK_VERSION
+    from recall.lineage import canonical_sha256
+
+    entry = _entry()
+    assert derived_digest([entry]) == canonical_sha256(
+        {
+            "v": DERIVED_BLOCK_VERSION,
+            "entries": [
+                {
+                    "head": entry.head, "value": entry.value, "proposal": entry.proposal,
+                    "provider": entry.provider, "reviewer": entry.reviewer, "at": entry.at,
+                    "note": entry.note,
+                }
+            ],
+        }
+    )

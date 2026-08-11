@@ -28,7 +28,13 @@ for frontmatter.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
+from datetime import datetime
+
+from recall.frontmatter import supersedes_key
+from recall.lineage import canonical_sha256
 
 #: Alone on a line. `.strip()` is used for the comparison, so an indented fence still counts —
 #: the read path errs toward stripping MORE, never less.
@@ -78,3 +84,169 @@ def split_derived_block(body: str) -> DerivedSplit:
     if start is None:
         return DerivedSplit(body.rstrip(), "", None)
     return DerivedSplit(body[:start].rstrip(), body[start:], start)
+
+
+#: Bumped only by a grammar change, and hashed INTO the digest so a v2 block cannot collide with
+#: a v1 hash of the same entries.
+DERIVED_BLOCK_VERSION = 1
+
+#: The only heads a derived block may carry.
+DERIVED_HEADS = ("contradicts", "same_entity", "status")
+
+#: Refused BY NAME rather than falling through to "unknown head". These three have frontmatter
+#: keys the trust layer reads (`recall/frontmatter.py:12`); a second copy in the body is a second
+#: source of truth that can disagree with the first, and the error should say so.
+FORBIDDEN_HEADS = ("supersedes", "valid_from", "valid_until")
+
+#: Closed vocabulary. It deliberately EXCLUDES `deprecated` and `obsolete`, which are in
+#: CLOSURE_MARKERS (`recall/lint.py:36`): written literally, the machine's own block would trip
+#: the linter built to find prose closure.
+STATUS_VALUES = ("open", "adopted", "closed", "superseded", "rejected", "abandoned")
+STATUS_ALIASES = {"deprecated": "superseded", "obsolete": "superseded"}
+
+REQUIRED_SUBKEYS = ("proposal", "provider", "reviewer", "at")
+OPTIONAL_SUBKEYS = ("note",)
+INDENT = "  "
+
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+class DerivedBlockError(ValueError):
+    """A derived block is malformed, forbidden, or disagrees with its digest."""
+
+
+class DerivedDigestMismatch(DerivedBlockError):
+    """The block parses, and its structure does not hash to the digest it carries.
+
+    A distinct type rather than a message the caller sniffs for. `diagnose_derived_block` has to
+    tell `derived-block-tampered` from `derived-block-malformed`, and a branch keyed off another
+    function's error STRING is an interface nobody knows they are maintaining.
+    """
+
+
+@dataclass(frozen=True)
+class DerivedEntry:
+    """One machine-proposed relation, with the review that let it into the file."""
+
+    head: str
+    value: str
+    proposal: str
+    provider: str
+    reviewer: str
+    at: str
+    note: str = ""
+
+
+def _is_utc_instant(value: str) -> bool:
+    if not value.endswith("Z"):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    return True
+
+
+def _validate_entry(entry: DerivedEntry) -> None:
+    """Every rule here is a refusal. Nothing in this function repairs anything."""
+    if entry.head in FORBIDDEN_HEADS:
+        raise DerivedBlockError(
+            f"head {entry.head!r} is frontmatter the trust layer reads; a copy in the body "
+            f"would be a second source of truth that can disagree with the first"
+        )
+    if entry.head not in DERIVED_HEADS:
+        raise DerivedBlockError(f"unknown head {entry.head!r}")
+    if entry.head == "status":
+        if entry.value in STATUS_ALIASES:
+            raise DerivedBlockError(
+                f"status {entry.value!r} is a closure marker and would trip recall lint; "
+                f"write {STATUS_ALIASES[entry.value]!r}"
+            )
+        if entry.value not in STATUS_VALUES:
+            raise DerivedBlockError(
+                f"status {entry.value!r} is outside the closed vocabulary "
+                f"{' | '.join(STATUS_VALUES)}"
+            )
+    elif not entry.value or supersedes_key(entry.value) != entry.value:
+        # Refuse the wikilink, do NOT unwrap it. `supersedes_key` exists to normalise what a
+        # HUMAN wrote (`recall/frontmatter.py:63`); a machine writing its own file has no excuse.
+        raise DerivedBlockError(f"value {entry.value!r} is not a bare document stem")
+    if not _HEX64.match(entry.proposal):
+        raise DerivedBlockError("proposal must be 64 lowercase hex characters")
+    if not _is_utc_instant(entry.at):
+        raise DerivedBlockError("at must be a Z-suffixed UTC ISO-8601 instant")
+    if not entry.provider.strip():
+        raise DerivedBlockError("provider must be a non-empty single line")
+    if not entry.reviewer.strip():
+        raise DerivedBlockError("reviewer must be a non-empty single line")
+    for name, text in (
+        ("value", entry.value), ("provider", entry.provider),
+        ("reviewer", entry.reviewer), ("note", entry.note),
+    ):
+        if "\n" in text:
+            raise DerivedBlockError(f"{name} must be a single line")
+
+
+def _validate_set(entries: Sequence[DerivedEntry]) -> None:
+    if not entries:
+        raise DerivedBlockError("a derived block with no entries is churn; remove the block")
+    keys = [(entry.head, entry.value) for entry in entries]
+    if len(set(keys)) != len(keys):
+        # Not fussiness: a duplicate (head, value) makes the sort non-total, so the caller's
+        # input order would leak into the rendered bytes and the re-render would not be stable.
+        raise DerivedBlockError("duplicate entry: (head, value) must be unique within a block")
+    if sum(1 for entry in entries if entry.head == "status") > 1:
+        raise DerivedBlockError("at most one status entry per block")
+
+
+def derived_digest(entries: Sequence[DerivedEntry]) -> str:
+    """`canonical_sha256` over the parsed structure — deliberately NOT over the raw bytes.
+
+    Hashing bytes would report every CRLF checkout as tampered, and this repo reads `utf-8-sig`
+    and tolerates a BOM precisely because it lives on both Windows and Linux.
+    """
+    return canonical_sha256(
+        {
+            "v": DERIVED_BLOCK_VERSION,
+            "entries": [
+                {
+                    "head": entry.head, "value": entry.value, "proposal": entry.proposal,
+                    "provider": entry.provider, "reviewer": entry.reviewer, "at": entry.at,
+                    "note": entry.note,
+                }
+                for entry in entries
+            ],
+        }
+    )
+
+
+def _normalise(entry: DerivedEntry) -> DerivedEntry:
+    if entry.head == "status" and entry.value in STATUS_ALIASES:
+        return replace(entry, value=STATUS_ALIASES[entry.value])
+    return entry
+
+
+def render_derived_block(entries: Sequence[DerivedEntry]) -> str:
+    """Render a block, sorted and digested. The output always ends in the close fence and one \\n.
+
+    This is the ONE place a repair happens, and it is a repair at the boundary rather than to a
+    file: `deprecated` / `obsolete` arriving from a proposal are normalised to `superseded`.
+    `parse_derived_block` refuses those same values, because a file containing them is claiming
+    something the grammar does not permit.
+    """
+    ordered = tuple(sorted((_normalise(e) for e in entries), key=lambda e: (e.head, e.value)))
+    _validate_set(ordered)
+    for entry in ordered:
+        _validate_entry(entry)
+    lines = [OPEN_FENCE]
+    for entry in ordered:
+        lines.append(f"{entry.head}: {entry.value}")
+        lines.append(f"{INDENT}proposal: {entry.proposal}")
+        lines.append(f"{INDENT}provider: {entry.provider}")
+        lines.append(f"{INDENT}reviewer: {entry.reviewer}")
+        lines.append(f"{INDENT}at: {entry.at}")
+        if entry.note:
+            lines.append(f"{INDENT}note: {entry.note}")
+    lines.append(f"digest: {derived_digest(ordered)}")
+    lines.append(CLOSE_FENCE)
+    return "\n".join(lines) + "\n"
