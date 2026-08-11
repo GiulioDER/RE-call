@@ -133,6 +133,19 @@ def test_writer_emits_lf_not_crlf(tmp_path: Path):
     assert json.loads(raw.decode("utf-8"))["n_files"] == 733
 
 
+def test_validate_peps_sha_format_accepts_a_real_sha():
+    from benchmarks.labelling.truth_extraction.census import _validate_peps_sha_format
+
+    _validate_peps_sha_format("5981b2a292610104eb30735423504c52fe454650")  # must not raise
+
+
+def test_validate_peps_sha_format_rejects_a_malformed_sha():
+    from benchmarks.labelling.truth_extraction.census import _validate_peps_sha_format
+
+    with pytest.raises(ValueError, match="40-character"):
+        _validate_peps_sha_format("not-a-sha")
+
+
 _TE = Path(__file__).resolve().parents[1] / "benchmarks" / "labelling" / "truth_extraction"
 CSV_PATH = _TE / "adjudication.csv"
 KEY_PATH = _TE / "adjudication_key.json"

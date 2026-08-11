@@ -11,6 +11,8 @@ body, which changes the digest, so `read_manifest` refuses the file rather than 
 from __future__ import annotations
 
 import argparse
+import json
+import re
 from pathlib import Path
 
 from benchmarks.labelling.truth_extraction.census import compute_census
@@ -81,6 +83,40 @@ def _split(path: Path) -> tuple[str, str]:
 #: produces the same manifest regardless of the directory it is invoked from.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
+#: A `git rev-parse HEAD` output: 40 lowercase hex characters. Same format `census.py` enforces
+#: on its own `--peps-sha`.
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _check_peps_sha(peps_sha: str, census_path: Path) -> None:
+    """Refuse a `--peps-sha` that is malformed, or that disagrees with `census.json`'s recorded one.
+
+    `--peps-sha` is taken unvalidated and is the SOLE corpus provenance in the frozen gold
+    manifest, so a typo here becomes unfalsifiable truth: nothing downstream can tell the
+    manifest names the wrong corpus. `census.json`'s own `_provenance.peps_sha` is an independent
+    record of the same corpus snapshot, already on disk by the time the gold manifest is frozen,
+    so comparing against it catches the typo instead of freezing it.
+    """
+    if not _SHA_RE.fullmatch(peps_sha):
+        raise ValueError(f"--peps-sha {peps_sha!r} is not a 40-character lowercase hex git SHA")
+    # Every failure reading the cross-check's OTHER side is folded into the same ValueError the
+    # caller already handles, with the path named, rather than left to surface as a bare
+    # FileNotFoundError/JSONDecodeError/KeyError traceback that names no file.
+    try:
+        census_sha = json.loads(census_path.read_text(encoding="utf-8"))["_provenance"]["peps_sha"]
+    except FileNotFoundError as exc:
+        raise ValueError(f"{census_path} does not exist: run census.py before build_gold.py") from exc
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ValueError(
+            f"{census_path} could not be read as a census artifact with _provenance.peps_sha: {exc}"
+        ) from exc
+    if peps_sha != census_sha:
+        raise ValueError(
+            f"--peps-sha {peps_sha} does not match {census_path}'s recorded peps_sha "
+            f"{census_sha}: the gold manifest and the census must describe the same corpus "
+            f"snapshot. Regenerate one to match the other rather than freezing a mismatch."
+        )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -98,10 +134,16 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    census_path = _REPO_ROOT / "results" / "truth_extraction" / "census.json"
+    try:
+        _check_peps_sha(args.peps_sha, census_path)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
     questions = build_gold_questions(args.peps_dir)
     corpus_hashes = {
         "peps_sha": args.peps_sha,
-        "census": file_digest(_REPO_ROOT / "results" / "truth_extraction" / "census.json"),
+        "census": file_digest(census_path),
     }
     digest = write_manifest(args.out, questions, corpus_hashes=corpus_hashes)
     positives = sum(1 for q in questions if q.expected_relevance_labels)

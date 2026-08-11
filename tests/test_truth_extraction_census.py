@@ -118,6 +118,37 @@ def test_check_peps_sha_rejects_a_malformed_sha():
         _check_peps_sha("not-a-sha", CENSUS)
 
 
+def test_check_peps_sha_reports_a_missing_census_file(tmp_path: Path):
+    # A missing census.json (build_gold.py run before census.py) must not surface a bare
+    # FileNotFoundError traceback naming no file; it is folded into the same ValueError the
+    # caller already catches and turns into a SystemExit.
+    from benchmarks.labelling.truth_extraction.build_gold import _check_peps_sha
+
+    missing = tmp_path / "no-such-census.json"
+    with pytest.raises(ValueError, match="does not exist"):
+        _check_peps_sha("a" * 40, missing)
+
+
+def test_check_peps_sha_reports_a_census_file_missing_the_sha_field(tmp_path: Path):
+    from benchmarks.labelling.truth_extraction.build_gold import _check_peps_sha
+
+    broken = tmp_path / "census.json"
+    broken.write_text(json.dumps({"_provenance": {}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="could not be read"):
+        _check_peps_sha("a" * 40, broken)
+
+
+def test_check_peps_sha_reports_a_census_file_with_the_wrong_shape(tmp_path: Path):
+    # Valid JSON, wrong shape: `_provenance` is not a dict, so `["peps_sha"]` raises TypeError
+    # rather than KeyError. Both must be folded into the same reported ValueError.
+    from benchmarks.labelling.truth_extraction.build_gold import _check_peps_sha
+
+    broken = tmp_path / "census.json"
+    broken.write_text(json.dumps({"_provenance": "oops"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="could not be read"):
+        _check_peps_sha("a" * 40, broken)
+
+
 def test_check_peps_sha_rejects_a_mismatch_against_the_census(census: dict):
     # A typo in --peps-sha is otherwise unfalsifiable: it is the sole corpus provenance in the
     # frozen gold manifest. Comparing against census.json's independently recorded peps_sha
