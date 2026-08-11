@@ -65,6 +65,7 @@ from recall.rewrite import (
 from recall.trust import metadata_is_trusted
 
 _WHEN = datetime(2026, 8, 11, tzinfo=timezone.utc)
+_LEDGER_BLOCKER = "not-a-directory"
 
 
 # --- fixtures -----------------------------------------------------------------------------------
@@ -391,6 +392,122 @@ def test_a_value_spanning_lines_cannot_inject_a_second_frontmatter_key(tmp_path:
     assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == before
 
 
+def test_a_unicode_line_separator_cannot_smuggle_a_title_past_the_guard(tmp_path: Path) -> None:
+    """`\\n` is not the only thing a reader calls a line break, and the readers disagree.
+
+    `parse_frontmatter` splits on `"\\n"` alone, so refusing `\\n`/`\\r` satisfies it. But
+    `context.document_title` reads the same block with `str.splitlines()`, which also breaks on
+    U+2028, U+2029, U+0085, VT and FF — and the title it returns is fed into the embedding text of
+    every chunk of the document. So a value carrying U+2028 declares a `title:` line that one
+    reader honours and the other cannot see. Tying the refusal to Python's own definition of a
+    line, rather than to a hand-written list of three characters, is the only version of this
+    guard that stays correct when a third reader appears.
+    """
+    _corpus(tmp_path)
+    before = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+
+    for separator in (" ", " ", "", "\x0b", "\x0c"):
+        smuggled = _fact(
+            subject_id=f"old_decision_2026-01-01.md{separator}title: Employee salary spreadsheet"
+        )
+        with pytest.raises(RewriteRefused, match="single line"):
+            apply_rewrite(tmp_path, smuggled, apply=True)
+
+    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == before
+
+
+def test_a_value_wrapped_in_whitespace_is_refused_so_the_dedup_can_match_it(
+    tmp_path: Path,
+) -> None:
+    """The derived block is idempotent only because the dedup recognises its own line.
+
+    It compares `line.strip()` against the entry, so a value with a trailing space never matches
+    what it wrote and the same annotation is appended on every run, each time reporting success.
+    The empty value does it too: `f"{key}: "` strips back to `key:`. Refusing is better than
+    stripping silently, because `_resolve` and `claim_key` both normalise through
+    `supersedes_key` while the written value stays raw — so a value that needs cleaning is one the
+    ledger and the file would disagree about.
+    """
+    _corpus(tmp_path)
+    before = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+
+    with pytest.raises(RewriteRefused, match="whitespace"):
+        apply_rewrite(tmp_path, _fact(subject_id="old_decision_2026-01-01.md "), apply=True)
+    with pytest.raises(RewriteRefused, match="empty"):
+        apply_rewrite(tmp_path, _fact(subject_id="   "), apply=True)
+
+    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == before
+
+
+def test_the_derived_block_converges_when_applied_twice(tmp_path: Path) -> None:
+    """Positive control for the refusal above: a clean value must still reach a fixed point."""
+    _corpus(tmp_path)
+    fact = _fact(
+        relation="contradicts",
+        subject_id="new_decision_2026-06-01.md",
+        object_id="old_decision_2026-01-01.md",
+    )
+
+    first = apply_rewrite(tmp_path, fact, apply=True)
+    once = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+    second = apply_rewrite(tmp_path, fact, apply=True)
+
+    assert first.written is True
+    assert second.written is False and second.refusal is not None
+    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == once
+
+
+def test_an_entry_a_human_indented_still_counts_as_present(tmp_path: Path) -> None:
+    """Idempotence has to survive a human tidying the block by hand.
+
+    Only the MARKERS are required at column 0; the entries between them are ordinary lines, and
+    someone who indented one still wrote it. Comparing on the line's ending alone would miss it
+    and append a near-duplicate one space to its left, forever.
+    """
+    _corpus(tmp_path)
+    marker_open, marker_close = DERIVED_OPEN.encode("utf-8"), DERIVED_CLOSE.encode("utf-8")
+    tidied = (
+        _NEW + marker_open + b"\n"
+        b"    contradicts: old_decision_2026-01-01.md\n" + marker_close + b"\n"
+    )
+    _memo(tmp_path, "new_decision_2026-06-01.md", tidied)
+
+    result = apply_rewrite(
+        tmp_path,
+        _fact(
+            relation="contradicts",
+            subject_id="new_decision_2026-06-01.md",
+            object_id="old_decision_2026-01-01.md",
+        ),
+        apply=True,
+    )
+
+    assert result.written is False
+    assert result.refusal is not None and "already declares" in result.refusal
+    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == tidied
+
+
+def test_a_memo_carrying_two_boms_does_not_lose_its_authored_frontmatter(tmp_path: Path) -> None:
+    """One more place the writer and `parse_frontmatter` must agree about a prefix.
+
+    `parse_frontmatter` uses `lstrip("\\ufeff")`, which removes any number of BOMs; a writer that
+    strips exactly one sees the second BOM ahead of the fence, concludes the file has no
+    frontmatter and prepends a fresh block — demoting the authored `valid_until` into the body,
+    where the trust layer can no longer read it. An expired memo silently becomes live again.
+    """
+    _memo(tmp_path, "old_decision_2026-01-01.md", _OLD)
+    doubled = b"\xef\xbb\xbf\xef\xbb\xbf---\nvalid_until: 2026-12-31\n---\n\nbody\n"
+    _memo(tmp_path, "new_decision_2026-06-01.md", doubled)
+
+    apply_rewrite(tmp_path, _fact(), apply=True)
+
+    meta, _ = parse_frontmatter(
+        (tmp_path / "new_decision_2026-06-01.md").read_text(encoding="utf-8")
+    )
+    assert meta["valid_until"] == "2026-12-31", "the authored validity bound was orphaned"
+    assert meta["supersedes"] == "old_decision_2026-01-01.md"
+
+
 def test_an_empty_supersedes_is_a_declaration_and_not_an_invitation(tmp_path: Path) -> None:
     """`supersedes:` with nothing after it is a human writing "this supersedes nothing".
 
@@ -508,6 +625,120 @@ def test_a_half_open_derived_block_is_refused_not_appended_past(tmp_path: Path) 
         apply_rewrite(tmp_path, fact, apply=True)
 
     assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == half_open
+
+
+def test_a_marker_inside_a_code_fence_is_prose_and_not_a_derived_block(tmp_path: Path) -> None:
+    """A memo documenting this format contains these markers, and must not be edited by them.
+
+    Scanning for a stripped marker line with no idea of fenced code finds the example inside the
+    ``` block, treats it as the machine-owned region, and writes the new entry INSIDE the user's
+    code fence — editing human prose, which is the one thing this module promises never to do.
+    """
+    _corpus(tmp_path)
+    documented = (
+        b"# How recall annotates memos\n"
+        b"\n"
+        b"```markdown\n" + DERIVED_OPEN.encode("utf-8") + b"\n"
+        b"contradicts: example.md\n" + DERIVED_CLOSE.encode("utf-8") + b"\n"
+        b"```\n"
+        b"\n"
+        b"real prose after the fence\n"
+    )
+    _memo(tmp_path, "new_decision_2026-06-01.md", documented)
+
+    apply_rewrite(
+        tmp_path,
+        _fact(
+            relation="same_entity",
+            subject_id="new_decision_2026-06-01.md",
+            object_id="old_decision_2026-01-01.md",
+        ),
+        apply=True,
+    )
+
+    raw = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+    assert raw.startswith(documented), "the fenced example was edited"
+    assert raw.endswith(
+        DERIVED_OPEN.encode("utf-8") + b"\nsame_entity: old_decision_2026-01-01.md\n"
+        + DERIVED_CLOSE.encode("utf-8") + b"\n"
+    )
+
+
+def test_an_indented_marker_is_prose_and_not_a_derived_block(tmp_path: Path) -> None:
+    """Markdown's other code block is four spaces and no fence, so fence tracking alone is not
+    enough — the marker must be required at column 0. Matching on a stripped line accepts the
+    indented example and writes the new entry into the user's illustration."""
+    _corpus(tmp_path)
+    indented = (
+        b"# How recall annotates memos\n"
+        b"\n"
+        b"    " + DERIVED_OPEN.encode("utf-8") + b"\n"
+        b"    contradicts: example.md\n"
+        b"    " + DERIVED_CLOSE.encode("utf-8") + b"\n"
+        b"\n"
+        b"real prose after the example\n"
+    )
+    _memo(tmp_path, "new_decision_2026-06-01.md", indented)
+
+    apply_rewrite(
+        tmp_path,
+        _fact(
+            relation="same_entity",
+            subject_id="new_decision_2026-06-01.md",
+            object_id="old_decision_2026-01-01.md",
+        ),
+        apply=True,
+    )
+
+    raw = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+    assert raw.startswith(indented), "the indented example was edited"
+    assert raw.endswith(
+        DERIVED_OPEN.encode("utf-8") + b"\nsame_entity: old_decision_2026-01-01.md\n"
+        + DERIVED_CLOSE.encode("utf-8") + b"\n"
+    )
+
+
+def test_two_derived_blocks_are_refused_rather_than_written_into(tmp_path: Path) -> None:
+    """One block per file is the stated rule; pairing only the first open with the first close
+    writes a duplicate entry into block one that already exists in block two."""
+    _corpus(tmp_path)
+    marker_open, marker_close = DERIVED_OPEN.encode("utf-8"), DERIVED_CLOSE.encode("utf-8")
+    two_blocks = (
+        _NEW + marker_open + b"\n" + marker_close + b"\nprose\n"
+        + marker_open + b"\ncontradicts: old_decision_2026-01-01.md\n" + marker_close + b"\n"
+    )
+    _memo(tmp_path, "new_decision_2026-06-01.md", two_blocks)
+    fact = _fact(
+        relation="contradicts",
+        subject_id="new_decision_2026-06-01.md",
+        object_id="old_decision_2026-01-01.md",
+    )
+
+    with pytest.raises(RewriteRefused, match="derived block"):
+        apply_rewrite(tmp_path, fact, apply=True)
+
+    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == two_blocks
+
+
+def test_a_stray_closing_marker_is_refused_rather_than_appended_past(tmp_path: Path) -> None:
+    """The mirror of the half-open case, and how a file grows an unpaired marker in the first
+    place: appending a fresh block past a lone close leaves two closes and one open."""
+    _corpus(tmp_path)
+    stray = _NEW + DERIVED_CLOSE.encode("utf-8") + b"\n"
+    _memo(tmp_path, "new_decision_2026-06-01.md", stray)
+
+    with pytest.raises(RewriteRefused, match="derived block"):
+        apply_rewrite(
+            tmp_path,
+            _fact(
+                relation="contradicts",
+                subject_id="new_decision_2026-06-01.md",
+                object_id="old_decision_2026-01-01.md",
+            ),
+            apply=True,
+        )
+
+    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == stray
 
 
 def test_the_staging_descriptor_is_closed_when_the_stage_itself_fails(
@@ -641,6 +872,36 @@ def test_a_ledger_that_cannot_open_reports_itself_and_leaks_no_connection(tmp_pa
     for conn in opened:
         with pytest.raises(sqlite3.ProgrammingError, match="closed"):
             conn.execute("SELECT 1")
+
+
+def test_writing_to_an_unusable_ledger_refuses_the_way_reading_one_does(tmp_path: Path) -> None:
+    """Both halves of the class must agree on their error contract.
+
+    `is_rejected` translates a sqlite failure into `RewriteRefused`; `reject` was left raw, so the
+    same ledger in the same state produces two different exception types depending on which way
+    you touched it. The realistic form is `database is locked` from a second reviewer.
+    """
+    import sqlite3
+
+    ledger = RejectionLedger(tmp_path / "ledger.sqlite3")
+    ledger.close()
+
+    with pytest.raises(RewriteRefused, match="ledger"):
+        ledger.is_rejected("claim_x")
+    with pytest.raises(RewriteRefused, match="ledger"):
+        ledger.reject("claim_x", reviewer_id="r", reason="no", rejected_at=_WHEN)
+    assert not isinstance(RewriteRefused("x"), sqlite3.Error)
+
+
+def test_a_ledger_directory_that_cannot_be_created_is_refused(tmp_path: Path) -> None:
+    """The connect was hardened and the `mkdir` one line above it was not, so a `.recall` name
+    already taken by a file — which `default_ledger_path` walks straight into — escapes as a raw
+    OSError instead of this module's refusal type."""
+    blocker = tmp_path / _LEDGER_BLOCKER
+    blocker.write_bytes(b"a memo, not a directory\n")
+
+    with pytest.raises(RewriteRefused, match="ledger"):
+        RejectionLedger(blocker / "nested" / "rejections.sqlite3")
 
 
 def test_the_ledger_key_is_generation_independent(tmp_path: Path) -> None:

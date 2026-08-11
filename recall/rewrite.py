@@ -141,8 +141,16 @@ class RejectionLedger:
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
-        if self._path.parent and not self._path.parent.exists():
-            self._path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if self._path.parent and not self._path.parent.exists():
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # Hardening the connect and leaving the mkdir above it raw meant a `.recall` name
+            # already taken by a file — which `default_ledger_path` walks straight into — escaped
+            # as a bare OSError instead of this module's refusal type.
+            raise RewriteRefused(
+                f"rejection ledger directory for {self._path} could not be created: {exc}"
+            ) from exc
         # Opened into a local and only adopted once the schema is there. A constructor that
         # raises after connecting leaves a handle no `__exit__` can ever close, because
         # `with RejectionLedger(p) as l:` never reaches `__enter__` when `__init__` raises.
@@ -180,12 +188,20 @@ class RejectionLedger:
             raise RewriteRefused("reviewer_id is required to reject a claim")
         if not reason.strip():
             raise RewriteRefused("reason is required to reject a claim")
-        self._conn.execute(
-            "INSERT OR REPLACE INTO rejected_claims "
-            "(claim_key, reviewer_id, reason, rejected_at) VALUES (?, ?, ?, ?)",
-            (claim, reviewer_id, reason, rejected_at.isoformat()),
-        )
-        self._conn.commit()
+        try:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO rejected_claims "
+                "(claim_key, reviewer_id, reason, rejected_at) VALUES (?, ?, ?, ?)",
+                (claim, reviewer_id, reason, rejected_at.isoformat()),
+            )
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            # Both halves of this class have to agree on their error contract. Translating only
+            # `is_rejected` meant the same ledger in the same state raised two different exception
+            # types depending on which way you touched it.
+            raise RewriteRefused(
+                f"rejection ledger at {self._path} could not be written: {exc}"
+            ) from exc
 
     def is_rejected(self, claim: str) -> bool:
         try:
@@ -265,21 +281,49 @@ def _refuse_untrusted(fact: object) -> PromotedFact:
     return fact
 
 
-def _refuse_multiline(value: str) -> None:
-    """A written value must occupy exactly one line, because a line is all either block can hold.
+def _refuse_unwritable_value(value: str) -> None:
+    """A written value must be one clean line, because that is all either block can hold.
 
-    `key: value` is formatted and inserted verbatim, so a newline inside `value` does not corrupt
+    `key: value` is formatted and inserted verbatim, so a break inside `value` does not corrupt
     the file — it writes a SECOND key into the block, which is strictly worse. `valid_until:
     1999-01-01` is the version that matters: nothing looks broken, the memo is silently expired,
     and the trust layer then does exactly what it was told. Neither `subject_id` nor `object_id`
     originates in this package (`_providers.py` builds them with a bare `str()` over a provider's
     raw JSON), so this is the boundary where that has to be checked. `key` needs no such check —
     it comes from `destination`, which is a closed set.
+
+    **A break is whatever Python calls a break, not a list of three characters.** Refusing only
+    ``\\n`` / ``\\r`` satisfies `parse_frontmatter`, which splits on ``"\\n"`` alone — and misses
+    `context.document_title`, which reads the SAME block with `str.splitlines()` and therefore
+    breaks on U+2028, U+2029, U+0085, VT and FF. A value carrying U+2028 declares a `title:` line
+    that one reader honours and the other cannot see, and that title is fed into the embedding
+    text of every chunk of the document. Deferring to `str.splitlines` is what keeps this guard
+    correct when a third reader appears.
+
+    Surrounding whitespace is refused rather than trimmed. The derived block is idempotent only
+    because its dedup recognises the line it wrote, and it compares on `strip()`; a trailing space
+    makes an entry that never matches itself and is appended again on every run. Trimming here
+    would fix that and introduce a subtler disagreement instead — `_resolve` and `claim_key`
+    normalise through `supersedes_key` while the written value stays raw, so a value that needs
+    cleaning is one the ledger and the file would remember differently.
     """
-    if any(ch in value for ch in ("\n", "\r", "\x00")):
+    if "\x00" in value:
+        raise RewriteRefused(f"refusing to write: {value!r} contains a NUL byte")
+    # `len(splitlines()) > 1` is the whole test. A value ENDING in a separator leaves one line, but
+    # every separator `str.splitlines` recognises is also `str.isspace`, so the surrounding-
+    # whitespace refusal below catches those — verified across all ten. An extra
+    # `value != "".join(value.splitlines())` clause was here and no input could reach it.
+    if len(value.splitlines()) > 1:
         raise RewriteRefused(
-            f"refusing to write: {value!r} is not a single line — a newline in a written value "
-            f"declares an additional frontmatter key, which is how a live memo gets expired"
+            f"refusing to write: {value!r} is not a single line — a line break in a written value "
+            f"declares an additional key, which is how a live memo gets expired"
+        )
+    if not value.strip():
+        raise RewriteRefused("refusing to write: the value is empty")
+    if value != value.strip():
+        raise RewriteRefused(
+            f"refusing to write: {value!r} carries surrounding whitespace, so the line it writes "
+            f"would not match the line its own dedup looks for, and would be re-appended forever"
         )
 
 
@@ -325,7 +369,7 @@ def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:
         edit_ref, value = checked.object_id, checked.subject_id
     else:
         edit_ref, value = checked.subject_id, checked.object_id
-    _refuse_multiline(value)
+    _refuse_unwritable_value(value)
     return RewritePlan(
         edit_file=_resolve(root, edit_ref),
         key=checked.relation,
@@ -433,6 +477,61 @@ def _lines(data: bytes) -> list[bytes]:
     return lines
 
 
+def _split_bom(raw: bytes) -> tuple[bytes, bytes]:
+    """`(leading BOMs, the rest)`, counting them the way `parse_frontmatter` does.
+
+    It uses `lstrip("\\ufeff")`, which removes ANY number. A writer that removed exactly one saw
+    the second BOM sitting ahead of the fence, concluded the file had no frontmatter and prepended
+    a fresh block — orphaning the authored `valid_until` into the body, where the trust layer can
+    no longer read it, so an expired memo silently became live again. One definition of "leading
+    BOM", shared, for the same reason there is one definition of a line.
+    """
+    end = 0
+    while raw.startswith(_BOM, end):
+        end += len(_BOM)
+    return raw[:end], raw[end:]
+
+
+def _derived_span(lines: list[bytes]) -> tuple[int, int] | None:
+    """The one derived block's `(open, close)` line indices, `None` if there is none.
+
+    Fence aware, because a memo DOCUMENTING this format contains these markers, and a scan
+    without that finds the example inside a ``` block, calls it the machine-owned region and
+    writes the new entry into the user's code — editing human prose, which is the one thing this
+    module promises never to do. Markers must also start at column 0: accepting an indented one
+    lets an indented code block supply it.
+
+    Anything other than exactly one open followed by one close is refused rather than guessed at.
+    A half-open region cannot be appended past (that writes a second opening marker), a stray
+    close cannot either (that is how a file grows an unpaired marker in the first place), and two
+    complete blocks would have their entries deduped against only the first — writing a duplicate
+    of something already recorded a few lines below.
+    """
+    opens: list[int] = []
+    closes: list[int] = []
+    fenced = False
+    for index, line in enumerate(lines):
+        bare = line.rstrip(b"\r\n")
+        if bare.strip().startswith((b"```", b"~~~")):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if bare == DERIVED_OPEN.encode("utf-8"):
+            opens.append(index)
+        elif bare == DERIVED_CLOSE.encode("utf-8"):
+            closes.append(index)
+    if not opens and not closes:
+        return None
+    if len(opens) != 1 or len(closes) != 1 or opens[0] > closes[0]:
+        raise RewriteRefused(
+            f"refusing to write: the derived block is malformed — found {len(opens)} "
+            f"{DERIVED_OPEN} and {len(closes)} {DERIVED_CLOSE}, expected exactly one of each "
+            f"in that order (an unclosed or duplicated block needs a human)"
+        )
+    return opens[0], closes[0]
+
+
 def _terminator(line: bytes, default: bytes) -> bytes:
     """A line's own ending, so an insertion beside it matches it exactly."""
     if line.endswith(b"\r\n"):
@@ -455,8 +554,7 @@ def _insert_frontmatter_line(raw: bytes, key: str, value: str) -> bytes:
     it and rewrite it again on every run. `parse_frontmatter` defines what the block is; this
     follows it. Tighten both together or neither.
     """
-    bom = _BOM if raw.startswith(_BOM) else b""
-    body = raw[len(bom) :]
+    bom, body = _split_bom(raw)
     newline = _newline(body)
     entry = f"{key}: {value}".encode("utf-8")
     lines = _lines(body)
@@ -476,35 +574,23 @@ def _upsert_derived_entry(raw: bytes, key: str, value: str) -> bytes | None:
     way to strip the machine's annotations back off. `key: value` is the identity, not `key` alone
     — a memo may legitimately contradict more than one other memo.
     """
-    bom = _BOM if raw.startswith(_BOM) else b""
-    body = raw[len(bom) :]
+    bom, body = _split_bom(raw)
     newline = _newline(body)
     entry = f"{key}: {value}".encode("utf-8")
     open_marker, close_marker = DERIVED_OPEN.encode("utf-8"), DERIVED_CLOSE.encode("utf-8")
     lines = _lines(body)
 
-    opened: int | None = None
-    closed: int | None = None
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped == open_marker and opened is None:
-            opened = index
-        elif stripped == close_marker and opened is not None and closed is None:
-            closed = index
-    if opened is not None and closed is not None:
+    span = _derived_span(lines)
+    if span is not None:
+        opened, closed = span
+        # `strip`, not `rstrip`: a human who hand-indented an entry still wrote that entry, and
+        # matching it is what keeps a second run from adding a near-duplicate beside it. Values
+        # carrying their own surrounding whitespace are refused upstream, so the two readings
+        # differ only for lines this module did not write.
         if any(line.strip() == entry for line in lines[opened + 1 : closed]):
             return None
         lines.insert(closed, entry + _terminator(lines[closed], newline))
         return bom + b"".join(lines)
-    if opened is not None:
-        # Falling through to the append branch would write a SECOND opening marker past the first
-        # and duplicate the entry the dedup above exists to catch — producing exactly the
-        # ambiguity the single-block rule prevents. A half-open machine-owned region is something
-        # a human has to look at, not something to append past.
-        raise RewriteRefused(
-            "refusing to write: the derived block is unclosed — "
-            f"{DERIVED_OPEN} has no matching {DERIVED_CLOSE}"
-        )
 
     tail = body if (not body or body.endswith(b"\n")) else body + newline
     return (
