@@ -116,7 +116,8 @@ python -m benchmarks.enterprise_rag \
 
 The SPLADE arm should run on a rented GPU for the full corpus. Local Windows CPU was validated, but
 it took about 20 minutes to encode 1,227 chunks in the calibration smoke, which is not acceptable
-for the full 500K document release.
+for the full 500K document release. Use [ENTERPRISE_RAG_VAST.md](ENTERPRISE_RAG_VAST.md) for the
+GPU runbook.
 
 Calibration command:
 
@@ -141,7 +142,7 @@ The final submission package should include:
 2. resumable question execution,
 3. JSONL output compatible with the benchmark submission format,
 4. a manifest with file digests,
-5. a refusal to overwrite a previous run unless `--resume` or a new output directory is used.
+5. streaming JSONL writes plus `--resume` so paid answer generation can survive restarts.
 
 ## Promotion Rule
 

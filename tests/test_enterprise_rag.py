@@ -14,6 +14,8 @@ from benchmarks.enterprise_rag import (
     generated_answer,
     load_documents,
     load_questions,
+    read_answer_rows,
+    write_answers_stream,
     write_answers,
 )
 from recall.types import ScoredChunk
@@ -181,3 +183,55 @@ def test_generated_answer_prompt_includes_question_type_and_strict_abstention(
     assert "Source type: github" in calls[0]["user"]
     assert "available documents do not contain the answer" in calls[0]["system"]
     assert "exact facts, quantities, dates, names" in calls[0]["system"]
+
+
+def test_streaming_answers_append_for_resume_without_diagnostics(tmp_path: Path) -> None:
+    out = tmp_path / "answers.jsonl"
+    out.write_text(
+        json.dumps({"question_id": "qst_1", "answer": "done", "document_ids": ["dsid_1"]})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    count, rows = write_answers_stream(
+        out,
+        [
+            {
+                "question_id": "qst_2",
+                "answer": "next",
+                "document_ids": ["dsid_2"],
+                "_diagnostics": {"gap_warning": False},
+            }
+        ],
+        overwrite=False,
+        resume=True,
+    )
+
+    assert count == 1
+    assert rows[0]["question_id"] == "qst_2"
+    written = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert written == [
+        {"question_id": "qst_1", "answer": "done", "document_ids": ["dsid_1"]},
+        {"question_id": "qst_2", "answer": "next", "document_ids": ["dsid_2"]},
+    ]
+    assert read_answer_rows(out) == written
+
+
+def test_parser_exposes_resume_and_sparse_device() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--questions",
+            "questions.jsonl",
+            "--documents",
+            "docs.zip",
+            "--out",
+            "answers.jsonl",
+            "--resume",
+            "--sparse-device",
+            "cuda",
+        ]
+    )
+
+    assert args.resume is True
+    assert args.sparse_device == "cuda"

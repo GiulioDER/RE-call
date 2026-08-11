@@ -22,7 +22,7 @@ import time
 import zipfile
 from io import TextIOWrapper
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -270,22 +270,45 @@ def backfill_sparse(
     model: str,
     accept_noncommercial_license: bool,
     batch_size: int,
+    device: str,
 ) -> dict[str, Any]:
     from recall.sparse import (
         SpladeEncoder,
         assert_sparse_coverage,
         attribution_notice,
         backfill_learned_sparse,
+        inspect_sparse_device,
+        resolve_sparse_device,
     )
 
-    encoder = SpladeEncoder.from_pretrained(
-        model, accept_noncommercial_license=accept_noncommercial_license
+    device_report = inspect_sparse_device(device)
+    resolved_device = resolve_sparse_device(device, report=device_report)
+    print(
+        "sparse device "
+        f"requested={device_report.requested} resolved={resolved_device} "
+        f"name={device_report.device_name or 'none'} "
+        f"cuda={device_report.torch_cuda_build or 'none'}",
+        flush=True,
     )
-    result = backfill_learned_sparse(store, encoder, batch_size=batch_size)
+    encoder = SpladeEncoder.from_pretrained(
+        model, accept_noncommercial_license=accept_noncommercial_license, device=resolved_device
+    )
+    last_reported = -1
+
+    def progress(written: int) -> None:
+        nonlocal last_reported
+        if written == last_reported:
+            return
+        last_reported = written
+        print(f"splade backfill written={written}", flush=True)
+
+    result = backfill_learned_sparse(store, encoder, batch_size=batch_size, progress=progress)
     assert_sparse_coverage(store, encoder.profile.profile_id, empty_ids=result.empty_ids)
     return {
         "model": model,
         "profile_id": encoder.profile.profile_id,
+        "device": resolved_device,
+        "device_report": asdict(device_report),
         "written": result.written,
         "empty_ids": result.empty_ids,
         "attribution": attribution_notice(model),
@@ -297,13 +320,16 @@ def build_sparse_encoder(
     *,
     model: str,
     accept_noncommercial_license: bool,
+    device: str,
 ) -> object | None:
     if sparse_backend not in ("splade", "both"):
         return None
-    from recall.sparse import SpladeEncoder
+    from recall.sparse import SpladeEncoder, resolve_sparse_device
 
     return SpladeEncoder.from_pretrained(
-        model, accept_noncommercial_license=accept_noncommercial_license
+        model,
+        accept_noncommercial_license=accept_noncommercial_license,
+        device=resolve_sparse_device(device),
     )
 
 
@@ -436,6 +462,45 @@ def write_answers(
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             count += 1
     return count
+
+
+def read_answer_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for i, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                raise ValueError(f"{path}:{i}: expected a JSON object")
+            rows.append(payload)
+    return rows
+
+
+def write_answers_stream(
+    path: Path,
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    overwrite: bool,
+    resume: bool,
+) -> tuple[int, list[Mapping[str, Any]]]:
+    if overwrite and resume:
+        raise ValueError("--overwrite and --resume are mutually exclusive")
+    if path.exists() and not overwrite and not resume:
+        raise FileExistsError(f"{path} exists. Pass --overwrite or --resume.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = "a" if resume else "w"
+    written_rows: list[Mapping[str, Any]] = []
+    with path.open(mode, encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            public_row = {key: value for key, value in row.items() if not key.startswith("_")}
+            handle.write(json.dumps(public_row, ensure_ascii=False) + "\n")
+            handle.flush()
+            written_rows.append(row)
+            print(f"answered {public_row.get('question_id')}", flush=True)
+    return len(written_rows), written_rows
 
 
 def _answers(
@@ -730,6 +795,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sparse-backend", choices=sorted(SPARSE_BACKENDS), default="lexical")
     parser.add_argument("--splade-model", default=DEFAULT_SPLADE_MODEL)
     parser.add_argument("--splade-batch-size", type=int, default=32)
+    parser.add_argument("--sparse-device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--backfill-splade", action="store_true")
     parser.add_argument("--accept-noncommercial-splade-license", action="store_true")
     parser.add_argument("--reranker", default="none")
@@ -739,6 +805,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-index", action="store_true")
     parser.add_argument("--index-only", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--answer-mode", choices=("extractive", "openrouter"), default="extractive")
     parser.add_argument("--model", default=os.environ.get("ENTERPRISE_RAG_MODEL", DEFAULT_MODEL))
     parser.add_argument("--max-context-chars", type=int, default=DEFAULT_MAX_CHARS)
@@ -780,12 +847,21 @@ def main(argv: Iterable[str] | None = None) -> int:
     t0 = time.perf_counter()
     embedder = resolve_embedder(args.embedder)
     reranker = build_reranker(args.reranker)
-    sparse_encoder = build_sparse_encoder(
-        args.sparse_backend,
-        model=args.splade_model,
-        accept_noncommercial_license=args.accept_noncommercial_splade_license,
-    )
+    sparse_encoder: object | None = None
     questions = load_questions(args.questions, limit=args.limit_questions)
+    all_questions = list(questions)
+    existing_answer_rows: list[dict[str, Any]] = []
+    if args.resume:
+        existing_answer_rows = read_answer_rows(args.out)
+        existing_question_ids = {
+            str(row.get("question_id")) for row in existing_answer_rows if row.get("question_id")
+        }
+        questions = [question for question in questions if question.question_id not in existing_question_ids]
+        print(
+            f"resume loaded existing_rows={len(existing_answer_rows)} "
+            f"remaining_questions={len(questions)}",
+            flush=True,
+        )
     dsn = _dsn(args)
     stats = {"documents": 0, "chunks": 0}
     sparse_stats: dict[str, Any] | None = None
@@ -814,10 +890,17 @@ def main(argv: Iterable[str] | None = None) -> int:
                 model=args.splade_model,
                 accept_noncommercial_license=args.accept_noncommercial_splade_license,
                 batch_size=args.splade_batch_size,
+                device=args.sparse_device,
             )
         if args.index_only:
             written = 0
         elif args.calibrate_retrieval_out:
+            sparse_encoder = build_sparse_encoder(
+                args.sparse_backend,
+                model=args.splade_model,
+                accept_noncommercial_license=args.accept_noncommercial_splade_license,
+                device=args.sparse_device,
+            )
             calibration = retrieval_calibration(
                 questions,
                 store,
@@ -835,7 +918,14 @@ def main(argv: Iterable[str] | None = None) -> int:
             )
             written = 0
         else:
-            answer_rows = list(
+            sparse_encoder = build_sparse_encoder(
+                args.sparse_backend,
+                model=args.splade_model,
+                accept_noncommercial_license=args.accept_noncommercial_splade_license,
+                device=args.sparse_device,
+            )
+            written, new_answer_rows = write_answers_stream(
+                args.out,
                 _answers(
                     questions,
                     store,
@@ -850,10 +940,12 @@ def main(argv: Iterable[str] | None = None) -> int:
                     sparse_encoder=sparse_encoder,
                     reranker=reranker,
                     gap_threshold=args.gap_threshold,
-                )
+                ),
+                overwrite=args.overwrite,
+                resume=args.resume,
             )
-            written = write_answers(args.out, public_answer_rows(answer_rows), overwrite=args.overwrite)
-            retrieval_metrics = retrieval_summary(questions, answer_rows)
+            answer_rows = [*existing_answer_rows, *new_answer_rows]
+            retrieval_metrics = retrieval_summary(all_questions, answer_rows)
     manifest = {
         "benchmark": "EnterpriseRAG-Bench",
         "started_at": started,
@@ -887,7 +979,12 @@ def main(argv: Iterable[str] | None = None) -> int:
             "model": args.model if args.answer_mode == "openrouter" else None,
             "max_context_chars": args.max_context_chars,
         },
-        "outputs": {"answers": str(args.out), "rows": written},
+        "outputs": {
+            "answers": str(args.out),
+            "rows": len(existing_answer_rows) + written,
+            "new_rows": written,
+            "resumed_rows": len(existing_answer_rows),
+        },
         "retrieval_metrics": retrieval_metrics,
         "calibration": {"path": str(args.calibrate_retrieval_out)} if calibration else None,
     }
