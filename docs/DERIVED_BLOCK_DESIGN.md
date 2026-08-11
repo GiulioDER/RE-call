@@ -70,7 +70,11 @@ and `at` are required; `note` is optional. `digest:` is block level, unindented,
 Sub-key value shapes, so the refusal list below is unambiguous:
 
 - `proposal` — exactly 64 lowercase hex characters (a proposal id is a content hash).
-- `at` — a `Z`-suffixed UTC ISO-8601 instant, e.g. `2026-08-11T09:14:22Z`.
+- `at` — a `Z`-suffixed UTC instant at whole-second precision, e.g. `2026-08-11T09:14:22Z`.
+  `_is_utc_instant` parses with `strptime(value, "%Y-%m-%dT%H:%M:%SZ")`, which refuses fractional
+  seconds (`2026-08-11T09:14:22.123456Z`) and refuses the `+00:00` offset form, so a value
+  produced by this repo's own `datetime.now(timezone.utc).isoformat()` does not validate as is
+  and must be formatted to the `Z`-suffixed shape first.
 - `provider` — a non-empty single line. The `provider_id@revision` shape in the example is
   convention, not enforced; the digest covers the string verbatim either way.
 - `reviewer` — a non-empty single line.
@@ -143,6 +147,15 @@ The cache at risk is the **extraction** cache, not the embedding one: `_pack` ca
 every block, so chunk text is whitespace-invariant at block boundaries either way.
 
 `s[:n].rstrip()` is still a prefix of `s`, so the rstrip does not cost the offset invariant.
+
+**That is true of the prefix invariant only, not of the chunker contract.** Every body is now
+rstripped, block or not — the no-fence branch's `.rstrip()` runs unconditionally. It is free for
+`chunk_text` and `chunk_code` today only because `_pack` (`recall/index.py:151`) strips each block
+before chunking, so a chunker that itself preserved trailing whitespace would never see the
+difference. A future chunker that preserves trailing whitespace would silently change its output
+for the entire corpus the day it lands, not just for files with a block. And in
+`recall/generations.py`, chunk ids are a hash of the piece text, so that change would rotate every
+markdown chunk id at once.
 
 ### Malformed blocks on the read path
 
@@ -291,6 +304,43 @@ Out, deliberately:
   lint error naming its byte count.
 - `verify_derived_block` refusing is a property of the function, not a demonstrated CLI refusal,
   until part (B) lands.
+- **The code-fence example in this file's own Grammar section costs this file most of itself.**
+  `_first_fence_offset` matches any line whose `.strip()` equals the literal `OPEN_FENCE` string,
+  with no awareness of whether that line sits inside a markdown code fence or in real prose. The
+  Grammar section above puts the literal fence text inside a ```` ``` ```` example so a reader can
+  see it, and `_first_fence_offset` cannot tell that occurrence from a real one. This file is a
+  live instance of the cost it describes: measured against the checked-in file, of 20394 total
+  bytes `human_body` keeps 1949 and 18445 are cut, the read stopping mid-document inside the
+  Grammar section's own code fence. `derived-block-not-last` (`recall/lint.py`) catches this file
+  if it is linted, but `recall/index.py` and `recall/generations.py` do not run lint on the corpus
+  they read, so at index time the loss is silent: the tail is simply gone from what gets embedded,
+  with no error surfaced anywhere in that path. The lint message itself also understates the loss
+  when it does fire: it reports only the byte count of the tail after the pseudo-block's own close
+  fence (17860 bytes here), not the pseudo-block's own body between the fake open and close fence
+  (a further 585 bytes that are just as unindexed but never named in the message).
+  **This is the accepted behaviour, not a bug to fix.** Making `_first_fence_offset` fence-aware
+  was considered and rejected: a detector that skips a fence line sitting inside an unbalanced
+  code span in ordinary prose would let a REAL derived block hide from the strip instead, and a
+  block that survives into the indexed body is silent amplification, the exact hazard this module
+  exists to prevent (`recall/derived_block.py:12`) — a machine's own inference re-entering the
+  corpus as evidence with nothing to flag it. The failure mode of the current rule is merely lost
+  retrieval, and `derived-block-not-last` names that loss loudly whenever lint runs. Between a
+  silent integrity failure and a loud availability one, the module is built to err toward
+  stripping more, never less, and that is the correct tradeoff here even though it costs this file
+  its own back half.
+
+### For the write path
+
+The digest binds the block's structure, not the document that contains it. `derived_digest` hashes
+`{"v": 1, "entries": [...]}` and nothing in that structure names the file the block sits in. A
+well-formed block copied verbatim from memo A into memo B verifies clean in memo B, because the
+digest only checks that the entries hash to the digest they carry, while the block's `contradicts:`
+/ `same_entity:` entries go on asserting relations about memo A. Harmless today, because nothing
+yet consumes a block as evidence. But part (B)'s write path should bind the containing document's
+stem into the hashed structure before any v1 block exists in the wild, because deciding to do that
+after v1 blocks are already written costs a grammar version bump (`DERIVED_BLOCK_VERSION`) just to
+retrofit an identity the digest should have carried from the start. This is a decision to make
+before the writer lands, not a cost to defer past it.
 
 ## Invariants this design must not break
 

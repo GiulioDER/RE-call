@@ -43,6 +43,9 @@ def load_chunks(corpus_dir: Path) -> tuple[list[str], list[str]]:
     # non-recursive glob silently skipped 53 files — training and evaluating against a corpus
     # missing 7% of its documents, with nothing to indicate it.
     for f in sorted(corpus_dir.rglob("*.md")):
+        # Deliberately chunks raw file bytes, frontmatter and any derived block included: this
+        # is fine-tuning pair construction, not a corpus evidence path, so it is outside the
+        # parse_document seam (docs/DERIVED_BLOCK_DESIGN.md) by design.
         for i, c in enumerate(chunk_text(f.read_text(encoding="utf-8"))):
             ids.append(f"{f.relative_to(corpus_dir).as_posix()}:{i}")
             texts.append(c)

@@ -278,10 +278,19 @@ def test_verify_detects_a_tampered_reviewer() -> None:
 
 
 def test_digest_is_over_structure_not_bytes() -> None:
-    """A CRLF checkout and a BOM are not tampering. This repo lives on Windows and Linux."""
+    """A CRLF checkout and a BOM are not tampering. This repo lives on Windows and Linux.
+
+    `.digest` returns the digest the text literally CARRIES, and all three variants carry the
+    same literal string, so comparing `.digest` to `.digest` is a tautology that would pass
+    against a `parse_derived_block` that never normalised CRLF at all. The real assertion
+    recomputes the digest from the PARSED entries, so it fails unless parsing actually produced
+    the same structure from each variant.
+    """
     text = _block(_entry())
     crlf = text.replace("\n", "\r\n")
     bom = "﻿" + text
+    assert derived_digest(verify_derived_block(crlf).entries) == verify_derived_block(text).digest
+    assert derived_digest(verify_derived_block(bom).entries) == verify_derived_block(text).digest
     assert verify_derived_block(crlf).digest == verify_derived_block(text).digest
     assert verify_derived_block(bom).digest == verify_derived_block(text).digest
 
@@ -410,6 +419,18 @@ def test_a_fully_populated_well_formed_block_parses() -> None:
             f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
             "two spaces",
             id="subkey-over-indented",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\n  proposal: {_PROPOSAL_A}\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "before any head",
+            id="subkey-before-any-head",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\ncontradicts: project_alpha_2026-03-02\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  provider: q\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "duplicate sub-key",
+            id="duplicate-subkey",
         ),
         pytest.param(
             f"{OPEN_FENCE}\nstatus: adopted\n"
