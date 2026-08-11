@@ -20,6 +20,8 @@ want to audit a claim or reproduce a benchmark.
 | [AUTH.md](AUTH.md) | Authentication, scopes, tenant isolation, and deployment limits. |
 | [SECURITY_MODEL.md](SECURITY_MODEL.md) | Detailed threat model behind the root security policy. |
 | [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) | MCP setup and tool behavior. |
+| [REASONING_OPERATIONS.md](REASONING_OPERATIONS.md) | Opt-in reasoning commands, MCP tools, failure behavior, review policy, and metrics. |
+| [BETA_RECRUITING.md](BETA_RECRUITING.md) | Compliant beta recruiting from public discussions without harvesting emails. |
 
 ## Architecture
 
@@ -28,6 +30,9 @@ want to audit a claim or reproduce a benchmark.
 | [WRITEUP.md](WRITEUP.md) | Architecture, trust semantics, and evaluation summary. |
 | [CASE_STUDY.md](CASE_STUDY.md) | Origin story, redacted production context, and public/private boundary. |
 | [REASONING_CONTRACT.md](REASONING_CONTRACT.md) | Reasoning vocabulary, invariants, Session 1 baseline fixture, and Session 6 evaluation controls. |
+| [REASONING_API.md](REASONING_API.md) | Typed reasoning request and response surface, provider ports, serialization, and validation rules. |
+| [REASONING_GRAPH.md](REASONING_GRAPH.md) | Generation-bound reasoning graph projection schema and invariants. |
+| [REASONING_RELEASE_NOTES.md](REASONING_RELEASE_NOTES.md) | Experimental reasoning release notes, migration notes, and limitations. |
 
 ## Evidence and limits
 

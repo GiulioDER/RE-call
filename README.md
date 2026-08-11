@@ -139,6 +139,14 @@ flowchart TB
     TR -. "optional" .-> EJ{"Entailment judge"}
     EJ --> OUT
     TR --> OUT["Verdict, confidence, provenance, or ABSTAIN"]
+
+    TR -. "explicit opt-in" .-> RG["Reasoning graph projection"]
+    DB -. "generation-bound" .-> RG
+    RG --> IP["Inference proposals: review candidates"]
+    TR --> RP["Reasoning policy plus budget"]
+    IP --> RP
+    RP --> RV{"Citation and trust validation"}
+    RV --> ROUT["Cited answer, needs review, clarification, or ABSTAIN"]
 ```
 
 ## Product surface
@@ -149,12 +157,14 @@ flowchart TB
 | Configuration | Guided setup, local and hosted embedder choices, retrieval cost profiles, optional reranking, strict or development trust policy, and per-corpus calibration. |
 | Storage | PostgreSQL with pgvector, ordered SQL migration path, immutable generations, incremental indexing, pruning, and source-scoped erasure. |
 | Agent integration | CLI, MCP server, LangChain retriever, LlamaIndex retriever, and injectable search seams for tests. |
+| Reasoning | Explicit opt-in reasoning API, CLI, and MCP tools over trusted retrieval, generation-bound graph projections, proposal inspection, budgets, and citation validation. |
 | Security | Tenant isolation, row-level security checks, serving and migration DSNs, bearer-token HTTP transports, scopes, quotas, and unsafe-DSN refusal. |
 | Operations | Timeouts, reconnect policy, structured logging, counters, latency percentiles, and MCP stats. |
 | Quality gates | Real pgvector integration tests, type checking, linting, dependency audit, claim-artifact checks, and regression fixtures for known failure modes. |
 
-Deliberately out of scope: an end-user dashboard, graph reasoning, entity synthesis, high
-availability orchestration, and automatic truth inference from prose.
+Deliberately out of scope: an end-user dashboard, entity synthesis, high availability orchestration,
+automatic truth extraction from prose, and corpus rewrites from inference proposals. Reasoning is
+opt in, citation constrained, and review aware.
 
 The ordered SQL migration path is versioned now, pre-tenancy tables are migrated in place, and runtime
 `CREATE TABLE IF NOT EXISTS` remains bootstrap only.
@@ -282,12 +292,14 @@ Core documents:
 | [docs/WRITEUP.md](https://github.com/GiulioDER/RE-call/blob/master/docs/WRITEUP.md) | Architecture and design rationale. |
 | [docs/API.md](https://github.com/GiulioDER/RE-call/blob/master/docs/API.md) | Supported Python, CLI, and MCP surface. |
 | [docs/REPOSITORY_MAP.md](https://github.com/GiulioDER/RE-call/blob/master/docs/REPOSITORY_MAP.md) | What is product, evidence, benchmark support, and archive. |
+| [docs/REASONING_OPERATIONS.md](https://github.com/GiulioDER/RE-call/blob/master/docs/REASONING_OPERATIONS.md) | Opt-in reasoning tools, traces, review policy, and operational behavior. |
 | [docs/AUTH.md](https://github.com/GiulioDER/RE-call/blob/master/docs/AUTH.md) | Authentication, scopes, and tenant isolation. |
 | [docs/MIGRATIONS.md](https://github.com/GiulioDER/RE-call/blob/master/docs/MIGRATIONS.md) | Migration roles, serving DSNs, and schema operations. |
 | [docs/OPERATING_MODES.md](https://github.com/GiulioDER/RE-call/blob/master/docs/OPERATING_MODES.md) | Local, production, quality, hosted, and evaluation deployment modes. |
 | [docs/CALIBRATION.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md) | Calibration workflow and generation-aware serving. |
 | [docs/CASE_STUDY.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CASE_STUDY.md) | Where the system came from and what is public versus private. |
 | [docs/RESEARCH_PROTOCOL.md](https://github.com/GiulioDER/RE-call/blob/master/docs/RESEARCH_PROTOCOL.md) | How benchmark runs are controlled and audited. |
+| [docs/BETA_RECRUITING.md](https://github.com/GiulioDER/RE-call/blob/master/docs/BETA_RECRUITING.md) | Public-discussion beta recruiting workflow with opt-in conversion, not email harvesting. |
 
 Release notes and upgrade warnings live in [CHANGELOG.md](https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md).
 
@@ -321,16 +333,17 @@ Important benchmark documents:
 
 ## When not to use RE-call
 
-Use something else if you need managed hosting, per-chunk ACLs, graph reasoning, automatic truth
-extraction from prose, or a memory system that rewrites facts for you. RE-call is a retrieval
-library over your PostgreSQL database, not a hosted memory platform.
+Use something else if you need managed hosting, per-chunk ACLs, automatic truth extraction from
+prose, or a memory system that rewrites facts for you. RE-call is a retrieval library over your
+PostgreSQL database, not a hosted memory platform.
 
 ## What this does not do
 
-RE-call is a retrieval library, not a general reasoning system. It does not infer every missing
-supersession edge, prove that an on-topic memory answers a near-miss question, or replace database
-operations with a managed service. It returns the trust signals the caller needs, and it refuses to
-pretend that a nearest match is always usable evidence.
+RE-call is a retrieval library with an opt-in reasoning layer, not a general reasoning system. It
+does not infer every missing supersession edge, prove that an on-topic memory answers a near-miss
+question, promote proposals into corpus truth, or replace database operations with a managed
+service. It returns the trust signals the caller needs, and it refuses to pretend that a nearest
+match is always usable evidence.
 
 ## Reproduce
 

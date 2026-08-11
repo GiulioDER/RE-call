@@ -100,6 +100,10 @@ one that honoured it.
 | **`recall_index`** | To add a markdown file/folder to memory (bounded by `RECALL_INDEX_ROOT`). |
 | **`recall_forget`** | To permanently delete indexed memory for source values returned by `recall_search`. Requires `recall:forget` on authenticated transports; irreversible, so check the returned `sources_not_found` before assuming a request matched. |
 | **`recall_stats`** | To check how much memory exists and whether the index is stale. |
+| **`recall_reasoning_query`** | When the agent explicitly needs the reasoning layer. It runs over trusted retrieval, obeys the configured policy and budget, and returns cited output, review state, clarification, or abstention. |
+| **`recall_reasoning_projection`** | To inspect the generation-bound reasoning graph projection without answering. |
+| **`recall_reasoning_proposals`** | To inspect inference proposals as review candidates, not trusted memory. |
+| **`recall_reasoning_audit`** | To verify reasoning integration state and diagnostics before relying on the reasoning layer. |
 
 `recall_search` returns `abstained`, `reason`, `calibrated`, calibration identity, tenant and
 generation identity, `stale`, `gap_warning`, `advice`, and hits carrying `verdict`, `score`,
@@ -108,6 +112,8 @@ certified exact generation binding. When `abstained` is true, say you do not kno
 from the hits.
 
 `recall_evidence` uses the same retrieval path, but admits only passages cleared by the trust layer.
+Reasoning tools are additive and opt in; `recall_search` and `recall_evidence` keep the same
+retrieval behavior when they are used directly.
 `decision: "abstain"` means the bundle is empty and the agent must not answer from memory. Validate
 generated answers with `recall.validate_answer`, which checks that every citation resolves to a
 supplied `chunk_id`.

@@ -8,6 +8,8 @@ benchmarks, migrations, or experiments, and can change more freely.
 | Surface | Import | Purpose |
 |---|---|---|
 | Trust search | `recall.trust.trusted_search` | Return verdicts, confidence, provenance, and abstention state. |
+| Reasoning | `recall.reasoning.reason` | Run explicit opt-in reasoning from trusted retrieval, bounded provider ports, graph projections, and citation validation. |
+| Reasoning graph | `recall.reasoning_graph.build_reasoning_graph` | Derive immutable, generation-bound graph projections for reasoning and proposal inspection. |
 | Embeddings | `recall.embeddings.make_embedder` | Construct supported embedding backends from configuration. |
 | Generation store | `recall.generation_store.GenerationStore` | Serve immutable, tenant-scoped generations. |
 | pgvector store | `recall.store.PgVectorStore` | Local indexing and retrieval over PostgreSQL plus pgvector. |
@@ -25,6 +27,7 @@ only from returned hits whose verdict and provenance satisfy the caller's policy
 | `recall schema` | Apply, inspect, and plan PostgreSQL schema migrations. |
 | `recall index` | Index a markdown corpus. |
 | `recall search` | Query an indexed corpus through the trust layer. |
+| `recall reasoning` | Inspect projections, proposals, traces, audits, and opt-in reasoning queries without changing ordinary retrieval behavior. |
 | `recall lint` | Validate memo frontmatter and corpus shape. |
 | `recall check` | Validate one memo, optionally in strict mode. |
 | `recall demo` | Run the bundled five-minute product example. |
@@ -41,8 +44,14 @@ The MCP server is `python -m recall_mcp.server`. Its supported tools are:
 | `recall_index` | Index allowed files beneath `RECALL_INDEX_ROOT`. |
 | `recall_forget` | Erase indexed source material. |
 | `recall_stats` | Report counters and operational state. |
+| `recall_reasoning_query` | Run an explicit opt-in reasoning query over trusted retrieval. |
+| `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
+| `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
+| `recall_reasoning_audit` | Report reasoning integration state and diagnostics. |
 
 Authentication, tenant isolation, and transport modes are documented in [AUTH.md](AUTH.md).
+Reasoning policy and operational behavior are documented in
+[REASONING_OPERATIONS.md](REASONING_OPERATIONS.md).
 
 ## Stability Boundary
 
