@@ -15,12 +15,8 @@ from collections.abc import Mapping, Sequence
 
 from recall.truth_extraction._cache import ExtractionCache, extraction_cache_key
 from recall.truth_extraction._engine import ExtractionEngine
-from recall.truth_extraction._normalize import (
-    human_body_of,
-    normalize_extraction,
-    refuse_unclosed_frontmatter,
-)
-from recall.truth_extraction._prompt import PROMPT_REVISION, build_extraction_prompt
+from recall.truth_extraction._normalize import human_body_of, normalize_extraction
+from recall.truth_extraction._prompt import build_extraction_prompt
 from recall.truth_extraction.types import (
     ClaimRejection,
     ExtractionBatchRejected,
@@ -37,12 +33,6 @@ def extract_file_claims(
     cache: ExtractionCache | None = None,
 ) -> FileExtraction:
     """Extract claims from one document. `text` is the raw file, frontmatter included."""
-    try:
-        # Before the engine, not after: a document whose metadata cannot be separated from
-        # its prose is refused without paying for a call on it.
-        refuse_unclosed_frontmatter(text)
-    except ExtractionBatchRejected as refused:
-        return _refused(file=file, engine=engine, refused=refused)
     body = human_body_of(text)
     prompt = build_extraction_prompt(file=file, human_body=body, corpus_names=corpus_names)
     key = extraction_cache_key(engine=engine, prompt=prompt)
@@ -83,24 +73,6 @@ def extract_file_claims(
     if cache is not None:
         cache.put(key, result)
     return result
-
-
-def _refused(
-    *, file: str, engine: ExtractionEngine, refused: ExtractionBatchRejected
-) -> FileExtraction:
-    """A document level refusal, recorded with the same shape as an output level one."""
-    return FileExtraction(
-        file=file,
-        claims=(),
-        rejections=(),
-        engine_id=engine.engine_id,
-        model_id=engine.model_id,
-        revision=engine.revision,
-        prompt_revision=PROMPT_REVISION,
-        batch_rejection=ClaimRejection(
-            index=-1, kind="*", rung=refused.rung, reason=refused.reason
-        ),
-    )
 
 
 def extract_corpus_claims(

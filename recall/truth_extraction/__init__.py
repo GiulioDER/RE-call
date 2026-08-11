@@ -18,11 +18,7 @@ from recall.truth_extraction._engine import (
     ExtractionEngine,
     resolve_extraction_engine,
 )
-from recall.truth_extraction._normalize import (
-    human_body_of,
-    normalize_extraction,
-    refuse_unclosed_frontmatter,
-)
+from recall.truth_extraction._normalize import human_body_of, normalize_extraction
 from recall.truth_extraction._prompt import (
     PROMPT_REVISION,
     ExtractionPrompt,
@@ -75,6 +71,5 @@ __all__ = [
     "build_extraction_prompt",
     "human_body_of",
     "normalize_extraction",
-    "refuse_unclosed_frontmatter",
     "resolve_extraction_engine",
 ]

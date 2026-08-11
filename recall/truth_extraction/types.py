@@ -40,12 +40,9 @@ STATUS_VOCABULARY: tuple[str, ...] = (
     "withdrawn",
 )
 
-#: Rungs of the validation ladder, in the order they are applied. `unclosed_frontmatter` is
-#: checked against the DOCUMENT before an engine ever runs; the rest judge engine output.
-#: The batch rungs
-#: reject the file's entire output; the claim rungs reject one claim.
+#: Rungs of the validation ladder, in the order they are applied. The batch rungs reject
+#: the file's entire output; the claim rungs reject one claim and keep the rest.
 BATCH_RUNGS: tuple[str, ...] = (
-    "unclosed_frontmatter",
     "json",
     "top_level_shape",
     "max_claims",
@@ -53,6 +50,7 @@ BATCH_RUNGS: tuple[str, ...] = (
 )
 CLAIM_RUNGS: tuple[str, ...] = (
     "quote_not_verbatim",
+    "quote_is_frontmatter",
     "target_not_in_corpus",
     "date_not_in_body",
 )

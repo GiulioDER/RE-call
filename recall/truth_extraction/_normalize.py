@@ -46,6 +46,15 @@ _KEY_LINE_RE = re.compile(r"^\s*[^\s:#][^:]*:")
 
 #: Field names each kind must carry, exactly. Extra fields are a shape failure: the model
 #: supplies semantics only, and a field nobody declared is a field nobody validates.
+#: A quote that IS a frontmatter key line. `parse_frontmatter` strips a block only when it
+#: opens on line 0 and closes; every other shape leaves `key: value` lines in the body, where
+#: they are verbatim substrings and pass rung 5. Built from VALIDITY_KEYS so the two cannot
+#: drift, and MULTILINE so a key line anywhere inside a multi line quote counts.
+_FRONTMATTER_QUOTE_RE = re.compile(
+    r"^[ \t]*(?:" + "|".join(re.escape(key) for key in VALIDITY_KEYS) + r")[ \t]*:",
+    re.MULTILINE,
+)
+
 _REQUIRED_FIELDS: Mapping[str, frozenset[str]] = {
     "supersession": frozenset({"kind", "superseded", "quote"}),
     "validity": frozenset({"kind", "key", "date", "quote"}),
@@ -63,61 +72,6 @@ def human_body_of(text: str) -> str:
     """
     _meta, body = parse_frontmatter(text)
     return body
-
-
-def refuse_unclosed_frontmatter(text: str) -> None:
-    """Refuse a document that opens a frontmatter block and never closes it.
-
-    `parse_frontmatter` documents its behaviour here: an unclosed block is returned as body.
-    That is the right call for retrieval, and the wrong one for extraction, because it hands
-    the metadata lines to the ladder as prose. The verbatim quote guard would then accept
-    `supersedes: X` as evidence for a supersession claim, which is exactly the thing the guard
-    exists to prevent. A malformed document is refused rather than half read.
-    """
-    lines = text.split("\n")
-    if not lines or lines[0].lstrip("﻿").strip() != "---":
-        return
-    if any(line.strip() == "---" for line in lines[1:]):
-        return
-    # A leading `---` is also markdown's thematic break. Refusing every document that opens
-    # with one would reject valid memos and record them as malformed, losing genuine prose
-    # claims. Refuse only when the opened block carries a key `recall.frontmatter` acts on,
-    # which is exactly the metadata that must not become quotable.
-    #
-    # The block runs from the fence to the first line of real prose, not to the end of the
-    # file. Scanning the whole document would refuse a memo that merely documents frontmatter
-    # or quotes a key in an example, which is the same over refusal in a different disguise.
-    #
-    # A blank line does NOT end the run. `parse_frontmatter` has no notion of a run at all —
-    # for it the block is everything up to the closing fence — so anything narrower here is a
-    # false negative waiting to happen, and a false negative hands `supersedes: X` back to the
-    # ladder as quotable prose.
-    # Once the block HAS started, an indented line or a comment is a continuation of it — a
-    # list item, a nested map, a folded scalar — and must not end it, or every key below the
-    # continuation is missed. Before the block has started, the same line is prose (a heading,
-    # an indented example) and does end it. `block and` is the whole difference.
-    block: list[str] = []
-    for line in lines[1:]:
-        if not line.strip():
-            continue
-        if _KEY_LINE_RE.match(line):
-            block.append(line)
-            continue
-        if block and (line[:1].isspace() or line.lstrip().startswith("#")):
-            continue
-        break
-    declared = sorted(
-        key
-        for key in VALIDITY_KEYS
-        if any(line.split(":", 1)[0].strip() == key for line in block)
-    )
-    if not declared:
-        return
-    raise ExtractionBatchRejected(
-        "unclosed_frontmatter",
-        f"the document opens a frontmatter block declaring {declared} and never closes it, "
-        "so its metadata cannot be separated from its prose",
-    )
 
 
 def normalize_extraction(
@@ -246,6 +200,17 @@ def _claim_rungs(
             rung="quote_not_verbatim",
             reason=f"quote {_clipped(quote)!r} is not a verbatim substring of the body",
         )
+    if _FRONTMATTER_QUOTE_RE.search(quote):
+        # Verbatim, and still not evidence. Justifying `supersedes: X` with the string
+        # `supersedes: X` proves only that the line exists, which is what the claim was
+        # supposed to establish. Refuse the CLAIM, not the document: the document's real
+        # prose claims are unaffected, and no boundary has to be guessed at.
+        return ClaimRejection(
+            index=index,
+            kind=kind,
+            rung="quote_is_frontmatter",
+            reason=f"quote {_clipped(quote)!r} is a frontmatter key line, not prose",
+        )
     if kind == "supersession":
         return _supersession(payload, index=index, file=file, by_key=by_key, quote=quote)
     if kind == "validity":
@@ -306,4 +271,4 @@ def _clipped(value: str, limit: int = 60) -> str:
     return value if len(value) <= limit else f"{value[:limit]}..."
 
 
-__all__ = ["human_body_of", "normalize_extraction", "refuse_unclosed_frontmatter"]
+__all__ = ["human_body_of", "normalize_extraction"]

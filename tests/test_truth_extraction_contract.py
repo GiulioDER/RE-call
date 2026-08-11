@@ -777,21 +777,6 @@ def test_json_nested_past_the_recursion_limit_rejects_the_batch(monkeypatch) -> 
         _normalize(_payload(SUPERSESSION))
 
 
-def test_an_unclosed_frontmatter_block_refuses_the_file_before_the_engine_runs() -> None:
-    """`parse_frontmatter` hands an unclosed block back as body, which would make the metadata
-    lines quotable prose and let a model justify `supersedes: X` with the string `supersedes: X`
-    after all. Refuse the document instead, and do not pay for an engine call on it."""
-    engine = _fake(_payload(SUPERSESSION))
-    unclosed = "---\nsupersedes: archive_policy_2026-01-05.md\nvalid_from: 2026-02-01\n\n" + BODY
-
-    result = extract_file_claims(file=FILE, text=unclosed, corpus_names=CORPUS, engine=engine)
-
-    assert result.claims == ()
-    assert result.batch_rejection is not None
-    assert result.batch_rejection.rung == "unclosed_frontmatter"
-    assert engine.call_count == 0
-
-
 def test_a_closed_frontmatter_block_is_not_refused() -> None:
     engine = _fake(_payload(SUPERSESSION))
 
@@ -829,126 +814,123 @@ def test_a_supersession_target_outside_this_graph_generation_is_skipped() -> Non
     assert [p for p in proposals if p.proposed_relation == "supersedes"] == []
     assert [p for p in proposals if p.proposed_relation == "declares_status"]
 
+# --- rung 5b: a quote must be prose, not a metadata line ----------------------------------------
+#
+# `parse_frontmatter` only strips a block that opens on line 0 and closes. Every other shape —
+# unclosed, preceded by a blank line, a thematic break followed by an indented example — leaves
+# `key: value` lines in the body, where they are verbatim substrings and so pass rung 5.
+#
+# An earlier attempt guarded this structurally, by deciding which DOCUMENTS were malformed. That
+# boundary is undecidable with no closing fence, and five rounds of review found five different
+# documents it got wrong in one direction or the other. The hazard is narrower than the document:
+# it is one CLAIM justified by one metadata line. Refusing that claim needs no boundary, costs the
+# document none of its real claims, and covers every shape at once.
 
-def test_a_markdown_thematic_break_is_not_mistaken_for_an_unclosed_block() -> None:
-    """A memo opening with `---` as a horizontal rule has no metadata to protect. Refusing it
-    loses genuine prose claims and records a valid document as malformed, so the rung must be
-    scoped to blocks that actually carry a key `recall.frontmatter` recognises."""
+
+def _frontmatter_shapes() -> dict[str, str]:
+    marker = "supersedes: archive_policy_2026-01-05.md"
+    return {
+        "unclosed block": f"---\n{marker}\nvalid_from: 2026-02-01\n\n{BODY}",
+        "block below a blank line": f"\n---\n{marker}\n---\n\n{BODY}",
+        "thematic break then an indented example": (
+            f"---\n\n# How to write frontmatter\n\nPut a line like\n\n    {marker}\n\n{BODY}"
+        ),
+        "yaml list above the key": f"---\ntitle: x\ntags:\n- policy\n{marker}\n\n{BODY}",
+    }
+
+
+def test_a_quote_that_is_a_frontmatter_key_line_is_refused() -> None:
+    forged = {
+        "kind": "supersession",
+        "superseded": "archive_policy_2026-01-05",
+        "quote": "supersedes: archive_policy_2026-01-05.md",
+    }
+
+    for shape, document in _frontmatter_shapes().items():
+        body = human_body_of(document)
+        assert forged["quote"] in body, shape  # the metadata really did survive into the body
+
+        accepted, rejected = normalize_extraction(
+            _payload(forged), file=FILE, human_body=body, corpus_names=CORPUS
+        )
+
+        assert accepted == (), shape
+        assert [rejection.rung for rejection in rejected] == ["quote_is_frontmatter"], shape
+
+
+def test_refusing_a_metadata_quote_costs_the_document_none_of_its_real_claims() -> None:
+    """The whole point of moving this guard off the document and onto the claim."""
+    document = _frontmatter_shapes()["unclosed block"]
+    body = human_body_of(document)
+    forged = {
+        "kind": "supersession",
+        "superseded": "archive_policy_2026-01-05",
+        "quote": "supersedes: archive_policy_2026-01-05.md",
+    }
+
+    accepted, rejected = normalize_extraction(
+        _payload(forged, SUPERSESSION, STATUS), file=FILE, human_body=body, corpus_names=CORPUS
+    )
+
+    assert [claim.quote for claim in accepted] == [SUPERSESSION["quote"], STATUS["quote"]]
+    assert len(rejected) == 1
+
+
+def test_prose_that_mentions_a_key_in_a_sentence_is_not_mistaken_for_metadata() -> None:
+    """The over rejection guard. `valid_from` inside a sentence is prose, and a memo that
+    discusses its own metadata is exactly the memo this feature exists to read."""
+    body = "We never set valid_from for this policy, so it applies from the start.\n"
+    claim = {"kind": "status", "value": "active", "quote": body.rstrip("\n")}
+
+    accepted, rejected = normalize_extraction(
+        _payload(claim), file=FILE, human_body=body, corpus_names=CORPUS
+    )
+
+    assert rejected == ()
+    assert len(accepted) == 1
+
+
+def test_a_document_is_never_refused_wholesale_for_carrying_stray_metadata() -> None:
     engine = DeterministicExtractionEngine()
-    thematic = "---\n\n# Release notes\n\nThis release supersedes archive_policy_2026-01-05.md.\n"
 
-    result = extract_file_claims(file=FILE, text=thematic, corpus_names=CORPUS, engine=engine)
+    for shape, document in _frontmatter_shapes().items():
+        result = extract_file_claims(
+            file=FILE, text=document, corpus_names=CORPUS, engine=engine
+        )
 
-    assert result.batch_rejection is None
-    assert [claim.kind for claim in result.claims] == ["supersession"]
+        assert result.batch_rejection is None, shape
+        assert result.claims, shape
 
 
-def test_a_thematic_break_document_that_merely_mentions_a_key_is_not_refused() -> None:
-    """The block is the CONTIGUOUS run of key lines after the opening fence, not every line
-    in the file. A memo that documents frontmatter, or quotes a key in an example, is not a
-    memo with frontmatter, and refusing it loses the claims its prose really does state."""
-    engine = DeterministicExtractionEngine()
-    mentions_a_key = (
-        "---\n"
-        "\n"
-        "# How to write frontmatter\n"
-        "\n"
-        "Put a line like\n"
-        "\n"
-        "    supersedes: archive_policy_2026-01-05.md\n"
-        "\n"
-        "at the top. This release supersedes archive_policy_2026-01-05.md.\n"
+def test_a_multi_line_quote_that_embeds_a_key_line_is_refused() -> None:
+    """A quote need not BE the metadata line to be justified by it. Wrapping it in a line of
+    real prose would otherwise launder it straight through."""
+    body = "Context follows.\nsupersedes: archive_policy_2026-01-05.md\nEnd of the block.\n"
+    smuggled = {
+        "kind": "supersession",
+        "superseded": "archive_policy_2026-01-05",
+        "quote": "Context follows.\nsupersedes: archive_policy_2026-01-05.md",
+    }
+
+    accepted, rejected = normalize_extraction(
+        _payload(smuggled), file=FILE, human_body=body, corpus_names=CORPUS
     )
 
-    result = extract_file_claims(
-        file=FILE, text=mentions_a_key, corpus_names=CORPUS, engine=engine
+    assert accepted == ()
+    assert rejected[0].rung == "quote_is_frontmatter"
+
+
+def test_a_sentence_quoting_a_key_inline_is_prose_not_a_metadata_line() -> None:
+    """The anchor. A memo discussing its own header writes `valid_from: 2026-02-01` inside a
+    sentence; that sentence is a real quote and a reviewer can read it. Only a line that STARTS
+    with the key is the metadata line itself."""
+    body = "The header says valid_from: 2026-02-01, which nobody ever updated.\n"
+    claim = {"kind": "validity", "key": "valid_from", "date": "2026-02-01",
+             "quote": body.rstrip("\n")}
+
+    accepted, rejected = normalize_extraction(
+        _payload(claim), file=FILE, human_body=body, corpus_names=CORPUS
     )
 
-    assert result.batch_rejection is None
-    assert [claim.kind for claim in result.claims] == ["supersession"]
-
-
-def test_a_blank_line_inside_an_unclosed_block_does_not_lose_the_refusal() -> None:
-    """The run of a real block is not always uninterrupted: an unrecognised key, a blank line,
-    or a key name with a space can sit above the one that matters. Stopping at the first of
-    those hands `supersedes: X` back to the ladder as quotable prose, which is a false negative
-    on the strongest guard in the design."""
-    engine = _fake(_payload(SUPERSESSION))
-    interrupted = (
-        "---\n"
-        "title: Retention policy\n"
-        "\n"
-        "supersedes: archive_policy_2026-01-05.md\n"
-        "valid_from: 2026-02-01\n"
-        "\n"
-        "We keep records for seven years.\n"
-    )
-
-    result = extract_file_claims(file=FILE, text=interrupted, corpus_names=CORPUS, engine=engine)
-
-    assert result.claims == ()
-    assert result.batch_rejection is not None
-    assert result.batch_rejection.rung == "unclosed_frontmatter"
-    assert engine.call_count == 0
-
-
-def test_a_key_name_the_pattern_does_not_recognise_does_not_lose_the_refusal() -> None:
-    """`parse_frontmatter` has no notion of a well formed key: every line up to the closing
-    fence is in the block. So the scan must not stop on a key shape it happens not to match,
-    such as one with a space in its name, when the validity key sits below it."""
-    engine = _fake(_payload(SUPERSESSION))
-    odd_key_above = (
-        "---\n"
-        "Last updated: 2026-01-01\n"
-        "supersedes: archive_policy_2026-01-05.md\n"
-    )
-
-    result = extract_file_claims(file=FILE, text=odd_key_above, corpus_names=CORPUS, engine=engine)
-
-    assert result.batch_rejection is not None
-    assert result.batch_rejection.rung == "unclosed_frontmatter"
-    assert engine.call_count == 0
-
-
-def test_a_markdown_heading_ends_the_block_even_when_it_contains_a_colon() -> None:
-    """A heading is prose, and prose ends the block. Without that, a heading such as
-    `# Retention: what changed` reads as a key line, the run continues past it, and a later
-    prose line shaped like a key drags the whole memo into a refusal."""
-    engine = _fake(_payload(SUPERSESSION))
-    heading_with_colon = (
-        "---\n"
-        "# Retention: what changed\n"
-        "valid_from: we never agreed one, see the thread\n"
-        "\n"
-        "This memo supersedes archive_policy_2026-01-05.md after the January review.\n"
-    )
-
-    result = extract_file_claims(
-        file=FILE, text=heading_with_colon, corpus_names=CORPUS, engine=engine
-    )
-
-    assert result.batch_rejection is None
-    assert engine.call_count == 1
-
-
-def test_a_yaml_continuation_line_does_not_end_the_block() -> None:
-    """A list item or an indented continuation carries no colon, so it is not a key line, but
-    it is plainly still inside the block. Ending the scan there loses the refusal for every
-    key below it, which is how `supersedes: X` becomes quotable prose again."""
-    engine = _fake(_payload(SUPERSESSION))
-    with_a_list = (
-        "---\n"
-        "title: Retention policy\n"
-        "tags:\n"
-        "  - policy\n"
-        "  - retention\n"
-        "supersedes: archive_policy_2026-01-05.md\n"
-        "\n"
-        "We keep records for seven years.\n"
-    )
-
-    result = extract_file_claims(file=FILE, text=with_a_list, corpus_names=CORPUS, engine=engine)
-
-    assert result.batch_rejection is not None
-    assert result.batch_rejection.rung == "unclosed_frontmatter"
-    assert engine.call_count == 0
+    assert rejected == ()
+    assert len(accepted) == 1
