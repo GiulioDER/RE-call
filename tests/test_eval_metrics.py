@@ -184,20 +184,45 @@ def test_nan_to_null_sanitises_the_mapping_types_this_repo_actually_returns():
 def test_nan_to_null_sanitises_sets_and_nested_tuples():
     from recall.eval.metrics import nan_to_null
 
-    assert nan_to_null({float("nan")}) == [None]
     assert nan_to_null({"counts": (1, float("-inf"))}) == {"counts": [1, None]}
+    assert nan_to_null(frozenset({1, 2})) == [1, 2]
 
 
-def test_nan_to_null_survives_a_self_referential_payload():
-    """The sibling walk in benchmarks/artifact_contract.py guards cycles; so must this one."""
+def test_nan_to_null_raises_on_a_cycle_rather_than_nulling_it_away():
+    """Loud, not quiet. Returning None for the cyclic member would publish a valid LOOKING
+    artifact with data silently replaced, and `write_json` treats an existing file as a
+    completed corpus. A RecursionError is unacceptable, but so is a plausible wrong file:
+    raise in json.dumps' own vocabulary instead."""
     from recall.eval.metrics import nan_to_null
 
     cyclic = {"precision": float("nan")}
     cyclic["self"] = cyclic
 
-    sanitised = nan_to_null(cyclic)
+    with pytest.raises(ValueError, match="Circular reference detected"):
+        nan_to_null(cyclic)
 
-    assert sanitised["precision"] is None
+
+def test_nan_to_null_keeps_a_shared_subtree_on_both_paths():
+    """The cycle guard is path scoped, so the same object referenced twice as SIBLINGS is not
+    a cycle and must survive on both paths rather than being pruned to None."""
+    from recall.eval.metrics import nan_to_null
+
+    shared = {"rate": float("nan"), "n": 3}
+
+    assert nan_to_null({"a": shared, "b": shared}) == {
+        "a": {"rate": None, "n": 3},
+        "b": {"rate": None, "n": 3},
+    }
+
+
+def test_nan_to_null_orders_sets_deterministically():
+    """Set iteration order varies per process under hash randomisation, and both callers write
+    git tracked artifacts, so an unordered list would rewrite the file on every run."""
+    from recall.eval.metrics import nan_to_null
+
+    assert nan_to_null({"d": {"scifact", "nfcorpus", "fiqa"}}) == {
+        "d": ["fiqa", "nfcorpus", "scifact"]
+    }
 
 
 def test_nan_to_null_leaves_strings_and_finite_numbers_alone():

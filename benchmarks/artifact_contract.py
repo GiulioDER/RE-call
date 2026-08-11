@@ -13,12 +13,14 @@ from recall.provider_metadata import ProviderMetadata, provider_metadata_from_an
 #: NOT caught either, which is a real gap, but closing it would make every run that reports a
 #: provider cost raise at the write site and is therefore not a change to make in passing.
 #:
-#: `pounds` is deliberately absent as a bare word while `£` and `GBP` are present: "weighs 5
-#: pounds" is not a cost claim, and a false positive here aborts a completed paid run at the
-#: write site. `dollars` and `euros` carry no such unit ambiguity, so they stay.
+#: `pounds` is deliberately absent as a BARE word while `£`, `GBP` and `pounds sterling` are
+#: present: "weighs 5 pounds" is not a cost claim, and a false positive here aborts a completed
+#: paid run at the write site. Nobody writes "weighs 5 pounds sterling", so the disambiguated
+#: form reclaims the money case for free. `dollars` and `euros` carry no unit ambiguity at all.
 _MONETARY_PROSE = re.compile(
     r"[$€£]\s*\d"
     r"|\b(?:USD|EUR|GBP)\s*\d"
+    r"|\d\s*pounds?\s+sterling\b"
     r"|\d\s*(?:USD\b|EUR\b|GBP\b|dollars?\b|euros?\b)",
     re.IGNORECASE,
 )

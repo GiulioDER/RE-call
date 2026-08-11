@@ -116,8 +116,18 @@ def nan_to_null(value: Any, seen: frozenset[int] = frozenset()) -> Any:
     proxy straight back with its NaN intact and `json.dumps` would then die on the proxy rather
     than on the number. Containers are normalised to plain dict/list on the way out.
 
-    `seen` is path scoped, so a cycle returns None instead of blowing the stack here, before the
-    serializer gets its chance to report the circular reference cleanly.
+    `seen` is path scoped, so it records ancestors only: the same object referenced twice as
+    SIBLINGS is not a cycle and survives on both paths. A real cycle RAISES rather than nulling
+    the repeated member away. Returning None there would be the worst outcome available, a
+    valid looking artifact with data silently replaced, and `write_json` treats an existing file
+    as a finished corpus. Stack safety must not be bought with a plausible wrong file.
+
+    Sets are emitted in sorted order. Iteration order varies per process under hash
+    randomisation, and both callers write git tracked artifacts that would otherwise rewrite
+    themselves on every run.
+
+    Mapping KEYS are deliberately out of scope. A non-finite or non-string key still reaches
+    `json.dumps`, which rejects it loudly, and that is the behaviour we want.
     """
     if isinstance(value, float) and not math.isfinite(value):
         return None
@@ -125,10 +135,12 @@ def nan_to_null(value: Any, seen: frozenset[int] = frozenset()) -> Any:
         return value
     if isinstance(value, (Mapping, list, tuple, AbstractSet)):
         if id(value) in seen:
-            return None
+            raise ValueError("Circular reference detected")
         seen = seen | {id(value)}
         if isinstance(value, Mapping):
             return {k: nan_to_null(v, seen) for k, v in value.items()}
+        if isinstance(value, AbstractSet):
+            return [nan_to_null(v, seen) for v in sorted(value, key=repr)]
         return [nan_to_null(v, seen) for v in value]
     return value
 

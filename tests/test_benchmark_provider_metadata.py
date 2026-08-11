@@ -184,6 +184,16 @@ def test_monetary_prose_covers_the_other_currencies_this_project_could_publish()
             reject_unauditable_cost_claims({"cost_claims": [], "headline": prose})
 
 
+def test_sterling_written_in_words_is_still_a_cost_claim() -> None:
+    """Dropping the bare word `pounds` must not drop sterling entirely. Nobody writes
+    "weighs 5 pounds sterling", so the disambiguated form costs no false positives."""
+
+    with pytest.raises(ValueError, match="provider_metadata"):
+        reject_unauditable_cost_claims(
+            {"cost_claims": [], "headline": "total spend: 12 pounds sterling"}
+        )
+
+
 def test_pounds_as_a_unit_of_weight_is_not_a_cost_claim() -> None:
     """A false positive here aborts a completed paid run at the write site, so the bare word
     `pounds` is deliberately not a currency form. The £ symbol and `GBP` still are."""
