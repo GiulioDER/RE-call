@@ -220,6 +220,7 @@ def test_top_config_enables_lexical_splade_voyage_rerank_and_openrouter() -> Non
     assert args.max_context_chars == 12_000
     assert args.chunk_chars == 12_000
     assert args.chunk_overlap == 200
+    assert args.rerank_document_chars == 4_000
 
 
 def test_generated_answer_prompt_includes_question_type_and_strict_abstention(

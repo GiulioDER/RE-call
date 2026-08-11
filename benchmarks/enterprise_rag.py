@@ -44,6 +44,7 @@ DEFAULT_MAX_CHARS = 3500
 DEFAULT_BATCH_CHUNKS = 256
 DEFAULT_CHUNK_CHARS = 800
 DEFAULT_CHUNK_OVERLAP = 80
+DEFAULT_RERANK_DOCUMENT_CHARS = 4_000
 DEFAULT_MODEL = "openai/gpt-4o"
 DEFAULT_SPLADE_MODEL = "prithivida/Splade_PP_en_v1"
 DEFAULT_VOYAGE_RERANKER = "rerank-2.5"
@@ -363,13 +364,16 @@ def build_sparse_encoder(
     )
 
 
-def build_reranker(name: str) -> object | None:
+def build_reranker(name: str, *, max_document_chars: int | None = None) -> object | None:
     if not name or name == "none":
         return None
     if name.startswith("voyage:"):
         from benchmarks.voyage_rerank import VoyageReranker
 
-        return VoyageReranker(model=name[len("voyage:"):])
+        return VoyageReranker(
+            model=name[len("voyage:"):],
+            max_document_chars=max_document_chars,
+        )
     if name == "local" or name.startswith("local:"):
         from benchmarks.systems import resolve_reranker
         from recall.rerank import Reranker
@@ -840,6 +844,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--backfill-splade", action="store_true")
     parser.add_argument("--accept-noncommercial-splade-license", action="store_true")
     parser.add_argument("--reranker", default="none")
+    parser.add_argument(
+        "--rerank-document-chars",
+        type=int,
+        default=DEFAULT_RERANK_DOCUMENT_CHARS,
+        help="maximum characters per candidate document sent to the reranker",
+    )
     parser.add_argument("--limit-docs", type=int)
     parser.add_argument("--limit-questions", type=int)
     parser.add_argument("--reset-index", action="store_true")
@@ -895,7 +905,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     started = datetime.now(UTC).isoformat()
     t0 = time.perf_counter()
     embedder = resolve_embedder(args.embedder)
-    reranker = build_reranker(args.reranker)
+    reranker = build_reranker(args.reranker, max_document_chars=args.rerank_document_chars)
     sparse_encoder: object | None = None
     questions = load_questions(args.questions, limit=args.limit_questions)
     all_questions = list(questions)
