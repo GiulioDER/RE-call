@@ -309,15 +309,23 @@ Out, deliberately:
   with no awareness of whether that line sits inside a markdown code fence or in real prose. The
   Grammar section above puts the literal fence text inside a ```` ``` ```` example so a reader can
   see it, and `_first_fence_offset` cannot tell that occurrence from a real one. This file is a
-  live instance of the cost it describes: measured against the checked-in file, of 20394 total
-  bytes `human_body` keeps 1949 and 18445 are cut, the read stopping mid-document inside the
-  Grammar section's own code fence. `derived-block-not-last` (`recall/lint.py`) catches this file
-  if it is linted, but `recall/index.py` and `recall/generations.py` do not run lint on the corpus
-  they read, so at index time the loss is silent: the tail is simply gone from what gets embedded,
-  with no error surfaced anywhere in that path. The lint message itself also understates the loss
-  when it does fire: it reports only the byte count of the tail after the pseudo-block's own close
-  fence (17860 bytes here), not the pseudo-block's own body between the fake open and close fence
-  (a further 585 bytes that are just as unindexed but never named in the message).
+  live instance of the cost it describes: `human_body` keeps **1949 bytes** and everything from
+  the Grammar section's opening fence onward is cut, so the read stops mid-document inside that
+  code fence and every section below it — including this one — is never indexed. Only the 1949 is
+  quoted here because it is the one figure that does not rot: it measures the text *above* the
+  fence, so editing anything below leaves it unchanged, while a total or a cut count would be
+  stale the moment this paragraph was written. Re-measure at any commit with:
+
+  ```bash
+  python -c "from pathlib import Path; from recall.document import parse_document; r=Path('docs/DERIVED_BLOCK_DESIGN.md').read_text(encoding='utf-8-sig'); d=parse_document(r); print(len(r.encode()), len(d.human_body.encode()), len(d.derived_text.encode()))"
+  ```
+
+  `derived-block-not-last` (`recall/lint.py`) catches this file if it is linted, but
+  `recall/index.py` and `recall/generations.py` do not run lint on the corpus they read, so at
+  index time the loss is silent: the tail is simply gone from what gets embedded, with no error
+  surfaced anywhere in that path. The lint message itself also understates the loss when it does
+  fire: it counts only the tail *after* the pseudo-block's close fence, omitting the pseudo-block's
+  own body between the fake open and close fences, which is just as unindexed and never named.
   **This is the accepted behaviour, not a bug to fix.** Making `_first_fence_offset` fence-aware
   was considered and rejected: a detector that skips a fence line sitting inside an unbalanced
   code span in ordinary prose would let a REAL derived block hide from the strip instead, and a
