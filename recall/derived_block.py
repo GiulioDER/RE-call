@@ -99,7 +99,7 @@ DERIVED_HEADS = ("contradicts", "same_entity", "status")
 FORBIDDEN_HEADS = ("supersedes", "valid_from", "valid_until")
 
 #: Closed vocabulary. It deliberately EXCLUDES `deprecated` and `obsolete`, which are in
-#: CLOSURE_MARKERS (`recall/lint.py:36`): written literally, the machine's own block would trip
+#: CLOSURE_MARKERS (`recall/lint.py:46`): written literally, the machine's own block would trip
 #: the linter built to find prose closure.
 STATUS_VALUES = ("open", "adopted", "closed", "superseded", "rejected", "abandoned")
 STATUS_ALIASES = {"deprecated": "superseded", "obsolete": "superseded"}

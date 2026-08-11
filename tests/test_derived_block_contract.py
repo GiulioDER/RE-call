@@ -171,7 +171,7 @@ def test_render_sorts_entries_by_head_then_value() -> None:
 def test_render_normalises_deprecated_and_obsolete_to_superseded() -> None:
     """The one place a repair is correct: a proposal's vocabulary arriving at the boundary.
 
-    `deprecated` and `obsolete` are in CLOSURE_MARKERS (`recall/lint.py:36`). Written literally,
+    `deprecated` and `obsolete` are in CLOSURE_MARKERS (`recall/lint.py:46`). Written literally,
     the machine's own block would trip the linter built to find prose closure.
     """
     for alias in ("deprecated", "obsolete"):
@@ -646,7 +646,7 @@ def test_a_block_does_not_trip_the_prose_closure_warning(tmp_path: Path) -> None
 
     The payload is a `note:` carrying "replaces", a word the regex really matches. NOT
     `status: superseded` — that looks like the obvious choice and is a guard that cannot fail:
-    CLOSURE_MARKERS (`recall/lint.py:36`) alternates on "superseded by" and "supersedes", and
+    CLOSURE_MARKERS (`recall/lint.py:46`) alternates on "superseded by" and "supersedes", and
     the bare word "superseded" matches neither, so such a test stays green even if the strip
     regresses. A `note:` is free text and is never normalised, so it reaches the rendered block
     verbatim; unstripped, this file would earn a `closure-marker-unlinked` warning it does not

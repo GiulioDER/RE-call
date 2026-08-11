@@ -82,7 +82,7 @@ copy in the body is a second source of truth that can disagree with the first.
 
 **`status` vocabulary is closed:** `open | adopted | closed | superseded | rejected | abandoned`.
 It deliberately excludes `deprecated` and `obsolete`, which are in `CLOSURE_MARKERS`
-(`recall/lint.py:36`) and would make the machine block trip the linter built to find prose closure.
+(`recall/lint.py:46`) and would make the machine block trip the linter built to find prose closure.
 Both normalise to `superseded` on the render path.
 
 **Entries are sorted by `(head, value)`**, so a re-render is byte identical and a re-run never
