@@ -31,13 +31,11 @@ reported as needing a human, never guessed at.
 """
 from __future__ import annotations
 
-import os
 import re
-import shutil
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from recall.atomic_write import atomic_write_text
 from recall.frontmatter import parse_frontmatter, supersedes_key
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
@@ -298,31 +296,6 @@ def apply_proposal(root: Path, p: Proposal) -> None:
     _log.info("declared %s in %s", line, p.edit_file)
 
 
-def _atomic_write_text(path: Path, data: str) -> None:
-    """Write `data` to `path` atomically: on any failure the original file is left intact.
-
-    `Path.write_text` opens the target with mode ``'w'``, which truncates it to zero bytes at
-    open — before a single byte of new content is written. For `apply_proposal`, the one path in
-    this package that rewrites a user's own memo in place, a crash / disk-full / I/O error in
-    that window leaves the original truncated or half-written and unrecoverable. Instead, stage
-    the new content in a sibling temp file (same directory, so the swap is a same-filesystem
-    atomic rename) and replace the target in a single ``os.replace``. If anything fails, the temp
-    file is removed and the original is never touched.
-    """
-    tmp_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-        if path.exists():
-            # The temp file is created 0600 by mkstemp; carry the original's permission bits over
-            # so the atomic swap does not silently tighten (or, as root, re-own) the user's memo.
-            shutil.copymode(path, tmp_name)
-        os.replace(tmp_name, path)  # atomic on POSIX and on Windows for a same-directory target
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+#: The atomic writer now lives in `recall.atomic_write`, shared with `recall.rewrite`. Kept as a
+#: module-level name because it is the seam this module's atomicity test injects a failure at.
+_atomic_write_text = atomic_write_text

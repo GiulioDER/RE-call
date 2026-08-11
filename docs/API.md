@@ -30,6 +30,8 @@ only from returned hits whose verdict and provenance satisfy the caller's policy
 | `recall reasoning` | Inspect projections, proposals, traces, audits, and opt-in reasoning queries without changing ordinary retrieval behavior. |
 | `recall lint` | Validate memo frontmatter and corpus shape. |
 | `recall check` | Validate one memo, optionally in strict mode. |
+| `recall extract` | Extract declared relations from memo prose with a model. Off unless `RECALL_EXTRACT=1`; needs `pip install recall[extract]`. Writes nothing to the corpus. `--recheck` re-calls the model on cached memos and reports the mismatch rate. |
+| `recall rewrite` | Declare reviewed supersession edges in corpus frontmatter. Dry run unless `--apply`; `--reviewer` and `--note` are required, because no proposal reaches corpus metadata without a named human. |
 | `recall demo` | Run the bundled five-minute product example. |
 | `recall-enterprise` | Manage generation routing and readiness for production deployments. |
 

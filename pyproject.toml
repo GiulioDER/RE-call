@@ -49,6 +49,11 @@ sparse = ["transformers>=4.40,<6", "torch>=2.0,<3"]
 # Keep rerank, entail, and finetune sentence-transformers floors in step.
 rerank = ["sentence-transformers>=3.0"]
 entail = ["sentence-transformers>=3.0"]
+# Prose claim extraction (`recall.extraction`). The OpenAI SDK talks to the OpenRouter base URL
+# the library already defaults to for cloud embeddings, so this adds a generative call, not a new
+# provider. Absent by default: `recall.extraction` imports the SDK lazily and
+# `resolve_claim_extractor` returns None unless RECALL_EXTRACT is set.
+extract = ["openai>=1.0"]
 eval = ["matplotlib>=3.7", "numpy"]
 finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
 # Adapter extras depend on the core packages only, not the framework meta-packages.
