@@ -1,0 +1,766 @@
+[
+ {
+  "id": "pt01",
+  "query": "guidelines for language evolution",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0005.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0387.rst:0"
+  ]
+ },
+ {
+  "id": "pt02",
+  "query": "doing python micro releases",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0102.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0101.rst:0"
+  ]
+ },
+ {
+  "id": "pt03",
+  "query": "string interpolation",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0215.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0292.rst:0"
+  ]
+ },
+ {
+  "id": "pt04",
+  "query": "docstring format",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0216.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0287.rst:0"
+  ]
+ },
+ {
+  "id": "pt05",
+  "query": "metadata for python software packages",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0241.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0314.rst:0"
+  ]
+ },
+ {
+  "id": "pt06",
+  "query": "python interface syntax",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0245.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0443.rst:0"
+  ]
+ },
+ {
+  "id": "pt07",
+  "query": "python interface syntax",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0245.rst:0"
+  ],
+  "successor_ids": [
+   "pep-3124.rst:0"
+  ]
+ },
+ {
+  "id": "pt08",
+  "query": "object adaptation",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0246.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0443.rst:0"
+  ]
+ },
+ {
+  "id": "pt09",
+  "query": "object adaptation",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0246.rst:0"
+  ],
+  "successor_ids": [
+   "pep-3124.rst:0"
+  ]
+ },
+ {
+  "id": "pt10",
+  "query": "api for cryptographic hash functions",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0247.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0452.rst:0"
+  ]
+ },
+ {
+  "id": "pt11",
+  "query": "python database api specification v1.0",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0248.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0249.rst:0"
+  ]
+ },
+ {
+  "id": "pt12",
+  "query": "backward compatibility for the python 2 standard library",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0291.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0387.rst:0"
+  ]
+ },
+ {
+  "id": "pt13",
+  "query": "metadata for python software packages 1.1",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0314.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0345.rst:0"
+  ]
+ },
+ {
+  "id": "pt14",
+  "query": "python web server gateway interface v1.0",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0333.rst:0"
+  ],
+  "successor_ids": [
+   "pep-3333.rst:0"
+  ]
+ },
+ {
+  "id": "pt15",
+  "query": "metadata for python software packages 1.2",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0345.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0426.rst:0"
+  ]
+ },
+ {
+  "id": "pt16",
+  "query": "metadata for python software packages 1.2",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0345.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0566.rst:0"
+  ]
+ },
+ {
+  "id": "pt17",
+  "query": "enumerations in python",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0354.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0435.rst:0"
+  ]
+ },
+ {
+  "id": "pt18",
+  "query": "mirroring infrastructure for pypi",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0381.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0449.rst:0"
+  ]
+ },
+ {
+  "id": "pt19",
+  "query": "mirroring infrastructure for pypi",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0381.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0464.rst:0"
+  ]
+ },
+ {
+  "id": "pt20",
+  "query": "namespace packages",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0382.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0402.rst:0"
+  ]
+ },
+ {
+  "id": "pt21",
+  "query": "changing the version comparison module in distutils",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0386.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0440.rst:0"
+  ]
+ },
+ {
+  "id": "pt22",
+  "query": "python launcher for windows",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0397.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0773.rst:0"
+  ]
+ },
+ {
+  "id": "pt23",
+  "query": "suppressing exception context",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0409.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0415.rst:0"
+  ]
+ },
+ {
+  "id": "pt24",
+  "query": "simpler customisation of class creation",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0422.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0487.rst:0"
+  ]
+ },
+ {
+  "id": "pt25",
+  "query": "metadata for python software packages 2.0",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0426.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0566.rst:0"
+  ]
+ },
+ {
+  "id": "pt26",
+  "query": "time zone support improvements",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0431.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0615.rst:0"
+  ]
+ },
+ {
+  "id": "pt27",
+  "query": "easier suppression of file descriptor inheritance",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0433.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0446.rst:0"
+  ]
+ },
+ {
+  "id": "pt28",
+  "query": "transitioning to release-file hosting on pypi",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0438.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0470.rst:0"
+  ]
+ },
+ {
+  "id": "pt29",
+  "query": "make the python launcher aware of virtual environments",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0486.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0773.rst:0"
+  ]
+ },
+ {
+  "id": "pt30",
+  "query": "general purpose template literal strings",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0501.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0750.rst:0"
+  ]
+ },
+ {
+  "id": "pt31",
+  "query": "add a private version to dict",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0509.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0699.rst:0"
+  ]
+ },
+ {
+  "id": "pt32",
+  "query": "a platform tag for portable linux built distributions",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0513.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0600.rst:0"
+  ]
+ },
+ {
+  "id": "pt33",
+  "query": "a unified tls api for python",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0543.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0748.rst:0"
+  ]
+ },
+ {
+  "id": "pt34",
+  "query": "multiple interpreters in the stdlib",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0554.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0734.rst:0"
+  ]
+ },
+ {
+  "id": "pt35",
+  "query": "postponed evaluation of annotations",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0563.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0649.rst:0"
+  ]
+ },
+ {
+  "id": "pt36",
+  "query": "postponed evaluation of annotations",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0563.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0749.rst:0"
+  ]
+ },
+ {
+  "id": "pt37",
+  "query": "the manylinux2010 platform tag",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0571.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0600.rst:0"
+  ]
+ },
+ {
+  "id": "pt38",
+  "query": "the manylinux2014 platform tag",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0599.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0600.rst:0"
+  ]
+ },
+ {
+  "id": "pt39",
+  "query": "forbid return/break/continue breaking out of finally",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0601.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0765.rst:0"
+  ]
+ },
+ {
+  "id": "pt40",
+  "query": "python packaging authority (pypa) governance",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0609.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0772.rst:0"
+  ]
+ },
+ {
+  "id": "pt41",
+  "query": "structural pattern matching",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0622.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0634.rst:0"
+  ]
+ },
+ {
+  "id": "pt42",
+  "query": "dependency specification in pyproject.toml based on pep 508",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0631.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0621.rst:0"
+  ]
+ },
+ {
+  "id": "pt43",
+  "query": "a file format to list python dependencies for reproducibility of an application",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0665.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0751.rst:0"
+  ]
+ },
+ {
+  "id": "pt44",
+  "query": "dependency specification for single-file scripts",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0722.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0723.rst:0"
+  ]
+ },
+ {
+  "id": "pt45",
+  "query": "stricter type guards",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-0724.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0742.rst:0"
+  ]
+ },
+ {
+  "id": "pt46",
+  "query": "overloading, generic functions, interfaces, and adaptation",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-3124.rst:0"
+  ],
+  "successor_ids": [
+   "pep-0443.rst:0"
+  ]
+ },
+ {
+  "id": "pt47",
+  "query": "asynchronous io support",
+  "trust": true,
+  "expect": "successor",
+  "stale_ids": [
+   "pep-3153.rst:0"
+  ],
+  "successor_ids": [
+   "pep-3156.rst:0"
+  ]
+ },
+ {
+  "id": "pt48",
+  "query": "calendar versioning for python",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-2026.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt49",
+  "query": "a case for top and bottom values",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0326.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt50",
+  "query": "migrate cpython to git, github, and phabricator",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0481.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt51",
+  "query": "shared object proxies",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0797.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt52",
+  "query": "the technical leader governance model",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-8010.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt53",
+  "query": "access to current module/class/function",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-3130.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt54",
+  "query": "dependency specification in pyproject.toml using an exploded toml table",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0633.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt55",
+  "query": "built-in noop()",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0559.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt56",
+  "query": "ieee 754 floating point special values",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0754.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt57",
+  "query": "add a \"while\" clause to generator expressions",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-3142.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt58",
+  "query": "the locked buffer interface",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0298.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt59",
+  "query": "prefixing sys.path by command line option",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0271.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt60",
+  "query": "dot notation assignment in function header",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0542.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt61",
+  "query": "environment markers",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0496.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt62",
+  "query": "transitioning to the py3k standard library",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0364.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt63",
+  "query": "a standard mechanism for backward compatibility",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0497.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt64",
+  "query": "loop counter iteration with range and xrange",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0281.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt65",
+  "query": "chain exceptions at c level",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0490.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt66",
+  "query": "design of the cpython compiler",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0339.rst:0"
+  ],
+  "successor_ids": []
+ },
+ {
+  "id": "pt67",
+  "query": "reworking python's numeric model",
+  "trust": true,
+  "expect": "abstain",
+  "stale_ids": [
+   "pep-0228.rst:0"
+  ],
+  "successor_ids": []
+ }
+]

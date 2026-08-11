@@ -97,3 +97,35 @@ def test_census_recomputes_from_the_corpus(census: dict):
     assert recomputed.n_prose_marker_files == census["n_prose_marker_files"]
     assert recomputed.n_marker_without_header == census["n_marker_without_header"]
     assert recomputed.n_restated_in_prose == census["n_restated_in_prose"]
+
+
+TRUST = REPO_ROOT / "recall" / "eval" / "peps_trust_queries.json"
+
+
+def test_trust_set_is_between_40_and_70_queries():
+    rows = json.loads(TRUST.read_text(encoding="utf-8"))
+    assert 40 <= len(rows) <= 70, f"{len(rows)} queries — Wilson needs the shipped n=4 fixed"
+
+
+def test_trust_set_matches_the_shipped_queries_schema():
+    shipped = json.loads((REPO_ROOT / "recall" / "eval" / "queries.json").read_text(
+        encoding="utf-8"))
+    shipped_trust_keys = {k for e in shipped if e.get("trust") for k in e}
+    rows = json.loads(TRUST.read_text(encoding="utf-8"))
+    for row in rows:
+        assert set(row) == shipped_trust_keys, f"{row['id']} does not match the shipped schema"
+
+
+def test_successor_rows_have_a_successor_and_abstain_rows_do_not():
+    rows = json.loads(TRUST.read_text(encoding="utf-8"))
+    for row in rows:
+        if row["expect"] == "successor":
+            assert row["successor_ids"] and row["stale_ids"]
+        else:
+            assert row["expect"] == "abstain" and row["successor_ids"] == []
+
+
+def test_successor_row_count_equals_census_header_edges(census: dict):
+    rows = json.loads(TRUST.read_text(encoding="utf-8"))
+    successors = [r for r in rows if r["expect"] == "successor"]
+    assert len(successors) == census["n_header_edges"]
