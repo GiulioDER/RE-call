@@ -26,10 +26,13 @@ from recall.derived_block import (
     CLOSE_FENCE,
     OPEN_FENCE,
     DerivedBlockError,
+    DerivedDigestMismatch,
     DerivedEntry,
     derived_digest,
+    parse_derived_block,
     render_derived_block,
     split_derived_block,
+    verify_derived_block,
 )
 
 
@@ -225,3 +228,225 @@ def test_digest_carries_the_grammar_version() -> None:
             ],
         }
     )
+
+
+def _block(*entries: DerivedEntry) -> str:
+    return render_derived_block(list(entries))
+
+
+def test_round_trip() -> None:
+    entries = [
+        _entry("contradicts", "project_alpha_2026-03-02", _PROPOSAL_A, note="they differ"),
+        _entry("same_entity", "project_beta_2026-04-01", _PROPOSAL_B),
+        _entry("status", "superseded", _PROPOSAL_C),
+    ]
+    assert list(parse_derived_block(render_derived_block(entries)).entries) == entries
+
+
+def test_re_render_is_byte_identical() -> None:
+    """A re-run over an unchanged file must not churn it."""
+    once = _block(_entry("status", "adopted"), _entry("contradicts", "old_memo_2026-01-02"))
+    assert render_derived_block(list(parse_derived_block(once).entries)) == once
+
+
+def test_verify_accepts_a_rendered_block() -> None:
+    text = _block(_entry())
+    assert verify_derived_block(text).digest == derived_digest([_entry()])
+
+
+def test_verify_detects_a_tampered_value() -> None:
+    text = _block(_entry()).replace("project_alpha_2026-03-02", "project_gamma_2026-09-09")
+    with pytest.raises(DerivedDigestMismatch, match="digest"):
+        verify_derived_block(text)
+
+
+def test_verify_detects_a_tampered_reviewer() -> None:
+    """The field a forger would most want to change is inside the digest."""
+    text = _block(_entry()).replace("reviewer: giulio", "reviewer: nobody")
+    with pytest.raises(DerivedDigestMismatch, match="digest"):
+        verify_derived_block(text)
+
+
+def test_digest_is_over_structure_not_bytes() -> None:
+    """A CRLF checkout and a BOM are not tampering. This repo lives on Windows and Linux."""
+    text = _block(_entry())
+    crlf = text.replace("\n", "\r\n")
+    bom = "﻿" + text
+    assert verify_derived_block(crlf).digest == verify_derived_block(text).digest
+    assert verify_derived_block(bom).digest == verify_derived_block(text).digest
+
+
+def test_a_fully_populated_well_formed_block_parses() -> None:
+    """The non-over-rejection test. Every refusal below is worthless without this one."""
+    entries = [
+        _entry("contradicts", "project_alpha_2026-03-02", _PROPOSAL_A, note="a: colon; and ; too"),
+        _entry("same_entity", "project_beta_2026-04-01", _PROPOSAL_B),
+        _entry("status", "abandoned", _PROPOSAL_C),
+    ]
+    assert len(verify_derived_block(render_derived_block(entries)).entries) == 3
+
+
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        pytest.param(
+            f"{OPEN_FENCE}\nsupersedes: other_memo_2026-01-01\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "second source of truth",
+            id="forbidden-head-supersedes",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\nvalid_until: 2026-01-01\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "second source of truth",
+            id="forbidden-head-valid-until",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\nrelates_to: x_2026-01-01\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "unknown head",
+            id="unknown-head",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\nstatus: deprecated\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "closure marker",
+            id="status-deprecated",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\nstatus: obsolete\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "closure marker",
+            id="status-obsolete",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\nstatus: pending\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "closed vocabulary",
+            id="status-outside-vocabulary",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\ncontradicts: [[project_alpha_2026-03-02]]\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "bare document stem",
+            id="value-is-a-wikilink",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\ncontradicts: project_alpha_2026-03-02.md\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "bare document stem",
+            id="value-carries-an-extension",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\ncontradicts: project_alpha_2026-03-02\n"
+            f"  proposal: not-a-hash\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "proposal",
+            id="proposal-not-hex",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\ncontradicts: project_alpha_2026-03-02\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "at",
+            id="at-is-a-date-not-an-instant",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\ncontradicts: project_alpha_2026-03-02\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22+02:00\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "at",
+            id="at-is-not-utc",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\ncontradicts: project_alpha_2026-03-02\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: \n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "provider",
+            id="provider-empty",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\ncontradicts: project_alpha_2026-03-02\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: \n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "reviewer",
+            id="reviewer-empty",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\ncontradicts: project_alpha_2026-03-02\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "reviewer",
+            id="missing-required-subkey",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\ncontradicts: project_alpha_2026-03-02\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\n  confidence: 0.9\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "unknown sub-key",
+            id="unknown-subkey",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\ncontradicts: project_alpha_2026-03-02\n"
+            f"    proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "two spaces",
+            id="subkey-over-indented",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\nstatus: adopted\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\n"
+            f"contradicts: project_alpha_2026-03-02\n"
+            f"  proposal: {_PROPOSAL_B}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n",
+            "sorted",
+            id="entries-out-of-order",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\ncontradicts: project_alpha_2026-03-02\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\n{CLOSE_FENCE}\n",
+            "digest",
+            id="missing-digest",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\ncontradicts: project_alpha_2026-03-02\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: nope\n{CLOSE_FENCE}\n",
+            "digest",
+            id="malformed-digest",
+        ),
+        pytest.param(f"{OPEN_FENCE}\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n", "no entries",
+                     id="zero-entries"),
+        pytest.param(f"{OPEN_FENCE}\nstatus: adopted\n", "close fence", id="unclosed-fence"),
+        pytest.param(
+            f"{OPEN_FENCE}\nstatus: adopted\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n"
+            f"{OPEN_FENCE}\nstatus: closed\n{CLOSE_FENCE}\n",
+            "second open fence",
+            id="second-open-fence",
+        ),
+        pytest.param(
+            f"{OPEN_FENCE}\nstatus: adopted\n"
+            f"  proposal: {_PROPOSAL_A}\n  provider: p\n  reviewer: r\n"
+            f"  at: 2026-08-11T09:14:22Z\ndigest: {'0' * 64}\n{CLOSE_FENCE}\n"
+            "a human appended this\n",
+            "after the close fence",
+            id="content-after-close-fence",
+        ),
+        pytest.param("no fence at all\n", "open fence", id="no-open-fence"),
+    ],
+)
+def test_parse_refuses(text: str, match: str) -> None:
+    with pytest.raises(DerivedBlockError, match=match):
+        parse_derived_block(text)

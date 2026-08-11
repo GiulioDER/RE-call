@@ -250,3 +250,116 @@ def render_derived_block(entries: Sequence[DerivedEntry]) -> str:
     lines.append(f"digest: {derived_digest(ordered)}")
     lines.append(CLOSE_FENCE)
     return "\n".join(lines) + "\n"
+
+
+@dataclass(frozen=True)
+class DerivedBlock:
+    """A parsed block. `digest` is what the FILE claims; `verify_derived_block` checks it."""
+
+    entries: tuple[DerivedEntry, ...]
+    digest: str
+
+
+def _entry_from(raw: dict[str, str]) -> DerivedEntry:
+    missing = [key for key in REQUIRED_SUBKEYS if key not in raw]
+    if missing:
+        raise DerivedBlockError(
+            f"entry {raw['head']}: {raw['value']!r} is missing {', '.join(missing)}"
+        )
+    entry = DerivedEntry(
+        head=raw["head"],
+        value=raw["value"],
+        proposal=raw["proposal"],
+        provider=raw["provider"],
+        reviewer=raw["reviewer"],
+        at=raw["at"],
+        note=raw.get("note", ""),
+    )
+    _validate_entry(entry)
+    return entry
+
+
+def parse_derived_block(text: str) -> DerivedBlock:
+    """Parse a block. Refusal only, never repair. Does NOT check the digest.
+
+    Parsing and verifying are separate so `diagnose_derived_block` can tell a half-written file
+    (`derived-block-malformed`) from an integrity breach (`derived-block-tampered`). Reporting the
+    first as the second sends whoever reads the lint output looking for an attacker.
+
+    CRLF is normalised and a BOM stripped before anything else, for the same reason the digest is
+    over structure: this repo reads `utf-8-sig` and lives on both Windows and Linux, so neither
+    is evidence of anything.
+    """
+    lines = text.replace("\r\n", "\n").lstrip("﻿").split("\n")
+    if lines and lines[-1] == "":
+        lines = lines[:-1]
+    if not lines or lines[0].strip() != OPEN_FENCE:
+        raise DerivedBlockError("a derived block must start with the open fence")
+    closes = [i for i, line in enumerate(lines) if line.strip() == CLOSE_FENCE]
+    if not closes:
+        raise DerivedBlockError("unclosed block: no close fence line")
+    close_at = closes[0]
+    if any(line.strip() == OPEN_FENCE for line in lines[1:close_at]):
+        raise DerivedBlockError("a second open fence inside a block")
+    if any(line.strip() for line in lines[close_at + 1 :]):
+        if any(line.strip() == OPEN_FENCE for line in lines[close_at + 1 :]):
+            raise DerivedBlockError("a second open fence follows the close fence")
+        raise DerivedBlockError("content after the close fence")
+
+    inner = lines[1:close_at]
+    if not inner or not inner[-1].startswith("digest: "):
+        raise DerivedBlockError("digest must be the last line before the close fence")
+    digest = inner[-1][len("digest: ") :].strip()
+    if not _HEX64.match(digest):
+        raise DerivedBlockError("digest must be 64 lowercase hex characters")
+
+    entries: list[DerivedEntry] = []
+    current: dict[str, str] | None = None
+    for line in inner[:-1]:
+        if not line.strip():
+            raise DerivedBlockError("a derived block contains no blank lines")
+        if line.startswith(INDENT):
+            if current is None:
+                raise DerivedBlockError("a sub-key appears before any head")
+            rest = line[len(INDENT) :]
+            if rest.startswith(" "):
+                raise DerivedBlockError("a sub-key must be indented exactly two spaces")
+            key, separator, value = rest.partition(": ")
+            if not separator:
+                raise DerivedBlockError(f"malformed sub-key line {rest!r}")
+            if key not in REQUIRED_SUBKEYS + OPTIONAL_SUBKEYS:
+                raise DerivedBlockError(f"unknown sub-key {key!r}")
+            if key in current:
+                raise DerivedBlockError(f"duplicate sub-key {key!r}")
+            current[key] = value
+        else:
+            if current is not None:
+                entries.append(_entry_from(current))
+            head, separator, value = line.partition(": ")
+            if not separator:
+                raise DerivedBlockError(f"malformed head line {line!r}")
+            current = {"head": head, "value": value}
+    if current is not None:
+        entries.append(_entry_from(current))
+
+    _validate_set(entries)
+    keys = [(entry.head, entry.value) for entry in entries]
+    if keys != sorted(keys):
+        raise DerivedBlockError("entries must be sorted by (head, value)")
+    return DerivedBlock(tuple(entries), digest)
+
+
+def verify_derived_block(text: str) -> DerivedBlock:
+    """Parse, then check the digest. The function a write path calls before touching a file.
+
+    Same posture as `recall/fix.py:264` refusing to overwrite what a human wrote: a file whose
+    block disagrees with its own structure is not a file to repair.
+    """
+    block = parse_derived_block(text)
+    expected = derived_digest(block.entries)
+    if expected != block.digest:
+        raise DerivedDigestMismatch(
+            f"digest mismatch: the block claims {block.digest}, "
+            f"its structure hashes to {expected}"
+        )
+    return block
