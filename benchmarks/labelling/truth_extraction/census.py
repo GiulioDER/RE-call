@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -132,7 +133,12 @@ def census_payload(
             "note": (
                 "Arm-independent: no model and no human judgement. recall_ceiling is the "
                 "fraction of authored header edges also stated in prose, and is the hard upper "
-                "bound on recall for any prose extractor."
+                "bound on recall for any prose extractor. An edge counts as restated if EITHER "
+                "end states it: of the 8 restated edges, 3 are stated by the superseded PEP "
+                "itself and 5 are stated only by the successor. That split matters because "
+                "build_gold.py hashes only the superseded PEP's body as the frozen question's "
+                "input, so the 3 figure is the one describing the superseded document alone; "
+                "for the other 5, the sentence this census counted is not in that input."
             ),
         },
     }
@@ -146,6 +152,18 @@ def write_census(path: Path, payload: Mapping[str, object]) -> None:
         handle.write(json.dumps(payload, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
 
 
+#: A `git rev-parse HEAD` output: 40 lowercase hex characters. `--peps-sha` is taken as a bare
+#: string and becomes the SOLE corpus provenance in every artifact built from it, so a typo here
+#: is unfalsifiable downstream: nothing else records which corpus snapshot was measured.
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _validate_peps_sha_format(peps_sha: str) -> None:
+    """Refuse a `--peps-sha` that is not a 40-character lowercase hex git SHA."""
+    if not _SHA_RE.fullmatch(peps_sha):
+        raise ValueError(f"--peps-sha {peps_sha!r} is not a 40-character lowercase hex git SHA")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--peps-dir", type=Path, required=True,
@@ -154,6 +172,11 @@ def main() -> None:
     parser.add_argument("--clone-date", required=True, help="ISO date the clone was taken")
     parser.add_argument("--out", type=Path, default=Path("results/truth_extraction/census.json"))
     args = parser.parse_args()
+
+    try:
+        _validate_peps_sha_format(args.peps_sha)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     recall_commit = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"],

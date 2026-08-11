@@ -41,7 +41,7 @@ when it meant "the older one".
 | `results/truth_extraction/census.json` | the 17.0% prose recall ceiling; counts recomputable from `python/peps` at the recorded SHA |
 | `benchmarks/labelling/truth_extraction/gold.manifest.jsonl` | 47 gold positives (authored PEP headers) + 4 transplanted negatives, frozen |
 | `benchmarks/labelling/truth_extraction/adjudication.csv` | the blind negative-adjudication pack, 38 rows from the 30 of 175 marker-without-header PEPs that name a target; `adjudication_key.json` un-blinds it and must not be opened until labelling is finished |
-| `recall/eval/peps_trust_queries.json` | 67 trust queries (47 successor / 20 abstain), replacing a shipped successor arm of n=4 |
+| `recall/eval/peps_trust_queries.json` | 62 trust queries (42 successor / 20 abstain), one row per superseded PEP rather than one row per edge, replacing a shipped successor arm of n=4 |
 
 **What this set measures well, and what it does not.** Of 47 authored header edges, only **8** are
 restated in prose with the marker and the partner PEP in the same sentence. A perfect prose
@@ -57,12 +57,31 @@ confirms, but only 30 of them name a candidate target in the marker's own senten
 there is no pair to put in front of an adjudicator. They are counted in the census and excluded
 from the pack.
 
+`census.py` counts an edge as restated if EITHER end states it, and of the 8 restated edges, 3 are
+stated by the superseded PEP itself and 5 are stated only by the successor. That split matters
+because `build_gold.py` hashes only the superseded PEP's body as the frozen gold item's input: the
+3 figure is the one describing the superseded document alone, and for the other 5 the sentence
+this census counted is not present in the text a prose extractor would actually read.
+
 **PEPs are not memos.** They cite each other as `PEP 3106`, not `[[wikilink]]`, and they are
 written under an editorial process a personal memo corpus does not have. A precision measured
 here does not transfer to a memo corpus. What transfers is the **error mix**, which the four
 transplanted fixtures in `benchmarks/labelling/truth_extraction/fixtures/` make checkable: they
 reproduce, verbatim, the reported speech, hedging and two partial-scope failures measured on the
 private 792-memo corpus and quoted in `recall/fix.py`.
+
+**Two runnability caveats, both true today.** `run_trust_eval` (`recall/eval/harness.py:459`)
+indexes the corpus with `recall.lint.DEFAULT_GLOB = "**/*.md"`, so pointed at a directory of PEP
+`.rst` files it indexes zero documents. The trust set is not yet runnable by the only consumer of
+its schema: "replacing a shipped successor arm of n=4" describes an intended substitution, not a
+working one.
+
+The `:0` chunk-id convention the trust set's `stale_ids`/`successor_ids` use is exhaustive on the
+22-file memo corpus under `recall/eval/corpus` (every file chunks to exactly one chunk at
+`DEFAULT_MAX_CHARS=800`), but not on PEPs, which chunk to between 5 and 153 chunks per file among
+the 77 PEPs named in the trust set's successor arm. `pep-0387.rst:0` names 1 of that file's 14
+chunks, and the scoring in `harness.py` compares the exact `file:ord` pair, so a hit anywhere else
+in the same file scores as a miss.
 
 ### Reasoning Session 1 control
 
