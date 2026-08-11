@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-11
 **Branch:** `claude/silly-heyrovsky-1136f9`
-**Status:** design approved, implementation not started
+**Status:** implemented. See the verification record at the end.
 
 ## The defect
 
@@ -86,25 +86,70 @@ Line 0 must be `---` after tolerating a BOM, exactly as today. Then walk from li
 | anything else | return `None`, this is not a frontmatter block |
 | end of input, no fence | return `None`, unclosed behavior unchanged |
 
-A block must contain **at least one** column 0 key line. Consequence: `---\n\n---` and `---\n---`,
-two adjacent thematic breaks, are no longer paired. An empty block declares no metadata, so no
-`meta` is lost by refusing it; only the two fence lines stay in the body.
+A block must contain **at least one** key line. Consequence: `---\n\n---` and `---\n---`, two
+adjacent thematic breaks, are no longer paired. An empty block declares no metadata, so no `meta`
+is lost by refusing it; only the two fence lines stay in the body.
 
 Indented lines are accepted as block members because `recall/context.py` already documents that a
 nested `title:` belongs to a sub-object, which means nested blocks are a real shape in these
-corpora. A rule stricter than this would leak them into retrieved bodies.
+corpora. An indented line that IS a key counts toward the at-least-one rule, so a block whose
+every line is indented is not refused over its indentation alone.
 
-#### Residual ambiguity, stated rather than solved
+#### Refusing is not symmetric with pairing
 
-These remain paired as frontmatter and will be asserted as such in tests, so the boundary is
-explicit instead of assumed away:
+**This is the governing principle, and the first draft of this design did not have it.** Pairing a
+block the old rule also paired is, at worst, no worse than the old rule. **Refusing** a block the
+old rule accepted is strictly worse: the validity metadata is lost *and* the raw block is handed
+to the chunker as prose. So the predicate must bias toward accepting, and every refusal has to
+earn its place by naming the markdown shape it protects.
 
-- `---\nNote: something\n---`. A one line prose block whose first word is followed by a colon is
-  genuinely indistinguishable from YAML without a real parser.
-- `---\nhttp://example.com\n---`. A bare URL at column 0 matches the key shape.
+Two audit rounds found nine shapes of valid YAML frontmatter that the draft rules refused: column
+0 block sequences, comments, quoted keys, digit leading keys, non-ASCII keys, wholly indented
+blocks, multi-line flow collections closed at column 0, explicit key syntax, and unquoted keys
+containing a space. All nine now parse.
 
-Both require the *entire* candidate block to consist of such lines. A rule followed by a heading, a
-sentence, or a bullet list is no longer paired, which is the reported failure.
+#### Order is what separates YAML from markdown
+
+`- archive` and `# Notes` are a sequence item and a comment, and a bullet and a heading, with
+nothing in the text to tell them apart. **Order** tells them apart: a sequence belongs to the key
+that opened it, so a column 0 `-` or `#` counts as a member only once a key has been seen.
+
+```
+---                        ---
+tags:                      <blank>
+- archive                  - first point
+valid_until: 2020-01-01    - second point
+---                        ---
+frontmatter                a rule, a list, another rule
+```
+
+A bare key may contain spaces and may lead with a digit or a non-ASCII letter. What it may **not**
+lead with is any character markdown uses to open a line: `#`, `-`, `*`, `+`, `>`, `|`, a backtick,
+or `[`. None of those is a plausible unquoted YAML key, and excluding them is what stops
+`**Warning**: text`, `[spec]: https://example.com`, `` `config`: x `` and `> quoted: x` from
+reading as keys.
+
+#### What this does not fix
+
+The obvious reading of the rule above is more generous than the truth, so this is stated flatly
+and asserted in tests.
+
+**One key unlocks the rest of the block.** After any key, every comment and sequence item is
+accepted. A prose section led by `Note: ...` and followed by a heading and a bullet list is still
+paired and still deleted. That is identical to the old behaviour, so it is not a regression and
+`legacy_pairing_differs` is correctly `False`. What *is* fixed is the section whose first
+non-blank line is a heading, a bullet, a blockquote, a link reference definition or ordinary
+prose, which is the reported defect.
+
+The remaining residuals, each needing the *entire* candidate block to look like it:
+
+- `Note: something` and a bare `http://example.com` read as keys. Without a real parser, a first
+  word followed by a colon is a key.
+- A `#` comment **before** the first key is refused. At that position it cannot be told apart from
+  the markdown heading in the reported defect, and a heading right after a rule is much the more
+  common document. A comment after a key is accepted.
+- `%YAML 1.2` refuses the block. A YAML directive belongs before the opening fence, not inside
+  it, so this shape is malformed anyway.
 
 Rejected alternative: additionally requiring the block to declare a known key
 (`valid_from` / `valid_until` / `supersedes` / `title`). It nearly eliminates false pairing, but a
@@ -139,6 +184,32 @@ Instead, perturb the `content_hash` input **only** for a file whose pairing actu
 old rule paired it and the new rule does not. Unaffected files hash bit-identically to today and
 keep skipping. The raw text is already read before the skip check, so the test costs one string
 scan.
+
+**Two index paths, not one.** The design as first written assumed `recall/index.py` was the only
+freshness guard. `recall/generations.py::_reuse_source` is a second one: it copies an earlier
+generation's chunks whenever tenant, URI, object sha256 and pipeline fingerprint all match, and it
+returns *before* `parse_frontmatter` runs. None of those four terms moved, and `PipelineIdentity`
+covers only the schema version, embedder, chunker and FTS configuration. An object indexed before
+the fix would therefore carry its truncated chunk set into every generation built afterwards.
+`_body_rule_changed` gates reuse on the same narrow trigger.
+
+**The trigger covers the title, not only the body.** An unclosed block carrying a `title:` key
+moves no body, because neither rule ever paired it, but `document_title` used to scan an unclosed
+block to its end and take the title out of it. The title is embedded into every passage in
+`section` and `neighbor` mode, so a body-only trigger would pin a stale title permanently. The
+same applies to a document containing U+2028, a form feed, a vertical tab or NEL: `document_title`
+split with `splitlines()`, which honours those, while the span is counted over `split("\n")`,
+which does not, so the two scans could address different lines. Flagged on the presence of the
+separator alone, which is cheap and exact.
+
+**`_body_rule_changed` does not self-heal, and that is a known cost.** `_body_derivation_hash`
+stores its perturbed fingerprint, so an affected file rebuilds once. The generations guard is a
+pure function of the object's text with nowhere to record that the rebuild happened, because
+reuse is keyed on tenant, URI, sha256 and pipeline fingerprint. An affected object is therefore
+re-chunked on every future generation build. Accepted because the cost falls only on objects that
+contain the defect, and removing it means either a new `PipelineIdentity` term (which re-embeds
+every corpus) or a body rule column threaded through `_reuse_source`'s SELECT. Recorded as a
+follow up rather than claimed as symmetric.
 
 This requires a helper that retains the old rule:
 
@@ -190,6 +261,56 @@ the guard most likely to be written so that it cannot fail:
 - The `recall/frontmatter.py` module docstring states the pairing rule, since it currently says only
   that a document "may begin with a `---` line".
 - `docs/ENTERPRISE_RETRIEVAL.md` title precedence row is reviewed against the new predicate.
+
+## Verification record
+
+Run on 2026-08-11, on this branch.
+
+| Check | Result |
+| --- | --- |
+| Full suite | 3166 passed, 516 skipped, 1 xfailed, exit 0 |
+| `python -m ruff check` | All checks passed (ruff 0.16.2) |
+| Old versus new body diff, 140 `.md` files | 0 bodies moved, 0 meta changed, 0 flagged for re-index |
+| YAML shape sweep | 17 of 18 shapes parse; only `%YAML 1.2` refused |
+| Markdown prose sweep | 8 of 8 sections correctly left in the body |
+| Guard mutation | 17 of 17 mutations produced a failure |
+| Adversarial audit | two rounds, 7 findings, all acted on |
+
+Four things the table does not say on its own.
+
+**The 516 skips are the `requires_db` tests.** No PostgreSQL is configured in this worktree. The
+index skip guard was verified through `_body_derivation_hash` as a pure function in both
+directions, and the generations reuse guard through `_body_rule_changed`, also pure. Neither was
+exercised through a real store round trip, and the wiring of `_body_rule_changed` into the build
+loop has no local coverage at all.
+
+**Zero moved bodies is the absence of a regression, not evidence the fix works.** None of this
+repository's 140 markdown files opens with a thematic break, so the corpus diff proves only that
+no existing chunk boundary shifts. The evidence that the defect is fixed is the test suite, and
+the diff harness was itself checked against a synthetic affected document before its zero was
+believed.
+
+**Mutation testing found a guard that asserted nothing.** The ordering rule that separates a YAML
+sequence from a markdown bullet list survived being deleted, because the bullet list test was
+passing on the at-least-one-key rule instead. Two tests were added in which a later line supplies
+the key, so the ordering rule is now the only thing refusing the block. This is the reason the
+mutation pass exists and it is worth recording that it paid.
+
+**The audit is what made this correct, and it cost two rounds.** The first found that the draft
+predicate refused six shapes of valid YAML; the second, after the repair, found three more plus
+the overclaiming docstring. Both rounds were adversarial, both produced concrete failing inputs,
+and I verified every finding against the real code before acting. The lesson generalised into the
+asymmetry principle above, which is the thing to carry forward: a rule that decides whether to
+parse something must be judged on what it *refuses*, not only on what it accepts.
+
+The 17 mutations covered: the at-least-one-key rule, the key line test in both directions, the
+markdown lead-in exclusions, the key pattern narrowed back to ASCII-letter-leading, indented
+continuation handling, an indented key counting as a key, sequence items and comments rejected
+outright, the ordering rule dropped, explicit key syntax, the flow collection closer, the exotic
+separator trigger, the title-only trigger, the media type check in `_body_rule_changed`,
+`legacy_pairing_differs` never flagging, `_body_derivation_hash` flagging everything, and both
+rewired call sites reverted to scanning forward for the next fence. Each was applied to the real
+source, run, and reverted.
 
 ## Recommended follow up, not in this scope
 

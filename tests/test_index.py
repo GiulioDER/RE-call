@@ -1,9 +1,50 @@
+import hashlib
+
 import pytest
 
-from recall.index import Indexer, chunk_code, chunk_text
+from recall.index import Indexer, _body_derivation_hash, chunk_code, chunk_text
 from recall.embeddings import HashingEmbedder
 
 from tests.conftest import requires_db
+
+
+# --- what an existing index has to rebuild after the frontmatter pairing rule changed ---------
+#
+# The skip guard is keyed on a file's raw bytes, so a file whose BODY moved while its bytes
+# stayed put would be reported unchanged forever. Both directions are load bearing: the second
+# test is the fix reaching existing corpora, and the first is the reason it does not cost every
+# other corpus a full re-embed.
+
+
+def test_the_fingerprint_hash_of_an_ordinary_file_is_exactly_its_raw_sha256():
+    raw = "---\nvalid_from: 2026-06-01\n---\n# Title\n\nbody\n"
+    assert _body_derivation_hash(raw, hashlib.sha256(raw.encode("utf-8")).hexdigest()) == (
+        hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    )
+
+
+def test_a_file_whose_body_moved_gets_a_different_fingerprint_hash():
+    raw = "---\n\n# Release notes\n\nProse the old rule deleted.\n\n---\n\nTail.\n"
+    content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    assert _body_derivation_hash(raw, content_hash) != content_hash
+
+
+def test_a_file_whose_title_moved_but_whose_body_did_not_also_rebuilds():
+    """An unclosed block carrying `title:`. The body is the whole text under both rules, so a
+    body comparison sees nothing, but the old title scan read that key and the new one does not.
+    The title is embedded into every passage in `section` and `neighbor` mode, so leaving this
+    out would pin a stale title in an existing index permanently.
+    """
+    raw = "---\ntitle: Real Title\n\n# Heading\ntext"
+    content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    assert _body_derivation_hash(raw, content_hash) != content_hash
+
+
+def test_an_unclosed_block_without_a_title_is_left_alone():
+    # Nothing about it changed, so a rebuild would be pure waste.
+    raw = "---\nvalid_until: 2026-01-01\nno closing fence"
+    content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    assert _body_derivation_hash(raw, content_hash) == content_hash
 
 
 def test_chunk_text_splits_on_blank_lines():

@@ -13,7 +13,7 @@ from recall.context import ContextPolicy, StructuredChunk, contextual_passages
 from recall.embedding_registry import context_version_for
 from recall.control_plane import ControlPlane
 from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
-from recall.frontmatter import parse_frontmatter, validity_bounds
+from recall.frontmatter import legacy_pairing_differs, parse_frontmatter, validity_bounds
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
 from recall.sparse import SparseEncoderProtocol, store_sparse_vectors
@@ -299,6 +299,30 @@ def candidate_files(path: str | Path, glob: str = DEFAULT_GLOB) -> list[Path]:
     return [root]
 
 
+def _body_derivation_hash(raw: str, content_hash: str) -> str:
+    """The identity `_index_fingerprint` uses for a file, covering its BODY and not just its bytes.
+
+    Normally `content_hash` itself, returned unchanged. The exception is a file whose leading
+    ``---`` used to be paired as a frontmatter fence and no longer is: its bytes are identical,
+    but the body `parse_frontmatter` hands to the chunker gained back a whole section. Nothing
+    else would ever tell the skip guard to rebuild it, so an existing index would go on serving
+    a chunk with that section missing, indefinitely and silently.
+
+    Deliberately NOT another term in `_index_fingerprint`. Widening that tuple changes the
+    joined string for EVERY file and re-embeds every corpus, which charges a full re-embed to
+    every user for a defect most corpora never contain, and `recall_mcp.service` builds its
+    shadow indexer without an embedding cache, so on that path it is a real metered cost. This
+    is the narrowest trigger that reaches the affected files: `legacy_pairing_differs` is false
+    for everything else, so every other file hashes bit-identically to before.
+
+    `content_hash` itself stays truthful and is what lands in chunk metadata. Perturbing the
+    stored value would make `source_raw_hashes()` report a hash that is not the file's.
+    """
+    if not legacy_pairing_differs(raw):
+        return content_hash
+    return hashlib.sha256(f"{content_hash}\x00frontmatter-pairing-2026-08-11".encode()).hexdigest()
+
+
 def _index_fingerprint(
     content_hash: str, embedder: Embedder, context_policy: ContextPolicy
 ) -> str:
@@ -516,13 +540,17 @@ class Indexer:
                 continue
             raw = _strip_nul(raw, f)
             content_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+            # What the FINGERPRINT is derived from, which is not always what is stored: a file
+            # whose leading `---` stopped being read as a fence has the same bytes and a bigger
+            # body. See `_body_derivation_hash`.
+            derived_hash = _body_derivation_hash(raw, content_hash)
             index_fingerprint = _index_fingerprint(
-                content_hash, self._embedder, self._context_policy
+                derived_hash, self._embedder, self._context_policy
             )
             shadow_fingerprint = (
                 None if self._shadow is None
                 else _index_fingerprint(
-                    content_hash, self._shadow.embedder, self._shadow.context_policy
+                    derived_hash, self._shadow.embedder, self._shadow.context_policy
                 )
             )
             # Up to date in EVERY generation being written, not just the active one.

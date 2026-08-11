@@ -4,29 +4,176 @@ A document may begin with a ``---`` line, followed by ``key: value`` lines, clos
 Only VALIDITY_KEYS are meaningful to recall; unknown keys are ignored and the returned body
 always excludes the block. Dates are ISO ``YYYY-MM-DD``, interpreted in UTC: ``valid_from``
 starts at 00:00:00 (inclusive), ``valid_until`` ends at 23:59:59.999999 (inclusive end of day).
+
+``---`` is also markdown's thematic break, so an opening fence is not on its own enough to
+declare a block. `frontmatter_span` decides the pairing and is the single definition of it:
+every consumer calls it rather than scanning for the next ``---`` itself.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, time, timezone
 
 VALIDITY_KEYS = ("valid_from", "valid_until", "supersedes")
+
+#: A mapping key: a quoted key, or a bare one, then a colon. A bare key may contain spaces
+#: (``date created:`` is ordinary Obsidian frontmatter) and may lead with a digit or a non-ASCII
+#: letter. What it may NOT lead with is any character markdown uses to open a line: ``#`` ``-``
+#: ``*`` ``+`` ``>`` ``|`` `````` and ``[``. None of those is a plausible unquoted YAML key, and
+#: excluding them is what stops ``**Warning**: text``, ``[spec]: https://x`` and ``> quoted: x``
+#: from reading as keys. That matters more than it looks: see `frontmatter_span` on how one key
+#: unlocks the rest of a block.
+_KEY_LINE = re.compile(r"""(?x)
+    (?: ["'] [^"']* ["'] | [^\s:\#\-*+`\[>|] [^:]* )
+    \s* :
+""")
+
+#: YAML explicit key syntax, ``? key`` on one line and ``: value`` on the next. Neither opens a
+#: line in markdown, so both are safe to read as keys wherever they appear.
+_EXPLICIT_KEY = re.compile(r"[?:](\s|$)")
+
+#: A YAML block sequence item at column 0. Identical in text to a markdown bullet, so it counts
+#: only AFTER a key has been seen: a sequence belongs to the key that opened it, and a bullet
+#: list following a bare rule has no key to belong to.
+_SEQUENCE_ITEM = re.compile(r"-(\s|$)")
+
+#: The closing bracket of a flow collection written across several lines, at column 0. Same
+#: ordering argument as `_SEQUENCE_ITEM`: it belongs to the key that opened the collection.
+_FLOW_CLOSER = re.compile(r"[\]}],?\s*$")
+
+#: The line separators `str.splitlines` honours and ``split("\n")`` does not. `document_title`
+#: used to split with the former while the span is counted over the latter, so a document
+#: carrying one of these is a document where the old and new scans could address different
+#: lines. A lone ``\r`` is absent: every production reader uses universal newlines, which
+#: translates it before this code sees it.
+_EXOTIC_BREAKS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+
+
+def frontmatter_span(text: str) -> int | None:
+    """Index of the line closing a real frontmatter block, or None when there is no block.
+
+    ``---`` opens a frontmatter block AND draws a horizontal rule. Testing only "line 0 is
+    ``---`` and some later line is ``---``" pairs two rules that happen to sit either side of a
+    section, and everything between them is then deleted from the body with no signal. On a memo
+    opening with a rule that is its whole first section, in exchange for an empty ``meta``.
+
+    A block is recognised only when every line before the closing fence is a plausible member,
+    AND at least one of them is a key. That last clause is what keeps two adjacent rules apart:
+    a block declaring nothing has no metadata to contribute, so pairing it could only ever
+    remove body. A member is a blank line, an indented line, a key, or, once a key has been
+    seen, a comment or a column 0 block sequence item.
+
+    ORDER carries the weight, because ``- archive`` and ``# Notes`` are a YAML sequence item and
+    a comment AND a markdown bullet and heading, with nothing in the text to tell them apart. A
+    sequence belongs to the key that opened it, so it counts only after one::
+
+        ---                     ---
+        tags:                   <blank>
+        - archive               - first point
+        valid_until: 2020-01-01 - second point
+        ---                     ---
+        frontmatter             a rule, a list, another rule
+
+    Refusing is NOT the safe default, and the asymmetry is the whole reason this rule is as
+    permissive as it is. Pairing a block the old rule also paired is, at worst, no worse than
+    before. REFUSING a block the old rule accepted is strictly worse: the validity metadata is
+    lost AND the raw block is handed to the chunker as prose. So every refusal here has to earn
+    its place by naming the markdown shape it protects, and digit-leading, non-ASCII, quoted,
+    space-containing and explicit keys are all keys.
+
+    What this does NOT fix, stated plainly because the obvious reading of the rule above is more
+    generous than the truth:
+
+    - **One key unlocks the rest of the block.** After any key, every comment and sequence item
+      is accepted, so a prose section led by ``Note: ...`` and followed by a heading and a
+      bullet list is still paired and still deleted. Identical to the old behaviour, so
+      `legacy_pairing_differs` is correctly False and nothing is re-indexed. What IS fixed is
+      the section whose first non-blank line is a heading, a bullet, a blockquote, a link
+      reference definition or ordinary prose, which is the reported defect.
+    - ``Note: something`` and a bare ``http://example.com`` read as keys. Without a real parser
+      a first word followed by a colon is a key.
+    - A ``#`` comment BEFORE the first key is refused: at that position it cannot be told apart
+      from a markdown heading, and a heading right after a rule is the commoner document.
+    - An unquoted key containing a space is fine, but ``%YAML 1.2`` and a key whose colon is on
+      a later line are not, and refuse the block.
+    """
+    lines = text.split("\n")
+    # tolerate a UTF-8 BOM before the opening fence: Windows editors add one, and a BOM
+    # that silently disabled frontmatter would mean validity metadata lost without a signal
+    if not lines or lines[0].lstrip("\ufeff").strip() != "---":
+        return None
+    seen_key = False
+    for i, line in enumerate(lines[1:], start=1):
+        stripped = line.strip()
+        if stripped == "---":
+            return i if seen_key else None
+        if not stripped:
+            continue
+        if line[:1].isspace():
+            # A continuation or sub-object member. It still counts as a key when it IS one, so a
+            # block whose every line is indented is not refused over its indentation alone.
+            seen_key = seen_key or bool(_KEY_LINE.match(stripped))
+            continue
+        if _KEY_LINE.match(line) or _EXPLICIT_KEY.match(line):
+            seen_key = True
+            continue
+        if seen_key and (
+            stripped.startswith("#")
+            or _SEQUENCE_ITEM.match(line)
+            or _FLOW_CLOSER.match(line)
+        ):
+            continue  # a comment, a sequence item, or a closer belonging to the key above it
+        return None  # prose: the opening ``---`` was a thematic break
+    return None  # unclosed block: treat the whole text as body
+
+
+def legacy_pairing_differs(text: str) -> bool:
+    """True when the pre-2026-08-11 rule paired a block that `frontmatter_span` now refuses.
+
+    Load bearing for index freshness, NOT dead code. `recall.index` fingerprints a file on its
+    raw bytes, so a corpus whose files have not changed is skipped on the next run and would go
+    on serving bodies with a section missing. This is the narrowest possible trigger for a
+    re-index: it names exactly the files whose body moved, so every other corpus fingerprints
+    bit-identically to before and nothing is re-embedded needlessly.
+
+    It stays permanently. Deleting it would revert those files' fingerprints and charge them a
+    second re-index, so it is not a migration shim and must not be labelled one.
+    """
+    head, _, rest = text.partition("\n")
+    if head.lstrip(chr(0xFEFF)).strip() != "---":
+        return False  # no opening fence, so the old rule did not pair it either
+    if any(ch in text for ch in _EXOTIC_BREAKS):
+        # The old title scan split on these and the span does not, so the two could address
+        # different lines. Flagged on the separator alone rather than on which key moved,
+        # because the cheap test is exact enough and the expensive one is not obviously so.
+        return True
+    if frontmatter_span(text) is not None:
+        return False  # still paired, so nothing this file contributes has moved
+    lines = rest.split("\n")
+    if any(line.strip() == "---" for line in lines):
+        return True  # the old rule paired it and the new one does not: the body moved
+    # An UNCLOSED block moves no body, because neither rule ever paired it. It can still move
+    # the TITLE: `recall.context.document_title` used to scan an unclosed block to its end and
+    # take a `title:` out of it, and the title is embedded into every passage in `section` and
+    # `neighbor` mode. Without this an existing index would pin the old title permanently.
+    return any(
+        line[:1].strip() and line.partition(":")[0].strip().lower() == "title" for line in lines
+    )
 
 
 def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     """Split a document into (recognized frontmatter keys, body without the block).
 
-    A document without a leading ``---`` line — or with an unclosed block — is returned
-    unchanged as ``({}, text)``.
+    A document without a leading ``---`` line, with an unclosed block, or whose leading ``---``
+    is a thematic break rather than a fence, is returned unchanged as ``({}, text)``.
+    `frontmatter_span` is what separates that last case from a real block.
     """
-    lines = text.split("\n")
-    # tolerate a UTF-8 BOM before the opening fence — Windows editors add one, and a BOM
-    # that silently disabled frontmatter would mean validity metadata lost without a signal
-    if not lines or lines[0].lstrip("\ufeff").strip() != "---":
+    span = frontmatter_span(text)
+    if span is None:
         return {}, text
+    lines = text.split("\n")
     meta: dict[str, str] = {}
-    for i, line in enumerate(lines[1:], start=1):
-        if line.strip() == "---":
-            return meta, "\n".join(lines[i + 1 :]).lstrip("\n")
+    for line in lines[1:span]:
         if ":" in line:
             key, _, value = line.partition(":")
             if key.strip() in VALIDITY_KEYS:
@@ -36,7 +183,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
                     value = value[1:-1].strip()
                 meta[key.strip()] = value
-    return {}, text  # unclosed block: treat the whole text as body
+    return meta, "\n".join(lines[span + 1 :]).lstrip("\n")
 
 
 # --- writing the block back, on bytes ------------------------------------------------------------
@@ -160,12 +307,12 @@ def insert_frontmatter_line(raw: bytes, key: str, value: str) -> bytes:
     carried across untouched and the inserted line borrows the closing fence's own terminator, so
     a CRLF memo gains a CRLF line.
 
-    The search for the closing fence is unbounded, and deliberately so. A memo whose body contains
-    a `---` thematic break within what looks like a block gets the key written next to prose,
-    which is startling — but `parse_frontmatter` makes exactly the same reading, and a writer that
-    disagreed with the parser would put the key somewhere the trust layer cannot see it and
-    rewrite it again on every run. The parser defines what the block is; this follows it. Tighten
-    both together or neither.
+    Whether there IS a block is `frontmatter_span`'s call, not a raw fence scan. Scanning forward
+    for the next `---` treats a leading horizontal rule as an open block and writes the key into
+    the author's prose, which then parses as frontmatter on the next read and deletes the first
+    section from retrieval. A document whose opening `---` is a rule therefore takes the same path
+    as a document with no frontmatter at all: a real block is added above it, with the rule left
+    standing as the first line of the body.
     """
     if has_line_break(value):
         raise ValueError(f"{key} value {value!r} contains a line break and would split the block")
@@ -173,12 +320,12 @@ def insert_frontmatter_line(raw: bytes, key: str, value: str) -> bytes:
     newline = dominant_newline(body)
     entry = f"{key}: {value}".encode("utf-8")
     lines = split_lines(body)
-    if lines and is_fence(lines[0]):
-        for index, line in enumerate(lines[1:], start=1):
-            if is_fence(line):
-                lines.insert(index, entry + line_terminator(line, newline))
-                return bom + b"".join(lines)
-        # unclosed block — treat as no frontmatter rather than corrupt it further
+    text = body.decode("utf-8")
+    span = frontmatter_span(text)
+    if span is not None:
+        closing = lines[span] if span < len(lines) else b""
+        lines.insert(span, entry + line_terminator(closing, newline))
+        return bom + b"".join(lines)
     return bom + b"---" + newline + entry + newline + b"---" + newline + body
 
 

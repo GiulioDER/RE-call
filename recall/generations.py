@@ -17,7 +17,7 @@ from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from recall.embeddings import Embedder, embed_passages
-from recall.frontmatter import parse_frontmatter, validity_bounds
+from recall.frontmatter import legacy_pairing_differs, parse_frontmatter, validity_bounds
 from recall.lineage import (
     GenerationState,
     IndexManifestV1,
@@ -96,6 +96,38 @@ class ErasureResult:
     generations: tuple[str, ...]
     chunks_removed: int
     event_id: str
+
+
+#: The media types whose body is derived by `parse_frontmatter`. Anything else is chunked as it
+#: arrived, so the frontmatter pairing rule cannot have moved its body.
+_MARKDOWN_MEDIA_TYPES = frozenset({"text/markdown", "text/x-markdown"})
+
+
+def _body_rule_changed(media_type: str, text: str) -> bool:
+    """True when this object's body moved because the frontmatter pairing rule changed.
+
+    A second freshness guard lives in this module and `recall.index`'s trigger does not reach
+    it. `_reuse_source` copies an earlier generation's chunks whenever tenant, URI, object
+    sha256 and pipeline fingerprint all match, and it returns BEFORE `parse_frontmatter` runs.
+    None of those four terms moved when the pairing rule changed, and `PipelineIdentity` covers
+    only the schema version, embedder, chunker and FTS configuration, so an object indexed
+    before the fix would carry its truncated chunk set into every generation built after it:
+    exactly the "stale forever" outcome the index side trigger exists to prevent.
+
+    Narrow, but NOT symmetric with `recall.index._body_derivation_hash`, and the difference is
+    worth stating rather than discovering. That one stores its perturbed fingerprint, so an
+    affected file rebuilds once and is skipped afterwards. This is a pure function of the
+    object's text with nowhere to record that the rebuild already happened, because reuse is
+    keyed on tenant, URI, sha256 and pipeline fingerprint and none of those can carry a body
+    rule term. An affected object is therefore re-chunked and re-embedded on EVERY future
+    generation build, not just the first.
+
+    Accepted rather than fixed: the cost falls only on objects that actually contain the defect,
+    and removing it means either a new term in `PipelineIdentity`, which re-embeds every corpus,
+    or a body rule column threaded through `_write_source` and `_reuse_source`'s SELECT, which
+    is a schema change to a reuse path. Recorded as a follow up.
+    """
+    return media_type in _MARKDOWN_MEDIA_TYPES and legacy_pairing_differs(text)
 
 
 def _new_id(prefix: str) -> str:
@@ -479,13 +511,15 @@ class GenerationManager:
                     if self._is_tombstoned(conn, entry.uri):
                         tombstoned += 1
                         continue
-                    reused = self._reuse_source(
-                        conn,
-                        generation_id,
-                        pipeline.fingerprint,
-                        entry.uri,
-                        entry.sha256,
-                        entry.version_id,
+                    reused = 0 if _body_rule_changed(entry.media_type, text) else (
+                        self._reuse_source(
+                            conn,
+                            generation_id,
+                            pipeline.fingerprint,
+                            entry.uri,
+                            entry.sha256,
+                            entry.version_id,
+                        )
                     )
                     if reused:
                         reused_objects += 1
@@ -496,7 +530,7 @@ class GenerationManager:
 
                 metadata: dict[str, Any] = {}
                 body = text
-                if entry.media_type in {"text/markdown", "text/x-markdown"}:
+                if entry.media_type in _MARKDOWN_MEDIA_TYPES:
                     metadata, body = parse_frontmatter(text)
                     try:
                         validity_bounds(metadata)
