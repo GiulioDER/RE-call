@@ -8,6 +8,20 @@ Properties:
       document. Without this the suite cannot detect a wholesale direction inversion.
   4. Corpus-dependent recomputation runs only when RECALL_PEPS_DIR is set, and SKIPS loudly
      otherwise rather than passing vacuously.
+  5. The published recall ceiling is a value strictly between 0 and 1, and the restated-in-prose
+     count never exceeds the header-edge count it is a fraction of.
+  6. The PEPs trust query set holds between 40 and 70 queries, replacing the shipped successor
+     arm of n=4 that made a Wilson interval uninterpretable.
+  7. Every trust query matches the schema of the shipped `queries.json`'s trust-flagged rows,
+     key for key, so the trust arm can be consumed by the same code as the shipped set.
+  8. Every `successor` row carries a non-empty `successor_ids` and `stale_ids`; every `abstain`
+     row carries an empty `successor_ids` and no other `expect` value is allowed.
+  9. The trust set's successor row count equals the census `n_header_edges`.
+  10. Every trust successor row's stale and successor ids name a census edge in the SUCCESSOR
+      direction, not the reverse, and together they cover the census edges exactly. This is the
+      direction guard: an inverted builder still emits 67 rows with matching shape and passes
+      every other test in this file, so counting rows and checking schema says nothing about
+      direction.
 """
 from __future__ import annotations
 

@@ -34,6 +34,36 @@ when it meant "the older one".
 
 ## The artifacts
 
+### Truth-extraction labelled set
+
+| artifact | backs |
+|---|---|
+| `results/truth_extraction/census.json` | the 17.0% prose recall ceiling; counts recomputable from `python/peps` at the recorded SHA |
+| `benchmarks/labelling/truth_extraction/gold.manifest.jsonl` | 47 gold positives (authored PEP headers) + 4 transplanted negatives, frozen |
+| `benchmarks/labelling/truth_extraction/adjudication.csv` | the blind negative-adjudication pack, 38 rows from the 30 of 175 marker-without-header PEPs that name a target; `adjudication_key.json` un-blinds it and must not be opened until labelling is finished |
+| `recall/eval/peps_trust_queries.json` | 67 trust queries (47 successor / 20 abstain), replacing a shipped successor arm of n=4 |
+
+**What this set measures well, and what it does not.** Of 47 authored header edges, only **8** are
+restated in prose with the marker and the partner PEP in the same sentence. A perfect prose
+extractor therefore scores recall **8/47 = 0.170** against the header denominator, and the usable
+positive class for recall is **8, not 47**: an n on which a Wilson interval is about as
+uninterpretable as the n=4 this set's trust arm was built to fix. Precision is the axis this set
+measures with power, from the 38 adjudicable candidate pairs drawn from those markers.
+
+Note the two counts are not interchangeable. 175 PEPs carry a closure marker that no header
+confirms, but only 30 of them name a candidate target in the marker's own sentence, yielding 38
+`(sentence, target)` pairs. The remaining 145 state a closure with no target named, and under
+`recall/fix.py`'s rule an unprovable target is reported for a human rather than guessed at, so
+there is no pair to put in front of an adjudicator. They are counted in the census and excluded
+from the pack.
+
+**PEPs are not memos.** They cite each other as `PEP 3106`, not `[[wikilink]]`, and they are
+written under an editorial process a personal memo corpus does not have. A precision measured
+here does not transfer to a memo corpus. What transfers is the **error mix**, which the four
+transplanted fixtures in `benchmarks/labelling/truth_extraction/fixtures/` make checkable: they
+reproduce, verbatim, the reported speech, hedging and two partial-scope failures measured on the
+private 792-memo corpus and quoted in `recall/fix.py`.
+
 ### Reasoning Session 1 control
 
 | artifact | backs |
