@@ -4,6 +4,8 @@ Properties:
   1. The gold manifest's positive row count equals the census `n_header_edges`.
   2. The manifest verifies against its own digest (read_manifest refuses a mismatch).
   3. Every positive carries exactly one successor label; every fixture negative carries none.
+  3b. Every positive's label is the SUCCESSOR named in its own question_id, not the superseded
+      document. Without this the suite cannot detect a wholesale direction inversion.
   4. Corpus-dependent recomputation runs only when RECALL_PEPS_DIR is set, and SKIPS loudly
      otherwise rather than passing vacuously.
 """
@@ -46,6 +48,24 @@ def test_every_positive_has_exactly_one_successor_label():
         if question.expected_relevance_labels:
             assert len(question.expected_relevance_labels) == 1
             assert question.expected_relevance_labels[0].endswith(".rst")
+
+
+def test_every_positive_label_is_the_SUCCESSOR_not_the_superseded():
+    # `question_id` is "<superseded>-><successor>". Labelling a positive with the SUPERSEDED PEP
+    # would make the gold set assert that the live document is the stale one — the inversion the
+    # trust layer exists to prevent, baked into the labels every later number is scored against.
+    #
+    # This test exists because without it the suite cannot detect that inversion: a
+    # `build_gold_questions` that swapped the two ends would still emit 47 positives, each with
+    # exactly one `.rst` label, and pass every other test unchanged. Counting rows and checking a
+    # suffix says nothing about direction.
+    questions, _ = read_manifest(GOLD)
+    positives = [q for q in questions if q.expected_relevance_labels]
+    assert positives, "no positives in the manifest — this test would pass vacuously"
+    for question in positives:
+        superseded, _, successor = question.question_id.partition("->")
+        assert successor, f"{question.question_id} is not an '<a>-><b>' identity"
+        assert question.expected_relevance_labels[0] == f"{successor}.rst"
 
 
 def test_fixture_negatives_are_frozen_with_no_labels():
