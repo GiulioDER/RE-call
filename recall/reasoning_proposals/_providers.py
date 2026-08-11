@@ -17,6 +17,7 @@ from recall.reasoning_proposals._deterministic import (
 )
 from recall.reasoning_proposals.types import (
     PROPOSAL_SCHEMA_VERSION,
+    PROPOSED_RELATIONS,
     InferenceProposal,
     ModelBackedProposalProvider,
     ProposalContext,
@@ -105,7 +106,7 @@ def _coerce_provider_proposal(
 
 
 def _checked_relation(value: Any) -> ProposedRelation:
-    if value not in {"supersedes", "contradicts", "same_entity", "references"}:
+    if value not in PROPOSED_RELATIONS:
         raise ValueError(f"unknown proposed_relation: {value!r}")
     return cast(ProposedRelation, value)
 
