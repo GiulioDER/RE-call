@@ -1236,7 +1236,12 @@ def test_an_unserialisable_payload_still_releases_the_arms_handles(
 
 
 def _quarantine_case(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, out: Path, *, reject: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    out: Path,
+    *,
+    reject: bool,
+    before: object = None,
 ) -> int:
     monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
     _patch_recall_stub(monkeypatch)
@@ -1269,10 +1274,13 @@ def test_the_rescue_falls_back_when_the_quarantine_directory_cannot_be_made(
     code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
 
     assert code == run_module.QUARANTINE_EXIT
-    fallback = out / f"{_STAMP_1CONV}.unpublished.json"
+    fallback = out / f"{_STAMP_1CONV}.unpublished.json.txt"
     assert fallback.exists(), "the artifact was lost when the subdirectory was blocked"
     assert json.loads(fallback.read_text(encoding="utf-8"))["unpublished"] is True
     assert str(fallback) in capsys.readouterr().err
+    # `.json.txt`, not `.json`: the fallback has to stay out of the publishable glob just as
+    # firmly as the subdirectory does, or the rescue hands `analyze` a refused artifact.
+    assert list(out.glob("*.json")) == []
 
 
 def test_a_failed_published_write_quarantines_the_artifact_too(
@@ -1296,3 +1304,158 @@ def test_a_failed_published_write_quarantines_the_artifact_too(
     assert recovered["unpublished"] is True
     assert recovered["aggregate"]
     assert "could not be written" in capsys.readouterr().err.lower()
+
+
+class _BrokenStream:
+    """A stream that refuses everything, the way a closed pipe does."""
+
+    def write(self, _data: str) -> int:
+        raise OSError(32, "Broken pipe")
+
+    def flush(self) -> None:
+        raise OSError(32, "Broken pipe")
+
+
+def test_the_rescue_writes_the_artifact_before_it_reports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unavailable stderr must not be able to destroy the artifact the rescue exists to save.
+
+    Reporting touches a stream this process does not own. Writing touches a directory it was
+    given. Doing them in that order, and guarding the reports, is what makes the docstring's
+    "never raises" true rather than aspirational.
+    """
+    import sys as _sys
+
+    out = tmp_path / "results"
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True, before=lambda: None)
+    assert code == run_module.QUARANTINE_EXIT  # sanity: the healthy-stderr baseline
+
+    out2 = tmp_path / "results2"
+    monkeypatch.setattr(_sys, "stderr", _BrokenStream())
+    code2 = _quarantine_case(tmp_path, monkeypatch, out2, reject=True)
+
+    assert code2 == run_module.QUARANTINE_EXIT
+    assert (out2 / "unpublished" / f"{_STAMP_1CONV}.json").exists()
+
+
+def test_the_rescue_falls_back_to_stdout_when_no_file_can_be_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both candidates blocked: the body still has to reach somewhere, and it is still exit 3."""
+    out = tmp_path / "results"
+    real_write = Path.write_text
+
+    def _refuse(self: Path, data: str, *a: object, **k: object) -> int:
+        if self.suffix in {".json", ".txt"} and "unpublished" in str(self):
+            raise OSError(28, "No space left on device")
+        return real_write(self, data, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _refuse)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    captured = capsys.readouterr()
+    # stdout also carries the run's progress prose, including a dict repr with single quotes,
+    # so anchor on the indented JSON opening rather than on the first brace.
+    body = captured.out[captured.out.rindex('{\n  "') :]
+    assert json.loads(body)["unpublished"] is True
+    assert "stdout" in captured.err
+
+
+def test_a_partially_written_artifact_is_removed_from_the_published_glob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`write_text` opens with mode "w", so the file is truncated before a byte can fail.
+
+    One truncated leftover in the results directory makes every later `analyze` over it die on a
+    JSONDecodeError, so the corpse has to go.
+    """
+    out = tmp_path / "results"
+    real_write = Path.write_text
+
+    def _die_midway(self: Path, data: str, *a: object, **k: object) -> int:
+        if self.name == f"{_STAMP_1CONV}.json" and self.parent.name == "results":
+            real_write(self, data[:20], encoding="utf-8")  # truncated, like a full disk
+            raise OSError(28, "No space left on device")
+        return real_write(self, data, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _die_midway)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=False)
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert list(out.glob("*.json")) == [], "a truncated artifact was left in the published glob"
+    assert (out / "unpublished" / f"{_STAMP_1CONV}.json").exists()
+
+
+def test_a_raising_teardown_report_cannot_change_the_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The report is wrapped because it runs inside a `finally` that now covers failure paths."""
+    from benchmarks.systems import RecallSystem
+
+    out = tmp_path / "results"
+
+    class _ClosableSystem(RecallSystem):
+        name = "recall"
+
+        def ingest(self, conversation: dict[str, Any]) -> None:
+            return None
+
+        def retrieve(self, question: str) -> str:
+            return "ctx"
+
+        def ablation_preflight(
+            self, questions: list[str], *, sample: int, metric_class: str, allow_inert: bool
+        ) -> list[dict[str, Any]]:
+            return []
+
+        def close(self) -> None:
+            raise RuntimeError("teardown exploded")
+
+    def _fake_build(
+        arm: str, model: str, openrouter_key: str, k: int, run_id: str,
+        embedder: str = "fastembed", **_extra: object,
+    ) -> MemorySystem:
+        return _ClosableSystem("postgresql://x/y", embedder_name="hashing", k=k)
+
+    def _report_explodes(subject: object, exc: BaseException) -> None:
+        raise SystemError("even the reporter is broken")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _fake_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+    monkeypatch.setattr(run_module, "_warn_teardown_failed", _report_explodes)
+
+    code = main(
+        ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+         "--conversations", "1", "--out", str(out)],
+        now=_NOW,
+    )
+
+    assert code == 0, "a broken teardown reporter must not change a finished run's verdict"
+    assert (out / f"{_STAMP_1CONV}.json").exists()
+
+
+def test_the_rescue_never_leaks_diagnostics_into_stdout_when_stderr_is_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`sys.stderr` really is None under pythonw, and `print(file=None)` writes to STDOUT.
+
+    Unguarded, every diagnostic line would land on stdout — which is where the last-resort
+    artifact body goes — so a reader parsing that stream would find prose wrapped around the
+    JSON. `_say` refuses a None stream instead, and that refusal is also what keeps its return
+    value honest about whether anything was preserved.
+    """
+    import sys as _sys
+
+    out = tmp_path / "results"
+    monkeypatch.setattr(_sys, "stderr", None)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert (out / "unpublished" / f"{_STAMP_1CONV}.json").exists()
+    assert "artifact NOT published" not in capsys.readouterr().out

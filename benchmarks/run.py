@@ -26,9 +26,10 @@ Two properties of the output exist because the money is real:
 
 Exit status: 0 published, 2 a usage error from argparse, and 3 means the run finished but its
 artifact was REFUSED publication (an unauditable cost claim, or a failed write) and quarantined
-under ``<out>/unpublished/``. 3 is distinct from 1 deliberately: 1 is what the interpreter exits
-with on an uncaught exception, and a wrapper has to be able to tell "salvageable, do not re-run"
-from "crashed".
+under ``<out>/unpublished/``. 1 means the artifact could not be preserved anywhere at all, a
+genuine loss rather than a salvageable one, and is also what the interpreter itself exits with on
+an uncaught exception. 3 is distinct from 1 deliberately, so a wrapper can tell "salvageable, do
+not re-run" from "crashed".
 
 The artifact also carries the run's full `config` block — retrieval budget, per-arm embedder,
 `mem0ai` version, Mem0's vector-store settings, both system prompts verbatim, temperature and the
@@ -45,7 +46,7 @@ import warnings
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from benchmarks.llm import Completer, OpenRouterLLM
 from benchmarks.artifact_contract import reject_unauditable_cost_claims
@@ -610,18 +611,29 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         try:
             reject_unauditable_cost_claims(payload)
         except ValueError as exc:
-            _quarantine(args.out, stamp, payload, encoded, partial_path, reason=str(exc))
-            return QUARANTINE_EXIT
+            preserved = _quarantine(
+                args.out, stamp, payload, encoded, partial_path, reason=str(exc)
+            )
+            return QUARANTINE_EXIT if preserved else 1
         try:
             path.write_text(encoded, encoding="utf-8")
         except OSError as exc:
             # Likelier than the contract firing: a full disk, a >260-char path, an antivirus or
             # indexer lock. The bytes are already in hand, so losing them here is gratuitous.
-            _quarantine(
+            #
+            # Remove the corpse first. `write_text` opens with mode "w", so the file is created
+            # and TRUNCATED before a single byte can fail, and one truncated leftover inside
+            # `results/*.json` makes every later `analyze` over that directory die on a
+            # JSONDecodeError rather than skip one file.
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:  # pragma: no cover - best effort; the quarantine still runs
+                pass
+            preserved = _quarantine(
                 args.out, stamp, payload, encoded, partial_path,
                 reason=f"the published artifact could not be written to {path}: {exc}",
             )
-            return QUARANTINE_EXIT
+            return QUARANTINE_EXIT if preserved else 1
         print(json.dumps(agg, indent=2))
         print(f"full results -> {path}")
         print(f"incremental  -> {partial_path}")
@@ -649,6 +661,10 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         if callable(close):
             try:
                 close()
+            # `Exception`, not `BaseException`, and that asymmetry with the guarded report
+            # below is deliberate: a Ctrl+C landing during `Mem0System.close` (releasing Qdrant
+            # locks is not instantaneous) SHOULD still interrupt the process. It costs at most a
+            # crash status on a run whose artifact is already safely on disk.
             except Exception as exc:  # noqa: BLE001 - a wedged handle is not a failed run
                 # The REPORT is guarded as carefully as the call, for the two reasons
                 # `Mem0System.close` documents: `warnings.warn` raises under `-W error`, and
@@ -670,55 +686,90 @@ def _quarantine(
     partial_path: Path,
     *,
     reason: str,
-) -> None:
-    """Preserve an artifact that must not be published, without ever raising while doing it.
+) -> bool:
+    """Preserve an artifact that must not be published. Returns whether it was preserved.
 
-    A rescue that can itself throw the artifact away is not a rescue, so every filesystem call in
-    here is guarded and there is a last resort that needs no filesystem at all.
+    A rescue that can itself throw the artifact away is not a rescue, so nothing in here raises:
+    every filesystem call is guarded, every report goes through `_say`, and there is a last
+    resort that needs no filesystem at all.
 
-    It goes in a subdirectory rather than beside the published artifacts because the operator's
-    `results/*.json` glob is what feeds `analyze`, and a refused artifact must not be readable as
-    a published one. The subdirectory only protects the documented glob though, so the payload is
-    ALSO marked in band: handed this file directly, a reader would otherwise find it byte
-    identical to a publishable artifact. Republishing means fixing the cause and dropping the two
-    marker keys.
+    WRITE FIRST, REPORT AFTER, and that order is the whole point. Writing touches a directory
+    this process was given; reporting touches a stream it does not own and cannot vouch for. An
+    earlier version announced the refusal before saving anything, so a closed stderr raised
+    straight out of the rescue and destroyed the artifact with a perfectly writable output
+    directory sitting there — and `main` then never returned QUARANTINE_EXIT, so a wrapper read
+    the crash status and re-ran the arm.
+
+    Neither destination may sit in the `results/*.json` glob that feeds `analyze`: not the
+    preferred subdirectory, and not the `.json.txt` fallback. The payload is ALSO marked in band,
+    because the subdirectory only protects the DOCUMENTED glob and a reader handed the file
+    directly would otherwise find it byte identical to a publishable artifact. `analyze` refuses
+    a payload carrying that mark, so it is a contract rather than a decoration. Republishing
+    means fixing the cause and dropping the two marker keys.
     """
 
-    print(f"artifact NOT published: {reason}", file=sys.stderr, flush=True)
     marked = dict(payload, unpublished=True, unpublished_reason=reason)
     try:
         body = json.dumps(marked, indent=2)
     except (TypeError, ValueError):  # pragma: no cover - `encoded` already proved it serialises
         body = encoded
 
-    for candidate in (out / "unpublished" / f"{stamp}.json", out / f"{stamp}.unpublished.json"):
+    notes = [f"artifact NOT published: {reason}"]
+    written: Path | None = None
+    for candidate in (
+        out / "unpublished" / f"{stamp}.json",
+        out / f"{stamp}.unpublished.json.txt",
+    ):
         try:
             candidate.parent.mkdir(parents=True, exist_ok=True)
             candidate.write_text(body, encoding="utf-8")
         except OSError as exc:
             # `exist_ok=True` does NOT tolerate the path existing as a FILE, so the preferred
             # subdirectory is one `touch` away from being unusable. Fall back, do not give up.
-            print(f"  {candidate} could not be written: {exc}", file=sys.stderr, flush=True)
+            notes.append(f"  {candidate} could not be written: {exc}")
             continue
-        print(f"unpublished  -> {candidate}", file=sys.stderr, flush=True)
+        written = candidate
         break
-    else:
-        # Nowhere on disk would take it. stdout still might be a file or a pipe.
-        print(body)
-        print(
-            "the artifact could not be written anywhere; it was printed to stdout above",
-            file=sys.stderr,
-            flush=True,
-        )
 
-    print(f"incremental  -> {partial_path}", file=sys.stderr, flush=True)
-    print(
+    preserved = written is not None
+    if written is not None:
+        notes.append(f"unpublished  -> {written}")
+    notes.append(f"incremental  -> {partial_path}")
+    notes.append(
         "the scored answers are safe either way: they are in that sidecar, and "
         "`python -m benchmarks.salvage --merge-only` rebuilds an artifact from it without "
-        "re-spending. Fix the cause and republish rather than re-running the arm.",
-        file=sys.stderr,
-        flush=True,
+        "re-spending. Fix the cause and republish rather than re-running the arm."
     )
+    for note in notes:
+        _say(note)
+
+    if written is None:
+        # Nowhere on disk would take it. stdout might still be a file or a pipe.
+        preserved = _say(body, stream=sys.stdout)
+        _say(
+            "the artifact reached no file; it was printed to stdout above"
+            if preserved
+            else "the artifact could not be preserved anywhere"
+        )
+    return preserved
+
+
+def _say(message: str, stream: TextIO | None = None) -> bool:
+    """Print without ever raising. Returns whether the message actually went anywhere.
+
+    `print(file=None)` writes to STDOUT rather than raising, and `sys.stderr` really is None
+    under pythonw, so a bare `file=sys.stderr` would silently interleave diagnostics into the
+    artifact body. Refusing a None stream is what keeps the last resort's return value honest.
+    """
+
+    target = sys.stderr if stream is None else stream
+    if target is None:
+        return False
+    try:
+        print(message, file=target, flush=True)
+    except BaseException:  # noqa: BLE001 - reporting a failure may not become one
+        return False
+    return True
 
 
 def _warn_teardown_failed(subject: object, exc: BaseException) -> None:
