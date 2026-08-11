@@ -273,16 +273,6 @@ def propose_fixes(
             # passive voice: the OTHER file is the one that supersedes this memo
             writer = edit_file if edit_file is not None else resolved
             value = target_name if edit_file is not None else name
-            if has_line_break(value):
-                # The helper raises on this, but a raise at WRITE time lands halfway through the
-                # apply loop, after earlier memos have been rewritten. Every other refusal here is
-                # reported by the dry run before a byte is touched; this one must be too. Same
-                # predicate as the helper, imported rather than restated, because the last time a
-                # writer restated the reader's rule the two drifted and a `valid_until` was lost.
-                unfixable.append(Unfixable(
-                    writer, f"names {value!r}, which contains a line break",
-                ))
-                continue
             if writer in unreadable:
                 unfixable.append(Unfixable(
                     writer, f"{unreadable[writer]}, so this tool will not write into it",
@@ -296,6 +286,21 @@ def propose_fixes(
                 continue
             pair = (writer, supersedes_key(value))
             if pair in seen:
+                continue
+            if has_line_break(value):
+                # AFTER the dedup on purpose. The helper raises on this, but a raise at WRITE time
+                # lands halfway through the apply loop, after earlier memos have been rewritten,
+                # so the refusal has to be reported by the dry run like every other one here.
+                # Placed BEFORE the dedup it also fired for a second spelling of an edge this same
+                # run declares correctly, and `supersedes_key` compares on the stem, so
+                # `sub<sep>dir/plan` and `plan` are one edge. Telling a reader to go look at a memo
+                # the tool already got right is the failure this module is built to avoid: a SKIP
+                # list whose entries must themselves be filtered has saved nobody any work.
+                # Same predicate as the helper, imported rather than restated, because the last
+                # time a writer restated the reader's rule the two drifted and a key was lost.
+                unfixable.append(Unfixable(
+                    writer, f"names {value!r}, which contains a line break",
+                ))
                 continue
             seen.add(pair)
             proposals.append(Proposal(writer, value, name, ref))

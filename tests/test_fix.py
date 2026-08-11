@@ -15,7 +15,13 @@ import os
 import pytest
 
 from recall.fix import Proposal, apply_proposal, extract_edges, propose_fixes
-from recall.frontmatter import parse_frontmatter
+from recall.frontmatter import has_line_break, parse_frontmatter
+
+#: U+2028 LINE SEPARATOR, written as an escape rather than pasted as a literal. Pasted, it was
+#: silently normalised to an ordinary space in this file, and the guard that depends on it then
+#: passed for the wrong reason. `str.splitlines()` ends a line here; `str.split("\n")` does not,
+#: which is the whole gap these tests exist to pin. It is also legal in an NTFS filename.
+LINE_SEP = chr(0x2028)
 
 
 def _write(d, name, text):
@@ -477,7 +483,7 @@ def test_a_path_with_a_line_separator_is_refused_before_anything_is_written(tmp_
     containment) after earlier memos have already been rewritten. A half-applied corpus and a raw
     traceback is the worst available outcome for a tool whose entire premise is refusing to guess.
     """
-    evidence = tmp_path / "note x_2026-01-01.md"
+    evidence = tmp_path / f"note{LINE_SEP}x_2026-01-01.md"
     try:
         evidence.write_text("Superseded by [[victim_2026-02-02]].", encoding="utf-8")
     except OSError:  # pragma: no cover - filesystem dependent
@@ -491,6 +497,49 @@ def test_a_path_with_a_line_separator_is_refused_before_anything_is_written(tmp_
     assert proposals == [], "a value that cannot be written must not be proposed"
     assert any("line break" in u.reason for u in unfixable), unfixable
     assert victim.read_bytes() == before
+
+
+def test_a_second_spelling_of_an_already_proposed_edge_is_not_reported_as_needing_a_human(tmp_path):
+    """A refusal for an edge the same run declares correctly is noise, and noise is the failure.
+
+    `supersedes_key` compares on the STEM, so `old_plan_2026-01-01` and `sub<sep>dir/…` are the
+    same edge. The clean spelling is proposed and written; the other is a duplicate that would be
+    dropped by the `seen` dedup and can never reach a write. Reporting it anyway tells the reader
+    to go look at a memo whose edge this run already got right.
+
+    That matters more here than the wording suggests. This module's whole argument is that it
+    narrows 60 prose markers to the few worth a human's attention: a SKIP list whose entries must
+    themselves be filtered has not saved anyone any work. So the value screen belongs after the
+    dedup, not before it.
+    """
+    _write(tmp_path, "old_plan_2026-01-01.md", "# old\n\nbody")
+    body = (
+        "Supersedes [[old_plan_2026-01-01]]. "
+        f"Supersedes [[sub{LINE_SEP}dir/old_plan_2026-01-01]]."
+    )
+    assert has_line_break(body), "premise: the second reference must carry a real separator"
+    _write(tmp_path, "new_plan_2026-02-02.md", body)
+
+    proposals, unfixable = propose_fixes(tmp_path)
+
+    assert [(p.edit_file, p.target) for p in proposals] == \
+        [("new_plan_2026-02-02.md", "old_plan_2026-01-01")]
+    assert unfixable == [], "the edge is declared in this very run; nothing needs a human"
+
+
+def test_a_line_break_value_that_is_not_a_duplicate_is_still_refused(tmp_path):
+    """Moving the screen after the dedup must not stop it refusing a genuinely new edge."""
+    evidence = tmp_path / f"note{LINE_SEP}x_2026-01-01.md"
+    try:
+        evidence.write_text("Superseded by [[victim_2026-02-02]].", encoding="utf-8")
+    except OSError:  # pragma: no cover - filesystem dependent
+        pytest.skip("this filesystem rejects U+2028 in a filename")
+    _write(tmp_path, "victim_2026-02-02.md", "---\nvalid_until: 2030-01-01\n---\n# Victim\n")
+
+    proposals, unfixable = propose_fixes(tmp_path)
+
+    assert proposals == []
+    assert any("line break" in u.reason for u in unfixable), unfixable
 
 
 def test_apply_proposal_preserves_the_memo_when_the_write_fails(tmp_path, monkeypatch):

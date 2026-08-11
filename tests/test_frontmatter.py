@@ -124,7 +124,7 @@ def test_a_value_carrying_a_line_break_is_refused(bad):
 #: Every separator `str.splitlines()` honours beyond ``\n`` and ``\r``. `parse_frontmatter` splits
 #: on ``"\n"`` and does not care, but `context.document_title` uses `splitlines()`, so to that
 #: reader each of these DOES end the line.
-_SPLITLINES_ONLY = ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", " ", " "]
+_SPLITLINES_ONLY = ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", chr(0x2028), chr(0x2029)]
 
 
 @pytest.mark.parametrize("sep", _SPLITLINES_ONLY)
