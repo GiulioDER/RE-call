@@ -828,3 +828,16 @@ def test_a_supersession_target_outside_this_graph_generation_is_skipped() -> Non
 
     assert [p for p in proposals if p.proposed_relation == "supersedes"] == []
     assert [p for p in proposals if p.proposed_relation == "declares_status"]
+
+
+def test_a_markdown_thematic_break_is_not_mistaken_for_an_unclosed_block() -> None:
+    """A memo opening with `---` as a horizontal rule has no metadata to protect. Refusing it
+    loses genuine prose claims and records a valid document as malformed, so the rung must be
+    scoped to blocks that actually carry a key `recall.frontmatter` recognises."""
+    engine = DeterministicExtractionEngine()
+    thematic = "---\n\n# Release notes\n\nThis release supersedes archive_policy_2026-01-05.md.\n"
+
+    result = extract_file_claims(file=FILE, text=thematic, corpus_names=CORPUS, engine=engine)
+
+    assert result.batch_rejection is None
+    assert [claim.kind for claim in result.claims] == ["supersession"]

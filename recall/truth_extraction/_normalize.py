@@ -22,7 +22,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-from recall.frontmatter import parse_frontmatter, supersedes_key
+from recall.frontmatter import VALIDITY_KEYS, parse_frontmatter, supersedes_key
 from recall.truth_extraction.types import (
     MAX_CLAIMS_PER_FILE,
     STATUS_VOCABULARY,
@@ -71,10 +71,21 @@ def refuse_unclosed_frontmatter(text: str) -> None:
         return
     if any(line.strip() == "---" for line in lines[1:]):
         return
+    # A leading `---` is also markdown's thematic break. Refusing every document that opens
+    # with one would reject valid memos and record them as malformed, losing genuine prose
+    # claims. Refuse only when the opened block carries a key `recall.frontmatter` acts on,
+    # which is exactly the metadata that must not become quotable.
+    declared = sorted(
+        key
+        for key in VALIDITY_KEYS
+        if any(line.split(":", 1)[0].strip() == key for line in lines[1:] if ":" in line)
+    )
+    if not declared:
+        return
     raise ExtractionBatchRejected(
         "unclosed_frontmatter",
-        "the document opens a frontmatter block that is never closed, so its metadata cannot "
-        "be separated from its prose",
+        f"the document opens a frontmatter block declaring {declared} and never closes it, "
+        "so its metadata cannot be separated from its prose",
     )
 
 
