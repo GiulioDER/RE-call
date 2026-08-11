@@ -38,8 +38,12 @@ from recall.derived_block import (
     split_derived_block,
     verify_derived_block,
 )
+from recall.check import check_file, corpus_names
+from recall.context import ContextPolicy, contextual_passages, structure_chunks
 from recall.document import parse_document
+from recall.index import chunk_text
 from recall.lint import lint_corpus
+from recall.semantic_lint import is_closed_decision
 
 
 def test_no_fence_yields_the_whole_body_rstripped() -> None:
@@ -669,3 +673,115 @@ def test_the_closure_warning_still_fires_on_real_prose(tmp_path: Path) -> None:
         "# Memo\n\nThis replaces the earlier retention window.\n",
     )
     assert [i.code for i in lint_corpus(tmp_path)] == ["closure-marker-unlinked"]
+
+
+_PLAIN_BODY = (
+    "# Retention\n\n"
+    "The first paragraph states the policy in enough words to be a chunk of its own.\n\n"
+    "## Detail\n\n"
+    "The second paragraph elaborates, and sits under a heading so the hierarchy is non-trivial.\n"
+)
+
+
+def _with_block(body: str) -> str:
+    return body + "\n" + _block(_entry())
+
+
+def test_a_file_with_a_block_chunks_identically_to_one_without() -> None:
+    """Gaining a block must not change what gets embedded, so every chunk still serves from the
+    embedding cache (`recall/cache.py:85`) and a block write costs one `replace_sources`.
+
+    Both bodies go through `parse_document`, the SEAM, rather than `split_derived_block`
+    directly. A leak reaches the indexer through the seam, so a test that bypasses the seam
+    cannot see the regression it exists to catch.
+    """
+    plain = parse_document(_PLAIN_BODY)
+    blocked = parse_document(_with_block(_PLAIN_BODY))
+    assert chunk_text(blocked.human_body) == chunk_text(plain.human_body)
+    assert chunk_text(blocked.human_body) == chunk_text(_PLAIN_BODY)
+
+
+def test_text_offsets_are_identical_with_and_without_a_block() -> None:
+    """`structure_chunks` finds chunks with `body.find(...)`, so a prefix keeps every offset.
+
+    Chunks are derived from EACH body rather than shared between them. Sharing one list makes
+    this test blind to the very leak it exists to catch: the block sits at the END, so a leaked
+    block shifts no earlier offset and every shared chunk is still found in the same place. Only
+    deriving separately surfaces the leak, as an extra chunk.
+    """
+    plain = parse_document(_PLAIN_BODY).human_body
+    blocked = parse_document(_with_block(_PLAIN_BODY)).human_body
+    plain_chunks = chunk_text(plain)
+    blocked_chunks = chunk_text(blocked)
+    assert blocked_chunks == plain_chunks
+    assert [(c.start, c.end) for c in structure_chunks(blocked, blocked_chunks)] == [
+        (c.start, c.end) for c in structure_chunks(plain, plain_chunks)
+    ]
+
+
+def test_contextual_passages_offsets_are_identical_with_and_without_a_block() -> None:
+    """The real indexing path, not just the helper underneath it.
+
+    Chunks are derived per document for the reason given above: a shared chunk list would make
+    this pass whether or not the block was stripped.
+    """
+    raw_plain = "---\ntitle: Retention\n---\n" + _PLAIN_BODY
+    raw_blocked = "---\ntitle: Retention\n---\n" + _with_block(_PLAIN_BODY)
+    plain = parse_document(raw_plain)
+    blocked = parse_document(raw_blocked)
+    plain_chunks = chunk_text(plain.human_body)
+    blocked_chunks = chunk_text(blocked.human_body)
+    assert blocked_chunks == plain_chunks
+
+    plain_structured, plain_texts = contextual_passages(
+        raw_plain, plain.human_body, plain_chunks, "retention.md", ContextPolicy(mode="section")
+    )
+    blocked_structured, blocked_texts = contextual_passages(
+        raw_blocked, blocked.human_body, blocked_chunks, "retention.md",
+        ContextPolicy(mode="section"),
+    )
+    assert [(c.start, c.end, c.headings) for c in blocked_structured] == [
+        (c.start, c.end, c.headings) for c in plain_structured
+    ]
+    assert blocked_texts == plain_texts
+
+
+def test_block_status_superseded_does_not_read_as_a_closed_decision() -> None:
+    """`_DECISION_STATUS` (`recall/semantic_lint.py:40`) matches `status:\\s*superseded`, which is
+    exactly the shape of a block's own status entry."""
+    document = parse_document(_PLAIN_BODY + "\n" + _block(_entry("status", "superseded")))
+    assert is_closed_decision(document.human_body) is False
+
+
+def test_the_closed_decision_check_still_fires_on_real_prose() -> None:
+    """Paired with the test above. Without this, that one passes against a function that always
+    returns False."""
+    assert is_closed_decision(_PLAIN_BODY + "\nstatus: superseded\n") is True
+    assert is_closed_decision(_PLAIN_BODY + "\nThis is superseded by the newer note.\n") is True
+
+
+def test_check_does_not_offer_the_machines_own_values_back(tmp_path: Path) -> None:
+    """The author is asked which document this memo supersedes. Offering the machine's own
+    proposal back would turn an inference into an authored declaration in one keystroke."""
+    _write(tmp_path, "old_memo_2026-01-02.md", "# Old\n\nThe earlier policy.\n")
+    _write(
+        tmp_path,
+        "new_memo_2026-06-01.md",
+        "# New\n\nThis replaces the earlier approach.\n\n"
+        + _block(_entry("contradicts", "old_memo_2026-01-02")),
+    )
+    result = check_file(tmp_path / "new_memo_2026-06-01.md", corpus_names(tmp_path))
+    assert result.marker == "replaces"
+    assert result.candidates == []
+
+
+def test_check_still_offers_a_name_the_author_wrote(tmp_path: Path) -> None:
+    """Paired with the test above, so it cannot pass against a `check_file` that offers nothing."""
+    _write(tmp_path, "old_memo_2026-01-02.md", "# Old\n\nThe earlier policy.\n")
+    _write(
+        tmp_path,
+        "new_memo_2026-06-01.md",
+        "# New\n\nThis replaces old_memo_2026-01-02 outright.\n",
+    )
+    result = check_file(tmp_path / "new_memo_2026-06-01.md", corpus_names(tmp_path))
+    assert result.candidates == ["old_memo_2026-01-02"]
