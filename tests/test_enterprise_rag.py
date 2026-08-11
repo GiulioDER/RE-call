@@ -12,6 +12,7 @@ from benchmarks.enterprise_rag import (
     build_parser,
     doc_chunks,
     generated_answer,
+    index_documents,
     load_documents,
     load_questions,
     read_answer_rows,
@@ -19,6 +20,7 @@ from benchmarks.enterprise_rag import (
     write_answers,
 )
 from recall.types import ScoredChunk
+from recall.types import Chunk
 
 
 def test_loads_enterprise_release_shapes_from_zip(tmp_path: Path) -> None:
@@ -120,6 +122,51 @@ def test_doc_chunks_accept_benchmark_scale_chunking() -> None:
 
     assert len(large) < len(tiny)
     assert all(len(chunk.text) <= 12_200 for chunk in large)
+
+
+def test_index_documents_can_skip_existing_sources() -> None:
+    class _FakeStore:
+        def __init__(self) -> None:
+            self.written: list[Chunk] = []
+
+        def iter_chunks(self) -> list[Chunk]:
+            return [
+                Chunk(
+                    id="dsid_existing#0000",
+                    source="dsid_existing",
+                    text="old",
+                    metadata={},
+                )
+            ]
+
+        def upsert(self, chunks: list[Chunk], embeddings: list[list[float]]) -> int:
+            self.written.extend(chunks)
+            return len(chunks)
+
+        def analyze_if_stale(self, modified: int) -> bool:
+            return True
+
+    class _FakeEmbedder:
+        dim = 2
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[1.0, 0.0] for _ in texts]
+
+    store = _FakeStore()
+
+    stats = index_documents(
+        store,  # type: ignore[arg-type]
+        _FakeEmbedder(),  # type: ignore[arg-type]
+        [
+            EnterpriseDoc("dsid_existing", "github", "Old", "Already indexed."),
+            EnterpriseDoc("dsid_new", "github", "New", "Needs indexing."),
+        ],
+        skip_indexed_sources=True,
+    )
+
+    assert stats["skipped_documents"] == 1
+    assert stats["documents"] == 1
+    assert [chunk.source for chunk in store.written] == ["dsid_new"]
 
 
 def test_loads_questions_and_writes_answer_jsonl(tmp_path: Path) -> None:

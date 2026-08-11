@@ -261,6 +261,7 @@ def index_documents(
     chunk_chars: int = DEFAULT_CHUNK_CHARS,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     reset: bool = False,
+    skip_indexed_sources: bool = False,
 ) -> dict[str, int]:
     if chunk_chars < 1:
         raise ValueError("chunk_chars must be >= 1")
@@ -270,10 +271,18 @@ def index_documents(
         sources = sorted({chunk.source for chunk in store.iter_chunks()})
         if sources:
             store.delete_sources(sources)
+    existing_sources: set[str] = set()
+    if skip_indexed_sources:
+        existing_sources = {chunk.source for chunk in store.iter_chunks()}
+        print(f"index resume existing_sources={len(existing_sources)}", flush=True)
     batch: list[Chunk] = []
     indexed_docs = 0
+    skipped_docs = 0
     indexed_chunks = 0
     for doc in docs:
+        if doc.doc_id in existing_sources:
+            skipped_docs += 1
+            continue
         indexed_docs += 1
         batch.extend(doc_chunks(doc, chunk_chars=chunk_chars, chunk_overlap=chunk_overlap))
         if len(batch) >= batch_chunks:
@@ -282,7 +291,7 @@ def index_documents(
     if batch:
         indexed_chunks += _write_batch(store, embedder, batch)
     store.analyze_if_stale(indexed_chunks)
-    return {"documents": indexed_docs, "chunks": indexed_chunks}
+    return {"documents": indexed_docs, "chunks": indexed_chunks, "skipped_documents": skipped_docs}
 
 
 def backfill_sparse(
@@ -834,6 +843,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit-docs", type=int)
     parser.add_argument("--limit-questions", type=int)
     parser.add_argument("--reset-index", action="store_true")
+    parser.add_argument(
+        "--skip-indexed-sources",
+        action="store_true",
+        help="resume indexing by skipping documents whose source ids already exist in the table",
+    )
     parser.add_argument("--skip-index", action="store_true")
     parser.add_argument("--index-only", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
@@ -920,6 +934,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 chunk_chars=args.chunk_chars,
                 chunk_overlap=args.chunk_overlap,
                 reset=args.reset_index,
+                skip_indexed_sources=args.skip_indexed_sources,
             )
         if args.backfill_splade:
             sparse_stats = backfill_sparse(
