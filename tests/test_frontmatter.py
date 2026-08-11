@@ -455,7 +455,18 @@ def test_a_sentence_without_a_colon_is_protected():
 
 
 def test_a_table_row_is_protected():
-    text = "---\n\n| a | b |\n| - | - |\n\n---\n\nTail.\n"
+    # The cells carry a colon deliberately. Without one, this document is protected by the
+    # no-colon rule and the assertion says nothing about the `|` exclusion it is named for.
+    # The alignment row is what a real table with alignment always has.
+    text = "---\n\n| key: value | b |\n| :-- | --: |\n\n---\n\nTail.\n"
+    assert parse_frontmatter(text) == ({}, text)
+
+
+def test_a_heading_containing_a_colon_is_protected():
+    # A memo heading like `# Release notes: June` is common, and it is the only thing standing
+    # between the `#` exclusion and a deleted section, since the colon makes the rest of the
+    # line key shaped.
+    text = "---\n\n# Release notes: June\n\n- one\n- two\n\n---\n\nTail.\n"
     assert parse_frontmatter(text) == ({}, text)
 
 

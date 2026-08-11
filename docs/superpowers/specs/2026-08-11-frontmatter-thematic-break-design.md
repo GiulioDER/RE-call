@@ -157,6 +157,14 @@ Two shapes of valid YAML remain refused, both recorded rather than fixed:
 - `%YAML 1.2` refuses the block. A YAML directive belongs before the opening fence, not inside
   it, so this shape is malformed anyway.
 
+And one shape the fix protected at an intermediate commit and no longer does: an **unfenced diff
+paste** (`-old_key: value` / `+new_key: value`), because `-` and `+` are readmitted as key leads
+when not followed by a space. That reprieve exists so `-k:` and `+k:` frontmatter keys do not lose
+their whole block. The asymmetry decides it: pairing a diff paste is what the old rule did anyway,
+while refusing `-k:` frontmatter would be strictly worse than the old rule. It buys avoiding a
+regression at the price of a missed improvement, and it is the one trade in this design close
+enough to be worth revisiting if diff pastes turn out to be commoner than `-`-leading keys.
+
 Rejected alternative: additionally requiring the block to declare a known key
 (`valid_from` / `valid_until` / `supersedes` / `title`). It nearly eliminates false pairing, but a
 block carrying only other keys, such as the `color: blue` in the existing test document, would leak
@@ -274,22 +282,22 @@ Run on 2026-08-11, on this branch.
 
 | Check | Result |
 | --- | --- |
-| Full suite | 3171 passed, 517 skipped, 1 xfailed, exit 0 |
+| Full suite, against PostgreSQL 18.4 | 3668 passed, 21 skipped, 1 xfailed, exit 0, 13m10s |
 | `python -m ruff check` | All checks passed (ruff 0.16.2) |
 | Old versus new body diff, 140 `.md` files | 0 bodies moved, 0 meta changed, 0 flagged for re-index |
 | YAML shape sweep | every shape swept parses except `%YAML 1.2` and a `#` comment before the first key |
 | Markdown prose sweep | every section swept correctly left in the body |
-| Guard mutation | 19 of 19 mutations produced a failure |
-| Adversarial audit | three rounds, 11 findings, all acted on |
+| Guard mutation | 25 of 25 mutations produced a failure |
+| Adversarial audit | four rounds, 14 findings, all acted on |
 
 Four things the table does not say on its own.
 
-**The 516 skips are the `requires_db` tests.** No PostgreSQL is configured in this worktree. The
-index skip guard was verified through `_body_derivation_hash` as a pure function in both
-directions, and the generations reuse guard through `_body_rule_changed`, also pure.
-`test_a_thematic_break_object_is_never_reused_into_a_new_generation` covers the call site, and it
-is the assertion that dies if the guard is deleted, but it is `@requires_db` and **did not execute
-here**. It runs for the first time in CI.
+**The database tests ran.** Earlier runs in this session skipped 516 `requires_db` tests and I
+reported them as a gap. A dedicated container was already listening on `127.0.0.1:5434`, so the
+suite was re-run against a real PostgreSQL 18.4 with `RECALL_TEST_DSN` pointed at it, and the
+skips fell to 21. `test_a_thematic_break_object_is_never_reused_into_a_new_generation` passes
+there, and, more to the point, it **fails when the guard is deleted** (`reused_objects` becomes 1
+instead of 0). The generations call site is genuinely covered, not covered by assertion.
 
 **Zero moved bodies is the absence of a regression, not evidence the fix works.** None of this
 repository's 140 markdown files opens with a thematic break, so the corpus diff proves only that
@@ -297,24 +305,35 @@ no existing chunk boundary shifts. The evidence that the defect is fixed is the 
 the diff harness was itself checked against a synthetic affected document before its zero was
 believed.
 
-**Mutation testing found a guard that asserted nothing.** The ordering rule that separates a YAML
-sequence from a markdown bullet list survived being deleted, because the bullet list test was
-passing on the at-least-one-key rule instead. Two tests were added in which a later line supplies
-the key, so the ordering rule is now the only thing refusing the block. This is the reason the
-mutation pass exists and it is worth recording that it paid.
+**Mutation testing found guards that asserted nothing, twice.** First the ordering rule that
+separates a YAML sequence from a markdown bullet list survived being deleted, because the bullet
+list test was passing on the at-least-one-key rule instead. Then, in round four, the `|` and `#`
+entries in the markdown-opener exclusion class turned out to be unguarded: the table row test's
+document had no colon, so the no-colon rule protected it either way, and no test covered a heading
+containing a colon at all.
 
-**The audit is what made this correct, and it cost three rounds.** The first found that the draft
+The second one has a lesson beyond itself. A whole-class mutation ("stop excluding markdown
+lead-ins") goes red as soon as **any one** exclusion is guarded, so a green class-level mutation
+says nothing about the individual members. The mutation set now carries one entry per excluded
+character, and all six go red independently.
+
+**The audit is what made this correct, and it cost four rounds.** The first found that the draft
 predicate refused six shapes of valid YAML. The second, after the repair, found three more plus an
 overclaiming docstring. The third found a hole in the separator guard the second round had just
 prompted (its fence precondition split one way while the divergence it models comes from the
 other, so the separator could skip the check that existed for it), a second overclaiming
-docstring, and a false claim in a test comment. Every round produced concrete failing inputs, and
-every finding was verified against the real code before being acted on.
+docstring, and a false claim in a test comment. The fourth found two unguarded exclusions, a hot
+path allocation, and the diff-paste consequence of the third round's own repair. Every round
+produced concrete failing inputs, and every finding was verified against the real code first.
 
-The lesson to carry forward is the asymmetry principle above: a rule that decides whether to parse
-something must be judged on what it *refuses*, not only on what it accepts. The second lesson is
-that a fix prompted by a review needs the same scrutiny as the original code, since round three's
-main finding was a defect introduced by round two's repair.
+Three lessons, in the order they cost the most:
+
+1. **The asymmetry principle above.** A rule that decides whether to parse something must be
+   judged on what it *refuses*, not only on what it accepts.
+2. **A repair prompted by a review needs the same scrutiny as the original code.** Rounds three
+   and four each found a defect introduced by the previous round's fix.
+3. **A green mutation at the level of a set says nothing about its members.** See the exclusion
+   class below.
 
 The 17 mutations covered: the at-least-one-key rule, the key line test in both directions, the
 markdown lead-in exclusions, the key pattern narrowed back to ASCII-letter-leading, indented

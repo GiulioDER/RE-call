@@ -24,8 +24,14 @@ VALIDITY_KEYS = ("valid_from", "valid_until", "supersedes")
 #: from reading as keys. That matters more than it looks: see `frontmatter_span` on how one key
 #: unlocks the rest of a block.
 #: ``-`` and ``+`` are readmitted when the next character is not a space, because a markdown
-#: bullet REQUIRES the space: ``-k: x`` is a mapping and ``- k`` is a list item, and the two are
-#: distinguishable. ``*`` gets no such reprieve, since ``*emphasis*: text`` is ordinary markdown.
+#: bullet REQUIRES the space: ``-k: x`` is a mapping and ``- k`` is a list item. ``*`` gets no
+#: such reprieve, since ``*emphasis*: text`` is ordinary markdown.
+#:
+#: The dichotomy is not complete, and the gap is paid for knowingly. An unfenced diff paste
+#: (``-old_key: value`` / ``+new_key: value``) is neither a bullet nor a mapping, and it now
+#: reads as a key, so a section led by one is paired. That is what the old rule did too, while
+#: REFUSING ``-k:`` frontmatter would lose its metadata and dump the block into the body. The
+#: asymmetry decides it: the reprieve trades a missed improvement for avoiding a regression.
 _KEY_LINE = re.compile(r"""(?x)
     (?: ["'] [^"']* ["'] | (?: [-+](?=\S) | [^\s:\#\-*+`\[>|] ) [^:]* )
     \s* :
@@ -151,7 +157,11 @@ def legacy_pairing_differs(text: str) -> bool:
     # exotic break sitting on the first physical line hide the very divergence the next check
     # exists for: that split sees no fence and returns, while the old title scan split with
     # `splitlines`, saw one, and read the block.
-    physical = (text.splitlines() or [""])[0]
+    # `head.splitlines()`, not `text.splitlines()`: this runs for every file on every index run,
+    # and splitting the whole text allocates a second copy of it before the early return below.
+    # The answers are identical, because `splitlines` splits at least as finely as `split("\n")`,
+    # so the first line of the finer split always lies inside the first line of the coarser one.
+    physical = (head.splitlines() or [""])[0]
     if not any(c.lstrip(chr(0xFEFF)).strip() == "---" for c in (head, physical)):
         return False  # no opening fence, so the old rule did not pair it either
     if any(ch in text for ch in _EXOTIC_BREAKS):
