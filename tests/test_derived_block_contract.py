@@ -20,6 +20,9 @@ plausible wrong implementation fails it:
 """
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pytest
 
 from recall.derived_block import (
@@ -35,6 +38,7 @@ from recall.derived_block import (
     split_derived_block,
     verify_derived_block,
 )
+from recall.document import parse_document
 
 
 def test_no_fence_yields_the_whole_body_rstripped() -> None:
@@ -514,3 +518,78 @@ def test_at_most_one_code_per_file() -> None:
     )
     assert len(diagnose_derived_block(split_derived_block(body).block_text)) == 1
     assert _codes(body) == ["derived-block-duplicated"]
+
+
+#: The seam itself, and the one file allowed to import `parse_frontmatter`.
+_SEAM = "recall/document.py"
+
+#: Outside the production packages and on the allowlist for a stated reason: it discards the body
+#: entirely and inspects only `meta`, so no evidence path runs through it.
+_ALLOWED_OUTSIDE = {"benchmarks/check_temporal_inert.py"}
+
+
+def test_parse_document_strips_frontmatter_and_the_block() -> None:
+    text = (
+        "---\nsupersedes: old_memo_2026-01-02\n---\n"
+        "# New\n\nThe 90 day window was adopted.\n\n"
+        + _block(_entry())
+    )
+    document = parse_document(text)
+    assert document.meta == {"supersedes": "old_memo_2026-01-02"}
+    assert document.human_body == "# New\n\nThe 90 day window was adopted."
+    assert document.derived_text.startswith(OPEN_FENCE)
+    assert OPEN_FENCE not in document.human_body
+
+
+def test_parse_document_on_a_file_with_no_block() -> None:
+    document = parse_document("---\nvalid_from: 2026-01-01\n---\n# New\n\nprose.\n")
+    assert document.human_body == "# New\n\nprose."
+    assert document.derived_text == ""
+
+
+def _imports_parse_frontmatter(source: str) -> bool:
+    """True if `source` imports `parse_frontmatter` directly out of `recall.frontmatter`."""
+    return any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "recall.frontmatter"
+        and any(alias.name == "parse_frontmatter" for alias in node.names)
+        for node in ast.walk(ast.parse(source))
+    )
+
+
+def test_only_the_seam_imports_parse_frontmatter() -> None:
+    """The guard that makes a seventh call site impossible to add silently.
+
+    Five of the six evidence readers must never see a derived block. Enforcing that at each call
+    site means a NEW caller of `parse_frontmatter` silently reads machine output back as evidence
+    and nothing goes red. Enforcing it here means the seventh site fails this test.
+    """
+    root = Path(__file__).resolve().parents[1]
+    offenders = [
+        relative
+        for package in ("recall", "recall_mcp", "recall_interop", "benchmarks")
+        for path in sorted((root / package).rglob("*.py"))
+        if (relative := path.relative_to(root).as_posix()) != _SEAM
+        and relative not in _ALLOWED_OUTSIDE
+        and _imports_parse_frontmatter(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == [], (
+        f"{offenders} import parse_frontmatter directly; go through {_SEAM} so the derived "
+        f"block cannot reach an evidence path"
+    )
+
+
+def test_the_seam_guard_can_see_a_violation() -> None:
+    """The canary, running on the SAME detector the test above uses.
+
+    A guard that cannot fail is worse than no guard, because it reads as one. The mutation in
+    this task's step 11 proves the guard once, by hand; this proves it on every CI run. Both
+    directions are asserted, so a detector stuck on `True` fails here too.
+    """
+    assert _imports_parse_frontmatter(
+        "from recall.frontmatter import parse_frontmatter, supersedes_key\n"
+    )
+    assert not _imports_parse_frontmatter(
+        "from recall.frontmatter import supersedes_key, validity_bounds\n"
+    )
+    assert not _imports_parse_frontmatter("from recall.document import parse_document\n")

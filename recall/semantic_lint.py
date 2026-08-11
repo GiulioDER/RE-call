@@ -28,7 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from recall.embeddings import Embedder
-from recall.frontmatter import parse_frontmatter, supersedes_key
+from recall.document import parse_document
+from recall.frontmatter import supersedes_key
 from recall.index import Indexer, chunk_text
 from recall.lint import CLOSURE_MARKERS, DEFAULT_GLOB
 from recall.retriever import HybridRetriever
@@ -123,7 +124,11 @@ def semantic_lint(
     for f in files:
         if f.name in ambiguous:
             continue
-        meta, body = parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+        # `_DECISION_STATUS` matches `status:\s*superseded`, which is exactly the shape of a
+        # derived block's own `status:` entry. Without this strip the machine's block would make
+        # every file it touches read as a closed decision.
+        document = parse_document(f.read_text(encoding="utf-8-sig"))
+        meta, body = document.meta, document.human_body
         target = meta.get("supersedes")
         supersedes[f.name] = {target} if target else set()
         closed[f.name] = is_closed_decision(body)

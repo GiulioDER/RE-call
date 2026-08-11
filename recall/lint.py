@@ -29,7 +29,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from recall.frontmatter import parse_frontmatter, supersedes_key, validity_bounds
+from recall.document import parse_document
+from recall.frontmatter import supersedes_key, validity_bounds
 
 #: Prose that usually accompanies a closure/replacement decision. Deliberately short and
 #: high-precision: a chatty list would drown real omissions in noise.
@@ -121,7 +122,8 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
             issues.append(LintIssue(rel[f], "error", "unreadable-file", str(exc)))
             continue
         readable.append(f)
-        meta, body = parse_frontmatter(text)
+        document = parse_document(text)
+        meta, body = document.meta, document.human_body
         metas[rel[f]], bodies[rel[f]] = meta, body
         try:
             validity_bounds(meta)

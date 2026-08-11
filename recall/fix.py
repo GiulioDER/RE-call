@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from recall.atomic_write import atomic_write_bytes
+from recall.document import parse_document
 from recall.frontmatter import (
     NAME_STAND_IN_MARK,
     encodable_name,
@@ -233,7 +234,8 @@ def propose_fixes(
     bodies: dict[str, str] = {}
     for f in files:
         try:
-            meta, body = parse_frontmatter(f.read_text(encoding="utf-8-sig"))
+            document = parse_document(f.read_text(encoding="utf-8-sig"))
+            meta, body = document.meta, document.human_body
         except (UnicodeDecodeError, OSError):
             continue
         bodies[rel[f]] = body
