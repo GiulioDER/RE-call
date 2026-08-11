@@ -258,12 +258,15 @@ def test_nan_to_null_orders_any_unordered_set_deterministically():
         def __len__(self):
             return len(self._items)
 
-    assert nan_to_null(HashBackedSet(["delta", "beta", "gamma", "alpha"])) == [
-        "alpha",
-        "beta",
-        "delta",
-        "gamma",
-    ]
+    # Eight members, not four. With four, roughly one process in 4! = 24 hashes them into
+    # already-sorted order and this test would PASS against the unsorted implementation; that
+    # was measured at seeds 30, 36 and 39. Eight drops it to one in 40320.
+    members = ["delta", "beta", "gamma", "alpha", "epsilon", "zeta", "eta", "theta"]
+    assert nan_to_null(HashBackedSet(members)) == sorted(members)
+
+    # `key=repr`, not natural order: repr("10") sorts before repr("9"). An all-string alphabet
+    # would satisfy either rule and so would pin neither.
+    assert nan_to_null(HashBackedSet([9, 10, 8])) == [10, 8, 9]
 
 
 def test_nan_to_null_orders_sets_deterministically():
