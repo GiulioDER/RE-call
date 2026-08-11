@@ -184,7 +184,12 @@ def _doc_from_text_file(name: str, content: str) -> EnterpriseDoc:
     stem = path.stem
     title = stem.split("__", 1)[1] if "__" in stem else stem
     title = title.replace("-", " ").replace("_", " ").strip() or doc_id
-    return EnterpriseDoc(doc_id=doc_id, source_type=source_type, title=title, content=content)
+    return EnterpriseDoc(
+        doc_id=doc_id,
+        source_type=source_type,
+        title=title,
+        content=content.replace("\x00", ""),
+    )
 
 
 def _doc_from_row(row: Mapping[str, Any]) -> EnterpriseDoc:

@@ -77,6 +77,20 @@ def test_loads_official_text_zip_shape(tmp_path: Path) -> None:
     )
 
 
+def test_text_zip_ingestion_strips_nul_bytes(tmp_path: Path) -> None:
+    archive = tmp_path / "all_documents.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(
+            "github/dsid_nul123__binary-paste.txt",
+            "The answer survives.\x00 This byte cannot go into Postgres.",
+        )
+
+    docs = list(load_documents([archive]))
+
+    assert "\x00" not in docs[0].content
+    assert "The answer survives." in docs[0].content
+
+
 def test_chunks_preserve_document_id_for_leaderboard_citations() -> None:
     chunks = doc_chunks(
         EnterpriseDoc(
