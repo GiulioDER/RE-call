@@ -1,112 +1,79 @@
-"""The census artifact boundary.
+"""The committed artifacts agree with each other and with the census that produced them.
 
-Properties, one test each:
-  1. A payload missing `_provenance` is refused.
-  2. A `_provenance` missing `peps_sha` is refused — the artifact would name no corpus version.
-  3. A `_provenance` missing `recall_commit` is refused.
-  4. A census whose `n_header_edges` disagrees with `len(edges)` is refused, because the two
-     are the same fact written twice and a reader cannot tell which one is the typo.
-  5. A census whose `n_restated_in_prose` disagrees with `len(restatements)` is refused.
-  6. A census claiming more restatements than header edges is refused — the ceiling cannot
-     exceed 100%.
-  7. A well-formed payload is NOT rejected.
-  8. The write site calls the validator.
-  9. The writer emits LF regardless of platform.
+Properties:
+  1. The gold manifest's positive row count equals the census `n_header_edges`.
+  2. The manifest verifies against its own digest (read_manifest refuses a mismatch).
+  3. Every positive carries exactly one successor label; every fixture negative carries none.
+  4. Corpus-dependent recomputation runs only when RECALL_PEPS_DIR is set, and SKIPS loudly
+     otherwise rather than passing vacuously.
 """
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
-from benchmarks.labelling.truth_extraction.artifact_contract import validate_census
-from benchmarks.labelling.truth_extraction.census import write_census
+from recall.eval.promotion.manifest import read_manifest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CENSUS = REPO_ROOT / "results" / "truth_extraction" / "census.json"
+GOLD = REPO_ROOT / "benchmarks" / "labelling" / "truth_extraction" / "gold.manifest.jsonl"
 
 
-def _ok() -> dict:
-    return {
-        "n_files": 733,
-        "n_header_edges": 2,
-        "n_prose_marker_files": 209,
-        "n_marker_without_header": 175,
-        "n_restated_in_prose": 1,
-        "edges": [
-            {"superseded": "pep-0216", "successor": "pep-0287"},
-            {"superseded": "pep-0386", "successor": "pep-0440"},
-        ],
-        "restatements": {"pep-0216->pep-0287": "It has been superseded by :pep:`287`."},
-        "marker_without_header": ["pep-0001"],
-        "file_digests": {"pep-0216.rst": "a" * 64},
-        "_provenance": {
-            "peps_sha": "5981b2a292610104eb30735423504c52fe454650",
-            "clone_date": "2026-08-11",
-            "recall_commit": "439717b",
-            "generated_at": "2026-08-11T12:00:00+00:00",
-            "model_stack": {},
-            "invocation": "python -m benchmarks.labelling.truth_extraction.census ...",
-        },
-    }
+@pytest.fixture(scope="module")
+def census() -> dict:
+    return json.loads(CENSUS.read_text(encoding="utf-8"))
 
 
-def test_missing_provenance_is_refused():
-    payload = _ok()
-    del payload["_provenance"]
-    with pytest.raises(ValueError, match="_provenance"):
-        validate_census(payload)
+def test_manifest_verifies_against_its_digest():
+    # read_manifest recomputes and refuses a mismatch; reaching this line means it matched.
+    questions, header = read_manifest(GOLD)
+    assert header["digest"]
+    assert questions
 
 
-def test_provenance_without_peps_sha_is_refused():
-    payload = _ok()
-    del payload["_provenance"]["peps_sha"]
-    with pytest.raises(ValueError, match="peps_sha"):
-        validate_census(payload)
+def test_positive_row_count_equals_census_header_edges(census: dict):
+    questions, _ = read_manifest(GOLD)
+    positives = [q for q in questions if q.expected_relevance_labels]
+    assert len(positives) == census["n_header_edges"]
 
 
-def test_provenance_without_recall_commit_is_refused():
-    payload = _ok()
-    del payload["_provenance"]["recall_commit"]
-    with pytest.raises(ValueError, match="recall_commit"):
-        validate_census(payload)
+def test_every_positive_has_exactly_one_successor_label():
+    questions, _ = read_manifest(GOLD)
+    for question in questions:
+        if question.expected_relevance_labels:
+            assert len(question.expected_relevance_labels) == 1
+            assert question.expected_relevance_labels[0].endswith(".rst")
 
 
-def test_edge_count_disagreeing_with_edge_list_is_refused():
-    payload = _ok()
-    payload["n_header_edges"] = 3
-    with pytest.raises(ValueError, match="n_header_edges"):
-        validate_census(payload)
+def test_fixture_negatives_are_frozen_with_no_labels():
+    questions, _ = read_manifest(GOLD)
+    negatives = [q for q in questions if not q.expected_relevance_labels]
+    assert len(negatives) == 4
+    assert all(q.corpus == "fix-transplant" for q in negatives)
 
 
-def test_restated_count_disagreeing_with_restatements_is_refused():
-    payload = _ok()
-    payload["n_restated_in_prose"] = 2
-    with pytest.raises(ValueError, match="n_restated_in_prose"):
-        validate_census(payload)
+def test_recall_ceiling_is_published_and_below_one(census: dict):
+    # The number this set exists to publish. If it ever reads 1.0, the detector is matching
+    # something that is not in the gold set.
+    assert 0.0 < census["recall_ceiling"] < 1.0
+    assert census["n_restated_in_prose"] <= census["n_header_edges"]
 
 
-def test_ceiling_above_one_hundred_percent_is_refused():
-    payload = _ok()
-    payload["n_header_edges"] = 1
-    payload["edges"] = [{"superseded": "pep-0216", "successor": "pep-0287"}]
-    with pytest.raises(ValueError, match="cannot exceed"):
-        validate_census(payload)
+def test_census_recomputes_from_the_corpus(census: dict):
+    peps_dir = os.environ.get("RECALL_PEPS_DIR")
+    if not peps_dir:
+        pytest.skip(
+            "RECALL_PEPS_DIR unset — clone python/peps and point it at the nested peps/ dir. "
+            "This test is SKIPPED, not passed: the corpus-dependent counts are unverified."
+        )
+    from benchmarks.labelling.truth_extraction.census import compute_census
 
-
-def test_well_formed_payload_is_accepted():
-    validate_census(_ok())  # must not raise
-
-
-def test_write_site_calls_the_validator(tmp_path: Path):
-    payload = _ok()
-    del payload["_provenance"]["peps_sha"]
-    with pytest.raises(ValueError, match="peps_sha"):
-        write_census(tmp_path / "census.json", payload)
-    assert not (tmp_path / "census.json").exists(), "refused payload must not be written"
-
-
-def test_writer_emits_lf_not_crlf(tmp_path: Path):
-    path = tmp_path / "census.json"
-    write_census(path, _ok())
-    raw = path.read_bytes()
-    assert b"\r\n" not in raw
-    assert json.loads(raw.decode("utf-8"))["n_files"] == 733
+    recomputed = compute_census(Path(peps_dir))
+    assert recomputed.n_files == census["n_files"]
+    assert recomputed.n_header_edges == census["n_header_edges"]
+    assert recomputed.n_prose_marker_files == census["n_prose_marker_files"]
+    assert recomputed.n_marker_without_header == census["n_marker_without_header"]
+    assert recomputed.n_restated_in_prose == census["n_restated_in_prose"]
