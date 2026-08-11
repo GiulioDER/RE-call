@@ -68,7 +68,11 @@ from benchmarks.run import (
     validate_openrouter_key,
 )
 from benchmarks.systems import DEFAULT_K, MemorySystem, sample_id_of
-from benchmarks.artifact_contract import load_published_artifact
+from benchmarks.artifact_contract import (
+    load_published_artifact,
+    reject_unauditable_cost_claims,
+)
+from benchmarks.run import _write_atomic
 
 #: The fields of a scored `Outcome`, i.e. the part of a sidecar record that is load-bearing.
 #: ``question`` and ``gold`` are joined in beside them by `benchmarks.run._outcome_record` and are
@@ -398,8 +402,15 @@ def consistency_report(
             # artifact must not be able to launder its config into a newly published one.
             doc = load_published_artifact(sibling)
             config = doc["config"]
+            if not isinstance(config, dict):
+                # `config.get(...)` happens below, outside this try. A positive shape check here
+                # beats widening the net to AttributeError.
+                raise TypeError(f"config is {type(config).__name__}, not an object")
         except SystemExit as exc:
-            unverified.append(f"{sibling.name}: {exc}")
+            # `sibling.name`, not `exc` verbatim: the refusal message carries the sibling's FULL
+            # path, which would both repeat the name and bake an absolute local path into a
+            # published artifact, since this list is copied into `salvage.consistency`.
+            unverified.append(f"{sibling.name}: {str(exc).replace(str(sibling), sibling.name)}")
             continue
         except (OSError, ValueError, KeyError, TypeError) as exc:
             unverified.append(f"{sibling.name}: unreadable as a results artifact ({exc})")
@@ -672,7 +683,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    # The same two steps `benchmarks.run` takes before it will call an artifact published: the
+    # cost-claim contract, then an atomic write. Salvage publishes a real, citable artifact, so
+    # without these it could publish exactly what run would have quarantined, and a failed write
+    # would truncate whatever was at --out.
+    reject_unauditable_cost_claims(payload)
+    _write_atomic(args.out, json.dumps(payload, indent=2))
 
     salvage: dict[str, Any] = payload["salvage"]
     unscored: list[str] = salvage["questions_still_unscored"]

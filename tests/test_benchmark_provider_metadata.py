@@ -308,7 +308,14 @@ def _refused_artifact(tmp_path: Path) -> Path:
 def test_every_run_artifact_reader_refuses_a_refused_artifact(tmp_path) -> None:
     """Behavioural, per reader. The textual guard below can be evaded by reformatting; this
     cannot, because it calls the real entry points."""
-    from benchmarks import analyze, h2h_artifact, judge_quality, rejudge, token_f1
+    from benchmarks import (
+        analyze,
+        h2h_artifact,
+        judge_quality,
+        locomo_audit,
+        rejudge,
+        token_f1,
+    )
 
     refused = _refused_artifact(tmp_path)
 
@@ -318,6 +325,9 @@ def test_every_run_artifact_reader_refuses_a_refused_artifact(tmp_path) -> None:
         "judge_quality._load_document": lambda: judge_quality._load_document(refused),
         "rejudge._load_document": lambda: rejudge._load_document(refused),
         "token_f1.compare": lambda: token_f1.compare(refused, refused),
+        "locomo_audit.main": lambda: locomo_audit.main(
+            ["--results", str(refused), "--data", str(refused), "--audit", str(refused)]
+        ),
     }
     refused_by = []
     for name, call in readers.items():
@@ -365,7 +375,27 @@ def test_no_benchmark_tool_reads_a_run_artifact_without_the_publication_check() 
     """
     from pathlib import Path
 
-    checker = "from benchmarks.artifact_contract import load_published_artifact"
+    import ast
+
+    def imports_checker(text: str) -> bool:
+        """True if the module really IMPORTS the checker.
+
+        Parsed, not grepped. A substring is satisfied by a `# TODO: use load_published_artifact`
+        that says the opposite; a literal import LINE is defeated by wrapping the import in
+        parentheses, which is exactly what happened to salvage.py the moment it needed a second
+        name from that module.
+        """
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:  # pragma: no cover - a syntax error is somebody else's test failing
+            return False
+        return any(
+            isinstance(node, ast.ImportFrom)
+            and node.module == "benchmarks.artifact_contract"
+            and any(alias.name == "load_published_artifact" for alias in node.names)
+            for node in ast.walk(tree)
+        )
+
     #: Keys that only a `benchmarks.run` results artifact carries.
     run_keys = (
         "outcomes",
@@ -398,7 +428,7 @@ def test_no_benchmark_tool_reads_a_run_artifact_without_the_publication_check() 
         if relative in exempt:
             continue
         text = module.read_text(encoding="utf-8")
-        if "json.load" not in text or checker in text:
+        if "json.load" not in text or imports_checker(text):
             continue
         if any(f'"{key}"' in text or f"'{key}'" in text for key in run_keys):
             offenders.append(relative)
@@ -409,8 +439,17 @@ def test_no_benchmark_tool_reads_a_run_artifact_without_the_publication_check() 
         + ", ".join(offenders)
     )
 
+    renamed = sorted(name for name in known_readers if not (root / name).is_file())
+    assert not renamed, (
+        "a known artifact reader was renamed, moved or deleted: "
+        + ", ".join(renamed)
+        + ". If it still reads run artifacts, update `known_readers` to its new path — do not "
+        "just drop the entry, because it may be one the heuristic above cannot see."
+    )
     missing = sorted(
-        name for name in known_readers if checker not in (root / name).read_text(encoding="utf-8")
+        name
+        for name in known_readers
+        if not imports_checker((root / name).read_text(encoding="utf-8"))
     )
     assert not missing, f"these known readers dropped the publication check: {missing}"
 
@@ -426,3 +465,26 @@ def test_a_json_file_that_is_not_an_object_is_refused_cleanly(tmp_path: Path) ->
 
     with pytest.raises(SystemExit, match="not a JSON object"):
         load_published_artifact(path)
+
+
+def test_the_claim_gate_reports_a_malformed_artifact_as_a_claim_error(tmp_path: Path) -> None:
+    """Refusal is not the only way the load can fail, and the gate accumulates failures.
+
+    A malformed or mis-encoded artifact raises JSONDecodeError/UnicodeDecodeError out of the
+    loader. Catching only SystemExit lets those escape `except ClaimError` and abort the gate on
+    the first bad file, leaving every later claim unchecked — the same defect the SystemExit
+    translation was added to fix, wearing a different exception.
+    """
+    from benchmarks.claim_gate import Claim, ClaimError, Marker, resolve
+
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{oops", encoding="utf-8")
+    claim = Claim(
+        doc="docs/RESULTS.md",
+        line=7,
+        text="0.99",
+        marker=Marker(kind="artifact", artifact=malformed.name, key="aggregate.rate"),
+    )
+
+    with pytest.raises(ClaimError):
+        resolve(claim, tmp_path)

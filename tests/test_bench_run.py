@@ -1661,3 +1661,42 @@ def test_one_interrupt_while_reporting_still_names_where_the_artifact_went(
     assert any("unpublished  ->" in line for line in stream.seen), (
         "one interrupt swallowed every note, including the artifact's location"
     )
+
+
+def test_a_second_run_of_the_same_stem_refuses_before_it_spends_anything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_run_stamp` resolves to the SECOND, so two replicates of one arm can share a whole stem.
+
+    Sharing it is not a cosmetic clash. Both would `os.replace` onto the same
+    `<stamp>.json`, so the loser's complete, paid-for measurement is destroyed silently with
+    exit 0 and a `full results ->` line naming a file holding the other run's data. Both would
+    also APPEND to one `<stamp>.partial.jsonl`, and `salvage --merge-only` would then rebuild a
+    single published artifact out of two interleaved runs — which `consistency_report` cannot
+    detect, because two replicates agree on arm, model and k.
+
+    The stem is therefore claimed atomically, and the refusal lands before the first token.
+    """
+    out = tmp_path / "results"
+    out.mkdir(parents=True)
+    (out / f"{_STAMP_1CONV}.partial.jsonl").write_text("", encoding="utf-8")
+
+    calls: list[str] = []
+
+    def _counting_complete(self: object, system: str, user: str) -> str:
+        calls.append(user)
+        return _stub_complete(self, system, user)  # type: ignore[arg-type]
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _counting_complete)
+
+    with pytest.raises(SystemExit, match="already exists"):
+        main(
+            ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+             "--conversations", "1", "--out", str(out)],
+            now=_NOW,
+        )
+
+    assert calls == [], "the refusal must come before a single generator or judge call"

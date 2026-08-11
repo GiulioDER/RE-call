@@ -528,3 +528,66 @@ def test_resume_refuses_to_append_to_the_partial_it_is_reading(tmp_path: Path) -
                 "--sidecar", str(partial),
             ]
         )
+
+
+def test_a_refused_sibling_is_unverified_not_verified_provenance(tmp_path: Path) -> None:
+    """Salvage cites a sibling `<stem>.json`'s config as VERIFIED provenance for the artifact it
+    publishes, so a refused artifact must not be able to launder its config into a new one."""
+    from benchmarks.salvage import consistency_report
+
+    stem = "recall_openai-gpt-4o-mini_1conv_20260102T030405Z"
+    partial = tmp_path / f"{stem}.partial.jsonl"
+    partial.write_text("", encoding="utf-8")
+    (tmp_path / f"{stem}.json").write_text(
+        json.dumps(
+            {
+                "config": {"arm": "recall", "model": "openai/gpt-4o-mini", "k": 5},
+                "unpublished": True,
+                "unpublished_reason": "benchmark cost claims require provider_metadata",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = consistency_report([partial], "recall", "openai/gpt-4o-mini", 5)
+
+    # The FILENAME is still legitimate provenance for arm and model; the refused sibling's
+    # config is what must not appear.
+    assert not any("(config)" in entry["source"] for entry in report["verified"]), (
+        "a refused sibling's config was cited as verified provenance"
+    )
+    assert any("REFUSED publication" in note for note in report["unverified"])
+    # The refusal message carries the sibling's full path; a published artifact must not embed
+    # an absolute local path, nor repeat the filename twice.
+    assert not any(str(tmp_path) in note for note in report["unverified"])
+
+
+def test_a_sibling_whose_config_is_not_an_object_is_reported_not_raised(tmp_path: Path) -> None:
+    """`config.get(...)` runs outside the try, so a non-mapping config used to crash the CLI."""
+    from benchmarks.salvage import consistency_report
+
+    stem = "recall_openai-gpt-4o-mini_1conv_20260102T030405Z"
+    partial = tmp_path / f"{stem}.partial.jsonl"
+    partial.write_text("", encoding="utf-8")
+    (tmp_path / f"{stem}.json").write_text(json.dumps({"config": "recall"}), encoding="utf-8")
+
+    report = consistency_report([partial], "recall", "openai/gpt-4o-mini", 5)
+
+    assert any("not an object" in note for note in report["unverified"])
+
+
+def test_salvage_publishes_through_the_same_contract_as_run(tmp_path: Path) -> None:
+    """Salvage refuses to launder a REFUSED sibling's config, then published without the
+    cost-claim contract at all — so it could publish what `benchmarks.run` would have
+    quarantined. The write is atomic for the same reason run's is."""
+    import inspect
+
+    from benchmarks import salvage as salvage_module
+
+    source = inspect.getsource(salvage_module.main)
+
+    assert "reject_unauditable_cost_claims(payload)" in source
+    assert source.index("reject_unauditable_cost_claims(payload)") < source.index(
+        "_write_atomic(args.out"
+    )
+    assert "args.out.write_text(" not in source, "the publish must go through _write_atomic"

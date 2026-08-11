@@ -319,7 +319,11 @@ def _append_records(path: Path, records: list[dict[str, Any]]) -> None:
 
 
 def _run_stamp(arm: str, model: str, conversations: int, now: datetime) -> str:
-    """The filename stem for one run's artifacts — unique per run because of the timestamp.
+    """The filename stem for one run's artifacts, stamped to the second.
+
+    NOT unique on its own: two replicates of the same arm/model/slice launched within one second
+    collide, so `main` claims the stem by creating the sidecar exclusively and refuses the
+    second run rather than letting them overwrite and interleave each other.
 
     Without it the stem is `{arm}_{model}_{N}conv`, so re-running the same arm/model/slice
     silently overwrites the previous run's results file: an artifact that cost real money and may
@@ -507,6 +511,23 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     text_by_id = _text_by_id(questions)
     gold_by_id = _gold_by_id(questions)
     partial_path = args.out / f"{stamp}.partial.jsonl"
+    # CLAIM the stem, atomically, before a single token is spent. `_run_stamp` resolves to the
+    # second, so two replicates of the same arm launched together share the WHOLE stem, and
+    # sharing it is not a cosmetic clash: both would `os.replace` onto one `<stamp>.json`, so the
+    # loser's complete, paid-for measurement vanishes with exit 0 and a `full results ->` line
+    # naming the other run's data; and both would APPEND to one sidecar, after which
+    # `salvage --merge-only` rebuilds one published artifact out of two interleaved runs. That
+    # last one is invisible to `consistency_report`, because two replicates agree on arm, model
+    # and k. Exclusive create is the check and the claim in one operation, so there is no window
+    # between them, and it fails before the run costs anything.
+    try:
+        with partial_path.open("x", encoding="utf-8"):
+            pass
+    except FileExistsError:
+        raise SystemExit(
+            f"{partial_path} already exists, so another run owns this stem. Artifact stems are "
+            "stamped to the second; wait a second and start again, or pass a different --out."
+        ) from None
     if skipped["total"]:
         print(f"skipped {skipped['total']} unscoreable qa rows: {skipped['by_reason']}", flush=True)
 

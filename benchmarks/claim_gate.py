@@ -481,10 +481,12 @@ def resolve(claim: Claim, results_root: Path) -> None:
         raise ClaimError(f"{claim.doc}:{claim.line} no such artifact: {marker.artifact}")
     try:
         doc = load_published_artifact(path)
-    except SystemExit as exc:
+    except (SystemExit, OSError, ValueError) as exc:
         # `resolve` promises ClaimError, and the caller loops over claims collecting failures.
-        # A SystemExit would escape that loop and abort the gate on the first refused artifact,
-        # leaving every later claim unchecked and reporting a bare exception instead of the list.
+        # Anything else escapes that loop and aborts the gate on the first bad file, leaving
+        # every later claim unchecked. SystemExit is the refusal; ValueError covers
+        # JSONDecodeError and UnicodeDecodeError on a malformed or mis-encoded artifact; OSError
+        # covers a file that vanished or locked between `is_file()` and the read.
         raise ClaimError(f"{claim.doc}:{claim.line} {exc}") from exc
     actual = lookup(doc, marker.key)
     if not matches(claim.text, actual):
