@@ -85,6 +85,37 @@ def test_a_rejected_proposal_is_not_offered_again(tmp_path, capsys):
     assert b"supersedes:" not in (tmp_path / "new.md").read_bytes()
 
 
+def test_a_missing_path_is_refused_rather_than_reported_as_a_clean_corpus(tmp_path, capsys):
+    """`propose_fixes` swallows the read failure for a non-directory path, so a typo'd corpus
+    printed "0 edge(s) proposable" and exited 0. A missing corpus and a clean one were
+    indistinguishable, which is the worst possible answer for a tool whose whole job is telling
+    you about edges you have not declared."""
+    with pytest.raises(SystemExit) as exc:
+        main(["rewrite", str(tmp_path / "no_such_dir"), "--reviewer", "giulio",
+              "--note", "checked", "--apply"])
+
+    assert exc.value.code != 0
+    assert "no such" in capsys.readouterr().err.lower()
+
+
+def test_an_unresolvable_target_is_skipped_not_a_traceback(tmp_path, capsys):
+    """`propose_fixes` checks ambiguity for the referenced name only, so `plan_rewrite` can still
+    raise on a target that matches two files. That aborted the run mid-loop, AFTER earlier
+    proposals had already been written with --apply, and left the ledger connection open."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "alpha_2026-01-01.md").write_bytes(b"# a\n\nSuperseded by beta_2026-02-02.\n")
+    (tmp_path / "b" / "alpha_2026-01-01.md").write_bytes(b"# a2\n\nunrelated\n")
+    (tmp_path / "beta_2026-02-02.md").write_bytes(b"# beta\n\nthe successor\n")
+
+    main(["rewrite", str(tmp_path), "--reviewer", "giulio", "--note", "checked",
+          "--glob", "**/*.md"])
+
+    out = capsys.readouterr().out
+    assert "SKIP" in out
+    assert "matches 2 files" in out
+
+
 def test_rejecting_does_not_write_to_the_corpus(tmp_path, capsys):
     _corpus(tmp_path)
     before = (tmp_path / "new.md").read_bytes()

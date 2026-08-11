@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
@@ -42,6 +43,16 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     except BaseException:
         try:
             os.unlink(tmp_name)
+        except PermissionError:
+            # `copymode` may have just made the staging file read-only, and on Windows a
+            # read-only file cannot be unlinked. Without this the cleanup silently failed and
+            # every attempt left another undeletable `.memo.md.*.tmp` in the user's corpus
+            # directory, which they could not remove without clearing its read-only bit first.
+            try:
+                os.chmod(tmp_name, stat.S_IWRITE)
+                os.unlink(tmp_name)
+            except OSError:
+                pass
         except OSError:
             pass
         raise

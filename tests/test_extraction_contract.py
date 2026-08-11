@@ -272,6 +272,34 @@ def test_a_claim_about_the_subject_itself_is_refused():
         _extractor(_Client(_one_claim(obj="new"))).extract(BODY, CORPUS, subject="new")
 
 
+def test_a_non_string_relation_is_refused_as_a_value_error():
+    """`relation not in _RELATIONS` raises TypeError for an unhashable value, and TypeError
+    escapes every `except ValueError` in the chain: the CLI's per-memo handler, `recheck`'s
+    mismatch counter, and `_providers.py`'s malformed_output mapping. One bad memo would abort
+    the whole corpus run through the very path documented as in-band."""
+    payload = json.dumps({"claims": [{"relation": ["supersedes"], "object": "old_thing_2026",
+                                      "evidence": BODY, "confidence": 0.9}]})
+    with pytest.raises(ValueError, match="relation"):
+        _extractor(_Client(payload)).extract(BODY, CORPUS, subject="new")
+
+
+def test_an_unconvertible_confidence_is_refused_as_a_value_error():
+    """`float(10**400)` raises OverflowError, not ValueError, so an oversized integer escaped
+    the in-band mapping instead of being reported as out of range."""
+    payload = json.dumps({"claims": [{"relation": "supersedes", "object": "old_thing_2026",
+                                      "evidence": BODY, "confidence": 10**400}]})
+    with pytest.raises(ValueError, match="confidence"):
+        _extractor(_Client(payload)).extract(BODY, CORPUS, subject="new")
+
+
+def test_deeply_nested_output_is_refused_as_a_value_error():
+    """`json.loads` raises RecursionError rather than JSONDecodeError on a deeply nested payload,
+    which the parser caught only by its narrower type."""
+    payload = "[" * 20000 + "]" * 20000
+    with pytest.raises(ValueError, match="json"):
+        _extractor(_Client(payload)).extract(BODY, CORPUS, subject="new")
+
+
 def test_a_well_formed_response_is_accepted():
     """Non-over-rejection. Eight refusals above are worth nothing if the valid case is refused."""
     claims = _extractor(_Client(_one_claim())).extract(BODY, CORPUS, subject="new")
@@ -344,9 +372,18 @@ def test_a_non_boolean_opt_in_is_refused():
 
 def test_the_module_imports_with_the_extra_absent(monkeypatch):
     """`openai` is installed here via the `bench` extra, so "it imports fine" proves nothing on
-    this machine. Making the import genuinely fail is what tests the laziness."""
+    this machine. Making the import genuinely fail is what tests the laziness.
+
+    Loaded under a THROWAWAY module name rather than re-imported over `recall.extraction`. The
+    first version deleted the entry from `sys.modules` and re-imported it, which left a second,
+    distinct module object behind: tests in other files hold a reference to the original and
+    monkeypatch that one, while `recall/cli.py` resolves the replacement, so the patch silently
+    stopped taking effect. It cost three unrelated tests, and only when the files ran together.
+    """
     import builtins
-    import importlib
+    import importlib.util
+
+    import recall.extraction as installed
 
     real_import = builtins.__import__
 
@@ -356,11 +393,21 @@ def test_the_module_imports_with_the_extra_absent(monkeypatch):
         return real_import(name, *a, **k)
 
     monkeypatch.setattr(builtins, "__import__", no_openai)
-    monkeypatch.delitem(__import__("sys").modules, "recall.extraction", raising=False)
 
-    module = importlib.import_module("recall.extraction")
+    import sys as _sys
+
+    spec = importlib.util.spec_from_file_location("_isolated_extraction", installed.__file__)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Registered under the throwaway name before exec: `dataclasses` resolves string annotations
+    # through `sys.modules[cls.__module__]`, so a module absent from sys.modules cannot define
+    # one. `recall.extraction` itself is still never touched, which is the point.
+    monkeypatch.setitem(_sys.modules, "_isolated_extraction", module)
+    spec.loader.exec_module(module)  # must not raise: the SDK import is lazy
+
     assert module.resolve_claim_extractor({}) is None
     assert module.PROMPT_SHA256
+    assert _sys.modules["recall.extraction"] is installed, "sys.modules was disturbed"
 
 
 def test_the_real_client_names_the_extra_when_the_sdk_is_missing(monkeypatch):

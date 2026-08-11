@@ -1059,69 +1059,91 @@ def main(argv: list[str] | None = None) -> None:
                   file=sys.stderr)
             raise SystemExit(2)
 
-        cache = _extraction.ClaimCache(args.cache) if args.cache else None
-        try:
-            extractor = _extraction.resolve_claim_extractor(cache=cache)
-        except ValueError as exc:
-            print(f"recall extract: {exc}", file=sys.stderr)
-            raise SystemExit(2) from exc
-        if extractor is None:
-            # Says so and stops, rather than succeeding with nothing done. This is the first path
-            # in the library that spends money and sends corpus text to a third party, so a
-            # silent no-op would be the wrong kind of safe: it looks like "no relations found".
-            print(
-                "recall extract: the extractor is off. Set RECALL_EXTRACT=1 to enable it "
-                "(needs `pip install recall[extract]` and an API key).",
-                file=sys.stderr,
-            )
+        root = Path(args.path)
+        # Checked BEFORE the cache is opened and before any paid call. A typo'd corpus path
+        # previously reached `f.read_text` and produced a raw FileNotFoundError traceback,
+        # unlike every other argument error in this command.
+        if not root.exists():
+            print(f"recall extract: no such path: {args.path}", file=sys.stderr)
             raise SystemExit(2)
 
-        root = Path(args.path)
-        names = corpus_names(root, args.glob)
-        files = sorted(root.glob(args.glob)) if root.is_dir() else [root]
-
-        found = rechecked = mismatches = 0
-        print()
-        for f in files:
-            subject = supersedes_key(f.name)
-            body = human_body(f.read_text(encoding="utf-8-sig", errors="replace"))
-            if not body:
-                continue
+        cache = _extraction.ClaimCache(args.cache) if args.cache else None
+        # try/finally around EVERYTHING below. The cache is a sqlite connection and was closed
+        # only on the single fall-through path, so each early exit leaked it — on Windows that
+        # leaves the file locked and the corpus directory undeletable.
+        try:
             try:
-                if args.recheck:
-                    report = extractor.recheck(body, names, subject=subject)
-                    rechecked += report.rechecked
-                    mismatches += report.mismatches
-                    if report.mismatches:
-                        print(f"  MISMATCH {f.name}: the re-call disagreed with the cache")
-                    continue
-                for claim in extractor.extract(body, names, subject=subject):
-                    found += 1
-                    print(f"  {f.name}: {claim.relation} {claim.object}  ({claim.confidence:.2f})")
-                    print(f"      because it says {claim.evidence!r}")
-            except ValueError as exc:
-                # In band. A refused response is a finding about this memo, not a reason to
-                # abandon the rest of the corpus half-extracted.
-                print(f"  SKIP {f.name}: {exc}")
-
-        if args.recheck:
-            rate = (mismatches / rechecked) if rechecked else 0.0
-            print(f"\nrechecked {rechecked} memo(s); mismatch rate {rate * 100:.1f}%")
-            if mismatches:
-                # Reported, not fatal. This is a MEASUREMENT of the provider, and a single
-                # flaky re-call is not a reason to fail a corpus-wide command. Anyone wanting a
-                # gate can read the rate off stdout and decide their own threshold; the command
-                # deciding one for them would be a policy nobody chose.
+                extractor = _extraction.resolve_claim_extractor(cache=cache)
+            except (ValueError, RuntimeError, ImportError) as exc:
+                # RuntimeError (no API key) and ImportError (extra not installed) are the two
+                # most likely first-run failures, and both carry a message written for exactly
+                # this moment. Catching only ValueError showed the user a traceback instead.
+                print(f"recall extract: {exc}", file=sys.stderr)
+                raise SystemExit(2) from exc
+            if extractor is None:
+                # Says so and stops, rather than succeeding with nothing done. This is the first
+                # path in the library that spends money and sends corpus text to a third party,
+                # so a silent no-op would be the wrong kind of safe: it reads as "none found".
                 print(
-                    "a non-zero rate means temperature 0 is NOT determinism for this provider: "
-                    "the cache, not the sampler, is what makes runs reproducible. Evicting it "
-                    "will silently renumber every proposal id derived from these claims."
+                    "recall extract: the extractor is off. Set RECALL_EXTRACT=1 to enable it "
+                    "(needs `pip install recall[extract]` and an API key).",
+                    file=sys.stderr,
                 )
-        else:
-            print(f"\n{found} claim(s) extracted. Nothing was written to the corpus; "
-                  "review them with `recall rewrite`.")
-        if cache is not None:
-            cache.close()
+                raise SystemExit(2)
+
+            # A single-file path takes its corpus names from the containing directory. Globbing
+            # a file yields nothing, so the model used to be handed an EMPTY name list while the
+            # file was still sent: every claim then failed the "not in the corpus" check, which
+            # made the single-file form a guaranteed wasted paid call.
+            names = corpus_names(root if root.is_dir() else root.parent, args.glob)
+            files = sorted(root.glob(args.glob)) if root.is_dir() else [root]
+
+            found = rechecked = mismatches = 0
+            print()
+            for f in files:
+                subject = supersedes_key(f.name)
+                try:
+                    body = human_body(f.read_text(encoding="utf-8-sig", errors="replace"))
+                    if not body:
+                        continue
+                    if args.recheck:
+                        report = extractor.recheck(body, names, subject=subject)
+                        rechecked += report.rechecked
+                        mismatches += report.mismatches
+                        if report.mismatches:
+                            print(f"  MISMATCH {f.name}: the re-call disagreed with the cache")
+                        continue
+                    for claim in extractor.extract(body, names, subject=subject):
+                        found += 1
+                        print(f"  {f.name}: {claim.relation} {claim.object} "
+                              f" ({claim.confidence:.2f})")
+                        print(f"      because it says {claim.evidence!r}")
+                except (ValueError, OSError) as exc:
+                    # In band. A refused response, or one unreadable file, is a finding about
+                    # that memo and not a reason to abandon the rest of the corpus
+                    # half-extracted and half-paid-for.
+                    print(f"  SKIP {f.name}: {exc}")
+
+            if args.recheck:
+                rate = (mismatches / rechecked) if rechecked else 0.0
+                print(f"\nrechecked {rechecked} memo(s); mismatch rate {rate * 100:.1f}%")
+                if mismatches:
+                    # Reported, not fatal. This is a MEASUREMENT of the provider, and a single
+                    # flaky re-call is not a reason to fail a corpus-wide command. Anyone wanting
+                    # a gate can read the rate off stdout and pick their own threshold; the
+                    # command deciding one for them would be a policy nobody chose.
+                    print(
+                        "a non-zero rate means temperature 0 is NOT determinism for this "
+                        "provider: the cache, not the sampler, is what makes runs reproducible. "
+                        "Evicting it will silently renumber every proposal id derived from "
+                        "these claims."
+                    )
+            else:
+                print(f"\n{found} claim(s) extracted. Nothing was written to the corpus; "
+                      "review them with `recall rewrite`.")
+        finally:
+            if cache is not None:
+                cache.close()
         return
 
     if args.cmd == "rewrite":  # pure filesystem write path — no embedder, no DB
@@ -1136,48 +1158,70 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(2)
 
         root = Path(args.path)
+        # `propose_fixes` swallows the read failure for a non-directory path, so a typo'd corpus
+        # printed "0 edge(s) proposable" and exited 0 — making a missing corpus indistinguishable
+        # from a clean one, which is the worst possible answer from a tool whose whole job is
+        # telling you about edges you have not declared.
+        if not root.exists():
+            print(f"recall rewrite: no such path: {args.path}", file=sys.stderr)
+            raise SystemExit(2)
+
         proposals, unfixable = propose_fixes(args.path, glob=args.glob)
         ledger = RejectionLedger(args.ledger) if args.ledger else None
         now = datetime.now(timezone.utc)
 
         written = rejected = offered = 0
         print()
-        for p in proposals:
-            fact = promoted_prose_edge(
-                edit_file=p.edit_file, target=p.target, evidence_file=p.evidence_file,
-                evidence=p.evidence, reviewer_id=args.reviewer, audit_note=args.note, at=now,
-            )
-            if args.reject_all:
-                # Checked before `apply_rewrite`, so `--reject-all --apply` rejects rather than
-                # writing. The opposite precedence would make a typo destructive, and this is the
-                # flag most likely to be typed by someone who has just decided "no".
-                assert ledger is not None
-                ledger.reject(fact, reviewer_id=args.reviewer, note=args.note)
-                rejected += 1
-                print(f"  REJECTED {p.edit_file}: supersedes: {p.target}")
-                continue
-            outcome = apply_rewrite(root, fact, apply=args.apply, ledger=ledger, glob=args.glob)
-            if outcome.skipped_reason:
-                print(f"  SKIP {p.edit_file}: {outcome.skipped_reason}")
-                continue
-            offered += 1
-            print(f"  {p.edit_file}: + supersedes: {p.target}")
-            print(f"      because {p.evidence_file} says {p.evidence!r}")
-            written += int(outcome.written)
-        for u in unfixable:
-            print(f"  SKIP {u.file}: {u.reason}")
+        try:
+            for p in proposals:
+                try:
+                    fact = promoted_prose_edge(
+                        edit_file=p.edit_file, target=p.target,
+                        evidence_file=p.evidence_file, evidence=p.evidence,
+                        reviewer_id=args.reviewer, audit_note=args.note, at=now,
+                    )
+                    if args.reject_all:
+                        # Checked before `apply_rewrite`, so `--reject-all --apply` rejects
+                        # rather than writing. The opposite precedence would make a typo
+                        # destructive, and this is the flag most likely to be typed by someone
+                        # who has just decided "no".
+                        assert ledger is not None
+                        ledger.reject(fact, reviewer_id=args.reviewer, note=args.note)
+                        rejected += 1
+                        print(f"  REJECTED {p.edit_file}: supersedes: {p.target}")
+                        continue
+                    outcome = apply_rewrite(
+                        root, fact, apply=args.apply, ledger=ledger, glob=args.glob
+                    )
+                except ValueError as exc:
+                    # `propose_fixes` proves the REFERENCED name resolves, but not the memo that
+                    # names it, so `plan_rewrite` can still refuse an ambiguous stem. Letting
+                    # that propagate ended the run mid-loop, after earlier proposals had already
+                    # been written with --apply and with no record of where it stopped.
+                    print(f"  SKIP {p.edit_file}: {exc}")
+                    continue
+                if outcome.skipped_reason:
+                    print(f"  SKIP {p.edit_file}: {outcome.skipped_reason}")
+                    continue
+                offered += 1
+                print(f"  {p.edit_file}: + supersedes: {p.target}")
+                print(f"      because {p.evidence_file} says {p.evidence!r}")
+                written += int(outcome.written)
+            for u in unfixable:
+                print(f"  SKIP {u.file}: {u.reason}")
 
-        print(f"\n{offered} edge(s) proposable, {len(unfixable)} need a human")
-        if args.reject_all:
-            print(f"recorded {rejected} rejection(s); the corpus was not modified.")
-        elif not args.apply:
-            # Same default, and the same reason, as `lint --fix`: a tool that rewrites your
-            # memory the first time you try it has earned distrust.
-            print("dry run — nothing written. Re-run with --apply to write these edges.")
-        else:
-            print(f"wrote {written} edge(s), reviewed by {args.reviewer}.")
-        if ledger is not None:
-            ledger.close()
+            print(f"\n{offered} edge(s) proposable, {len(unfixable)} need a human")
+            if args.reject_all:
+                print(f"recorded {rejected} rejection(s); the corpus was not modified.")
+            elif not args.apply:
+                # Same default, and the same reason, as `lint --fix`: a tool that rewrites your
+                # memory the first time you try it has earned distrust.
+                print("dry run — nothing written. Re-run with --apply to write these edges.")
+            else:
+                print(f"wrote {written} edge(s), reviewed by {args.reviewer}.")
+        finally:
+            if ledger is not None:
+                ledger.close()
         return
 
     if args.cmd == "check":  # pure filesystem check — no embedder, no DB

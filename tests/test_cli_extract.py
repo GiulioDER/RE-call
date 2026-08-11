@@ -130,6 +130,79 @@ def test_a_refused_response_does_not_abort_the_rest_of_the_corpus(tmp_path, monk
     )
 
 
+def test_a_missing_path_is_refused_before_any_model_call(tmp_path, monkeypatch, capsys):
+    """A typo'd corpus path produced a raw FileNotFoundError traceback, unlike every other
+    argument error in this command, which exits 2 with a message."""
+    client = _Client(_claim())
+    _install(monkeypatch, client)
+    monkeypatch.setenv("RECALL_EXTRACT", "1")
+
+    with pytest.raises(SystemExit) as exc:
+        main(["extract", str(tmp_path / "no_such_dir")])
+
+    assert exc.value.code != 0
+    assert "no such" in capsys.readouterr().err.lower()
+    assert client.calls == 0, "a paid call was made against a path that does not exist"
+
+
+def test_a_single_file_takes_its_corpus_names_from_its_directory(tmp_path, monkeypatch, capsys):
+    """`corpus_names` globs, so a single-file path yielded an EMPTY name list while the file was
+    still sent to the provider. Every claim then failed the "not a document in the corpus" check,
+    guaranteeing a paid call that could not possibly produce a result."""
+    _corpus(tmp_path)
+    _install(monkeypatch, _Client(_claim()))
+    monkeypatch.setenv("RECALL_EXTRACT", "1")
+
+    main(["extract", str(tmp_path / "new.md")])
+
+    out = capsys.readouterr().out
+    assert "supersedes old_thing_2026" in out, f"the single-file form could not resolve: {out}"
+
+
+def test_a_missing_api_key_exits_with_the_guidance_message(tmp_path, monkeypatch, capsys):
+    """The resolver raises RuntimeError for a missing key and ImportError for a missing extra,
+    but only ValueError was caught, so the two most likely first-run failures produced a
+    traceback instead of the messages written for exactly those cases."""
+    _corpus(tmp_path)
+
+    def raising(env=None, *, cache=None):
+        raise RuntimeError("the prose extractor needs an API key (OPENROUTER_API_KEY ...)")
+
+    monkeypatch.setattr(extraction_mod, "resolve_claim_extractor", raising)
+    monkeypatch.setenv("RECALL_EXTRACT", "1")
+
+    with pytest.raises(SystemExit) as exc:
+        main(["extract", str(tmp_path)])
+
+    assert exc.value.code != 0
+    assert "API key" in capsys.readouterr().err
+
+
+def test_the_claim_cache_is_closed_even_when_the_run_exits_early(tmp_path, monkeypatch, capsys):
+    """The cache was opened before the resolver and closed only on the single fall-through path,
+    so every early exit leaked the sqlite connection. On Windows that leaves the file locked, and
+    the observable symptom is that the corpus directory cannot be cleaned up afterwards."""
+    _corpus(tmp_path)
+    closed: list[int] = []
+
+    class _CountingCache(extraction_mod.ClaimCache):
+        def close(self) -> None:
+            closed.append(1)
+            super().close()
+
+    def raising(env=None, *, cache=None):
+        raise RuntimeError("no API key")
+
+    monkeypatch.setattr(extraction_mod, "ClaimCache", _CountingCache)
+    monkeypatch.setattr(extraction_mod, "resolve_claim_extractor", raising)
+    monkeypatch.setenv("RECALL_EXTRACT", "1")
+
+    with pytest.raises(SystemExit):
+        main(["extract", str(tmp_path), "--cache", str(tmp_path / "claims.sqlite3")])
+
+    assert closed, "the cache connection was leaked on the early-exit path"
+
+
 def test_recheck_without_a_cache_is_refused(tmp_path, monkeypatch, capsys):
     _corpus(tmp_path)
     _install(monkeypatch, _Client())

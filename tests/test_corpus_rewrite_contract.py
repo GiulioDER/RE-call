@@ -461,6 +461,93 @@ def test_human_body_excludes_the_frontmatter_and_the_derived_block(tmp_path):
     assert before == "real prose"
 
 
+# --- defects found by the bug audit of d8e236d ------------------------------------------------
+
+
+def test_a_memo_quoting_the_end_marker_does_not_get_prose_spliced(tmp_path):
+    """`_insert_derived_line` required only that both markers EXIST, not that BEGIN came first.
+
+    A memo that merely quotes the closing marker in its prose therefore had machine-written text
+    inserted into the middle of the author's sentence. Worse than a cosmetic corruption: it
+    changes `human_body`, which changes the claim cache key, which re-invokes the model on prose
+    no human edited. That is the exact re-invocation the extractor's design exists to prevent.
+    """
+    memo = tmp_path / "new.md"
+    prose = f"# memo\n\nthe closer is {DERIVED_END} in prose\n"
+    _write(memo, prose.encode("utf-8"))
+    _write(tmp_path / "old.md", b"# old\n")
+    _write(tmp_path / "third.md", b"# third\n")
+
+    apply_rewrite(tmp_path, _promoted("new.md", "old.md", relation="contradicts"), apply=True)
+    apply_rewrite(tmp_path, _promoted("new.md", "third.md", relation="same_entity"), apply=True)
+
+    text = memo.read_text(encoding="utf-8")
+    assert "the closer is <!-- /recall:derived --> in prose" in text, (
+        "the author's sentence was spliced"
+    )
+    assert human_body(memo.read_text(encoding="utf-8")).startswith("# memo")
+
+
+def test_prose_that_merely_mentions_a_relation_does_not_suppress_a_real_write(tmp_path):
+    """The duplicate check was a substring test over the WHOLE FILE, so an author quoting
+    `status: something.md` anywhere in their prose silently suppressed a reviewed edge and told
+    the operator it was already recorded. A refusal that reports a falsehood is worse than none.
+    """
+    memo = tmp_path / "new.md"
+    _write(memo, b"---\ntitle: t\n---\n\nA reviewer once wrote: status: old.md was the label.\n")
+    _write(tmp_path / "old.md", b"# old\n")
+
+    result = apply_rewrite(tmp_path, _promoted("new.md", "old.md", relation="status"), apply=True)
+
+    assert result.written is True, f"a real write was suppressed: {result.skipped_reason}"
+    text = memo.read_text(encoding="utf-8")
+    assert DERIVED_BEGIN in text and "status: old.md" in text.split(DERIVED_BEGIN)[1]
+
+
+def test_a_genuine_duplicate_in_the_derived_block_is_still_skipped(tmp_path):
+    """Non-over-rejection for the fix above: narrowing the check to the block must not lose it."""
+    memo = tmp_path / "new.md"
+    _write(memo, b"---\ntitle: t\n---\n\nbody\n")
+    _write(tmp_path / "old.md", b"# old\n")
+
+    first = apply_rewrite(tmp_path, _promoted("new.md", "old.md", relation="contradicts"),
+                          apply=True)
+    second = apply_rewrite(tmp_path, _promoted("new.md", "old.md", relation="contradicts"),
+                           apply=True)
+
+    assert first.written is True
+    assert second.written is False
+    assert memo.read_text(encoding="utf-8").count("contradicts: old.md") == 1
+
+
+def test_an_unclosed_frontmatter_block_is_refused_not_double_declared(tmp_path):
+    """`parse_frontmatter` returns {} for an unclosed block, so the "already declares" guard
+    could not fire and the writer prepended a SECOND block. The file then visibly stated two
+    different predecessors, retrieval acted on the new one, and the result reported success."""
+    memo = tmp_path / "new.md"
+    original = b"---\nsupersedes: already_declared.md\ntitle: t\n"
+    _write(memo, original)
+    _write(tmp_path / "old.md", b"# old\n")
+
+    result = apply_rewrite(tmp_path, _promoted("new.md", "old.md"), apply=True)
+
+    assert memo.read_bytes() == original, "an unclosed block was rewritten"
+    assert result.written is False
+    assert result.skipped_reason and "unclosed" in result.skipped_reason
+
+
+def test_a_file_with_no_frontmatter_at_all_still_gains_one(tmp_path):
+    """Non-over-rejection: refusing an UNCLOSED block must not mean refusing an ABSENT one."""
+    memo = tmp_path / "new.md"
+    _write(memo, b"# new\n\njust prose, no block\n")
+    _write(tmp_path / "old.md", b"# old\n")
+
+    result = apply_rewrite(tmp_path, _promoted("new.md", "old.md"), apply=True)
+
+    assert result.written is True
+    assert memo.read_bytes().startswith(b"---\nsupersedes: old.md\n---\n")
+
+
 # --- 11. fixed point ---------------------------------------------------------------------------
 
 

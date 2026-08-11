@@ -41,7 +41,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 from recall.provider_metadata import ProviderMetadata
 
@@ -259,6 +259,10 @@ def _parse_claims(
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ValueError(f"provider response is not json: {exc.msg}") from exc
+    except RecursionError as exc:
+        # A deeply nested payload raises RecursionError, not JSONDecodeError, and RecursionError
+        # is not a ValueError — so it escaped the in-band mapping and aborted the whole run.
+        raise ValueError("provider response is not json: nesting is too deep to parse") from exc
     if not isinstance(payload, dict) or "claims" not in payload:
         raise ValueError("provider response has no 'claims' key")
     items = payload["claims"]
@@ -272,7 +276,12 @@ def _parse_claims(
         if not isinstance(item, dict):
             raise ValueError("claim is not an object")
         relation = item.get("relation")
-        if relation not in _RELATIONS:
+        # The isinstance check is not redundant with the membership test: `[] in frozenset(...)`
+        # raises TypeError for an unhashable value, and TypeError is not a ValueError, so a
+        # provider returning `"relation": []` escaped every in-band handler in the chain — the
+        # CLI's per-memo `except`, `recheck`'s mismatch counter, and the malformed_output mapping
+        # in `_providers.py` — turning one bad memo into an aborted corpus run.
+        if not isinstance(relation, str) or relation not in _RELATIONS:
             raise ValueError(
                 f"claim relation {relation!r} is not one of {sorted(_RELATIONS)}"
             )
@@ -293,11 +302,17 @@ def _parse_claims(
         confidence = item.get("confidence")
         if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
             raise ValueError("claim confidence is missing or not a number")
-        if not 0.0 <= float(confidence) <= 1.0:
+        # Bounds compared BEFORE converting. `float(10**400)` raises OverflowError, which is not
+        # a ValueError, so an oversized integer escaped the in-band mapping instead of being
+        # reported as out of range. The comparison itself works on int and float alike.
+        if not 0.0 <= confidence <= 1.0:
             raise ValueError(f"claim confidence {confidence!r} is outside [0, 1]")
         claims.append(
             ExtractedClaim(
-                relation=relation,
+                # `cast`, not `type: ignore`: the isinstance + membership test above IS
+                # the runtime proof, and mypy simply cannot narrow a str to a Literal through
+                # a frozenset lookup. An ignore would suppress future real errors here too.
+                relation=cast(ExtractedRelation, relation),
                 subject=subject,
                 object=obj,
                 evidence=evidence,

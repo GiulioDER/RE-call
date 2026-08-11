@@ -228,11 +228,43 @@ def _insert_derived_line(raw: bytes, key: str, value: str) -> bytes:
     line = f"{key}: {value}".encode("utf-8") + nl
     begin, end = DERIVED_BEGIN.encode("utf-8"), DERIVED_END.encode("utf-8")
 
-    idx = body.find(end)
-    if body.find(begin) != -1 and idx != -1:
+    start, idx = body.find(begin), body.find(end)
+    # BEGIN must actually precede END. Requiring only that both exist meant a memo whose prose
+    # merely QUOTES the closing marker got machine-written text spliced into the middle of the
+    # author's sentence. That is not just cosmetic: it changes `human_body`, which changes the
+    # claim cache key, which re-invokes the model on prose no human touched.
+    if start != -1 and idx != -1 and start < idx:
         return bom + body[:idx] + line + body[idx:]
     prefix = body if body.endswith(nl) or not body else body + nl
     return bom + prefix + nl + begin + nl + line + end + nl
+
+
+def _derived_records(text: str, line: str) -> bool:
+    """Whether the derived BLOCK already carries exactly this line.
+
+    Scoped to the block and matched whole-line, because the first version tested the raw
+    substring against the whole file: an author quoting ``status: old.md`` anywhere in their
+    prose silently suppressed a reviewed write and told the operator it was already recorded. A
+    refusal that reports something untrue is worse than no refusal, because it ends the enquiry.
+    """
+    start, end = text.find(DERIVED_BEGIN), text.find(DERIVED_END)
+    if start == -1 or end == -1 or end < start:
+        return False
+    block = text[start + len(DERIVED_BEGIN):end]
+    return any(existing.strip() == line for existing in block.splitlines())
+
+
+def _has_unclosed_frontmatter(text: str) -> bool:
+    """True when the file opens a ``---`` block and never closes it.
+
+    `parse_frontmatter` returns ``({}, text)`` for this case, which is indistinguishable from
+    "no frontmatter at all" — and the two need opposite treatment: an absent block should be
+    created, a broken one must not be papered over with a second block.
+    """
+    lines = text.split("\n")
+    if not lines or lines[0].lstrip("﻿").strip() != "---":
+        return False
+    return not any(line.strip() == "---" for line in lines[1:])
 
 
 def human_body(text: str) -> str:
@@ -445,7 +477,18 @@ def apply_rewrite(
     raw = target.read_bytes()
 
     if plan.destination == "frontmatter":
-        meta, _body = parse_frontmatter(raw.decode("utf-8-sig", errors="replace"))
+        decoded = raw.decode("utf-8-sig", errors="replace")
+        if _has_unclosed_frontmatter(decoded):
+            # `parse_frontmatter` reports NO frontmatter for an unclosed block, so the
+            # "already declares" guard below could not fire and the writer prepended a second
+            # block. The file then stated two different predecessors, retrieval acted on the
+            # newer one, and the result claimed success. Refusing is the only safe answer: the
+            # alternative is inventing a closing fence somewhere in the author's prose.
+            return RewriteResult(plan, planned=False, written=False,
+                                 skipped_reason=f"{plan.edit_file} has an unclosed frontmatter "
+                                                "block; refusing to write into a file whose "
+                                                "metadata cannot be parsed")
+        meta, _body = parse_frontmatter(decoded)
         if meta.get(plan.key):
             # `fix.py:264` refuses this too. A second writer that did not would make that refusal
             # decorative, since either tool can be the one that runs first.
@@ -455,7 +498,7 @@ def apply_rewrite(
         updated = _insert_frontmatter_key(raw, plan.key, plan.value)
     else:
         line = f"{plan.key}: {plan.value}"
-        if line in raw.decode("utf-8-sig", errors="replace"):
+        if _derived_records(raw.decode("utf-8-sig", errors="replace"), line):
             return RewriteResult(plan, planned=False, written=False,
                                  skipped_reason=f"{plan.edit_file} already records {line!r}")
         updated = _insert_derived_line(raw, plan.key, plan.value)
