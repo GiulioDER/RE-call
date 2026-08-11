@@ -118,10 +118,17 @@ proposal examples, provider failure matrix, and side effect audit flags.
 never averaged into a single number. Two rules keep the score honest.
 
 **Referrals are not assertions.** Only `candidate` proposals are scored. A `requires_review`
-proposal is reported separately as `referred`, alongside `asserted` and a `referral_rate`, and is
-never folded into precision. Counting referrals as predictions would let a provider buy precision
-by relabelling every shaky proposal `requires_review`. The policy is the `counted_statuses` and
-`referred_statuses` parameters rather than a hard coded constant, and the two must stay disjoint.
+proposal is reported separately as `referred_proposals`, alongside `asserted_proposals` and a
+`referral_rate`, and is never folded into precision. Counting referrals as predictions would let a
+provider buy precision by relabelling every shaky proposal `requires_review`. The policy is the
+`counted_statuses` and `referred_statuses` parameters rather than a hard coded constant; the two
+must stay disjoint, and an unknown status raises rather than silently scoring zero.
+
+Mind the two denominators. Precision divides by the deduplicated `(subject, object)` pair set,
+while `asserted_proposals` and `referred_proposals` count raw proposals, because several rules can
+fire on the same pair. Session 3 publishes three asserted proposals over two pairs, so
+`true_positive / asserted_proposals` is 0.667 and is **not** the published precision of 1.0. The
+key names carry the unit for exactly this reason.
 
 **A rate with no data is not a score.** Precision is `NaN` when nothing was asserted and recall is
 `NaN` when nothing was expected, matching `recall.eval.metrics.fraction_true`. This matters for the

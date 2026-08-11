@@ -15,13 +15,13 @@
   "generation_id": "reasoning-session3-fixture-gen1",
   "pipeline_id": "reasoning-session3-pipeline-v1",
   "precision_recall": {
-    "asserted": 3,
+    "asserted_proposals": 3,
     "false_negative": 0,
     "false_positive": 0,
     "precision": 1.0,
     "recall": 1.0,
     "referral_rate": 0.5714285714285714,
-    "referred": 4,
+    "referred_proposals": 4,
     "true_positive": 2
   },
   "proposal_count": 8,

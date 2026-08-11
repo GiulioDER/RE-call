@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import random
 from statistics import NormalDist
+from typing import Any
 
 from recall.observability import percentile
 
@@ -99,6 +100,23 @@ def fraction_true(flags: list[bool]) -> float:
     if not flags:
         return float("nan")
     return sum(1 for f in flags if f) / len(flags)
+
+
+def nan_to_null(value: Any) -> Any:
+    """Recursively replace non-finite floats with None, so `allow_nan=False` can stay on.
+
+    The NaN convention above is what makes this necessary: every rate here reports NaN rather
+    than a fake score on no data, and `json.dumps` renders that as a bare `NaN` token which is
+    not valid JSON and which no non-Python parser will read. Sanitise, then serialise strictly,
+    so a missed one is a loud failure instead of an unparseable artifact.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: nan_to_null(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [nan_to_null(v) for v in value]
+    return value
 
 
 def bootstrap_ci(

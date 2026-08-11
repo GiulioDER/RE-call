@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
+from typing import get_args
 
 from recall.reasoning_proposals.types import InferenceProposal, ProposalStatus, ProposedRelation
+
+_VALID_STATUSES: frozenset[str] = frozenset(get_args(ProposalStatus))
 
 #: Statuses that count as the provider ASSERTING a relation, and so are scored.
 ASSERTED_STATUSES: tuple[ProposalStatus, ...] = ("candidate",)
@@ -14,6 +17,32 @@ ASSERTED_STATUSES: tuple[ProposalStatus, ...] = ("candidate",)
 REFERRED_STATUSES: tuple[ProposalStatus, ...] = ("requires_review",)
 
 _NAN = float("nan")
+
+
+def _validated_statuses(
+    statuses: Sequence[ProposalStatus], name: str, *, allow_empty: bool
+) -> tuple[ProposalStatus, ...]:
+    """Reject a policy that would score zero in silence rather than raise.
+
+    A bare `"candidate"` is the dangerous one: `tuple()` shreds a string into single characters,
+    so the policy matches nothing and the arm publishes precision NaN beside recall 0.0, which
+    reads as two contradictory findings rather than as the misconfiguration it is.
+    """
+
+    if isinstance(statuses, (str, bytes, bytearray)):
+        raise ValueError(f"{name} must be a sequence of statuses, not a bare string")
+    values = tuple(statuses)
+    if not values and not allow_empty:
+        raise ValueError(f"{name} must name at least one status")
+    unknown = sorted(set(values) - _VALID_STATUSES)
+    if unknown:
+        raise ValueError(
+            f"{name} contains unknown proposal statuses: "
+            + ", ".join(unknown)
+            + "; valid statuses are "
+            + ", ".join(sorted(_VALID_STATUSES))
+        )
+    return values
 
 
 def proposal_precision_recall(
@@ -36,10 +65,16 @@ def proposal_precision_recall(
     provider buy precision by relabelling every shaky proposal, so it is excluded from the scored
     set and surfaced as `referral_rate` instead. The policy is a parameter rather than a constant
     so an arm may declare a different one, but the two sets must stay disjoint.
+
+    Mind the two denominators. Precision divides by the DEDUPLICATED (subject, object) pair set;
+    `asserted_proposals` and `referred_proposals` count raw proposals, because several rules may
+    fire on the same pair and the referral split is about how the provider labelled its own
+    output. Session 3 publishes three asserted proposals over two pairs, so the keys name their
+    unit and `true_positive / asserted_proposals` is not the published precision.
     """
 
-    counted = tuple(counted_statuses)
-    referred_only = tuple(referred_statuses)
+    counted = _validated_statuses(counted_statuses, "counted_statuses", allow_empty=False)
+    referred_only = _validated_statuses(referred_statuses, "referred_statuses", allow_empty=True)
     overlap = set(counted) & set(referred_only)
     if overlap:
         raise ValueError(
@@ -64,8 +99,8 @@ def proposal_precision_recall(
             "false_negative": false_negative,
             "precision": true_positive / len(predicted) if predicted else _NAN,
             "recall": true_positive / len(expected_pairs) if expected_pairs else _NAN,
-            "asserted": len(asserted),
-            "referred": len(referrals),
+            "asserted_proposals": len(asserted),
+            "referred_proposals": len(referrals),
             "referral_rate": len(referrals) / considered if considered else _NAN,
         }
     )

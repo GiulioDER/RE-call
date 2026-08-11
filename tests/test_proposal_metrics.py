@@ -15,7 +15,11 @@ Properties, one test per property:
 6. The referral rate itself is a rate with no data on an empty relation, so NaN.
 7. The status policy is an explicit parameter, and counted and referred statuses must be
    disjoint. Overlap is rejected rather than silently folded.
-8. Every relation is scorable separately, not just `supersedes`.
+8. The status policy is validated. An unknown status, a bare string, or an empty counted set
+   raises rather than silently scoring zero.
+9. The count keys name their unit. Counts are over proposals, precision is over deduplicated
+   pairs, and the two denominators must not be confusable.
+10. Every relation is scorable separately, not just `supersedes`.
 """
 
 from __future__ import annotations
@@ -122,8 +126,8 @@ def test_requires_review_is_not_asserted_against_precision() -> None:
 
     assert metrics["precision"] == 1.0
     assert metrics["false_positive"] == 0
-    assert metrics["asserted"] == 1
-    assert metrics["referred"] == 1
+    assert metrics["asserted_proposals"] == 1
+    assert metrics["referred_proposals"] == 1
     assert metrics["referral_rate"] == 0.5
 
 
@@ -136,7 +140,7 @@ def test_relabelling_everything_requires_review_cannot_buy_precision() -> None:
     metrics = proposal_precision_recall(proposals, {SEARCH_PAIR})
 
     assert math.isnan(metrics["precision"])
-    assert metrics["asserted"] == 0
+    assert metrics["asserted_proposals"] == 0
     assert metrics["referral_rate"] == 1.0
 
 
@@ -144,8 +148,8 @@ def test_referral_rate_is_nan_when_the_relation_has_no_proposals() -> None:
     metrics = proposal_precision_recall([], {SEARCH_PAIR})
 
     assert math.isnan(metrics["referral_rate"])
-    assert metrics["referred"] == 0
-    assert metrics["asserted"] == 0
+    assert metrics["referred_proposals"] == 0
+    assert metrics["asserted_proposals"] == 0
 
 
 def test_rejected_proposals_are_neither_asserted_nor_referred() -> None:
@@ -153,8 +157,8 @@ def test_rejected_proposals_are_neither_asserted_nor_referred() -> None:
 
     metrics = proposal_precision_recall(proposals, {SEARCH_PAIR})
 
-    assert metrics["asserted"] == 0
-    assert metrics["referred"] == 0
+    assert metrics["asserted_proposals"] == 0
+    assert metrics["referred_proposals"] == 0
     assert metrics["false_positive"] == 0
     assert math.isnan(metrics["referral_rate"])
 
@@ -170,8 +174,8 @@ def test_status_policy_is_an_explicit_parameter() -> None:
     )
 
     assert metrics["precision"] == 1.0
-    assert metrics["asserted"] == 1
-    assert metrics["referred"] == 0
+    assert metrics["asserted_proposals"] == 1
+    assert metrics["referred_proposals"] == 0
 
 
 def test_counted_and_referred_statuses_must_be_disjoint() -> None:
@@ -182,6 +186,41 @@ def test_counted_and_referred_statuses_must_be_disjoint() -> None:
             counted_statuses=("candidate", "requires_review"),
             referred_statuses=("requires_review",),
         )
+
+
+def test_unknown_status_in_the_policy_is_rejected() -> None:
+    """A typo must raise, not silently score precision NaN beside recall 0.0."""
+
+    with pytest.raises(ValueError, match="candidates"):
+        proposal_precision_recall([], {SEARCH_PAIR}, counted_statuses=("candidates",))
+
+
+def test_bare_string_status_policy_is_rejected() -> None:
+    """`tuple("candidate")` shreds into single characters, which would score zero in silence."""
+
+    with pytest.raises(ValueError, match="sequence of statuses"):
+        proposal_precision_recall([], {SEARCH_PAIR}, counted_statuses="candidate")
+
+
+def test_empty_counted_statuses_is_rejected() -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        proposal_precision_recall([], {SEARCH_PAIR}, counted_statuses=())
+
+
+def test_count_keys_name_their_unit() -> None:
+    """Counts are over PROPOSALS, precision is over deduplicated PAIRS.
+
+    Session 3 publishes three asserted proposals covering two pairs, so a reader who computes
+    true_positive / asserted gets 0.667 against a published precision of 1.0. The key names carry
+    the unit so the two denominators cannot be confused.
+    """
+
+    metrics = proposal_precision_recall(_session3_proposals(), {SEARCH_PAIR, CACHE_PAIR})
+
+    assert metrics["asserted_proposals"] == 3
+    assert metrics["referred_proposals"] == 4
+    assert "asserted" not in metrics
+    assert "referred" not in metrics
 
 
 def test_each_relation_is_scored_separately() -> None:
@@ -213,4 +252,4 @@ def test_relation_defaults_to_supersedes() -> None:
     metrics = proposal_precision_recall(proposals, {CACHE_PAIR})
 
     assert math.isnan(metrics["precision"])
-    assert metrics["asserted"] == 0
+    assert metrics["asserted_proposals"] == 0

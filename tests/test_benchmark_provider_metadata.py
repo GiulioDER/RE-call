@@ -159,6 +159,40 @@ def test_monetary_prose_scan_does_not_over_reject_ordinary_artifacts() -> None:
     )
 
 
+def test_verbatim_source_exclusion_applies_only_at_the_top_level() -> None:
+    """A nested key named `outcomes` must not hide a cost claim.
+
+    The exclusion exists for the one top level array of copied in LOCOMO source text. Applied at
+    every depth it becomes an audit bypass, and `config["system"]` is `describe()` output from a
+    duck typed adapter, so that key namespace is not ours to trust.
+    """
+
+    with pytest.raises(ValueError, match="provider_metadata"):
+        reject_unauditable_cost_claims(
+            {"cost_claims": [], "config": {"system": {"outcomes": "billed $7.29 per run"}}}
+        )
+
+
+def test_monetary_prose_is_found_inside_sets() -> None:
+    with pytest.raises(ValueError, match="provider_metadata"):
+        reject_unauditable_cost_claims({"cost_claims": [], "tags": {"$7.29 per run"}})
+
+
+def test_monetary_prose_covers_the_other_currencies_this_project_could_publish() -> None:
+    for prose in ("spend was EUR 6.60", "cost €6.60 per run", "£5.00 of tokens"):
+        with pytest.raises(ValueError, match="provider_metadata"):
+            reject_unauditable_cost_claims({"cost_claims": [], "headline": prose})
+
+
+def test_self_referential_payload_does_not_blow_the_stack() -> None:
+    """The walk runs before `json.dumps`, so a cycle must not surface as a RecursionError."""
+
+    payload: dict[str, object] = {"cost_claims": []}
+    payload["self"] = payload
+
+    reject_unauditable_cost_claims(payload)
+
+
 def test_write_site_calls_the_validator_before_writing() -> None:
     """A validator the write path stopped calling is a validator that cannot fail."""
 
