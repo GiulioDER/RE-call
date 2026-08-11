@@ -1,7 +1,15 @@
 """The downstream trust query set: does retrieval prefer the successor over the stale document?
 
-Each `(superseded, successor)` header edge is a natural `(stale_ids, successor_ids)` row. The
-shipped set in `recall/eval/queries.json` has 6 trust rows, of which only 4 expect a successor,
+One row per superseded PEP, not one row per header edge. Five superseded PEPs have TWO
+successors each (pep-0563, for one, is superseded by both pep-0649 and pep-0749), so a row per
+edge would emit two rows with identical `query` text and identical `stale_ids`, differing only in
+which single successor each expects. Identical query text retrieves identically, so at most one
+row of each such pair could ever score correct, capping the successor arm's ceiling below 100%
+without saying so. Grouping by the superseded PEP and collecting every successor into one row's
+`successor_ids` removes that ceiling: a row is correct when retrieval prefers ANY of its
+successors over the stale document.
+
+The shipped set in `recall/eval/queries.json` has 6 trust rows, of which only 4 expect a successor,
 and a Wilson interval on n=4 is uninterpretable.
 
 A NEW file rather than an edit to `queries.json`: that file's ids address the synthetic memo
@@ -33,15 +41,22 @@ def build_queries(peps_dir: Path, *, n_abstain: int, seed: int) -> list[dict]:
     census = compute_census(peps_dir)
     rows: list[dict] = []
 
-    for i, edge in enumerate(census.edges, 1):
-        title = _fields(peps_dir, edge.superseded).get("Title", "")
+    # Group by the superseded PEP: a PEP with two successors gets ONE row whose successor_ids
+    # holds both, rather than two rows sharing identical query text and disjoint successor_ids.
+    by_superseded: dict[str, list[str]] = {}
+    for edge in census.edges:
+        by_superseded.setdefault(edge.superseded, []).append(edge.successor)
+
+    for i, stale in enumerate(sorted(by_superseded), 1):
+        successors = sorted(by_superseded[stale])
+        title = _fields(peps_dir, stale).get("Title", "")
         rows.append({
             "id": f"pt{i:02d}",
             "query": title.lower(),
             "trust": True,
             "expect": "successor",
-            "stale_ids": [f"{edge.superseded}.rst:0"],
-            "successor_ids": [f"{edge.successor}.rst:0"],
+            "stale_ids": [f"{stale}.rst:0"],
+            "successor_ids": [f"{s}.rst:0" for s in successors],
         })
 
     in_an_edge = {e.superseded for e in census.edges} | {e.successor for e in census.edges}
