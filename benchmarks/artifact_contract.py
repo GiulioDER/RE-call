@@ -15,8 +15,9 @@ from recall.provider_metadata import ProviderMetadata, provider_metadata_from_an
 #:
 #: `pounds` is deliberately absent as a BARE word while `£`, `GBP` and `pounds sterling` are
 #: present: "weighs 5 pounds" is not a cost claim, and a false positive here aborts a completed
-#: paid run at the write site. Nobody writes "weighs 5 pounds sterling", so the disambiguated
-#: form reclaims the money case for free. `dollars` and `euros` carry no unit ambiguity at all.
+#: paid run at the write site. The disambiguated form reclaims the money case at a cost of one
+#: remaining weight phrasing, "N pounds sterling silver", which this project will not publish.
+#: `dollars` and `euros` carry no unit ambiguity at all.
 _MONETARY_PROSE = re.compile(
     r"[$€£]\s*\d"
     r"|\b(?:USD|EUR|GBP)\s*\d"

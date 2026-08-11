@@ -1,7 +1,7 @@
 """Retrieval metrics (pure functions over id lists) + the guard false-confident rate."""
 from __future__ import annotations
 
-from collections.abc import Mapping, Set as AbstractSet
+from collections.abc import ItemsView, KeysView, Mapping, Set as AbstractSet
 import math
 import random
 from statistics import NormalDist
@@ -119,15 +119,20 @@ def nan_to_null(value: Any, seen: frozenset[int] = frozenset()) -> Any:
     `seen` is path scoped, so it records ancestors only: the same object referenced twice as
     SIBLINGS is not a cycle and survives on both paths. A real cycle RAISES rather than nulling
     the repeated member away. Returning None there would be the worst outcome available, a
-    valid looking artifact with data silently replaced, and `write_json` treats an existing file
-    as a finished corpus. Stack safety must not be bought with a plausible wrong file.
+    valid looking artifact with data silently replaced, and `pending_datasets` treats an
+    existing file as a finished corpus. Stack safety must not be bought with a wrong file.
 
-    Sets are emitted in sorted order. Iteration order varies per process under hash
-    randomisation, and both callers write git tracked artifacts that would otherwise rewrite
-    themselves on every run.
+    Unordered sets are emitted in sorted order. Their iteration order varies per process under
+    hash randomisation, and both callers write git tracked artifacts that would otherwise
+    rewrite themselves on every run. The test is "is this an ordered view", not "is this a
+    `set`": any hash backed `collections.abc.Set` has the same problem. `dict.keys()` and
+    `dict.items()` register as Sets but are already ORDERED, so they keep their order, because
+    sorting them would buy no determinism they did not have and would discard insertion order.
 
-    Mapping KEYS are deliberately out of scope. A non-finite or non-string key still reaches
-    `json.dumps`, which rejects it loudly, and that is the behaviour we want.
+    Mapping KEYS are deliberately out of scope. A non-finite key survives to `json.dumps`, which
+    rejects it under `allow_nan=False`, and a non-scalar key raises there too; both are the loud
+    failure we want. Note `json.dumps` silently stringifies int, float, bool and None keys, and
+    that coercion is accepted here rather than pre-empted.
     """
     if isinstance(value, float) and not math.isfinite(value):
         return None
@@ -139,7 +144,7 @@ def nan_to_null(value: Any, seen: frozenset[int] = frozenset()) -> Any:
         seen = seen | {id(value)}
         if isinstance(value, Mapping):
             return {k: nan_to_null(v, seen) for k, v in value.items()}
-        if isinstance(value, AbstractSet):
+        if isinstance(value, AbstractSet) and not isinstance(value, (KeysView, ItemsView)):
             return [nan_to_null(v, seen) for v in sorted(value, key=repr)]
         return [nan_to_null(v, seen) for v in value]
     return value

@@ -185,8 +185,9 @@ def test_monetary_prose_covers_the_other_currencies_this_project_could_publish()
 
 
 def test_sterling_written_in_words_is_still_a_cost_claim() -> None:
-    """Dropping the bare word `pounds` must not drop sterling entirely. Nobody writes
-    "weighs 5 pounds sterling", so the disambiguated form costs no false positives."""
+    """Dropping the bare word `pounds` must not drop sterling entirely. The disambiguated form
+    leaves one weight phrasing matching, "N pounds sterling silver", accepted because this
+    project will not publish it."""
 
     with pytest.raises(ValueError, match="provider_metadata"):
         reject_unauditable_cost_claims(

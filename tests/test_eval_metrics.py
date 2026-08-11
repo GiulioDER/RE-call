@@ -215,6 +215,57 @@ def test_nan_to_null_keeps_a_shared_subtree_on_both_paths():
     }
 
 
+def test_nan_to_null_keeps_the_order_of_ordered_set_like_views():
+    """`dict.keys()` and `dict.items()` register as collections.abc.Set but are ORDERED.
+    Sorting them buys no determinism they did not already have and destroys insertion order."""
+    from recall.eval.metrics import nan_to_null
+
+    source = {"zeta": 1, "alpha": 2, "mid": float("nan")}
+
+    assert nan_to_null(source.keys()) == ["zeta", "alpha", "mid"]
+    assert nan_to_null(source.items()) == [["zeta", 1], ["alpha", 2], ["mid", None]]
+
+
+def test_nan_to_null_leaves_a_non_finite_mapping_key_for_the_serializer_to_reject():
+    """Keys are out of scope by design: the NaN key survives and `allow_nan=False` rejects it,
+    which is the loud failure we want rather than a silently rewritten key."""
+    from recall.eval.metrics import nan_to_null
+
+    sanitised = nan_to_null({float("nan"): "x"})
+
+    assert [type(k) for k in sanitised] == [float]
+    with pytest.raises(ValueError, match="Out of range float"):
+        json.dumps(sanitised, allow_nan=False)
+
+
+def test_nan_to_null_orders_any_unordered_set_deterministically():
+    """Not just `set`/`frozenset`. A hash backed `collections.abc.Set` has the same per process
+    random order, so the rule keys off "is it an ordered view", not off the concrete type."""
+    import collections.abc
+
+    from recall.eval.metrics import nan_to_null
+
+    class HashBackedSet(collections.abc.Set):
+        def __init__(self, items):
+            self._items = set(items)
+
+        def __contains__(self, item):
+            return item in self._items
+
+        def __iter__(self):
+            return iter(self._items)
+
+        def __len__(self):
+            return len(self._items)
+
+    assert nan_to_null(HashBackedSet(["delta", "beta", "gamma", "alpha"])) == [
+        "alpha",
+        "beta",
+        "delta",
+        "gamma",
+    ]
+
+
 def test_nan_to_null_orders_sets_deterministically():
     """Set iteration order varies per process under hash randomisation, and both callers write
     git tracked artifacts, so an unordered list would rewrite the file on every run."""
