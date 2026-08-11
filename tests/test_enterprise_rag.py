@@ -155,6 +155,7 @@ def test_top_config_enables_lexical_splade_voyage_rerank_and_openrouter() -> Non
     assert args.model == "openai/gpt-4o"
     assert args.k == 8
     assert args.candidate_k == 200
+    assert args.batch_chunks == 32
     assert args.max_context_chars == 12_000
     assert args.chunk_chars == 12_000
     assert args.chunk_overlap == 200

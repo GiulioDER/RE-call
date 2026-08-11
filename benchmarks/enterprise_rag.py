@@ -50,6 +50,7 @@ DEFAULT_VOYAGE_RERANKER = "rerank-2.5"
 DEFAULT_DSN = "postgresql://recall:recall@localhost:5432/recall"
 TOP_CONFIG_K = 8
 TOP_CONFIG_CANDIDATE_K = 200
+TOP_CONFIG_BATCH_CHUNKS = 32
 TOP_CONFIG_MAX_CHARS = 12_000
 TOP_CONFIG_CHUNK_CHARS = 12_000
 TOP_CONFIG_CHUNK_OVERLAP = 200
@@ -856,6 +857,7 @@ def apply_top_config(args: argparse.Namespace) -> None:
     args.embedder = TOP_CONFIG_EMBEDDER
     args.k = TOP_CONFIG_K
     args.candidate_k = TOP_CONFIG_CANDIDATE_K
+    args.batch_chunks = TOP_CONFIG_BATCH_CHUNKS
     args.sparse_backend = TOP_CONFIG_SPARSE_BACKEND
     args.backfill_splade = True
     args.reranker = TOP_CONFIG_RERANKER

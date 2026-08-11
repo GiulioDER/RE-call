@@ -29,6 +29,7 @@ python -m benchmarks.enterprise_rag \
   --k 8 \
   --candidate-k 200 \
   --gap-threshold 0.5 \
+  --batch-chunks "${ENTERPRISE_RAG_BATCH_CHUNKS:-32}" \
   --max-context-chars 12000 \
   --chunk-chars "${ENTERPRISE_RAG_CHUNK_CHARS:-12000}" \
   --chunk-overlap "${ENTERPRISE_RAG_CHUNK_OVERLAP:-200}" \
