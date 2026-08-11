@@ -32,10 +32,10 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeVar
 
 from recall.atomic_write import atomic_write_bytes
-from recall.frontmatter import parse_frontmatter, supersedes_key
+from recall.frontmatter import has_unclosed_frontmatter, parse_frontmatter, supersedes_key
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
 from recall.promotion import PromotedFact
@@ -44,6 +44,10 @@ from recall.trust import metadata_is_trusted
 _log = get_logger("rewrite")
 
 Destination = Literal["frontmatter", "derived"]
+
+#: `str` or `bytes`: the block-span scan is index arithmetic and is identical for both, and the
+#: writer has to stay byte-oriented to preserve the file's BOM and line endings.
+_Text = TypeVar("_Text", str, bytes)
 
 #: Relations the trust layer can act on, and which therefore belong in the frontmatter block.
 #: This set is not extensible from here: it is `frontmatter.VALIDITY_KEYS`, and adding to it
@@ -228,43 +232,54 @@ def _insert_derived_line(raw: bytes, key: str, value: str) -> bytes:
     line = f"{key}: {value}".encode("utf-8") + nl
     begin, end = DERIVED_BEGIN.encode("utf-8"), DERIVED_END.encode("utf-8")
 
-    start, idx = body.find(begin), body.find(end)
-    # BEGIN must actually precede END. Requiring only that both exist meant a memo whose prose
-    # merely QUOTES the closing marker got machine-written text spliced into the middle of the
-    # author's sentence. That is not just cosmetic: it changes `human_body`, which changes the
-    # claim cache key, which re-invokes the model on prose no human touched.
-    if start != -1 and idx != -1 and start < idx:
-        return bom + body[:idx] + line + body[idx:]
+    spans = _derived_spans(body, begin, end)
+    if spans:
+        insert_at = spans[-1][1] - len(end)
+        return bom + body[:insert_at] + line + body[insert_at:]
     prefix = body if body.endswith(nl) or not body else body + nl
     return bom + prefix + nl + begin + nl + line + end + nl
 
 
-def _derived_records(text: str, line: str) -> bool:
-    """Whether the derived BLOCK already carries exactly this line.
+def _derived_spans(text: _Text, begin: _Text, end: _Text) -> list[tuple[int, int]]:
+    """``(start, stop)`` of every well-formed derived block, earliest first.
 
-    Scoped to the block and matched whole-line, because the first version tested the raw
+    Written once and shared by the writer, the duplicate check and `human_body`, because when
+    those three disagreed about which bytes were "the block" the disagreement corrupted files.
+    Works on ``str`` and ``bytes`` alike so the writer can stay byte-oriented.
+
+    **Each END is matched to the NEAREST PRECEDING BEGIN**, which is the part that took two
+    attempts to get right. Taking the first BEGIN and the first END independently picks a span
+    covering the author's prose whenever a memo happens to quote either marker: in one direction
+    that ate real prose, in the other it swallowed the machine-written block into the text the
+    extractor hashes. Both moved the claim cache key and so re-invoked a paid model on prose
+    nobody had edited.
+    """
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    while (stop := text.find(end, pos)) != -1:
+        start = text.rfind(begin, 0, stop)
+        if start != -1 and (not spans or start >= spans[-1][1]):
+            spans.append((start, stop + len(end)))
+        pos = stop + len(end)
+    return spans
+
+
+def _derived_records(text: str, line: str) -> bool:
+    """Whether any derived BLOCK already carries exactly this line.
+
+    Scoped to the blocks and matched whole-line, because the first version tested the raw
     substring against the whole file: an author quoting ``status: old.md`` anywhere in their
     prose silently suppressed a reviewed write and told the operator it was already recorded. A
     refusal that reports something untrue is worse than no refusal, because it ends the enquiry.
+
+    Every block, not just the first: a record present only in a later one was otherwise reported
+    as a fresh write and duplicated.
     """
-    start, end = text.find(DERIVED_BEGIN), text.find(DERIVED_END)
-    if start == -1 or end == -1 or end < start:
-        return False
-    block = text[start + len(DERIVED_BEGIN):end]
-    return any(existing.strip() == line for existing in block.splitlines())
-
-
-def _has_unclosed_frontmatter(text: str) -> bool:
-    """True when the file opens a ``---`` block and never closes it.
-
-    `parse_frontmatter` returns ``({}, text)`` for this case, which is indistinguishable from
-    "no frontmatter at all" — and the two need opposite treatment: an absent block should be
-    created, a broken one must not be papered over with a second block.
-    """
-    lines = text.split("\n")
-    if not lines or lines[0].lstrip("﻿").strip() != "---":
-        return False
-    return not any(line.strip() == "---" for line in lines[1:])
+    for start, stop in _derived_spans(text, DERIVED_BEGIN, DERIVED_END):
+        block = text[start + len(DERIVED_BEGIN):stop - len(DERIVED_END)]
+        if any(existing.strip() == line for existing in block.splitlines()):
+            return True
+    return False
 
 
 def human_body(text: str) -> str:
@@ -276,9 +291,9 @@ def human_body(text: str) -> str:
     it touched and re-invoke the model on prose no human had altered.
     """
     _meta, body = parse_frontmatter(text)
-    begin, end = body.find(DERIVED_BEGIN), body.find(DERIVED_END)
-    if begin != -1 and end != -1 and end > begin:
-        body = body[:begin] + body[end + len(DERIVED_END):]
+    # Removed right to left so the earlier spans' offsets stay valid.
+    for start, stop in reversed(_derived_spans(body, DERIVED_BEGIN, DERIVED_END)):
+        body = body[:start] + body[stop:]
     return body.rstrip()
 
 
@@ -313,15 +328,23 @@ class RejectionLedger:
         if self._path.parent and not self._path.parent.exists():
             self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self._path))
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS rejections ("
-            "  proposal_id TEXT PRIMARY KEY,"
-            "  fact_id     TEXT NOT NULL,"
-            "  reviewer_id TEXT NOT NULL,"
-            "  note        TEXT NOT NULL,"
-            "  rejected_at TEXT NOT NULL)"
-        )
-        self._conn.commit()
+        # The connection is open before the statement that can fail, and a half-constructed
+        # object never reaches the caller, so nothing downstream can close it. Pointing --ledger
+        # at an ordinary file therefore leaked the handle no matter what the CLI caught, and on
+        # Windows that leaves the file locked.
+        try:
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS rejections ("
+                "  proposal_id TEXT PRIMARY KEY,"
+                "  fact_id     TEXT NOT NULL,"
+                "  reviewer_id TEXT NOT NULL,"
+                "  note        TEXT NOT NULL,"
+                "  rejected_at TEXT NOT NULL)"
+            )
+            self._conn.commit()
+        except BaseException:
+            self._conn.close()
+            raise
 
     def reject(
         self, fact: PromotedFact, *, reviewer_id: str, note: str, at: datetime | None = None
@@ -478,7 +501,7 @@ def apply_rewrite(
 
     if plan.destination == "frontmatter":
         decoded = raw.decode("utf-8-sig", errors="replace")
-        if _has_unclosed_frontmatter(decoded):
+        if has_unclosed_frontmatter(decoded):
             # `parse_frontmatter` reports NO frontmatter for an unclosed block, so the
             # "already declares" guard below could not fire and the writer prepended a second
             # block. The file then stated two different predecessors, retrieval acted on the

@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from recall.atomic_write import atomic_write_text
-from recall.frontmatter import parse_frontmatter, supersedes_key
+from recall.frontmatter import has_unclosed_frontmatter, parse_frontmatter, supersedes_key
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
 
@@ -281,6 +281,17 @@ def apply_proposal(root: Path, p: Proposal) -> None:
     """
     f = root / p.edit_file if root.is_dir() else root
     text = f.read_text(encoding="utf-8-sig")
+    if has_unclosed_frontmatter(text):
+        # Refused, where this used to "treat as no frontmatter rather than corrupt it further"
+        # and prepend a second block. That produced a file declaring two different predecessors,
+        # with retrieval acting on the newer one and nothing reporting a problem. `recall
+        # rewrite` refuses the same file, and two writers of the user's own memos giving
+        # opposite answers means the guard on either one is a guard on neither — especially when
+        # the unguarded one is the one that runs unattended.
+        raise ValueError(
+            f"{p.edit_file} has an unclosed frontmatter block; refusing to write into a file "
+            "whose metadata cannot be parsed"
+        )
     line = f"supersedes: {p.target}"
     lines = text.split("\n")
     if lines and lines[0].lstrip("﻿").strip() == "---":
@@ -288,8 +299,6 @@ def apply_proposal(root: Path, p: Proposal) -> None:
             if ln.strip() == "---":
                 lines.insert(i, line)
                 break
-        else:  # unclosed block — treat as no frontmatter rather than corrupt it further
-            lines = ["---", line, "---", *lines]
     else:
         lines = ["---", line, "---", *lines]
     _atomic_write_text(f, "\n".join(lines))

@@ -548,6 +548,109 @@ def test_a_file_with_no_frontmatter_at_all_still_gains_one(tmp_path):
     assert memo.read_bytes().startswith(b"---\nsupersedes: old.md\n---\n")
 
 
+@pytest.mark.parametrize("marker_name", ["begin", "end"])
+def test_writing_a_derived_record_never_changes_human_body(tmp_path, marker_name):
+    """The other half of the spliced-marker defect, and the one with the running cost.
+
+    Fixing the WRITER stopped the bytes being corrupted, but `human_body` still took the first
+    BEGIN and the first END independently. For a memo whose prose contains either marker that
+    picked the wrong span: five words of real prose vanished from the extractor's input in one
+    direction, and the machine-written block was INCLUDED in it in the other. Either way the
+    sha256 that keys the claim cache moves, so applying an accepted proposal makes the next
+    `recall extract` pay for a re-call of prose no human edited. The module docstring promises
+    exactly the opposite.
+    """
+    marker = DERIVED_BEGIN if marker_name == "begin" else DERIVED_END
+    memo = tmp_path / "new.md"
+    memo.write_text(f"# memo\n\nI use {marker} as a marker in prose\n", encoding="utf-8",
+                    newline="")
+    _write(tmp_path / "old.md", b"# old\n")
+    before = human_body(memo.read_text(encoding="utf-8"))
+
+    apply_rewrite(tmp_path, _promoted("new.md", "old.md", relation="contradicts"), apply=True)
+
+    after = human_body(memo.read_text(encoding="utf-8"))
+    assert after == before, "the extractor's input, and so its cache key, moved"
+    assert marker in after, "the author's own use of the marker was eaten"
+
+
+def test_a_record_in_a_second_derived_block_is_not_written_again(tmp_path):
+    """`_derived_records` inspected only the first block, so a record already present in a later
+    one was reported as a fresh write and duplicated."""
+    memo = tmp_path / "new.md"
+    memo.write_text(
+        f"# memo\n\nprose\n\n{DERIVED_BEGIN}\n{DERIVED_END}\n\n"
+        f"{DERIVED_BEGIN}\ncontradicts: old.md\n{DERIVED_END}\n",
+        encoding="utf-8", newline="",
+    )
+    _write(tmp_path / "old.md", b"# old\n")
+
+    result = apply_rewrite(tmp_path, _promoted("new.md", "old.md", relation="contradicts"),
+                           apply=True)
+
+    assert result.written is False
+    assert memo.read_text(encoding="utf-8").count("contradicts: old.md") == 1
+
+
+def test_the_other_writer_also_refuses_an_unclosed_frontmatter_block(tmp_path):
+    """`recall lint --fix` and `recall rewrite` write the same files, so a guard on one of them
+    is a guard on neither. `fix.apply_proposal` still prepended a second block, producing the
+    double declaration this project calls corruption, and it is the unguarded one that runs
+    unattended."""
+    from recall.fix import Proposal, apply_proposal
+
+    memo = tmp_path / "new.md"
+    original = b"---\nsupersedes: already_declared.md\ntitle: t\n"
+    _write(memo, original)
+
+    with pytest.raises(ValueError, match="unclosed"):
+        apply_proposal(tmp_path, Proposal(
+            edit_file="new.md", target="old.md",
+            evidence_file="other.md", evidence="supersedes [[new]]",
+        ))
+    assert memo.read_bytes() == original
+
+
+def test_the_other_writers_unattended_loop_survives_the_new_refusal(tmp_path, capsys):
+    """Adding a refusal to `apply_proposal` gave `recall lint --fix --apply` an exception it
+    never had, in a bare loop that writes the user's memos unattended.
+
+    Left alone it would abort part-way through a corpus, having already written some files, and
+    never reach its own `wrote N edge(s)` line — so the operator gets a traceback and no record
+    of what was changed. A guard that turns silent corruption into a half-finished run with no
+    report has moved the problem, not fixed it.
+    """
+    from recall.cli import main
+
+    _write(tmp_path / "broken.md", b"---\nsupersedes: pinned.md\ntitle: t\n")
+    _write(tmp_path / "old_a_2026.md", b"# a\n\nthe original\n")
+    _write(tmp_path / "good.md", b"# good\n\nThis supersedes [[old_a_2026]].\n")
+    _write(tmp_path / "old_b_2026.md", b"# b\n\nSuperseded by [[broken]].\n")
+
+    main(["lint", str(tmp_path), "--fix", "--apply"])
+
+    out = capsys.readouterr().out
+    assert b"supersedes: old_a_2026" in (tmp_path / "good.md").read_bytes(), (
+        "the run aborted before writing the memo it could write"
+    )
+    assert "SKIP" in out and "unclosed" in out
+    assert "wrote 1 edge(s)" in out, f"the count did not match what was written: {out}"
+
+
+def test_the_other_writer_still_writes_a_well_formed_memo(tmp_path):
+    """Non-over-rejection for the guard above."""
+    from recall.fix import Proposal, apply_proposal
+
+    memo = tmp_path / "new.md"
+    _write(memo, b"---\ntitle: t\n---\n\nbody\n")
+
+    apply_proposal(tmp_path, Proposal(
+        edit_file="new.md", target="old.md",
+        evidence_file="other.md", evidence="supersedes [[new]]",
+    ))
+    assert b"supersedes: old.md" in memo.read_bytes()
+
+
 # --- 11. fixed point ---------------------------------------------------------------------------
 
 

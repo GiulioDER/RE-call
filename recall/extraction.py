@@ -210,10 +210,17 @@ class ClaimCache:
         if self._path.parent and not self._path.parent.exists():
             self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self._path))
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS claims (key TEXT PRIMARY KEY, response TEXT NOT NULL)"
-        )
-        self._conn.commit()
+        # Closed on a failed CREATE: the connection is open before the statement that can fail,
+        # and a half-constructed object never reaches the caller, so no `finally` downstream can
+        # reach this handle. `--cache` pointed at an ordinary file is one typo away.
+        try:
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS claims (key TEXT PRIMARY KEY, response TEXT NOT NULL)"
+            )
+            self._conn.commit()
+        except BaseException:
+            self._conn.close()
+            raise
 
     def get(self, key: str) -> str | None:
         row = self._conn.execute(

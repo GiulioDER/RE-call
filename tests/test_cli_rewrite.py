@@ -85,6 +85,55 @@ def test_a_rejected_proposal_is_not_offered_again(tmp_path, capsys):
     assert b"supersedes:" not in (tmp_path / "new.md").read_bytes()
 
 
+def test_a_blank_reviewer_is_refused_and_never_reported_as_success(tmp_path, capsys):
+    """A regression introduced by the audit fix, and the worst kind: it defeats the invariant.
+
+    argparse's `required=True` accepts an empty string, so the reviewer check lives in
+    `promotion.py` and raises ValueError. Once the loop grew an `except ValueError` to skip an
+    ambiguous stem, that same handler swallowed the reviewer refusal, and the command finished
+    with `wrote 0 edge(s), reviewed by .` and exit 0. A CI step could not tell "your reviewer
+    flag was empty" from "your corpus had nothing to declare" — the very indistinguishability
+    the missing-path fix had just removed.
+    """
+    _corpus(tmp_path)
+
+    with pytest.raises(SystemExit) as exc:
+        main(["rewrite", str(tmp_path), "--reviewer", "   ", "--note", "checked", "--apply"])
+
+    assert exc.value.code != 0
+    out = capsys.readouterr()
+    assert "reviewer" in out.err
+    assert "wrote" not in out.out, "a refused run reported a write"
+    assert b"supersedes:" not in (tmp_path / "new.md").read_bytes()
+
+
+def test_a_blank_audit_note_is_refused_and_never_reported_as_success(tmp_path, capsys):
+    _corpus(tmp_path)
+
+    with pytest.raises(SystemExit) as exc:
+        main(["rewrite", str(tmp_path), "--reviewer", "giulio", "--note", "  ", "--apply"])
+
+    assert exc.value.code != 0
+    assert "note" in capsys.readouterr().err
+    assert b"supersedes:" not in (tmp_path / "new.md").read_bytes()
+
+
+def test_a_ledger_pointed_at_a_non_database_is_refused_without_leaking(tmp_path, capsys):
+    """The sidecar was constructed OUTSIDE the new try/finally, and both constructors open the
+    connection before the statement that can fail. A mistyped --ledger therefore leaked exactly
+    as before the fix, which on Windows leaves the file locked."""
+    _corpus(tmp_path)
+    not_a_db = tmp_path / "notes.md"
+    not_a_db.write_bytes(b"# ordinary markdown, definitely not sqlite\n")
+
+    with pytest.raises(SystemExit) as exc:
+        main(["rewrite", str(tmp_path), "--reviewer", "giulio", "--note", "checked",
+              "--ledger", str(not_a_db)])
+
+    assert exc.value.code != 0
+    not_a_db.unlink()  # fails with PermissionError on Windows if the connection leaked
+
+
 def test_a_missing_path_is_refused_rather_than_reported_as_a_clean_corpus(tmp_path, capsys):
     """`propose_fixes` swallows the read failure for a non-directory path, so a typo'd corpus
     printed "0 edge(s) proposable" and exited 0. A missing corpus and a clean one were

@@ -39,6 +39,26 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     return {}, text  # unclosed block: treat the whole text as body
 
 
+def has_unclosed_frontmatter(text: str) -> bool:
+    """True when the document opens a ``---`` block and never closes it.
+
+    `parse_frontmatter` deliberately returns ``({}, text)`` for this case, which makes it
+    indistinguishable from "no frontmatter at all" — and the two need OPPOSITE treatment from
+    anything that writes: an absent block should be created, a broken one must not be papered
+    over with a second one. A writer that cannot tell them apart prepends a fresh block above the
+    damaged one, and the file then declares two different predecessors while retrieval acts on
+    the newer.
+
+    Lives here, beside the parser whose ambiguity creates the need, so that every writer shares
+    one answer. It previously lived in `rewrite.py`, which guarded `recall rewrite` and left
+    `recall lint --fix` writing the same files with the opposite behaviour.
+    """
+    lines = text.split("\n")
+    if not lines or lines[0].lstrip("﻿").strip() != "---":
+        return False
+    return not any(line.strip() == "---" for line in lines[1:])
+
+
 def _parse_date(value: str, key: str) -> datetime:
     try:
         d = datetime.strptime(value, "%Y-%m-%d")

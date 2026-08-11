@@ -4,6 +4,7 @@ import argparse
 import functools
 import json
 import os
+import sqlite3
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -1005,9 +1006,22 @@ def main(argv: list[str] | None = None) -> None:
                 print("dry run — nothing written. Re-run with --apply to write these edges.")
             else:
                 root = Path(args.path)
+                _wrote = 0
                 for p in proposals:
-                    apply_proposal(root, p)
-                print(f"wrote {len(proposals)} edge(s).")
+                    try:
+                        apply_proposal(root, p)
+                    except ValueError as exc:
+                        # `apply_proposal` refuses a file whose frontmatter cannot be parsed.
+                        # This loop is unattended and has already written earlier memos by the
+                        # time it gets here, so letting the refusal propagate would end the run
+                        # part-way with a traceback and no record of what changed. One bad memo
+                        # is a finding about that memo.
+                        print(f"  SKIP {p.edit_file}: {exc}")
+                        continue
+                    _wrote += 1
+                # Counted, not assumed. `len(proposals)` was already the wrong number whenever
+                # anything was skipped, and it reported writes that had not happened.
+                print(f"wrote {_wrote} edge(s).")
 
         chains = []
         if args.semantic:  # opt-in retrieval-based missing-edge check (needs DB + embedder)
@@ -1067,7 +1081,15 @@ def main(argv: list[str] | None = None) -> None:
             print(f"recall extract: no such path: {args.path}", file=sys.stderr)
             raise SystemExit(2)
 
-        cache = _extraction.ClaimCache(args.cache) if args.cache else None
+        try:
+            cache = _extraction.ClaimCache(args.cache) if args.cache else None
+        except sqlite3.DatabaseError as exc:
+            # `ClaimCache.__init__` connects before the CREATE TABLE that can fail, so a --cache
+            # pointed at an ordinary file left the connection open and, on Windows, the file
+            # locked. The try/finally below cannot help: the object does not exist yet.
+            print(f"recall extract: --cache {args.cache} is not a usable database: {exc}",
+                  file=sys.stderr)
+            raise SystemExit(2) from exc
         # try/finally around EVERYTHING below. The cache is a sqlite connection and was closed
         # only on the single fall-through path, so each early exit leaked it — on Windows that
         # leaves the file locked and the corpus directory undeletable.
@@ -1156,6 +1178,20 @@ def main(argv: list[str] | None = None) -> None:
             print("recall rewrite: --reject-all needs --ledger to record the rejection in",
                   file=sys.stderr)
             raise SystemExit(2)
+        # Validated HERE, not left to `promotion.py` to raise inside the loop. argparse's
+        # `required=True` accepts an empty string, and once that loop grew an `except ValueError`
+        # to skip an ambiguous stem, the same handler swallowed the reviewer refusal: the command
+        # printed "wrote 0 edge(s), reviewed by ." and exited 0. That makes "your reviewer flag
+        # was empty" indistinguishable from "your corpus had nothing to declare", and it defeats
+        # the one invariant this command exists to make visible.
+        if not args.reviewer.strip():
+            print("recall rewrite: --reviewer must name a person; no proposal reaches corpus "
+                  "metadata unattributed", file=sys.stderr)
+            raise SystemExit(2)
+        if not args.note.strip():
+            print("recall rewrite: --note must explain the decision; it is kept with the "
+                  "promotion as its audit note", file=sys.stderr)
+            raise SystemExit(2)
 
         root = Path(args.path)
         # `propose_fixes` swallows the read failure for a non-directory path, so a typo'd corpus
@@ -1167,7 +1203,15 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(2)
 
         proposals, unfixable = propose_fixes(args.path, glob=args.glob)
-        ledger = RejectionLedger(args.ledger) if args.ledger else None
+        # Constructed inside its own try: `RejectionLedger.__init__` opens the sqlite connection
+        # BEFORE the CREATE TABLE that can fail, so a --ledger pointed at an ordinary file leaked
+        # the connection exactly as before the try/finally was added. One mistyped path away.
+        try:
+            ledger = RejectionLedger(args.ledger) if args.ledger else None
+        except sqlite3.DatabaseError as exc:
+            print(f"recall rewrite: --ledger {args.ledger} is not a usable database: {exc}",
+                  file=sys.stderr)
+            raise SystemExit(2) from exc
         now = datetime.now(timezone.utc)
 
         written = rejected = offered = 0
