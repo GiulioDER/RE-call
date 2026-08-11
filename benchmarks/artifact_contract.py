@@ -54,7 +54,9 @@ def load_published_artifact(path: Path) -> dict[str, Any]:
     matches what `analyze._expand` already raises for an unusable input.
     """
 
-    doc: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    doc: Any = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(doc, dict):
+        raise SystemExit(f"{path} is not a JSON object, so it is not a results artifact")
     if doc.get("unpublished"):
         raise SystemExit(
             f"{path} was REFUSED publication by benchmarks.run and is not a measurement: "

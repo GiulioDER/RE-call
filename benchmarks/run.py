@@ -735,16 +735,17 @@ def _quarantine(
         "`python -m benchmarks.salvage --merge-only` rebuilds an artifact from it without "
         "re-spending. Fix the cause and republish rather than re-running the arm."
     )
-    try:
-        for note in notes:
+    for note in notes:
+        try:
             _say(note)
-    except BaseException:  # noqa: BLE001 - the artifact is already on disk by this point
-        # `_say` deliberately lets a KeyboardInterrupt through, because the last-resort dump
-        # below is a long write to a pipe and an interrupt there is the operator talking. These
-        # notes are five short lines printed AFTER the artifact is safe, so an interrupt here
-        # would throw away the verdict for a run that WAS preserved and hand a wrapper a crash
-        # status — the harm the narrowing was meant to prevent, inverted.
-        pass
+        except BaseException:  # noqa: BLE001 - the artifact is already on disk by this point
+            # `_say` deliberately lets a KeyboardInterrupt through, because the last-resort
+            # dump below is a long write to a pipe and an interrupt is the operator talking.
+            # These notes print AFTER the artifact is safe, so an interrupt here
+            # would throw away the verdict for a run that WAS preserved and hand a wrapper a
+            # crash status — the harm the narrowing was meant to prevent, inverted. Per note, so
+            # a single Ctrl+C costs one line and not the `unpublished -> ...` path with it.
+            pass
 
     if written is None:
         # Nowhere on disk would take it. stdout might still be a file or a pipe.
@@ -776,7 +777,10 @@ def _write_atomic(path: Path, body: str) -> None:
     renaming makes the distinction moot: the target is only ever touched by an atomic rename.
     """
 
-    tmp = path.with_name(path.name + ".tmp")
+    # PID in the name: `_run_stamp` resolves to the second, so two replicates of the same arm
+    # launched in the same second would otherwise share one temp, and the loser's `os.replace`
+    # would fail and quarantine a complete, good artifact as refused.
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(body, encoding="utf-8")
         os.replace(tmp, path)

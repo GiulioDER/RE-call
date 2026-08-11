@@ -68,6 +68,7 @@ from benchmarks.run import (
     validate_openrouter_key,
 )
 from benchmarks.systems import DEFAULT_K, MemorySystem, sample_id_of
+from benchmarks.artifact_contract import load_published_artifact
 
 #: The fields of a scored `Outcome`, i.e. the part of a sidecar record that is load-bearing.
 #: ``question`` and ``gold`` are joined in beside them by `benchmarks.run._outcome_record` and are
@@ -392,8 +393,14 @@ def consistency_report(
             )
             continue
         try:
-            doc = json.loads(sibling.read_text(encoding="utf-8"))
+            # Through the publication check, not a bare load: this sibling IS a `benchmarks.run`
+            # results artifact, and its config is cited below as verified provenance. A refused
+            # artifact must not be able to launder its config into a newly published one.
+            doc = load_published_artifact(sibling)
             config = doc["config"]
+        except SystemExit as exc:
+            unverified.append(f"{sibling.name}: {exc}")
+            continue
         except (OSError, ValueError, KeyError, TypeError) as exc:
             unverified.append(f"{sibling.name}: unreadable as a results artifact ({exc})")
             continue

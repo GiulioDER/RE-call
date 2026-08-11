@@ -1623,3 +1623,41 @@ def test_an_interrupt_while_reporting_does_not_lose_a_preserved_verdict(
 
     assert code == run_module.QUARANTINE_EXIT
     assert (out / "unpublished" / f"{_STAMP_1CONV}.json").exists()
+
+
+def test_one_interrupt_while_reporting_still_names_where_the_artifact_went(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A single Ctrl+C must cost one diagnostic line, not all of them.
+
+    Guarding the whole loop instead of each note means one interrupt swallows every note,
+    including the only one that tells the operator where the artifact is — silence in place of
+    the wrong path the previous round was fixing.
+    """
+    import sys as _sys
+
+    class _InterruptsOnce:
+        def __init__(self) -> None:
+            self.seen: list[str] = []
+            self.armed = True
+
+        def write(self, data: str) -> int:
+            if self.armed:
+                self.armed = False
+                raise KeyboardInterrupt
+            self.seen.append(data)
+            return len(data)
+
+        def flush(self) -> None:
+            return None
+
+    stream = _InterruptsOnce()
+    out = tmp_path / "results"
+    monkeypatch.setattr(_sys, "stderr", stream)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert any("unpublished  ->" in line for line in stream.seen), (
+        "one interrupt swallowed every note, including the artifact's location"
+    )

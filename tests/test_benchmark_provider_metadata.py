@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from benchmarks.artifact_contract import reject_unauditable_cost_claims
@@ -284,15 +286,11 @@ def test_a_refused_artifact_is_refused_by_every_reader(tmp_path) -> None:
     assert load_published_artifact(ordinary)["arm"] == "recall"
 
 
-def test_every_run_artifact_reader_refuses_a_refused_artifact(tmp_path) -> None:
-    """Behavioural, per reader. The textual guard below can be evaded by reformatting; this
-    cannot, because it calls the real entry points."""
+def _refused_artifact(tmp_path: Path) -> Path:
     import json
 
-    from benchmarks import analyze, h2h_artifact, judge_quality, rejudge, token_f1
-
-    refused = tmp_path / "refused.json"
-    refused.write_text(
+    path = tmp_path / "refused.json"
+    path.write_text(
         json.dumps(
             {
                 "arm": "recall",
@@ -304,6 +302,15 @@ def test_every_run_artifact_reader_refuses_a_refused_artifact(tmp_path) -> None:
         ),
         encoding="utf-8",
     )
+    return path
+
+
+def test_every_run_artifact_reader_refuses_a_refused_artifact(tmp_path) -> None:
+    """Behavioural, per reader. The textual guard below can be evaded by reformatting; this
+    cannot, because it calls the real entry points."""
+    from benchmarks import analyze, h2h_artifact, judge_quality, rejudge, token_f1
+
+    refused = _refused_artifact(tmp_path)
 
     readers = {
         "analyze.curve_points": lambda: analyze.curve_points([refused]),
@@ -312,57 +319,110 @@ def test_every_run_artifact_reader_refuses_a_refused_artifact(tmp_path) -> None:
         "rejudge._load_document": lambda: rejudge._load_document(refused),
         "token_f1.compare": lambda: token_f1.compare(refused, refused),
     }
+    refused_by = []
     for name, call in readers.items():
-        with pytest.raises(SystemExit, match="REFUSED publication"):
+        try:
             call()
-        assert name  # names the failing reader in the traceback
+        except SystemExit as exc:
+            assert "REFUSED publication" in str(exc), name
+            refused_by.append(name)
+    assert refused_by == list(readers), f"these did not refuse: {set(readers) - set(refused_by)}"
+
+
+def test_the_claim_gate_reports_a_refused_artifact_as_a_claim_error(tmp_path) -> None:
+    """`resolve` promises ClaimError, and its caller loops collecting failures.
+
+    A SystemExit from the loader would escape that loop and abort the gate on the first refused
+    artifact, leaving every later claim unchecked and reporting a bare exception in place of the
+    accumulated list.
+    """
+    from benchmarks.claim_gate import Claim, ClaimError, Marker, resolve
+
+    refused = _refused_artifact(tmp_path)
+    claim = Claim(
+        doc="docs/RESULTS.md",
+        line=42,
+        text="0.99",
+        marker=Marker(kind="artifact", artifact=refused.name, key="aggregate.answerable_accuracy.rate"),
+    )
+
+    with pytest.raises(ClaimError, match="REFUSED publication"):
+        resolve(claim, tmp_path)
 
 
 def test_no_benchmark_tool_reads_a_run_artifact_without_the_publication_check() -> None:
-    """A grep guard over EVERY benchmarks module, because this contract decays one convenient
-    `json.loads` at a time.
+    """Two guards over the whole package, because this contract decays one `json.loads` at a time.
 
-    An allowlist of known readers cannot catch the thing most worth catching, a NEW reader, so
-    this scans the whole package and carries an explicit exemption list instead. Matching is on
-    `json.load` anywhere in the module rather than on a same-line `json.loads(...read_text(...))`
-    pair, because splitting that across two lines is a one-keystroke evasion.
+    NEGATIVE: every module under `benchmarks/`, recursively, that parses JSON and names a
+    run-artifact key must import the checker. An allowlist of known readers cannot catch the
+    thing most worth catching, a new one, and a top-level-only glob misses six subpackages.
+    The condition is the literal IMPORT line, not the mere presence of the name: a substring
+    check is satisfied by a `# TODO: use load_published_artifact` that says the opposite.
+
+    POSITIVE: `claim_gate` is invisible to the heuristic — it looks keys up from markers and so
+    names none of them — and any reader could become invisible the same way. So the readers we
+    already know about are asserted to still import the checker.
     """
     from pathlib import Path
 
-    #: Modules that legitimately parse JSON that is NOT a `benchmarks.run` results artifact.
+    checker = "from benchmarks.artifact_contract import load_published_artifact"
+    #: Keys that only a `benchmarks.run` results artifact carries.
+    run_keys = (
+        "outcomes",
+        "aggregate",
+        "provider_metadata",
+        "cost_claims",
+        "adversarial_abstention",
+        "answerable_accuracy",
+    )
+    #: The two modules that legitimately name those keys without reading an artifact.
     exempt = {
-        "artifact_contract.py": "defines load_published_artifact itself",
+        "artifact_contract.py": "defines load_published_artifact",
         "run.py": "writes artifacts; reads only the LOCOMO source corpus",
-        "salvage.py": "reads the incremental .jsonl sidecar and the LOCOMO corpus",
-        "build_9l_temporal_fixture.py": "reads BEAM {summary, rows}, pinned by sha256",
-        "llm.py": "parses HTTP response bodies",
-        "usage.py": "parses HTTP response bodies",
-        "pipeline.py": "parses model output",
-        "systems.py": "adapter configuration",
-        # Each of these was checked, not waved through: none opens a run artifact.
-        "check_anchor_direction.py": "reads its own audit file",
-        "check_p1_supersession_density.py": "reads the locomo10.json source corpus",
-        "check_temporal_live.py": "reads the locomo10.json source corpus",
-        "check_utterance_postdating.py": "reads the --corpus LOCOMO file",
-        "covgate_multievidence.py": "reads its --data corpus",
-        "evidence_injection.py": "parses model output between evidence markers",
-        "latency.py": "reads its --data corpus",
-        "rerank_finetune.py": "reads JSONL training rows",
-        "rerank_pool_arms.py": "reads JSONL pool rows",
-        "score_peps_rerank_pool.py": "reads its questions file",
+    }
+    known_readers = {
+        "analyze.py",
+        "claim_gate.py",
+        "h2h_artifact.py",
+        "judge_quality.py",
+        "locomo_audit.py",
+        "rejudge.py",
+        "salvage.py",
+        "token_f1.py",
     }
 
     root = Path(__file__).resolve().parents[1] / "benchmarks"
     offenders = []
-    for module in sorted(root.glob("*.py")):
-        if module.name in exempt:
+    for module in sorted(root.rglob("*.py")):
+        relative = module.relative_to(root).as_posix()
+        if relative in exempt:
             continue
         text = module.read_text(encoding="utf-8")
-        if "json.load" in text and "load_published_artifact" not in text:
-            offenders.append(module.name)
+        if "json.load" not in text or checker in text:
+            continue
+        if any(f'"{key}"' in text or f"'{key}'" in text for key in run_keys):
+            offenders.append(relative)
 
     assert not offenders, (
-        "these parse JSON without importing the publication check. If they read a "
-        "`benchmarks.run` artifact, route them through `load_published_artifact`; if they read "
-        "something else, add them to `exempt` with the reason: " + ", ".join(offenders)
+        "these parse JSON and name run-artifact keys without importing the publication check. "
+        "Route them through `load_published_artifact`, or add them to `exempt` with the reason: "
+        + ", ".join(offenders)
     )
+
+    missing = sorted(
+        name for name in known_readers if checker not in (root / name).read_text(encoding="utf-8")
+    )
+    assert not missing, f"these known readers dropped the publication check: {missing}"
+
+
+def test_a_json_file_that_is_not_an_object_is_refused_cleanly(tmp_path: Path) -> None:
+    """`doc.get` on a list is an AttributeError, which is not the caller's clean error."""
+    import json
+
+    from benchmarks.artifact_contract import load_published_artifact
+
+    path = tmp_path / "list.json"
+    path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="not a JSON object"):
+        load_published_artifact(path)

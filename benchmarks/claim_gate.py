@@ -479,7 +479,14 @@ def resolve(claim: Claim, results_root: Path) -> None:
         )
     if not path.is_file():
         raise ClaimError(f"{claim.doc}:{claim.line} no such artifact: {marker.artifact}")
-    actual = lookup(load_published_artifact(path), marker.key)
+    try:
+        doc = load_published_artifact(path)
+    except SystemExit as exc:
+        # `resolve` promises ClaimError, and the caller loops over claims collecting failures.
+        # A SystemExit would escape that loop and abort the gate on the first refused artifact,
+        # leaving every later claim unchecked and reporting a bare exception instead of the list.
+        raise ClaimError(f"{claim.doc}:{claim.line} {exc}") from exc
+    actual = lookup(doc, marker.key)
     if not matches(claim.text, actual):
         raise ClaimError(
             f"{claim.doc}:{claim.line} published {claim.text} but "
