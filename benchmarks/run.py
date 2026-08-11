@@ -617,22 +617,13 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
             )
             return QUARANTINE_EXIT if preserved else 1
         try:
-            path.write_text(encoded, encoding="utf-8")
+            _write_atomic(path, encoded)
         except OSError as exc:
             # Likelier than the contract firing: a full disk, a >260-char path, an antivirus or
             # indexer lock. The bytes are already in hand, so losing them here is gratuitous.
             #
-            # Remove the corpse first. `write_text` opens with mode "w", so the file is created
-            # and TRUNCATED before a single byte can fail, and one truncated leftover inside
-            # `results/*.json` makes every later `analyze` over that directory die on a
-            # JSONDecodeError rather than skip one file.
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                # Reached whenever `path` is a DIRECTORY: both the write and the unlink raise
-                # PermissionError there. Best effort — `exc` is already bound, so the real error
-                # still reaches the quarantine reason and nothing is masked.
-                pass
+            # No cleanup needed: `_write_atomic` never touches `path` except by rename, so a
+            # failure here cannot have left a truncated artifact in the publishable glob.
             preserved = _quarantine(
                 args.out, stamp, payload, encoded, partial_path,
                 reason=f"the published artifact could not be written to {path}: {exc}",
@@ -726,18 +717,10 @@ def _quarantine(
     ):
         try:
             candidate.parent.mkdir(parents=True, exist_ok=True)
-            candidate.write_text(body, encoding="utf-8")
+            _write_atomic(candidate, body)
         except OSError as exc:
             # `exist_ok=True` does NOT tolerate the path existing as a FILE, so the preferred
             # subdirectory is one `touch` away from being unusable. Fall back, do not give up.
-            #
-            # Take the corpse with us. `write_text` truncates at open, so a mid-write ENOSPC
-            # leaves a half JSON file behind, and `_load_published` parses before it can consult
-            # the `unpublished` mark — so the mark cannot save a reader from this one.
-            try:
-                candidate.unlink(missing_ok=True)
-            except OSError:
-                pass
             notes.append(f"  {candidate} could not be written: {exc}")
             continue
         written = candidate
@@ -752,8 +735,16 @@ def _quarantine(
         "`python -m benchmarks.salvage --merge-only` rebuilds an artifact from it without "
         "re-spending. Fix the cause and republish rather than re-running the arm."
     )
-    for note in notes:
-        _say(note)
+    try:
+        for note in notes:
+            _say(note)
+    except BaseException:  # noqa: BLE001 - the artifact is already on disk by this point
+        # `_say` deliberately lets a KeyboardInterrupt through, because the last-resort dump
+        # below is a long write to a pipe and an interrupt there is the operator talking. These
+        # notes are five short lines printed AFTER the artifact is safe, so an interrupt here
+        # would throw away the verdict for a run that WAS preserved and hand a wrapper a crash
+        # status — the harm the narrowing was meant to prevent, inverted.
+        pass
 
     if written is None:
         # Nowhere on disk would take it. stdout might still be a file or a pipe.
@@ -771,6 +762,30 @@ def _quarantine(
 #: `_say(body, stream=sys.stdout)` with a None stdout took the default branch, wrote the artifact
 #: body to STDERR, reported "printed to stdout above", and counted it as preserved.
 _NO_STREAM: Any = object()
+
+
+def _write_atomic(path: Path, body: str) -> None:
+    """Write via a temp file and `os.replace`, so a failed write can neither truncate the target
+    nor destroy what was already there.
+
+    `write_text` opens with mode "w", which has two distinct failure shapes and a naive cleanup
+    gets one of them badly wrong. Fail AFTER open (ENOSPC mid-write) and the target is a
+    half-written corpse that has to go. Fail AT open (an antivirus or indexer lock, EACCES, a
+    read-only mount) and the file sitting there is INTACT and somebody else's, so unlinking it
+    destroys a good artifact this function is not going to replace. Writing to a temp and
+    renaming makes the distinction moot: the target is only ever touched by an atomic rename.
+    """
+
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(body, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _say(message: str, stream: TextIO | None = _NO_STREAM) -> bool:

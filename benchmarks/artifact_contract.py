@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence, Set as AbstractSet
 import json
 from pathlib import Path
 import re
+from typing import Any
 
 from recall.provider_metadata import ProviderMetadata, provider_metadata_from_any, validate_cost_claim
 
@@ -40,7 +41,7 @@ VERBATIM_SOURCE_KEYS = frozenset({"outcomes"})
 
 
 
-def load_published_artifact(path: Path) -> dict[str, object]:
+def load_published_artifact(path: Path) -> dict[str, Any]:
     """Load a benchmark artifact, refusing one `benchmarks.run` marked as never published.
 
     The other half of the quarantine. `benchmarks.run` keeps a refused artifact out of the
@@ -53,7 +54,7 @@ def load_published_artifact(path: Path) -> dict[str, object]:
     matches what `analyze._expand` already raises for an unusable input.
     """
 
-    doc: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    doc: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     if doc.get("unpublished"):
         raise SystemExit(
             f"{path} was REFUSED publication by benchmarks.run and is not a measurement: "

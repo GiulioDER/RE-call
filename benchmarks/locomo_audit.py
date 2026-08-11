@@ -50,6 +50,7 @@ from typing import Any
 from benchmarks.pipeline import aggregate
 from benchmarks.rejudge import to_outcome
 from benchmarks.systems import sample_id_of
+from benchmarks.artifact_contract import load_published_artifact
 
 #: The vendored audit findings. See ``audit_data/README.md`` for source, revision and licence.
 DEFAULT_AUDIT_PATH = Path(__file__).parent / "audit_data" / "locomo_errors.json"
@@ -250,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         if not path.exists():
             parser.error(f"{path} not found")
 
-    doc: dict[str, Any] = json.loads(args.results.read_text(encoding="utf-8"))
+    doc: dict[str, Any] = load_published_artifact(args.results)
     report = audited_report(doc, args.data, args.audit)
 
     all_rate = (report["aggregate_all"] or {}).get("answerable_accuracy") or {}

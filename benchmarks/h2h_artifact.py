@@ -48,6 +48,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from benchmarks.analyze import paired_mcnemar
 from benchmarks.claim_gate import matches
+from benchmarks.artifact_contract import load_published_artifact
 
 OutcomeMap = dict[str, bool]
 
@@ -133,7 +134,7 @@ def load_run(path: Path) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
     refuses arms whose adversarial labelling disagrees. Filtering here would defeat that
     check, which is the check that catches two runs scored against different question sets.
     """
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = load_published_artifact(path)
     config = {
         "arm": payload["arm"],
         "generator": payload["model"],

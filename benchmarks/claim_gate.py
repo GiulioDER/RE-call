@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from benchmarks.artifact_contract import load_published_artifact
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_ROOT = REPO_ROOT / "results"
@@ -478,7 +479,7 @@ def resolve(claim: Claim, results_root: Path) -> None:
         )
     if not path.is_file():
         raise ClaimError(f"{claim.doc}:{claim.line} no such artifact: {marker.artifact}")
-    actual = lookup(json.loads(path.read_text(encoding="utf-8")), marker.key)
+    actual = lookup(load_published_artifact(path), marker.key)
     if not matches(claim.text, actual):
         raise ClaimError(
             f"{claim.doc}:{claim.line} published {claim.text} but "

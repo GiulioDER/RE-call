@@ -1346,7 +1346,9 @@ def test_the_rescue_falls_back_to_stdout_when_no_file_can_be_written(
     real_write = Path.write_text
 
     def _refuse(self: Path, data: str, *a: object, **k: object) -> int:
-        if self.suffix in {".json", ".txt"} and "unpublished" in str(self):
+        # `.tmp` too: the rescue writes atomically, so blocking only the final names would
+        # block nothing at all.
+        if "unpublished" in str(self):
             raise OSError(28, "No space left on device")
         return real_write(self, data, *a, **k)  # type: ignore[arg-type]
 
@@ -1375,7 +1377,7 @@ def test_a_partially_written_artifact_is_removed_from_the_published_glob(
     real_write = Path.write_text
 
     def _die_midway(self: Path, data: str, *a: object, **k: object) -> int:
-        if self.name == f"{_STAMP_1CONV}.json" and self.parent.name == "results":
+        if self.name.startswith(_STAMP_1CONV) and self.parent.name == "results":
             real_write(self, data[:20], encoding="utf-8")  # truncated, like a full disk
             raise OSError(28, "No space left on device")
         return real_write(self, data, *a, **k)  # type: ignore[arg-type]
@@ -1386,6 +1388,7 @@ def test_a_partially_written_artifact_is_removed_from_the_published_glob(
 
     assert code == run_module.QUARANTINE_EXIT
     assert list(out.glob("*.json")) == [], "a truncated artifact was left in the published glob"
+    assert list(out.glob("*.tmp")) == [], "the atomic write left its temp behind"
     assert (out / "unpublished" / f"{_STAMP_1CONV}.json").exists()
 
 
@@ -1541,3 +1544,82 @@ def test_a_partially_written_quarantine_candidate_is_removed(
     assert code == run_module.QUARANTINE_EXIT
     assert not (out / "unpublished" / f"{_STAMP_1CONV}.json").exists(), "truncated corpse left"
     assert (out / f"{_STAMP_1CONV}.unpublished.json.txt").exists()
+
+
+def test_a_failed_quarantine_write_does_not_destroy_a_pre_existing_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cleanup that guesses is worse than no cleanup.
+
+    `write_text` truncates at open, so a corpse only exists when the failure comes AFTER open.
+    When it comes AT open — an antivirus or indexer lock, EACCES, a read-only mount — the file
+    sitting there is intact and somebody else's, and deleting it destroys a good artifact the
+    rescue then does not replace.
+    """
+    out = tmp_path / "results"
+    victim = out / "unpublished" / f"{_STAMP_1CONV}.json"
+    victim.parent.mkdir(parents=True)
+    victim.write_text('{"real": "a previous artifact"}', encoding="utf-8")
+
+    real_write = Path.write_text
+
+    def _locked(self: Path, data: str, *a: object, **k: object) -> int:
+        if self.parent.name == "unpublished":
+            raise PermissionError(13, "locked by another process")
+        return real_write(self, data, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _locked)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert victim.read_text(encoding="utf-8") == '{"real": "a previous artifact"}'
+    assert (out / f"{_STAMP_1CONV}.unpublished.json.txt").exists()
+
+
+def test_a_failed_write_leaves_no_temporary_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Atomic writes move the corpse problem into a `.tmp` that must be cleaned up itself."""
+    out = tmp_path / "results"
+    real_write = Path.write_text
+
+    def _die_midway(self: Path, data: str, *a: object, **k: object) -> int:
+        if self.parent.name == "unpublished":
+            real_write(self, data[:30], encoding="utf-8")
+            raise OSError(28, "No space left on device")
+        return real_write(self, data, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", _die_midway)
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert list((out / "unpublished").glob("*")) == [], "a temp or a corpse was left behind"
+    assert (out / f"{_STAMP_1CONV}.unpublished.json.txt").exists()
+
+
+def test_an_interrupt_while_reporting_does_not_lose_a_preserved_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The notes print AFTER the artifact is safe, so an interrupt there must not cost exit 3.
+
+    Letting it propagate would hand a wrapper a crash status for a run that was preserved — the
+    exact harm narrowing `_say` to `except Exception` was meant to prevent, inverted.
+    """
+    import sys as _sys
+
+    class _Interrupting:
+        def write(self, _data: str) -> int:
+            raise KeyboardInterrupt
+
+        def flush(self) -> None:
+            pass
+
+    out = tmp_path / "results"
+    monkeypatch.setattr(_sys, "stderr", _Interrupting())
+
+    code = _quarantine_case(tmp_path, monkeypatch, out, reject=True)
+
+    assert code == run_module.QUARANTINE_EXIT
+    assert (out / "unpublished" / f"{_STAMP_1CONV}.json").exists()
