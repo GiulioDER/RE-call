@@ -129,3 +129,33 @@ def test_successor_row_count_equals_census_header_edges(census: dict):
     rows = json.loads(TRUST.read_text(encoding="utf-8"))
     successors = [r for r in rows if r["expect"] == "successor"]
     assert len(successors) == census["n_header_edges"]
+
+
+def test_stale_and_successor_are_not_inverted(census: dict):
+    # `stale_ids` must hold the SUPERSEDED document and `successor_ids` the SUCCESSOR. Swapping
+    # them scores a system correct exactly when it prefers the stale document — the failure the
+    # trust layer exists to prevent, written into the labels every later number is graded on.
+    #
+    # This test exists because the suite was measured blind to it: an inverted builder still
+    # emits 67 rows, 47 of them `successor`, with matching schema keys and non-empty
+    # `successor_ids`, and passes every other test in this file. Counting rows and checking
+    # shape says nothing about direction.
+    #
+    # The comparison is against `census.json`'s edge list, which is independently frozen and
+    # whose own direction was verified against the PEP headers.
+    edges = {(e["superseded"], e["successor"]) for e in census["edges"]}
+    rows = json.loads(TRUST.read_text(encoding="utf-8"))
+
+    def stem(chunk_id: str) -> str:
+        name = chunk_id.rsplit(":", 1)[0]
+        return name[:-4] if name.endswith(".rst") else name
+
+    seen = set()
+    for row in (r for r in rows if r["expect"] == "successor"):
+        pair = (stem(row["stale_ids"][0]), stem(row["successor_ids"][0]))
+        assert pair in edges, (
+            f"{row['id']}: {pair[0]} -> {pair[1]} is not a census edge. "
+            f"Reversed pair present in census: {(pair[1], pair[0]) in edges}"
+        )
+        seen.add(pair)
+    assert seen == edges, "successor rows do not cover the census edges exactly"
