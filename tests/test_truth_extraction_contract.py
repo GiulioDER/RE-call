@@ -1018,3 +1018,20 @@ def test_a_trailing_newline_in_a_quote_does_not_drag_in_the_next_line() -> None:
 
     assert rejected == ()
     assert len(accepted) == 1
+
+
+@pytest.mark.timeout(5)
+def test_a_quote_recurring_inside_one_long_line_stays_linear() -> None:
+    """A memo pasting a minified config as one long line, with a quote that recurs in it, made
+    the all occurrences loop re-slice and re-scan that whole line once per occurrence. Measured
+    at ~16s for this input before the region was cached; it is milliseconds after."""
+    fragment = '"status":"active",'
+    body = "# Fleet config\n\n" + fragment * 4800 + "\n\nThe fleet is documented above.\n"
+    claim = {"kind": "status", "value": "active", "quote": fragment}
+
+    accepted, rejected = normalize_extraction(
+        _payload(claim), file=FILE, human_body=body, corpus_names=CORPUS
+    )
+
+    assert rejected == ()
+    assert len(accepted) == 1

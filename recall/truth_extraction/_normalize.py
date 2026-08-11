@@ -283,12 +283,20 @@ def _quote_sits_in_frontmatter(human_body: str, quote: str) -> bool:
     if not trimmed:  # pragma: no cover - `_shape` has already rejected a blank quote
         return False
     start = human_body.find(trimmed)
+    # Occurrences that fall entirely inside the region just scanned share that region, so they
+    # need no work. Without this a quote recurring inside one long line — a pasted config, a
+    # minified blob — re-slices and re-scans the whole line once per occurrence, which is
+    # quadratic in the body. The containment test must check the END too: an occurrence that
+    # starts inside the region but runs past it spans more lines and needs its own scan.
+    line_start, line_end = 0, -1
     while start != -1:
-        line_start = human_body.rfind("\n", 0, start) + 1
-        line_end = human_body.find("\n", start + len(trimmed))
-        region = human_body[line_start : len(human_body) if line_end == -1 else line_end]
-        if _FRONTMATTER_QUOTE_RE.search(region):
-            return True
+        end = start + len(trimmed)
+        if not (line_start <= start and end <= line_end):
+            line_start = human_body.rfind("\n", 0, start) + 1
+            newline = human_body.find("\n", end)
+            line_end = len(human_body) if newline == -1 else newline
+            if _FRONTMATTER_QUOTE_RE.search(human_body[line_start:line_end]):
+                return True
         start = human_body.find(trimmed, start + 1)
     return False
 
