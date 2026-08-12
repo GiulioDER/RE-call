@@ -46,6 +46,7 @@ import argparse
 import json
 import os
 import re
+import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,7 +73,7 @@ from benchmarks.artifact_contract import (
     load_published_artifact,
     reject_unauditable_cost_claims,
 )
-from benchmarks.run import _write_atomic
+from benchmarks.run import QUARANTINE_EXIT, _write_atomic
 
 #: The fields of a scored `Outcome`, i.e. the part of a sidecar record that is load-bearing.
 #: ``question`` and ``gold`` are joined in beside them by `benchmarks.run._outcome_record` and are
@@ -349,6 +350,23 @@ def _ordered(
     return ordered
 
 
+def _scrubbed(exc: BaseException, sibling: Path) -> str:
+    """The exception text with the sibling's full path reduced to its name.
+
+    These notes are copied verbatim into `salvage.consistency` and published, and both the
+    refusal message and an OSError's text carry the absolute path. Leaving it in bakes a local
+    filesystem path into a committed artifact and repeats the filename the caller already added.
+    """
+
+    text = str(exc)
+    # Three spellings, because an OSError's text carries the path REPR, whose backslashes are
+    # doubled on Windows — so scrubbing only `str(sibling)` silently misses the leak it exists
+    # to prevent, and a substring test against the raw path misses it too.
+    for spelling in (str(sibling), str(sibling).replace("\\", "\\\\"), sibling.as_posix()):
+        text = text.replace(spelling, sibling.name)
+    return text
+
+
 def consistency_report(
     paths: Sequence[Path], arm: str, model: str, k: int
 ) -> dict[str, Any]:
@@ -407,13 +425,12 @@ def consistency_report(
                 # beats widening the net to AttributeError.
                 raise TypeError(f"config is {type(config).__name__}, not an object")
         except SystemExit as exc:
-            # `sibling.name`, not `exc` verbatim: the refusal message carries the sibling's FULL
-            # path, which would both repeat the name and bake an absolute local path into a
-            # published artifact, since this list is copied into `salvage.consistency`.
-            unverified.append(f"{sibling.name}: {str(exc).replace(str(sibling), sibling.name)}")
+            unverified.append(f"{sibling.name}: {_scrubbed(exc, sibling)}")
             continue
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            unverified.append(f"{sibling.name}: unreadable as a results artifact ({exc})")
+            unverified.append(
+                f"{sibling.name}: unreadable as a results artifact ({_scrubbed(exc, sibling)})"
+            )
             continue
         verified.append(
             {
@@ -687,8 +704,27 @@ def main(argv: list[str] | None = None) -> int:
     # cost-claim contract, then an atomic write. Salvage publishes a real, citable artifact, so
     # without these it could publish exactly what run would have quarantined, and a failed write
     # would truncate whatever was at --out.
-    reject_unauditable_cost_claims(payload)
-    _write_atomic(args.out, json.dumps(payload, indent=2))
+    encoded = json.dumps(payload, indent=2)
+    try:
+        reject_unauditable_cost_claims(payload)
+    except ValueError as exc:
+        # Same trade as `benchmarks.run`: the contract keeps an unauditable artifact out of the
+        # published path, it does not get to destroy the work. A non-merge-only salvage has just
+        # re-bought whole conversations, and an uncaught ValueError exits 1, the status that
+        # tells a wrapper it is safe to re-run and pay for them again.
+        unpublished = args.out.with_name(f"{args.out.stem}.unpublished.json")
+        marked = dict(payload, unpublished=True, unpublished_reason=str(exc))
+        _write_atomic(unpublished, json.dumps(marked, indent=2))
+        print(f"salvaged artifact NOT published: {exc}", file=sys.stderr, flush=True)
+        print(f"unpublished       -> {unpublished}", file=sys.stderr, flush=True)
+        print(
+            "the re-scored work is in that file; repair the provider metadata and republish it "
+            "rather than re-running the salvage.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return QUARANTINE_EXIT
+    _write_atomic(args.out, encoded)
 
     salvage: dict[str, Any] = payload["salvage"]
     unscored: list[str] = salvage["questions_still_unscored"]

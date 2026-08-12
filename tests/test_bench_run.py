@@ -1700,3 +1700,60 @@ def test_a_second_run_of_the_same_stem_refuses_before_it_spends_anything(
         )
 
     assert calls == [], "the refusal must come before a single generator or judge call"
+
+
+def test_a_stem_that_cannot_be_claimed_at_all_fails_with_a_clear_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every other filesystem failure here gets a curated message; this one used to traceback.
+
+    A read-only or full `--out`, an antivirus lock, a directory sitting at the sidecar's path:
+    all of them are OSError, none of them is FileExistsError.
+    """
+    out = tmp_path / "results"
+    real_open = Path.open
+
+    def _locked(self: Path, *a: object, **k: object):  # type: ignore[no-untyped-def]
+        if self.name.endswith(".partial.jsonl"):
+            raise PermissionError(13, "locked by another process")
+        return real_open(self, *a, **k)  # type: ignore[arg-type]
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+    monkeypatch.setattr(Path, "open", _locked)
+
+    with pytest.raises(SystemExit, match="could not be created"):
+        main(
+            ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+             "--conversations", "1", "--out", str(out)],
+            now=_NOW,
+        )
+
+
+def test_a_crash_before_the_first_record_leaves_no_empty_sidecar_corpse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Claiming the stem creates the sidecar, so a crash above the scoring loop leaves a 0-byte
+    file that is indistinguishable from a crashed run whose records were lost — and
+    `salvage --merge-only` will happily publish it as an n=0 artifact."""
+    out = tmp_path / "results"
+
+    def _explodes(self: object, conversation: dict[str, Any]) -> None:
+        raise RuntimeError("ingest died")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+    monkeypatch.setattr(run_module.RecallSystem, "ingest", _explodes)
+
+    with pytest.raises(RuntimeError, match="ingest died"):
+        main(
+            ["--arm", "recall", "--data", str(_write_fixture(tmp_path)),
+             "--conversations", "1", "--out", str(out)],
+            now=_NOW,
+        )
+
+    assert list(out.glob("*.partial.jsonl")) == [], "an empty sidecar corpse was left behind"

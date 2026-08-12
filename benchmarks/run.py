@@ -528,6 +528,13 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
             f"{partial_path} already exists, so another run owns this stem. Artifact stems are "
             "stamped to the second; wait a second and start again, or pass a different --out."
         ) from None
+    except OSError as exc:
+        # Every other filesystem failure here — a read-only or full `--out`, an antivirus lock,
+        # a directory at the sidecar's path — gets the same curated treatment the write site
+        # gives OSError, rather than a raw traceback in a function where nothing else produces one.
+        raise SystemExit(
+            f"{partial_path} could not be created, so this run cannot claim its stem: {exc}"
+        ) from None
     if skipped["total"]:
         print(f"skipped {skipped['total']} unscoreable qa rows: {skipped['by_reason']}", flush=True)
 
@@ -536,48 +543,62 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     # Distinguishes "the preflight ran and found nothing configured" from "the preflight never
     # ran" — both stamp `verdicts: []` otherwise, and the second case would read as clean.
     ablation_ran = False
-    for position, conv in enumerate(convs):
-        sample_id = sample_id_of(conv)
-        conv_questions = [q for q in questions if q["sample_id"] == sample_id]
-        # Ingest THEN score, one conversation at a time: both adapters scope retrieval to the last
-        # conversation ingested, so ingesting all of them up front would answer every question out
-        # of the final conversation's memory.
-        system.ingest(conv)
-        if position == 0 and args.arm == "recall":
-            # `_build_system` always returns a `RecallSystem` for `arm == "recall"` today, so this
-            # is unreachable — but if that ever changed silently, falling through here would skip
-            # the preflight with zero trace: the artifact would stamp `verdicts: []`, indistinguishable
-            # from a preflight that ran and found nothing configured, and the run would read as
-            # clean. Asserting keeps mypy able to see `ablation_preflight` (it is on the
-            # `RecallSystem` adapter, not the shared `MemorySystem` protocol — it is retrieval-only
-            # and has no meaning on the Mem0 arms) while making that failure mode loud instead of
-            # silent.
-            assert isinstance(system, RecallSystem), (
-                f"arm='recall' but _build_system returned {type(system).__name__}; the ablation "
-                f"preflight cannot run and would silently stamp verdicts: []"
+    try:
+        for position, conv in enumerate(convs):
+            sample_id = sample_id_of(conv)
+            conv_questions = [q for q in questions if q["sample_id"] == sample_id]
+            # Ingest THEN score, one conversation at a time: both adapters scope retrieval to the last
+            # conversation ingested, so ingesting all of them up front would answer every question out
+            # of the final conversation's memory.
+            system.ingest(conv)
+            if position == 0 and args.arm == "recall":
+                # `_build_system` always returns a `RecallSystem` for `arm == "recall"` today, so this
+                # is unreachable — but if that ever changed silently, falling through here would skip
+                # the preflight with zero trace: the artifact would stamp `verdicts: []`, indistinguishable
+                # from a preflight that ran and found nothing configured, and the run would read as
+                # clean. Asserting keeps mypy able to see `ablation_preflight` (it is on the
+                # `RecallSystem` adapter, not the shared `MemorySystem` protocol — it is retrieval-only
+                # and has no meaning on the Mem0 arms) while making that failure mode loud instead of
+                # silent.
+                assert isinstance(system, RecallSystem), (
+                    f"arm='recall' but _build_system returned {type(system).__name__}; the ablation "
+                    f"preflight cannot run and would silently stamp verdicts: []"
+                )
+                # After index build, before the FIRST generator call: retrieval-only, so an inert arm
+                # is caught before a single token is spent. BEAM best-config ran out of credits at
+                # 5/60; a post-hoc check would have spent them first.
+                ablation = system.ablation_preflight(
+                    [str(q["question"]) for q in conv_questions],
+                    sample=args.ablation_sample,
+                    metric_class="set",
+                    allow_inert=args.allow_inert_arm,
+                )
+                ablation_ran = True
+                print(f"ablation preflight: {ablation}", flush=True)
+            conv_outcomes, _ = run_arm(system, completer, conv_questions)
+            outcomes.extend(conv_outcomes)
+            # Persist BEFORE the next conversation is touched: everything scored above has already
+            # been paid for in generator and judge calls, and this is the write that keeps it.
+            _append_records(
+                partial_path, [_outcome_record(o, text_by_id, gold_by_id) for o in conv_outcomes]
             )
-            # After index build, before the FIRST generator call: retrieval-only, so an inert arm
-            # is caught before a single token is spent. BEAM best-config ran out of credits at
-            # 5/60; a post-hoc check would have spent them first.
-            ablation = system.ablation_preflight(
-                [str(q["question"]) for q in conv_questions],
-                sample=args.ablation_sample,
-                metric_class="set",
-                allow_inert=args.allow_inert_arm,
+            print(
+                f"  [{position + 1}/{len(convs)}] {sample_id}: {len(conv_outcomes)} questions scored",
+                flush=True,
             )
-            ablation_ran = True
-            print(f"ablation preflight: {ablation}", flush=True)
-        conv_outcomes, _ = run_arm(system, completer, conv_questions)
-        outcomes.extend(conv_outcomes)
-        # Persist BEFORE the next conversation is touched: everything scored above has already
-        # been paid for in generator and judge calls, and this is the write that keeps it.
-        _append_records(
-            partial_path, [_outcome_record(o, text_by_id, gold_by_id) for o in conv_outcomes]
-        )
-        print(
-            f"  [{position + 1}/{len(convs)}] {sample_id}: {len(conv_outcomes)} questions scored",
-            flush=True,
-        )
+    finally:
+        # RELEASE the claim if nothing was ever written. Claiming the stem CREATES the
+        # sidecar, so a failure above the first scored conversation — an ablation refusal,
+        # a bad DSN, an ingest error — would otherwise leave a 0-byte corpse that reads
+        # exactly like a crashed run whose records were lost, and
+        # `salvage --merge-only` republishes that as an n=0 artifact. An empty sidecar
+        # records nothing, so removing it loses nothing and frees the stem for a retry.
+        try:
+            if partial_path.stat().st_size == 0:
+                partial_path.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - best effort; a live sidecar is never touched
+            pass
+
 
     agg = aggregate(outcomes)
     total_usage = usage_snapshot()

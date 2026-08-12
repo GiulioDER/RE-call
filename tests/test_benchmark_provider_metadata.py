@@ -389,10 +389,17 @@ def test_no_benchmark_tool_reads_a_run_artifact_without_the_publication_check() 
             tree = ast.parse(text)
         except SyntaxError:  # pragma: no cover - a syntax error is somebody else's test failing
             return False
+        guarded: set[int] = set()
+        for node in ast.walk(tree):
+            # An import under `if TYPE_CHECKING:` never runs, so it is not a use of the checker;
+            # it is a cheaper bypass than the parenthesised import that motivated this rewrite.
+            if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test):
+                guarded.update(id(inner) for inner in ast.walk(node) if inner is not node)
         return any(
             isinstance(node, ast.ImportFrom)
             and node.module == "benchmarks.artifact_contract"
             and any(alias.name == "load_published_artifact" for alias in node.names)
+            and id(node) not in guarded
             for node in ast.walk(tree)
         )
 
@@ -421,6 +428,17 @@ def test_no_benchmark_tool_reads_a_run_artifact_without_the_publication_check() 
         "token_f1.py",
     }
 
+    # LIVENESS, both directions. `imports_checker` returning True unconditionally makes this
+    # whole test pass vacuously — verified: that mutant survived. So prove it accepts a real
+    # import and rejects the two spellings that are not one.
+    assert imports_checker("from benchmarks.artifact_contract import load_published_artifact\n")
+    assert not imports_checker("# TODO: use load_published_artifact one day\n")
+    assert not imports_checker(
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from benchmarks.artifact_contract import load_published_artifact\n"
+    ), "a TYPE_CHECKING import is not a runtime call site"
+
     root = Path(__file__).resolve().parents[1] / "benchmarks"
     offenders = []
     for module in sorted(root.rglob("*.py")):
@@ -437,6 +455,16 @@ def test_no_benchmark_tool_reads_a_run_artifact_without_the_publication_check() 
         "these parse JSON and name run-artifact keys without importing the publication check. "
         "Route them through `load_published_artifact`, or add them to `exempt` with the reason: "
         + ", ".join(offenders)
+    )
+
+    # The behavioural test above and this textual list are two hand-maintained inventories of
+    # the same thing, which is how they drift. Tie them: every behavioural entry must be a known
+    # reader, and the readers deliberately absent from the behavioural dict are named here so
+    # adding one forces a decision about the other.
+    behavioural = {"analyze", "h2h_artifact", "judge_quality", "locomo_audit", "rejudge", "token_f1"}
+    only_textual = {"claim_gate", "salvage"}
+    assert {f"{name}.py" for name in behavioural | only_textual} == known_readers, (
+        "the behavioural reader dict and known_readers have drifted; update both"
     )
 
     renamed = sorted(name for name in known_readers if not (root / name).is_file())
