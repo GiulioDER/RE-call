@@ -334,3 +334,28 @@ def test_scaffold_claude_md_rerun_replaces_block_only(tmp_path):
     text = path.read_text(encoding="utf-8")
     assert text.count("<!-- recall setup begin -->") == 1
     assert "Custom notes that must survive." in text
+
+
+def test_scaffold_memory_index_creates_directory_and_file(tmp_path):
+    from recall.setup import scaffold_memory_index
+
+    memory_dir = tmp_path / "memory"
+    created = scaffold_memory_index(memory_dir)
+
+    assert created is True
+    assert memory_dir.is_dir()
+    text = (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
+    assert "type: user | feedback | project | reference" in text
+
+
+def test_scaffold_memory_index_leaves_existing_file_untouched(tmp_path):
+    from recall.setup import scaffold_memory_index
+
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "MEMORY.md").write_text("# Real user facts\n", encoding="utf-8")
+
+    created = scaffold_memory_index(memory_dir)
+
+    assert created is False
+    assert (memory_dir / "MEMORY.md").read_text(encoding="utf-8") == "# Real user facts\n"

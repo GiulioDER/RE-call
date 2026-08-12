@@ -343,6 +343,39 @@ def scaffold_claude_md(path: Path = DEFAULT_CLAUDE_MD_PATH) -> None:
     _update_markdown_block(path, CLAUDE_MD_BEGIN, CLAUDE_MD_END, _claude_md_block())
 
 
+def _memory_md_starter() -> str:
+    return (
+        "# Memory index\n"
+        "\n"
+        "This file is the always-loaded index. Each fact below lives in its own file under "
+        "`memory/`, with frontmatter:\n"
+        "\n"
+        "```markdown\n"
+        "---\n"
+        "name: <short-kebab-case-slug>\n"
+        "description: <one-line summary, used to judge relevance>\n"
+        "metadata:\n"
+        "  type: user | feedback | project | reference\n"
+        "---\n"
+        "\n"
+        "<the fact>\n"
+        "```\n"
+        "\n"
+        "Add one line per fact here as you create them:\n"
+        "\n"
+        "`- [Title](file.md) — one-line hook`\n"
+    )
+
+
+def scaffold_memory_index(memory_dir: Path = DEFAULT_MEMORY_DIR) -> bool:
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    index_path = memory_dir / "MEMORY.md"
+    if index_path.exists():
+        return False
+    index_path.write_text(_memory_md_starter(), encoding="utf-8")
+    return True
+
+
 def _quote_env(value: str) -> str:
     if value == "":
         return '""'
