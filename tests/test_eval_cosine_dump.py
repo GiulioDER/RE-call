@@ -42,18 +42,29 @@ def test_labelled_entries_bucket_by_their_explicit_label() -> None:
 
 def test_split_sizes_match_the_corpus_labels() -> None:
     buckets = [_reference_bucket(q) for q in _queries()]
-    assert buckets.count("answerable") == 14
-    assert buckets.count("far_gap") == 5
-    assert buckets.count(None) == 6
+    queries = _queries()
+    # Derived from the file's own explicit labels rather than typed in, so growing the fixture
+    # does not silently turn this into a chore that gets "fixed" by editing the number. It still
+    # catches the defect: `is True` and `is False` both miss a trust entry, which carries no
+    # `answerable` key at all, so a bucketer that swept those into far_gap would exceed this.
+    assert buckets.count("answerable") == sum(1 for q in queries if q.get("answerable") is True)
+    assert buckets.count("far_gap") == sum(1 for q in queries if q.get("answerable") is False)
+    assert buckets.count(None) == sum(1 for q in queries if q.get("trust"))
 
 
 def test_the_falsy_shortcut_would_contaminate_the_far_gap_class() -> None:
     """The specific defect this bucketer exists to avoid, asserted rather than described."""
-    shortcut = ["answerable" if q.get("answerable") else "far_gap" for q in _queries()]
-    correct = [b for b in (_reference_bucket(q) for q in _queries()) if b is not None]
+    queries = _queries()
+    shortcut = ["answerable" if q.get("answerable") else "far_gap" for q in queries]
+    correct = [b for b in (_reference_bucket(q) for q in queries) if b is not None]
 
-    assert shortcut.count("far_gap") == 11
-    assert correct.count("far_gap") == 5
+    labelled_far_gap = sum(1 for q in queries if q.get("answerable") is False)
+    trust = sum(1 for q in queries if q.get("trust"))
+
+    # The shortcut sweeps every trust entry into far_gap; the correct rule skips them entirely.
+    assert shortcut.count("far_gap") == labelled_far_gap + trust
+    assert correct.count("far_gap") == labelled_far_gap
+    assert shortcut.count("far_gap") > correct.count("far_gap")
 
 
 def test_bucketer_agrees_with_the_calibration_sampling_rule() -> None:
