@@ -24,6 +24,7 @@ retained for reproducibility.
 | Goal | Start here |
 |---|---|
 | Try the product | [README.md](../README.md#quickstart), then [examples/README.md](../examples/README.md). |
+| Connect an agent via MCP, or set up CLAUDE.md/memory files | [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md). |
 | Integrate the library | [API.md](API.md), [PRODUCTION.md](PRODUCTION.md), and [OPERATING_MODES.md](OPERATING_MODES.md). |
 | Configure deployment | [ENVIRONMENT.md](ENVIRONMENT.md), [MIGRATIONS.md](MIGRATIONS.md), and [AUTH.md](AUTH.md). |
 | Audit public claims | [EVIDENCE.md](EVIDENCE.md), [../results/README.md](../results/README.md), and [../benchmarks/README.md](../benchmarks/README.md). |
