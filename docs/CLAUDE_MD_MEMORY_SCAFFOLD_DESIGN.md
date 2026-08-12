@@ -1,7 +1,7 @@
 # CLAUDE.md and memory/MEMORY.md scaffolding in `recall setup`
 
 Date: 2026-08-12
-Status: approved, not yet implemented
+Status: implemented (commits c4b027e..a9c802c on claude/recall-config-setup-f241a6)
 
 ## Problem
 

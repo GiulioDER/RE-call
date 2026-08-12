@@ -150,9 +150,6 @@ Claude:  "Memory has no real answer on that — I'd be guessing. Want me to rese
 The agent-side glue is tiny — see [`examples/self_recall_agent.py`](../examples/self_recall_agent.py)
 for the ~30-line pattern: search first; if a non-gap closed decision surfaces, back off.
 
-— Back to the [README](../README.md) · the [engineering writeup](WRITEUP.md) · the
-[case study](CASE_STUDY.md).
-
 ## 5. Configure your project's memory files
 
 `recall setup` offers to scaffold two files after the embedder/reranker/entailment prompts:
@@ -165,13 +162,25 @@ for the ~30-line pattern: search first; if a non-gap closed decision surfaces, b
   frontmatter convention (`name`, `description`, `metadata.type`) and the one-line-per-fact index
   format. `memory/*.md` files you add later are where individual facts live.
 
-The wizard then indexes `memory/` immediately, so `recall_search` can find it from your first turn
-with Claude. Under `RECALL_ENV=production` this indexing step is skipped (local filesystem indexing
-is development-only there — see [PRODUCTION.md](PRODUCTION.md)); index it through your production
+The wizard then tries to index `memory/` immediately, so `recall_search` can find it from your
+first turn with Claude. This auto-index step requires the schema to already be applied at a
+dimension matching the chosen embedder; if the schema has not been applied yet (or is applied at a
+different dimension), indexing fails and the wizard prints remediation instead of blocking setup;
+run `python -m recall.cli index memory/` yourself once the schema is ready. Under
+`RECALL_ENV=production` this indexing step is skipped entirely (local filesystem indexing is
+development-only there — see [PRODUCTION.md](PRODUCTION.md)); index it through your production
 build pipeline instead.
+
+Auto-index always targets the default table and tenant (`DEFAULT_TABLE`/`DEFAULT_TENANT`), even if
+you ran `recall setup` with a non-default `--tenant` or `--table`. If your project uses a
+non-default tenant or table, the rows written by auto-index will not show up in that tenant's later
+searches; index `memory/` yourself against the correct table/tenant instead.
 
 Decline the prompt to skip scaffolding entirely, or answer it again on a later `recall setup` run
 to refresh the `CLAUDE.md` block.
+
+— Back to the [README](../README.md) · the [engineering writeup](WRITEUP.md) · the
+[case study](CASE_STUDY.md).
 
 ## Strict trust: what the tools return when the gate cannot certify an answer
 

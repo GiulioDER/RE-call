@@ -330,12 +330,13 @@ def _claude_md_block() -> str:
         "forming a hypothesis, or repeating past work. If a closed decision or falsified "
         "hypothesis surfaces, do not re-litigate it.\n"
         "\n"
-        "- When `abstained` is true, no hit survived the trust gate — say you do not know instead "
-        "of answering from degraded hits.\n"
+        "- When `abstained` is true, no hit survived the trust gate (or `decision: abstain` from "
+        "`recall_evidence`) — say you do not know instead of answering from degraded hits.\n"
         "- Use `recall_evidence` instead of `recall_search` when about to answer from memory "
         "rather than just consult it; cite only `chunk_id` values from its `items`.\n"
         "- Write new durable facts to `memory/`, one file per fact, indexed by "
-        "`memory/MEMORY.md` (see that file for the format), so `recall_index` can find them.\n"
+        "`memory/MEMORY.md` (see that file for the format), then call `recall_index` on the new "
+        "file so it becomes searchable.\n"
     )
 
 
@@ -390,10 +391,10 @@ def index_memory_directory(
             "production build pipeline instead."
         )
         return
-    from recall.index import Indexer, chunk_text
-    from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
-
     try:
+        from recall.index import Indexer, chunk_text
+        from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
+
         embedder = resolve_embedder(embedder_name, env=env)
         with PgVectorStore(
             dsn, dim=embedder.dim, table=DEFAULT_TABLE, tenant=DEFAULT_TENANT
@@ -402,7 +403,11 @@ def index_memory_directory(
             indexer = Indexer(store, embedder, chunker=chunk_text)
             stats = indexer.index_path(memory_dir, glob="**/*.md")
     except Exception as exc:  # best effort: scaffolded files must survive even if this fails
-        print_fn(f"Could not auto-index {memory_dir}: {exc}")
+        print_fn(
+            f"Could not auto-index {memory_dir}: {exc} — run "
+            f"'python -m recall.cli index {memory_dir}' once the schema is applied for this "
+            "embedder's dimension."
+        )
         return
     print_fn(f"Indexed {stats.chunks} chunks from {stats.files} files in {memory_dir}")
 
