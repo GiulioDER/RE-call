@@ -24,6 +24,12 @@ from recall.truth_extraction.types import (
 )
 
 
+#: Consecutive engine failures after which the engine is treated as unavailable for the rest of
+#: the run. Consecutive rather than total: a corpus with a few individually awkward memos should
+#: not stop, while an endpoint that is simply down should stop being asked once per file.
+CONSECUTIVE_ENGINE_FAILURE_LIMIT = 3
+
+
 def _refused(
     *,
     file: str,
@@ -140,12 +146,41 @@ def extract_corpus_claims(
     a target that is not a file in the corpus.
     """
     names = tuple(corpus_names) if corpus_names is not None else tuple(sorted(documents))
-    return tuple(
-        extract_file_claims(
+    results: list[FileExtraction] = []
+    consecutive_failures = 0
+    for file, text in sorted(documents.items()):
+        if consecutive_failures >= CONSECUTIVE_ENGINE_FAILURE_LIMIT:
+            # The engine is down, not this memo. Making a per-file refusal out of a systemic
+            # outage was the right call for ONE failure and is the wrong call for all of them:
+            # every remaining memo would pay the full retry and timeout budget to learn the same
+            # thing. At 3 attempts against a 60 second timeout that is minutes per file, so a
+            # 792 memo corpus spends over a day producing nothing.
+            #
+            # Still recorded per file, so the extractions already built survive and a reviewer
+            # sees why the rest are missing. That is the contract this guard defends, not an
+            # exception to it.
+            results.append(
+                _refused(
+                    file=file,
+                    engine=engine,
+                    prompt=build_extraction_prompt(
+                        file=file, human_body=human_body_of(text), corpus_names=names
+                    ),
+                    rung="engine_error",
+                    reason=(
+                        f"skipped: the engine failed {consecutive_failures} times in a row, "
+                        f"so it is treated as unavailable rather than re-asked per file"
+                    ),
+                )
+            )
+            continue
+        result = extract_file_claims(
             file=file, text=text, corpus_names=names, engine=engine, cache=cache
         )
-        for file, text in sorted(documents.items())
-    )
+        failed = result.batch_rejection is not None and result.batch_rejection.rung == "engine_error"
+        consecutive_failures = consecutive_failures + 1 if failed else 0
+        results.append(result)
+    return tuple(results)
 
 
 __all__ = ["extract_corpus_claims", "extract_file_claims"]

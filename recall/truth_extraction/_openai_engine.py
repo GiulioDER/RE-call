@@ -90,9 +90,62 @@ class OpenAIExtractionEngine:
         )
 
 
+#: Recorded in place of an endpoint this module cannot parse. A literal, because the raw value
+#: must never be recorded: a scheme-less base_url gives `urlsplit` no hostname, and falling back
+#: to the raw string would write `user:sk-secret@host/v1?token=...` into the audit record and the
+#: cache key. An endpoint that cannot be identified safely is better recorded as unidentified.
+UNPARSED_ENDPOINT = "unparsed-endpoint"
+
+
 def _host_of(base_url: str) -> str:
-    """The host of `base_url`, for the audit identity. Never the path, never credentials."""
-    return urlsplit(base_url).hostname or base_url
+    """The host and port of `base_url`, for the audit identity.
+
+    Never the path, never the query, never credentials. The PORT is included because dropping it
+    is what leaves the collision this identity exists to close half open: vLLM on `localhost:8000`
+    and LM Studio on `localhost:1234` serving the same model name would otherwise be one identity
+    and one cache key, so the cache would serve one endpoint's answers for the other.
+
+    A scheme-less value ("myhost.local/v1") yields no hostname at all. `urlsplit` is retried once
+    with a `//` prefix, which is how a network-relative reference is spelled, and anything still
+    unparseable becomes `UNPARSED_ENDPOINT` rather than the raw string.
+    """
+    parts = urlsplit(base_url)
+    if parts.hostname is None:
+        parts = urlsplit(f"//{base_url}")
+    host = parts.hostname
+    if host is None:
+        return UNPARSED_ENDPOINT
+    try:
+        port = parts.port
+    except ValueError:  # a non-numeric port; the host alone still identifies it safely
+        port = None
+    return f"{host}:{port}" if port else host
+
+
+def _text_of(reply: object) -> str:
+    """The assistant text in a chat completion, or `""` when there is none.
+
+    Deliberately total: every degenerate shape returns `""` rather than raising, because the
+    ladder's `json` rung already refuses `""` and records it as a batch rejection a reviewer can
+    see. Raising here would make this engine's failure mode differ from the rules engine's for
+    the same unusable answer.
+
+    The guards are not paranoia. OpenRouter returns HTTP 200 with an `{"error": ...}` body and no
+    `choices` key when an upstream provider fails, which makes `reply.choices[0]` an unguarded
+    IndexError on a live path, and that exception escapes `extract_file_claims`.
+
+    Module level, and NOT inlined into the client closure, so a test can reach it. A guard only
+    exercised through a test's own copy of it is a guard that cannot fail.
+    """
+    choices = getattr(reply, "choices", None) or ()
+    if not choices:
+        return ""
+    message = getattr(choices[0], "message", None)
+    content = getattr(message, "content", None)
+    # A gateway may return `content` as a list of blocks rather than a string. It is passed
+    # through unchanged as text only if it is text; anything else becomes "" and meets the
+    # `json` rung, which is where every unusable answer is already handled.
+    return content if isinstance(content, str) else ""
 
 
 def _setting(source: Mapping[str, str], name: str, default: str) -> str:
@@ -133,7 +186,20 @@ def _client_from_env(source: Mapping[str, str]) -> ChatClient:
         )
     base_url = _setting(source, "RECALL_EXTRACTION_BASE_URL", DEFAULT_EXTRACTION_BASE_URL)
     model = _setting(source, "RECALL_EXTRACTION_MODEL", DEFAULT_EXTRACTION_MODEL)
-    timeout = float(_setting(source, "RECALL_EXTRACTION_TIMEOUT", "60"))
+    # Named refusal, matching every other setting on this path. `60s` and `1m` are the natural
+    # things to write, and a bare "could not convert string to float" names neither the variable
+    # that is wrong nor the form that is right.
+    raw_timeout = _setting(source, "RECALL_EXTRACTION_TIMEOUT", "60")
+    try:
+        timeout = float(raw_timeout)
+    except ValueError:
+        raise ValueError(
+            f"RECALL_EXTRACTION_TIMEOUT={raw_timeout!r} is not a number of seconds"
+        ) from None
+    if timeout <= 0:
+        raise ValueError(
+            f"RECALL_EXTRACTION_TIMEOUT={raw_timeout!r} must be greater than zero"
+        )
     # `max_retries=0` because `retry_with_backoff` below owns the retry policy. The SDK default
     # is 2 retries against a 600 second read timeout, and layering our own on top of that
     # multiplies the two: a wedged provider would block one memo for close to half an hour.
@@ -147,17 +213,7 @@ def _client_from_env(source: Mapping[str, str]) -> ChatClient:
                 ),
                 attempts=3,
             )
-            # Every shape below returns "" rather than raising, because the ladder's `json`
-            # rung already refuses "" and records it as a batch rejection a reviewer can see.
-            # Raising here would make this engine's failure mode differ from the rules engine's
-            # for the same malformed answer. The guards are not paranoia: OpenRouter returns
-            # HTTP 200 with an `{"error": ...}` body and NO `choices` key when an upstream
-            # provider fails, which makes `reply.choices[0]` an unguarded crash on a live path.
-            choices = getattr(reply, "choices", None) or ()
-            if not choices:
-                return ""
-            message = getattr(choices[0], "message", None)
-            return getattr(message, "content", None) or ""
+            return _text_of(reply)
 
     return _Client()
 

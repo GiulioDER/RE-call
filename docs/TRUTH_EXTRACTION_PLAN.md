@@ -372,7 +372,7 @@ git commit -m "Route a proposal's relation to a key, or refuse it"
 
 **Interfaces:**
 - Consumes: `ExtractionEngine` Protocol, `ExtractionPrompt`, `_ENGINES` (Task 2).
-- Produces: `recall.truth_extraction._openai_engine.OpenAIExtractionEngine` with class attributes `engine_id = "recall.truth_extraction.openai"`, `model_id`, `revision`, and `run(prompt: ExtractionPrompt) -> str`. Registered as `_ENGINES["openai"]`.
+- Produces: `recall.truth_extraction._openai_engine.OpenAIExtractionEngine` with `run(prompt: ExtractionPrompt) -> str` and the identity attributes `model_id`, `revision` and `engine_id`. **As built, `engine_id` is an INSTANCE attribute**, `f"recall.truth_extraction.openai@{host}:{port}"`, because the endpoint has to be part of the audit identity: `extraction_cache_key` hashes only engine_id, model_id and revision, so two endpoints advertising the same model name would otherwise share one cache entry. Registered as `_ENGINES["openai"]`, whose factories take the resolved settings mapping so an explicit env reaches the engine instead of `os.environ`.
 
 - [ ] **Step 1: Write the failing test**
 

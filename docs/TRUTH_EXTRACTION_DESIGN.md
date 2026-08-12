@@ -84,8 +84,13 @@ recall/truth_extraction/_openai_engine.py   ->  _ENGINES["openai"]
 
 Whatever the model returns still passes the full ladder, unchanged:
 
-**Batch rungs** (refuse the file's whole output): `json`, `top_level_shape`, `max_claims`,
-`claim_shape`.
+**Batch rungs** (refuse the file's whole output): `engine_error`, `json`, `top_level_shape`,
+`max_claims`, `claim_shape`. `engine_error` is the one rung raised *before* the model answers:
+a model engine reaches the network, so it can fail with a rate limit, a timeout or a dropped
+connection, none of which is a malformed answer. It is recorded per file and never cached,
+because a transient failure is not an answer. After `CONSECUTIVE_ENGINE_FAILURE_LIMIT` failures
+in a row the engine is treated as unavailable and the remaining files are refused without a
+network round trip, since one failure is that memo's problem and every failure is the engine's.
 **Claim rungs** (refuse one claim, keep the rest): `quote_not_verbatim`, `quote_is_frontmatter`,
 `target_not_in_corpus`, `date_not_in_body`.
 

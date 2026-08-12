@@ -28,7 +28,12 @@ from recall.truth_extraction._engine import (
     resolve_extraction_engine,
 )
 from recall.truth_extraction._normalize import normalize_extraction
-from recall.truth_extraction._openai_engine import DEFAULT_EXTRACTION_MODEL
+from recall.truth_extraction._openai_engine import (
+    DEFAULT_EXTRACTION_MODEL,
+    UNPARSED_ENDPOINT,
+    _host_of,
+    _text_of,
+)
 from recall.truth_extraction._prompt import build_extraction_prompt
 
 
@@ -169,29 +174,180 @@ def test_a_variable_set_to_empty_falls_back_to_the_default():
     [
         SimpleNamespace(choices=[]),
         SimpleNamespace(choices=None),
+        SimpleNamespace(),
         SimpleNamespace(choices=[SimpleNamespace(message=None)]),
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=None))]),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=[{"a": 1}]))]),
     ],
-    ids=["no-choices", "null-choices", "no-message", "null-content"],
+    ids=["no-choices", "null-choices", "no-choices-attr", "no-message", "null-content", "blocks"],
 )
 def test_a_degenerate_response_becomes_an_empty_answer_not_a_crash(reply):
     """OpenRouter returns HTTP 200 with an error body and NO choices when an upstream fails.
 
     `reply.choices[0]` would be an unguarded IndexError on a live path, and that exception
     escapes `extract_file_claims` and discards the whole corpus run.
+
+    Calls the PRODUCTION `_text_of`. An earlier version of this test re-implemented the guard
+    in its own fake client, which meant deleting the real guard left the suite green: a guard
+    that cannot fail. Import the thing under test, never a copy of it.
     """
-    from recall.truth_extraction._openai_engine import OpenAIExtractionEngine
+    assert _text_of(reply) == ""
 
-    class _Raw:
-        def complete(self, messages, **kwargs):
-            choices = getattr(reply, "choices", None) or ()
-            if not choices:
-                return ""
-            message = getattr(choices[0], "message", None)
-            return getattr(message, "content", None) or ""
 
-    engine = OpenAIExtractionEngine(client=_Raw(), model_id="m", revision="r")
-    assert engine.run(_prompt()) == ""
+def test_the_happy_path_still_returns_the_model_text():
+    """The degenerate cases above must not be passing because `_text_of` always returns ""."""
+    reply = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="hello"))])
+    assert _text_of(reply) == "hello"
+
+
+def test_the_client_is_built_with_an_explicit_timeout_and_no_sdk_retries(monkeypatch):
+    """The SDK default is a 600s read timeout with 2 retries; ours must replace both.
+
+    Nothing pinned this before, so the timeout and `max_retries=0` could be deleted silently.
+    """
+    import openai
+
+    seen: dict = {}
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=lambda **k: None))
+
+    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+    resolve_extraction_engine(
+        {
+            "RECALL_TRUTH_EXTRACTION": "1",
+            "RECALL_TRUTH_EXTRACTION_ENGINE": "openai",
+            "RECALL_EXTRACTION_API_KEY": "k",
+            "RECALL_EXTRACTION_TIMEOUT": "12.5",
+        }
+    )
+    assert seen["timeout"] == 12.5
+    assert seen["max_retries"] == 0, "the SDK's own retries would multiply with ours"
+
+
+def test_a_transient_failure_is_retried_and_a_permanent_one_is_not(monkeypatch):
+    import openai
+
+    calls = {"n": 0}
+
+    def _make(fail_with):
+        def _create(**kwargs):
+            calls["n"] += 1
+            raise fail_with
+
+        class _FakeOpenAI:
+            def __init__(self, **kwargs):
+                self.chat = SimpleNamespace(completions=SimpleNamespace(create=_create))
+
+        return _FakeOpenAI
+
+    env = {
+        "RECALL_TRUTH_EXTRACTION": "1",
+        "RECALL_TRUTH_EXTRACTION_ENGINE": "openai",
+        "RECALL_EXTRACTION_API_KEY": "k",
+    }
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    monkeypatch.setattr(openai, "OpenAI", _make(TimeoutError("timed out")))
+    engine = resolve_extraction_engine(env)
+    with pytest.raises(TimeoutError):
+        engine.run(_prompt())
+    assert calls["n"] == 3, "a transient failure must be retried"
+
+    calls["n"] = 0
+    monkeypatch.setattr(openai, "OpenAI", _make(PermissionError("401 unauthorized")))
+    engine = resolve_extraction_engine(env)
+    with pytest.raises(PermissionError):
+        engine.run(_prompt())
+    assert calls["n"] == 1, "a permanent failure must fail fast"
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [
+        ("https://openrouter.ai/api/v1", "openrouter.ai"),
+        ("http://localhost:8000/v1", "localhost:8000"),
+        ("http://localhost:1234/v1", "localhost:1234"),
+        ("myhost.local/v1", "myhost.local"),
+        ("myproxy.local:8443/v1?token=sk-live-SECRET", "myproxy.local:8443"),
+        ("https://user:sk-secret@host.example/v1", "host.example"),
+    ],
+)
+def test_the_endpoint_identity_carries_host_and_port_and_nothing_else(base_url, expected):
+    """Credentials, query and path must never reach the audit record or the cache key."""
+    assert _host_of(base_url) == expected
+
+
+def test_two_local_ports_are_two_identities():
+    """Dropping the port leaves the collision this identity exists to close half open."""
+    assert _host_of("http://localhost:8000/v1") != _host_of("http://localhost:1234/v1")
+
+
+def test_an_unparseable_endpoint_is_recorded_as_unidentified_not_verbatim():
+    assert _host_of("") == UNPARSED_ENDPOINT
+    assert "SECRET" not in _host_of("myproxy.local:8443/v1?token=sk-live-SECRET")
+
+
+def test_a_non_numeric_timeout_names_the_variable():
+    with pytest.raises(ValueError, match="RECALL_EXTRACTION_TIMEOUT"):
+        resolve_extraction_engine(
+            {
+                "RECALL_TRUTH_EXTRACTION": "1",
+                "RECALL_TRUTH_EXTRACTION_ENGINE": "openai",
+                "RECALL_EXTRACTION_API_KEY": "k",
+                "RECALL_EXTRACTION_TIMEOUT": "60s",
+            }
+        )
+
+
+def test_a_systemic_outage_stops_asking_once_per_file():
+    """One failure is this memo's problem; every failure is the engine's.
+
+    Without a break, a wedged endpoint makes all 792 memos pay the full retry and timeout
+    budget to learn the same thing, which is over a day of ingest producing nothing.
+    """
+    from recall.truth_extraction.extract import (
+        CONSECUTIVE_ENGINE_FAILURE_LIMIT,
+        extract_corpus_claims,
+    )
+
+    class _Down(DeterministicExtractionEngine):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, prompt) -> str:
+            self.calls += 1
+            raise ConnectionError("connection refused")
+
+    engine = _Down()
+    documents = {f"{i:02d}.md": "Body.\n" for i in range(20)}
+    results = extract_corpus_claims(documents, engine=engine)
+
+    assert len(results) == 20, "every file must still get a result"
+    assert all(r.batch_rejection is not None for r in results)
+    assert engine.calls == CONSECUTIVE_ENGINE_FAILURE_LIMIT, (
+        f"the engine was asked {engine.calls} times; it should stop after "
+        f"{CONSECUTIVE_ENGINE_FAILURE_LIMIT}"
+    )
+    assert "treated as unavailable" in results[-1].batch_rejection.reason
+
+
+def test_an_isolated_failure_does_not_trip_the_break():
+    """A corpus with a few awkward memos must not stop; only a run of failures should."""
+    from recall.truth_extraction.extract import extract_corpus_claims
+
+    class _Flaky(DeterministicExtractionEngine):
+        def run(self, prompt) -> str:
+            if prompt.file in {"02.md", "07.md", "13.md"}:
+                raise ConnectionError("blip")
+            return super().run(prompt)
+
+    documents = {f"{i:02d}.md": "Body. This replaces other.md.\n" for i in range(20)}
+    results = extract_corpus_claims(documents, engine=_Flaky())
+    refused = [r for r in results if r.batch_rejection is not None]
+    assert len(refused) == 3, "isolated failures tripped the systemic break"
 
 
 def test_an_engine_failure_refuses_one_file_and_spares_the_rest():
