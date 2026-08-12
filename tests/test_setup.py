@@ -444,3 +444,25 @@ def test_index_memory_directory_survives_indexing_failure(monkeypatch, tmp_path)
 
     assert "Could not auto-index" in output.getvalue()
     assert "db unreachable" in output.getvalue()
+
+
+def test_index_memory_directory_survives_embedder_resolution_failure(monkeypatch, tmp_path):
+    from recall.setup import index_memory_directory
+
+    monkeypatch.delenv("RECALL_ENV", raising=False)
+
+    def boom(*a, **k):
+        raise ValueError("unknown embedder")
+
+    monkeypatch.setattr("recall.setup.resolve_embedder", boom)
+    output = io.StringIO()
+
+    index_memory_directory(
+        dsn="postgresql://example/recall",
+        embedder_name="invalid_embedder",
+        memory_dir=tmp_path / "memory",
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    assert "Could not auto-index" in output.getvalue()
+    assert "unknown embedder" in output.getvalue()

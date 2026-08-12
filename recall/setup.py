@@ -393,8 +393,8 @@ def index_memory_directory(
     from recall.index import Indexer, chunk_text
     from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
 
-    embedder = resolve_embedder(embedder_name, env=env)
     try:
+        embedder = resolve_embedder(embedder_name, env=env)
         with PgVectorStore(
             dsn, dim=embedder.dim, table=DEFAULT_TABLE, tenant=DEFAULT_TENANT
         ) as store:
