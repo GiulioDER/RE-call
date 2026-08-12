@@ -153,6 +153,26 @@ for the ~30-line pattern: search first; if a non-gap closed decision surfaces, b
 — Back to the [README](../README.md) · the [engineering writeup](WRITEUP.md) · the
 [case study](CASE_STUDY.md).
 
+## 5. Configure your project's memory files
+
+`recall setup` offers to scaffold two files after the embedder/reranker/entailment prompts:
+
+- A `<!-- recall setup begin -->` / `<!-- recall setup end -->` block appended to `CLAUDE.md`
+  (created if missing) telling Claude when to call `recall_search`/`recall_evidence` and how to
+  write new facts to `memory/`. Re-running `recall setup` only replaces this block — everything
+  else in `CLAUDE.md` is left alone.
+- A starter `memory/MEMORY.md`, created only if one does not already exist, documenting the
+  frontmatter convention (`name`, `description`, `metadata.type`) and the one-line-per-fact index
+  format. `memory/*.md` files you add later are where individual facts live.
+
+The wizard then indexes `memory/` immediately, so `recall_search` can find it from your first turn
+with Claude. Under `RECALL_ENV=production` this indexing step is skipped (local filesystem indexing
+is development-only there — see [PRODUCTION.md](PRODUCTION.md)); index it through your production
+build pipeline instead.
+
+Decline the prompt to skip scaffolding entirely, or answer it again on a later `recall setup` run
+to refresh the `CLAUDE.md` block.
+
 ## Strict trust: what the tools return when the gate cannot certify an answer
 
 The MCP service defaults to **strict**, like the library. A server that degraded by omission would
