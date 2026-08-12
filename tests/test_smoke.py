@@ -52,3 +52,20 @@ def test_server_json_versions_match_pyproject():
     ]
     assert pins, "no --from argument in server.json to pin the version"
     assert all(pin.endswith(f"=={declared}") for pin in pins), pins
+
+
+def test_uv_lock_records_this_version():
+    """`uv.lock` is the sixth place the version is written, and CI is where that was learned.
+
+    The lock records the project's own version alongside its dependencies, so bumping anywhere
+    else leaves it stale. CI does catch it, via `uv lock --check`, but only after a push: this
+    turns a lost CI round into a failing test on the machine that made the change.
+    """
+    lock = Path(__file__).parent.parent / "uv.lock"
+    declared = _declared_version()
+    text = lock.read_text(encoding="utf-8")
+
+    # The project's own entry, not one of the 193 dependencies that also carry a `version =`.
+    m = re.search(r'^name = "recall-rag"\nversion = "([^"]+)"', text, re.M)
+    assert m, "no recall-rag entry in uv.lock"
+    assert m.group(1) == declared
