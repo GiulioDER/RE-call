@@ -248,7 +248,11 @@ def test_a_transient_failure_is_retried_and_a_permanent_one_is_not(monkeypatch):
         "RECALL_TRUTH_EXTRACTION_ENGINE": "openai",
         "RECALL_EXTRACTION_API_KEY": "k",
     }
-    monkeypatch.setattr("time.sleep", lambda _s: None)
+    # NOT `monkeypatch.setattr("time.sleep", ...)`. `retry_with_backoff` captured
+    # `sleep=time.sleep` as a keyword DEFAULT at definition time, so rebinding the module
+    # attribute does nothing and this test really slept for about a second. Patching the jitter
+    # draw works because it is resolved at call time, and it makes every backoff zero length.
+    monkeypatch.setattr("recall.embeddings.random.uniform", lambda _a, _b: 0.0)
 
     monkeypatch.setattr(openai, "OpenAI", _make(TimeoutError("timed out")))
     engine = resolve_extraction_engine(env)
@@ -288,6 +292,35 @@ def test_two_local_ports_are_two_identities():
 def test_an_unparseable_endpoint_is_recorded_as_unidentified_not_verbatim():
     assert _host_of("") == UNPARSED_ENDPOINT
     assert "SECRET" not in _host_of("myproxy.local:8443/v1?token=sk-live-SECRET")
+
+
+@pytest.mark.parametrize("bad", ["[::1:8000/v1", "[::1]8000", "[", "http://[", "https://["])
+def test_a_malformed_ipv6_endpoint_is_refused_not_crashed(bad):
+    """`urlsplit` raises on an unbalanced bracket, and the `//` retry can raise where the
+    first split did not. A missing closing bracket is an ordinary typo, and this is total."""
+    assert _host_of(bad) == UNPARSED_ENDPOINT
+
+
+def test_an_ipv6_literal_keeps_its_brackets_so_two_endpoints_stay_distinct():
+    """Unbracketed, `[::1]:8000` and `[::1:8000]` both render as `::1:8000`: one identity."""
+    assert _host_of("http://[::1]:8000/v1") == "[::1]:8000"
+    assert _host_of("http://[::1:8000]/v1") == "[::1:8000]"
+    assert _host_of("http://[::1]:8000/v1") != _host_of("http://[::1:8000]/v1")
+
+
+def test_text_blocks_are_read_rather_than_discarded():
+    """A gateway returning content blocks sends a WELL FORMED answer; discarding it would
+    refuse every file under the `json` rung and blame the model for it."""
+    reply = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=[{"type": "text", "text": '{"claims": '}, {"type": "text", "text": "[]}"}]
+                )
+            )
+        ]
+    )
+    assert _text_of(reply) == '{"claims": []}'
 
 
 def test_a_non_numeric_timeout_names_the_variable():
@@ -332,6 +365,92 @@ def test_a_systemic_outage_stops_asking_once_per_file():
         f"{CONSECUTIVE_ENGINE_FAILURE_LIMIT}"
     )
     assert "treated as unavailable" in results[-1].batch_rejection.reason
+
+
+class _MemoryCache:
+    def __init__(self) -> None:
+        self.entries: dict = {}
+
+    def get(self, key):
+        return self.entries.get(key)
+
+    def put(self, key, value) -> None:
+        self.entries[key] = value
+
+
+def _warm(documents):
+    cache = _MemoryCache()
+    from recall.truth_extraction.extract import extract_corpus_claims
+
+    extract_corpus_claims(documents, engine=DeterministicExtractionEngine(), cache=cache)
+    return cache
+
+
+class _Down(DeterministicExtractionEngine):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(self, prompt) -> str:
+        self.calls += 1
+        raise ConnectionError("connection refused")
+
+
+def test_the_break_never_stands_between_a_caller_and_the_cache():
+    """A cache hit costs no engine call, so refusing it saves nothing and destroys the run.
+
+    Measured before the fix: 17 memos with valid cached extractions came back as engine_error
+    refusals, turning 16 surviving claims into zero for identical engine cost.
+    """
+    from recall.truth_extraction.extract import extract_corpus_claims
+
+    # Self-referential: each memo supersedes the previous one, so the targets RESOLVE. Naming
+    # a target outside the corpus is refused at the `target_not_in_corpus` rung, which would
+    # leave the warm cache holding zero claims and make this test pass for the wrong reason.
+    documents = {
+        f"{i:02d}.md": f"Doc {i}. This replaces {i - 1:02d}.md.\n" if i else "Doc 0.\n"
+        for i in range(20)
+    }
+    cache = _warm(documents)
+
+    edited = dict(documents)
+    for name in ("00.md", "01.md", "02.md", "03.md"):
+        edited[name] = documents[name] + "Edited today.\n"
+
+    engine = _Down()
+    results = extract_corpus_claims(edited, engine=engine, cache=cache)
+
+    kept = sum(len(r.claims) for r in results)
+    assert kept > 0, "the break discarded every cached extraction"
+    assert sum(1 for r in results if r.cached) == 16
+    assert engine.calls <= 4, "the break should still stop the engine being re-asked"
+
+
+def test_a_cache_hit_does_not_reset_the_failure_counter():
+    """A cached result is no evidence the engine recovered.
+
+    With edited memos interleaved among cached ones, which is what adding files to a corpus
+    produces alphabetically, a resetting counter meant the break never tripped at all.
+    """
+    from recall.truth_extraction.extract import extract_corpus_claims
+
+    # Self-referential: each memo supersedes the previous one, so the targets RESOLVE. Naming
+    # a target outside the corpus is refused at the `target_not_in_corpus` rung, which would
+    # leave the warm cache holding zero claims and make this test pass for the wrong reason.
+    documents = {
+        f"{i:02d}.md": f"Doc {i}. This replaces {i - 1:02d}.md.\n" if i else "Doc 0.\n"
+        for i in range(20)
+    }
+    cache = _warm(documents)
+
+    edited = dict(documents)
+    for i in range(0, 20, 2):  # every other file misses the cache
+        edited[f"{i:02d}.md"] = documents[f"{i:02d}.md"] + "Edited today.\n"
+
+    engine = _Down()
+    extract_corpus_claims(edited, engine=engine, cache=cache)
+    assert engine.calls == 3, (
+        f"the engine was asked {engine.calls} times; interleaved cache hits reset the counter"
+    )
 
 
 def test_an_isolated_failure_does_not_trip_the_break():

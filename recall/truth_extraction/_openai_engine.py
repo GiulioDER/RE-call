@@ -109,16 +109,35 @@ def _host_of(base_url: str) -> str:
     with a `//` prefix, which is how a network-relative reference is spelled, and anything still
     unparseable becomes `UNPARSED_ENDPOINT` rather than the raw string.
     """
-    parts = urlsplit(base_url)
-    if parts.hostname is None:
-        parts = urlsplit(f"//{base_url}")
-    host = parts.hostname
+    # Both splits are guarded. `urlsplit` raises ValueError("Invalid IPv6 URL") on an unbalanced
+    # bracket, and the `//` retry can raise for input the FIRST split accepted: with no netloc
+    # there is no bracket to validate, and prefixing one creates it. A missing closing bracket on
+    # a local IPv6 endpoint is an ordinary typo, and this function promises to be total.
+    host = port = None
+    # The `//` retry is for SCHEME-LESS input only. Applying it to a value that already has a
+    # scheme re-reads the scheme as the host, so a malformed "http://[" would be recorded as the
+    # endpoint "http" rather than as unidentified.
+    candidates = (base_url,) if "://" in base_url else (base_url, f"//{base_url}")
+    for candidate in candidates:
+        try:
+            parts = urlsplit(candidate)
+        except ValueError:
+            continue
+        if parts.hostname is None:
+            continue
+        host = parts.hostname
+        try:
+            port = parts.port
+        except ValueError:  # a non-numeric port; the host alone still identifies it safely
+            port = None
+        break
     if host is None:
         return UNPARSED_ENDPOINT
-    try:
-        port = parts.port
-    except ValueError:  # a non-numeric port; the host alone still identifies it safely
-        port = None
+    # An IPv6 literal is re-bracketed before the port is joined. Without it `[::1]:8000` and
+    # `[::1:8000]` both render as `::1:8000`, which is one identity for two endpoints: exactly
+    # the collision this function exists to close.
+    if ":" in host:
+        host = f"[{host}]"
     return f"{host}:{port}" if port else host
 
 
@@ -142,10 +161,20 @@ def _text_of(reply: object) -> str:
         return ""
     message = getattr(choices[0], "message", None)
     content = getattr(message, "content", None)
-    # A gateway may return `content` as a list of blocks rather than a string. It is passed
-    # through unchanged as text only if it is text; anything else becomes "" and meets the
-    # `json` rung, which is where every unusable answer is already handled.
-    return content if isinstance(content, str) else ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        # A gateway may return `content` as a list of text blocks. Discarding that answer would
+        # refuse a WELL FORMED reply and blame the model for it, under the `json` rung, on every
+        # file. Joining the text fields reads it; anything that is not a text block contributes
+        # nothing, so a genuinely degenerate list still ends up as "".
+        return "".join(
+            block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "") or ""
+            for block in content
+        )
+    # Every remaining shape becomes "" and meets the `json` rung, which is where every unusable
+    # answer is already handled.
+    return ""
 
 
 def _setting(source: Mapping[str, str], name: str, default: str) -> str:

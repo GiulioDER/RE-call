@@ -12,6 +12,7 @@ reviews — so a batch level rejection is recorded on the returned `FileExtracti
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 
 from recall.truth_extraction._cache import ExtractionCache, extraction_cache_key
 from recall.truth_extraction._engine import ExtractionEngine
@@ -149,6 +150,18 @@ def extract_corpus_claims(
     results: list[FileExtraction] = []
     consecutive_failures = 0
     for file, text in sorted(documents.items()):
+        # The break guards the ENGINE, so it must not stand between a caller and the cache. A
+        # cache hit costs no engine call, so skipping it saves nothing and throws away an
+        # extraction that already succeeded: on a warm cache with a dead endpoint, refusing
+        # cached files turned 16 surviving claims into zero for identical engine cost.
+        if consecutive_failures >= CONSECUTIVE_ENGINE_FAILURE_LIMIT and cache is not None:
+            prompt = build_extraction_prompt(
+                file=file, human_body=human_body_of(text), corpus_names=names
+            )
+            cached = cache.get(extraction_cache_key(engine=engine, prompt=prompt))
+            if cached is not None:
+                results.append(replace(cached, cached=True))
+                continue
         if consecutive_failures >= CONSECUTIVE_ENGINE_FAILURE_LIMIT:
             # The engine is down, not this memo. Making a per-file refusal out of a systemic
             # outage was the right call for ONE failure and is the wrong call for all of them:
@@ -177,8 +190,17 @@ def extract_corpus_claims(
         result = extract_file_claims(
             file=file, text=text, corpus_names=names, engine=engine, cache=cache
         )
-        failed = result.batch_rejection is not None and result.batch_rejection.rung == "engine_error"
-        consecutive_failures = consecutive_failures + 1 if failed else 0
+        # Only a result that actually reached the engine is evidence about the engine. A cache
+        # hit says nothing either way, and letting one RESET the counter defeated the break
+        # entirely: with edited memos interleaved among cached ones, which is what adding files
+        # to a corpus produces alphabetically, every failure was followed by a hit and the
+        # engine was asked for all of them.
+        if not result.cached:
+            failed = (
+                result.batch_rejection is not None
+                and result.batch_rejection.rung == "engine_error"
+            )
+            consecutive_failures = consecutive_failures + 1 if failed else 0
         results.append(result)
     return tuple(results)
 
