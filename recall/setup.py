@@ -41,6 +41,11 @@ class Choice:
     label: str
     value: str
     description: str
+    #: False when this machine cannot run the option yet. It is still offered, because hiding it
+    #: makes the product look like it does not have the feature, and leaves no way to ask for it.
+    available: bool = True
+    #: What to install to make an unavailable option work. Shown when it is selected.
+    unavailable_note: str = ""
 
 
 @dataclass(frozen=True)
@@ -175,26 +180,53 @@ def embedder_choices(
     return choices
 
 
+def _why_unavailable(probe: HardwareProbe, *, needs_cuda: bool = False) -> str:
+    """The conditions that actually failed, not the one that usually fails.
+
+    These mirror the guards the callers use to compute `runnable`, and must stay in step with
+    them: a note naming sentence-transformers to somebody who already has it, when the real
+    blocker is free disk, sends them to fix the wrong thing.
+    """
+    missing: list[str] = []
+    if needs_cuda and not probe.cuda_available:
+        missing.append("no CUDA device was detected")
+    if not probe.sentence_transformers_available:
+        missing.append("sentence-transformers is not installed")
+    if not _can_download_models(probe):
+        missing.append("there is not enough internet or free disk to download the model")
+    return "; ".join(missing) if missing else "this machine cannot run it"
+
+
 def reranker_choices(
     probe: HardwareProbe, *, security_required: bool
 ) -> list[Choice]:
+    runnable = probe.sentence_transformers_available and _can_download_models(probe)
+    note = (
+        f"Reranking is unavailable here: {_why_unavailable(probe)}. The extra is "
+        'pip install "recall-rag[rerank]". Rerun setup and choose it again once it can run.'
+    )
     choices = [Choice(label="none", value="", description="Skip reranking for speed")]
-    if probe.sentence_transformers_available and _can_download_models(probe):
+    choices.append(
+        Choice(
+            label="ms marco reranker",
+            value="RECALL_RERANK=1",
+            description="Default local cross encoder, the measured rerank win",
+            available=runnable,
+            unavailable_note=note,
+        )
+    )
+    # `security_required` hides bge as a policy decision rather than a capability one, so it stays
+    # hidden rather than being listed as unavailable: nothing the reader installs would reveal it.
+    if not security_required:
         choices.append(
             Choice(
-                label="ms marco reranker",
-                value="RECALL_RERANK=1",
-                description="Default local cross encoder, the measured rerank win",
+                label="bge reranker",
+                value="RECALL_RERANK=1;RECALL_RERANK_MODEL=BAAI/bge-reranker-base",
+                description="Heavier local reranker, available if you want to try it",
+                available=runnable,
+                unavailable_note=note,
             )
         )
-        if not security_required:
-            choices.append(
-                Choice(
-                    label="bge reranker",
-                    value="RECALL_RERANK=1;RECALL_RERANK_MODEL=BAAI/bge-reranker-base",
-                    description="Heavier local reranker, available if you want to try it",
-                )
-            )
     return choices
 
 
@@ -206,14 +238,24 @@ def sparse_choices(probe: HardwareProbe) -> list[Choice]:
             description="Current sparse retrieval path, no extra GPU requirement",
         )
     ]
-    if probe.cuda_available and probe.sentence_transformers_available and _can_download_models(probe):
-        choices.append(
-            Choice(
-                label="splade",
-                value="RECALL_SPARSE=splade",
-                description="CUDA sparse encoder for higher coverage when the machine can run it",
-            )
+    runnable = (
+        probe.cuda_available
+        and probe.sentence_transformers_available
+        and _can_download_models(probe)
+    )
+    choices.append(
+        Choice(
+            label="splade",
+            value="RECALL_SPARSE=splade",
+            description="CUDA sparse encoder for higher coverage when the machine can run it",
+            available=runnable,
+            unavailable_note=(
+                f"SPLADE is unavailable here: {_why_unavailable(probe, needs_cuda=True)}. The "
+                'extra is pip install "recall-rag[sparse]". Rerun setup and choose it again once '
+                "it can run."
+            ),
         )
+    )
     return choices
 
 
@@ -274,12 +316,29 @@ def _choose(
     print_fn: Callable[..., None],
     title: str,
     choices: Sequence[Choice],
+    *,
+    sole_note: str | None = None,
 ) -> Choice:
     if not choices:
         raise ValueError(f"no choices available for {title}")
+    if not choices[0].available:
+        # The fallback below returns choices[0] when someone picks an option this machine cannot
+        # run, so the first entry has to be the runnable baseline. Every builder puts it there.
+        # Failing here is far better than the alternative, which is writing an unrunnable value
+        # into .env under a message announcing it was kept for safety.
+        raise ValueError(f"the first choice for {title} must be runnable")
+    if len(choices) == 1 and sole_note is not None:
+        # A menu of one is not a choice. The hardware probe already decided this, so asking the
+        # reader to type `1` costs a keystroke and tells them nothing. Say what was selected and
+        # why nothing else was offered, which is how the entailment judge already reports its
+        # own absence a few lines below. Only call sites that pass a note opt into this, so
+        # nothing else in the wizard changes shape without saying so.
+        print_fn(sole_note)
+        return choices[0]
     print_fn(title)
     for i, choice in enumerate(choices, 1):
-        print_fn(f"  {i}. {choice.label}: {choice.description}")
+        suffix = "" if choice.available else "  (not installed yet)"
+        print_fn(f"  {i}. {choice.label}: {choice.description}{suffix}")
     while True:
         raw = _prompt(input_fn, print_fn, "Select a number: ")
         try:
@@ -287,7 +346,17 @@ def _choose(
         except ValueError:
             idx = 0
         if 1 <= idx <= len(choices):
-            return choices[idx - 1]
+            picked = choices[idx - 1]
+            if picked.available:
+                return picked
+            # Unavailable options are offered so the reader can see the feature exists and ask
+            # for it. The choice still cannot be written to .env: the module is absent, so it
+            # would fail at query time, long after the person who could fix it walked away.
+            # Falling back to choices[0] relies on the first entry being the always-runnable
+            # baseline, which `reranker_choices` and `sparse_choices` both guarantee.
+            print_fn(picked.unavailable_note)
+            print_fn(f"Keeping {choices[0].label} for now.")
+            return choices[0]
         print_fn(f"Choose one of 1..{len(choices)}.")
 
 
@@ -531,6 +600,11 @@ def run_setup_wizard(
         print_fn,
         "Choose the embedder you want to use:",
         embedders,
+        sole_note=(
+            "Embedder: hashing, the only one this machine can use. It needs no download and no "
+            "network, and it retrieves noticeably worse than a real model. Install one with "
+            'pip install "recall-rag[fastembed]", or set an API key above, then rerun setup.'
+        ),
     )
     rerankers = reranker_choices(probe, security_required=security_required)
     reranker = _choose(

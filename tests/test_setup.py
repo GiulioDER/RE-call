@@ -46,8 +46,8 @@ def test_setup_wizard_writes_env_and_accepts_api_keys(tmp_path, monkeypatch):
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu
+        "1",  # sparse backend menu
         "n",
         "n",  # scaffold CLAUDE.md / memory/? declined
         "n",
@@ -99,8 +99,8 @@ def test_setup_wizard_skips_blank_calibration_inputs(tmp_path, monkeypatch):
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu
+        "1",  # sparse backend menu
         "n",
         "n",  # scaffold CLAUDE.md / memory/? declined
         "y",
@@ -161,8 +161,8 @@ def test_setup_wizard_treats_calibration_directory_as_output_folder(tmp_path, mo
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu
+        "1",  # sparse backend menu
         "n",
         "n",  # scaffold CLAUDE.md / memory/? declined
         "y",
@@ -221,8 +221,8 @@ def test_setup_wizard_can_enable_entailment_judge(tmp_path, monkeypatch):
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu
+        "1",  # sparse backend menu
         "y",
         "1",
         "n",  # scaffold CLAUDE.md / memory/? declined
@@ -268,8 +268,13 @@ def test_splade_choice_requires_cuda_gpu():
         fastembed_available=True,
         sentence_transformers_available=True,
     )
-    assert all(choice.label != "splade" for choice in sparse_choices(no_cuda))
-    assert any(choice.label == "splade" for choice in sparse_choices(with_cuda))
+    # splade is listed either way now, because hiding it makes the product look like it does not
+    # have the feature. What CUDA governs is whether it can be selected and run.
+    without = next(c for c in sparse_choices(no_cuda) if c.label == "splade")
+    withit = next(c for c in sparse_choices(with_cuda) if c.label == "splade")
+    assert without.available is False
+    assert "CUDA" in without.unavailable_note
+    assert withit.available is True
 
 
 def test_update_markdown_block_creates_file_when_absent(tmp_path):
@@ -499,8 +504,8 @@ def test_setup_wizard_scaffolds_claude_md_and_memory_and_indexes(tmp_path, monke
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu
+        "1",  # sparse backend menu
         "n",
         "y",  # scaffold CLAUDE.md / memory/? accepted
         "n",
@@ -554,8 +559,8 @@ def test_setup_wizard_survives_scaffold_failure_and_still_writes_env(tmp_path, m
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu
+        "1",  # sparse backend menu
         "n",
         "y",  # scaffold CLAUDE.md / memory/? accepted, but scaffold_claude_md raises
         "n",
@@ -611,8 +616,8 @@ def test_setup_wizard_skips_scaffold_when_declined(tmp_path, monkeypatch):
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu
+        "1",  # sparse backend menu
         "n",
         "n",  # scaffold CLAUDE.md / memory/? declined
         "n",
@@ -665,8 +670,8 @@ def test_setup_wizard_scaffold_prompt_defaults_to_yes_on_blank_answer(tmp_path, 
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu
+        "1",  # sparse backend menu
         "n",
         "",  # scaffold CLAUDE.md / memory/? blank answer takes the default (yes)
         "n",
@@ -722,8 +727,8 @@ def test_setup_wizard_still_scaffolds_when_calibration_output_path_is_invalid(
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu
+        "1",  # sparse backend menu
         "n",
         "y",  # scaffold CLAUDE.md / memory/? accepted
         "y",  # calibrate now? accepted
@@ -757,3 +762,225 @@ def test_setup_wizard_still_scaffolds_when_calibration_output_path_is_invalid(
     assert claude_md_path.exists()
     assert (memory_dir / "MEMORY.md").exists()
     assert index_calls["memory_dir"] == memory_dir
+
+
+def test_a_real_choice_is_still_offered_as_a_menu(tmp_path, monkeypatch):
+    """The shortcut must not swallow a decision the machine can actually make.
+
+    With CUDA and sentence-transformers present, sparse has two backends and reranking has three,
+    so both menus appear and both answers are consumed. Widen the `sole_note` branch to fire on
+    more than one choice and this goes red.
+    """
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu="nvidia",
+        cuda_available=True,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    answers = iter([
+        "n",  # security
+        "", "", "",  # the three API keys
+        "1",  # embedder
+        "1",  # reranker menu, genuinely offered
+        "2",  # sparse menu, genuinely offered: splade
+        "n",  # entailment
+        "n",  # scaffold
+        "n",  # calibrate
+    ])
+    output = io.StringIO()
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _prompt="": next(answers),
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = output.getvalue()
+    assert "Choose the sparse retrieval backend:" in text
+    assert "SPLADE is unavailable" not in text
+    assert next(answers, None) is None
+    assert "RECALL_SPARSE=splade" in (tmp_path / ".env").read_text(encoding="utf-8")
+
+
+def test_a_sole_embedder_says_what_it_costs_rather_than_offering_a_menu(tmp_path, monkeypatch):
+    """The embedder list can collapse too, and hashing is the one collapse that costs quality.
+
+    A menu of one never told anyone that. Drop the `sole_note` from the embedder call site and
+    this goes red: the wizard prompts for a menu the answer list does not answer.
+    """
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=False,
+        sentence_transformers_available=False,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: False)
+    answers = iter([
+        "n",  # security
+        "", "", "",  # the three API keys, all blank, so no cloud embedder appears
+        "1",  # reranker menu, still offered because unavailable options are listed
+        "1",  # sparse backend menu, same
+        "n",  # scaffold
+        "n",  # calibrate
+    ])
+    output = io.StringIO()
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _prompt="": next(answers),
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = output.getvalue()
+    assert "Embedder: hashing, the only one this machine can use" in text
+    assert "retrieves noticeably worse than a real model" in text
+    assert "Choose the embedder you want to use:" not in text
+    assert next(answers, None) is None
+    assert "RECALL_EMBEDDER=hashing" in (tmp_path / ".env").read_text(encoding="utf-8")
+
+
+def _no_extras_probe() -> HardwareProbe:
+    """A default `pip install "recall-rag[fastembed]"` machine: no sentence-transformers, no CUDA."""
+    return HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=False,
+    )
+
+
+def test_options_this_machine_cannot_run_are_still_listed_and_marked(tmp_path, monkeypatch) -> None:
+    """Hiding them makes the product look like it lacks the feature, and leaves no way to ask.
+
+    Drop the `(not installed yet)` suffix in `_choose` and the marker assertion goes red; stop
+    appending the unavailable options in `reranker_choices` and the label assertions go red.
+    """
+    monkeypatch.setattr("recall.setup.probe_hardware", _no_extras_probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: False)
+    answers = iter(["n", "", "", "", "1", "1", "1", "n", "n"])
+    output = io.StringIO()
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _prompt="": next(answers),
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = output.getvalue()
+    assert "ms marco reranker" in text
+    assert "bge reranker" in text
+    assert "splade" in text
+    assert "(not installed yet)" in text
+    assert next(answers, None) is None
+
+
+def test_picking_an_unavailable_reranker_explains_and_keeps_the_baseline(
+    tmp_path, monkeypatch
+) -> None:
+    """The setting is deliberately NOT written: the module is absent, so it would fail at query
+    time, in front of whoever inherits the deployment rather than the person who chose it.
+
+    Delete the availability branch in `_choose` and this goes red with RECALL_RERANK=1.
+    """
+    monkeypatch.setattr("recall.setup.probe_hardware", _no_extras_probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: False)
+    answers = iter(["n", "", "", "", "1", "2", "1", "n", "n"])  # reranker 2 is not installed
+    output = io.StringIO()
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _prompt="": next(answers),
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = output.getvalue()
+    assert 'pip install "recall-rag[rerank]"' in text
+    assert "Keeping none for now." in text
+    assert "RECALL_RERANK=0" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert next(answers, None) is None
+
+
+def test_picking_unavailable_splade_explains_and_keeps_postgres_fts(tmp_path, monkeypatch) -> None:
+    """Same rule on the sparse menu, where the baseline is `postgres fts` rather than `none`."""
+    monkeypatch.setattr("recall.setup.probe_hardware", _no_extras_probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: False)
+    answers = iter(["n", "", "", "", "1", "1", "2", "n", "n"])  # sparse 2 is not installed
+    output = io.StringIO()
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _prompt="": next(answers),
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = output.getvalue()
+    assert 'pip install "recall-rag[sparse]"' in text
+    assert "Keeping postgres fts for now." in text
+    assert "RECALL_SPARSE=fts" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert next(answers, None) is None
+
+
+def test_the_note_names_the_condition_that_actually_failed() -> None:
+    """Telling somebody to install what they already have sends them to fix the wrong thing.
+
+    `runnable` folds together the package check and the disk/network check, so a fixed string
+    blaming sentence-transformers is wrong whenever the real blocker is disk. Replace
+    `_why_unavailable(probe)` with a constant and the disk case goes red.
+    """
+    from recall.setup import reranker_choices, sparse_choices
+
+    no_package = HardwareProbe(
+        cpu_count=8, gpu=None, cuda_available=False, free_bytes=10_000_000_000,
+        internet=True, fastembed_available=True, sentence_transformers_available=False,
+    )
+    # Has the package, but no room to download the weights.
+    no_disk = HardwareProbe(
+        cpu_count=8, gpu=None, cuda_available=False, free_bytes=1_000_000,
+        internet=True, fastembed_available=True, sentence_transformers_available=True,
+    )
+
+    missing_pkg = next(c for c in reranker_choices(no_package, security_required=False)
+                       if c.label == "ms marco reranker")
+    assert "sentence-transformers is not installed" in missing_pkg.unavailable_note
+    assert "free disk" not in missing_pkg.unavailable_note
+
+    missing_disk = next(c for c in reranker_choices(no_disk, security_required=False)
+                        if c.label == "ms marco reranker")
+    assert missing_disk.available is False
+    assert "free disk" in missing_disk.unavailable_note
+    assert "sentence-transformers is not installed" not in missing_disk.unavailable_note
+
+    splade = next(c for c in sparse_choices(no_disk) if c.label == "splade")
+    assert "no CUDA device was detected" in splade.unavailable_note
+
+
+def test_a_choice_list_whose_baseline_cannot_run_is_refused() -> None:
+    """The fallback returns choices[0], so an unrunnable first entry would write a broken value.
+
+    Delete the guard in `_choose` and this goes red, silently returning the unrunnable baseline.
+    """
+    from recall.setup import Choice, _choose
+
+    broken = [
+        Choice(label="a", value="A", description="", available=False, unavailable_note="n"),
+        Choice(label="b", value="B", description=""),
+    ]
+    with pytest.raises(ValueError, match="must be runnable"):
+        _choose(lambda _p="": "1", lambda *a, **k: None, "Pick:", broken)
