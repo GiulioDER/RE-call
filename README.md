@@ -77,29 +77,54 @@ the full interpretation and limits.
 
 ## Quickstart
 
-Run the guided setup wizard for your own corpus. The wizard records the selected
+RE-call keeps memory in your own PostgreSQL with pgvector, so a database comes first.
+
+**Already running PostgreSQL with pgvector?** Skip ahead and point the DSN at it.
+
+**Want a throwaway one?** Save this as `docker-compose.yml`, then start it:
+
+```yaml
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: recall
+      POSTGRES_PASSWORD: recall
+      POSTGRES_DB: recall
+    volumes:
+      - recall_pgdata:/var/lib/postgresql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recall"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  recall_pgdata:
+```
+
+```bash
+docker compose up -d --wait
+```
+
+Then install, create the schema, and run the guided setup wizard. The wizard records the selected
 embedder, retrieval options, and an optional calibration that is fitted to your labeled queries and
 your corpus.
 
 ```bash
-docker compose up -d --wait
 pip install "recall-rag[fastembed]"
-python -m recall.cli --table recall_quickstart \
-  --migration-dsn postgresql://recall:recall@localhost:5432/recall \
-  schema --dim 384 apply
+python -m recall.cli --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply
 python -m recall.cli setup
 ```
 
-PowerShell:
+Those three run unchanged in PowerShell.
 
-```powershell
-docker compose up -d --wait
-pip install "recall-rag[fastembed]"
-python -m recall.cli --table recall_quickstart `
-  --migration-dsn postgresql://recall:recall@localhost:5432/recall `
-  schema --dim 384 apply
-python -m recall.cli setup
-```
+The schema command targets the default `chunks` table deliberately. Global migrations have to be
+applied there before any other table, so starting with `--table something_else` on a fresh database
+stops with `SchemaTooOld`. To add a separate index later, apply the default target first, then pass
+`--table`.
 
 When the wizard asks whether to calibrate, provide a labeled query JSON and the corpus directory.
 Use [recall/eval/queries.json](https://github.com/GiulioDER/RE-call/blob/master/recall/eval/queries.json)
