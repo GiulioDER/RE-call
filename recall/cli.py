@@ -681,7 +681,9 @@ def main(argv: list[str] | None = None) -> None:
             # The wizard is the command you run to REPAIR a bad configuration, so a bare
             # refusal is a dead end: it takes `dsn=args.dsn` verbatim and never prompts for
             # one. Still guarded, because it does connect when the operator accepts the
-            # calibrate prompt — but the refusal has to name the way out.
+            # calibrate prompt, and also when the operator accepts the CLAUDE.md/memory
+            # scaffold prompt (which defaults to yes and auto-indexes memory/) — but the
+            # refusal has to name the way out.
             try:
                 _require_secure(args.dsn)
             except PermissionError as exc:

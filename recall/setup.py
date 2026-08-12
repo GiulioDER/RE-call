@@ -19,6 +19,10 @@ SETUP_END = "# recall setup end"
 DEFAULT_ENV_PATH = Path(".env")
 DEFAULT_CALIBRATION_PATH = Path("calibration.json")
 MODEL_DOWNLOAD_FLOOR_BYTES = 1_500_000_000
+CLAUDE_MD_BEGIN = "<!-- recall setup begin -->"
+CLAUDE_MD_END = "<!-- recall setup end -->"
+DEFAULT_CLAUDE_MD_PATH = Path("CLAUDE.md")
+DEFAULT_MEMORY_DIR = Path("memory")
 
 
 @dataclass(frozen=True)
@@ -304,6 +308,110 @@ def _update_env_block(path: Path, values: dict[str, str]) -> None:
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
+def _update_markdown_block(path: Path, begin: str, end: str, content: str) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    start = next((i for i, line in enumerate(lines) if line.strip() == begin), None)
+    stop = next((i for i, line in enumerate(lines) if line.strip() == end), None)
+    block = [begin, *content.splitlines(), end]
+    if start is not None and stop is not None and stop >= start:
+        lines = [*lines[:start], *block, *lines[stop + 1 :]]
+    else:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(block)
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _claude_md_block() -> str:
+    return (
+        "## Using recall\n"
+        "\n"
+        "This project is indexed by recall. Call `recall_search` before proposing an idea, "
+        "forming a hypothesis, or repeating past work. If a closed decision or falsified "
+        "hypothesis surfaces, do not re-litigate it.\n"
+        "\n"
+        "- When `abstained` is true, no hit survived the trust gate (or `decision: abstain` from "
+        "`recall_evidence`) — say you do not know instead of answering from degraded hits.\n"
+        "- Use `recall_evidence` instead of `recall_search` when about to answer from memory "
+        "rather than just consult it; cite only `chunk_id` values from its `items`.\n"
+        "- Write new durable facts to `memory/`, one file per fact, indexed by "
+        "`memory/MEMORY.md` (see that file for the format), then call `recall_index` on "
+        "`memory/` so the new file and the updated index both become searchable.\n"
+    )
+
+
+def scaffold_claude_md(path: Path = DEFAULT_CLAUDE_MD_PATH) -> None:
+    _update_markdown_block(path, CLAUDE_MD_BEGIN, CLAUDE_MD_END, _claude_md_block())
+
+
+def _memory_md_starter() -> str:
+    return (
+        "# Memory index\n"
+        "\n"
+        "This file is the always-loaded index. Each fact below lives in its own file under "
+        "`memory/`, with frontmatter:\n"
+        "\n"
+        "```markdown\n"
+        "---\n"
+        "name: <short-kebab-case-slug>\n"
+        "description: <one-line summary, used to judge relevance>\n"
+        "metadata:\n"
+        "  type: user | feedback | project | reference\n"
+        "---\n"
+        "\n"
+        "<the fact>\n"
+        "```\n"
+        "\n"
+        "Add one line per fact here as you create them:\n"
+        "\n"
+        "`- [Title](file.md) — one-line hook`\n"
+    )
+
+
+def scaffold_memory_index(memory_dir: Path = DEFAULT_MEMORY_DIR) -> bool:
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    index_path = memory_dir / "MEMORY.md"
+    if index_path.exists():
+        return False
+    index_path.write_text(_memory_md_starter(), encoding="utf-8")
+    return True
+
+
+def index_memory_directory(
+    *,
+    dsn: str,
+    embedder_name: str,
+    memory_dir: Path = DEFAULT_MEMORY_DIR,
+    env: dict[str, str] | None = None,
+    print_fn: Callable[..., None] = print,
+) -> None:
+    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+        print_fn(
+            f"Skipping auto-index: RECALL_ENV is production. Index {memory_dir} via your "
+            "production build pipeline instead."
+        )
+        return
+    try:
+        from recall.index import Indexer, chunk_text
+        from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
+
+        embedder = resolve_embedder(embedder_name, env=env)
+        with PgVectorStore(
+            dsn, dim=embedder.dim, table=DEFAULT_TABLE, tenant=DEFAULT_TENANT
+        ) as store:
+            store.check_schema()
+            indexer = Indexer(store, embedder, chunker=chunk_text)
+            stats = indexer.index_path(memory_dir, glob="**/*.md")
+    except Exception as exc:  # best effort: scaffolded files must survive even if this fails
+        print_fn(
+            f"Could not auto-index {memory_dir}: {exc} — run "
+            f"'python -m recall.cli index {memory_dir}' once the schema is applied for this "
+            "embedder's dimension."
+        )
+        return
+    print_fn(f"Indexed {stats.chunks} chunks from {stats.files} files in {memory_dir}")
+
+
 def _quote_env(value: str) -> str:
     if value == "":
         return '""'
@@ -392,6 +500,8 @@ def run_setup_wizard(
     *,
     dsn: str,
     env_path: Path = DEFAULT_ENV_PATH,
+    claude_md_path: Path = DEFAULT_CLAUDE_MD_PATH,
+    memory_dir: Path = DEFAULT_MEMORY_DIR,
     input_fn: Callable[[str], str] = input,
     print_fn: Callable[..., None] = print,
 ) -> dict[str, str]:
@@ -456,6 +566,35 @@ def run_setup_wizard(
             "and enough internet and disk to download a model."
         )
 
+    scaffold_requested = _ask_yes_no(
+        input_fn,
+        print_fn,
+        "Scaffold CLAUDE.md and a memory/ directory for this project?",
+        default=True,
+    )
+
+    # Deferred to right before each return, after `.env` is written: `scaffold_claude_md` and
+    # `index_memory_directory` can resolve/download an embedder model and open a DB connection,
+    # and running that BEFORE the answers just gathered are persisted means an interruption
+    # during a long model download loses the whole completed interview, not just the scaffold.
+    def _run_scaffold() -> None:
+        try:
+            scaffold_claude_md(claude_md_path)
+            print_fn(f"Updated {claude_md_path}")
+            if scaffold_memory_index(memory_dir):
+                print_fn(f"Wrote {memory_dir / 'MEMORY.md'}")
+            else:
+                print_fn(f"{memory_dir / 'MEMORY.md'} already exists, left unchanged.")
+            index_memory_directory(
+                dsn=dsn,
+                embedder_name=embedder.value,
+                memory_dir=memory_dir,
+                env=cloud_keys,
+                print_fn=print_fn,
+            )
+        except Exception as exc:
+            print_fn(f"Could not scaffold CLAUDE.md/memory: {exc}")
+
     values: dict[str, str] = {
         "RECALL_DSN": dsn,
         "RECALL_SECURITY_REQUIRED": "1" if security_required else "0",
@@ -507,6 +646,8 @@ def run_setup_wizard(
             )
             _update_env_block(env_path, values)
             print_fn(f"Wrote {env_path}")
+            if scaffold_requested:
+                _run_scaffold()
             return values
         queries = _require_local_path(queries_raw, label="Path to labeled queries JSON")
         corpus = _require_local_path(corpus_raw, label="Path to your corpus")
@@ -526,6 +667,12 @@ def run_setup_wizard(
             )
         except ValueError as exc:
             print_fn(str(exc))
+            # This path never wrote `.env` even before this function grew a scaffold step — a
+            # bad calibration path aborts the whole wizard. But scaffolding was requested
+            # independently of calibration succeeding, so still attempt it best-effort on the
+            # way out rather than silently dropping a completed part of the interview.
+            if scaffold_requested:
+                _run_scaffold()
             raise SystemExit(2) from exc
         values["RECALL_CALIBRATION"] = str(result.path)
         print_fn(
@@ -539,4 +686,6 @@ def run_setup_wizard(
 
     _update_env_block(env_path, values)
     print_fn(f"Wrote {env_path}")
+    if scaffold_requested:
+        _run_scaffold()
     return values

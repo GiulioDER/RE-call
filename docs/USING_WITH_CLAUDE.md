@@ -150,6 +150,43 @@ Claude:  "Memory has no real answer on that — I'd be guessing. Want me to rese
 The agent-side glue is tiny — see [`examples/self_recall_agent.py`](../examples/self_recall_agent.py)
 for the ~30-line pattern: search first; if a non-gap closed decision surfaces, back off.
 
+## 5. Configure your project's memory files
+
+`recall setup` offers to scaffold two files after the embedder/reranker/entailment prompts:
+
+- A `<!-- recall setup begin -->` / `<!-- recall setup end -->` block appended to `CLAUDE.md`
+  (created if missing) telling Claude when to call `recall_search`/`recall_evidence` and how to
+  write new facts to `memory/`. Re-running `recall setup` only replaces this block — everything
+  else in `CLAUDE.md` is left alone.
+- A starter `memory/MEMORY.md`, created only if one does not already exist, documenting the
+  frontmatter convention (`name`, `description`, `metadata.type`) and the one-line-per-fact index
+  format. `memory/*.md` files you add later are where individual facts live.
+
+The wizard then tries to index `memory/` immediately, so `recall_search` can find it from your
+first turn with Claude. This auto-index step requires the schema to already be applied at a
+dimension matching the chosen embedder; if the schema has not been applied yet (or is applied at a
+different dimension), indexing fails and the wizard prints remediation instead of blocking setup;
+run `python -m recall.cli index memory/` yourself once the schema is ready. Under
+`RECALL_ENV=production` this indexing step is skipped entirely (local filesystem indexing is
+development-only there — see [PRODUCTION.md](PRODUCTION.md)); index it through your production
+build pipeline instead.
+
+Auto-index always targets the default table and tenant (`DEFAULT_TABLE`/`DEFAULT_TENANT`), even if
+you ran `recall setup` with a non-default `--tenant` or `--table`. If your project uses a
+non-default tenant or table, the rows written by auto-index will not show up in that tenant's later
+searches; index `memory/` yourself against the correct table/tenant instead.
+
+The first auto-index run indexes `memory/MEMORY.md` itself along with any facts already present,
+since it walks the whole directory. On a fresh scaffold that means the starter file's own
+frontmatter/format instructions are indexed as a chunk — harmless (the trust layer scores generic
+boilerplate low), but if `recall_search` surfaces it, that's what happened.
+
+The scaffold/index step runs only after `.env` is written, so an interruption during a slow model
+download or DB connection never loses the answers you already gave earlier in the interview.
+
+Decline the prompt to skip scaffolding entirely, or answer it again on a later `recall setup` run
+to refresh the `CLAUDE.md` block.
+
 — Back to the [README](../README.md) · the [engineering writeup](WRITEUP.md) · the
 [case study](CASE_STUDY.md).
 

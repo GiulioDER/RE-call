@@ -5,8 +5,8 @@
 <!-- mcp-name: io.github.GiulioDER/re-call -->
 
 <p align="center">
-  <b>Trustworthy memory for AI agents.</b><br>
-  RE-call gives retrieval results confidence, provenance, validity, tenant isolation, and an explicit abstention path when the memory does not support an answer.
+  <b>Memory that knows what it no longer believes.</b><br>
+  RE-call is the retrieval engine I extracted from a research agent that had been running for months, after its memory outgrew its context window and it started confidently repeating conclusions it had already disproved.
 </p>
 
 <p align="center">
@@ -34,17 +34,22 @@
 
 ## Why RE-call
 
-Most memory systems optimize for the nearest match. Agent memory needs a stricter contract: the
-retriever must say whether a memory is current, where it came from, how confident it is, and when
-the corpus does not contain an answer.
+Nearest-match retrieval cannot tell the difference between what is true and what merely reads like
+it. When a corpus keeps its history, and real agent memory does, the retracted claim and its
+correction are both retrievable, and the retracted one is often the nearer match. That is not a
+tuning problem. A ranker with no notion of validity has no way to prefer the correction.
 
-RE-call is built around that contract.
+RE-call came out of a production, long-running trading-research agent: months of operation,
+792 <!--@ citation-pending: measured in docs/CASE_STUDY.md, not backed by a committed results artifact -->
+typed memos, 6,469 <!--@ citation-pending: measured in docs/CASE_STUDY.md, not backed by a committed results artifact -->
+chunks, re-indexed daily by a session-end hook. Every guard in this repository
+exists because that agent failed a specific way without it. See
+[docs/CASE_STUDY.md](https://github.com/GiulioDER/RE-call/blob/master/docs/CASE_STUDY.md).
 
-It is for teams putting agent memory behind real applications: support copilots, internal research
-agents, compliance assistants, and long-running workflow agents where a stale or unsupported memory
-is worse than no memory. The buyer story is simple: keep the memory layer local by default, attach
-policy to every hit, calibrate the refusal threshold on your corpus, and let the application decide
-what to do with a result that is not trustworthy enough to answer from.
+It is for teams putting agent memory behind real applications, where a stale or unsupported memory
+is worse than no memory: keep the memory layer local by default, attach policy to every hit,
+calibrate the refusal threshold on your corpus, and let the application decide what to do with a
+result that is not trustworthy enough to answer from.
 
 | Capability | What it means in practice |
 |---|---|
@@ -168,6 +173,20 @@ opt in, citation constrained, and review aware.
 
 The ordered SQL migration path is versioned now, pre-tenancy tables are migrated in place, and runtime
 `CREATE TABLE IF NOT EXISTS` remains bootstrap only.
+
+## When not to use RE-call
+
+Use something else if you need managed hosting, per-chunk ACLs, automatic truth extraction from
+prose, or a memory system that rewrites facts for you. RE-call is a retrieval library over your
+PostgreSQL database, not a hosted memory platform.
+
+## What this does not do
+
+RE-call is a retrieval library with an opt-in reasoning layer, not a general reasoning system. It
+does not infer every missing supersession edge, prove that an on-topic memory answers a near-miss
+question, promote proposals into corpus truth, or replace database operations with a managed
+service. It returns the trust signals the caller needs, and it refuses to pretend that a nearest
+match is always usable evidence.
 
 ## Use it
 
@@ -329,20 +348,6 @@ Important benchmark documents:
 | [benchmarks/REVIEW.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md) | Adversarial review of the LOCOMO comparison. |
 | [benchmarks/PREREGISTRATION.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/PREREGISTRATION.md) | Pre-registered rules for the main memory benchmark. |
 | [benchmarks/archive/preregistrations/README.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/archive/preregistrations/README.md) | Archived preregistrations for follow-up benchmark arms. |
-
-## When not to use RE-call
-
-Use something else if you need managed hosting, per-chunk ACLs, automatic truth extraction from
-prose, or a memory system that rewrites facts for you. RE-call is a retrieval library over your
-PostgreSQL database, not a hosted memory platform.
-
-## What this does not do
-
-RE-call is a retrieval library with an opt-in reasoning layer, not a general reasoning system. It
-does not infer every missing supersession edge, prove that an on-topic memory answers a near-miss
-question, promote proposals into corpus truth, or replace database operations with a managed
-service. It returns the trust signals the caller needs, and it refuses to pretend that a nearest
-match is always usable evidence.
 
 ## Reproduce
 
