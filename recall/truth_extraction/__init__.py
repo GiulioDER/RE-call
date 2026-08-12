@@ -6,10 +6,14 @@ and, separately, declare them. It never writes corpus metadata and never runs on
 path: extraction is an ingest concern.
 """
 
-# Imported here rather than re-exported from `recall.reasoning_proposals`: the query
-# planner imports that package, and pulling extraction in through it would put a model
-# backed component on the query path. The dependency runs one way only.
-from recall.reasoning_proposals._extracted import ExtractedClaimProposalProvider
+# `ExtractedClaimProposalProvider` is deliberately NOT re-exported here. It lives in
+# `recall.reasoning_proposals._extracted` because it needs that package's private
+# `_make_proposal` and `_proposal_id`, and that module imports `recall.truth_extraction.types`.
+# Re-exporting it created a genuine import cycle: importing the adapter first, on a fresh
+# interpreter, raised ImportError from a partially initialised module, so the package only
+# worked when something else happened to import this one first. The dependency runs ONE WAY,
+# adapter -> truth_extraction, and this line was the thing violating that. Import the provider
+# from `recall.reasoning_proposals._extracted`.
 from recall.truth_extraction._engine import (
     DETERMINISTIC_EXTRACTION_ENGINE_ID,
     DETERMINISTIC_EXTRACTION_MODEL_ID,
@@ -49,7 +53,6 @@ __all__ = [
     "DETERMINISTIC_EXTRACTION_MODEL_ID",
     "DETERMINISTIC_EXTRACTION_REVISION",
     "DeterministicExtractionEngine",
-    "ExtractedClaimProposalProvider",
     "ExtractionEngine",
     "ExtractionPrompt",
     "PROMPT_REVISION",

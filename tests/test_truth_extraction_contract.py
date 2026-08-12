@@ -53,8 +53,8 @@ from recall.reasoning_proposals import (
     deterministic_inference_proposals,
     proposal_report,
 )
+from recall.reasoning_proposals._extracted import ExtractedClaimProposalProvider
 from recall.truth_extraction import (
-    ExtractedClaimProposalProvider,
     CLAIM_KINDS,
     DETERMINISTIC_EXTRACTION_ENGINE_ID,
     MAX_CLAIMS_PER_FILE,
