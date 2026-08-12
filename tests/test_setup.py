@@ -46,8 +46,7 @@ def test_setup_wizard_writes_env_and_accepts_api_keys(tmp_path, monkeypatch):
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu. The sparse backend is not prompted: only one
         "n",
         "n",  # scaffold CLAUDE.md / memory/? declined
         "n",
@@ -99,8 +98,7 @@ def test_setup_wizard_skips_blank_calibration_inputs(tmp_path, monkeypatch):
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu. The sparse backend is not prompted: only one
         "n",
         "n",  # scaffold CLAUDE.md / memory/? declined
         "y",
@@ -161,8 +159,7 @@ def test_setup_wizard_treats_calibration_directory_as_output_folder(tmp_path, mo
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu. The sparse backend is not prompted: only one
         "n",
         "n",  # scaffold CLAUDE.md / memory/? declined
         "y",
@@ -221,8 +218,7 @@ def test_setup_wizard_can_enable_entailment_judge(tmp_path, monkeypatch):
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu. The sparse backend is not prompted: only one
         "y",
         "1",
         "n",  # scaffold CLAUDE.md / memory/? declined
@@ -499,8 +495,7 @@ def test_setup_wizard_scaffolds_claude_md_and_memory_and_indexes(tmp_path, monke
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu. The sparse backend is not prompted: only one
         "n",
         "y",  # scaffold CLAUDE.md / memory/? accepted
         "n",
@@ -554,8 +549,7 @@ def test_setup_wizard_survives_scaffold_failure_and_still_writes_env(tmp_path, m
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu. The sparse backend is not prompted: only one
         "n",
         "y",  # scaffold CLAUDE.md / memory/? accepted, but scaffold_claude_md raises
         "n",
@@ -611,8 +605,7 @@ def test_setup_wizard_skips_scaffold_when_declined(tmp_path, monkeypatch):
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu. The sparse backend is not prompted: only one
         "n",
         "n",  # scaffold CLAUDE.md / memory/? declined
         "n",
@@ -665,8 +658,7 @@ def test_setup_wizard_scaffold_prompt_defaults_to_yes_on_blank_answer(tmp_path, 
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu. The sparse backend is not prompted: only one
         "n",
         "",  # scaffold CLAUDE.md / memory/? blank answer takes the default (yes)
         "n",
@@ -722,8 +714,7 @@ def test_setup_wizard_still_scaffolds_when_calibration_output_path_is_invalid(
         "openai-key",
         "openrouter-key",
         "4",
-        "1",
-        "1",
+        "1",  # reranker menu. The sparse backend is not prompted: only one
         "n",
         "y",  # scaffold CLAUDE.md / memory/? accepted
         "y",  # calibrate now? accepted
@@ -757,3 +748,136 @@ def test_setup_wizard_still_scaffolds_when_calibration_output_path_is_invalid(
     assert claude_md_path.exists()
     assert (memory_dir / "MEMORY.md").exists()
     assert index_calls["memory_dir"] == memory_dir
+
+
+def test_a_sole_backend_is_reported_rather_than_offered_as_a_menu(tmp_path, monkeypatch):
+    """A menu of one is not a choice, so the wizard states it and moves on.
+
+    This probe has no CUDA and no sentence-transformers, so reranking and the sparse backend each
+    collapse to their baseline. The answer list below deliberately provides nothing for either.
+    Delete the `sole_note` branch in `_choose` and this goes red: the wizard prompts twice more
+    and runs the iterator dry.
+    """
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=False,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    answers = iter([
+        "n",  # security
+        "", "", "",  # the three API keys
+        "1",  # embedder
+        "n",  # scaffold
+        "n",  # calibrate
+    ])
+    output = io.StringIO()
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _prompt="": next(answers),
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = output.getvalue()
+    assert "Reranking stays off, because sentence-transformers is not installed" in text
+    assert "SPLADE is unavailable" in text
+    assert "Choose the sparse retrieval backend:" not in text
+    assert "Choose whether to enable reranking:" not in text
+    # Every answer was consumed by the prompt it was written for, and no prompt was answered
+    # with a value meant for another one.
+    assert next(answers, None) is None
+    assert "Please answer yes or no." not in text
+    env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "RECALL_RERANK=0" in env
+    assert "RECALL_SPARSE=fts" in env
+
+
+def test_a_real_choice_is_still_offered_as_a_menu(tmp_path, monkeypatch):
+    """The shortcut must not swallow a decision the machine can actually make.
+
+    With CUDA and sentence-transformers present, sparse has two backends and reranking has three,
+    so both menus appear and both answers are consumed. Widen the `sole_note` branch to fire on
+    more than one choice and this goes red.
+    """
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu="nvidia",
+        cuda_available=True,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    answers = iter([
+        "n",  # security
+        "", "", "",  # the three API keys
+        "1",  # embedder
+        "1",  # reranker menu, genuinely offered
+        "2",  # sparse menu, genuinely offered: splade
+        "n",  # entailment
+        "n",  # scaffold
+        "n",  # calibrate
+    ])
+    output = io.StringIO()
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _prompt="": next(answers),
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = output.getvalue()
+    assert "Choose the sparse retrieval backend:" in text
+    assert "SPLADE is unavailable" not in text
+    assert next(answers, None) is None
+    assert "RECALL_SPARSE=splade" in (tmp_path / ".env").read_text(encoding="utf-8")
+
+
+def test_a_sole_embedder_says_what_it_costs_rather_than_offering_a_menu(tmp_path, monkeypatch):
+    """The embedder list can collapse too, and hashing is the one collapse that costs quality.
+
+    A menu of one never told anyone that. Drop the `sole_note` from the embedder call site and
+    this goes red: the wizard prompts for a menu the answer list does not answer.
+    """
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=False,
+        sentence_transformers_available=False,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: False)
+    answers = iter([
+        "n",  # security
+        "", "", "",  # the three API keys, all blank, so no cloud embedder appears
+        "n",  # scaffold
+        "n",  # calibrate
+    ])
+    output = io.StringIO()
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _prompt="": next(answers),
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = output.getvalue()
+    assert "Embedder: hashing, the only one this machine can use" in text
+    assert "retrieves noticeably worse than a real model" in text
+    assert "Choose the embedder you want to use:" not in text
+    assert next(answers, None) is None
+    assert "RECALL_EMBEDDER=hashing" in (tmp_path / ".env").read_text(encoding="utf-8")

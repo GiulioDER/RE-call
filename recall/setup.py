@@ -269,14 +269,45 @@ def _ask_yes_no(
         print_fn("Please answer yes or no.")
 
 
+def _missing_prerequisites(probe: HardwareProbe, *, needs_cuda: bool = False) -> str:
+    """What is absent on this machine, phrased so the reader can act on it.
+
+    These conditions mirror the guards in `reranker_choices` and `sparse_choices`, which decide
+    whether the alternatives get appended at all. The two have to stay in step: if a guard there
+    gains a condition and this does not, the wizard will state a reason that is not the real one.
+    The final fallback covers exactly that drift, so it should stay even though no probe reaches
+    it today.
+    """
+    missing: list[str] = []
+    if not probe.sentence_transformers_available:
+        missing.append("sentence-transformers is not installed")
+    if not _can_download_models(probe):
+        missing.append("there is not enough internet or free disk to download a model")
+    if needs_cuda and not probe.cuda_available:
+        missing.append("no CUDA device was detected")
+    if not missing:
+        return "the alternatives are unavailable on this machine"
+    return "; ".join(missing)
+
+
 def _choose(
     input_fn: Callable[[str], str],
     print_fn: Callable[..., None],
     title: str,
     choices: Sequence[Choice],
+    *,
+    sole_note: str | None = None,
 ) -> Choice:
     if not choices:
         raise ValueError(f"no choices available for {title}")
+    if len(choices) == 1 and sole_note is not None:
+        # A menu of one is not a choice. The hardware probe already decided this, so asking the
+        # reader to type `1` costs a keystroke and tells them nothing. Say what was selected and
+        # why nothing else was offered, which is how the entailment judge already reports its
+        # own absence a few lines below. Only call sites that pass a note opt into this, so
+        # nothing else in the wizard changes shape without saying so.
+        print_fn(sole_note)
+        return choices[0]
     print_fn(title)
     for i, choice in enumerate(choices, 1):
         print_fn(f"  {i}. {choice.label}: {choice.description}")
@@ -531,6 +562,11 @@ def run_setup_wizard(
         print_fn,
         "Choose the embedder you want to use:",
         embedders,
+        sole_note=(
+            "Embedder: hashing, the only one this machine can use. It needs no download and no "
+            "network, and it retrieves noticeably worse than a real model. Install one with "
+            'pip install "recall-rag[fastembed]", or set an API key above, then rerun setup.'
+        ),
     )
     rerankers = reranker_choices(probe, security_required=security_required)
     reranker = _choose(
@@ -538,12 +574,22 @@ def run_setup_wizard(
         print_fn,
         "Choose whether to enable reranking:",
         rerankers,
+        sole_note=(
+            "Reranking stays off, because "
+            + _missing_prerequisites(probe)
+            + '. Install it with pip install "recall-rag[rerank]", then rerun setup.'
+        ),
     )
     sparse_backend = _choose(
         input_fn,
         print_fn,
         "Choose the sparse retrieval backend:",
         sparse_choices(probe),
+        sole_note=(
+            "Sparse retrieval uses PostgreSQL full-text search. SPLADE is unavailable, because "
+            + _missing_prerequisites(probe, needs_cuda=True)
+            + "."
+        ),
     )
     entailment = None
     entailment_options = entailment_choices(probe)
