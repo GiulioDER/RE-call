@@ -297,15 +297,20 @@ def test_a_key_that_is_itself_a_contact_value_is_never_echoed(tmp_path: Path) ->
 
 
 def test_an_absurdly_nested_entry_is_refused_rather_than_crashing(tmp_path: Path) -> None:
-    """`json.loads` accepts nesting far deeper than Python will recurse over.
+    """The bound is 32, so 100 levels must be refused rather than walked.
 
-    Without the depth bound this raised RecursionError instead of refusing, so a malformed export
-    took the tool down rather than getting an answer. Remove the `MAX_CONTACT_DEPTH` check and
-    this goes red with RecursionError rather than SystemExit.
+    Depth is deliberately just past the bound rather than past CPython's stack. An earlier version
+    of this test nested 3000 levels to provoke a real RecursionError, which passed locally on 3.14
+    and failed on the 3.11 floor job inside `json.dumps` itself, before the guard was ever
+    reached. That version tested the interpreter's stack limit; this one tests
+    `MAX_CONTACT_DEPTH`.
+
+    Remove the `MAX_CONTACT_DEPTH` check and no SystemExit is raised at all, because the entry
+    carries a valid `query` and would load cleanly, so this goes red.
     """
     nested: dict[str, object] = {"query": "q"}
     cursor = nested
-    for _ in range(3000):
+    for _ in range(100):
         child: dict[str, object] = {}
         cursor["deeper"] = child
         cursor = child
