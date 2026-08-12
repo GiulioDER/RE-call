@@ -144,9 +144,18 @@ def test_the_superseded_memo_is_left_untouched(corpus, supersession):
 
 def test_a_rewrite_refuses_a_proposal_that_did_not_pass_promotion(corpus, supersession):
     """`promotion.py` held a complete gate with no caller outside its own tests. This is the
-    reason it exists, so the gate has to actually stop an unreviewed proposal."""
-    with pytest.raises((RewriteRefused, TypeError, ValueError, AttributeError)):
+    reason it exists, so the gate has to actually stop an unreviewed proposal.
+
+    Narrowed to `RewriteRefused` with its message. Accepting `AttributeError` too made this
+    green with the gate deleted: the next line reads `fact.state`, which an InferenceProposal
+    does not have, so an incidental crash was indistinguishable from a refusal.
+    """
+    before = {name: (corpus / name).read_bytes() for name in DOCUMENTS}
+    with pytest.raises(RewriteRefused, match="expected a reviewed PromotedFact"):
         apply_rewrite(corpus, supersession, apply=True)  # type: ignore[arg-type]
+    assert {name: (corpus / name).read_bytes() for name in DOCUMENTS} == before, (
+        "a refused rewrite still touched the corpus"
+    )
 
 
 def test_the_written_edge_is_readable_by_the_trust_layer(corpus, supersession):
@@ -164,40 +173,85 @@ def test_a_dry_run_writes_nothing(corpus, supersession):
     assert {name: (corpus / name).read_text(encoding="utf-8") for name in DOCUMENTS} == before
 
 
+#: Anchored on THIS FILE, never on the process's cwd. One editable install serves every
+#: worktree on this machine, so a relative path or an unpinned subprocess resolves `recall` from
+#: whichever checkout the shell happened to be in. Both guards below were demonstrably green
+#: over a restored cycle when run from a directory holding a different copy of the package.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 def test_the_adapter_imports_on_its_own():
     """`recall.truth_extraction` re-exported the adapter, which imports back into it.
 
     That cycle only showed itself when the adapter was imported FIRST, on a fresh interpreter,
     which is why every existing test missed it: they all imported the package first and the
-    module was already in `sys.modules`. A subprocess is the only honest check.
+    module was already in `sys.modules`. A subprocess is the only honest check, but only when
+    it is pinned to the checkout under test.
     """
+    import os
     import subprocess
     import sys
 
     out = subprocess.run(
-        [sys.executable, "-c", "import recall.reasoning_proposals._extracted"],
+        [sys.executable, "-c", "import recall.reasoning_proposals._extracted; print(recall.__file__)"],
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
         capture_output=True,
         text=True,
     )
-    assert out.returncode == 0, f"importing the adapter first still fails:\n{out.stderr}"
+    # A wrong-checkout ModuleNotFoundError must not read as the cycle being fixed, nor as it
+    # being present. Distinguish the two rather than trusting the return code alone.
+    assert "circular import" not in out.stderr, f"the cycle is back:\n{out.stderr}"
+    assert out.returncode == 0, f"importing the adapter first failed:\n{out.stderr}"
 
 
 def test_the_dependency_runs_one_way():
     """truth_extraction must not import reasoning_proposals: the query planner imports the
-    latter, and pulling extraction in behind it would put a model on the query path."""
-    from pathlib import Path
+    latter, and pulling extraction in behind it would put a model on the query path.
 
-    source = Path("recall/truth_extraction/__init__.py").read_text(encoding="utf-8")
-    offending = [
-        line
-        for line in source.splitlines()
-        if line.startswith(("import ", "from ")) and "reasoning_proposals" in line
-    ]
+    Walks EVERY module in the package with `ast`, not just `__init__.py`. A wrong-way import in
+    any sibling is the same defect, and a textual `startswith` check also misses indented and
+    parenthesis-continued imports.
+    """
+    import ast
+
+    offending: list[str] = []
+    for path in sorted((REPO_ROOT / "recall" / "truth_extraction").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "recall.reasoning_proposals"
+            ):
+                offending.append(f"{path.name}:{node.lineno} from {node.module}")
+            elif isinstance(node, ast.Import):
+                offending += [
+                    f"{path.name}:{node.lineno} import {alias.name}"
+                    for alias in node.names
+                    if alias.name.startswith("recall.reasoning_proposals")
+                ]
     assert not offending, f"truth_extraction imports reasoning_proposals: {offending}"
 
 
+def test_the_ladder_refuses_a_target_outside_the_corpus():
+    """Asserted at the LADDER, not only at its downstream consequence.
+
+    Two independent guards refuse this: the ladder's `target_not_in_corpus` rung, and
+    `_shape_of`'s check that the target has a node in this graph generation. Asserting only
+    that no `supersedes` proposal appears needed BOTH to break before it went red, so it did
+    not pin the rung it was named for.
+    """
+    documents = {
+        NEW: f"# new decision\n\nThis memo supersedes {OLD} after the February review.\n"
+    }
+    extractions = extract_corpus_claims(documents, engine=DeterministicExtractionEngine())
+    assert len(extractions) == 1
+    only = extractions[0]
+    assert only.claims == (), "a target outside the corpus was extracted as a claim"
+    assert [r.rung for r in only.rejections] == ["target_not_in_corpus"]
+
+
 def test_a_claim_the_ladder_refused_never_reaches_the_corpus():
-    """The ladder is the whole defence. A target outside the corpus must produce no proposal."""
+    """The downstream consequence of the rung above: no proposal, so nothing to promote."""
     documents = {
         NEW: f"# new decision\n\nThis memo supersedes {OLD} after the February review.\n"
     }
