@@ -1757,3 +1757,43 @@ def test_a_crash_before_the_first_record_leaves_no_empty_sidecar_corpse(
         )
 
     assert list(out.glob("*.partial.jsonl")) == [], "an empty sidecar corpse was left behind"
+
+
+def test_a_run_that_scores_nothing_still_keeps_its_stem_claimed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Releasing the claim on the SUCCESS path undoes the guarantee it was added for.
+
+    A run whose every qa row is unscoreable publishes a real `<stamp>.json` and writes no
+    sidecar records. If the release fires there, the stem is unclaimed while a published
+    artifact sits at it, and a same-second replicate reclaims it and silently overwrites that
+    artifact — exactly what claiming the stem exists to prevent. The release is for UNWINDING.
+    """
+    out = tmp_path / "results"
+    data = tmp_path / "unscoreable.json"
+    data.write_text(
+        json.dumps(
+            [{
+                "sample_id": "conv-a",
+                "conversation": {"speaker_a": "A", "speaker_b": "B"},
+                "qa": [{"question": "out of range", "answer": "x", "category": 9}],
+            }]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    _patch_recall_stub(monkeypatch)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+
+    argv = ["--arm", "recall", "--data", str(data), "--conversations", "1", "--out", str(out)]
+    assert main(argv, now=_NOW) == 0
+    published = out / f"{_STAMP_1CONV}.json"
+    assert published.exists()
+    before = published.read_text(encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="already exists"):
+        main(argv, now=_NOW)
+
+    assert published.read_text(encoding="utf-8") == before, "the published artifact was clobbered"

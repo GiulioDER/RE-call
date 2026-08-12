@@ -46,7 +46,6 @@ import argparse
 import json
 import os
 import re
-import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,7 +72,7 @@ from benchmarks.artifact_contract import (
     load_published_artifact,
     reject_unauditable_cost_claims,
 )
-from benchmarks.run import QUARANTINE_EXIT, _write_atomic
+from benchmarks.run import QUARANTINE_EXIT, _quarantine, _write_atomic
 
 #: The fields of a scored `Outcome`, i.e. the part of a sidecar record that is load-bearing.
 #: ``question`` and ``gold`` are joined in beside them by `benchmarks.run._outcome_record` and are
@@ -708,22 +707,20 @@ def main(argv: list[str] | None = None) -> int:
     try:
         reject_unauditable_cost_claims(payload)
     except ValueError as exc:
-        # Same trade as `benchmarks.run`: the contract keeps an unauditable artifact out of the
-        # published path, it does not get to destroy the work. A non-merge-only salvage has just
-        # re-bought whole conversations, and an uncaught ValueError exits 1, the status that
-        # tells a wrapper it is safe to re-run and pay for them again.
-        unpublished = args.out.with_name(f"{args.out.stem}.unpublished.json")
-        marked = dict(payload, unpublished=True, unpublished_reason=str(exc))
-        _write_atomic(unpublished, json.dumps(marked, indent=2))
-        print(f"salvaged artifact NOT published: {exc}", file=sys.stderr, flush=True)
-        print(f"unpublished       -> {unpublished}", file=sys.stderr, flush=True)
-        print(
-            "the re-scored work is in that file; repair the provider metadata and republish it "
-            "rather than re-running the salvage.",
-            file=sys.stderr,
-            flush=True,
+        # Same trade as `benchmarks.run`, through the SAME code: the contract keeps an
+        # unauditable artifact out of the published path, it does not get to destroy the work. A
+        # non-merge-only salvage has just re-bought whole conversations, and an uncaught
+        # ValueError exits 1, the status that tells a wrapper it is safe to pay for them again.
+        #
+        # `run._quarantine` rather than a local copy. Hand-rolling it here reproduced two defects
+        # that had already been found and fixed on run's side: the rescue could itself raise and
+        # lose the work, and it wrote inside the `results/*.json` glob that feeds `analyze`, so a
+        # refused salvage aborted every later curve over that directory.
+        preserved = _quarantine(
+            args.out.parent, args.out.stem, payload, encoded, sidecar or args.partial[0],
+            reason=str(exc),
         )
-        return QUARANTINE_EXIT
+        return QUARANTINE_EXIT if preserved else 1
     _write_atomic(args.out, encoded)
 
     salvage: dict[str, Any] = payload["salvage"]

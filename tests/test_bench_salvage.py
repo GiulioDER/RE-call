@@ -595,7 +595,8 @@ def test_salvage_quarantines_an_artifact_the_cost_contract_refuses(
     """
     records = [*_conv_a_records(), _record("conv-b:0"), _record("conv-c:0")]
     partial = _write_partial(tmp_path / f"{_STEM}{salvage_module.PARTIAL_SUFFIX}", records)
-    out = tmp_path / "salvaged.json"
+    # A results directory of its own, so the glob assertion below means something.
+    out = tmp_path / "results" / "salvaged.json"
 
     def _poison(*args: object, **kwargs: object) -> dict[str, Any]:
         payload = real_payload(*args, **kwargs)  # type: ignore[arg-type]
@@ -609,11 +610,47 @@ def test_salvage_quarantines_an_artifact_the_cost_contract_refuses(
 
     assert code == salvage_module.QUARANTINE_EXIT
     assert not out.exists(), "a refused artifact reached the published path"
-    quarantined = out.with_name(f"{out.stem}.unpublished.json")
+    # Outside the `results/*.json` glob that feeds `analyze`, exactly as run's quarantine is.
+    # Landing beside the published artifacts makes every later `analyze --curve` over that
+    # directory abort on the refusal.
+    assert list(out.parent.glob("*.json")) == []
+    quarantined = out.parent / "unpublished" / f"{out.stem}.json"
     assert quarantined.exists(), "the re-scored work was discarded rather than quarantined"
     recovered = json.loads(quarantined.read_text(encoding="utf-8"))
     assert recovered["unpublished"] is True
     assert "provider_metadata" in recovered["unpublished_reason"]
+
+
+def test_a_salvage_quarantine_that_cannot_be_written_falls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rescue that can itself throw the work away is not a rescue — salvage's included.
+
+    Hand-rolling the quarantine meant re-learning that lesson; it goes through run's hardened
+    `_quarantine`, which falls back from the subdirectory to a sibling and finally to stdout.
+    """
+    records = [*_conv_a_records(), _record("conv-b:0"), _record("conv-c:0")]
+    partial = _write_partial(tmp_path / f"{_STEM}{salvage_module.PARTIAL_SUFFIX}", records)
+    out = tmp_path / "results" / "salvaged.json"
+    out.parent.mkdir(parents=True)
+    (out.parent / "unpublished").write_text("not a directory", encoding="utf-8")
+
+    real_payload = salvage_module._results_payload
+
+    def _poison(*args: object, **kwargs: object) -> dict[str, Any]:
+        payload = real_payload(*args, **kwargs)  # type: ignore[arg-type]
+        payload["headline"] = "the whole arm for $7.29 of tokens"
+        return payload
+
+    monkeypatch.setattr(salvage_module, "_results_payload", _poison)
+
+    code = _merge_only(partial, out, _write_fixture(tmp_path))
+
+    assert code == salvage_module.QUARANTINE_EXIT
+    fallback = out.parent / f"{out.stem}.json.unpublished.json.txt"
+    assert fallback.exists() or (out.parent / "salvaged.unpublished.json.txt").exists(), (
+        f"the work was lost when the subdirectory was blocked: {list(out.parent.iterdir())}"
+    )
 
 
 def test_a_failed_publish_leaves_no_half_artifact_and_no_temp(

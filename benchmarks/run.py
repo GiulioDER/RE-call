@@ -587,17 +587,24 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
                 flush=True,
             )
     finally:
-        # RELEASE the claim if nothing was ever written. Claiming the stem CREATES the
-        # sidecar, so a failure above the first scored conversation — an ablation refusal,
-        # a bad DSN, an ingest error — would otherwise leave a 0-byte corpse that reads
-        # exactly like a crashed run whose records were lost, and
-        # `salvage --merge-only` republishes that as an n=0 artifact. An empty sidecar
-        # records nothing, so removing it loses nothing and frees the stem for a retry.
-        try:
-            if partial_path.stat().st_size == 0:
-                partial_path.unlink(missing_ok=True)
-        except OSError:  # pragma: no cover - best effort; a live sidecar is never touched
-            pass
+        # RELEASE the claim if nothing was ever written AND we are unwinding. Claiming the stem
+        # CREATES the sidecar, so a failure above the first scored conversation — an ablation
+        # refusal, a bad DSN, an ingest error — would otherwise leave a 0-byte corpse that reads
+        # exactly like a crashed run whose records were lost, and `salvage --merge-only`
+        # republishes that as an n=0 artifact. An empty sidecar records nothing, so removing it
+        # loses nothing and frees the stem for a retry.
+        #
+        # `sys.exception()` is what keeps this to the unwinding path. On SUCCESS a run can also
+        # write no records — every qa row unscoreable — and it still publishes a real
+        # `<stamp>.json`. Releasing there would unclaim a stem that a published artifact sits
+        # at, and the next same-second replicate would reclaim it and silently overwrite that
+        # artifact: the precise harm claiming the stem exists to prevent.
+        if sys.exception() is not None:
+            try:
+                if partial_path.stat().st_size == 0:
+                    partial_path.unlink(missing_ok=True)
+            except OSError:  # pragma: no cover - best effort; a live sidecar is never touched
+                pass
 
 
     agg = aggregate(outcomes)
