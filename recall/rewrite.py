@@ -73,10 +73,12 @@ from recall.frontmatter import (
     split_bom,
     split_lines,
     supersedes_key,
+    validity_bounds,
 )
 from recall.lineage import canonical_sha256
 from recall.observability import get_logger
 from recall.promotion import PromotedFact
+from recall.truth_extraction.types import STATUS_VOCABULARY, VALIDITY_CLAIM_KEYS
 from recall.trust import metadata_is_trusted
 
 _log = get_logger("rewrite")
@@ -88,6 +90,11 @@ FRONTMATTER_KEYS: tuple[str, ...] = VALIDITY_KEYS
 #: Everything the frontmatter has no vocabulary for. `status` is routable but no relation emits it
 #: yet: the routing table is the design, and leaving a hole in it invites a fourth frontmatter key.
 DERIVED_KEYS: tuple[str, ...] = ("contradicts", "same_entity", "status")
+
+#: Derived keys that hold exactly one value, so a second declaration is a conflict rather than
+#: an addition. `contradicts` and `same_entity` are genuinely multi-valued; `status` is not, and
+#: a memo carrying `status: active` and `status: withdrawn` at once says nothing at all.
+SINGLE_VALUED_DERIVED_KEYS: tuple[str, ...] = ("status",)
 
 DERIVED_OPEN = "<!-- recall:derived -->"
 DERIVED_CLOSE = "<!-- /recall:derived -->"
@@ -115,6 +122,83 @@ def destination(key: str) -> Destination:
     raise RewriteRefused(
         f"unknown_key: {key!r} is neither a recognised frontmatter key {FRONTMATTER_KEYS} "
         f"nor a derived-block key {DERIVED_KEYS}"
+    )
+
+
+@dataclass(frozen=True)
+class Routed:
+    """Where a proposal's relation lands: which key, what value, and in whose file."""
+
+    key: str
+    value: str
+    edit_file: str
+
+
+def route_relation(relation: str, subject_id: str, object_id: str) -> Routed:
+    """Resolve a proposal's relation into the key, value and file a rewrite would touch.
+
+    `destination` routes on a KEY. `reasoning_proposals/_extracted.py` emits a RELATION, and for
+    the two relations a document makes about ITSELF it prefixes the key into `object_id`
+    (`valid_from:2026-07-14`, `status:deprecated`). Neither is a relation between two documents,
+    and forcing them into `references` would put a false relation into an audit record.
+
+    Under proposal schema v1 the two agreed by coincidence: `supersedes`, `contradicts` and
+    `same_entity` are all both relation names and key names. Schema v2 broke that, so this
+    function is the seam, and refusing an unrecognised prefix is its more important half. A
+    prefix accepted loosely is a fourth frontmatter key invented by a malformed proposal.
+    """
+    if relation == "supersedes":
+        # The ONLY relation whose edit lands on object_id. The schema has no `superseded_by`,
+        # so the SUPERSEDING memo gains the key and names the superseded one. Inverting this
+        # declares the live memo stale and demotes it beneath the memo it replaced, which is
+        # the exact failure the trust layer exists to prevent.
+        return Routed(key="supersedes", value=subject_id, edit_file=object_id)
+    if relation == "declares_validity":
+        key, sep, value = object_id.partition(":")
+        # Checked against the two VALIDITY CLAIM keys, not against `VALIDITY_KEYS`, which also
+        # contains `supersedes`. A membership test against the latter would route
+        # `object_id="supersedes:victim.md"` straight into the frontmatter supersedes key.
+        if not sep or key not in VALIDITY_CLAIM_KEYS or not value:
+            raise RewriteRefused(
+                f"unroutable_validity: {object_id!r} does not name one of "
+                f"{VALIDITY_CLAIM_KEYS} with a value"
+            )
+        # The VALUE is checked too, and it has to be checked HERE. These are the two keys the
+        # trust layer parses as dates, and `index.py:570` calls `validity_bounds` to fail fast,
+        # re-raising as a ValueError that aborts the run: one unparseable date written into one
+        # memo stops `recall index` for the WHOLE corpus rather than degrading that memo. The
+        # extraction ladder validates dates already; the provider path in `_providers.py` does
+        # not, and this is the seam both reach the corpus through.
+        #
+        # Validated by calling `validity_bounds`, the READER's own function, rather than a
+        # private copy of the format. The property is "never write what the reader cannot
+        # parse", and the only way to guarantee it is to ask the reader. A second parser here
+        # could drift, and would also make this writer stricter for free: `2026-7-4` is
+        # unpadded but `validity_bounds` accepts it, so refusing it would reject a value a
+        # human is allowed to have authored by hand.
+        try:
+            validity_bounds({key: value})
+        except ValueError as exc:
+            raise RewriteRefused(
+                f"unroutable_validity: {value!r} is not a date `recall index` can read, and an "
+                f"unreadable date fails the whole corpus, not just this memo ({exc})"
+            ) from exc
+        return Routed(key=key, value=value, edit_file=subject_id)
+    if relation == "declares_status":
+        key, sep, value = object_id.partition(":")
+        # `STATUS_VOCABULARY` is closed on purpose: an open status field lets a model invent a
+        # taxonomy per memo, and a taxonomy nobody declared cannot be acted on. Enforcing it
+        # only in the extraction engine leaves the provider path free to write anything.
+        if key != "status" or not sep or value not in STATUS_VOCABULARY:
+            raise RewriteRefused(
+                f"unroutable_status: {object_id!r} does not name a status from "
+                f"{STATUS_VOCABULARY}"
+            )
+        return Routed(key="status", value=value, edit_file=subject_id)
+    if relation in ("contradicts", "same_entity"):
+        return Routed(key=relation, value=object_id, edit_file=subject_id)
+    raise RewriteRefused(
+        f"unroutable_relation: {relation!r} has no key, so there is nowhere to write it"
     )
 
 
@@ -383,18 +467,18 @@ def _resolve(root: Path, ref: str) -> str:
 def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:
     """What `apply_rewrite` would do, with no side effect of any kind."""
     checked = _refuse_untrusted(fact)
-    block = destination(checked.relation)
-    # `supersedes` is the asymmetric one: the key goes on the SUPERSEDING memo (`object_id`) and
-    # names the superseded one. The derived relations are stated by their subject.
-    if checked.relation == "supersedes":
-        edit_ref, value = checked.object_id, checked.subject_id
-    else:
-        edit_ref, value = checked.subject_id, checked.object_id
-    _refuse_unwritable_value(value)
+    # One definition of the direction rule, in `route_relation`. Keeping a second copy here is
+    # how the two drift apart, and a drifted direction rule writes the right key onto the wrong
+    # document. Note `destination` takes the resolved KEY, never the relation: passing the
+    # relation worked under proposal schema v1 only because the v1 relation names happened to
+    # equal their key names, and it raised `unknown_key` for every relation v2 added.
+    routed = route_relation(checked.relation, checked.subject_id, checked.object_id)
+    block = destination(routed.key)
+    _refuse_unwritable_value(routed.value)
     return RewritePlan(
-        edit_file=_resolve(root, edit_ref),
-        key=checked.relation,
-        value=value,
+        edit_file=_resolve(root, routed.edit_file),
+        key=routed.key,
+        value=routed.value,
         block=block,
         claim=claim_key(checked.relation, checked.subject_id, checked.object_id),
         fact_id=checked.fact_id,
@@ -444,6 +528,18 @@ def apply_rewrite(
             )
         updated = insert_frontmatter_line(raw, plan.key, plan.value)
     else:
+        if plan.key in SINGLE_VALUED_DERIVED_KEYS:
+            # `_upsert_derived_entry`'s identity is `key: value`, which is right for
+            # `contradicts` and `same_entity` — a memo may legitimately contradict more than
+            # one other memo. It is wrong for `status`, which has exactly one value: three
+            # promotions would append `status: active`, `status: deprecated` and
+            # `status: withdrawn` to one block with no rule for which wins. Refuse instead of
+            # replacing: the line already there was declared by a named human too.
+            existing = _derived_value(raw, plan.key)
+            if existing is not None:
+                return RewriteResult(
+                    plan, False, f"{plan.edit_file} already declares {plan.key}: {existing!r}"
+                )
         derived = _upsert_derived_entry(raw, plan.key, plan.value)
         if derived is None:
             return RewriteResult(
@@ -559,6 +655,32 @@ def _derived_span(lines: list[bytes]) -> tuple[int, int, list[bool]] | None:
     return opens[0], closes[0], flags
 
 
+
+
+def _derived_value(raw: bytes, key: str) -> str | None:
+    """The value already recorded for `key` in the derived block, or None.
+
+    Matches on the KEY alone, unlike `_upsert_derived_entry`'s `key: value` identity. That is
+    the whole point: it answers "is this single-valued key already declared, whatever it says?"
+
+    Fence aware for the same reason every scan in this module is: a memo documenting this format
+    contains these lines, and reading an EXAMPLE as a declaration would refuse a real annotation
+    with a reason that is not true.
+    """
+    _, body = split_bom(raw)
+    lines = split_lines(body)
+    span = _derived_span(lines)
+    if span is None:
+        return None
+    opened, closed, fenced = span
+    prefix = f"{key}:".encode("utf-8")
+    for index, line in enumerate(lines[opened + 1 : closed], start=opened + 1):
+        if fenced[index]:
+            continue
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            return stripped[len(prefix) :].decode("utf-8", "replace").strip()
+    return None
 
 
 def _upsert_derived_entry(raw: bytes, key: str, value: str) -> bytes | None:
