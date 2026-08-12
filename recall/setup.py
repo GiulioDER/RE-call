@@ -19,6 +19,10 @@ SETUP_END = "# recall setup end"
 DEFAULT_ENV_PATH = Path(".env")
 DEFAULT_CALIBRATION_PATH = Path("calibration.json")
 MODEL_DOWNLOAD_FLOOR_BYTES = 1_500_000_000
+CLAUDE_MD_BEGIN = "<!-- recall setup begin -->"
+CLAUDE_MD_END = "<!-- recall setup end -->"
+DEFAULT_CLAUDE_MD_PATH = Path("CLAUDE.md")
+DEFAULT_MEMORY_DIR = Path("memory")
 
 
 @dataclass(frozen=True)
@@ -316,6 +320,27 @@ def _update_markdown_block(path: Path, begin: str, end: str, content: str) -> No
             lines.append("")
         lines.extend(block)
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _claude_md_block() -> str:
+    return (
+        "## Using recall\n"
+        "\n"
+        "This project is indexed by recall. Call `recall_search` before proposing an idea, "
+        "forming a hypothesis, or repeating past work. If a closed decision or falsified "
+        "hypothesis surfaces, do not re-litigate it.\n"
+        "\n"
+        "- When `abstained` is true, no hit survived the trust gate: say you do not know instead "
+        "of answering from degraded hits.\n"
+        "- Use `recall_evidence` instead of `recall_search` when about to answer from memory "
+        "rather than just consult it; cite only `chunk_id` values from its `items`.\n"
+        "- Write new durable facts to `memory/`, one file per fact, indexed by "
+        "`memory/MEMORY.md` (see that file for the format), so `recall_index` can find them.\n"
+    )
+
+
+def scaffold_claude_md(path: Path = DEFAULT_CLAUDE_MD_PATH) -> None:
+    _update_markdown_block(path, CLAUDE_MD_BEGIN, CLAUDE_MD_END, _claude_md_block())
 
 
 def _quote_env(value: str) -> str:

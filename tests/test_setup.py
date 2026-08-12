@@ -307,3 +307,30 @@ def test_update_markdown_block_replaces_in_place_on_rerun(tmp_path):
     assert "<!-- begin -->\nnew\n<!-- end -->" in text
     assert text.startswith("# My project\n")
     assert text.rstrip().endswith("Trailer.")
+
+
+def test_scaffold_claude_md_creates_file(tmp_path):
+    from recall.setup import scaffold_claude_md
+
+    path = tmp_path / "CLAUDE.md"
+    scaffold_claude_md(path)
+
+    text = path.read_text(encoding="utf-8")
+    assert "<!-- recall setup begin -->" in text
+    assert "recall_search" in text
+    assert "recall_evidence" in text
+    assert "memory/MEMORY.md" in text
+
+
+def test_scaffold_claude_md_rerun_replaces_block_only(tmp_path):
+    from recall.setup import scaffold_claude_md
+
+    path = tmp_path / "CLAUDE.md"
+    path.write_text("# My project\n\nCustom notes that must survive.\n", encoding="utf-8")
+
+    scaffold_claude_md(path)
+    scaffold_claude_md(path)
+
+    text = path.read_text(encoding="utf-8")
+    assert text.count("<!-- recall setup begin -->") == 1
+    assert "Custom notes that must survive." in text
