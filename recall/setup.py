@@ -495,6 +495,8 @@ def run_setup_wizard(
     *,
     dsn: str,
     env_path: Path = DEFAULT_ENV_PATH,
+    claude_md_path: Path = DEFAULT_CLAUDE_MD_PATH,
+    memory_dir: Path = DEFAULT_MEMORY_DIR,
     input_fn: Callable[[str], str] = input,
     print_fn: Callable[..., None] = print,
 ) -> dict[str, str]:
@@ -557,6 +559,26 @@ def run_setup_wizard(
         print_fn(
             "Entailment judge is unavailable on this machine. It needs sentence-transformers "
             "and enough internet and disk to download a model."
+        )
+
+    if _ask_yes_no(
+        input_fn,
+        print_fn,
+        "Scaffold CLAUDE.md and a memory/ directory for this project?",
+        default=True,
+    ):
+        scaffold_claude_md(claude_md_path)
+        print_fn(f"Updated {claude_md_path}")
+        if scaffold_memory_index(memory_dir):
+            print_fn(f"Wrote {memory_dir / 'MEMORY.md'}")
+        else:
+            print_fn(f"{memory_dir / 'MEMORY.md'} already exists, left unchanged.")
+        index_memory_directory(
+            dsn=dsn,
+            embedder_name=embedder.value,
+            memory_dir=memory_dir,
+            env=cloud_keys,
+            print_fn=print_fn,
         )
 
     values: dict[str, str] = {

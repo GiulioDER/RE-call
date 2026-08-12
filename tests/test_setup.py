@@ -49,6 +49,7 @@ def test_setup_wizard_writes_env_and_accepts_api_keys(tmp_path, monkeypatch):
         "1",
         "1",
         "n",
+        "n",  # scaffold CLAUDE.md / memory/? declined
         "n",
     ])
     output = io.StringIO()
@@ -101,6 +102,7 @@ def test_setup_wizard_skips_blank_calibration_inputs(tmp_path, monkeypatch):
         "1",
         "1",
         "n",
+        "n",  # scaffold CLAUDE.md / memory/? declined
         "y",
         "",
         "",
@@ -162,6 +164,7 @@ def test_setup_wizard_treats_calibration_directory_as_output_folder(tmp_path, mo
         "1",
         "1",
         "n",
+        "n",  # scaffold CLAUDE.md / memory/? declined
         "y",
         str(tmp_path / "queries.json"),
         str(tmp_path / "corpus"),
@@ -222,6 +225,7 @@ def test_setup_wizard_can_enable_entailment_judge(tmp_path, monkeypatch):
         "1",
         "y",
         "1",
+        "n",  # scaffold CLAUDE.md / memory/? declined
         "n",
     ])
     output = io.StringIO()
@@ -466,3 +470,112 @@ def test_index_memory_directory_survives_embedder_resolution_failure(monkeypatch
 
     assert "Could not auto-index" in output.getvalue()
     assert "unknown embedder" in output.getvalue()
+
+
+def test_setup_wizard_scaffolds_claude_md_and_memory_and_indexes(tmp_path, monkeypatch):
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    monkeypatch.setattr(
+        "recall.setup.calibrate_from_files",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("calibration should be skipped")),
+    )
+    index_calls = {}
+    monkeypatch.setattr(
+        "recall.setup.index_memory_directory",
+        lambda **kw: index_calls.update(kw),
+    )
+    answers = iter([
+        "n",
+        "voyage-key",
+        "openai-key",
+        "openrouter-key",
+        "4",
+        "1",
+        "1",
+        "n",
+        "y",  # scaffold CLAUDE.md / memory/? accepted
+        "n",
+    ])
+    output = io.StringIO()
+
+    def fake_input(_prompt: str = "") -> str:
+        return next(answers)
+
+    claude_md_path = tmp_path / "CLAUDE.md"
+    memory_dir = tmp_path / "memory"
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        claude_md_path=claude_md_path,
+        memory_dir=memory_dir,
+        input_fn=fake_input,
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    assert "recall_search" in claude_md_path.read_text(encoding="utf-8")
+    assert (memory_dir / "MEMORY.md").exists()
+    assert index_calls["memory_dir"] == memory_dir
+    assert index_calls["embedder_name"] == "voyage:voyage-3"
+
+
+def test_setup_wizard_skips_scaffold_when_declined(tmp_path, monkeypatch):
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    monkeypatch.setattr(
+        "recall.setup.calibrate_from_files",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("calibration should be skipped")),
+    )
+    monkeypatch.setattr(
+        "recall.setup.index_memory_directory",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("index should be skipped")),
+    )
+    answers = iter([
+        "n",
+        "voyage-key",
+        "openai-key",
+        "openrouter-key",
+        "4",
+        "1",
+        "1",
+        "n",
+        "n",  # scaffold CLAUDE.md / memory/? declined
+        "n",
+    ])
+    output = io.StringIO()
+
+    def fake_input(_prompt: str = "") -> str:
+        return next(answers)
+
+    claude_md_path = tmp_path / "CLAUDE.md"
+    memory_dir = tmp_path / "memory"
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        claude_md_path=claude_md_path,
+        memory_dir=memory_dir,
+        input_fn=fake_input,
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    assert not claude_md_path.exists()
+    assert not memory_dir.exists()
