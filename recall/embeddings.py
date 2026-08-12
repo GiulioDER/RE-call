@@ -20,15 +20,27 @@ def _is_transient(exc: Exception) -> bool:
     """Heuristic: is this exception worth retrying?
 
     Covers rate-limit (429), server (5xx) and network/timeout errors WITHOUT importing any
-    provider-specific exception type (voyageai is an optional dependency). Checks a numeric
-    ``status_code``/``status`` attribute first, then falls back to matching well-known markers
-    in the exception text. A non-transient error (e.g. 401 auth) returns False so it fails fast.
+    provider-specific exception type (voyageai is an optional dependency). A non-transient error
+    (e.g. 401 auth) returns False so it fails fast.
+
+    A numeric ``status_code``/``status`` is DECISIVE: when the transport has stated the status,
+    that answer is returned and the text markers below are never consulted. They used to be, and
+    they could overturn a correct verdict — the marker ``"429"`` is a substring of any number
+    containing it, so ``"…your messages resulted in 10429 tokens"`` made a permanent HTTP 400
+    context-length overflow look like a rate limit. That is the worst case to be wrong on:
+    ``retry_with_backoff`` resends the entire payload, and on the truth-extraction path the
+    payload is a prompt with a whole memo body inside it, so the request that was refused for
+    being too long was paid for three times over.
+
+    The markers remain as a fallback for errors that carry no status at all — voyageai spells it
+    ``http_status``, and ``openai.APIConnectionError``/``APITimeoutError`` carry none — which is
+    the only evidence available there.
     """
     status = getattr(exc, "status_code", None)
     if status is None:
         status = getattr(exc, "status", None)
-    if isinstance(status, int) and (status == 429 or 500 <= status < 600):
-        return True
+    if isinstance(status, int):
+        return status == 429 or 500 <= status < 600
     text = f"{type(exc).__name__} {exc}".lower()
     markers = (
         "429", " 500", " 502", " 503", " 504", "rate limit", "too many requests",
