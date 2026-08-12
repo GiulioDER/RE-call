@@ -81,8 +81,10 @@ def test_a_400_whose_message_contains_429_is_not_retried() -> None:
 def test_the_real_sdk_400_that_was_reported_is_not_retried() -> None:
     """The same case built from the real SDK rather than a look-alike.
 
-    The stub above proves only that the stub matches itself; this pins the fix to the attribute
-    `openai` actually sets, so a rename of `status_code` cannot pass silently.
+    What this guards is a rename BY openai, not by us: under every mutation of our own code this
+    test dies exactly when the stub twin above dies, so it adds nothing there. Its value is that
+    the stub's `status_code` is an assumption about someone else's library, and this is the only
+    thing that would notice if that assumption stopped holding.
     """
     openai = pytest.importorskip("openai", reason="needs the bench extra (pip install recall[bench])")
     httpx = pytest.importorskip("httpx", reason="openai's transport dep; only missing if it drops it")
@@ -155,16 +157,35 @@ def test_a_status_spelled_status_also_decides_alone() -> None:
     assert _attempts_used(exc) == 1
 
 
+def test_a_transient_status_spelled_status_is_still_retried() -> None:
+    """The other direction of the same limb, and the one that costs a real outage if lost.
+
+    Asserting only that `status` can refuse a retry leaves an implementation in which the second
+    lookup may ONLY refuse: under it a rate limit spelled `status = 429` falls through to the
+    text, and with marker-free prose it is classified permanent. The message here is marker-free
+    precisely so nothing but the numeric limb can produce True.
+    """
+    exc = _StatusOnlyError("slow down", status=429)
+    assert _is_transient(exc) is True
+    assert _attempts_used(exc) == 3
+
+
 def test_status_code_is_read_before_status() -> None:
     """The two lookups are ordered, and the order is load-bearing once each one is decisive.
 
-    An SDK that carries both — a transport 429 alongside a body-level status — must be read as
-    the rate limit it is. Swapping the lookups would make this a permanent 400.
+    Both directions, because pinning only one leaves an implementation in which EITHER attribute
+    may declare the error transient. That is not a hypothetical weakening: it re-opens this
+    fix's own bug, since a permanent 400 sitting beside a stale 503 would be retried again.
     """
-    exc = _StatusError("slow down", status_code=429)
-    exc.status = 400  # type: ignore[attr-defined]
-    assert _is_transient(exc) is True
-    assert _attempts_used(exc) == 3
+    transient_first = _StatusError("slow down", status_code=429)
+    transient_first.status = 400  # type: ignore[attr-defined]
+    assert _is_transient(transient_first) is True
+    assert _attempts_used(transient_first) == 3
+
+    permanent_first = _StatusError("upstream is having a bad day", status_code=400)
+    permanent_first.status = 503  # type: ignore[attr-defined]
+    assert _is_transient(permanent_first) is False
+    assert _attempts_used(permanent_first) == 1
 
 
 def test_an_error_with_no_status_still_falls_back_to_text_markers() -> None:

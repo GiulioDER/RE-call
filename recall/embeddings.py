@@ -28,9 +28,11 @@ def _is_transient(exc: Exception) -> bool:
     they could overturn a correct verdict — the marker ``"429"`` is a substring of any number
     containing it, so ``"…your messages resulted in 10429 tokens"`` made a permanent HTTP 400
     context-length overflow look like a rate limit. That is the worst case to be wrong on:
-    ``retry_with_backoff`` resends the entire payload, and on the truth-extraction path the
-    payload is a prompt with a whole memo body inside it, so the request that was refused for
-    being too long was paid for three times over.
+    ``retry_with_backoff`` resends the entire payload, so a caller whose payload is a prompt with
+    a whole document body inside it pays three times over for a request that was refused for
+    being too long, and no retry can make an over-long prompt fit. ``benchmarks/llm.py`` is that
+    shape here; the case this was actually found on is an extraction engine that lives on an
+    unlanded branch, so do not go looking for it in this tree.
 
     The markers remain as a fallback for errors that carry no status at all — voyageai spells it
     ``http_status``, and ``openai.APIConnectionError``/``APITimeoutError`` carry none — which is
