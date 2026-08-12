@@ -30,11 +30,83 @@ if TYPE_CHECKING:
     from recall.store import PgVectorStore
 
 
+#: Stems meaning a field carries direct contact data. The audit needs a question's text and
+#: nothing else, so a file arriving with these is refused rather than read past: quietly ignoring
+#: a field still means the file was accepted, sits on disk, and falls under whatever was promised
+#: about retention. Refusing is a guard the operator cannot forget to apply; a written rule is one
+#: they can.
+#:
+#: Matched as substrings of a lowercased key, not as exact field names. An exact-name list leaked
+#: three ways at once: `contactEmail` and `phoneNumber` never matched a snake_case vocabulary,
+#: plurals like `emails` matched nothing, and a nested `{"meta": {"email": ...}}` was never looked
+#: at. Enumerating the spellings people use is a losing game, so this states the rule instead.
+#:
+#: It over-matches deliberately, and not only on `contact`: `phone` is inside `phonetic` and
+#: `microphone`, `mobile` is inside `automobile`, `mail` is inside `mailbox`, and `discord` is an
+#: ordinary English word that predates the chat app. A corpus about linguistics or vehicles can
+#: trip these on an innocent field name. That is accepted: a rename costs the owner a minute, and
+#: accepting a file that turned out to carry contact data costs a promise.
+#:
+#: Known limit: matching is on ASCII substrings, so a homoglyph such as a Cyrillic `а` inside
+#: `email` reads as contact data to a person and not to this code. The threat model here is an
+#: inattentive owner rather than someone hand-crafting lookalike keys.
+CONTACT_STEMS = (
+    "email",
+    "mail",
+    "phone",
+    "mobile",
+    "whatsapp",
+    "telegram",
+    "discord",
+    "linkedin",
+    "contact",
+)
+
+
+#: How deep the guard walks before refusing. `json.loads` accepts far deeper nesting than Python
+#: will recurse over, so an exporter bug produced a `RecursionError` instead of a refusal.
+MAX_CONTACT_DEPTH = 32
+
+
+class _TooDeep(Exception):
+    """A questions entry nested deeper than the guard will walk."""
+
+
+def _contact_stems(value: object, depth: int = 0) -> list[str]:
+    """Which contact stems appear in an entry's field names, nested objects and lists included.
+
+    Returns the STEMS matched, never the field names. A field name is not safe to print: JSON
+    objects can be keyed BY a contact value, and `{"jane.doe@gmail.com": ...}` matches on `mail`
+    through its own domain, so echoing the name would put the address into the refusal message.
+    That is exactly the data this guard exists to keep out of messages, so it would invert the
+    guard for the most common personal email domains. The stem plus the entry's position is
+    enough for an owner to find the field in their own file.
+
+    Lowercasing is the whole normalisation, because stem substrings already cover separators and
+    camelCase: `contactEmail` and `contact-email` both contain `email` once lowered. A camelCase
+    splitter was written here first and deleted, because no mutation of it could turn any test
+    red, which means it guaranteed nothing.
+    """
+    if depth > MAX_CONTACT_DEPTH:
+        raise _TooDeep
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            token = str(key).lower()
+            found.update(stem for stem in CONTACT_STEMS if stem in token)
+            found.update(_contact_stems(nested, depth + 1))
+    elif isinstance(value, list):
+        for item in value:
+            found.update(_contact_stems(item, depth + 1))
+    return sorted(found)
+
+
 def _load_questions(path: Path) -> list[str]:
     """A JSON list of strings, or a JSON list of objects each carrying a `query` key.
 
-    Errors name the path and the entry's position, never its content: these questions are
-    corpus-owner data, and an argument error is not a reason to print one.
+    Errors name the path, the entry's position, and at most a rejected field's NAME, never any
+    value: these questions are corpus-owner data, and an argument error is not a reason to print
+    one.
     """
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, list):
@@ -43,7 +115,25 @@ def _load_questions(path: Path) -> list[str]:
     for position, item in enumerate(raw, start=1):
         if isinstance(item, str):
             out.append(item)
-        elif isinstance(item, dict) and isinstance(item.get("query"), str):
+        elif isinstance(item, dict):
+            try:
+                stems = _contact_stems(item)
+            except _TooDeep:
+                raise SystemExit(
+                    f"{path}: entry {position} nests deeper than {MAX_CONTACT_DEPTH} levels, so "
+                    "it cannot be checked for contact fields. Flatten it and rerun."
+                ) from None
+            if stems:
+                raise SystemExit(
+                    f"{path}: entry {position} has field names matching {', '.join(stems)}. "
+                    "This tool needs the question text and nothing else. Remove those fields "
+                    "and rerun."
+                )
+            if not isinstance(item.get("query"), str):
+                raise SystemExit(
+                    f"{path}: entry {position} is neither a string nor an object with a string "
+                    f"`query` key"
+                )
             out.append(item["query"])
         else:
             raise SystemExit(
