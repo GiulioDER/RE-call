@@ -40,6 +40,13 @@ STATUS_VOCABULARY: tuple[str, ...] = (
     "withdrawn",
 )
 
+#: Consecutive engine failures after which the engine is treated as unavailable for the rest of
+#: a run. Consecutive rather than total: a corpus with a few individually awkward memos should
+#: not stop, while an endpoint that is simply down should stop being asked once per file.
+#: Lives here, the leaf, because both `extract` and `_cache` need it and `extract` imports
+#: `_cache`, so defining it in either would be a cycle.
+CONSECUTIVE_ENGINE_FAILURE_LIMIT = 3
+
 #: Rungs of the validation ladder, in the order they are applied. The batch rungs reject
 #: the file's entire output; the claim rungs reject one claim and keep the rest.
 BATCH_RUNGS: tuple[str, ...] = (

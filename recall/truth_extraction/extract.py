@@ -19,16 +19,11 @@ from recall.truth_extraction._engine import ExtractionEngine
 from recall.truth_extraction._normalize import human_body_of, normalize_extraction
 from recall.truth_extraction._prompt import ExtractionPrompt, build_extraction_prompt
 from recall.truth_extraction.types import (
+    CONSECUTIVE_ENGINE_FAILURE_LIMIT,
     ClaimRejection,
     ExtractionBatchRejected,
     FileExtraction,
 )
-
-
-#: Consecutive engine failures after which the engine is treated as unavailable for the rest of
-#: the run. Consecutive rather than total: a corpus with a few individually awkward memos should
-#: not stop, while an endpoint that is simply down should stop being asked once per file.
-CONSECUTIVE_ENGINE_FAILURE_LIMIT = 3
 
 
 def _refused(
