@@ -304,6 +304,20 @@ def _update_env_block(path: Path, values: dict[str, str]) -> None:
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
+def _update_markdown_block(path: Path, begin: str, end: str, content: str) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    start = next((i for i, line in enumerate(lines) if line.strip() == begin), None)
+    stop = next((i for i, line in enumerate(lines) if line.strip() == end), None)
+    block = [begin, *content.splitlines(), end]
+    if start is not None and stop is not None and stop >= start:
+        lines = [*lines[:start], *block, *lines[stop + 1 :]]
+    else:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(block)
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
 def _quote_env(value: str) -> str:
     if value == "":
         return '""'

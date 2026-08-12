@@ -266,3 +266,44 @@ def test_splade_choice_requires_cuda_gpu():
     )
     assert all(choice.label != "splade" for choice in sparse_choices(no_cuda))
     assert any(choice.label == "splade" for choice in sparse_choices(with_cuda))
+
+
+def test_update_markdown_block_creates_file_when_absent(tmp_path):
+    from recall.setup import _update_markdown_block
+
+    path = tmp_path / "CLAUDE.md"
+    _update_markdown_block(path, "<!-- begin -->", "<!-- end -->", "hello")
+
+    text = path.read_text(encoding="utf-8")
+    assert text == "<!-- begin -->\nhello\n<!-- end -->\n"
+
+
+def test_update_markdown_block_appends_when_markers_absent(tmp_path):
+    from recall.setup import _update_markdown_block
+
+    path = tmp_path / "CLAUDE.md"
+    path.write_text("# My project\n\nSome notes.\n", encoding="utf-8")
+
+    _update_markdown_block(path, "<!-- begin -->", "<!-- end -->", "hello")
+
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("# My project\n\nSome notes.\n")
+    assert "<!-- begin -->\nhello\n<!-- end -->" in text
+
+
+def test_update_markdown_block_replaces_in_place_on_rerun(tmp_path):
+    from recall.setup import _update_markdown_block
+
+    path = tmp_path / "CLAUDE.md"
+    path.write_text(
+        "# My project\n\n<!-- begin -->\nold\n<!-- end -->\n\nTrailer.\n",
+        encoding="utf-8",
+    )
+
+    _update_markdown_block(path, "<!-- begin -->", "<!-- end -->", "new")
+
+    text = path.read_text(encoding="utf-8")
+    assert "old" not in text
+    assert "<!-- begin -->\nnew\n<!-- end -->" in text
+    assert text.startswith("# My project\n")
+    assert text.rstrip().endswith("Trailer.")
