@@ -69,6 +69,50 @@ results/enterprise_rag/vast_top_splade_smoke.answers.jsonl.manifest.json
 
 ## Launch
 
+Preferred launch after the VPS2 dense arm has completed:
+
+1. Export the dense table on VPS2:
+
+```bash
+cd /home/sentiment/enterprise-rag-run/RE-call
+nohup ./scripts/enterprise_rag_vps2_export_dense.sh \
+  > logs/enterprise_rag_vps2_dense_export.log 2>&1 &
+echo $! > enterprise_rag_vps2_dense_export.pid
+```
+
+2. Copy the dump to the Vast instance:
+
+```bash
+scp -P <vast_ssh_port> \
+  sentiment@vps2:/home/sentiment/enterprise-rag-run/enterprise_rag_dense_12k.pgcustom \
+  root@<vast_ip>:/workspace/enterprise_rag_dense_12k.pgcustom
+```
+
+If `vps2` is a local Tailscale alias only, copy through the local machine instead:
+
+```bash
+scp vps2:/home/sentiment/enterprise-rag-run/enterprise_rag_dense_12k.pgcustom .
+scp -P <vast_ssh_port> enterprise_rag_dense_12k.pgcustom root@<vast_ip>:/workspace/
+```
+
+3. Import the dense table on Vast:
+
+```bash
+cd /workspace/RE-call
+./scripts/enterprise_rag_vast_import_dense.sh /workspace/enterprise_rag_dense_12k.pgcustom
+```
+
+4. Run SPLADE backfill on CUDA and then answer from the imported table:
+
+```bash
+cd /workspace/RE-call
+nohup ./scripts/enterprise_rag_vast_splade_from_import.sh \
+  > logs/enterprise_rag_vast_splade_from_import.log 2>&1 &
+echo $! > enterprise_rag_vast_splade_from_import.pid
+```
+
+Fallback launch, only if the dense dump is unavailable:
+
 ```bash
 cd /workspace/RE-call
 nohup ./scripts/enterprise_rag_vast_run.sh \
@@ -76,7 +120,7 @@ nohup ./scripts/enterprise_rag_vast_run.sh \
 echo $! > enterprise_rag_vast_top_splade.pid
 ```
 
-The run has two phases:
+The fallback run has two phases:
 
 1. `scripts/enterprise_rag_vast_index.sh`: indexes the full corpus and backfills SPLADE on CUDA.
    On success it writes `results/enterprise_rag/vast_top_splade_full.index.done`.
@@ -125,5 +169,6 @@ Already done locally or on VPS2:
 Useful work still possible without the GPU:
 
 1. Keep monitoring the VPS2 dense plus lexical arm.
-2. Prepare the leaderboard submission email draft after the Vast artifacts exist.
-3. Run `scripts/enterprise_rag_vast_smoke.sh` immediately after setup on the rented instance.
+2. Export `ber_voy_lex_12k_full` from VPS2 with `scripts/enterprise_rag_vps2_export_dense.sh`.
+3. Prepare the leaderboard submission email draft after the Vast artifacts exist.
+4. Run `scripts/enterprise_rag_vast_smoke.sh` immediately after setup on the rented instance.
