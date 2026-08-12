@@ -112,6 +112,54 @@
     "answerable": true
   },
   {
+    "id": "q15",
+    "query": "how many application replicas run in production",
+    "relevant_ids": [
+      "autoscaling.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q16",
+    "query": "how do we verify that backups can actually be restored",
+    "relevant_ids": [
+      "backups.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q17",
+    "query": "are idempotency keys required on post endpoints",
+    "relevant_ids": [
+      "retry_policy.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q18",
+    "query": "what mitigation was applied after the checkout incident",
+    "relevant_ids": [
+      "incident_checkout_500.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q19",
+    "query": "how often are secrets rotated",
+    "relevant_ids": [
+      "secrets_handling.md:0"
+    ],
+    "answerable": true
+  },
+  {
+    "id": "q20",
+    "query": "what time of day does the indexer run",
+    "relevant_ids": [
+      "indexer_freshness.md:0"
+    ],
+    "answerable": true
+  },
+  {
     "id": "u01",
     "query": "what is our kubernetes pod eviction policy",
     "relevant_ids": [],
@@ -138,6 +186,96 @@
   {
     "id": "u05",
     "query": "how do penguins survive antarctic winters",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u06",
+    "query": "what is our incident severity classification scheme",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u07",
+    "query": "which cloud provider hosts the production cluster",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u08",
+    "query": "what uptime sla do we promise customers",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u09",
+    "query": "how many engineers are on the platform team",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u10",
+    "query": "how many approvals does a pull request need",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u11",
+    "query": "which continuous integration provider runs the test suite",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u12",
+    "query": "what is the monthly infrastructure budget",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u13",
+    "query": "which programming language is the checkout service written in",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u14",
+    "query": "what is our policy on force-pushing to the main branch",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u15",
+    "query": "what is the maximum request payload size the api accepts",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u16",
+    "query": "which message queue handles asynchronous jobs",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u17",
+    "query": "what is the mobile app release cadence",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u18",
+    "query": "who approves production access requests",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u19",
+    "query": "what is the company holiday calendar",
+    "relevant_ids": [],
+    "answerable": false
+  },
+  {
+    "id": "u20",
+    "query": "which font does the design system use",
     "relevant_ids": [],
     "answerable": false
   },
