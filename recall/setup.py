@@ -46,6 +46,10 @@ class Choice:
     available: bool = True
     #: What to install to make an unavailable option work. Shown when it is selected.
     unavailable_note: str = ""
+    #: Vector width this option produces, where it is fixed and known. Declared rather than
+    #: derived, because deriving it means constructing the embedder, and constructing a fastembed
+    #: one downloads its weights. Asking "would this fit your table" must not cost 1.2 GB.
+    dim: int | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +133,7 @@ def embedder_choices(
             label="hashing",
             value="hashing",
             description="No model download, no network, works anywhere",
+            dim=64,
         ),
     ]
     if probe.fastembed_available and _can_download_models(probe):
@@ -137,14 +142,37 @@ def embedder_choices(
                 label="fastembed",
                 value="fastembed",
                 description="Local bge-small embedder, best default when offline matters",
+                dim=384,
             )
         )
+        # Larger bge models, gated on their own download size rather than the shared floor: the
+        # floor is 1.5 GB and bge-large alone is 1.2 GB, so a machine can clear the floor and
+        # still have no room left. Each needs its weights plus headroom to unpack them.
+        if probe.free_bytes >= 2 * 1024**3:
+            choices.append(
+                Choice(
+                    label="fastembed base",
+                    value="fastembed:BAAI/bge-base-en-v1.5",
+                    description="Local bge-base, 768 dims, ~210 MB, the best size for quality",
+                    dim=768,
+                )
+            )
+        if probe.free_bytes >= 4 * 1024**3:
+            choices.append(
+                Choice(
+                    label="fastembed large",
+                    value="fastembed:BAAI/bge-large-en-v1.5",
+                    description="Local bge-large, 1024 dims, ~1.2 GB, best quality and slowest",
+                    dim=1024,
+                )
+            )
     if probe.sentence_transformers_available and _can_download_models(probe):
         choices.append(
             Choice(
                 label="sentence transformers",
                 value="st:sentence-transformers/all-MiniLM-L6-v2",
                 description="Local transformer embedder, good if you already have the extra",
+                dim=384,
             )
         )
     voyage_key = cloud_keys.get("VOYAGE_API_KEY", "")
@@ -162,6 +190,7 @@ def embedder_choices(
                 label="voyage cloud",
                 value="voyage:voyage-3",
                 description="Cloud embedder, only when data may leave the machine",
+                dim=1024,
             )
         )
     if (
@@ -175,9 +204,41 @@ def embedder_choices(
                 label="openai compatible cloud",
                 value="openai:text-embedding-3-small",
                 description="OpenAI compatible cloud path through OpenRouter or OpenAI",
+                dim=1536,
             )
         )
     return choices
+
+
+def _schema_dim_conflict(dsn: str, expected_dim: int, table: str | None = None) -> str | None:
+    """The library's own incompatibility message if `table` disagrees on width, else None.
+
+    Asks `check_schema` rather than reading `pg_attribute` here, so there is one authority on
+    what "compatible" means and this cannot drift from it.
+
+    `table` matters: the wizard must check the table the caller actually uses. Checking a
+    hard-coded `chunks` would report a conflict against a leftover table a `--table` user does
+    not care about, and stay silent about the one they do.
+
+    Only `SchemaIncompatible` is a conflict. Every other failure returns None on purpose: no
+    database yet, no table yet, no psycopg, no permission, and migrations pending, none of which
+    mean the width is wrong, and the wizard has always been runnable before a schema exists.
+    A table that is behind on migrations has an unknown width rather than a wrong one, so it is
+    not grounds for refusing a choice.
+    """
+    try:
+        from recall.schema import SchemaIncompatible
+        from recall.store import DEFAULT_TABLE, PgVectorStore
+    except Exception:
+        return None
+    try:
+        with PgVectorStore(dsn, dim=expected_dim, table=table or DEFAULT_TABLE) as store:
+            store.check_schema()
+    except SchemaIncompatible as exc:
+        return str(exc)
+    except Exception:
+        return None
+    return None
 
 
 def _why_unavailable(probe: HardwareProbe, *, needs_cuda: bool = False) -> str:
@@ -568,6 +629,7 @@ def calibrate_from_files(
 def run_setup_wizard(
     *,
     dsn: str,
+    table: str | None = None,
     env_path: Path = DEFAULT_ENV_PATH,
     claude_md_path: Path = DEFAULT_CLAUDE_MD_PATH,
     memory_dir: Path = DEFAULT_MEMORY_DIR,
@@ -595,17 +657,44 @@ def run_setup_wizard(
     embedders = embedder_choices(
         probe, security_required=security_required, cloud_keys=cloud_keys
     )
-    embedder = _choose(
-        input_fn,
-        print_fn,
-        "Choose the embedder you want to use:",
-        embedders,
-        sole_note=(
-            "Embedder: hashing, the only one this machine can use. It needs no download and no "
-            "network, and it retrieves noticeably worse than a real model. Install one with "
-            'pip install "recall-rag[fastembed]", or set an API key above, then rerun setup.'
-        ),
-    )
+    refused: set[int] = set()
+    while True:
+        embedder = _choose(
+            input_fn,
+            print_fn,
+            "Choose the embedder you want to use:",
+            embedders,
+            sole_note=(
+                "Embedder: hashing, the only one this machine can use. It needs no download and "
+                "no network, and it retrieves noticeably worse than a real model. Install one "
+                'with pip install "recall-rag[fastembed]", or set an API key above, then rerun '
+                "setup."
+            ),
+        )
+        # An embedder wider than the table cannot be discovered later without cost: it is found
+        # when something first tries to write a vector, which is after the model has downloaded
+        # and the corpus has been read. These widths differ by design, 384 through 1536, so the
+        # mismatch is ordinary rather than exotic.
+        if embedder.dim is None:
+            break  # width not fixed or not known, so there is nothing to compare
+        conflict = _schema_dim_conflict(dsn, embedder.dim, table)
+        if conflict is None:
+            break
+        print_fn(conflict)
+        print_fn(
+            f"{embedder.label} produces {embedder.dim}-dimension vectors. Either create a table "
+            f"with `recall schema --dim {embedder.dim} apply`, or pick an embedder matching the "
+            "table you have."
+        )
+        refused.add(embedder.dim)
+        # Stop once nothing untried is left. Bounding on the menu size alone was wrong: a table
+        # of any other width, say 512, conflicts with every option, and the loop then re-asked
+        # forever, or ran a scripted caller's answers dry with an unhandled StopIteration.
+        if all(c.dim in refused for c in embedders if c.dim):
+            raise SystemExit(
+                "no embedder on offer matches this table. Create one with "
+                "`recall schema --dim <width> apply`, or point RECALL_DSN at a matching table."
+            )
     rerankers = reranker_choices(probe, security_required=security_required)
     reranker = _choose(
         input_fn,

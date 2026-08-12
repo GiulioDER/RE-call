@@ -45,7 +45,7 @@ def test_setup_wizard_writes_env_and_accepts_api_keys(tmp_path, monkeypatch):
         "voyage-key",
         "openai-key",
         "openrouter-key",
-        "4",
+        "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
@@ -98,7 +98,7 @@ def test_setup_wizard_skips_blank_calibration_inputs(tmp_path, monkeypatch):
         "voyage-key",
         "openai-key",
         "openrouter-key",
-        "4",
+        "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
@@ -160,7 +160,7 @@ def test_setup_wizard_treats_calibration_directory_as_output_folder(tmp_path, mo
         "voyage-key",
         "openai-key",
         "openrouter-key",
-        "4",
+        "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
@@ -220,7 +220,7 @@ def test_setup_wizard_can_enable_entailment_judge(tmp_path, monkeypatch):
         "voyage-key",
         "openai-key",
         "openrouter-key",
-        "4",
+        "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
         "y",
@@ -503,7 +503,7 @@ def test_setup_wizard_scaffolds_claude_md_and_memory_and_indexes(tmp_path, monke
         "voyage-key",
         "openai-key",
         "openrouter-key",
-        "4",
+        "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
@@ -558,7 +558,7 @@ def test_setup_wizard_survives_scaffold_failure_and_still_writes_env(tmp_path, m
         "voyage-key",
         "openai-key",
         "openrouter-key",
-        "4",
+        "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
@@ -615,7 +615,7 @@ def test_setup_wizard_skips_scaffold_when_declined(tmp_path, monkeypatch):
         "voyage-key",
         "openai-key",
         "openrouter-key",
-        "4",
+        "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
@@ -669,7 +669,7 @@ def test_setup_wizard_scaffold_prompt_defaults_to_yes_on_blank_answer(tmp_path, 
         "voyage-key",
         "openai-key",
         "openrouter-key",
-        "4",
+        "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
@@ -726,7 +726,7 @@ def test_setup_wizard_still_scaffolds_when_calibration_output_path_is_invalid(
         "voyage-key",
         "openai-key",
         "openrouter-key",
-        "4",
+        "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
         "n",
@@ -984,3 +984,161 @@ def test_a_choice_list_whose_baseline_cannot_run_is_refused() -> None:
     ]
     with pytest.raises(ValueError, match="must be runnable"):
         _choose(lambda _p="": "1", lambda *a, **k: None, "Pick:", broken)
+
+
+def _roomy_probe(free_bytes: int) -> HardwareProbe:
+    return HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=free_bytes,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=False,
+    )
+
+
+def test_the_bigger_bge_models_appear_only_with_room_for_them() -> None:
+    """bge-large is 1.2 GB against the shared 1.5 GB floor, so the floor alone is not enough.
+
+    Drop the per-model size gates and the 1.6 GB case starts offering a download that cannot
+    finish, so this goes red.
+    """
+    from recall.setup import embedder_choices
+
+    roomy = [c.label for c in embedder_choices(
+        _roomy_probe(10 * 1024**3), security_required=False, cloud_keys={})]
+    tight = [c.label for c in embedder_choices(
+        _roomy_probe(1_600_000_000), security_required=False, cloud_keys={})]
+
+    assert "fastembed base" in roomy and "fastembed large" in roomy
+    assert "fastembed" in tight  # bge-small is 67 MB, it still fits
+    assert "fastembed base" not in tight
+    assert "fastembed large" not in tight
+
+
+def test_every_embedder_option_declares_its_width() -> None:
+    """The dimension guard is only as good as the widths it compares, and a missing one is silent."""
+    from recall.setup import embedder_choices
+
+    choices = embedder_choices(
+        _roomy_probe(10 * 1024**3), security_required=False, cloud_keys={})
+    assert choices, "no embedders offered"
+    assert all(c.dim for c in choices), [c.label for c in choices if not c.dim]
+
+
+def test_an_embedder_wider_than_the_table_is_refused_and_asked_again(tmp_path, monkeypatch):
+    """Found here rather than on the first write, which is after the model and corpus are read.
+
+    Remove the conflict check in `run_setup_wizard` and this goes red: the wizard accepts the
+    1024-wide choice, never re-asks, and the leftover answer runs the iterator dry.
+    """
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: _roomy_probe(10 * 1024**3))
+    monkeypatch.setattr("recall.setup._module_available", lambda name: False)
+    monkeypatch.setattr(
+        "recall.setup._schema_dim_conflict",
+        lambda dsn, dim, table=None: (
+            "recall_chunks_v1 uses vector(384), requested dimension is 1024"
+            if dim != 384 else None
+        ),
+    )
+    answers = iter([
+        "n",  # security
+        "", "", "",  # API keys
+        "4",  # fastembed large, 1024 wide, refused against a 384 table
+        "2",  # fastembed small, 384 wide, accepted
+        "1",  # reranker
+        "1",  # sparse
+        "n",  # scaffold
+        "n",  # calibrate
+    ])
+    output = io.StringIO()
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _prompt="": next(answers),
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = output.getvalue()
+    assert "uses vector(384), requested dimension is 1024" in text
+    assert "schema --dim 1024" in text
+    assert next(answers, None) is None
+    assert "RECALL_EMBEDDER=fastembed" in (tmp_path / ".env").read_text(encoding="utf-8")
+
+
+def test_an_unreachable_database_is_not_treated_as_a_conflict() -> None:
+    """The wizard has always run before the schema exists, and must keep doing so."""
+    from recall.setup import _schema_dim_conflict
+
+    assert _schema_dim_conflict("postgresql://nobody@127.0.0.1:1/nothing", 384) is None
+
+
+def test_a_table_no_offered_embedder_matches_stops_instead_of_looping(tmp_path, monkeypatch):
+    """A 512-wide table matches none of 64, 384, 768 or 1024, so re-asking never ends.
+
+    Bounding on the menu size alone was wrong: it only caught a menu of one. Replace the
+    `all(... in refused ...)` check with `len(embedders) == 1` and this hangs, or in a scripted
+    caller dies with StopIteration once the answers run out.
+    """
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: _roomy_probe(10 * 1024**3))
+    monkeypatch.setattr("recall.setup._module_available", lambda name: False)
+    monkeypatch.setattr(
+        "recall.setup._schema_dim_conflict",
+        lambda dsn, dim, table=None: f"table uses vector(512), requested dimension is {dim}",
+    )
+    answers = iter(["n", "", "", "", "1", "2", "3", "4"])  # every embedder, each refused
+
+    with pytest.raises(SystemExit, match="no embedder on offer matches"):
+        run_setup_wizard(
+            dsn="postgresql://example/recall",
+            env_path=tmp_path / ".env",
+            input_fn=lambda _prompt="": next(answers),
+            print_fn=lambda *a, **k: None,
+        )
+
+
+def test_the_width_check_asks_about_the_table_the_caller_uses(tmp_path, monkeypatch):
+    """Checking a hard-coded `chunks` would refuse over a table a `--table` user does not use."""
+    seen: list[str | None] = []
+
+    def spy(dsn: str, dim: int, table: str | None = None) -> None:
+        seen.append(table)
+        return None
+
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: _roomy_probe(10 * 1024**3))
+    monkeypatch.setattr("recall.setup._module_available", lambda name: False)
+    monkeypatch.setattr("recall.setup._schema_dim_conflict", spy)
+    answers = iter(["n", "", "", "", "2", "1", "1", "n", "n"])
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        table="my_project_chunks",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _prompt="": next(answers),
+        print_fn=lambda *a, **k: None,
+    )
+
+    assert seen == ["my_project_chunks"]
+
+
+def test_the_printed_schema_command_is_runnable(tmp_path, monkeypatch):
+    """`schema --dim N` alone is an argparse error: the subcommand `apply` is required."""
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: _roomy_probe(10 * 1024**3))
+    monkeypatch.setattr("recall.setup._module_available", lambda name: False)
+    monkeypatch.setattr(
+        "recall.setup._schema_dim_conflict",
+        lambda dsn, dim, table=None: ("mismatch" if dim != 384 else None),
+    )
+    answers = iter(["n", "", "", "", "4", "2", "1", "1", "n", "n"])
+    output = io.StringIO()
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _prompt="": next(answers),
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    assert "recall schema --dim 1024 apply" in output.getvalue()
