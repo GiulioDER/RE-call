@@ -359,3 +359,88 @@ def test_scaffold_memory_index_leaves_existing_file_untouched(tmp_path):
 
     assert created is False
     assert (memory_dir / "MEMORY.md").read_text(encoding="utf-8") == "# Real user facts\n"
+
+
+def test_index_memory_directory_skips_in_production(monkeypatch, tmp_path):
+    from recall.setup import index_memory_directory
+
+    monkeypatch.setenv("RECALL_ENV", "production")
+    output = io.StringIO()
+
+    index_memory_directory(
+        dsn="postgresql://example/recall",
+        embedder_name="hashing",
+        memory_dir=tmp_path / "memory",
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    assert "Skipping auto-index" in output.getvalue()
+
+
+def test_index_memory_directory_indexes_via_indexer(monkeypatch, tmp_path):
+    from recall.index import IndexStats
+    from recall.setup import index_memory_directory
+
+    monkeypatch.delenv("RECALL_ENV", raising=False)
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "MEMORY.md").write_text("# Memory index\n", encoding="utf-8")
+
+    calls = {}
+
+    class FakeStore:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def check_schema(self):
+            calls["checked"] = True
+
+    class FakeIndexer:
+        def __init__(self, store, embedder, chunker=None):
+            calls["store"] = store
+            calls["embedder"] = embedder
+
+        def index_path(self, path, glob=None):
+            calls["path"] = path
+            calls["glob"] = glob
+            return IndexStats(files=1, chunks=3)
+
+    monkeypatch.setattr("recall.store.PgVectorStore", lambda *a, **k: FakeStore())
+    monkeypatch.setattr("recall.index.Indexer", FakeIndexer)
+    output = io.StringIO()
+
+    index_memory_directory(
+        dsn="postgresql://example/recall",
+        embedder_name="hashing",
+        memory_dir=memory_dir,
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    assert calls["path"] == memory_dir
+    assert calls["glob"] == "**/*.md"
+    assert "Indexed 3 chunks from 1 files" in output.getvalue()
+
+
+def test_index_memory_directory_survives_indexing_failure(monkeypatch, tmp_path):
+    from recall.setup import index_memory_directory
+
+    monkeypatch.delenv("RECALL_ENV", raising=False)
+
+    def boom(*a, **k):
+        raise RuntimeError("db unreachable")
+
+    monkeypatch.setattr("recall.store.PgVectorStore", boom)
+    output = io.StringIO()
+
+    index_memory_directory(
+        dsn="postgresql://example/recall",
+        embedder_name="hashing",
+        memory_dir=tmp_path / "memory",
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    assert "Could not auto-index" in output.getvalue()
+    assert "db unreachable" in output.getvalue()

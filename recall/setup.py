@@ -376,6 +376,37 @@ def scaffold_memory_index(memory_dir: Path = DEFAULT_MEMORY_DIR) -> bool:
     return True
 
 
+def index_memory_directory(
+    *,
+    dsn: str,
+    embedder_name: str,
+    memory_dir: Path = DEFAULT_MEMORY_DIR,
+    env: dict[str, str] | None = None,
+    print_fn: Callable[..., None] = print,
+) -> None:
+    if os.environ.get("RECALL_ENV", "development").lower() == "production":
+        print_fn(
+            f"Skipping auto-index: RECALL_ENV is production. Index {memory_dir} via your "
+            "production build pipeline instead."
+        )
+        return
+    from recall.index import Indexer, chunk_text
+    from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
+
+    embedder = resolve_embedder(embedder_name, env=env)
+    try:
+        with PgVectorStore(
+            dsn, dim=embedder.dim, table=DEFAULT_TABLE, tenant=DEFAULT_TENANT
+        ) as store:
+            store.check_schema()
+            indexer = Indexer(store, embedder, chunker=chunk_text)
+            stats = indexer.index_path(memory_dir, glob="**/*.md")
+    except Exception as exc:  # best effort: scaffolded files must survive even if this fails
+        print_fn(f"Could not auto-index {memory_dir}: {exc}")
+        return
+    print_fn(f"Indexed {stats.chunks} chunks from {stats.files} files in {memory_dir}")
+
+
 def _quote_env(value: str) -> str:
     if value == "":
         return '""'
