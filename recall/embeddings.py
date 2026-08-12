@@ -48,9 +48,11 @@ def _is_transient(exc: Exception) -> bool:
     It is also THIS FUNCTION'S exclusion and not yet the system's. ``OpenAICompatEmbedder`` below
     and ``benchmarks/llm.py`` both build their ``OpenAI`` client without ``max_retries=0``, and
     the SDK retries 408, 409, 429 and 5xx twice on its own before this classifier is consulted at
-    all — so end to end a 408 is currently retried anyway, and every attempt counted here is
-    three requests. Fixing that is tracked separately; until it lands, do not read the paragraph
-    above as describing what reaches the provider.
+    all — so end to end a 408 is currently retried anyway, and for THOSE statuses every attempt
+    counted here is three requests. A 400 or 402 is not in the SDK's retry set, so those attempts
+    stay one request each, which is the case the paragraph above is about. Fixing the missing
+    ``max_retries=0`` is tracked separately; until it lands, do not read this function's numeric
+    contract as describing what reaches the provider.
     """
     status = getattr(exc, "status_code", None)
     if status is None:

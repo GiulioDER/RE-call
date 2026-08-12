@@ -140,6 +140,42 @@ def test_the_whole_5xx_band_is_still_retried(status: int) -> None:
     assert _attempts_used(exc) == 3
 
 
+@pytest.mark.parametrize("status", [402, 499])
+def test_a_status_below_the_band_is_not_retried(status: int) -> None:
+    """Pins the 5xx floor from BELOW, which the band above cannot do.
+
+    Testing 500 stops the floor being RAISED; nothing stopped it being LOWERED, and `402 <=
+    status` left every test green. Two cases, because one does not do it: with only 402, floors
+    at 422 and 499 still survived, since a floor above the value under test cannot reclassify
+    it. 499 is the value immediately below the band, so it closes every downward move at once.
+
+    402 is here as the real one rather than the boundary one. `benchmarks/llm.py` records an
+    actual OpenRouter refusal, `402 ... You requested up to 65536 tokens, but can only afford
+    64714`, that killed a BEAM run mid-arm. A credit refusal is permanent, and retrying it four
+    times from that caller is the exact failure class this whole change exists to prevent.
+    """
+    exc = _StatusError("insufficient credits", status_code=status)
+    assert _is_transient(exc) is False
+    assert _attempts_used(exc) == 1
+
+
+@pytest.mark.parametrize("status", [408, 409])
+def test_a_server_returned_timeout_or_conflict_is_not_retried_here(status: int) -> None:
+    """The exclusion `_is_transient`'s docstring calls deliberate, now enforced.
+
+    openai's own client retries both (409 with the comment "Retry on lock timeouts"), so this is
+    a place where we knowingly differ from the SDK. Widening the branch to `status in (408, 409,
+    429)` left all fourteen tests green, which made "deliberate" a claim no test could check —
+    the same shape as the defects the earlier rounds here fixed.
+
+    Prose is marker-free on purpose: the natural wording for a 408 contains "timeout", which
+    would let the fallback answer and hide whichever way the numeric branch went.
+    """
+    exc = _StatusError("the gateway gave up waiting", status_code=status)
+    assert _is_transient(exc) is False
+    assert _attempts_used(exc) == 1
+
+
 def test_a_401_is_not_rescued_by_a_marker_word_in_its_message() -> None:
     """Generalises the bug past the "429"-in-a-number coincidence.
 
