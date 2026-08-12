@@ -869,7 +869,15 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="include evidence text in the projection summary input. Defaults off for privacy.",
     )
-    reasoning_sub.add_parser("proposals", help="inspect deterministic inference proposals")
+    p_reasoning_proposals = reasoning_sub.add_parser(
+        "proposals", help="inspect deterministic inference proposals"
+    )
+    p_reasoning_proposals.add_argument(
+        "--include-extracted",
+        action="store_true",
+        help="also list proposals replayed from prose extraction recorded at ingest. Refuses "
+        "if nothing was recorded: extraction never runs on the query path.",
+    )
     p_reasoning_query = reasoning_sub.add_parser("query", help="run a bounded reasoning query")
     p_reasoning_query.add_argument("query")
     p_reasoning_query.add_argument("-k", type=int, default=5)
@@ -1602,7 +1610,9 @@ def main(argv: list[str] | None = None) -> None:
                 print(projection.model_dump_json(indent=2))
                 return
             if args.reasoning_cmd == "proposals":
-                proposal_result = reasoning_proposals(store)
+                proposal_result = reasoning_proposals(
+                    store, include_extracted=args.include_extracted
+                )
                 trust_state = (
                     "trusted" if proposal_result.generation_id != "legacy" else "degraded"
                 )
