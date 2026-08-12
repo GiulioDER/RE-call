@@ -330,7 +330,7 @@ def _claude_md_block() -> str:
         "forming a hypothesis, or repeating past work. If a closed decision or falsified "
         "hypothesis surfaces, do not re-litigate it.\n"
         "\n"
-        "- When `abstained` is true, no hit survived the trust gate: say you do not know instead "
+        "- When `abstained` is true, no hit survived the trust gate — say you do not know instead "
         "of answering from degraded hits.\n"
         "- Use `recall_evidence` instead of `recall_search` when about to answer from memory "
         "rather than just consult it; cite only `chunk_id` values from its `items`.\n"
