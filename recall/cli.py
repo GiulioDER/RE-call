@@ -313,6 +313,164 @@ def _run_queries(
         print()
 
 
+def _positive_int(value: str) -> int:
+    """A count that must be at least 1, refused at parse time.
+
+    `--limit -1` silently sliced the LAST file off the corpus instead of the first, and
+    `--limit 0` reported a clean `0 file(s) read` with exit 0, which reads as "this corpus
+    states nothing".
+    """
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {number}")
+    return number
+
+
+def _run_extract(args: argparse.Namespace) -> None:
+    """`recall extract run|show`. Reads the corpus, writes nothing, never opens the database.
+
+    Extraction is OFF unless `RECALL_TRUTH_EXTRACTION` is set, mirroring `entailment.py`, and an
+    unknown engine name is refused rather than downgraded to the deterministic one: silently
+    running a different engine than the one named would make the audit record wrong about how a
+    claim was produced.
+    """
+    from recall.truth_extraction import resolve_extraction_engine
+    from recall.truth_extraction.extract import extract_corpus_claims
+
+    try:
+        engine = resolve_extraction_engine()
+    except (ValueError, ImportError) as exc:
+        print(f"recall extract: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    if engine is None:
+        print(
+            "recall extract: extraction is off. Set RECALL_TRUTH_EXTRACTION=1 to enable it. "
+            "See docs/TRUTH_EXTRACTION_DESIGN.md for what it does and what it refuses.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    root = Path(args.path if args.extract_cmd == "run" else args.file)
+    if not root.exists():
+        # Refused, not reported as an empty corpus. `0 claim(s) for review` on a typo reads as
+        # "this corpus states nothing", which is the opposite of "I never looked". `lint` and
+        # `check` both exit 2 here; this matches them.
+        print(f"recall extract: no such path: {root}", file=sys.stderr)
+        raise SystemExit(2)
+    if args.extract_cmd == "show" and not root.is_file():
+        print(f"recall extract show: not a file: {root}", file=sys.stderr)
+        raise SystemExit(2)
+
+    def _glob(directory: Path) -> list[Path]:
+        # `Path.glob` raises ValueError on an empty pattern and NotImplementedError on an
+        # absolute one. Neither is an OSError, so both escaped as a traceback.
+        try:
+            return sorted(directory.glob(args.glob))
+        except (ValueError, NotImplementedError, OSError) as exc:
+            print(f"recall extract: --glob {args.glob!r}: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+
+    if args.extract_cmd == "run":
+        # The CORPUS is always the full glob. Slicing it with `--limit` shrinks the set a
+        # supersession target resolves against, so a memo naming a real neighbour is refused
+        # with "which is not a file in the corpus" about a file sitting right beside it. That
+        # fabricated refusal reads exactly like a real one, and `--limit` is a sampling flag
+        # whose entire purpose is to look at part of a corpus without changing the answers.
+        corpus_paths = _glob(root) if root.is_dir() else _glob(root.parent)
+        paths = corpus_paths if root.is_dir() else [root]
+        if args.limit is not None:
+            paths = paths[: args.limit]
+    else:
+        # `show` REPORTS one file but resolves targets against the corpus that file lives in,
+        # for the same reason.
+        paths = [root]
+        corpus_paths = _glob(root.parent)
+
+    corpus_root = root if root.is_dir() else root.parent
+
+    def _key(path: Path) -> str:
+        # Keyed by path relative to the corpus root, not by bare basename. The default glob is
+        # recursive, so `legal/policy.md` and `eng/policy.md` collapsed onto one dict key: one
+        # file was silently dropped, and the ladder's "matches N files in the corpus" refusal
+        # could never fire, because the index had deduplicated the ambiguity away.
+        try:
+            return path.relative_to(corpus_root).as_posix()
+        except ValueError:
+            return path.name
+
+    documents: dict[str, str] = {}
+    unreadable: list[tuple[str, str]] = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            documents[_key(path)] = path.read_text(encoding="utf-8-sig")
+        except (UnicodeDecodeError, OSError) as exc:
+            # Per file, and note `UnicodeDecodeError` is a ValueError, NOT an OSError. One memo
+            # that is not UTF-8 aborted the whole run and discarded every file already decoded.
+            # `lint.py` and `fix.py` both catch the pair and keep going.
+            unreadable.append((_key(path), str(exc)))
+    corpus_names = tuple(sorted(_key(p) for p in corpus_paths if p.is_file()))
+
+    # Validated BEFORE any extraction runs. Deferring it meant a user paid for a whole corpus of
+    # model calls and then got exit 2 on a flag combination knowable at parse time, with a
+    # complete looking report already printed above the error.
+    if getattr(args, "recheck", False) and not getattr(args, "cache", False):
+        print(
+            "recall extract: --recheck needs --cache; there is nothing to re-check against "
+            "an empty cache",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    cache = None
+    if getattr(args, "cache", False):
+        from recall.truth_extraction._cache import InMemoryExtractionCache
+
+        cache = InMemoryExtractionCache()
+
+    extractions = extract_corpus_claims(
+        documents, engine=engine, corpus_names=corpus_names, cache=cache
+    )
+    for name, reason in unreadable:
+        print(f"  UNREADABLE {name}: {reason}")
+    for item in extractions:
+        for claim in item.claims:
+            print(f"  {item.file}: {claim.kind}")
+            print(f"      quote {claim.quote!r}")
+        for refusal in item.rejections:
+            print(f"  SKIP {item.file}: {refusal.rung}: {refusal.reason}")
+        if item.batch_rejection is not None:
+            print(
+                f"  REFUSED {item.file}: {item.batch_rejection.rung}: "
+                f"{item.batch_rejection.reason}"
+            )
+    total = sum(len(item.claims) for item in extractions)
+    print(f"\n{len(documents)} file(s) read, {total} claim(s) for review")
+
+    if cache is not None and getattr(args, "recheck", False):
+        from recall.truth_extraction._cache import recheck_cached_extractions
+
+        # The SAME `corpus_names` the extraction ran with. `extraction_cache_key` hashes them,
+        # so passing the document keys instead produced a different key for every file, every
+        # lookup missed, and the report read "0 checked, rate not measured" without saying why.
+        report = recheck_cached_extractions(
+            documents, engine=engine, corpus_names=corpus_names, cache=cache
+        )
+        rate = "not measured" if report.mismatch_rate is None else f"{report.mismatch_rate:.3f}"
+        print(
+            f"recheck: {report.checked} checked, {report.mismatched} mismatched, "
+            f"{report.errored} errored, rate {rate}"
+        )
+
+    # Dry run is the ONLY run. This command has no --apply, because declaring a claim needs a
+    # named human at `recall rewrite apply`, not a flag here.
+    print("nothing written — review with `recall rewrite plan`")
+
+
 def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):  # clean UTF-8 output on Windows consoles
         sys.stdout.reconfigure(encoding="utf-8")
@@ -525,6 +683,61 @@ def main(argv: list[str] | None = None) -> None:
         "audit", help="run the reasoning integration audit"
     )
     p_reasoning_audit.add_argument("--query", default="reasoning audit sentinel")
+
+    # No `_opens_db`: extraction is an ingest-side filesystem concern and never connects. The
+    # set of DB-opening commands is derived from these declarations, so leaving it off IS the
+    # answer to the question that guard asks, not an omission.
+    p_extract = sub.add_parser(
+        "extract",
+        help="extract structured truth claims from memo prose (no DB needed; writes nothing)",
+    )
+    extract_sub = p_extract.add_subparsers(dest="extract_cmd", required=True)
+    # `description` as well as `help`: `help` shows in the PARENT's listing, `description` in
+    # this subparser's own `--help`, which is where someone checks what it will do to their
+    # files. Stating "writes nothing" only in the parent listing leaves that question
+    # unanswered exactly where it gets asked.
+    _extract_run_blurb = (
+        "Extract claims from a corpus. This writes nothing: it has no --apply, because "
+        "declaring a claim needs a named human at `recall rewrite apply`. Review with "
+        "`recall rewrite plan`."
+    )
+    p_extract_run = extract_sub.add_parser(
+        "run", help=_extract_run_blurb, description=_extract_run_blurb
+    )
+    p_extract_run.add_argument("path")
+    p_extract_run.add_argument("--glob", default=DEFAULT_GLOB)
+    p_extract_run.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=None,
+        help="read at most this many files. Targets still resolve against the WHOLE corpus, "
+        "so sampling does not change the answers.",
+    )
+    p_extract_run.add_argument(
+        "--recheck",
+        action="store_true",
+        help="re-call the engine on cached keys and report the mismatch rate, to MEASURE "
+        "whether determinism holds rather than assume it (needs --cache)",
+    )
+    # A boolean, deliberately NOT a path. An earlier version took `--cache PATH`, ignored the
+    # path entirely and built a process-local cache, so the flag could never do the one thing
+    # its help promised: nothing was written to PATH and a second run hit nothing. Advertising
+    # a persistence this does not have is worse than not offering it.
+    p_extract_run.add_argument(
+        "--cache",
+        action="store_true",
+        help="keep a process-local extraction cache for this run. NOT persisted between runs; "
+        "its purpose is to make --recheck possible.",
+    )
+    _extract_show_blurb = (
+        "Show the claims and refusals for a single file. Targets are resolved against the "
+        "file's own directory, not against the file alone. This writes nothing."
+    )
+    p_extract_show = extract_sub.add_parser(
+        "show", help=_extract_show_blurb, description=_extract_show_blurb
+    )
+    p_extract_show.add_argument("file")
+    p_extract_show.add_argument("--glob", default=DEFAULT_GLOB)
 
     sub.add_parser("demo", help="index corpus/ and run sample memory queries").set_defaults(
         _opens_db=True
@@ -1010,6 +1223,10 @@ def main(argv: list[str] | None = None) -> None:
         print(f"{errors} errors, {warnings} warnings")
         if errors:
             raise SystemExit(1)
+        return
+
+    if args.cmd == "extract":  # pure filesystem path — no embedder, no DB
+        _run_extract(args)
         return
 
     if args.cmd == "check":  # pure filesystem check — no embedder, no DB
