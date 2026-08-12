@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software or describe it publicly, please cite RE-call and credit Giulio D'Erme."
 title: "RE-call: Retrieval-Augmented Self-Recall"
-version: 0.9.2
+version: 0.9.4
 abstract: >-
   RE-call is a retrieval engine for an AI agent's own memory that returns confidence, provenance,
   and validity with every hit — instead of the closest vector match alone — and prefers an explicit
