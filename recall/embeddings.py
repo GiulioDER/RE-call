@@ -29,10 +29,10 @@ def _is_transient(exc: Exception) -> bool:
     containing it, so ``"…your messages resulted in 10429 tokens"`` made a permanent HTTP 400
     context-length overflow look like a rate limit. That is the worst case to be wrong on:
     ``retry_with_backoff`` resends the entire payload, so a caller whose payload is a prompt with
-    a whole document body inside it pays three times over for a request that was refused for
-    being too long, and no retry can make an over-long prompt fit. ``benchmarks/llm.py`` is that
-    shape here; the case this was actually found on is an extraction engine that lives on an
-    unlanded branch, so do not go looking for it in this tree.
+    a whole document body inside it pays for the same refused request on every attempt (three by
+    default, four from ``benchmarks/llm.py``), and no retry can make an over-long prompt fit.
+    ``benchmarks/llm.py`` is that shape here; the case this was actually found on is an
+    extraction engine that lives on an unlanded branch, so do not go looking for it in this tree.
 
     The markers remain as a fallback for errors that carry no status at all — voyageai spells it
     ``http_status``, and ``openai.APIConnectionError``/``APITimeoutError`` carry none — which is
@@ -44,6 +44,13 @@ def _is_transient(exc: Exception) -> bool:
     has always claimed. That exclusion is deliberate; widening it is a change to what "transient"
     means, and it belongs in the numeric branch rather than in a text marker that would re-open
     the hole above.
+
+    It is also THIS FUNCTION'S exclusion and not yet the system's. ``OpenAICompatEmbedder`` below
+    and ``benchmarks/llm.py`` both build their ``OpenAI`` client without ``max_retries=0``, and
+    the SDK retries 408, 409, 429 and 5xx twice on its own before this classifier is consulted at
+    all — so end to end a 408 is currently retried anyway, and every attempt counted here is
+    three requests. Fixing that is tracked separately; until it lands, do not read the paragraph
+    above as describing what reaches the provider.
     """
     status = getattr(exc, "status_code", None)
     if status is None:

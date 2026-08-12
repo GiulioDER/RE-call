@@ -7,8 +7,10 @@ carry no status at all (voyageai spells it `http_status`, and connection/timeout
 nothing), so they must not be consulted once the transport has already stated the status.
 
 The cost of the false positive is not one wasted attempt. `retry_with_backoff` resends the whole
-payload, and the payload on the extraction path is a prompt with an entire memo body embedded in
-it — so a context-length overflow, which is permanent by construction, is paid for three times.
+payload, and a caller whose payload is a prompt carrying a whole document body pays for the
+refusal on every attempt. `benchmarks/llm.py` is that shape in this repository, sending the
+retrieved context `benchmarks/pipeline.py` builds; the case this was found on is an extraction
+engine on an unlanded branch, which is not in this tree.
 """
 
 import pytest
@@ -122,13 +124,18 @@ def test_a_real_429_is_still_retried() -> None:
     assert _attempts_used(exc) == 3
 
 
-def test_a_503_is_still_retried() -> None:
+@pytest.mark.parametrize("status", [500, 503, 599])
+def test_the_whole_5xx_band_is_still_retried(status: int) -> None:
     """5xx is the other transient family. Marker-free for the same reason as the 429 above.
 
     `"Error code: 503 - ..."` contains `" 503"`, leading space and all, which IS one of the
     markers — so the obvious phrasing hid the same hole here.
+
+    Both ends of the band, not one point in the middle. With 503 as the only case, moving the
+    lower bound to `501 <= status` left every test green while making a plain HTTP 500 fail on
+    the first attempt.
     """
-    exc = _StatusError("upstream is having a bad day", status_code=503)
+    exc = _StatusError("upstream is having a bad day", status_code=status)
     assert _is_transient(exc) is True
     assert _attempts_used(exc) == 3
 
@@ -196,6 +203,19 @@ def test_an_error_with_no_status_still_falls_back_to_text_markers() -> None:
     fallback would make every network blip fail on the first attempt.
     """
     exc = RuntimeError("connection reset by peer")
+    assert _is_transient(exc) is True
+    assert _attempts_used(exc) == 3
+
+
+def test_the_fallback_matches_case_insensitively() -> None:
+    """Pins the `.lower()` in the fallback, using the exact string the docstring leans on.
+
+    Every marker is written lowercase, and `openai.APIConnectionError` stringifies to
+    `"Connection error."` with a capital C. Drop the `.lower()` and that error stops being
+    transient while the rest of the suite stays green — which would silently retract the
+    fallback from the one shape `_is_transient`'s docstring names as depending on it.
+    """
+    exc = RuntimeError("Connection error.")
     assert _is_transient(exc) is True
     assert _attempts_used(exc) == 3
 
