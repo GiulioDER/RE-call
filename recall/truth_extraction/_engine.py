@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from recall.truth_extraction._prompt import ExtractionPrompt
@@ -130,7 +130,26 @@ def _line_of(body: str, offset: int) -> str:
     return body[start:] if end == -1 else body[start:end]
 
 
-_ENGINES: Mapping[str, type] = {"deterministic": DeterministicExtractionEngine}
+def _openai_factory(source: Mapping[str, str]) -> ExtractionEngine:
+    from recall.truth_extraction._openai_engine import openai_engine_from_env
+
+    return openai_engine_from_env(source)
+
+
+#: Name to factory, not name to class, and each factory TAKES the resolved settings mapping.
+#:
+#: Deferred construction is what keeps the extra optional: importing this package never imports
+#: an engine's optional dependency, and only naming `openai` pulls `openai` in.
+#:
+#: The `source` argument is what keeps configuration honest. `resolve_extraction_engine` accepts
+#: an explicit mapping, and a nullary factory could only reach `os.environ`, so a caller passing
+#: a complete env would be refused for a key it had supplied, or silently answered by whatever
+#: model the ambient environment named. That wrong name then reaches the cache key and the audit
+#: record, which is the failure the refuse-don't-downgrade rule below exists to prevent.
+_ENGINES: Mapping[str, Callable[[Mapping[str, str]], ExtractionEngine]] = {
+    "deterministic": lambda _source: DeterministicExtractionEngine(),
+    "openai": _openai_factory,
+}
 
 
 def resolve_extraction_engine(env: Mapping[str, str] | None = None) -> ExtractionEngine | None:
@@ -157,7 +176,7 @@ def resolve_extraction_engine(env: Mapping[str, str] | None = None) -> Extractio
             f"RECALL_TRUTH_EXTRACTION_ENGINE={name!r} is not a known engine. Known engines: "
             f"{sorted(_ENGINES)}."
         )
-    engine: ExtractionEngine = _ENGINES[name]()
+    engine: ExtractionEngine = _ENGINES[name](source)
     return engine
 
 

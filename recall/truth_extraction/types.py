@@ -43,6 +43,7 @@ STATUS_VOCABULARY: tuple[str, ...] = (
 #: Rungs of the validation ladder, in the order they are applied. The batch rungs reject
 #: the file's entire output; the claim rungs reject one claim and keep the rest.
 BATCH_RUNGS: tuple[str, ...] = (
+    "engine_error",
     "json",
     "top_level_shape",
     "max_claims",

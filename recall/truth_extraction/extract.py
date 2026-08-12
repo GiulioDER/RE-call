@@ -16,12 +16,43 @@ from collections.abc import Mapping, Sequence
 from recall.truth_extraction._cache import ExtractionCache, extraction_cache_key
 from recall.truth_extraction._engine import ExtractionEngine
 from recall.truth_extraction._normalize import human_body_of, normalize_extraction
-from recall.truth_extraction._prompt import build_extraction_prompt
+from recall.truth_extraction._prompt import ExtractionPrompt, build_extraction_prompt
 from recall.truth_extraction.types import (
     ClaimRejection,
     ExtractionBatchRejected,
     FileExtraction,
 )
+
+
+def _refused(
+    *,
+    file: str,
+    engine: ExtractionEngine,
+    prompt: ExtractionPrompt,
+    rung: str,
+    reason: str,
+) -> FileExtraction:
+    """A whole-file refusal, recorded so a reviewer sees it rather than seeing nothing.
+
+    Deliberately NOT cached. A cache entry exists to avoid re-paying for an answer, and a rate
+    limit or a dropped connection is not an answer: caching it would make a transient failure
+    permanent for as long as the entry survives, and the next run would report the same refusal
+    without ever having asked again.
+
+    The reason carries the exception's CLASS NAME and not its text, matching
+    `reasoning_proposals/_providers._safe_failure_message`. Provider error strings routinely
+    echo the request, and the request carries the API key and the memo body.
+    """
+    return FileExtraction(
+        file=file,
+        claims=(),
+        rejections=(),
+        engine_id=engine.engine_id,
+        model_id=engine.model_id,
+        revision=engine.revision,
+        prompt_revision=prompt.revision,
+        batch_rejection=ClaimRejection(index=-1, kind="*", rung=rung, reason=reason),
+    )
 
 
 def extract_file_claims(
@@ -50,9 +81,29 @@ def extract_file_claims(
                 batch_rejection=cached.batch_rejection,
                 cached=True,
             )
+    # The engine call is guarded SEPARATELY from normalization, and it is guarded broadly. A
+    # model engine reaches the network, so it can raise a rate limit, a timeout, a connection
+    # reset or a malformed-response error, none of which is an `ExtractionBatchRejected`. Left
+    # to propagate, one such failure on memo 400 of 792 aborts `extract_corpus_claims` and
+    # discards all 399 extractions already built, because it collects into a `tuple(...)` over a
+    # generator. That directly contradicts this module's contract: "One memo whose output was
+    # malformed must not abort ingesting the other 791."
+    #
+    # The broad catch is scoped to `engine.run` alone. Bugs inside `normalize_extraction` are
+    # the library's own and must still surface as crashes rather than be recorded as refusals.
+    try:
+        answer = engine.run(prompt)
+    except Exception as failure:  # noqa: BLE001 - see above; the engine is third party code
+        return _refused(
+            file=file,
+            engine=engine,
+            prompt=prompt,
+            rung="engine_error",
+            reason=f"engine failed: {failure.__class__.__name__}",
+        )
     try:
         claims, rejections = normalize_extraction(
-            engine.run(prompt), file=file, human_body=body, corpus_names=corpus_names
+            answer, file=file, human_body=body, corpus_names=corpus_names
         )
         batch_rejection = None
     except ExtractionBatchRejected as refused:

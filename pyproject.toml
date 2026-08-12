@@ -50,6 +50,9 @@ sparse = ["transformers>=4.40,<6", "torch>=2.0,<3"]
 rerank = ["sentence-transformers>=3.0"]
 entail = ["sentence-transformers>=3.0"]
 eval = ["matplotlib>=3.7", "numpy"]
+# Model backed truth extraction. Runs on the ingest path only, never the query path, and is
+# OFF unless RECALL_TRUTH_EXTRACTION is set. Shares the `bench` extra's openai floor.
+extract = ["openai>=1.0"]
 finetune = ["sentence-transformers>=3.0", "datasets>=2.0", "accelerate>=1.1", "numpy"]
 # Adapter extras depend on the core packages only, not the framework meta-packages.
 langchain = ["langchain-core>=0.3"]
