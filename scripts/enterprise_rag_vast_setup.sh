@@ -22,7 +22,7 @@ have() {
 
 if [[ ! -d "$ROOT/.git" ]]; then
   mkdir -p "$(dirname "$ROOT")"
-  git clone --branch "$BRANCH" --single-branch https://github.com/GiulioDER/RE-call.git "$ROOT"
+  git clone --depth 1 --branch "$BRANCH" --single-branch https://github.com/GiulioDER/RE-call.git "$ROOT"
 else
   git -C "$ROOT" fetch origin "$BRANCH"
   git -C "$ROOT" checkout "$BRANCH"
