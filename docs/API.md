@@ -23,7 +23,7 @@ only from returned hits whose verdict and provenance satisfy the caller's policy
 
 | Command | Purpose |
 |---|---|
-| `recall setup` | Guided local setup, including optional per-corpus calibration. |
+| `recall setup` | Guided local setup: embedder/reranker/entailment choices, optional per-corpus calibration, and optional CLAUDE.md/memory scaffolding. |
 | `recall schema` | Apply, inspect, and plan PostgreSQL schema migrations. |
 | `recall index` | Index a markdown corpus. |
 | `recall search` | Query an indexed corpus through the trust layer. |

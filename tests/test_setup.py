@@ -636,3 +636,124 @@ def test_setup_wizard_skips_scaffold_when_declined(tmp_path, monkeypatch):
 
     assert not claude_md_path.exists()
     assert not memory_dir.exists()
+
+
+def test_setup_wizard_scaffold_prompt_defaults_to_yes_on_blank_answer(tmp_path, monkeypatch):
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    monkeypatch.setattr(
+        "recall.setup.calibrate_from_files",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("calibration should be skipped")),
+    )
+    index_calls = {}
+    monkeypatch.setattr(
+        "recall.setup.index_memory_directory",
+        lambda **kw: index_calls.update(kw),
+    )
+    answers = iter([
+        "n",
+        "voyage-key",
+        "openai-key",
+        "openrouter-key",
+        "4",
+        "1",
+        "1",
+        "n",
+        "",  # scaffold CLAUDE.md / memory/? blank answer takes the default (yes)
+        "n",
+    ])
+    output = io.StringIO()
+
+    def fake_input(_prompt: str = "") -> str:
+        return next(answers)
+
+    claude_md_path = tmp_path / "CLAUDE.md"
+    memory_dir = tmp_path / "memory"
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        claude_md_path=claude_md_path,
+        memory_dir=memory_dir,
+        input_fn=fake_input,
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    assert claude_md_path.exists()
+    assert (memory_dir / "MEMORY.md").exists()
+    assert index_calls["memory_dir"] == memory_dir
+
+
+def test_setup_wizard_still_scaffolds_when_calibration_output_path_is_invalid(
+    tmp_path, monkeypatch
+):
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    monkeypatch.setattr(
+        "recall.setup.calibrate_from_files",
+        lambda **kw: (_ for _ in ()).throw(ValueError("bad calibration input")),
+    )
+    index_calls = {}
+    monkeypatch.setattr(
+        "recall.setup.index_memory_directory",
+        lambda **kw: index_calls.update(kw),
+    )
+    answers = iter([
+        "n",
+        "voyage-key",
+        "openai-key",
+        "openrouter-key",
+        "4",
+        "1",
+        "1",
+        "n",
+        "y",  # scaffold CLAUDE.md / memory/? accepted
+        "y",  # calibrate now? accepted
+        str(tmp_path / "queries.json"),
+        str(tmp_path / "corpus"),
+        "",  # calibration output path, default — calibrate_from_files raises ValueError
+    ])
+    output = io.StringIO()
+
+    def fake_input(_prompt: str = "") -> str:
+        return next(answers)
+
+    claude_md_path = tmp_path / "CLAUDE.md"
+    memory_dir = tmp_path / "memory"
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_setup_wizard(
+            dsn="postgresql://example/recall",
+            env_path=tmp_path / ".env",
+            claude_md_path=claude_md_path,
+            memory_dir=memory_dir,
+            input_fn=fake_input,
+            print_fn=lambda *a, **k: print(*a, **k, file=output),
+        )
+
+    assert exc_info.value.code == 2
+    # A bad calibration path aborts the wizard before .env is ever written, unchanged from
+    # before this refactor — but a scaffold the user separately asked for must not be silently
+    # dropped just because a later, unrelated step failed.
+    assert not (tmp_path / ".env").exists()
+    assert claude_md_path.exists()
+    assert (memory_dir / "MEMORY.md").exists()
+    assert index_calls["memory_dir"] == memory_dir

@@ -335,8 +335,8 @@ def _claude_md_block() -> str:
         "- Use `recall_evidence` instead of `recall_search` when about to answer from memory "
         "rather than just consult it; cite only `chunk_id` values from its `items`.\n"
         "- Write new durable facts to `memory/`, one file per fact, indexed by "
-        "`memory/MEMORY.md` (see that file for the format), then call `recall_index` on the new "
-        "file so it becomes searchable.\n"
+        "`memory/MEMORY.md` (see that file for the format), then call `recall_index` on "
+        "`memory/` so the new file and the updated index both become searchable.\n"
     )
 
 
@@ -566,12 +566,18 @@ def run_setup_wizard(
             "and enough internet and disk to download a model."
         )
 
-    if _ask_yes_no(
+    scaffold_requested = _ask_yes_no(
         input_fn,
         print_fn,
         "Scaffold CLAUDE.md and a memory/ directory for this project?",
         default=True,
-    ):
+    )
+
+    # Deferred to right before each return, after `.env` is written: `scaffold_claude_md` and
+    # `index_memory_directory` can resolve/download an embedder model and open a DB connection,
+    # and running that BEFORE the answers just gathered are persisted means an interruption
+    # during a long model download loses the whole completed interview, not just the scaffold.
+    def _run_scaffold() -> None:
         try:
             scaffold_claude_md(claude_md_path)
             print_fn(f"Updated {claude_md_path}")
@@ -640,6 +646,8 @@ def run_setup_wizard(
             )
             _update_env_block(env_path, values)
             print_fn(f"Wrote {env_path}")
+            if scaffold_requested:
+                _run_scaffold()
             return values
         queries = _require_local_path(queries_raw, label="Path to labeled queries JSON")
         corpus = _require_local_path(corpus_raw, label="Path to your corpus")
@@ -659,6 +667,12 @@ def run_setup_wizard(
             )
         except ValueError as exc:
             print_fn(str(exc))
+            # This path never wrote `.env` even before this function grew a scaffold step — a
+            # bad calibration path aborts the whole wizard. But scaffolding was requested
+            # independently of calibration succeeding, so still attempt it best-effort on the
+            # way out rather than silently dropping a completed part of the interview.
+            if scaffold_requested:
+                _run_scaffold()
             raise SystemExit(2) from exc
         values["RECALL_CALIBRATION"] = str(result.path)
         print_fn(
@@ -672,4 +686,6 @@ def run_setup_wizard(
 
     _update_env_block(env_path, values)
     print_fn(f"Wrote {env_path}")
+    if scaffold_requested:
+        _run_scaffold()
     return values

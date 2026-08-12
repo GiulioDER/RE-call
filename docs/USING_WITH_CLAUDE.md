@@ -176,6 +176,14 @@ you ran `recall setup` with a non-default `--tenant` or `--table`. If your proje
 non-default tenant or table, the rows written by auto-index will not show up in that tenant's later
 searches; index `memory/` yourself against the correct table/tenant instead.
 
+The first auto-index run indexes `memory/MEMORY.md` itself along with any facts already present,
+since it walks the whole directory. On a fresh scaffold that means the starter file's own
+frontmatter/format instructions are indexed as a chunk — harmless (the trust layer scores generic
+boilerplate low), but if `recall_search` surfaces it, that's what happened.
+
+The scaffold/index step runs only after `.env` is written, so an interruption during a slow model
+download or DB connection never loses the answers you already gave earlier in the interview.
+
 Decline the prompt to skip scaffolding entirely, or answer it again on a later `recall setup` run
 to refresh the `CLAUDE.md` block.
 
