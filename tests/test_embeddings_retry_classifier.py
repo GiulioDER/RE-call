@@ -1,8 +1,8 @@
 """`_is_transient` must let a numeric status have the last word.
 
-The classifier reads a numeric `status_code`/`status` first and then ALSO matches markers in the
-exception text. When both fire, the text used to win: a permanent 400 whose message merely
-contained the digits "429" was classified transient. The markers are a fallback for errors that
+The classifier used to read a numeric `status_code`/`status` and then ALSO match markers in the
+exception text. When both fired, the text won: a permanent 400 whose message merely contained
+the digits "429" was classified transient. The markers are a fallback for errors that
 carry no status at all (voyageai spells it `http_status`, and connection/timeout errors carry
 nothing), so they must not be consulted once the transport has already stated the status.
 
@@ -28,6 +28,19 @@ class _StatusError(Exception):
         self.status_code = status_code
 
 
+class _StatusOnlyError(Exception):
+    """An error that spells the status `status`, with no `status_code` at all.
+
+    A separate class rather than a `None` on `_StatusError`, because `getattr(exc, "status_code",
+    None)` cannot tell an absent attribute from one set to None — so the attribute has to be
+    genuinely missing for these tests to reach the second lookup.
+    """
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 def _attempts_used(exc: Exception, attempts: int = 3) -> int:
     """Run `retry_with_backoff` over a function that always raises `exc`, and count the calls.
 
@@ -45,22 +58,38 @@ def _attempts_used(exc: Exception, attempts: int = 3) -> int:
     return calls["n"]
 
 
-def test_a_400_whose_message_contains_429_is_not_retried() -> None:
-    """The verified failing input, built from the real SDK rather than a look-alike.
+#: The reported failure, verbatim. "10429 tokens" is not a rate limit, and no number of retries
+#: will make an over-long prompt fit.
+_OVERFLOW = (
+    "This model's maximum context length is 8192 tokens, however your messages "
+    "resulted in 10429 tokens"
+)
 
-    A stub would prove only that the stub matches itself; this pins the fix to the attribute
-    `openai` actually sets. "10429 tokens" is not a rate limit, and no number of retries will
-    make an over-long prompt fit.
+
+def test_a_400_whose_message_contains_429_is_not_retried() -> None:
+    """The reported case, on a stub, so that CI actually runs it.
+
+    The real-SDK twin below is gated behind the `bench` extra, and CI installs `.[dev]` — which
+    means the one test reproducing the exact bug this fix exists for would never execute there.
+    A stub-only test proves less, and a skipped test proves nothing at all, so both exist.
     """
-    openai = pytest.importorskip("openai", reason="needs the extract/bench extra")
+    exc = _StatusError(f"Error code: 400 - {_OVERFLOW}", status_code=400)
+    assert _is_transient(exc) is False
+    assert _attempts_used(exc) == 1
+
+
+def test_the_real_sdk_400_that_was_reported_is_not_retried() -> None:
+    """The same case built from the real SDK rather than a look-alike.
+
+    The stub above proves only that the stub matches itself; this pins the fix to the attribute
+    `openai` actually sets, so a rename of `status_code` cannot pass silently.
+    """
+    openai = pytest.importorskip("openai", reason="needs the bench extra (pip install recall[bench])")
     httpx = pytest.importorskip("httpx", reason="openai's transport dep; only missing if it drops it")
 
     body = {
         "error": {
-            "message": (
-                "This model's maximum context length is 8192 tokens, however your messages "
-                "resulted in 10429 tokens"
-            ),
+            "message": _OVERFLOW,
             "type": "invalid_request_error",
             "code": "context_length_exceeded",
         }
@@ -79,15 +108,25 @@ def test_a_400_whose_message_contains_429_is_not_retried() -> None:
 
 
 def test_a_real_429_is_still_retried() -> None:
-    """The status the classifier exists for. Deciding on the number must not lose this."""
-    exc = _StatusError("Error code: 429 - slow down", status_code=429)
+    """The status the classifier exists for. Deciding on the number must not lose this.
+
+    The message is deliberately marker-free — no digits, no "rate limit". Spelling it the way a
+    provider would, `"Error code: 429 - slow down"`, made the text fallback able to satisfy this
+    test on its own, so deleting the whole numeric branch left it green: a guard for the numeric
+    branch that did not need the numeric branch.
+    """
+    exc = _StatusError("slow down", status_code=429)
     assert _is_transient(exc) is True
     assert _attempts_used(exc) == 3
 
 
 def test_a_503_is_still_retried() -> None:
-    """5xx is the other transient family, and its text carries no marker of its own here."""
-    exc = _StatusError("Error code: 503 - upstream is having a bad day", status_code=503)
+    """5xx is the other transient family. Marker-free for the same reason as the 429 above.
+
+    `"Error code: 503 - ..."` contains `" 503"`, leading space and all, which IS one of the
+    markers — so the obvious phrasing hid the same hole here.
+    """
+    exc = _StatusError("upstream is having a bad day", status_code=503)
     assert _is_transient(exc) is True
     assert _attempts_used(exc) == 3
 
@@ -101,6 +140,31 @@ def test_a_401_is_not_rescued_by_a_marker_word_in_its_message() -> None:
     exc = _StatusError("401 unauthorized: connection to the tenant timed out", status_code=401)
     assert _is_transient(exc) is False
     assert _attempts_used(exc) == 1
+
+
+def test_a_status_spelled_status_also_decides_alone() -> None:
+    """The second lookup is now decisive too, and that is a bigger change than the first.
+
+    Before the fix a wrong `status` could only ever ADD a spurious True; now it can force a
+    permanent False and suppress a real retry. Nothing covered that limb, so deleting the
+    `getattr(exc, "status", None)` line entirely left the whole file green.
+    """
+    exc = _StatusOnlyError(f"Error code: 400 - {_OVERFLOW}", status=400)
+    assert not hasattr(exc, "status_code")  # the first lookup must genuinely miss
+    assert _is_transient(exc) is False
+    assert _attempts_used(exc) == 1
+
+
+def test_status_code_is_read_before_status() -> None:
+    """The two lookups are ordered, and the order is load-bearing once each one is decisive.
+
+    An SDK that carries both — a transport 429 alongside a body-level status — must be read as
+    the rate limit it is. Swapping the lookups would make this a permanent 400.
+    """
+    exc = _StatusError("slow down", status_code=429)
+    exc.status = 400  # type: ignore[attr-defined]
+    assert _is_transient(exc) is True
+    assert _attempts_used(exc) == 3
 
 
 def test_an_error_with_no_status_still_falls_back_to_text_markers() -> None:

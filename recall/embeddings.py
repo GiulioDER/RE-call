@@ -35,6 +35,13 @@ def _is_transient(exc: Exception) -> bool:
     The markers remain as a fallback for errors that carry no status at all — voyageai spells it
     ``http_status``, and ``openai.APIConnectionError``/``APITimeoutError`` carry none — which is
     the only evidence available there.
+
+    So "network/timeout" above means a CLIENT-side timeout, which arrives with no status and
+    keeps the fallback. A server that RETURNS 408 (or 409, which openai's own client retries as a
+    lock timeout) is not retried here, because 429 and 5xx is the numeric contract this docstring
+    has always claimed. That exclusion is deliberate; widening it is a change to what "transient"
+    means, and it belongs in the numeric branch rather than in a text marker that would re-open
+    the hole above.
     """
     status = getattr(exc, "status_code", None)
     if status is None:
