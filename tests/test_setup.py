@@ -528,6 +528,63 @@ def test_setup_wizard_scaffolds_claude_md_and_memory_and_indexes(tmp_path, monke
     assert index_calls["embedder_name"] == "voyage:voyage-3"
 
 
+def test_setup_wizard_survives_scaffold_failure_and_still_writes_env(tmp_path, monkeypatch):
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=10_000_000_000,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    monkeypatch.setattr(
+        "recall.setup.calibrate_from_files",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("calibration should be skipped")),
+    )
+    monkeypatch.setattr(
+        "recall.setup.scaffold_claude_md",
+        lambda *a, **kw: (_ for _ in ()).throw(OSError("permission denied")),
+    )
+    answers = iter([
+        "n",
+        "voyage-key",
+        "openai-key",
+        "openrouter-key",
+        "4",
+        "1",
+        "1",
+        "n",
+        "y",  # scaffold CLAUDE.md / memory/? accepted, but scaffold_claude_md raises
+        "n",
+    ])
+    output = io.StringIO()
+
+    def fake_input(_prompt: str = "") -> str:
+        return next(answers)
+
+    claude_md_path = tmp_path / "CLAUDE.md"
+    memory_dir = tmp_path / "memory"
+
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        claude_md_path=claude_md_path,
+        memory_dir=memory_dir,
+        input_fn=fake_input,
+        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    )
+
+    text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "RECALL_DSN=postgresql://example/recall" in text
+    assert "RECALL_EMBEDDER=voyage:voyage-3" in text
+    assert "RECALL_SPARSE=fts" in text
+    assert "RECALL_ENTAILMENT=0" in text
+    assert "Could not scaffold" in output.getvalue()
+
+
 def test_setup_wizard_skips_scaffold_when_declined(tmp_path, monkeypatch):
     probe = HardwareProbe(
         cpu_count=8,

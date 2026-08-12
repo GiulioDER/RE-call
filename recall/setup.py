@@ -567,19 +567,22 @@ def run_setup_wizard(
         "Scaffold CLAUDE.md and a memory/ directory for this project?",
         default=True,
     ):
-        scaffold_claude_md(claude_md_path)
-        print_fn(f"Updated {claude_md_path}")
-        if scaffold_memory_index(memory_dir):
-            print_fn(f"Wrote {memory_dir / 'MEMORY.md'}")
-        else:
-            print_fn(f"{memory_dir / 'MEMORY.md'} already exists, left unchanged.")
-        index_memory_directory(
-            dsn=dsn,
-            embedder_name=embedder.value,
-            memory_dir=memory_dir,
-            env=cloud_keys,
-            print_fn=print_fn,
-        )
+        try:
+            scaffold_claude_md(claude_md_path)
+            print_fn(f"Updated {claude_md_path}")
+            if scaffold_memory_index(memory_dir):
+                print_fn(f"Wrote {memory_dir / 'MEMORY.md'}")
+            else:
+                print_fn(f"{memory_dir / 'MEMORY.md'} already exists, left unchanged.")
+            index_memory_directory(
+                dsn=dsn,
+                embedder_name=embedder.value,
+                memory_dir=memory_dir,
+                env=cloud_keys,
+                print_fn=print_fn,
+            )
+        except Exception as exc:
+            print_fn(f"Could not scaffold CLAUDE.md/memory: {exc}")
 
     values: dict[str, str] = {
         "RECALL_DSN": dsn,
