@@ -78,6 +78,7 @@ from recall.frontmatter import (
 from recall.lineage import canonical_sha256
 from recall.observability import get_logger
 from recall.promotion import PromotedFact
+from recall.reasoning_proposals.types import InferenceProposal
 from recall.truth_extraction.types import STATUS_VOCABULARY, VALIDITY_CLAIM_KEYS
 from recall.trust import metadata_is_trusted
 
@@ -462,6 +463,113 @@ def _resolve(root: Path, ref: str) -> str:
             f"refusing to write: {ref!r} matches {len(matches)} files in the corpus, not one"
         )
     return matches[0]
+
+
+def corpus_proposals(root: Path, glob: str = "**/*.md") -> tuple[InferenceProposal, ...]:
+    """Every inference proposal the corpus at `root` currently states.
+
+    Re-derived from the files on every call rather than stored. Extraction is cached and
+    deterministic, so that is affordable, and it is also the honest model: a proposal is a
+    reading of the corpus AS IT STANDS NOW, not a verdict recorded earlier. A stored proposal
+    would go stale the moment a memo was edited, and the id would still look authoritative.
+
+    Filesystem only. Nothing here opens a database: the graph is built from the files
+    themselves, so the whole review path works on a checkout with no ingest behind it.
+    """
+    # Imported inside the function: `reasoning_graph` and the proposal protocol are not needed
+    # to WRITE a reviewed fact, which is what the rest of this module does, and pulling them
+    # into its import graph would make the write path carry the reasoning stack.
+    from recall.reasoning_graph import build_reasoning_graph
+    from recall.reasoning_proposals._extracted import ExtractedClaimProposalProvider
+    from recall.reasoning_proposals._providers import proposal_report
+    from recall.truth_extraction._engine import resolve_extraction_engine
+    from recall.truth_extraction.extract import extract_corpus_claims
+    from recall.types import Chunk
+
+    # Every failure here becomes a RewriteRefused, which the CLI already turns into
+    # `recall rewrite: <reason>` and exit 2. Left raw, a non-boolean RECALL_TRUTH_EXTRACTION,
+    # an unknown engine name, a missing extra or a malformed glob all escaped as tracebacks,
+    # while the sibling `recall extract` refused the identical inputs cleanly.
+    try:
+        engine = resolve_extraction_engine()
+    except (ValueError, ImportError) as exc:
+        raise RewriteRefused(str(exc)) from exc
+    if engine is None:
+        raise RewriteRefused(
+            "extraction is off. Set RECALL_TRUTH_EXTRACTION=1 to enable it."
+        )
+
+    corpus_root = root if root.is_dir() else root.parent
+    try:
+        corpus_paths = sorted(corpus_root.glob(glob))
+    except (ValueError, NotImplementedError, OSError) as exc:
+        raise RewriteRefused(f"--glob {glob!r}: {exc}") from exc
+    # Reading ONE memo still resolves targets against the whole corpus it lives in, matching
+    # `extract show`. Narrowing the corpus to the single file refuses every supersession it
+    # states with "which is not a file in the corpus", about a neighbour sitting right there.
+    read_paths = corpus_paths if root.is_dir() else [root]
+
+    def _key(path: Path) -> str:
+        try:
+            return path.relative_to(corpus_root).as_posix()
+        except ValueError:
+            return path.name
+
+    # The whole corpus is read for the GRAPH, while only `read_paths` is extracted FROM. A
+    # supersession proposal needs a graph node for its target as well as a corpus name for it:
+    # `_shape_of` drops any claim whose target has no source node, so building the graph from
+    # the extracted subset alone silently produced zero proposals whenever that subset was not
+    # the whole corpus. That is what made `plan <one-memo.md>` report nothing while
+    # `extract show` on the same memo reported a claim.
+    corpus_documents: dict[str, str] = {}
+    unreadable: list[str] = []
+    for path in corpus_paths:
+        if not path.is_file():
+            continue
+        key = _key(path)
+        try:
+            corpus_documents[key] = path.read_text(encoding="utf-8-sig")
+        except (UnicodeDecodeError, OSError):
+            # Present in the corpus, just not readable. It still gets a node, with empty text,
+            # so a neighbour naming it resolves. Dropping it entirely removed the NEIGHBOUR's
+            # proposal from the review queue, which is a silent loss of a human's work item.
+            corpus_documents[key] = ""
+            unreadable.append(key)
+    wanted = {_key(p) for p in read_paths if p.is_file()}
+    documents = {
+        name: text
+        for name, text in corpus_documents.items()
+        if name in wanted and name not in unreadable
+    }
+    if not documents:
+        return ()
+
+    # `corpus_names` covers every globbed path, not only the ones that decoded.
+    names = tuple(sorted(corpus_documents))
+    if unreadable:
+        _log.warning("unreadable, skipped: %s", ", ".join(sorted(unreadable)))
+    extractions = extract_corpus_claims(documents, engine=engine, corpus_names=names)
+    provider = ExtractedClaimProposalProvider(extractions)
+    graph = build_reasoning_graph(
+        [
+            # `source` is the corpus-relative name, never an absolute path. Node ids are hashed
+            # into the proposal id, so an absolute source made the id depend on how the user
+            # spelled the path: `plan <abs>` and `plan <rel>` produced different ids for the
+            # same unchanged corpus, and an id from one could not be applied through the other.
+            Chunk(name, name, text, {"file": name, "ord": 0})
+            for name, text in corpus_documents.items()
+        ],
+        tenant_id="local",
+        generation_id="filesystem",
+        pipeline_fingerprint="recall.rewrite",
+        include_text=True,
+    )
+    report = proposal_report(graph, model_provider=provider)
+    return tuple(
+        proposal
+        for proposal in (*report.proposals, *report.rejected_proposals)
+        if proposal.provider_id == provider.provider_id
+    )
 
 
 def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:

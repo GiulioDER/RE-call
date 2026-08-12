@@ -329,6 +329,219 @@ def _positive_int(value: str) -> int:
     return number
 
 
+def _rejected_claims(ledger_path: Path) -> frozenset[str]:
+    """Every claim key a human has rejected, read without creating the ledger.
+
+    Returns an empty set when the sidecar does not exist: nothing has been rejected yet. A
+    ledger that exists but cannot be read is a different matter and propagates, because it
+    might hold a rejection for the very claim being asked about.
+    """
+    import sqlite3
+
+    if not ledger_path.exists():
+        return frozenset()
+    try:
+        with sqlite3.connect(f"file:{ledger_path}?mode=ro", uri=True) as conn:
+            return frozenset(
+                row[0] for row in conn.execute("SELECT claim_key FROM rejected_claims")
+            )
+    except sqlite3.Error as exc:
+        from recall.rewrite import RewriteRefused
+
+        raise RewriteRefused(
+            f"rejection ledger at {ledger_path} could not be read: {exc}"
+        ) from exc
+
+
+def _already_declared(root: Path, proposal: object) -> bool:
+    """True when the memo already states this proposal's key, so it needs no second review."""
+    from recall.frontmatter import parse_frontmatter
+    from recall.rewrite import RewriteRefused, destination, route_relation
+
+    try:
+        routed = route_relation(
+            proposal.proposed_relation,  # type: ignore[attr-defined]
+            proposal.subject_id,  # type: ignore[attr-defined]
+            proposal.object_id,  # type: ignore[attr-defined]
+        )
+        if destination(routed.key) != "frontmatter":
+            # A derived-block key is multi valued for `contradicts` and `same_entity`, so
+            # "already there" is not a property of the key alone. Left to the write path.
+            return False
+        path = (root if root.is_dir() else root.parent) / routed.edit_file
+        meta, _ = parse_frontmatter(path.read_text(encoding="utf-8-sig"))
+    except (RewriteRefused, UnicodeDecodeError, OSError):
+        return False
+    return routed.key in meta
+
+
+def _run_rewrite(args: argparse.Namespace) -> None:
+    """`recall rewrite plan|apply|reject|verify`. Filesystem only; never opens the database.
+
+    Proposals are re-derived from the corpus on every verb rather than stored, because a
+    proposal is a reading of the corpus as it stands now. See `rewrite.corpus_proposals`.
+    """
+    from datetime import datetime, timezone
+
+    from recall.frontmatter import parse_frontmatter, supersedes_key
+    from recall.promotion import (
+        accept_reviewed_proposal,
+        promote_accepted_proposal,
+        review_proposal,
+    )
+    from recall.rewrite import (
+        RejectionLedger,
+        apply_rewrite,
+        claim_key,
+        corpus_proposals,
+        default_ledger_path,
+        plan_rewrite,
+    )
+
+    root = Path(args.path)
+    if not root.exists():
+        print(f"recall rewrite: no such path: {root}", file=sys.stderr)
+        raise SystemExit(2)
+
+    if args.rewrite_cmd == "verify":
+        # The check `recall lint` makes, scoped to what this command writes: a declared edge
+        # whose target does not resolve is the defect `supersedes_key` exists for, and it is
+        # exactly what a bad rewrite would leave behind.
+        corpus_root = root if root.is_dir() else root.parent
+        try:
+            corpus_paths = sorted(corpus_root.glob(args.glob))
+        except (ValueError, NotImplementedError, OSError) as exc:
+            print(f"recall rewrite: --glob {args.glob!r}: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+        # Checking ONE memo still resolves against the corpus it lives in; scoping the corpus
+        # to the single file reported every edge that does resolve as unresolved.
+        paths = corpus_paths if root.is_dir() else [root]
+
+        def _rel(path: Path) -> str:
+            try:
+                return path.relative_to(corpus_root).as_posix()
+            except ValueError:
+                return path.name
+
+        # A LIST per key, not a single name. Overwriting collapsed `legal/old.md` and
+        # `eng/old.md` onto one entry, so an edge naming `old.md` was reported as resolved
+        # when it resolves to two files and therefore to none: `lint` calls that
+        # `ambiguous-supersedes-target` and `_resolve` refuses to write it.
+        by_key: dict[str, list[str]] = {}
+        for path in corpus_paths:
+            if path.is_file():
+                by_key.setdefault(supersedes_key(path.name), []).append(_rel(path))
+
+        unresolved = 0
+        for path in paths:
+            if not path.is_file():
+                continue
+            try:
+                meta, _ = parse_frontmatter(path.read_text(encoding="utf-8-sig"))
+            except (UnicodeDecodeError, OSError) as exc:
+                print(f"  UNREADABLE {_rel(path)}: {exc}")
+                continue
+            target = meta.get("supersedes")
+            if not target:
+                continue
+            matches = by_key.get(supersedes_key(target), [])
+            if not matches:
+                print(
+                    f"  UNRESOLVED {_rel(path)}: supersedes {target!r}, "
+                    f"which is not in the corpus"
+                )
+                unresolved += 1
+            elif len(matches) > 1:
+                print(
+                    f"  AMBIGUOUS {_rel(path)}: supersedes {target!r}, which matches "
+                    f"{len(matches)} files: {', '.join(matches)}"
+                )
+                unresolved += 1
+        print(f"\n{unresolved} unresolved edge(s)")
+        if unresolved:
+            raise SystemExit(1)
+        return
+
+    # `RewriteRefused` is caught by the dispatcher in `main`, which turns it into the same
+    # `recall rewrite: <reason>` and exit 2. Catching it again here only risked the two
+    # disagreeing, and the local handler referenced a name this function never imported.
+    proposals = corpus_proposals(root, args.glob)
+    ledger_path = default_ledger_path(root if root.is_dir() else root.parent)
+
+    if args.rewrite_cmd == "plan":
+        # Read WITHOUT creating the ledger. Opening it for write made `plan` create
+        # `<root>/.recall/rejections.sqlite3` while printing "nothing written", and made the
+        # command fail outright on a corpus the user cannot write to. A plan is a listing, not
+        # a decision, so a missing ledger simply means nothing has been rejected yet.
+        rejected = _rejected_claims(ledger_path)
+        for proposal in proposals:
+            claim = claim_key(
+                proposal.proposed_relation, proposal.subject_id, proposal.object_id
+            )
+            if claim in rejected:
+                mark = "REJECTED"
+            elif _already_declared(root, proposal):
+                # Otherwise an accepted proposal reappears every run, indistinguishable from
+                # unreviewed work. It needs no storage: the corpus file already states it.
+                mark = "DECLARED"
+            else:
+                mark = "review  "
+            print(f"  {mark} {proposal.id}  {proposal.proposed_relation}")
+            print(f"      {proposal.subject_id} -> {proposal.object_id}")
+            print(f"      {proposal.explanation}")
+        print(f"\n{len(proposals)} proposal(s)")
+        print("dry run — nothing written. Declare one with `recall rewrite apply`.")
+        return
+
+    chosen = next((p for p in proposals if p.id == args.proposal), None)
+    if chosen is None:
+        print(
+            f"recall rewrite: no proposal {args.proposal!r} in {root}. "
+            f"Run `recall rewrite plan {root}` to list them.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    now = datetime.now(timezone.utc)
+    claim = claim_key(chosen.proposed_relation, chosen.subject_id, chosen.object_id)
+
+    if args.rewrite_cmd == "reject":
+        with RejectionLedger(ledger_path) as ledger:
+            ledger.reject(
+                claim, reviewer_id=args.reviewer, reason=args.note, rejected_at=now
+            )
+        print(f"recorded {args.reviewer}'s rejection of {chosen.id} as claim {claim}")
+        return
+
+    reviewed = review_proposal(
+        chosen, reviewer_id=args.reviewer, reviewed_at=now, audit_note=args.note
+    )
+    fact = promote_accepted_proposal(accept_reviewed_proposal(reviewed), promoted_at=now)
+    plan = plan_rewrite(root, fact)
+    print(f"  {plan.edit_file}: + {plan.key}: {plan.value}  (in the {plan.block} block)")
+    if not args.apply:
+        # Dry run by DEFAULT: this edits the user's own documents, and a tool that rewrites
+        # your memory the first time you try it has earned distrust.
+        #
+        # The ledger is consulted HERE, not only under --apply. Skipping it meant the preview
+        # of an already rejected claim printed "Re-run with --apply to write this edge", and
+        # --apply then refused it: a preview that promises a write the real run declines.
+        if claim in _rejected_claims(ledger_path):
+            print(f"not written: claim {claim} was already rejected by a reviewer")
+            raise SystemExit(1)
+        print("dry run — nothing written. Re-run with --apply to write this edge.")
+        return
+    with RejectionLedger(ledger_path) as ledger:
+        result = apply_rewrite(root, fact, ledger=ledger, apply=True)
+    if result.written:
+        print("written")
+        return
+    # Non-zero when nothing was written. Exiting 0 on a refusal left a script unable to tell a
+    # completed declaration from a declined one. 2 stays reserved for caller error.
+    print(f"not written: {result.refusal}")
+    raise SystemExit(1)
+
+
 def _run_extract(args: argparse.Namespace) -> None:
     """`recall extract run|show`. Reads the corpus, writes nothing, never opens the database.
 
@@ -738,6 +951,59 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_extract_show.add_argument("file")
     p_extract_show.add_argument("--glob", default=DEFAULT_GLOB)
+
+    # No `_opens_db` here either: review and declaration are filesystem work.
+    p_rewrite = sub.add_parser(
+        "rewrite",
+        help="review extracted claims and declare accepted ones in corpus frontmatter",
+    )
+    rewrite_sub = p_rewrite.add_subparsers(dest="rewrite_cmd", required=True)
+
+    _plan_blurb = "Show every proposal the corpus states, and change nothing."
+    p_rw_plan = rewrite_sub.add_parser("plan", help=_plan_blurb, description=_plan_blurb)
+    p_rw_plan.add_argument("path")
+    p_rw_plan.add_argument("--glob", default=DEFAULT_GLOB)
+
+    _apply_blurb = (
+        "Declare ONE reviewed proposal in its memo. DRY RUN by default: it prints the plan and "
+        "changes nothing unless --apply is given. --reviewer and --note are required because "
+        "nothing reaches corpus metadata without a named human."
+    )
+    p_rw_apply = rewrite_sub.add_parser("apply", help=_apply_blurb, description=_apply_blurb)
+    p_rw_apply.add_argument("path")
+    p_rw_apply.add_argument("--glob", default=DEFAULT_GLOB)
+    p_rw_apply.add_argument("--proposal", required=True, help="the proposal id to declare")
+    p_rw_apply.add_argument(
+        "--reviewer", required=True, help="identity of the human accepting this proposal"
+    )
+    p_rw_apply.add_argument(
+        "--note", required=True, help="why it was accepted; kept in the audit record"
+    )
+    p_rw_apply.add_argument(
+        "--apply", action="store_true", help="actually write the edit to the memo file"
+    )
+
+    # `reject` takes a PATH, which the original design sketch did not. The ledger is keyed by
+    # CLAIM (relation plus the two normalised document names), deliberately not by proposal id,
+    # because ids hash in the generation and would forget every rejection at the next re-index.
+    # Resolving an id to a claim key therefore needs the corpus.
+    _reject_blurb = (
+        "Record a human's refusal so the proposal does not resurface. Needs the corpus, "
+        "because the ledger is keyed by claim rather than by proposal id."
+    )
+    p_rw_reject = rewrite_sub.add_parser("reject", help=_reject_blurb, description=_reject_blurb)
+    p_rw_reject.add_argument("path")
+    p_rw_reject.add_argument("--glob", default=DEFAULT_GLOB)
+    p_rw_reject.add_argument("--proposal", required=True)
+    p_rw_reject.add_argument("--reviewer", required=True)
+    p_rw_reject.add_argument("--note", required=True)
+
+    _verify_blurb = "Check that every declared supersedes edge still resolves to one file."
+    p_rw_verify = rewrite_sub.add_parser(
+        "verify", help=_verify_blurb, description=_verify_blurb
+    )
+    p_rw_verify.add_argument("path")
+    p_rw_verify.add_argument("--glob", default=DEFAULT_GLOB)
 
     sub.add_parser("demo", help="index corpus/ and run sample memory queries").set_defaults(
         _opens_db=True
@@ -1227,6 +1493,24 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "extract":  # pure filesystem path — no embedder, no DB
         _run_extract(args)
+        return
+
+    if args.cmd == "rewrite":  # pure filesystem path — no embedder, no DB
+        from recall.rewrite import RewriteRefused
+
+        # `required=True` is satisfied by `--reviewer ""`. The gate at the parser is the first
+        # half; this is the second. A gate a caller passes by typing nothing is a field, not a
+        # person, and this is the one command in the library that edits a user's own memos.
+        for field in ("reviewer", "note"):
+            value = getattr(args, field, None)
+            if value is not None and not value.strip():
+                print(f"recall rewrite: --{field} must not be empty", file=sys.stderr)
+                raise SystemExit(2)
+        try:
+            _run_rewrite(args)
+        except RewriteRefused as exc:
+            print(f"recall rewrite: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
         return
 
     if args.cmd == "check":  # pure filesystem check — no embedder, no DB
