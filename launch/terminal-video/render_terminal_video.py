@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -255,13 +257,72 @@ def write_gif_preview() -> None:
     )
 
 
-def main() -> None:
+MP4_HELP = """
+The MP4 needs `imageio` and `imageio-ffmpeg`. The GIF above needed only Pillow.
+
+    python -m pip install --user imageio imageio-ffmpeg
+
+If the error above mentions a numpy DLL and an Application Control policy, the packages are fine
+and their location is not: Windows refuses to load native extensions out of the ephemeral
+environment `uv run` builds under AppData\\Local\\uv\\cache. Install into your normal interpreter
+with the line above and run this script with plain `python` rather than `uv run`.
+
+To skip the MP4 deliberately, pass --gif-only.
+"""
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Render the RE-call terminal demo. Outputs go beside this script, in out/."
+    )
+    parser.add_argument(
+        "--gif-only",
+        action="store_true",
+        help="skip the MP4, which needs imageio and ffmpeg. The GIF needs only Pillow.",
+    )
+    args = parser.parse_args(argv)
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    write_mp4()
+
+    # The GIF goes first on purpose. It needs nothing beyond Pillow, which is already required to
+    # draw a single frame, so rendering the MP4 first meant one missing optional dependency threw
+    # away an asset that never depended on it.
     write_gif_preview()
-    print(f"wrote {MP4_PATH}")
     print(f"wrote {GIF_PATH}")
+
+    if args.gif_only:
+        return 0
+
+    # Whether an MP4 was already on disk decides what a failure below actually means. Both
+    # outputs are tracked in git, and the README tells you to re-run after copy changes, so the
+    # dangerous outcome is not a missing file: it is a stale MP4 sitting beside the GIF that was
+    # just regenerated, quietly disagreeing with it.
+    mp4_existed = MP4_PATH.exists()
+
+    try:
+        write_mp4()
+    except Exception as exc:
+        # Report what was and was not produced. A caller that sees only a traceback cannot tell
+        # that half the job succeeded, and the numpy DLL error this usually surfaces names
+        # neither the real cause nor the fix.
+        #
+        # Flush first: stdout is block-buffered when piped, so without this the failure block
+        # lands above the "wrote ... gif" line and the reader concludes nothing was produced.
+        sys.stdout.flush()
+        print(f"did NOT write {MP4_PATH}", file=sys.stderr)
+        if mp4_existed:
+            print(
+                "  an earlier MP4 is still on disk. It predates the GIF written above, so the"
+                " two assets may now disagree. Do not commit them as a pair.",
+                file=sys.stderr,
+            )
+        print(f"  {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(MP4_HELP, file=sys.stderr)
+        return 1
+
+    print(f"wrote {MP4_PATH}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
