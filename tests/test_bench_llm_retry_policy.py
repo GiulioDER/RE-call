@@ -51,6 +51,9 @@ def _handler_for(state: dict) -> type[BaseHTTPRequestHandler]:
         protocol_version = "HTTP/1.1"
 
         def do_POST(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler
+            # Recorded so teardown can prove this thread actually ended. Keep-alive means one
+            # thread serves every attempt of a test, and it outlives the request.
+            state["handler_threads"].add(threading.current_thread())
             self.rfile.read(int(self.headers.get("Content-Length", 0)))
             state["count"] += 1
             status = state["status"]
@@ -69,39 +72,81 @@ def _handler_for(state: dict) -> type[BaseHTTPRequestHandler]:
 
 
 @pytest.fixture
-def stub_provider():
-    """A real HTTP endpoint that counts requests and replies with whatever the test arms."""
-    state: dict = {"status": 200, "body": {}, "count": 0}
+def stub_provider(monkeypatch):
+    """A real HTTP endpoint that counts requests and replies with whatever the test arms.
+
+    Proxy variables are stripped first. `httpx` reads them with `trust_env=True` and applies
+    them to 127.0.0.1 as readily as to anything else, so a developer or CI runner exporting
+    `HTTP_PROXY` would send every request in this file to their proxy instead of the stub.
+    That does not fail cleanly: the SDK's default read timeout is 600s, and this suite's
+    `timeout_method = "thread"` takes the whole session down rather than one test.
+
+    Teardown closes the client end before stopping the server. `ThreadingHTTPServer` sets
+    `daemon_threads`, which makes `server_close`'s join a no-op, and HTTP/1.1 keep-alive leaves
+    each handler thread blocked reading a socket nobody closes. Shutting the listener without
+    closing the connection leaks a live thread per test.
+    """
+    for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.delenv(var, raising=False)
+        monkeypatch.delenv(var.lower(), raising=False)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+
+    state: dict = {
+        "status": 200,
+        "body": {},
+        "count": 0,
+        "handler_threads": set(),
+        "built": [],
+    }
     server = ThreadingHTTPServer(("127.0.0.1", 0), _handler_for(state))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    # 0.05 rather than the 0.5 default: `shutdown` waits out one poll interval, which was
+    # costing half a second of teardown per test for nothing.
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
+    thread.daemon = True
     thread.start()
     state["url"] = f"http://127.0.0.1:{server.server_port}/v1"
     try:
         yield state
     finally:
+        for llm in state["built"]:
+            close = getattr(llm._client, "close", None)
+            if callable(close):
+                close()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        assert not thread.is_alive(), "the stub's accept loop outlived the test"
+        for handler in state["handler_threads"]:
+            handler.join(timeout=5)
+            assert not handler.is_alive(), "a stub handler thread outlived the test"
 
 
-def _armed(stub_provider, status: int, message: str, **kw) -> OpenRouterLLM:
-    """An LLM pointed at the stub, with the stub armed to fail.
+def _llm(stub_provider, **kw) -> OpenRouterLLM:
+    """An LLM pointed at the stub, registered so teardown can close its connection.
 
     `sleep` is swallowed rather than monkeypatched: `OpenRouterLLM` already injects it for
     exactly this, so the retry path runs at test speed without reaching into another module.
-
-    `message` must avoid every marker in `_is_transient`'s text fallback, so each test measures
-    the numeric status branch rather than an accident of provider wording.
     """
-    stub_provider["status"] = status
-    stub_provider["body"] = {"error": {"message": message}}
-    return OpenRouterLLM(
+    llm = OpenRouterLLM(
         model="stub-model",
         api_key="test",
         base_url=stub_provider["url"],
         sleep=lambda _seconds: None,
         **kw,
     )
+    stub_provider["built"].append(llm)
+    return llm
+
+
+def _armed(stub_provider, status: int, message: str, **kw) -> OpenRouterLLM:
+    """As `_llm`, with the stub armed to fail.
+
+    `message` must avoid every marker in `_is_transient`'s text fallback, so each test measures
+    the numeric status branch rather than an accident of provider wording.
+    """
+    stub_provider["status"] = status
+    stub_provider["body"] = {"error": {"message": message}}
+    return _llm(stub_provider, **kw)
 
 
 def test_a_rate_limit_costs_the_retry_policys_attempts_and_no_more(stub_provider):
@@ -159,12 +204,7 @@ def test_a_bad_request_is_not_retried(stub_provider):
 
 def test_a_success_costs_exactly_one_request(stub_provider):
     """The happy path must not be perturbed: one call, one request, the content returned."""
-    llm = OpenRouterLLM(
-        model="stub-model",
-        api_key="test",
-        base_url=stub_provider["url"],
-        sleep=lambda _seconds: None,
-    )
+    llm = _llm(stub_provider)
 
     assert llm.complete("sys", "user") == "ok"
 
