@@ -126,10 +126,28 @@ applied there before any other table, so starting with `--table something_else` 
 stops with `SchemaTooOld`. To add a separate index later, apply the default target first, then pass
 `--table`.
 
-When the wizard asks whether to calibrate, provide a labeled query JSON and the corpus directory.
-Use [recall/eval/queries.json](https://github.com/GiulioDER/RE-call/blob/master/recall/eval/queries.json)
-as the input shape. Calibration is per embedder and per corpus, so a new model or substantially
-changed corpus should be calibrated again.
+When the wizard asks whether to calibrate, it wants a labeled query file and the corpus those
+queries refer to. You do not have to build either to try it: both ship inside the installed
+package, next to each other.
+
+```bash
+python -c "import recall.eval, pathlib; print(pathlib.Path(recall.eval.__file__).parent)"
+```
+
+That prints a directory holding `queries.json`, a labeled set covering both answerable and
+unanswerable questions, and `corpus/`, the documents those questions are labeled against. Give the
+wizard those two paths and calibration runs end to end. Sources:
+[recall/eval/queries.json](https://github.com/GiulioDER/RE-call/blob/master/recall/eval/queries.json)
+and [recall/eval/corpus/](https://github.com/GiulioDER/RE-call/tree/master/recall/eval/corpus).
+
+A calibration fitted that way belongs to that sample, not to your data. It shows the mechanism
+working and gives you a labeled file to copy the shape of. Calibration is per embedder and per
+corpus, so a new model or a substantially changed corpus needs calibrating again, and a threshold
+fitted on the sample should not be used to judge your own memory.
+
+A labeled file needs at least one answerable and one unanswerable query, and every entry needs a
+`query` and an `answerable` key. Calibration refuses the file rather than fitting a threshold to
+one-sided evidence.
 
 The distribution is `recall-rag`; the import is `recall`. The name `recall` on PyPI belongs to an
 unrelated package, so do not install both into the same environment.
