@@ -245,14 +245,28 @@ What is known about them:
   nobody claimed. Every report also ends with `runs covered: ...`, so the universe a CLEAN refers
   to is legible in the report itself rather than reconstructed from a command line.
 
-  ⚠️ `--expect-rows 842` is not optional in spirit either. Coverage matches on the BASENAME, so
-  without a size claim a one-row file called `taskc_recall_official.predictions.jsonl` certifies
-  that run CLEAN while 841 answers go unmeasured; a name is not a size. 842 is the `tasks` field
-  in `manifests/taskc_recall_official.predictions.jsonl.manifest.json`. What survives even with
-  both flags: a file carrying the right name and the right row count but copied from somewhere
-  else is taken at face value, because the rows record `task_id` and no run identity. A CLEAN
-  therefore says "these named files were read in full and nothing in them hit the ceiling", which
-  is what an operator should quote it as.
+  ⚠️ `--expect-rows 842` is required too, and for the same reason. Coverage matches on the
+  BASENAME, so without a size claim a one-row file called
+  `taskc_recall_official.predictions.jsonl` certifies that run CLEAN while 841 answers go
+  unmeasured; a name is not a size. 842 is the `tasks` field in
+  `manifests/taskc_recall_official.predictions.jsonl.manifest.json`. Because that field counts
+  TASKS and a file holds LINES, the scan also requires the distinct `task_id` count to equal the
+  row count, so a file padded with repeated rows cannot reach the number. `--expect-rows
+  unclaimed` is the explicit opt-out, and the report then prints `rows expected unclaimed`, so a
+  CLEAN can never be mistaken for a size claim nobody made. (This flag was optional for exactly
+  one commit, which left the false clean it was written to close reachable by not typing it. That
+  is why the opt-out is a token rather than silence.)
+
+  What survives even with both flags, so a CLEAN is quoted for what it is:
+
+  * A file carrying the right name and the right row count but copied from somewhere else is taken
+    at face value, because rows record `task_id` and no run identity.
+  * Measurement is over `predictions[].text`. A 520-token answer stored under a sibling key in a
+    prediction object that also carries a readable `text` is not inspected, because in every file
+    this has been pointed at a prediction's other keys are metadata.
+
+  A CLEAN therefore says: **these named files were read in full, they are the size their manifest
+  claims, and nothing in their `predictions[].text` reached the ceiling.**
 
   🔑 It reports **CLEAN only when every file was fully read and every prediction in every row was
   measured**, and exits non-zero otherwise. An absent file, an empty one, a line that will not

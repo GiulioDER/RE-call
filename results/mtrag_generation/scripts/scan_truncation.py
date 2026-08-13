@@ -89,6 +89,7 @@ class FileReport:
         self.no_answer = 0
         self.unmeasurable = 0
         self.unterminated = 0
+        self.task_ids: set[str] = set()
         self.error: str | None = None
         self.counts: list[int] = []
         self.at_ceiling: list[tuple[str, int, str]] = []
@@ -110,6 +111,10 @@ class FileReport:
             or self.unmeasurable > 0
             or self.rows == 0
             or (self.expected_rows is not None and self.rows != self.expected_rows)
+            # The manifest's `tasks: 842` counts TASKS; `rows` counts LINES. A file padded with
+            # repeated `task_id`s reaches the count while fewer than 842 of the run's tasks are
+            # present, so the size claim has to be a per-task claim to mean what it says.
+            or (self.expected_rows is not None and len(self.task_ids) != self.rows)
         )
 
     @property
@@ -170,6 +175,7 @@ def scan(path: Path, ceiling: int, encoding_name: str,
                 continue
             report.rows += 1
             task_id = _safe(row.get("task_id"))
+            report.task_ids.add(task_id)
             texts, dropped = _texts_of(row)
             report.unmeasurable += dropped
             if not texts:
@@ -255,16 +261,39 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("files", nargs="+", type=Path)
     ap.add_argument("--ceiling", type=int, default=512, help="the --max-tokens the run sent")
     ap.add_argument("--encoding", default="o200k_base", help="gpt-4o and gpt-4o-mini use o200k_base")
-    ap.add_argument("--expect-rows", type=int, default=None, metavar="N",
-                    help="rows each file must hold, from the run's manifest (`tasks`, 842 here); "
-                         "without it a CLEAN says the named files were fully measured, not that "
-                         "they are the complete runs")
+    ap.add_argument("--expect-rows", default=None, metavar="N|unclaimed",
+                    help="rows each file must hold, from the run's manifest (`tasks`, 842 here). "
+                         "REQUIRED: pass `unclaimed` to state explicitly that this run makes no "
+                         "claim about size, which is then printed in the report")
     ap.add_argument("--expect", default=None, metavar="STEM,STEM",
                     help="run stems that must be covered, e.g. "
                          "taskc_benchmark_official,taskc_recall_official; required with a wildcard")
     args = ap.parse_args(argv)
 
-    print(f"ceiling {args.ceiling} completion tokens, encoding {args.encoding}\n")
+    # Parsed before anything is read, so a bad size claim fails before spending the scan. An
+    # OPT-OUT token rather than silence: the previous round added `--expect-rows` and left it
+    # optional, so the very false clean it was written to close stayed reachable by not typing the
+    # flag, and the documentation said it was "not optional in spirit", which is not a check. A
+    # tool cannot certify what nobody claimed, and "I am not claiming size" is itself a claim that
+    # belongs in the report.
+    size_complaints: list[str] = []
+    expect_rows: int | None = None
+    if args.expect_rows is None:
+        size_complaints.append(
+            "--expect-rows was not given, so nothing states how large these runs should be "
+            "(pass a number from the run manifest's `tasks`, or `unclaimed`)")
+    elif args.expect_rows != "unclaimed":
+        try:
+            expect_rows = int(args.expect_rows)
+        except ValueError:
+            size_complaints.append(f"--expect-rows {args.expect_rows!r} is not a number")
+        else:
+            if expect_rows < 1:
+                size_complaints.append(f"--expect-rows {expect_rows} claims no rows")
+                expect_rows = None
+
+    print(f"ceiling {args.ceiling} completion tokens, encoding {args.encoding}, "
+          f"rows expected {expect_rows if expect_rows is not None else 'unclaimed'}\n")
     reports: list[FileReport] = []
     files, globbed = _expanded(args.files)
     for path in files:
@@ -275,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{path.name}: ABSENT, so this run is UNVERIFIED rather than clean\n")
             continue
         try:
-            report = scan(path, args.ceiling, args.encoding, args.expect_rows)
+            report = scan(path, args.ceiling, args.encoding, expect_rows)
         except Exception as exc:  # noqa: BLE001 - one unreadable file must not hide the others
             report = FileReport(path.name)
             report.error = f"{type(exc).__name__}: {exc}"
@@ -287,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{report.name}\n"
             f"  rows {report.rows}"
             f"{'' if report.expected_rows is None else f' (expected {report.expected_rows})'}"
+            f"  distinct task_ids {len(report.task_ids)}"
             f"  answers {len(report.counts)}  "
             f"unparseable {report.unparseable}  rows with no answer {report.no_answer}  "
             f"unreadable predictions {report.unmeasurable}\n"
@@ -316,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
     covered = sorted({r.name.split(".")[0] for r in reports})
     print(f"runs covered: {', '.join(covered)}")
 
-    complaints: list[str] = []
+    complaints: list[str] = list(size_complaints)
     if not reports:
         # Defence in depth, and unreachable while `_expanded` keeps a non-matching pattern in the
         # list: `all()` over nothing is True, so a set of arguments resolving to no files would

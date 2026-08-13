@@ -75,6 +75,12 @@ def run(*paths: object, ceiling: int | None = 512,
                         if not any(ch in a for ch in "*?[")})
         if stems:
             extra += ["--expect", ",".join(stems)]
+    if not any(a == "--expect-rows" for a in extra):
+        # An explicit disclaimer, not silence: `--expect-rows` is required, and a case that is not
+        # about file size should say so rather than be exempted from saying anything. The cases
+        # that DO test size pass a number, and the requirement itself is pinned by a direct
+        # invocation that bypasses this helper.
+        extra += ["--expect-rows", "unclaimed"]
     proc = subprocess.run(
         [sys.executable, str(SCRIPT),
          *(["--ceiling", str(ceiling)] if ceiling is not None else []), *extra, *args],
@@ -230,8 +236,8 @@ def main(argv: list[str] | None = None) -> int:
         # a mutation swapping two of them stays green.
         stats = write("stats.jsonl", "".join(row(tokens(n), f"s{n}") + "\n" for n in (10, 20, 60)))
         _, out, _ = run(stats)
-        for fragment in ("rows 3  answers 3", "mean 30.0", "p50 20", "p95 60", "max 60",
-                         "unreadable predictions 0"):
+        for fragment in ("rows 3  distinct task_ids 3  answers 3", "mean 30.0", "p50 20",
+                         "p95 60", "max 60", "unreadable predictions 0"):
             ok = fragment in out
             print(f"[{'ok  ' if ok else 'FAIL'}] summary line reports {fragment!r}")
             if not ok:
@@ -315,17 +321,61 @@ def main(argv: list[str] | None = None) -> int:
 
         # Run coverage matches on BASENAME, so without a size claim a one-row file carrying the
         # right name certifies a whole run. The archive's manifests record `tasks: 842`.
-        three = write("sized.jsonl", "".join(row(fine, f"n{i}") + "\n" for i in range(3)))
-        code, out, verdicts = run(three, extra=["--expect", "sized", "--expect-rows", "3"])
-        ok = code == 0 and verdicts.get("sized.jsonl") == CLEAN
-        print(f"[{'ok  ' if ok else 'FAIL'}] exit {code} (want 0) the right row count is clean")
+        # 300 rows, not 3: at 3 the mutant `rows is not expected_rows` stays green, because small
+        # ints are interned and `3 is 3` while `300 is not 300`. Every real file is far above the
+        # cache, so a fixture inside it cannot see that mutation at all.
+        sized = write("sized.jsonl", "".join(row(fine, f"n{i}") + "\n" for i in range(300)))
+        oversized = write("oversized.jsonl", "".join(row(fine, f"n{i}") + "\n" for i in range(302)))
+        dupids = write("dupids.jsonl", "".join(row(fine, "same") + "\n" for _ in range(300)))
+        for label, target, rows_arg, want_code, want_verdict in [
+            ("the right row count is clean", sized, "300", 0, CLEAN),
+            ("a SHORT file cannot certify a run", sized, "842", 1, UNVERIFIED),
+            # Both directions: with only short-vs-equal, weakening `!=` to `<` survives.
+            ("an OVERSIZED file cannot certify a run", oversized, "300", 1, UNVERIFIED),
+            # `tasks: 842` counts tasks; `rows` counts lines. Repeated ids reach the count while
+            # fewer than 842 of the run's tasks are present.
+            ("repeated task_ids cannot reach the count", dupids, "300", 1, UNVERIFIED),
+            ("--expect-rows 0 claims nothing", sized, "0", 1, None),
+            ("--expect-rows that is not a number is refused", sized, "many", 1, None),
+        ]:
+            name = pathlib.Path(str(target)).name
+            code, out, verdicts = run(
+                target, extra=["--expect", name.split(".")[0], "--expect-rows", rows_arg])
+            ok = code == want_code and (want_verdict is None or verdicts.get(name) == want_verdict)
+            print(f"[{'ok  ' if ok else 'FAIL'}] exit {code} (want {want_code}) {label}")
+            if not ok:
+                failures.append(f"{label}: exit {code} (want {want_code})\n{out[-300:]}")
+
+        # Two independent guards refuse `--expect-rows 0`: the parse-time rejection, and
+        # `expected_rows is not None` in `unread`. Either alone makes the case above exit 1, so
+        # that case pins the PAIR and neither member. Assert the parse-time complaint's own text,
+        # so the two mechanisms have one assertion each.
+        code, out, _ = run(sized, extra=["--expect", "sized", "--expect-rows", "0"])
+        ok = "claims no rows" in out
+        print(f"[{'ok  ' if ok else 'FAIL'}] a zero size claim is refused BY NAME, not as a mismatch")
         if not ok:
-            failures.append(f"a correctly sized file was not clean\n{out[-300:]}")
-        code, out, verdicts = run(three, extra=["--expect", "sized", "--expect-rows", "842"])
-        ok = code == 1 and verdicts.get("sized.jsonl") == UNVERIFIED
-        print(f"[{'ok  ' if ok else 'FAIL'}] exit {code} (want 1) a short file cannot certify a run")
+            failures.append(f"--expect-rows 0 was not refused at parse time\n{out[-300:]}")
+
+        # The mechanism must be REQUIRED, not merely available: the previous round added it and
+        # left it optional, so the false clean it was written to close stayed one omitted flag away.
+        bare_rows = subprocess.run(
+            [sys.executable, str(SCRIPT), "--expect", "sized", str(sized)],
+            capture_output=True, text=True, encoding=CHILD_ENCODING, errors="replace",
+            env={**os.environ, "PYTHONIOENCODING": CHILD_ENCODING},
+        )
+        ok = bare_rows.returncode == 1 and "how large these runs should be" in bare_rows.stdout
+        print(f"[{'ok  ' if ok else 'FAIL'}] exit {bare_rows.returncode} (want 1) no --expect-rows "
+              f"cannot certify")
         if not ok:
-            failures.append(f"a file with 3 of 842 rows was certified\n{out[-300:]}")
+            failures.append(f"a run without --expect-rows certified a file\n{bare_rows.stdout[-300:]}")
+
+        # ...but an EXPLICIT disclaimer is allowed, and says so in the report.
+        code, out, verdicts = run(sized, extra=["--expect", "sized", "--expect-rows", "unclaimed"])
+        ok = code == 0 and verdicts.get("sized.jsonl") == CLEAN and "rows expected unclaimed" in out
+        print(f"[{'ok  ' if ok else 'FAIL'}] exit {code} (want 0) an explicit size disclaimer is "
+              f"allowed and printed")
+        if not ok:
+            failures.append(f"the explicit size disclaimer did not work\n{out[-300:]}")
 
         # A degenerate --expect must not satisfy the requirement it appears to satisfy.
         for label, expect in [("--expect ,", ","), ("--expect empty", ""), ("--expect spaces", " ")]:
