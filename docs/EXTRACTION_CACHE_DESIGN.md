@@ -280,6 +280,17 @@ Added after a review enumerated guards from the SOURCE rather than from either l
 41. A parent directory that already exists is not an error, which is what makes `exist_ok=True`
     reachable from a single process test. It is NOT evidence about concurrency; see the section
     below on the race that was not one.
+42. The stored payload's key order is deterministic. `sort_keys=True` was asserted by nothing,
+    because round trip equality is identical either way and only the BYTE form varies.
+43. A refusal names WHICH guard refused. The busy and damaged branches assert distinct
+    messages, so forcing `_is_busy` true can no longer report a corrupt store as "retry, another
+    run is probably holding it" over a cache whose only recovery is deleting it. The malformed
+    payload and bad member cases likewise assert their reason rather than only their type.
+
+The sentinel in property 36 derives from `BaseException`, not `Exception`, and that IS the test:
+derived from `Exception` it pinned the bare `raise` and left the `except BaseException` free, so
+narrowing the catch kept the suite green while a Ctrl-C during open would skip `connection.close()`
+and leak the handle.
 
 `tests/test_cli_extract.py` gains: the file is created at PATH; a second run reports hits; a bad
 `--cache` path exits 2 before any engine call. Its existing `--recheck` test, which passes `--cache`

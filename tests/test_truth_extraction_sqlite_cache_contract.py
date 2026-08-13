@@ -282,6 +282,10 @@ def test_a_stored_payload_is_readable_json(tmp_path):
         ).fetchone()
     body = json.loads(payload)
     assert [c["kind"] for c in body["claims"]] == [c.kind for c in ALL_CLAIM_KINDS]
+    # `sort_keys=True` was asserted by nothing: round trip equality is identical either way, so
+    # the stored BYTE form was free to vary. It costs nothing to pin, and a stable payload is
+    # what lets a cache file be diffed or hashed at all. `json.loads` preserves document order.
+    assert list(body) == sorted(body), "the stored payload's key order is not deterministic"
 
 
 # Everything below was added after a mutation run over this boundary: each guard here was
@@ -477,13 +481,22 @@ def test_a_failed_commit_is_rolled_back_rather_than_left_pending(tmp_path):
 class _TrackedConnection:
     """A real connection that records its own close, so a leak is assertable on any OS."""
 
-    def __init__(self, real, closed, kwargs):
+    def __init__(self, real, closed):
         self._real = real
         self._closed = closed
-        self._kwargs = kwargs
 
     def __getattr__(self, name):
         return getattr(self._real, name)
+
+    # Explicit, because implicit special method lookup bypasses `__getattr__`: `with conn:`
+    # would raise TypeError against this wrapper however complete the delegation looks. Nothing
+    # in `_sqlite_cache` uses that form today, but its own comment plans for `autocommit=False`,
+    # which is exactly where a `with` around a transaction would appear.
+    def __enter__(self):
+        return self._real.__enter__()
+
+    def __exit__(self, *exc):
+        return self._real.__exit__(*exc)
 
     def close(self):
         self._closed.append(True)
@@ -497,8 +510,10 @@ def _track_connections(monkeypatch):
     real_connect = sqlite3.connect
 
     def _connect(p, **kwargs):
+        # Recorded HERE, before wrapping, so the timeout assertion reads the production call
+        # site's own keyword rather than anything this helper chose.
         seen.append(dict(kwargs))
-        return _TrackedConnection(real_connect(p, **kwargs), closed, kwargs)
+        return _TrackedConnection(real_connect(p, **kwargs), closed)
 
     monkeypatch.setattr(sqlite3, "connect", _connect)
     return closed, seen
@@ -525,8 +540,13 @@ def test_a_refused_open_closes_the_connection_it_made(tmp_path, monkeypatch, wre
     else:
         path.write_bytes(b"\xff\xd8\xff\xe0 this is a jpeg, not a database" * 8)
 
+    # Per case `match=`, because only ONE direction of the busy/damaged split was asserted.
+    # Forcing `_is_busy` to True left the suite green, so a foreign or corrupt store could be
+    # reported as "is busy ... retry", telling the user to retry forever over a cache whose only
+    # recovery is deleting it. The locked case pins the other direction.
+    expected = "columns" if wreck == "foreign_table" else "is not usable"
     closed, _ = _track_connections(monkeypatch)
-    with pytest.raises(ExtractionCacheRefused):
+    with pytest.raises(ExtractionCacheRefused, match=expected):
         SqliteExtractionCache(path)
     assert closed, f"the {wreck} refusal path leaked its sqlite handle"
 
@@ -539,7 +559,12 @@ def test_a_failure_that_is_not_sqlites_passes_through_unwrapped(tmp_path, monkey
     data damage. The handle must still be released on the way past.
     """
 
-    class _Sentinel(Exception):
+    # `BaseException`, NOT `Exception`, and that is the whole test. Derived from `Exception` it
+    # pinned the bare `raise` and left `except BaseException` free: narrowing the catch to
+    # `except Exception` kept the suite green, and under that narrowing a KeyboardInterrupt
+    # inside `_ensure_schema` skips `connection.close()` entirely. Ctrl-C during open then leaks
+    # the handle, which is the exact case this docstring claims to cover.
+    class _Sentinel(BaseException):
         pass
 
     closed, _ = _track_connections(monkeypatch)
@@ -663,38 +688,43 @@ def test_a_claims_or_rejections_field_that_is_not_a_list_is_refused(field):
 
 
 @pytest.mark.parametrize(
-    "text",
+    "text,expected",
     [
-        "not json at all",
-        "5",
+        ("not json at all", "not JSON"),
+        ("5", "not an object"),
     ],
     ids=["bad_json", "not_an_object"],
 )
-def test_a_malformed_payload_raises_this_modules_own_type(text):
+def test_a_malformed_payload_raises_this_modules_own_type(text, expected):
     """`extraction_from_json` is a module boundary, and its contract is its own exception type.
 
     Each of these raised something else before: `json.JSONDecodeError` from the parse, and
     `TypeError: 'int' object is not iterable` from the shape guards. `get` catches everything,
     so the suite could not see the difference and the contract was asserted by nothing.
+
+    `match=` per case, because the guards are ORDERED and the type alone does not say which one
+    fired. Without it these would keep passing if a case started being refused a guard earlier,
+    which is the defect this file has now made three times.
     """
     from recall.truth_extraction import _serialize
 
-    with pytest.raises(_serialize.ExtractionPayloadInvalid):
+    with pytest.raises(_serialize.ExtractionPayloadInvalid, match=expected):
         _serialize.extraction_from_json(text)
 
 
 @pytest.mark.parametrize(
-    "field,bad",
+    "field,bad,expected",
     [
-        ("claims", [5]),
-        ("rejections", [5]),
-        ("batch_rejection", 5),
+        ("claims", [5], "claim 0 is"),
+        ("rejections", [5], "rejection 0 is"),
+        ("batch_rejection", 5, "batch rejection is"),
     ],
 )
-def test_a_member_that_is_not_an_object_raises_this_modules_own_type(field, bad):
+def test_a_member_that_is_not_an_object_raises_this_modules_own_type(field, bad, expected):
+    """`match=` names which member was refused, so the case cannot drift onto another guard."""
     from recall.truth_extraction import _serialize
 
-    with pytest.raises(_serialize.ExtractionPayloadInvalid):
+    with pytest.raises(_serialize.ExtractionPayloadInvalid, match=expected):
         _serialize.extraction_from_json(_payload(**{field: bad}))
 
 
