@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from benchmarks.llm import Completer, OpenRouterLLM
+from benchmarks.llm import Completer, OpenRouterLLM, RunAborted, is_terminal
 from benchmarks.artifact_contract import reject_unauditable_cost_claims
 from benchmarks.usage import install_openai_meter
 from benchmarks.usage import reset as reset_usage
@@ -78,9 +78,16 @@ from recall.eval.locomo import (
 )
 
 
+#: Consecutive per-question failures that stop the run. Same constant and same argument as
+#: `benchmarks/mtrag/generation.py`: one question can fail on its own merits (a content-policy
+#: refusal), five in a row is the whole run being broken, and the difference is worth the
+#: remaining questions' spend AND the difference between a refusal and a published artifact.
+CONSECUTIVE_FAILURE_LIMIT = 5
+
+
 def run_arm(
     system: MemorySystem, completer: Completer, questions: list[dict[str, Any]]
-) -> tuple[list[Outcome], dict[str, Any]]:
+) -> tuple[list[Outcome], dict[str, Any], list[str]]:
     """Score `questions` against whatever `system` currently has ingested.
 
     Deliberately does NOT ingest: `MemorySystem.ingest` is per-conversation and stateful (both
@@ -89,9 +96,58 @@ def run_arm(
     per-conversation outcomes and re-aggregates over the pool rather than averaging the per-call
     aggregates, because conversations carry different question counts and a mean of rates would
     weight a 150-question conversation the same as a 250-question one.
+
+    A question that fails is DROPPED rather than allowed to end the run, and its id comes back in
+    the third return value. This used to be one list comprehension, and `main` calls
+    `_append_records` only AFTER it returns, so a single failure discarded every already-billed
+    question of the conversation, up to ~200 on LOCOMO. `benchmarks/llm.py` now raises where it
+    returned "" for an unusable completion, which made that reachable on ordinary provider
+    behaviour (a content filter) rather than only on a crash.
+
+    ⚠️ The terminal check is not optional decoration. LOCOMO had NO notion of a terminal failure,
+    so a bare `except Exception` here would turn an empty balance into a short artifact and exit
+    0 — `benchmarks/beam/run.py:_run_pool` documents that exact outcome (101 questions "failed",
+    `n: 599`, nothing saying the account was empty) as the reason its own breaker exists.
+
+    ⛔ The terminal check ALONE is not enough either, and this is the second thing a review caught.
+    A fault that is not about the account — a wrong `--model` (404), a 400 on every request — is
+    not terminal by any definition, so every question would be dropped, `aggregate([])` would
+    report rate-None blocks, and the artifact would publish with exit 0. `CONSECUTIVE_FAILURE_LIMIT`
+    is the floor, borrowed from `benchmarks/mtrag/generation.py` where the same argument was made:
+    one question can fail on its own merits, but five in a row is the run being broken.
+
+    Dropped ids are RETURNED, as a third element, rather than tucked into the aggregate. They were
+    in the aggregate first, and both production callers unpack it as `_`, so nothing reached any
+    artifact while this docstring claimed the opposite. A value a caller must name is a value a
+    caller cannot discard by accident.
     """
-    outcomes = [run_question(system.retrieve, completer, q) for q in questions]
-    return outcomes, aggregate(outcomes)
+    outcomes: list[Outcome] = []
+    dropped: list[str] = []
+    consecutive = 0
+    for q in questions:
+        try:
+            outcomes.append(run_question(system.retrieve, completer, q))
+        except Exception as exc:  # noqa: BLE001 - re-raised if terminal, quarantined otherwise
+            if is_terminal(exc):
+                raise RunAborted(
+                    f"{type(exc).__name__}: {exc}. Stopping rather than scoring the remaining "
+                    f"questions, because a whole-run fault (revoked key, exhausted credit) fails "
+                    f"every one of them identically and would still produce an artifact."
+                ) from exc
+            dropped.append(str(q["question_id"]))
+            consecutive += 1
+            print(f"  ! question {q['question_id']} failed, dropped: {exc}", flush=True)
+            if consecutive >= CONSECUTIVE_FAILURE_LIMIT:
+                raise RunAborted(
+                    f"{consecutive} questions failed in a row, the last being "
+                    f"{q['question_id']}: {exc}. Stopping rather than dropping the rest, because "
+                    f"a whole-run fault (wrong model, malformed request, dead retrieval) looks "
+                    f"exactly like this and would otherwise publish an artifact over whatever "
+                    f"happened to succeed first."
+                ) from exc
+            continue
+        consecutive = 0
+    return outcomes, aggregate(outcomes), dropped
 
 
 def _load(
@@ -377,6 +433,7 @@ def _results_payload(
     skipped: dict[str, Any],
     usage: dict[str, Any],
     provider_metadata: list[dict[str, object]] | None = None,
+    dropped_question_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """The publishable artifact: run identity, config, the aggregate, and every per-question record.
 
@@ -395,6 +452,14 @@ def _results_payload(
         "provider_metadata": provider_metadata or [],
         "cost_claims": [],
         "aggregate": aggregate_,
+        # Beside the aggregate, not inside it, and ALWAYS present. `n` shrinks silently when a
+        # question is quarantined, so a reader diffing two runs cannot otherwise tell a short
+        # run from a small one. Empty on a clean run, so "no failures" is distinguishable from
+        # "this field predates the guard".
+        "dropped": {
+            "n": len(dropped_question_ids or []),
+            "question_ids": list(dropped_question_ids or []),
+        },
         "outcomes": [_outcome_record(o, text_by_id, gold_by_id) for o in outcomes],
     }
 
@@ -539,6 +604,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         print(f"skipped {skipped['total']} unscoreable qa rows: {skipped['by_reason']}", flush=True)
 
     outcomes: list[Outcome] = []
+    dropped_ids: list[str] = []
     ablation: list[dict[str, Any]] = []
     # Distinguishes "the preflight ran and found nothing configured" from "the preflight never
     # ran" — both stamp `verdicts: []` otherwise, and the second case would read as clean.
@@ -575,8 +641,11 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
                 )
                 ablation_ran = True
                 print(f"ablation preflight: {ablation}", flush=True)
-            conv_outcomes, _ = run_arm(system, completer, conv_questions)
+            conv_outcomes, _, conv_dropped = run_arm(system, completer, conv_questions)
             outcomes.extend(conv_outcomes)
+            # Accumulated for the ARTIFACT, not just the console. A dropped question shrinks
+            # `n` silently otherwise, and a reader cannot tell a short run from a small one.
+            dropped_ids.extend(conv_dropped)
             # Persist BEFORE the next conversation is touched: everything scored above has already
             # been paid for in generator and judge calls, and this is the write that keeps it.
             _append_records(
@@ -634,6 +703,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
         skipped,
         usage_block,
         provider_metadata,
+        dropped_ids,
     )
     payload["ablation_preflight"] = {
         "verdicts": ablation,

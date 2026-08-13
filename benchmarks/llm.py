@@ -120,6 +120,82 @@ KNOWN_FINISH_REASONS = frozenset(
 )
 
 
+class RunAborted(RuntimeError):
+    """A condition that will fail every remaining item identically, so the run stops.
+
+    Lives here rather than in `benchmarks/beam/run.py`, where it was defined, because it is the
+    other half of `is_terminal` below and four drivers now need both. `benchmarks.beam.run`
+    re-exports the name, so `except RunAborted` written against either module catches the same
+    class.
+    """
+
+
+#: Statuses that mean every REMAINING request fails the same way: a revoked key, an empty
+#: balance. Not 429 and not 5xx, which are what the retry layer exists to absorb.
+TERMINAL_STATUS_CODES = frozenset({401, 402})
+
+#: Phrases that name the ACCOUNT explicitly, checked BEFORE the status and regardless of it.
+#:
+#: ⛔ This is not symmetric with `_AMBIGUOUS_MARKERS` below, and the asymmetry is the point.
+#: OpenAI signals exhausted credit as **HTTP 429 with `code: insufficient_quota`** — a status that
+#: is stated, and that means "slow down" for every other 429. Putting these behind the numeric
+#: branch made the marker dead code for its own canonical carrier: `is_terminal` answered False,
+#: `_is_transient` answered True, and an empty account bought four retries per question and was
+#: then dropped one question at a time. That is precisely the "tidy `n: 599`, exit 0" artifact the
+#: quarantine exists to prevent, reached through the guard meant to prevent it.
+#:
+#: These two phrases are safe ahead of the status because neither can appear in an unrelated
+#: message the way a bare "401" can appear in any number containing it.
+_ACCOUNT_MARKERS = ("insufficient_quota", "requires more credits")
+
+#: Last resort ONLY, for a transport that carried no numeric status (`openai.APIConnectionError`
+#: carries none). Bare digits, so they stay BEHIND the status: these are the ones that produced the
+#: false positives on our own messages.
+_AMBIGUOUS_MARKERS = ("401", "402")
+
+
+def is_terminal(exc: BaseException) -> bool:
+    """Does this failure mean the whole run is over, rather than one item having failed?
+
+    The difference is worth a run's paid work in both directions. Treating a terminal error as one
+    bad item is how an empty OpenRouter balance became "a tidy `n: 599` summary and exit 0" with
+    101 questions quietly dropped, which `benchmarks/beam/run.py:_run_pool` calls infrastructure
+    wearing a verdict's clothes. Treating one bad item as terminal throws away everything already
+    bought.
+
+    PRECEDENCE, and it is the whole function:
+
+      1. **Our own failures are never terminal.** They describe one completion, not the account.
+         This is not a nicety: the substring version returned True for `max_tokens=1402` and for
+         any provider-chosen `finish_reason` containing "402", so a truncation at an unlucky
+         ceiling, or a string chosen by the provider, aborted an entire run.
+      2. **An unambiguous ACCOUNT phrase wins, whatever the status says.** `insufficient_quota`
+         ships as a 429, so anything that let the status decide first made this unreachable for
+         its own canonical carrier. See `_ACCOUNT_MARKERS`.
+      3. **Then a numeric status is decisive.** When the transport states the status, that is the
+         answer and the digit markers below are not consulted.
+      4. **Bare digits last**, for errors carrying no status at all, where the text is the only
+         evidence there is.
+
+    Steps 3 and 4 are the precedence `recall.embeddings._is_transient` settled on, for the same
+    reason: a digit is a substring of any number containing it, and messages are written for
+    humans. Step 2 is the exception that proves it — a phrase that can only mean one thing is
+    evidence a status cannot override, because the status is about the REQUEST and the phrase is
+    about the ACCOUNT.
+    """
+    if isinstance(exc, PERMANENT_ERRORS + TRANSIENT_ERRORS):
+        return False
+    text = str(exc).lower()
+    if any(marker in text for marker in _ACCOUNT_MARKERS):
+        return True
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(exc, "status", None)
+    if isinstance(status, int):
+        return status in TERMINAL_STATUS_CODES
+    return any(marker in text for marker in _AMBIGUOUS_MARKERS)
+
+
 def _safe_reason(reason: object) -> str:
     """`reason` rendered for a message that another module substring-matches.
 

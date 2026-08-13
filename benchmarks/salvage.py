@@ -318,7 +318,12 @@ def score_missing(
     for position, (conv, todo) in enumerate(work):
         sample_id = sample_id_of(conv)
         system.ingest(conv)
-        outcomes, _ = run_arm(system, completer, todo)
+        # The third element is the dropped-question ids. Named rather than `_`, because the
+        # previous version of this line discarded them and nothing downstream could tell a
+        # salvaged run that lost questions from one that never had them.
+        outcomes, _, dropped = run_arm(system, completer, todo)
+        if dropped:
+            print(f"  ! {len(dropped)} question(s) dropped: {', '.join(dropped)}", flush=True)
         records = [_outcome_record(o, text_by_id, gold_by_id) for o in outcomes]
         if sidecar is not None:
             _append_records(sidecar, records)

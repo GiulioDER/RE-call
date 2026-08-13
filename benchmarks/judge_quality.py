@@ -76,7 +76,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from benchmarks.llm import Completer, OpenRouterLLM
+from benchmarks.llm import Completer, OpenRouterLLM, is_terminal
 from benchmarks.pipeline import _json_safe_rate, judge_correct
 from benchmarks.artifact_contract import load_published_artifact
 from recall.eval.locomo import _rate
@@ -570,7 +570,29 @@ def run_probe(items: Sequence[ProbeItem], completer: Completer) -> list[dict[str
     """
     verdicts: list[dict[str, Any]] = []
     for item in items:
-        accepted = judge_correct(completer, item.question, item.gold, item.prediction)
+        try:
+            accepted: bool | None = judge_correct(
+                completer, item.question, item.gold, item.prediction
+            )
+        except Exception as exc:  # noqa: BLE001 - re-raised if terminal, recorded otherwise
+            if is_terminal(exc):
+                # A dead account probes nothing, and a scorecard built from the items that ran
+                # before the credit ran out is a measurement of the balance, not of the judge.
+                raise
+            # ⛔ `accepted` is None, NOT False. `measure_model` builds the accept rate with
+            # `_rate([bool(v["accepted"]) ...])`, so recording a failed call as False would not be
+            # an omission — it would be a fabricated REJECTION, moving the false-accept rate this
+            # module exists to measure, in the flattering direction. `judge_error` is None for the
+            # same reason: a call that never returned a verdict is not evidence about the judge.
+            # `measure_model` filters on these two Nones.
+            accepted = None
+            verdicts.append({
+                "item_id": item.item_id, "question_id": item.question_id,
+                "construction": item.construction, "expected": item.expected,
+                "accepted": None, "judge_error": None, "failed": True,
+                "error": f"{type(exc).__name__}: {exc}"[:300],
+            })
+            continue
         verdicts.append(
             {
                 "item_id": item.item_id,
@@ -579,6 +601,7 @@ def run_probe(items: Sequence[ProbeItem], completer: Completer) -> list[dict[str
                 "expected": item.expected,
                 "accepted": accepted,
                 "judge_error": accepted != item.expected,
+                "failed": False,
             }
         )
     return verdicts
@@ -602,11 +625,21 @@ def measure_model(
         items = probes.get(name, [])
         verdicts = run_probe(items, completer)
         verdicts_by_probe[name] = verdicts
+        # ⛔ Filtered on `accepted is not None`, not passed straight through. `bool(None)` is
+        # `False`, so an item whose judge call failed would otherwise enter the rate as a
+        # REJECTION the judge never made — inventing evidence in the flattering direction on the
+        # false-accept rate this module exists to measure, and shrinking nothing in `n` to show
+        # for it. Excluded items are counted in `judge_failures` below instead.
         result[f"{name}_accept_rate"] = _json_safe_rate(
-            _rate([bool(v["accepted"]) for v in verdicts])
+            _rate([bool(v["accepted"]) for v in verdicts if v["accepted"] is not None])
         )
     result["judge_errors"] = {
         name: sum(1 for v in verdicts_by_probe[name] if v["judge_error"]) for name in PROBE_NAMES
+    }
+    #: Separate from `judge_errors`, which counts verdicts that were WRONG. This counts calls that
+    #: produced no verdict at all, so a scorecard whose n shrank says why.
+    result["judge_failures"] = {
+        name: sum(1 for v in verdicts_by_probe[name] if v.get("failed")) for name in PROBE_NAMES
     }
     result["verdicts"] = verdicts_by_probe
     return result
