@@ -24,6 +24,21 @@ import pytest
 
 from recall.embeddings import _TRANSIENT_MARKERS, retry_with_backoff
 
+# Imported at MODULE scope, not with `importorskip` inside the tests that need it. Importing
+# voyageai costs ~90 s on a machine that has the extra, because it pulls langchain_text_splitters
+# -> sentence_transformers -> transformers, and `pytest-timeout` clocks only the test protocol.
+# Inside a test body that 90 s is billed to one item against the suite's `timeout = 120`, and
+# `timeout_method = "thread"` does not redden the item when it overruns: it `os._exit`s the whole
+# session. Out here the cost lands in collection, where nothing is timing it.
+try:
+    import voyageai.error as voyage_error
+except ImportError:  # pragma: no cover - the extra is absent in CI by design
+    voyage_error = None  # type: ignore[assignment]
+
+requires_voyage = pytest.mark.skipif(
+    voyage_error is None, reason="needs the voyage extra (pip install recall-rag[voyage])"
+)
+
 
 def _attempts(exc: Exception, *, attempts: int = 2) -> int:
     """Return how many times `retry_with_backoff` actually calls a function raising ``exc``.
@@ -192,16 +207,13 @@ def test_a_non_retryable_http_status_is_still_not_retried(status: int) -> None:
     assert _attempts(_HttpStatusError("boom", http_status=status)) == 1
 
 
+@requires_voyage
 def test_a_real_voyage_server_error_is_retried() -> None:
     """The same guard against the installed SDK, so the attribute name cannot drift unnoticed.
 
     Constructed with voyageai's own positional signature (message, http_body, http_status), the
     way `api_requestor._interpret_response_line` raises it on a real 500.
     """
-    voyage_error = pytest.importorskip(
-        "voyageai.error", reason="needs the voyage extra (pip install recall-rag[voyage])"
-    )
-
     exc = voyage_error.ServerError("The server failed to process the request.", None, 500)
     assert getattr(exc, "status_code", None) is None  # the reason the numeric read used to miss
     assert getattr(exc, "status", None) is None
@@ -209,6 +221,7 @@ def test_a_real_voyage_server_error_is_retried() -> None:
     assert _attempts(exc) == 2
 
 
+@requires_voyage
 def test_a_real_voyage_rate_limit_is_retried_without_a_marker_in_its_message() -> None:
     """A real 429 whose body says nothing marker shaped still has to retry.
 
@@ -216,21 +229,14 @@ def test_a_real_voyage_rate_limit_is_retried_without_a_marker_in_its_message() -
     class name "RateLimitError" does not contain the marker "rate limit" because the marker has
     a space in it. On the text alone this error is indistinguishable from a permanent one.
     """
-    voyage_error = pytest.importorskip(
-        "voyageai.error", reason="needs the voyage extra (pip install recall-rag[voyage])"
-    )
-
     exc = voyage_error.RateLimitError("You have exceeded your quota.", None, 429)
     text = f"{type(exc).__name__} {exc}".lower()
     assert not [m for m in _TRANSIENT_MARKERS if m in text], "message accidentally carries a marker"
     assert _attempts(exc) == 2
 
 
+@requires_voyage
 def test_a_real_voyage_auth_error_fails_fast() -> None:
     """The other direction on the same SDK: a 401 is permanent and must not be paid for twice."""
-    voyage_error = pytest.importorskip(
-        "voyageai.error", reason="needs the voyage extra (pip install recall-rag[voyage])"
-    )
-
     exc = voyage_error.AuthenticationError("Provided API key is invalid.", None, 401)
     assert _attempts(exc) == 1
