@@ -230,19 +230,25 @@ What is known about them:
 * The scan is cheap once the payload pack from `runs/README.md` is restored. It is
   `scripts/scan_truncation.py`, and it reads `predictions[].text` and needs nothing else:
 
-      python results/mtrag_generation/scripts/scan_truncation.py <restored>/taskc_*_official.*.jsonl
+      python results/mtrag_generation/scripts/scan_truncation.py --expect 2 \
+          <restored>/taskc_*_official.*.jsonl
 
-  (An unexpanded wildcard is globbed by the script itself, because PowerShell does not expand
-  arguments and the operator would otherwise be told the pattern is ABSENT.)
+  An unexpanded wildcard is globbed by the script itself, because PowerShell does not expand
+  arguments and the operator would otherwise be told the pattern is ABSENT. ⛔ `--expect N` is then
+  REQUIRED, and it is not ceremony: with only one of the two runs restored, a pattern that matches
+  one file would otherwise certify that file CLEAN and never name the other. The wildcard, not the
+  operator, would have decided what CLEAN was a statement about.
 
   🔑 It reports **CLEAN only when every file was fully read and every prediction in every row was
   measured**, and exits non-zero otherwise. An absent file, an empty one, a line that will not
-  parse, a row with no `predictions`, a prediction this tool cannot read even when a readable one
-  sits beside it, a truncation at any prediction index rather than the first, a count one token
-  under the ceiling, or a scan that raised: each ends as UNVERIFIED, never as CLEAN. A byte-order
-  mark is the one entry that behaves the other way round, deliberately: the file is opened as
-  `utf-8-sig` so the mark is consumed and the first row is READ, rather than dropped as
-  unparseable and taken for a clean file with one fewer row.
+  parse, a repeated JSON key, a row with no `predictions`, a prediction this tool cannot read even
+  when a readable one sits beside it, or a scan that raised: none of these can end as CLEAN, they
+  end as UNVERIFIED. A truncation at any prediction index, or a count one token under the ceiling,
+  is not clean either: a finding outranks an unread condition and ends as TRUNCATION FOUND or NEAR
+  THE CEILING, so that the report names what it found rather than hiding it behind the weaker
+  label. A byte-order mark is the one case handled the other way round, deliberately: the file is
+  opened as `utf-8-sig` so the mark is consumed and the first row is READ, rather than dropped as
+  unparseable and the file taken for a shorter one.
 
   That list is not decoration. Every entry on it was a way an earlier version of this script
   silently reported "0 truncated" for rows it never read, each found by audit, twice over, before

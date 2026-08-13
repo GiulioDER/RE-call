@@ -13,18 +13,29 @@ under the same BPE. The one edge case is the trailing whitespace token that `gen
 `.strip()` removes, which can move a count by one, so a row just under the ceiling is reported as
 a finding rather than logged and passed.
 
-⛔ **The only failure that matters here is reporting "clean" for rows nobody read.** Every way a
-file can be unreadable therefore ends as UNVERIFIED, never as CLEAN, and the exit code is 0 only
-when every file was fully read and every row carried an answer: an absent file, an empty one, a
-line that will not parse, a row with no `predictions`, an answer that is not a string, or a scan
-that raised. Silence is not evidence, and this whole audit exists because a stop reason nobody
-recorded was later read as a stop reason nobody needed.
+⛔ **The only failure that matters here is reporting "clean" for rows nobody read.** Nothing that
+went unread can end as CLEAN: an absent file, an empty one, a line that will not parse, a repeated
+JSON key, a row with no `predictions`, a prediction this tool cannot read even when a readable one
+sits beside it, or a scan that raised, all end as UNVERIFIED. A finding outranks that and ends as
+TRUNCATION FOUND or NEAR THE CEILING, so those two are not clean either. Exit is 0 only when every
+file came back CLEAN. Silence is not evidence, and this whole audit exists because a stop reason
+nobody recorded was later read as a stop reason nobody needed.
+
+A byte-order mark is the one case handled the other way round, deliberately: the file opens as
+`utf-8-sig` so the mark is consumed and the first row is READ, rather than dropped as unparseable
+and the file taken for a shorter one.
 
 Reads any file whose rows carry `task_id` and `predictions[].text`: `.predictions.jsonl`,
-`.scoring.jsonl` and `.scored.jsonl` all qualify. EVERY prediction in a row is measured, not just
-the first.
+`.scoring.jsonl` and `.scored.jsonl` all qualify. EVERY element of `predictions` is measured, not
+just the first. ⚠️ The guarantee is over `predictions[].text` only: an answer stored under some
+other key INSIDE a prediction object that also carries a readable `text` is not inspected, because
+a prediction object's other keys are metadata in every file this has been pointed at.
 
     python results/mtrag_generation/scripts/scan_truncation.py <file> [<file> ...] [--ceiling N]
+
+A wildcard argument is expanded here (PowerShell does not expand arguments), and then `--expect N`
+is REQUIRED, because a pattern that matches one of two files would otherwise certify the one it
+found and never name the one it did not.
 
 Needs `tiktoken`. See `../runs/README.md` for restoring the payload pack these files come from.
 """
@@ -105,6 +116,19 @@ class FileReport:
         return sorted(self.counts)[min(int(len(self.counts) * fraction), len(self.counts) - 1)]
 
 
+def _no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
+    """Reject a repeated key instead of letting `json` keep the last one.
+
+    `{"text": <520 tokens>, "text": <40 tokens>}` parses to the short value, so the long answer is
+    physically in the file and invisible to the scan. Which value survives depends on the ORDER,
+    which means such a row is not evidence either way: it is refused as unparseable.
+    """
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("duplicate key in a JSON object")
+    return dict(pairs)
+
+
 def scan(path: Path, ceiling: int, encoding_name: str) -> FileReport:
     import tiktoken
 
@@ -118,8 +142,8 @@ def scan(path: Path, ceiling: int, encoding_name: str) -> FileReport:
             if not line.strip():
                 continue
             try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
+                row = json.loads(line, object_pairs_hook=_no_duplicate_keys)
+            except (json.JSONDecodeError, ValueError):
                 # A file cut off mid-write is an interrupted archive, not a truncated answer. It
                 # is counted, reported AND fails the file, because rows behind an unparseable line
                 # were never measured.
@@ -179,8 +203,15 @@ def _texts_of(row: dict) -> tuple[list[str], int]:
     return out, dropped
 
 
-def _expanded(paths: list[Path]) -> list[Path]:
-    """Expand any wildcard the shell left alone.
+def _expanded(paths: list[Path]) -> tuple[list[Path], bool]:
+    """Expand any wildcard the shell left alone, and say whether one was used.
+
+    ⛔ A wildcard cannot certify completeness, which is why the caller demands `--expect N`
+    alongside one. With `taskc_*_official.*.jsonl` and only ONE of the two runs restored, an
+    expanding scanner reports CLEAN and exits 0 while never naming the run it did not see: the
+    pattern, not the operator, silently decided what CLEAN was a statement about. Before expansion
+    existed the same command exited 1. Turning an explicit refusal into a quiet narrowing is the
+    exact trade this whole audit exists to refuse.
 
     PowerShell does not glob arguments, so `taskc_*_official.*.jsonl` reaches this script as a
     literal. Without this the operator gets "ABSENT" for a pattern and reads it as "the files are
@@ -188,6 +219,7 @@ def _expanded(paths: list[Path]) -> list[Path]:
     list so it is still reported ABSENT rather than silently disappearing.
     """
     out: list[Path] = []
+    globbed = False
     for path in paths:
         if path.exists() or not any(ch in str(path) for ch in "*?["):
             out.append(path)
@@ -195,8 +227,11 @@ def _expanded(paths: list[Path]) -> list[Path]:
         matches = sorted(Path(path.anchor or ".").glob(
             str(path if not path.anchor else path.relative_to(path.anchor)).replace("\\", "/")
         ))
+        globbed = True
+        print(f"pattern {path} -> {len(matches)} file(s): "
+              f"{', '.join(m.name for m in matches) or 'NONE'}")
         out.extend(matches or [path])
-    return out
+    return out, globbed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -204,11 +239,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("files", nargs="+", type=Path)
     ap.add_argument("--ceiling", type=int, default=512, help="the --max-tokens the run sent")
     ap.add_argument("--encoding", default="o200k_base", help="gpt-4o and gpt-4o-mini use o200k_base")
+    ap.add_argument("--expect", type=int, default=None,
+                    help="how many files must be scanned; required when an argument is a wildcard")
     args = ap.parse_args(argv)
 
     print(f"ceiling {args.ceiling} completion tokens, encoding {args.encoding}\n")
     reports: list[FileReport] = []
-    for path in _expanded(args.files):
+    files, globbed = _expanded(args.files)
+    for path in files:
         if not path.exists():
             report = FileReport(path.name)
             report.error = "file absent"
@@ -248,10 +286,29 @@ def main(argv: list[str] | None = None) -> int:
     print("verdicts:")
     for report in reports:
         print(f"  {report.verdict:38} {report.name}")
-    clean = all(r.verdict == "CLEAN" for r in reports)
-    if not clean:
-        print("\nNot every file came back CLEAN. Nothing above may be reported as checked.")
-    return 0 if clean else 1
+
+    complaints: list[str] = []
+    if not reports:
+        # Defence in depth, and unreachable while `_expanded` keeps a non-matching pattern in the
+        # list: `all()` over nothing is True, so a set of arguments resolving to no files would
+        # otherwise print an empty verdict block and certify it. The LIVE mechanism is that
+        # fallback, which is what the case matrix pins (a non-matching pattern must print ABSENT,
+        # not merely exit non-zero). This line only matters if that fallback is ever removed.
+        complaints.append("no files were scanned at all")
+    if globbed and args.expect is None:
+        complaints.append(
+            "a wildcard was expanded but --expect N was not given, so nothing here establishes "
+            "that the pattern matched every file it should have")
+    if args.expect is not None and len(reports) != args.expect:
+        complaints.append(f"--expect {args.expect} but {len(reports)} file(s) were scanned")
+    if any(r.verdict != "CLEAN" for r in reports):
+        complaints.append("not every file came back CLEAN")
+
+    if complaints:
+        print("\nNOT CHECKED: " + "; ".join(complaints) + ".")
+        print("Nothing above may be reported as clean.")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

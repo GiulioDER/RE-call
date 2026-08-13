@@ -72,9 +72,14 @@ def run(*paths: object, ceiling: int = 512, extra: list[str] | None = None) -> t
         for line in out.split("verdicts:", 1)[1].splitlines():
             if not line.startswith("  "):
                 continue
-            label, _, name = line.strip().rpartition(" ")
-            if label:
-                verdicts[name] = label.strip()
+            # Split on the KNOWN label, not on the last space. `rpartition(" ")` mis-keyed any
+            # filename containing a space, which on Windows is ordinary, and on the --corpus path
+            # that produced the false report "DETECTOR IS DEAD" while the detector had fired.
+            stripped = line.strip()
+            for label in (FOUND, NEAR, UNVERIFIED, CLEAN):
+                if stripped.startswith(label):
+                    verdicts[stripped[len(label):].strip()] = label
+                    break
     return proc.returncode, out, verdicts
 
 
@@ -142,6 +147,27 @@ def main(argv: list[str] | None = None) -> int:
              [write("nested.jsonl", json.dumps(
                  {"task_id": "x", "predictions": [{"text": fine}, [{"text": over}]]}) + "\n")],
              1, {"nested.jsonl": UNVERIFIED}),
+            # Multi-row and NOT in the last row, so the counter's ACCUMULATION is pinned. With a
+            # one-row fixture, `unmeasurable = dropped` (assignment, not +=) passed every case
+            # while reinstating the defect on any real file, where later clean rows reset it to 0.
+            ("an unreadable prediction in row 0 of 4 is not clean",
+             [write("early.jsonl", json.dumps(
+                 {"task_id": "x", "predictions": [{"text": fine}, {"response": over}]}) + "\n"
+                 + "".join(row(fine, f"r{i}") + "\n" for i in range(3)))],
+             1, {"early.jsonl": UNVERIFIED}),
+            ("an empty-string answer is not clean",
+             [write("emptytext.jsonl", json.dumps(
+                 {"task_id": "x", "predictions": [{"text": ""}]}) + "\n")],
+             1, {"emptytext.jsonl": UNVERIFIED}),
+            # Whichever value `json` keeps depends on ORDER, so both orderings must be refused.
+            ("a duplicate key with the long value first is not clean",
+             [write("dup1.jsonl",
+                    '{"task_id": "x", "predictions": [{"text": %s, "text": %s}]}\n'
+                    % (json.dumps(over), json.dumps(fine)))], 1, {"dup1.jsonl": UNVERIFIED}),
+            ("a duplicate key with the long value last is not clean",
+             [write("dup2.jsonl",
+                    '{"task_id": "x", "predictions": [{"text": %s, "text": %s}]}\n'
+                    % (json.dumps(fine), json.dumps(over)))], 1, {"dup2.jsonl": UNVERIFIED}),
             ("a directory argument is not clean", [here], 1, {here.name: UNVERIFIED}),
             ("a BOM must not hide the first row",
              [write("bom.jsonl", row(over) + "\n", bom=True)], 1, {"bom.jsonl": FOUND}),
@@ -179,14 +205,65 @@ def main(argv: list[str] | None = None) -> int:
                 failures.append(f"{name}: exit {code} (want {expected}), verdicts {wrong}"
                                 f"\n{out[-400:]}")
 
-        # The statistics RESULTS.md publishes come from code no verdict can see.
-        stats = write("stats.jsonl", "".join(row(tokens(n), f"s{n}") + "\n" for n in (40, 41, 42)))
+        # The statistics RESULTS.md publishes come from code no verdict can see. The fixture is
+        # 10/20/60 tokens so mean (30.0), p50 (20) and p95 (60) are pairwise DISTINCT: with 40/41/42
+        # a mutation swapping two of them stays green.
+        stats = write("stats.jsonl", "".join(row(tokens(n), f"s{n}") + "\n" for n in (10, 20, 60)))
         _, out, _ = run(stats)
-        for fragment in ("rows 3  answers 3", "p50 41", "max 42"):
+        for fragment in ("rows 3  answers 3", "mean 30.0", "p50 20", "p95 60", "max 60",
+                         "unreadable predictions 0"):
             ok = fragment in out
             print(f"[{'ok  ' if ok else 'FAIL'}] summary line reports {fragment!r}")
             if not ok:
                 failures.append(f"summary line missing {fragment!r}\n{out[-400:]}")
+
+        # The punctuation check is quoted in RESULTS.md ("three answers of 3,368 end without
+        # terminal punctuation"), and no verdict depends on it, so it needs its own assertion.
+        # The third row ends in "?" ON PURPOSE: with only a bare word and a full stop, shrinking
+        # TERMINAL to ('.',) gives the same count, so the fixture could not see the mutation.
+        punct = write("punct.jsonl",
+                      row(tokens(10), "a") + "\n"
+                      + row(tokens(10) + ".", "b") + "\n"
+                      + row(tokens(10) + "?", "c") + "\n")
+        _, out, _ = run(punct)
+        ok = "no terminal punctuation: 1 of 3" in out
+        print(f"[{'ok  ' if ok else 'FAIL'}] the punctuation count covers every terminal mark")
+        if not ok:
+            failures.append(f"punctuation count wrong\n{out[-400:]}")
+
+        # A counter that accumulates needs a fixture where it must reach more than one.
+        two_bad = write("twobad.jsonl", "".join(json.dumps(
+            {"task_id": f"x{i}", "predictions": [{"text": fine}, {"response": over}]}) + "\n"
+            for i in range(2)))
+        _, out, _ = run(two_bad)
+        ok = "unreadable predictions 2" in out
+        print(f"[{'ok  ' if ok else 'FAIL'}] unreadable predictions accumulate across rows")
+        if not ok:
+            failures.append(f"the unreadable-prediction counter does not accumulate\n{out[-400:]}")
+
+        # A wildcard must not quietly decide what CLEAN is a statement about.
+        (here / "g1.jsonl").write_text(row(fine) + "\n", encoding="utf-8")
+        (here / "g2.jsonl").write_text(row(fine) + "\n", encoding="utf-8")
+        pattern = str(here / "g?.jsonl")
+        for label, args_extra, want_code, target, must_say in [
+            ("a pattern matching both files with --expect 2 is clean",
+             ["--expect", "2"], 0, None, "2 file(s)"),
+            ("a pattern without --expect cannot certify", [], 1, None, "--expect"),
+            ("a pattern matching fewer than --expect fails", ["--expect", "3"], 1, None, "--expect 3"),
+            # `must_say` matters here: a pattern matching nothing exits 1 under the fallback (the
+            # pattern is kept and reported ABSENT) AND under a scanner that drops the fallback and
+            # scans nothing at all. Only the text tells those two apart, and the second is a
+            # scanner that certifies an empty universe.
+            ("a pattern matching nothing is reported ABSENT",
+             ["--expect", "2"], 1, str(here / "nothing_*.jsonl"), "ABSENT"),
+        ]:
+            code, out, _ = run(target or pattern, extra=args_extra)
+            ok = code == want_code and must_say in out
+            print(f"[{'ok  ' if ok else 'FAIL'}] exit {code} (want {want_code}) "
+                  f"{'' if must_say in out else f'NO {must_say!r} IN OUTPUT '}{label}")
+            if not ok:
+                failures.append(f"{label}: exit {code} (want {want_code}), "
+                                f"{must_say!r} present: {must_say in out}\n{out[-400:]}")
 
         # The premise of the whole tool is the GENERATOR's encoding, and a default that drifts to
         # another BPE changes every count without changing any verdict.
