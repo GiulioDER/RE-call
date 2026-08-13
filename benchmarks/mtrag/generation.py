@@ -432,13 +432,54 @@ GENERATION_BACKOFF_S = 2.0
 #: content-policy refusal); five in a row is the whole run being broken, and the difference is
 #: worth ~837 unnecessary billed attempts.
 CONSECUTIVE_FAILURE_LIMIT = 5
+
+
+class EmptyCompletion(RuntimeError):
+    """A completion came back carrying no text at all.
+
+    Distinct from `CompletionTruncated` on purpose, and the distinction is the operator's next
+    action. Truncation means the completion hit OUR `max_tokens` ceiling, so the fix is a bigger
+    ceiling. Empty text is what an OpenAI-compatible provider returns when it filtered the
+    completion (`finish_reason == "content_filter"`) or emitted a tool call instead of prose
+    (`"tool_calls"`), and no value of `--max-tokens` changes either. Folding the two together would
+    print "Raise --max-tokens" for a cause that flag cannot reach.
+
+    Raised rather than returned, because the returned value was `""`: the caller wrote
+    `predictions: [{"text": ""}]`, reset the consecutive-failure counter, and counted the task as
+    completed. An empty prediction is unscorable by any judge and indistinguishable, in the
+    artifact, from a system that had nothing to say.
+
+    Classified permanent. A filter fires on the PROMPT, and the prompt is byte-identical on every
+    attempt, so the three extra calls buy the same refusal at the same price. Refusals also land on
+    particular tasks rather than in runs, so `CONSECUTIVE_FAILURE_LIMIT` never trips to cap them.
+    """
+
+
+class NoCompletionChoices(RuntimeError):
+    """A 200 whose `choices` list is empty, so there is no completion to read at all.
+
+    OpenRouter answers this way when the upstream it routed to faults. `response.choices[0]` used
+    to raise `IndexError` here, which reported as `generation gave up after 4 attempts (IndexError:
+    list index out of range)`: a message that names a Python operation rather than the provider,
+    and sends whoever reads it hunting for a bug in the harness.
+
+    Deliberately NOT permanent, unlike `EmptyCompletion` above. This is a fault on the provider's
+    side of the wire, not a property of the request, so a second attempt can be served by a healthy
+    upstream. Being wrong in this direction is cheap and capped: `CONSECUTIVE_FAILURE_LIMIT` stops
+    the run after 5 tasks in a row, or 20 attempts. Being wrong the other way fails a task that
+    would have succeeded.
+    """
+
+
 #: Failures no number of attempts can fix. The provider's own types are matched by NAME so this
-#: module does not import the SDK just to define its own retry policy; `CompletionTruncated` is
-#: ours and is already imported, so it contributes `__name__` rather than a literal — a rename
-#: then follows the class instead of silently restoring the retry it is here to prevent.
+#: module does not import the SDK just to define its own retry policy; `CompletionTruncated` and
+#: `EmptyCompletion` are ours, so they contribute `__name__` rather than a literal — a rename then
+#: follows the class instead of silently restoring the retry it is here to prevent.
+#:
+#: `NoCompletionChoices` is deliberately absent; see its docstring for why it is worth retrying.
 PERMANENT_ERROR_NAMES = frozenset(
     {"AuthenticationError", "PermissionDeniedError", "NotFoundError", "BadRequestError",
-     CompletionTruncated.__name__}
+     CompletionTruncated.__name__, EmptyCompletion.__name__}
 )
 
 
@@ -462,6 +503,19 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             response = client.chat.completions.create(
                 model=model, messages=messages, max_tokens=max_tokens, temperature=0.0
             )
+            # Read the choice ONCE, and defensively. A 200 can carry an empty `choices` list when
+            # OpenRouter's upstream faults, and indexing it blind raised `IndexError`: a type that
+            # is not in `PERMANENT_ERROR_NAMES`, so the task paid four attempts and then reported
+            # a Python operation instead of the provider fault it actually was.
+            choices = response.choices
+            if not choices:
+                raise NoCompletionChoices(
+                    "the provider returned a 200 with an empty `choices` list, so there is no "
+                    "completion to read. This is an upstream fault on the provider's side, not a "
+                    "property of the request."
+                )
+            choice = choices[0]
+
             # A completion that stopped for `length` hit OUR ceiling; the provider is healthy and
             # the answer is half-written. Returning it would put a fluent, on-topic, mid-sentence
             # string into `predictions`, where nothing downstream can tell it apart from a genuine
@@ -472,12 +526,27 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             # `getattr` rather than attribute access: a response that omits the field is UNSTATED,
             # not truncated, and an `AttributeError` here is not in `PERMANENT_ERROR_NAMES` — it
             # would be retried four times and then reported as a generation failure.
-            if getattr(response.choices[0], "finish_reason", None) == "length":
+            reason = getattr(choice, "finish_reason", None)
+            if reason == "length":
                 raise CompletionTruncated(
                     f"completion hit max_tokens={max_tokens} and was cut off. Raise --max-tokens "
                     "— do NOT score this answer."
                 )
-            return (response.choices[0].message.content or "").strip()
+
+            answer = (choice.message.content or "").strip()
+            # Checked AFTER `.strip()`, because that is the string the caller writes: whitespace
+            # reaches `predictions` as `""` exactly like `content=None` does. Returning it was the
+            # bug. `submission_row` is fed straight from here and nothing between the two looks at
+            # the answer again, so this is the only place an empty prediction can be stopped.
+            # `finish_reason` is named because it is the only field that tells a filter refusal
+            # apart from a tool-call stub or a provider bug, and the three want different responses.
+            if not answer:
+                raise EmptyCompletion(
+                    f"the provider returned a completion with no text (finish_reason={reason!r}), "
+                    "so this task has no answer. Writing it would put an unscorable empty "
+                    "prediction in the submission. Do NOT treat this as a completed task."
+                )
+            return answer
         except Exception as exc:  # noqa: BLE001 - re-raised below once attempts are exhausted
             last = exc
             if type(exc).__name__ in PERMANENT_ERROR_NAMES or attempt == GENERATION_ATTEMPTS:
