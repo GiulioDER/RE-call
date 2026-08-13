@@ -154,6 +154,83 @@ def test_asking_for_extracted_proposals_refuses_rather_than_returning_an_empty_l
         _stored_extracted_proposals(object())
 
 
+def test_the_two_surfaces_agree_on_claim_keys_but_never_on_proposal_ids(monkeypatch):
+    """The handoff this tool advertises has to actually work.
+
+    `recall_rewrite_plan` derives proposals from the deterministic rules over the STORE graph;
+    `recall rewrite apply` derives them from the filesystem extractor. Provider, tenant,
+    generation and pipeline are all hashed into a proposal id, so the two id spaces are
+    disjoint BY CONSTRUCTION: every id the tool emitted was one the CLI exits 2 on. Claim keys
+    are generation independent, which is why the rejection ledger uses them, and they match.
+    """
+    import tempfile
+
+    monkeypatch.setenv("RECALL_TRUTH_EXTRACTION", "1")
+    monkeypatch.delenv("RECALL_TRUTH_EXTRACTION_ENGINE", raising=False)
+
+    from recall.reasoning_graph import build_reasoning_graph
+    from recall.reasoning_proposals import deterministic_inference_proposals
+    from recall.rewrite import claim_key, corpus_proposals
+    from recall.types import Chunk
+
+    documents = {
+        "policy_v1.md": "# v1\n\nThe original retention policy.\n",
+        "policy_v2.md": "# v2\n\nThis memo supersedes policy_v1.md after review.\n",
+    }
+    graph = build_reasoning_graph(
+        [Chunk(n, n, t, {"file": n, "ord": 0}) for n, t in documents.items()],
+        tenant_id="acme",
+        generation_id="gen_1",
+        pipeline_fingerprint="pipe-a",
+        include_text=True,
+    )
+    store_side = deterministic_inference_proposals(graph, pipeline_id="pipe-a")
+
+    root = Path(tempfile.mkdtemp())
+    for name, text in documents.items():
+        (root / name).write_text(text, encoding="utf-8", newline="\n")
+    cli_side = corpus_proposals(root)
+
+    assert store_side and cli_side, "both surfaces must find the supersession"
+    assert not {p.id for p in store_side} & {p.id for p in cli_side}, (
+        "the id spaces overlapped, so this test is no longer measuring the hazard"
+    )
+    store_claims = {claim_key(p.proposed_relation, p.subject_id, p.object_id) for p in store_side}
+    cli_claims = {claim_key(p.proposed_relation, p.subject_id, p.object_id) for p in cli_side}
+    assert store_claims & cli_claims, "the claim keys must cross the two surfaces"
+
+
+def test_the_plan_result_hands_off_a_claim_not_a_proposal_id():
+    """`apply_command` must name something `recall rewrite apply` can actually resolve.
+
+    Asserts the produced VALUE, not this module's source. A source check fails for the wrong
+    reason here, because the comment explaining why a proposal id cannot be handed off contains
+    the flag name being ruled out.
+    """
+    from recall_mcp.service import RewritePlanResult, apply_command_for
+
+    assert "claim" in RewritePlanResult.model_fields
+    assert "apply_command" in RewritePlanResult.model_fields
+    command = apply_command_for("claim_abc123")
+    assert "--claim claim_abc123" in command
+    assert "--proposal" not in command, "a store-side proposal id always exits 2 at the CLI"
+    assert "--reviewer" in command and "--note" in command
+
+
+def test_the_cli_accepts_a_claim_key():
+    """Otherwise the command the tool prints does not exist."""
+    tree = ast.parse((REPO_ROOT / "recall" / "cli.py").read_text(encoding="utf-8"))
+    flags = {
+        node.args[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "attr", None) == "add_argument"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+    }
+    assert "--claim" in flags
+
+
 def test_the_cli_flag_exists(capsys):
     """Word-bounded. A plain `in` check passes for `--include-extractedX`, since the real flag
     name is a substring of the typo, so renaming the flag left this green."""

@@ -489,14 +489,29 @@ def _run_rewrite(args: argparse.Namespace) -> None:
             print(f"  {mark} {proposal.id}  {proposal.proposed_relation}")
             print(f"      {proposal.subject_id} -> {proposal.object_id}")
             print(f"      {proposal.explanation}")
+            # Printed so a plan from THIS command and a plan from `recall_rewrite_plan` over
+            # MCP name the same thing. Their proposal ids never match; their claim keys do.
+            print(f"      claim {claim}")
         print(f"\n{len(proposals)} proposal(s)")
         print("dry run — nothing written. Declare one with `recall rewrite apply`.")
         return
 
-    chosen = next((p for p in proposals if p.id == args.proposal), None)
+    wanted = getattr(args, "claim", None)
+    if wanted:
+        chosen = next(
+            (
+                p
+                for p in proposals
+                if claim_key(p.proposed_relation, p.subject_id, p.object_id) == wanted
+            ),
+            None,
+        )
+    else:
+        chosen = next((p for p in proposals if p.id == args.proposal), None)
     if chosen is None:
+        given = f"claim {wanted!r}" if wanted else f"proposal {args.proposal!r}"
         print(
-            f"recall rewrite: no proposal {args.proposal!r} in {root}. "
+            f"recall rewrite: no {given} in {root}. "
             f"Run `recall rewrite plan {root}` to list them.",
             file=sys.stderr,
         )
@@ -980,7 +995,16 @@ def main(argv: list[str] | None = None) -> None:
     p_rw_apply = rewrite_sub.add_parser("apply", help=_apply_blurb, description=_apply_blurb)
     p_rw_apply.add_argument("path")
     p_rw_apply.add_argument("--glob", default=DEFAULT_GLOB)
-    p_rw_apply.add_argument("--proposal", required=True, help="the proposal id to declare")
+    # Either identity, but one of them. `--claim` exists because `recall_rewrite_plan` over MCP
+    # derives proposals from the STORE graph while this command derives them from the
+    # filesystem extractor, and an id hashes in provider, tenant, generation and pipeline: the
+    # two id spaces are disjoint, so every id that surface emits is one `--proposal` refuses.
+    # Claim keys are generation independent, which is also why the rejection ledger uses them.
+    _apply_id = p_rw_apply.add_mutually_exclusive_group(required=True)
+    _apply_id.add_argument("--proposal", help="the proposal id to declare")
+    _apply_id.add_argument(
+        "--claim", help="the claim key to declare, as reported by recall_rewrite_plan over MCP"
+    )
     p_rw_apply.add_argument(
         "--reviewer", required=True, help="identity of the human accepting this proposal"
     )
@@ -1002,7 +1026,9 @@ def main(argv: list[str] | None = None) -> None:
     p_rw_reject = rewrite_sub.add_parser("reject", help=_reject_blurb, description=_reject_blurb)
     p_rw_reject.add_argument("path")
     p_rw_reject.add_argument("--glob", default=DEFAULT_GLOB)
-    p_rw_reject.add_argument("--proposal", required=True)
+    _reject_id = p_rw_reject.add_mutually_exclusive_group(required=True)
+    _reject_id.add_argument("--proposal")
+    _reject_id.add_argument("--claim", help="the claim key, as reported by recall_rewrite_plan")
     p_rw_reject.add_argument("--reviewer", required=True)
     p_rw_reject.add_argument("--note", required=True)
 
@@ -1610,9 +1636,16 @@ def main(argv: list[str] | None = None) -> None:
                 print(projection.model_dump_json(indent=2))
                 return
             if args.reasoning_cmd == "proposals":
-                proposal_result = reasoning_proposals(
-                    store, include_extracted=args.include_extracted
-                )
+                try:
+                    proposal_result = reasoning_proposals(
+                        store, include_extracted=args.include_extracted
+                    )
+                except ValueError as exc:
+                    # `--include-extracted` refuses when nothing was recorded at ingest. Left
+                    # raw it was the flag's only reachable outcome AND a traceback, where every
+                    # neighbouring refusal in this CLI prints one line and exits 2.
+                    print(f"recall reasoning: {exc}", file=sys.stderr)
+                    raise SystemExit(2) from exc
                 trust_state = (
                     "trusted" if proposal_result.generation_id != "legacy" else "degraded"
                 )

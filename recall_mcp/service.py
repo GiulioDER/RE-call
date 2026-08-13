@@ -1204,17 +1204,48 @@ def reasoning_projection(
 
 
 class RewritePlanResult(BaseModel):
-    proposal_id: str = Field(description="The proposal this plan describes.")
+    proposal_id: str = Field(
+        description=(
+            "The store-side proposal this plan describes. NOT usable with `recall rewrite "
+            "apply --proposal`: that resolves ids against the filesystem extractor, and the two "
+            "id spaces are disjoint because provider, tenant, generation and pipeline are all "
+            "hashed into an id. Hand off with `claim` instead."
+        )
+    )
+    claim: str = Field(
+        description=(
+            "Generation independent identity of this claim: relation plus the two normalised "
+            "document names. This is the handoff to the CLI, for the same reason the rejection "
+            "ledger is keyed by it: a proposal id forgets itself at the next re-index."
+        )
+    )
     relation: str = Field(description="Proposed relationship between subject and object.")
     key: str = Field(description="Frontmatter or derived-block key that would be declared.")
     value: str = Field(description="Value that would be written for that key.")
     edit_file: str = Field(description="Corpus file that would gain the key.")
     block: str = Field(description="Where it would land: frontmatter or the derived block.")
-    requires_named_human: bool = Field(
+    apply_command: str = Field(
+        description="The exact command a human runs to declare this. There is no MCP equivalent."
+    )
+    rejection_checked: bool = Field(
         description=(
-            "Always true. Declaring this needs `recall rewrite apply --reviewer <id> "
-            "--note <why>` at the CLI; there is no MCP tool that writes it."
+            "Always false. This surface has no corpus root, so it cannot consult the rejection "
+            "ledger; a claim a reviewer already declined still appears here. The CLI checks it "
+            "before writing and refuses."
         )
+    )
+
+
+def apply_command_for(claim: str) -> str:
+    """The exact CLI command that declares `claim`.
+
+    A function rather than an inline f-string so a test can assert on the VALUE. Asserting on
+    this module's SOURCE does not work: the surrounding comment explains why a proposal id
+    cannot be handed off, and that explanation contains the very flag name being ruled out.
+    """
+    return (
+        f"recall rewrite apply <corpus> --claim {claim} "
+        f"--reviewer <your-id> --note <why> --apply"
     )
 
 
@@ -1224,7 +1255,7 @@ def rewrite_plan(store: PgVectorStore, *, proposal_id: str) -> RewritePlanResult
     Read only by construction: it routes the relation and reports the result. It never
     constructs a `PromotedFact`, never touches a file, and imports nothing that writes.
     """
-    from recall.rewrite import destination, route_relation
+    from recall.rewrite import claim_key, destination, route_relation
 
     graph = project_store_graph(store, include_text=True)
     proposals = deterministic_inference_proposals(
@@ -1235,14 +1266,22 @@ def rewrite_plan(store: PgVectorStore, *, proposal_id: str) -> RewritePlanResult
         # The id is echoed because the caller supplied it; nothing about the corpus leaks.
         raise ValueError(f"no proposal {proposal_id!r} in this generation")
     routed = route_relation(found.proposed_relation, found.subject_id, found.object_id)
+    # The CLAIM key, not the proposal id, is what crosses to the CLI. This tool's proposals come
+    # from the deterministic rules over the STORE graph; `recall rewrite apply --proposal`
+    # resolves ids against the filesystem extractor. Provider, tenant, generation and pipeline
+    # are hashed into an id, so the two id spaces are disjoint by construction and every id this
+    # tool emitted was one the CLI exits 2 on. Claim keys are generation independent and match.
+    claim = claim_key(found.proposed_relation, found.subject_id, found.object_id)
     return RewritePlanResult(
         proposal_id=found.id,
+        claim=claim,
         relation=found.proposed_relation,
         key=routed.key,
         value=routed.value,
         edit_file=routed.edit_file,
         block=destination(routed.key),
-        requires_named_human=True,
+        apply_command=apply_command_for(claim),
+        rejection_checked=False,
     )
 
 
