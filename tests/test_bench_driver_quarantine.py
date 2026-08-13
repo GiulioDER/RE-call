@@ -187,6 +187,70 @@ def test_a_voyage_style_transient_status_is_not_terminal(status: int) -> None:
     assert not is_terminal(_VoyageStatus("slow down", status))
 
 
+def test_a_status_probe_that_raises_does_not_beat_the_error_it_is_probing() -> None:
+    """⛔ A classifier that raises does not misclassify, it REPLACES the provider's error.
+
+    Every `is_terminal` call site is inside an `except Exception as exc:` block — `run_arm`,
+    `judge_answer`, `_run_pool`, `run_probe`, `rejudge_outcomes`. So an exception escaping the
+    classifier leaves the handler entirely: no quarantine, no `RunAborted` wrapping, no
+    `CONSECUTIVE_FAILURE_LIMIT` floor, and in `_run_pool`'s threaded branch it abandons the
+    `for future in futures` loop with the remaining futures neither cancelled nor collected. The
+    guard defeats itself.
+
+    `getattr(x, name, None)` swallows only `AttributeError`, and these are exceptions from
+    arbitrary libraries where the attribute may be a property free to raise anything — a
+    deprecated alias under `-W error`, a lazy parse of a malformed response.
+    `recall.embeddings._probe` exists for exactly this and says so; `is_terminal` claimed to mirror
+    that classifier while reading through bare `getattr`, so `_is_transient` returned False on this
+    object and `is_terminal` raised.
+    """
+
+    class _Hostile(Exception):
+        @property
+        def http_status(self) -> int:
+            raise RuntimeError("deprecated alias")
+
+    assert is_terminal(_Hostile("boom")) is False
+
+
+def test_the_first_spelling_that_answers_wins() -> None:
+    """Pins first-non-None precedence, which a mutation to last-non-None survived.
+
+    It has to match `_is_transient` exactly: if the two picked different values off one exception,
+    a status could be both non-terminal and non-transient, i.e. silently dropped forever.
+    """
+
+    class _Both(Exception):
+        status_code = 500
+        http_status = 401
+
+    assert not is_terminal(_Both("upstream failed")), (
+        "status_code is read first, so this is a 500 and not a revoked key"
+    )
+
+    class _Reversed(Exception):
+        status_code = 401
+        http_status = 500
+
+    assert is_terminal(_Reversed("unauthorized"))
+
+
+def test_a_status_that_is_not_a_number_falls_through_to_the_markers() -> None:
+    """Pins the `isinstance(status, int)` gate as a FALL-THROUGH rather than an early answer.
+
+    Loosening it to `status is not None` survived mutation, and the failure would be silent rather
+    than loud: `"402" in frozenset({401, 402})` is False, not a TypeError, so a string status would
+    quietly report every error as non-terminal.
+    """
+
+    class _StringStatus(Exception):
+        status_code = "error"
+
+    assert is_terminal(_StringStatus("Error code: 402 - payment required")), (
+        "the status said nothing usable, so the text is the only evidence left"
+    )
+
+
 def test_exhausted_quota_is_terminal_even_though_it_arrives_as_a_rate_limit() -> None:
     """⛔ THE REGRESSION A REVIEW CAUGHT, and the most expensive one in this change.
 

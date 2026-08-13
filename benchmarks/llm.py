@@ -5,7 +5,7 @@ import time
 from collections.abc import Callable
 from typing import Protocol
 
-from recall.embeddings import _is_transient, retry_with_backoff
+from recall.embeddings import _is_transient, _probe, retry_with_backoff
 from recall.provider_metadata import ProviderMetadata
 
 #: The injected-LLM seam: (system_prompt, user_prompt) -> completion text. Everything downstream
@@ -154,8 +154,13 @@ _ACCOUNT_MARKERS = ("insufficient_quota", "requires more credits")
 _AMBIGUOUS_MARKERS = ("401", "402")
 
 
-def is_terminal(exc: BaseException) -> bool:
+def is_terminal(exc: Exception) -> bool:
     """Does this failure mean the whole run is over, rather than one item having failed?
+
+    Takes `Exception`, not `BaseException`. Every call site is inside an `except Exception as exc:`
+    block, so that is the real domain, and it is what `_probe` and `_is_transient` accept. A
+    `KeyboardInterrupt` is not a provider verdict, and asking this about one is a type error worth
+    having rather than a question with a meaningless answer.
 
     The difference is worth a run's paid work in both directions. Treating a terminal error as one
     bad item is how an empty OpenRouter balance became "a tidy `n: 599` summary and exit 0" with
@@ -193,10 +198,17 @@ def is_terminal(exc: BaseException) -> bool:
     # Reading only the first two left a Voyage 401 falling through to the digit markers, so a
     # revoked key whose message did not happen to contain "401" was not terminal — and retrieval
     # embeds, so `run_arm` would have quarantined a dead embedding key one question at a time.
-    status = getattr(exc, "status_code", None)
+    #
+    # ⛔ Through `_probe`, not bare `getattr`, and mirroring `_is_transient` here is not cosmetic.
+    # `getattr(x, name, None)` swallows only `AttributeError`, and these are exceptions from
+    # arbitrary libraries whose attribute may be a property free to raise anything. EVERY caller of
+    # this function is inside an `except Exception as exc:` block, so a classifier that raises does
+    # not misclassify — it replaces the provider's error and leaves the handler, taking the
+    # quarantine, the `RunAborted` wrapping and the failure floor with it.
+    status = _probe(exc, "status_code")
     for spelling in ("status", "http_status"):
         if status is None:
-            status = getattr(exc, spelling, None)
+            status = _probe(exc, spelling)
     if isinstance(status, int):
         return status in TERMINAL_STATUS_CODES
     return any(marker in text for marker in _AMBIGUOUS_MARKERS)

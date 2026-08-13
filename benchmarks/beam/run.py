@@ -629,7 +629,7 @@ def _already_done(paths: list[Path] | None) -> tuple[list[dict[str, Any]], set[s
 #: the same class.
 
 
-def _is_terminal(exc: BaseException) -> bool:
+def _is_terminal(exc: Exception) -> bool:
     """A failure about the ACCOUNT, not about the question. Kept as a name because `_run_pool`
     reads it twice, but the policy now lives in `benchmarks.llm` because four drivers need it.
 
