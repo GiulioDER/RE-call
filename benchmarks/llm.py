@@ -317,6 +317,17 @@ class OpenRouterLLM:
         self._api_key = api_key
         self._sleep = sleep
         self._client: object | None = None
+        #: Guards the lazy build in `_complete_once`, for the same reason `_usage_lock` guards the
+        #: counters below: ONE instance is driven by an 8-thread pool, and `if x is None: x = ...`
+        #: is a check-then-set. Measured before this existed: eight threads released from a
+        #: barrier onto one instance built eight `OpenAI` clients, seven of them overwritten on
+        #: the next assignment and dropped while still owning an `httpx.Client` whose connection
+        #: pool is never closed.
+        #:
+        #: A SEPARATE lock rather than a reuse of `_usage_lock`. The two protect unrelated state,
+        #: and `threading.Lock` is not reentrant, so folding them together would leave any later
+        #: edit that builds a client while holding the usage lock deadlocked rather than slow.
+        self._client_lock = threading.Lock()
         #: The benchmark's OWN generator+judge usage (this instance drives both). Recorded as the
         #: `harness` baseline so the memory layer's cost can be isolated as total - harness.
         #:
@@ -363,15 +374,39 @@ class OpenRouterLLM:
     def _complete_once(self, system: str, user: str) -> str:
         from openai import OpenAI  # lazy: only needed at real run time
 
-        if self._client is None:
-            # `max_retries=0` because `retry_with_backoff` in `complete` owns the retry policy.
-            # The SDK default is 2 retries, so leaving it on multiplies the two layers: one 429
-            # costs 4 x 3 = 12 requests rather than the 4 `max_attempts` asks for, and the outer
-            # FULL-jitter backoff (which exists so a fleet does not remarch onto the provider in
-            # lockstep) ends up wrapping an inner loop that smears its own doubling schedule by
-            # only `1 - 0.25 * random()` — a 25% jitter, not a draw across the interval, so it
-            # separates a fleet far less than the layer wrapping it.
-            self._client = OpenAI(api_key=self._api_key, base_url=self.base_url, max_retries=0)
+        # The lock is taken unconditionally rather than as the second half of a double-check. The
+        # unlocked fast path would buy an uncontended `Lock.acquire` (tens of nanoseconds) off the
+        # front of an HTTP round trip measured in hundreds of milliseconds, and would pay for it
+        # with a publication argument that has no settled answer on a free-threaded build, which
+        # this package supports (Python 3.14 is in the tested matrix).
+        #
+        # Still lazy, and that is not an oversight this could tidy away by building in `__init__`.
+        # `openai` is in the `bench` extra, `dev` excludes it deliberately, and CI installs
+        # `.[dev]`, so the SDK is absent wherever the tests run; the class is documented as
+        # constructible without it and `test_bench_llm.py` constructs one with no `openai` in
+        # `sys.modules` at all. Building eagerly would move the ImportError from the first
+        # request onto every construction, green on a developer machine that happens to have the
+        # extra and red in CI.
+        #
+        # The request below then reads `self._client` OUTSIDE this block, deliberately, and
+        # `VoyageReranker._voyage_client` makes the opposite choice for its own read. Both are
+        # sound and the difference is only what each method costs: holding a lock across the
+        # network call here would serialise the whole pool, whereas the reranker's helper returns
+        # immediately and holds nothing. The unlocked read is safe because the slot is write-once
+        # (assigned only here and in `__init__`, never reset) and every reader has already been
+        # through this acquire/release pair, which supplies the ordering a free-threaded build
+        # would otherwise need. `tests/lazy_client_lock_helpers.py` enforces that premise rather
+        # than trusting this paragraph.
+        with self._client_lock:
+            if self._client is None:
+                # `max_retries=0` because `retry_with_backoff` in `complete` owns the retry
+                # policy. The SDK default is 2 retries, so leaving it on multiplies the two
+                # layers: one 429 costs 4 x 3 = 12 requests rather than the 4 `max_attempts` asks
+                # for, and the outer FULL-jitter backoff (which exists so a fleet does not remarch
+                # onto the provider in lockstep) ends up wrapping an inner loop that smears its
+                # own doubling schedule by only `1 - 0.25 * random()` — a 25% jitter, not a draw
+                # across the interval, so it separates a fleet far less than the layer wrapping it.
+                self._client = OpenAI(api_key=self._api_key, base_url=self.base_url, max_retries=0)
         extra = {} if self.max_tokens is None else {"max_tokens": self.max_tokens}
         started = time.perf_counter()
         resp = self._client.chat.completions.create(  # type: ignore[union-attr]
