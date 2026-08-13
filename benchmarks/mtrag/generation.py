@@ -566,24 +566,15 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
                     "property of the request."
                 )
             choice = choices[0]
-            # Read the whole path to the text in ONE step, against a sentinel. `message` can fail
-            # to arrive as an object in four ways (key omitted, set to null, some other type, or an
-            # object with no `content` field), and every one of them used to reach `.content` and
-            # raise `AttributeError`. Checking them one field at a time is how this fix twice
-            # stopped one field short of the answer: `choices` was hardened while `message` was
-            # left bare, then `message` while `.content` was left bare. A sentinel collapses all
-            # four into the same question, which is the only one that matters here: did a `content`
-            # field arrive at all? `None` is a legitimate ANSWER to that question and falls through
-            # to the emptiness check below, where it is classified differently on purpose.
-            content = getattr(getattr(choice, "message", None), "content", _NO_CONTENT_FIELD)
-            if content is _NO_CONTENT_FIELD:
-                raise NoCompletionInResponse(
-                    "the provider returned a 200 whose first choice carries no `message.content` "
-                    f"field (finish_reason={getattr(choice, 'finish_reason', None)!r}), so there "
-                    "is no completion to read. This is an upstream fault on the provider's side, "
-                    "not a property of the request."
-                )
 
+            # ⚠️ ORDER IS A DIAGNOSIS, not layout. `finish_reason` is asked FIRST, before the body
+            # is read, because it is the most specific thing known about the response and it is the
+            # only one of these causes that names a fix. A truncated completion whose `message`
+            # also failed to arrive is still truncation: reading the body first reported it as an
+            # upstream fault, retried it four times against a ceiling no attempt can move, and
+            # printed "not a property of the request" while interpolating `finish_reason='length'`
+            # into the same sentence.
+            #
             # A completion that stopped for `length` hit OUR ceiling; the provider is healthy and
             # the answer is half-written. Returning it would put a fluent, on-topic, mid-sentence
             # string into `predictions`, where nothing downstream can tell it apart from a genuine
@@ -599,6 +590,23 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
                 raise CompletionTruncated(
                     f"completion hit max_tokens={max_tokens} and was cut off. Raise --max-tokens "
                     "— do NOT score this answer."
+                )
+
+            # Read the whole path to the text in ONE step, against a sentinel. `message` can fail
+            # to arrive as an object in four ways (key omitted, set to null, some other type, or an
+            # object with no `content` field), and every one of them used to reach `.content` and
+            # raise `AttributeError`. Checking them one field at a time is how this fix twice
+            # stopped one field short of the answer: `choices` was hardened while `message` was
+            # left bare, then `message` while `.content` was left bare. A sentinel collapses all
+            # four into the same question, which is the only one that matters here: did a `content`
+            # field arrive at all? `None` is a legitimate ANSWER to that question and falls through
+            # to the emptiness check below, where it is classified differently on purpose.
+            content = getattr(getattr(choice, "message", None), "content", _NO_CONTENT_FIELD)
+            if content is _NO_CONTENT_FIELD:
+                raise NoCompletionInResponse(
+                    "the provider returned a 200 whose first choice carries no `message.content` "
+                    f"field (finish_reason={reason!r}), so there is no completion to read. This is "
+                    "an upstream fault on the provider's side, not a property of the request."
                 )
 
             answer = completion_text(content)

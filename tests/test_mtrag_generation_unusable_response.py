@@ -341,6 +341,46 @@ def test_a_choice_carrying_no_message_is_retried() -> None:
 
 
 # --------------------------------------------------------------------------------------------
+# 2b. Where the truncation check sits relative to these, which is behaviour and not layout.
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        pytest.param(_BUILD, id="content-null"),
+        pytest.param(_ABSENT, id="no-message-at-all"),
+        pytest.param("half a sen", id="message-is-not-an-object"),
+    ],
+)
+def test_a_truncated_completion_is_truncation_even_when_its_text_is_unreadable(
+    message: object,
+) -> None:
+    """⚠️ This pins ORDER, and order here is a diagnosis. `finish_reason == "length"` says the
+    ceiling was hit, which is a property of OUR request and the most specific thing known about
+    the response, so it wins over any shape the body turned out to have.
+
+    Nothing pinned this before, and the gap was not hypothetical: an earlier revision moved the
+    content read above the truncation check, which sent a `length` completion with an unreadable
+    `message` to `NoCompletionInResponse`. That is wrong twice over. It costs four billed attempts
+    for a ceiling that cannot be reached by retrying, and it prints "an upstream fault on the
+    provider's side, not a property of the request" while interpolating `finish_reason='length'`
+    into the very same sentence, so the artifact contradicts itself.
+
+    `content-null` is the shape a reasoning model produces when it spends the whole ceiling on
+    reasoning tokens: `length` with no text at all. Sending that to `EmptyCompletion` would tell
+    the operator no value of `--max-tokens` can change it, which is the opposite of true."""
+    client = _Client([_choice(message=message, finish_reason="length")])
+
+    with pytest.raises(RuntimeError) as caught:
+        _generate(client)
+
+    assert CompletionTruncated.__name__ in str(caught.value)
+    assert str(_CEILING) in str(caught.value), "the operator's fix is the flag, so name the ceiling"
+    assert client.calls == 1, "no attempt count can make an over-long request fit"
+
+
+# --------------------------------------------------------------------------------------------
 # 3. `content` as a list of blocks: a WELL FORMED answer in a shape the reader has to know.
 # --------------------------------------------------------------------------------------------
 
