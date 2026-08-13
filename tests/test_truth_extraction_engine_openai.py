@@ -28,6 +28,7 @@ from recall.truth_extraction._engine import (
     resolve_extraction_engine,
 )
 from recall.truth_extraction._normalize import normalize_extraction
+from tests.conftest import requires_openai
 from recall.truth_extraction._openai_engine import (
     DEFAULT_EXTRACTION_MODEL,
     UNPARSED_ENDPOINT,
@@ -108,6 +109,7 @@ def test_importing_the_package_does_not_import_openai():
     assert out.stdout.strip() == "False", "importing recall.truth_extraction pulled in openai"
 
 
+@requires_openai
 def test_the_resolved_env_reaches_the_engine_rather_than_os_environ(monkeypatch):
     """`resolve_extraction_engine` takes an explicit mapping; the engine must honour IT.
 
@@ -129,6 +131,7 @@ def test_the_resolved_env_reaches_the_engine_rather_than_os_environ(monkeypatch)
     assert engine.model_id == "caller/model", "the ambient environment overrode the caller"
 
 
+@requires_openai
 def test_the_endpoint_is_part_of_the_engine_identity():
     """Two endpoints advertising one model name must not share a cache key.
 
@@ -154,6 +157,7 @@ def test_the_endpoint_is_part_of_the_engine_identity():
     )
 
 
+@requires_openai
 def test_a_variable_set_to_empty_falls_back_to_the_default():
     """`export RECALL_EXTRACTION_MODEL=` must behave like unset, not record model_id=''."""
     engine = resolve_extraction_engine(
@@ -200,6 +204,7 @@ def test_the_happy_path_still_returns_the_model_text():
     assert _text_of(reply) == "hello"
 
 
+@requires_openai
 def test_the_client_is_built_with_an_explicit_timeout_and_no_sdk_retries(monkeypatch):
     """The SDK default is a 600s read timeout with 2 retries; ours must replace both.
 
@@ -227,6 +232,7 @@ def test_the_client_is_built_with_an_explicit_timeout_and_no_sdk_retries(monkeyp
     assert seen["max_retries"] == 0, "the SDK's own retries would multiply with ours"
 
 
+@requires_openai
 def test_a_transient_failure_is_retried_and_a_permanent_one_is_not(monkeypatch):
     import openai
 
@@ -323,6 +329,7 @@ def test_text_blocks_are_read_rather_than_discarded():
     assert _text_of(reply) == '{"claims": []}'
 
 
+@requires_openai
 def test_a_non_numeric_timeout_names_the_variable():
     with pytest.raises(ValueError, match="RECALL_EXTRACTION_TIMEOUT"):
         resolve_extraction_engine(

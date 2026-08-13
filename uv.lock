@@ -3725,6 +3725,9 @@ eval = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
+extract = [
+    { name = "openai" },
+]
 fastembed = [
     { name = "fastembed" },
 ]
@@ -3781,6 +3784,7 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'eval'" },
     { name = "numpy", marker = "extra == 'finetune'" },
     { name = "openai", marker = "extra == 'bench'", specifier = ">=1.0" },
+    { name = "openai", marker = "extra == 'extract'", specifier = ">=1.0" },
     { name = "pgvector", specifier = ">=0.4" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
     { name = "psycopg-pool", marker = "extra == 'dev'", specifier = ">=3.2" },
@@ -3799,9 +3803,9 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'rerank'", specifier = ">=3.0" },
     { name = "torch", marker = "extra == 'sparse'", specifier = ">=2.0,<3" },
     { name = "transformers", marker = "extra == 'sparse'", specifier = ">=4.40,<6" },
-    { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.2" },
+    { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.2.2" },
 ]
-provides-extras = ["fastembed", "pool", "mcp", "voyage", "s3", "sparse", "rerank", "entail", "eval", "finetune", "langchain", "llamaindex", "bench", "dev"]
+provides-extras = ["fastembed", "pool", "mcp", "voyage", "s3", "sparse", "rerank", "entail", "eval", "extract", "finetune", "langchain", "llamaindex", "bench", "dev"]
 
 [[package]]
 name = "referencing"

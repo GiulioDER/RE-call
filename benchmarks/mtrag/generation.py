@@ -125,6 +125,11 @@ from typing import Any
 
 from benchmarks.llm import CompletionTruncated
 
+# Private on purpose, and imported rather than reimplemented: there is one definition in this
+# repository of how long a provider asked us to wait, and a second copy here would drift from it
+# exactly as the two retry policies this file just finished collapsing into one did.
+from recall.embeddings import _retry_after_seconds
+
 #: From the official `format_checker.py`. Named here so a violation fails in OUR run, with a
 #: message naming the limit, rather than at submission.
 MAX_CONTEXTS = 10
@@ -423,7 +428,14 @@ def openrouter_client(api_key: str | None = None) -> Any:
             "set OPENROUTER_API_KEY (or pass --api-key-file). Resolved eagerly so a missing key "
             "fails before the first task rather than after the run has started."
         )
-    return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=key)
+    # `max_retries=0` because `generate_one` owns the retry policy. The SDK default is 2 retries,
+    # which does not replace that loop but multiplies with it: at `GENERATION_ATTEMPTS = 4` one
+    # 429 costs 12 billed requests rather than 4, which is 3x the worst-case bill the warning
+    # above `generate_one` quotes. `PERMANENT_ERROR_NAMES` is unaffected either way: the statuses
+    # the SDK retries (408, 409, 429, 5xx, plus ANY status on which the provider sends
+    # `x-should-retry: true`) are all but disjoint from the 400/401/403/404 that set names,
+    # so what is removed here is the multiplication on transient failures and nothing else.
+    return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=key, max_retries=0)
 
 
 GENERATION_ATTEMPTS = 4
@@ -537,14 +549,22 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
 
     ⚠️ Every attempt is a billed call. Raising `GENERATION_ATTEMPTS` raises the worst-case bill by
     the same factor. An authentication error is not retried: it is not a flaky network, and
-    retrying it burns the backoff and reads like one. Nor is a completion cut off by `max_tokens`:
-    the ceiling is a property of the REQUEST, so every attempt buys the same truncation again.
+    retrying it burns the backoff and reads like one. Nor is a completion cut off by `max_tokens`,
+    nor one that came back with no text: the ceiling and the filter are both properties of the
+    REQUEST, so every attempt buys the same failure again.
 
-    ⚠️ A truncated answer therefore FAILS the task rather than being written. That is the point —
-    scoring it would charge our own ceiling to the system under test — but it does change what a
-    too-low `--max-tokens` looks like from the outside: previously a run of silently short answers,
-    now a run of `task_failed` events that can trip `CONSECUTIVE_FAILURE_LIMIT` and stop early.
-    The message names the ceiling so the fix is the flag, not the attempt count.
+    That arithmetic holds only because `client` comes from `openrouter_client`, which builds the
+    SDK with `max_retries=0`. A stock `openai` client retries twice inside its own transport, so
+    the worst case would be `GENERATION_ATTEMPTS` x 3 — 12 requests, not 4 — and the warning
+    above would understate the bill it exists to give by 3x. Pass a client built anywhere else
+    and this loop no longer owns the retry policy.
+
+    ⚠️ A truncated or empty answer therefore FAILS the task rather than being written. That is the
+    point — scoring it would charge our own ceiling, or an empty string, to the system under test —
+    but it does change what a too-low `--max-tokens` looks like from the outside: previously a run
+    of silently short answers, now a run of `task_failed` events that can trip
+    `CONSECUTIVE_FAILURE_LIMIT` and stop early. The message names the ceiling so the fix is the
+    flag, not the attempt count.
     """
     last: Exception | None = None
     for attempt in range(1, GENERATION_ATTEMPTS + 1):
@@ -627,7 +647,14 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             last = exc
             if type(exc).__name__ in PERMANENT_ERROR_NAMES or attempt == GENERATION_ATTEMPTS:
                 break
-            time.sleep(GENERATION_BACKOFF_S * (2 ** (attempt - 1)))
+            # `+ _retry_after_seconds` for the same reason `retry_with_backoff` does it, and it
+            # is this loop's problem for the same reason: `openrouter_client` passes
+            # `max_retries=0`, so the transport layer that used to obey `Retry-After` is gone and
+            # nothing else here reads it. The fixed ladder spends all four attempts inside 14s,
+            # so a per-minute rate limit the stock client would have waited out fails the task,
+            # and `CONSECUTIVE_FAILURE_LIMIT` turns five such tasks into an aborted run.
+            paced = _retry_after_seconds(exc) or 0.0
+            time.sleep(GENERATION_BACKOFF_S * (2 ** (attempt - 1)) + paced)
     raise RuntimeError(
         f"generation gave up after {GENERATION_ATTEMPTS} attempts "
         f"({type(last).__name__}: {last}). Answers already written are kept; re-run to resume."

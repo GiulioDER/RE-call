@@ -16,6 +16,11 @@ from typing import TYPE_CHECKING, Protocol
 
 from recall.lineage import canonical_sha256
 from recall.truth_extraction._prompt import ExtractionPrompt
+from recall.truth_extraction._sqlite_cache import (
+    CACHE_SCHEMA_VERSION,
+    ExtractionCacheRefused,
+    SqliteExtractionCache,
+)
 from recall.truth_extraction.types import FileExtraction
 
 if TYPE_CHECKING:  # `_engine` imports `_prompt`, and typing-only keeps the cycle off runtime
@@ -195,9 +200,14 @@ def recheck_cached_extractions(
 
 
 __all__ = [
+    # `SqliteExtractionCache` lives in `_sqlite_cache` and is re-exported here so that the two
+    # implementations of the port are found together, from the module that defines the port.
+    "CACHE_SCHEMA_VERSION",
     "ExtractionCache",
+    "ExtractionCacheRefused",
     "InMemoryExtractionCache",
     "RecheckReport",
+    "SqliteExtractionCache",
     "extraction_cache_key",
     "recheck_cached_extractions",
 ]
