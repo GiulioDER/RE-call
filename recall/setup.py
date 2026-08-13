@@ -726,7 +726,8 @@ def run_setup_wizard(
     else:
         print_fn(
             "Entailment judge is unavailable on this machine. It needs sentence-transformers "
-            "and enough internet and disk to download a model."
+            "and enough internet and disk to download a model. The extra is "
+            'pip install "recall-rag[entail]". Rerun setup and choose it again once it can run.'
         )
 
     scaffold_requested = _ask_yes_no(

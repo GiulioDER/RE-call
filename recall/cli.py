@@ -898,8 +898,14 @@ def main(argv: list[str] | None = None) -> None:
     p_search.add_argument(
         "--entail",
         action="store_true",
+        # No install command in this string, deliberately. argparse wraps help through
+        # `textwrap.wrap`, which defaults to `break_on_hyphens=True`, so `recall-rag[entail]`
+        # renders as `recall-` / `rag[entail]` at COLUMNS 63-69 and 111-123 — including 120,
+        # which is a very common terminal width. A command that arrives pre-broken is worse
+        # than no command. The exact line lives in the ImportError that fires when the extra is
+        # actually missing (`recall/entailment.py`), which argparse never touches.
         help="opt-in entailment stage: demote hits that don't answer the query "
-        "(requires recall[entail]; downloads the QNLI judge on first use)",
+        "(requires the entail extra; downloads the QNLI judge on first use)",
     )
     p_search.add_argument(
         "--evidence",

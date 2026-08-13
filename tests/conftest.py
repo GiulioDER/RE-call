@@ -313,7 +313,7 @@ def _fastembed_available() -> bool:
 #: intentional CI condition into a red build.
 requires_fastembed = pytest.mark.skipif(
     not _fastembed_available(),
-    reason="needs the fastembed extra (pip install recall[fastembed])",
+    reason='needs the fastembed extra (pip install "recall-rag[fastembed]")',
 )
 
 
@@ -334,7 +334,7 @@ def _openai_available() -> bool:
 #: module-level skip would silently retire the test that proves the import stays lazy.
 requires_openai = pytest.mark.skipif(
     not _openai_available(),
-    reason="needs the extract extra (pip install recall[extract])",
+    reason='needs the extract extra (pip install "recall-rag[extract]")',
 )
 
 

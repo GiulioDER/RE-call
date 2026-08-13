@@ -150,7 +150,7 @@ def test_the_voyage_client_is_built_with_the_sdk_retry_layer_off(
     keyword this repository passes, not about what the transport underneath does with it.
     """
     if voyageai is None:
-        pytest.skip("needs the voyage extra (pip install recall[voyage])")
+        pytest.skip('needs the voyage extra (pip install "recall-rag[voyage]")')
     seen: dict[str, object] = {}
 
     class _FakeClient:

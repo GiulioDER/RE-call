@@ -112,7 +112,7 @@ class S3ObjectReader:
         try:
             import boto3
         except ImportError as exc:  # pragma: no cover, exercised without the optional extra
-            raise ImportError("S3 access requires: pip install recall-rag[s3]") from exc
+            raise ImportError('S3 access requires: pip install "recall-rag[s3]"') from exc
         endpoint = os.environ.get("RECALL_S3_ENDPOINT_URL")
         client = boto3.client("s3", endpoint_url=endpoint) if endpoint else boto3.client("s3")
         return cls(client, S3Allowlist.from_environment())
