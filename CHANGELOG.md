@@ -48,6 +48,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   siblings installed the unrelated PyPI package of that name, which ships its own top level
   `recall` module and shadows this one. That is the collision `docs/DEPENDENCIES.md` already
   warned about, printed by the library's own ImportError messages.
+* The same commands now quote the extra, `pip install "recall-rag[fastembed]"`. Unquoted, the
+  brackets are a glob: zsh refuses the line with "no matches found" and never runs pip, and bash
+  expands it only when a matching file happens to exist, so it worked on some machines and not
+  others. README and `recall setup` already quoted it; the ImportError messages did not.
 
 ## [0.9.4] (2026-08-12)
 
