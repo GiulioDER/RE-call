@@ -123,6 +123,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from benchmarks.llm import CompletionTruncated
+
 #: From the official `format_checker.py`. Named here so a violation fails in OUR run, with a
 #: message naming the limit, rather than at submission.
 MAX_CONTEXTS = 10
@@ -430,8 +432,13 @@ GENERATION_BACKOFF_S = 2.0
 #: content-policy refusal); five in a row is the whole run being broken, and the difference is
 #: worth ~837 unnecessary billed attempts.
 CONSECUTIVE_FAILURE_LIMIT = 5
+#: Failures no number of attempts can fix. The provider's own types are matched by NAME so this
+#: module does not import the SDK just to define its own retry policy; `CompletionTruncated` is
+#: ours and is already imported, so it contributes `__name__` rather than a literal — a rename
+#: then follows the class instead of silently restoring the retry it is here to prevent.
 PERMANENT_ERROR_NAMES = frozenset(
-    {"AuthenticationError", "PermissionDeniedError", "NotFoundError", "BadRequestError"}
+    {"AuthenticationError", "PermissionDeniedError", "NotFoundError", "BadRequestError",
+     CompletionTruncated.__name__}
 )
 
 
@@ -440,7 +447,14 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
 
     ⚠️ Every attempt is a billed call. Raising `GENERATION_ATTEMPTS` raises the worst-case bill by
     the same factor. An authentication error is not retried: it is not a flaky network, and
-    retrying it burns the backoff and reads like one.
+    retrying it burns the backoff and reads like one. Nor is a completion cut off by `max_tokens`:
+    the ceiling is a property of the REQUEST, so every attempt buys the same truncation again.
+
+    ⚠️ A truncated answer therefore FAILS the task rather than being written. That is the point —
+    scoring it would charge our own ceiling to the system under test — but it does change what a
+    too-low `--max-tokens` looks like from the outside: previously a run of silently short answers,
+    now a run of `task_failed` events that can trip `CONSECUTIVE_FAILURE_LIMIT` and stop early.
+    The message names the ceiling so the fix is the flag, not the attempt count.
     """
     last: Exception | None = None
     for attempt in range(1, GENERATION_ATTEMPTS + 1):
@@ -448,6 +462,21 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             response = client.chat.completions.create(
                 model=model, messages=messages, max_tokens=max_tokens, temperature=0.0
             )
+            # A completion that stopped for `length` hit OUR ceiling; the provider is healthy and
+            # the answer is half-written. Returning it would put a fluent, on-topic, mid-sentence
+            # string into `predictions`, where nothing downstream can tell it apart from a genuine
+            # short answer or a genuine refusal — a measurement error introduced by our own
+            # configuration, scored against the system under test. The task is quarantined
+            # instead, so the run continues and the loss is visible in `.failed.jsonl`.
+            #
+            # `getattr` rather than attribute access: a response that omits the field is UNSTATED,
+            # not truncated, and an `AttributeError` here is not in `PERMANENT_ERROR_NAMES` — it
+            # would be retried four times and then reported as a generation failure.
+            if getattr(response.choices[0], "finish_reason", None) == "length":
+                raise CompletionTruncated(
+                    f"completion hit max_tokens={max_tokens} and was cut off. Raise --max-tokens "
+                    "— do NOT score this answer."
+                )
             return (response.choices[0].message.content or "").strip()
         except Exception as exc:  # noqa: BLE001 - re-raised below once attempts are exhausted
             last = exc
