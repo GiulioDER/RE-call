@@ -87,3 +87,40 @@ class VectorKeyedFakeStore(FakeStore):
     def query_dense(self, vector, k, source=None):
         self.dense_sources.append(source)
         return self._hits(self._dense_by_vector.get(tuple(vector), [])[:k])
+
+
+class FakeExtractionEngine:
+    """A truth extraction engine that returns scripted output and counts its calls.
+
+    The call counter is the point. Extraction is cached, and a cache that silently stopped
+    answering would look identical to one that never stopped — the same output, quietly
+    re-paid for. Assert on `call_count` to pin whether the cache answered.
+
+    `responses` maps a file name to the raw string the engine returns for it. Unscripted
+    files get `default`, which is a well formed empty batch, so a test that only cares about
+    one file does not have to script the rest of the corpus.
+    """
+
+    engine_id = "tests.fake_extraction"
+    model_id = "fake"
+
+    def __init__(
+        self,
+        responses: dict[str, str] | None = None,
+        *,
+        default: str = '{"claims": []}',
+        revision: str = "fake-v1",
+    ) -> None:
+        self.responses = dict(responses or {})
+        self.default = default
+        self.revision = revision
+        #: Every prompt received, in call order.
+        self.calls: list[object] = []
+
+    @property
+    def call_count(self) -> int:
+        return len(self.calls)
+
+    def run(self, prompt) -> str:
+        self.calls.append(prompt)
+        return self.responses.get(prompt.file, self.default)

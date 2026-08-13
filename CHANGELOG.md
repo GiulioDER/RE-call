@@ -8,6 +8,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Added
+
+* Added model backed truth extraction: `recall/truth_extraction/`, turning memo prose into
+  structured, quoted claims behind a refusing validation ladder. Off unless
+  `RECALL_TRUTH_EXTRACTION=1`, runs on the ingest path only, never the query path. The
+  extraction engine is a port with two implementations, a deterministic rules reference and an
+  OpenAI compatible model engine (`pip install recall[extract]`); whatever an engine returns
+  clears the same ladder, so a model gains no ability to skip a rung.
+* Added `recall extract run|show`, which reads a corpus and writes nothing, and
+  `recall rewrite plan|apply|reject|verify`, which declares reviewed claims in corpus
+  frontmatter. `recall rewrite apply` is a dry run by default and requires `--reviewer` and
+  `--note` as argparse requirements, so the named human gate fires before any code runs.
+* Added the `recall_rewrite_plan` MCP tool, read only. There is deliberately no
+  `recall_rewrite_apply`: the MCP client is the model, and a reviewer id it can type is a field
+  rather than a person. `recall_reasoning_proposals` and `recall reasoning proposals` gain
+  `include_extracted`, defaulting to off so existing behaviour is byte identical.
+
+### Changed
+
+* **BREAKING: `PROPOSAL_SCHEMA_VERSION` moved from 1 to 2**, which rewrites **every** `ip_`
+  proposal id in existence, including the checked in `results/reasoning_session3_proposals.json`.
+  Version 2 adds `declares_validity` and `declares_status` to `ProposedRelation`, because a
+  document asserting something about ITSELF is not a relation between two documents and forcing
+  it into `references` would put a false relation into an audit record. The bump is the point:
+  an id minted under a vocabulary that could not express validity must not be mistaken for one
+  minted under a vocabulary that can. Anyone holding stored `ip_` ids must re-derive them.
+
 ## [0.9.4] (2026-08-12)
 
 Released straight from 0.9.2. 0.9.3 is deliberately skipped and will never exist.
