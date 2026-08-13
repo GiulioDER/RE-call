@@ -43,7 +43,9 @@ ALL_CLAIM_KINDS = (
     SupersessionClaim(superseded="old_2026-01-01.md", quote="This supersedes old_2026-01-01.md."),
     ValidityClaim(key="valid_from", date="2026-07-14", quote="Effective valid_from 2026-07-14."),
     StatusClaim(value="deprecated", quote="Status: deprecated"),
-    IdentityClaim(entity="Acme", alias="Acme Corp", quote="Acme (formerly Acme Corp)"),
+    # Non-ASCII on purpose: it is what makes `ensure_ascii` reachable in the byte form test, and
+    # memo prose is full of accented names, so an all-ASCII fixture is also unrepresentative.
+    IdentityClaim(entity="Åcme", alias="Acme Corp", quote="Åcme (formerly Acme Corp)"),
 )
 
 
@@ -269,7 +271,11 @@ def test_a_filename_that_is_not_valid_utf8_does_not_abort_the_ingest(tmp_path):
     with SqliteExtractionCache(_path(tmp_path)) as cache:
         cache.put("k1", _extraction(file="bad\udcff.md"))
         assert cache.write_failures == 1, "the bad bind was not swallowed and counted"
-        assert cache.get("k2") is None  # the cache is still usable afterwards
+        # A ROUND TRIP, not `get("k2") is None`. That was the usability check and it could not
+        # fail: `get` answers None for a missing row AND for a dead connection, so a cache the
+        # bad bind had destroyed satisfied it exactly like a healthy one.
+        cache.put("k2", _extraction())
+        assert cache.get("k2") is not None, "the failed write left the cache unusable"
 
 
 def test_a_stored_payload_is_readable_json(tmp_path):
@@ -282,11 +288,14 @@ def test_a_stored_payload_is_readable_json(tmp_path):
         ).fetchone()
     body = json.loads(payload)
     assert [c["kind"] for c in body["claims"]] == [c.kind for c in ALL_CLAIM_KINDS]
-    # The whole BYTE form, not just the top level key order. `sort_keys=True` was asserted by
-    # nothing, and the first fix for that only checked `list(body) == sorted(body)`, which
-    # covers the nine outer keys and neither the keys inside each claim nor `separators`. A
-    # re-dump comparison pins all three at once: drop either flag, or reorder the dict literal,
-    # and this fails. Round trip EQUALITY is blind to all of it, which is why it needs saying.
+    # The stored payload is CANONICAL json: keys sorted at every level, compact separators, and
+    # ASCII escaped. Drop any of the three flags and this fails. It says nothing about the order
+    # the dict literal is BUILT in, and an earlier version of this comment wrongly claimed it
+    # did: `sort_keys=True` makes construction order unobservable by construction, so reordering
+    # the literal is an equivalent mutant. Round trip EQUALITY is blind to all of it.
+    #
+    # `_extraction()` carries a non-ASCII quote so `ensure_ascii` is reachable; an all-ASCII
+    # fixture cannot tell the default from `ensure_ascii=False`.
     assert payload == json.dumps(
         json.loads(payload), sort_keys=True, separators=(",", ":")
     ), "the stored payload's byte form is not deterministic"
@@ -460,6 +469,32 @@ def test_an_unknown_claim_kind_is_refused_by_the_serializer(tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    "claim,expected",
+    [
+        ({"kind": ["status"], "value": "a", "quote": "q"}, r"has kind \['status'\]"),
+        ({"kind": {"a": 1}, "value": "a", "quote": "q"}, "has kind {'a': 1}"),
+        ({"kind": 5, "value": "a", "quote": "q"}, "has kind 5"),
+        ({"value": "a", "quote": "q"}, "has kind None"),
+    ],
+    ids=["list", "dict", "int", "absent"],
+)
+def test_a_claim_kind_that_is_not_a_string_is_refused(claim, expected):
+    """A list or dict kind raised `TypeError: unhashable type` out of this module.
+
+    `kind not in _CLAIM_TYPES` HASHES the key, so the membership test itself was the crash, and
+    it sat before every guard meant to catch a bad kind. The cache's broad `except` turned it
+    into a miss rather than a dead ingest, which is exactly why it survived: the only place the
+    contract visibly broke was `extraction_from_json`, which is exported and tested directly.
+
+    The `absent` case pins the `None` default on the `pop`, which nothing reached either.
+    """
+    from recall.truth_extraction import _serialize
+
+    with pytest.raises(_serialize.ExtractionPayloadInvalid, match=expected):
+        _serialize.extraction_from_json(_payload(claims=[claim]))
+
+
 def test_the_cached_flag_round_trips(tmp_path):
     """`_serialize` promises total equality with no carve outs. `extract.py` overrides `cached`
     at its own read site, so storing a constant here breaks nothing TODAY, and the promise the
@@ -614,6 +649,23 @@ def test_a_failure_that_is_not_sqlites_passes_through_unwrapped(tmp_path, monkey
     with pytest.raises(_Sentinel):
         SqliteExtractionCache(_path(tmp_path))
     assert closed, "the pass-through path leaked its sqlite handle"
+
+
+def test_the_connection_tracker_survives_a_with_block(tmp_path, monkeypatch):
+    """`_TrackedConnection.__enter__` is unreached by production code today.
+
+    Kept anyway, because implicit special method lookup bypasses `__getattr__` and the module
+    plans for `autocommit=False`, where a `with` around a transaction appears. Exercised here so
+    the body is falsifiable rather than dead: it must hand back the WRAPPER, since sqlite3's own
+    `__enter__` returns the connection, and returning that would put the untracked object in the
+    caller's hands and lose the close this class exists to observe.
+    """
+    closed, _ = _track_connections(monkeypatch)
+    conn = sqlite3.connect(tmp_path / "plain.db")
+    with conn as inside:
+        assert inside is conn, "the wrapper handed back the raw connection"
+    inside.close()
+    assert closed, "a close through the context manager went unrecorded"
 
 
 def test_the_connect_timeout_is_the_production_value(tmp_path, monkeypatch):

@@ -26,7 +26,7 @@ is one a test can pin with nothing standing between the assertion and the defect
 from __future__ import annotations
 
 import json
-from typing import Any, cast
+from typing import Any
 
 from recall.truth_extraction.types import (
     ClaimRejection,
@@ -127,11 +127,20 @@ def _claim_from_object(obj: object, *, index: int) -> ExtractedClaim:
         raise ExtractionPayloadInvalid(f"claim {index} is {type(obj).__name__}, not an object")
     body = dict(obj)
     kind = body.pop("kind", None)
-    if kind not in _CLAIM_TYPES:
+    # The type check comes FIRST, and it is not decoration. `kind not in _CLAIM_TYPES` HASHES
+    # the key, so a stored `"kind"` that is a JSON array or object raised
+    # `TypeError: unhashable type` straight out of this function, breaking the one contract this
+    # module has: that a bad payload arrives as `ExtractionPayloadInvalid`. `get` catches
+    # everything, so it degraded to a miss there rather than crashing an ingest, but
+    # `extraction_from_json` is exported and its callers were promised otherwise.
+    if type(kind) is not str or kind not in _CLAIM_TYPES:
         raise ExtractionPayloadInvalid(
             f"claim {index} has kind {kind!r}, not one of {sorted(_CLAIM_TYPES)}"
         )
-    cls = _CLAIM_TYPES[cast(str, kind)]
+    # No `cast` here any more: the `type(kind) is not str` guard above narrows `kind` for mypy,
+    # so the cast the untyped membership test used to need is now redundant and rejected by
+    # `warn_redundant_casts`. A pleasant side effect of guarding for the right reason.
+    cls = _CLAIM_TYPES[kind]
     # No cast on the result: `_CLAIM_TYPES` values are already the four claim classes, so mypy
     # infers the union and a cast here is redundant, which `warn_unused_ignores` reports as an
     # error rather than ignoring.
