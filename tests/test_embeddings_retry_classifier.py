@@ -544,8 +544,14 @@ def test_the_fallback_normalises_every_word_not_just_the_first(message: str) -> 
     Every marker these messages match is capitalised in ALL of its words, which is what makes
     them bite. The shape that would NOT pin it is a message whose MATCHED marker is already
     lowercase in it: `RuntimeError("Connection reset by peer")` matches "reset by peer" with or
-    without the fold, so it proves nothing. "Service Temporarily Unavailable" is the literal HTTP
-    503 reason phrase, so this is the shape a real 503 body arrives in.
+    without the fold, so it proves nothing.
+
+    ⚠️ These four are chosen for their CASING, not for their provenance. An earlier version of
+    this docstring called "Service Temporarily Unavailable" the HTTP 503 reason phrase; it is not
+    (RFC 9110 registers "Service Unavailable"), and the claim was decoration on a case that bites
+    for a different reason entirely. Each string here matters only because every marker inside it
+    is capitalised, so the fold is the only thing that can find it. Do not add a case for where
+    you think a string comes from — add it for how it is spelled.
     """
     exc = RuntimeError(message)
     assert _is_transient(exc) is True
