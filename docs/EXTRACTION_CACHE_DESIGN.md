@@ -235,6 +235,21 @@ which means they were asserted in a comment and by nothing else:
     pass because the fixture was malformed rather than because a guard fired, which is the same
     defect one level up.
 
+Added after a review mutated four guards the list above had never enumerated:
+
+24. A failed COMMIT is rolled back rather than left pending. Without this the next successful
+    `put` commits both, so a row counted in `write_failures`, and reported to the user as not
+    stored, lands in the store anyway.
+25. A refused open closes the connection it made. Asserted on the close CALL, not on unlinking
+    the file: an open handle blocks deletion on Windows and not on POSIX, so a `Path.unlink()`
+    assertion would pass on Linux CI whatever the code did.
+26. A cache under a directory that does not exist yet is created, which is the common first use.
+27. A parent that cannot be created is refused as `ExtractionCacheRefused`, not as a raw OSError.
+28. A parent that is ITSELF a file is refused too, by the connect guard rather than the mkdir
+    one. `Path.exists()` is true for a file, so the shallow case never reaches the mkdir block
+    at all, and a shallow test would have reported property 27 as covered while running none of
+    it.
+
 `tests/test_cli_extract.py` gains: the file is created at PATH; a second run reports hits; a bad
 `--cache` path exits 2 before any engine call. Its existing `--recheck` test, which passes `--cache`
 as a boolean, is updated. Persistence is proven by ENGINE CALLS rather than by the file existing: a
@@ -260,11 +275,18 @@ behaviour is pinned by a test. The mechanism is not stated in the code.
 and CI runs `ruff check` only. No database is needed for any of this.
 
 Every guard is mutated and watched going red before it is claimed to work, and the mutation is run
-from two working directories. This is not a formality: the first mutation run over this boundary
-caught 17 of 25 and left 8 guards unpinned, which is what properties 16 to 23 above were written
-for. One survivor was left alone deliberately: `type(raw[name]) is not want` against `isinstance`
-at the top level is an equivalent mutant, since the two diverge only for `bool` against `int` and
-no top level field is an `int`. A test there would have improved the count while asserting nothing.
+from two working directories. This is not a formality. The first run over this boundary caught 17 of
+25 and left 8 guards unpinned, which is what properties 16 to 23 above were written for. A review
+then mutated four guards that run's LIST had never enumerated, and all four survived, which is
+properties 24 to 28. That is the sharper lesson: mutating the guards you thought of proves only that
+you thought of them, and the three that survived longest were each argued for at length in a comment
+or a docstring.
+
+One survivor is left alone deliberately. `type(raw[name]) is not want` against `isinstance` at the
+top level is an equivalent mutant: `_TOP_LEVEL_SCALARS` holds five `str` fields and one `bool`,
+`bool` has no subclasses, and `json.loads` produces only exact types, so the two forms cannot
+diverge on any input this function can receive. A test there would have improved the count while
+asserting nothing.
 
 The mutation runs from two working directories. One editable install serves roughly eighteen
 worktrees on the development machine: from this worktree `import recall` resolves here, but from any

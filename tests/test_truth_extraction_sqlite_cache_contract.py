@@ -18,6 +18,7 @@ Properties, one test each:
 8. An unserializable value does not abort the ingest and is counted in `write_failures`.
 9. The counters mirror `InMemoryExtractionCache`, so the two are substitutable in a report.
 """
+import contextlib
 import json
 import sqlite3
 
@@ -315,7 +316,12 @@ def test_a_locked_store_is_reported_as_busy_rather_than_as_damage(tmp_path, monk
     real_connect = sqlite3.connect
     # Only the timeout is shortened. The lock, the error and the branch under test are real;
     # at the production 30s this identical test would just take 30 seconds to say the same.
-    monkeypatch.setattr(sqlite3, "connect", lambda p, **k: real_connect(p, timeout=0.1))
+    # Forwards every other keyword rather than dropping it, so the docstring above is true by
+    # construction. Dropping them is harmless against today's single `timeout=` call site and
+    # would silently test a differently configured connection the moment one is added.
+    monkeypatch.setattr(
+        sqlite3, "connect", lambda p, **k: real_connect(p, **{**k, "timeout": 0.1})
+    )
     try:
         with pytest.raises(ExtractionCacheRefused) as exc:
             SqliteExtractionCache(path)
@@ -369,9 +375,19 @@ def test_a_bool_where_an_int_belongs_is_refused(tmp_path):
     unequal to the `1` that was stored, and `recheck` reports that as ENGINE nondeterminism."""
     from recall.truth_extraction import _serialize
 
-    with pytest.raises(_serialize.ExtractionPayloadInvalid):
+    # `match=`, because this test is otherwise not pinned to the REASON it raises. `_checked`
+    # runs its field-set branch before its per-field type branch, so adding a field to
+    # ClaimRejection (with the matching `_FIELDS` entry, which the table test accepts) would
+    # make this dict raise for the wrong reason and the bool guard would go untested again.
+    with pytest.raises(_serialize.ExtractionPayloadInvalid, match="'index' is bool"):
         _serialize.extraction_from_json(
-            _payload(rejections=[{"index": True, "kind": "s", "rung": "json", "reason": "r"}])
+            _payload(
+                rejections=[
+                    {name: True if name == "index" else "x" for name in _serialize._FIELDS[
+                        ClaimRejection
+                    ]}
+                ]
+            )
         )
 
 
@@ -407,3 +423,110 @@ def test_the_cached_flag_round_trips(tmp_path):
 
     entry = _extraction(cached=True)
     assert _serialize.extraction_from_json(_serialize.extraction_to_json(entry)) == entry
+
+
+# A second round, from a review that mutated guards the round above did not enumerate. The
+# lesson is the mutation LIST, not the technique: mutating the guards you thought of proves
+# only that you thought of them. Each of these has a comment or a docstring arguing for it, and
+# each could be deleted with the whole suite staying green.
+
+
+def test_a_failed_commit_is_rolled_back_rather_than_left_pending(tmp_path):
+    """A COMMIT that fails leaves the INSERT pending, so the NEXT successful `put` commits both.
+
+    A row the cache counted in `write_failures`, and told the user was not stored, then lands in
+    the store anyway, depending only on whether another put followed it before the process died.
+    """
+
+    class _CommitFails:
+        """Real connection, failing commit: the INSERT is genuinely pending underneath."""
+
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, *args, **kwargs):
+            return self._real.execute(*args, **kwargs)
+
+        def commit(self):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        def rollback(self):
+            return self._real.rollback()
+
+    with SqliteExtractionCache(_path(tmp_path)) as cache:
+        healthy = cache._conn
+        cache._conn = _CommitFails(healthy)
+        try:
+            cache.put("k1", _extraction(file="doomed.md"))
+            assert cache.write_failures == 1, "the failed write was not counted"
+        finally:
+            cache._conn = healthy
+        cache.put("k2", _extraction(file="fine.md"))
+        assert cache.get("k1") is None, "a write reported as FAILED was committed anyway"
+        assert len(cache) == 1
+
+
+def test_a_refused_open_closes_the_connection_it_made(tmp_path, monkeypatch):
+    """The `connection.close()` on the refusal path, which the module argues for at length.
+
+    Asserted on the close CALL rather than on unlinking the file: an open handle blocks
+    deletion on Windows and not on POSIX, so a `Path.unlink()` assertion would pass on Linux CI
+    whatever the code did, which is the same defect this whole file exists to remove.
+    """
+    path = _path(tmp_path)
+    real_connect = sqlite3.connect
+    with contextlib.closing(real_connect(path)) as raw:
+        raw.execute("CREATE TABLE extraction_entries (id INTEGER PRIMARY KEY, whatever TEXT)")
+        raw.commit()
+
+    closed: list[bool] = []
+
+    class _Tracked:
+        def __init__(self, real):
+            self._real = real
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        def close(self):
+            closed.append(True)
+            self._real.close()
+
+    monkeypatch.setattr(sqlite3, "connect", lambda p, **k: _Tracked(real_connect(p, **k)))
+    with pytest.raises(ExtractionCacheRefused):
+        SqliteExtractionCache(path)
+    assert closed, "the refusal path leaked its sqlite handle"
+
+
+def test_a_cache_under_a_directory_that_does_not_exist_is_created(tmp_path):
+    """`--cache .recall/tx.sqlite3` on a fresh checkout, which is the common first use."""
+    path = tmp_path / "nested" / "deeper" / "tx.sqlite3"
+    with SqliteExtractionCache(path) as cache:
+        cache.put("k1", _extraction())
+        assert cache.get("k1") is not None
+    assert path.exists(), "the parent directory was not created"
+
+
+def test_a_parent_that_cannot_be_created_is_refused_not_a_traceback(tmp_path):
+    """`default_ledger_path` walks straight into a `.recall` name already taken by a file.
+
+    `RejectionLedger` hardened the connect and left the mkdir above it raw, so this escaped as a
+    bare OSError instead of the module's own refusal type. Same shape, same guard, pinned here.
+
+    Nested one level deeper than looks necessary, and the shallow version is why: for
+    `<file>/tx.sqlite3` the parent IS the file, `Path.exists()` on it is True, and the mkdir
+    block is skipped entirely. That path refuses too, but from the connect guard below, so a
+    shallow test would have reported this guard as covered while never running a line of it.
+    """
+    occupied = tmp_path / "notadir"
+    occupied.write_text("", encoding="utf-8", newline="\n")
+    with pytest.raises(ExtractionCacheRefused, match="could not be created"):
+        SqliteExtractionCache(occupied / "sub" / "tx.sqlite3")
+
+
+def test_a_parent_that_is_itself_a_file_is_refused_too(tmp_path):
+    """The shallow case from the docstring above: still refused, by the connect guard."""
+    occupied = tmp_path / "notadir"
+    occupied.write_text("", encoding="utf-8", newline="\n")
+    with pytest.raises(ExtractionCacheRefused, match="could not be opened"):
+        SqliteExtractionCache(occupied / "tx.sqlite3")
