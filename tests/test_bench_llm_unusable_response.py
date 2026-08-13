@@ -253,15 +253,21 @@ def test_non_str_content_is_refused_by_type_rather_than_crashing(
     the "names a Python operation rather than the provider" failure `NoCompletionChoices` exists to
     abolish, reintroduced by the guard meant to remove it.
 
-    `content or ""` used to hand the list back instead, which is no better: the seam is declared to
-    return `str`, so a list would have been scored as an answer or blown up further downstream.
+    `content or ""` used to hand the value back instead, which is no better: the seam is declared
+    to return `str`, so it would have been scored as an answer or blown up further downstream.
+
+    ⚠️ NARROWED. This arm used to script a LIST of text blocks, and a list is no longer refused:
+    it is READ, joined, and returned, because a gateway serialising content as blocks is sending a
+    well formed answer and failing it would blame the system under test for its gateway's
+    encoding. See `tests/test_bench_llm_block_content.py`. A dict exercises the identical
+    `AttributeError` path this arm was written for, so the guard it pins is unchanged.
     """
-    _install_fake_openai(monkeypatch, choices=[_choice([{"type": "text", "text": "hi"}], "stop")])
+    _install_fake_openai(monkeypatch, choices=[_choice({"text": "hi"}, "stop")])
 
     with pytest.raises(EmptyCompletion) as caught:
         _llm().complete("s", "u")
 
-    assert "list" in str(caught.value), "the operator needs the SHAPE that actually came back"
+    assert "dict" in str(caught.value), "the operator needs the SHAPE that actually came back"
 
 
 # --------------------------------------------------------------------------------------------

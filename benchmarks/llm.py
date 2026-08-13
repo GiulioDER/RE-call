@@ -242,6 +242,41 @@ def is_terminal(exc: Exception) -> bool:
     return any(marker in text for marker in _AMBIGUOUS_MARKERS)
 
 
+def _assistant_text(content: object) -> str:
+    """The assistant text in a completion's `message.content`, or `""` when it carries none.
+
+    ⚠️ MIRRORS `recall.truth_extraction._openai_engine._text_of`, and the two are pinned equal by
+    `tests/test_bench_llm_block_content.py::test_both_clients_read_every_block_shape_identically`.
+    Change one and change the other, or that test goes red — which is the point, because a rule
+    duplicated across modules and kept in step by a comment does drift. `is_terminal` in this same
+    file ran with two of three status spellings for an entire branch and nothing went red.
+
+    Mirrored rather than imported on purpose. Importing `_text_of` would make the benchmark client
+    depend on the truth-extraction subsystem, and it does not fit anyway: `_text_of` takes a whole
+    reply and flattens a missing `choices` into `""`, while `_complete_once` has to tell that apart
+    as `NoCompletionChoices` (transient) from empty content (permanent).
+
+    🔑 A LIST of text blocks is READ, not refused, which is the reconciliation. A gateway may
+    serialise `content` as blocks, and that is a well formed answer in a shape the schema permits;
+    refusing it would fail every question of a run and blame the system under test for its
+    gateway's encoding — the same class of measurement error `EmptyCompletion` exists to prevent.
+    Blocks that carry no text contribute nothing, so a genuinely degenerate list still reads as
+    `""` and the caller refuses it.
+
+    What the two clients do with an EMPTY reading still differs, deliberately: `_text_of` returns
+    it, because `_batch_rungs` refuses `""` as a batch rejection a reviewer sees; `_complete_once`
+    raises, because nothing downstream re-reads the answer and `""` was scored.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "") or ""
+            for block in content
+        )
+    return ""
+
+
 def _safe_reason(reason: object) -> str:
     """`reason` rendered for a message that another module substring-matches.
 
@@ -472,8 +507,9 @@ class OpenRouterLLM:
         # from a tool-call stub or a provider bug, and the three want different responses — but
         # only through `_safe_reason`, because the raw value is the provider's text and this
         # message is read by another substring classifier. The raw value rides the exception.
-        if not isinstance(content, str) or not content.strip():
-            shape = "" if content is None or isinstance(content, str) else (
+        answer = _assistant_text(content)
+        if not answer.strip():
+            shape = "" if content is None or isinstance(content, (str, list)) else (
                 f" content came back as {type(content).__name__}, not a string;"
             )
             raise EmptyCompletion(
@@ -483,7 +519,7 @@ class OpenRouterLLM:
                 f"system that had nothing to say.",
                 finish_reason=reason,
             )
-        return content
+        return answer
 
 
 def _usage_cost_usd(usage: object | None) -> float | None:
