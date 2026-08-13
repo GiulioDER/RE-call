@@ -25,7 +25,7 @@ authority, because nothing here reaches corpus metadata; that needs a named huma
 **Determinism, and the honest caveat.** Temperature 0 is not a guarantee from any hosted
 provider. `recheck` exists to MEASURE whether it holds rather than to assume it.
 
-Requires ``pip install recall-rag[extract]``.
+Requires ``pip install "recall-rag[extract]"``.
 """
 
 from __future__ import annotations
@@ -199,7 +199,7 @@ def _client_from_env(source: Mapping[str, str]) -> ChatClient:
         from openai import OpenAI
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ImportError(
-            "the openai extraction engine requires: pip install recall-rag[extract]"
+            'the openai extraction engine requires: pip install "recall-rag[extract]"'
         ) from exc
 
     # Imported here, not at module scope: `recall.embeddings` pulls the embedder stack, and this

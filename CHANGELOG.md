@@ -14,7 +14,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   structured, quoted claims behind a refusing validation ladder. Off unless
   `RECALL_TRUTH_EXTRACTION=1`, runs on the ingest path only, never the query path. The
   extraction engine is a port with two implementations, a deterministic rules reference and an
-  OpenAI compatible model engine (`pip install recall-rag[extract]`); whatever an engine returns
+  OpenAI compatible model engine (`pip install "recall-rag[extract]"`); whatever an engine returns
   clears the same ladder, so a model gains no ability to skip a rung.
 * Added `recall extract run|show`, which reads a corpus and writes nothing, and
   `recall rewrite plan|apply|reject|verify`, which declares reviewed claims in corpus

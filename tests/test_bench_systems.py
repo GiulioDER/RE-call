@@ -919,7 +919,7 @@ def test_the_attribute_path_close_walks_still_exists_in_mem0() -> None:
     """
     spec = importlib.util.find_spec("mem0")
     if spec is None or not spec.origin:
-        pytest.skip("needs the bench extra (pip install recall-rag[bench])")
+        pytest.skip('needs the bench extra (pip install "recall-rag[bench]")')
 
     root = Path(spec.origin).parent
     main = (root / "memory" / "main.py").read_text(encoding="utf-8", errors="ignore")
@@ -1399,7 +1399,7 @@ def test_a_real_openai_402_is_recognised() -> None:
     the second.
     """
     openai = pytest.importorskip(
-        "openai", reason="needs the bench extra (pip install recall-rag[bench])"
+        "openai", reason='needs the bench extra (pip install "recall-rag[bench]")'
     )
     httpx = pytest.importorskip("httpx", reason="openai's transport dep; only missing if it drops it")
 

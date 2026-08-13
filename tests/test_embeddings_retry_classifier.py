@@ -56,7 +56,7 @@ requires_voyage = pytest.mark.skipif(
     reason=(
         f"voyageai present but unimportable: {_voyage_import_error}"
         if _voyage_import_error
-        else "needs the voyage extra (pip install recall-rag[voyage])"
+        else 'needs the voyage extra (pip install "recall-rag[voyage]")'
     ),
 )
 
@@ -132,7 +132,7 @@ def test_the_real_sdk_400_that_was_reported_is_not_retried() -> None:
     thing that would notice if that assumption stopped holding.
     """
     openai = pytest.importorskip(
-        "openai", reason="needs the bench extra (pip install recall-rag[bench])"
+        "openai", reason='needs the bench extra (pip install "recall-rag[bench]")'
     )
     httpx = pytest.importorskip(
         "httpx", reason="openai's transport dep; only missing if it drops it"

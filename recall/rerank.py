@@ -44,7 +44,7 @@ PINNED_RERANKER_SHA256 = "db6ad87969c7dc78320152e68a16118aeb4b2a6f7d8cc979c57f61
 
 
 class CrossEncoderReranker:
-    """Reorder hits by cross-encoder relevance. Requires `pip install recall-rag[rerank]`.
+    """Reorder hits by cross-encoder relevance. Requires `pip install "recall-rag[rerank]"`.
 
     The default model is pinned to a Hub revision; if you supply your own `model`, pin your own
     `revision` too (the default pin belongs to the default model only)."""
@@ -61,7 +61,7 @@ class CrossEncoderReranker:
             from sentence_transformers import CrossEncoder
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError(
-                "CrossEncoderReranker requires: pip install recall-rag[rerank]"
+                'CrossEncoderReranker requires: pip install "recall-rag[rerank]"'
             ) from exc
         if local_files_only:
             if artifact_sha256 is None:
@@ -184,7 +184,7 @@ def late_interaction_licence(
 
 
 class LateInteractionReranker:
-    """Reorder hits by ColBERT style MaxSim. Requires `pip install recall-rag[fastembed]`.
+    """Reorder hits by ColBERT style MaxSim. Requires `pip install "recall-rag[fastembed]"`.
 
     The encoder is INJECTED rather than loaded in `__init__`, mirroring `SpladeEncoder`, so the
     scoring path is testable against fake token matrices without a 0.44 GB download.
@@ -219,7 +219,7 @@ class LateInteractionReranker:
             from fastembed import LateInteractionTextEmbedding
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError(
-                "LateInteractionReranker requires: pip install recall-rag[fastembed]"
+                'LateInteractionReranker requires: pip install "recall-rag[fastembed]"'
             ) from exc
         encoder = LateInteractionTextEmbedding(
             model_name=model_name, cache_dir=cache_dir, threads=threads
