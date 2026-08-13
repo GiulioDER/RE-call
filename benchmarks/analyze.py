@@ -335,7 +335,7 @@ def plot_curve(points: Sequence[Mapping[str, Any]], out_path: Path | str) -> Pat
     except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
         raise RuntimeError(
             "plot_curve needs matplotlib, which ships in the 'eval' extra: "
-            "pip install 'recall-rag[eval]'"
+            'pip install "recall-rag[eval]"'
         ) from exc
 
     matplotlib.use("Agg")

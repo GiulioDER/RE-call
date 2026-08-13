@@ -52,6 +52,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   brackets are a glob: zsh refuses the line with "no matches found" and never runs pip, and bash
   expands it only when a matching file happens to exist, so it worked on some machines and not
   others. README and `recall setup` already quoted it; the ImportError messages did not.
+  One hint used SINGLE quotes, which fails differently and only on Windows: `cmd.exe` does not
+  treat `'` as a quote character, so it passed the apostrophes through and pip answered
+  `Invalid requirement: "'recall-rag[eval]'"`. Every install command in the package now uses one
+  spelling, with double quotes, which is correct in cmd, PowerShell, bash and zsh alike.
 
 ## [0.9.4] (2026-08-12)
 
