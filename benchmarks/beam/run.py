@@ -97,12 +97,17 @@ def _looks_like_refusal(answer: str) -> bool:
     return normalised.startswith(REFUSAL)
 
 
-def _parse_judge(raw: str) -> tuple[float, str]:
+def _parse_judge(raw: str) -> tuple[float | None, str]:
     """Pull ``{"score", "reason"}`` out of the judge's reply.
 
     A judge reply that cannot be parsed is NOT silently scored 0.0 — that would convert a harness
-    failure into evidence against whichever system happened to be judged. It returns a NaN score
-    and the raw text, and the caller counts it as an error that appears in the artifact.
+    failure into evidence against whichever system happened to be judged. It returns None and the
+    raw text, and the caller counts it as an error that appears in the artifact.
+
+    None rather than NaN, and that is a change: `json.dumps` writes NaN as a bare `NaN` token,
+    which is not valid JSON (jq, `JSON.parse` and Postgres jsonb all reject it), and this value
+    goes straight into `nugget_scores` and out to both the sidecar and the artifact. Every reader
+    of the score goes through `is_number`, which excludes None and NaN alike.
     """
     text = raw.strip()
     match = re.search(r"\{.*\}", text, re.DOTALL)
@@ -112,10 +117,10 @@ def _parse_judge(raw: str) -> tuple[float, str]:
             return _clamp(float(obj.get("score", 0.0))), str(obj.get("reason", ""))
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
-    return float("nan"), text[:300]
+    return None, text[:300]
 
 
-def _is_number(score: object) -> bool:
+def is_number(score: object) -> bool:
     """Is `score` a real, finite-enough number to average?
 
     Excludes both NaN (an unparseable judge reply) and None (a judge call that never returned).
@@ -162,13 +167,13 @@ def judge_answer(
             score, reason = None, f"judge call failed: {type(exc).__name__}: {exc}"[:300]
         else:
             score, reason = _parse_judge(raw)
-        if not _is_number(score):
+        if not is_number(score):
             errors += 1
         scores.append({"nugget": nugget, "score": score, "reason": reason})
     # ⚠️ `_is_number`, not `s["score"] == s["score"]`. That NaN test admits None, because
     # `None == None` is True, and `statistics.mean` then raises on it — so the obvious swap of NaN
     # for None above would have turned a degraded nugget into a crash.
-    usable = [s["score"] for s in scores if _is_number(s["score"])]
+    usable = [s["score"] for s in scores if is_number(s["score"])]
     return (statistics.mean(usable) if usable else float("nan")), scores, errors
 
 
@@ -983,9 +988,9 @@ def _main() -> None:
                 "retrieval_empty": (row["memories_evaluated"] or 0) == 0,
                 # Same NaN-to-None rule as `score_question`; `_is_number` rather than a
                 # `mean == mean` NaN test, because that test admits None.
-                "score": mean if _is_number(mean) else None,
+                "score": mean if is_number(mean) else None,
                 "published_score": row["published_score"],
-                "judgment": ("PASS" if mean >= 0.5 else "FAIL") if _is_number(mean) else "ERROR",
+                "judgment": ("PASS" if mean >= 0.5 else "FAIL") if is_number(mean) else "ERROR",
                 "nugget_scores": nuggets,
                 "judge_errors": errors,
             }

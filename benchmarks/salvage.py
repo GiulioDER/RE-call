@@ -307,14 +307,20 @@ def score_missing(
     text_by_id: dict[str, str],
     gold_by_id: dict[str, str],
     sidecar: Path | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Ingest and score only the outstanding questions, appending to a NEW sidecar as we go.
 
     Mirrors `benchmarks.run.main`'s loop — ingest one conversation, score its questions, persist
     before touching the next — because the salvage can crash for exactly the reasons the original
     run did, and a salvage without its own incremental write would need salvaging in turn.
+
+    Returns (records, dropped question ids). The ids are RETURNED rather than only printed: the
+    salvaged artifact carries a `dropped` block, and a caller with no way to fill it published an
+    affirmative `n: 0` over a run that had in fact lost questions. An affirmative zero is worse
+    than an absent key, and not losing paid work silently is this module's entire purpose.
     """
     written: list[dict[str, Any]] = []
+    dropped_all: list[str] = []
     for position, (conv, todo) in enumerate(work):
         sample_id = sample_id_of(conv)
         system.ingest(conv)
@@ -322,6 +328,7 @@ def score_missing(
         # previous version of this line discarded them and nothing downstream could tell a
         # salvaged run that lost questions from one that never had them.
         outcomes, _, dropped = run_arm(system, completer, todo)
+        dropped_all.extend(dropped)
         if dropped:
             print(f"  ! {len(dropped)} question(s) dropped: {', '.join(dropped)}", flush=True)
         records = [_outcome_record(o, text_by_id, gold_by_id) for o in outcomes]
@@ -332,7 +339,7 @@ def score_missing(
             f"  [{position + 1}/{len(work)}] {sample_id}: {len(records)} questions re-scored",
             flush=True,
         )
-    return written
+    return written, dropped_all
 
 
 def _ordered(
@@ -518,8 +525,13 @@ def resume(
     }
 
     rescored: list[dict[str, Any]] = []
+    # Initialised beside `rescored`, because `--merge-only` skips the scoring branch below
+    # entirely and the payload reads this unconditionally.
+    rescore_dropped: list[str] = []
     if system is not None and completer is not None:
-        rescored = score_missing(system, completer, work, text_by_id, gold_by_id, sidecar)
+        rescored, rescore_dropped = score_missing(
+            system, completer, work, text_by_id, gold_by_id, sidecar
+        )
 
     records = _ordered(merge_records([salvaged, rescored]), questions)
     outcomes: list[Outcome] = [to_outcome(record) for record in records]
@@ -537,6 +549,13 @@ def resume(
         # re-scored questions are only a subset — so a token total here would be a lie. Marked
         # unmetered rather than reported as zero.
         {"note": "usage not metered on salvaged runs"},
+        # BY KEYWORD, and passed at all. This call listed ten positional arguments and stopped,
+        # so the new `dropped_question_ids` parameter defaulted to None and every salvaged
+        # artifact published `dropped: {"n": 0}` — including ones where `score_missing` had just
+        # printed the questions it lost. Keywords mean the next parameter cannot be skipped in
+        # silence the way this one was.
+        provider_metadata=None,
+        dropped_question_ids=rescore_dropped,
     )
 
     known_ids = {str(q["question_id"]) for q in questions}

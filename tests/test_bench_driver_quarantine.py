@@ -322,6 +322,48 @@ def test_a_partly_degraded_question_still_averages_over_what_scored() -> None:
     json.dumps(nuggets, allow_nan=False)
 
 
+def test_no_route_leaves_a_bare_nan_in_the_artifact() -> None:
+    """⛔ The first fix converted only the EXCEPTION route and left the older, commoner one.
+
+    `_parse_judge` still returned `float("nan")` for a judge that answers in prose instead of
+    JSON, and that value goes straight into `nugget_scores` and out through `json.dumps`. So the
+    row-level `score` was clean while the nugget it was averaged from was still a bare `NaN`
+    token, and the commit claiming "now None" was true of one path in two.
+    """
+    row = beam.score_question(_question(), [{"text": "m"}], lambda s, u: "an answer",
+                              lambda s, u: "I think yes, probably", cutoff=5)
+
+    json.dumps(row, allow_nan=False)
+    json.loads(json.dumps(row, ensure_ascii=False), parse_constant=_reject_constant)
+    assert row["nugget_scores"][0]["score"] is None
+    assert row["judgment"] == "ERROR", "an unparseable reply is still an error, just a JSON-safe one"
+
+
+def test_a_none_score_is_excluded_by_the_paired_panel() -> None:
+    """⛔ BUG-008's fix landing one module over, in the CLI that produces the PUBLISHED
+    significance panel.
+
+    `benchmarks/beam/pair.py` skipped unscored rows with the `x != x` NaN idiom, and `None != None`
+    is False, so a None row was admitted into `pairs` and then hit
+    `r["score"] >= PASS_THRESHOLD` — `TypeError: '>=' not supported between instances of 'NoneType'
+    and 'float'`. `_is_number` was written for exactly this trap and then applied only inside the
+    module that defined it.
+    """
+    from benchmarks.beam import pair
+
+    def failing(system: str, user: str) -> str:
+        raise EmptyCompletion("no text.")
+
+    bad = beam.score_question(_question(), [{"text": "m"}], lambda s, u: "a", failing, cutoff=5)
+    good = beam.score_question(_question(), [{"text": "m"}], lambda s, u: "a",
+                               lambda s, u: '{"score": 1.0, "reason": "y"}', cutoff=5)
+
+    assert pair.compare([bad], [good])["n_pairs"] == 0, (
+        "an unscored row cannot enter a paired comparison, and must not crash it either"
+    )
+    assert pair.compare([good], [good])["n_pairs"] == 1, "guards the guard: real pairs still pair"
+
+
 def test_a_terminal_error_still_aborts_from_inside_the_nugget_loop() -> None:
     """The carve-out. Degrading a dead account to NaN would fill an artifact with unscored rows
     and report it as a completed run."""
@@ -506,6 +548,88 @@ def test_the_published_artifact_names_the_questions_it_dropped(
     assert "conv-a:0" not in {o["question_id"] for o in payload["outcomes"]}, (
         "the dropped question is genuinely absent from n, which is why it must be named"
     )
+
+
+def test_score_missing_hands_its_dropped_ids_back_to_the_caller() -> None:
+    """⛔ A salvaged artifact published an affirmative `dropped: {"n": 0}` over a run that had just
+    printed the questions it lost.
+
+    `salvage.resume` called `_results_payload` with ten POSITIONAL arguments and stopped, so the
+    new `dropped_question_ids` parameter took its `None` default. `score_missing` collected the ids
+    from `run_arm`'s third element and only printed them, so they existed for one console line and
+    then vanished. An affirmative zero is worse than an absent key, and salvage is the tool whose
+    whole purpose is not losing paid work silently.
+    """
+    from benchmarks.salvage import score_missing
+
+    def completer(system: str, user: str) -> str:
+        if "poison" in user:
+            raise EmptyCompletion("no text.")
+        return "YES" if "Correct?" in user else "500"
+
+    work = [({"sample_id": "conv-a"}, _questions())]
+    records, dropped = score_missing(
+        _Sys(), completer, work, {"a": "poison?", "b": "fine?"}, {"a": "x", "b": "500"}
+    )
+
+    assert dropped == ["a"], "the ids must survive the call, not just the console"
+    assert [r["question_id"] for r in records] == ["b"]
+
+
+def test_the_salvaged_artifact_names_the_questions_it_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """⛔ END TO END THROUGH `salvage.main`, and the THIRD time this exact gap shape appeared.
+
+    Testing `score_missing`'s return value is not testing the artifact. `resume` called
+    `_results_payload` with ten POSITIONAL arguments, so the new keyword defaulted to None and the
+    file published `dropped: {"n": 0}` regardless — the same failure as BUG-006 in `main`, caught
+    the same way, by a mutation that nothing red-flagged because every arm read a return value
+    instead of the file a reader actually opens.
+    """
+    from tests.test_bench_salvage import (
+        _FAKE_KEY as _SALVAGE_KEY,
+        _STEM,
+        _StubSys,
+        _artifact,
+        _conv_a_records,
+        _write_fixture as _salvage_fixture,
+        _write_partial,
+    )
+    from benchmarks import salvage as salvage_module
+
+    stub = _StubSys()
+
+    def _build(arm: str, model: str, openrouter_key: str, k: int, run_id: str) -> Any:
+        return stub
+
+    def _complete(self: Any, system: str, user: str) -> str:
+        # conv-b's question is poisoned; conv-c's still scores, so the run is not a total loss.
+        if "chef" in user or "cook" in user:
+            raise EmptyCompletion("no text (finish_reason=content_filter).")
+        return "YES" if "Correct?" in user else "a fresh answer"
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _SALVAGE_KEY)
+    monkeypatch.setattr(salvage_module, "_build_system", _build)
+    monkeypatch.setattr(salvage_module.OpenRouterLLM, "complete", _complete)
+
+    partial = _write_partial(
+        tmp_path / f"{_STEM}{salvage_module.PARTIAL_SUFFIX}", _conv_a_records()
+    )
+    out = tmp_path / "resumed.json"
+    assert salvage_module.main([
+        "--partial", str(partial), "--arm", "recall",
+        "--data", str(_salvage_fixture(tmp_path)), "--k", "5", "--out", str(out),
+    ]) == 0
+
+    payload = _artifact(out)
+    assert payload["dropped"]["n"] > 0, (
+        "a salvaged run that lost questions must not publish an affirmative zero"
+    )
+    assert payload["dropped"]["question_ids"], "and it has to name them"
+    assert set(payload["dropped"]["question_ids"]).isdisjoint(
+        {o["question_id"] for o in payload["outcomes"]}
+    ), "a dropped question is genuinely absent from n, which is why the block exists"
 
 
 def test_a_terminal_error_aborts_the_locomo_run() -> None:
