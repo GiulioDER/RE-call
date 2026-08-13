@@ -228,14 +228,29 @@ What is known about them:
   so truncation is unlikely. ⚠️ That is an inference from sibling runs, not a measurement of these
   ones, and it must not be quoted as if the check had been run.
 * The scan is cheap once the payload pack from `runs/README.md` is restored. It is
-  `scripts/scan_truncation.py`, it reads `predictions[].text` and needs nothing else, and it exits
-  non-zero on a truncation found OR a file absent, so it can gate a scoring step without letting
-  "never checked" pass as "clean":
+  `scripts/scan_truncation.py`, and it reads `predictions[].text` and needs nothing else:
 
       python results/mtrag_generation/scripts/scan_truncation.py <restored>/taskc_*_official.*.jsonl
 
+  🔑 It reports **CLEAN only when every file was fully read and every row carried an answer**, and
+  exits non-zero otherwise. An absent file, an empty one, a byte-order mark, a line that will not
+  parse, a row with no `predictions`, an answer that is not a string, a truncation at any
+  prediction index rather than the first, a count one token under the ceiling, or a scan that
+  raised: each ends as UNVERIFIED, never as CLEAN. That list is not decoration. Every entry on it
+  was a way the FIRST version of this script silently reported "0 truncated" for rows it had never
+  read, which an audit found before the script had been pointed at anything real.
+
   Its detector is live rather than assumed: run it with `--ceiling 200` against `taskb` and it
-  finds rows, so the zero at 512 is a measurement and not a dead check.
+  finds rows and exits 1, so the zero at 512 is a measurement and not a dead check. That claim is
+  itself checked, by `scripts/check_scan_truncation.py`, a 17-case matrix covering every false
+  clean above plus the liveness run. Run it after any edit to the scanner:
+
+      python results/mtrag_generation/scripts/check_scan_truncation.py --corpus <a real .jsonl>
+
+  Each case asserts the VERDICT, not just a non-zero exit, because several of them exit non-zero
+  either way: a byte-order mark that hides an over-ceiling first row exits 1 as UNVERIFIED, so a
+  case demanding only "not clean" passes whether the row was read or dropped. Six mutations of the
+  scanner, one per mechanism, each turn exactly one case red.
 
 Two further limits on the four rows that WERE scanned, stated so the audit is not read as stronger
 than it is:
@@ -246,8 +261,10 @@ than it is:
   re-gzipping does not reproduce a byte-identical container, so the comparison is inconclusive in
   both directions rather than negative.
 * `taskb.algorithmic.jsonl` survives only as 329 of 842 records with the last one cut off
-  mid-write. That is an interrupted write of a derived artifact, not a truncated answer; its 329
-  records are clean.
+  mid-write. That is an interrupted write of a derived artifact, not a truncated answer. No
+  truncation appears in the 329 records that could be read, and the scan still reports the file
+  UNVERIFIED, which is correct: the other 513 were never read. It carries the same predictions as
+  `taskb`, which was read in full, so nothing is lost by it.
 
 ## Pending
 
