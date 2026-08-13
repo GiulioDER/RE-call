@@ -98,7 +98,16 @@ def _is_transient(exc: Exception) -> bool:
         # arbitrary exception runs ITS ``__str__``, which is free to raise — and a body that was
         # never decoded is a realistic way for that to happen. The class name alone still gives
         # the markers something to match on.
-        text = type(exc).__name__.lower()
+        try:
+            text = type(exc).__name__.lower()
+        except Exception:  # noqa: BLE001 - nested, because the fallback can raise too
+            # ``__name__`` resolves through the METACLASS, where a `@property` is a data
+            # descriptor that beats ``type.__name__``. Unnested, this line sits inside the
+            # handler and its exception escapes `_is_transient` — the very outcome the outer
+            # guard exists to stop, one line further down. Empty text classifies as permanent,
+            # which fails fast rather than resending, and is the safe direction for an object
+            # this hostile.
+            text = ""
     markers = (
         "429", " 500", " 502", " 503", " 504", "rate limit", "too many requests",
         "timeout", "timed out", "temporarily", "connection", "reset by peer", "unavailable",

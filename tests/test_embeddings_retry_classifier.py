@@ -17,6 +17,16 @@ import pytest
 
 from recall.embeddings import _is_transient, retry_with_backoff
 
+#: Module scope, matching `test_embeddings_retry_after`: `voyageai` drags `transformers` in
+#: behind it and takes ~75s cold, which is most of the 120s per-test timeout. An `importorskip`
+#: INSIDE a test bills that import to the test and times it out on a cold cache; collection is
+#: not clocked, so paying it here is free. Observed, not theorised — the test below timed out
+#: exactly once this way before the import was moved.
+try:
+    import voyageai.error
+except ImportError:  # pragma: no cover - exercised only without the extra
+    voyageai = None  # type: ignore[assignment]
+
 
 class _StatusError(Exception):
     """An SDK-shaped error: a transport status alongside a human message.
@@ -341,9 +351,9 @@ def test_the_real_voyage_errors_reach_the_numeric_branch() -> None:
     voyageai renamed `http_status`. Both wordings are deliberately ones the text markers do NOT
     match, so a pass here means the numeric branch answered.
     """
-    voyageai_error = pytest.importorskip(
-        "voyageai.error", reason="needs the voyage extra (pip install recall[voyage])"
-    )
+    if voyageai is None:
+        pytest.skip("needs the voyage extra (pip install recall[voyage])")
+    voyageai_error = voyageai.error
 
     server = voyageai_error.ServerError(
         "the server failed to process the request.", http_status=500
@@ -387,8 +397,12 @@ def test_a_status_attribute_that_raises_does_not_take_the_retry_down_with_it() -
     assert _attempts_used(exc) == 3
 
 
-class _HostileStrError(Exception):
-    """An error whose `__str__` raises. A body that was never decoded is one real way to get one."""
+class _HostileTimeoutError(Exception):
+    """An error whose `__str__` raises. A body that was never decoded is one real way to get one.
+
+    The CLASS NAME carries the marker "timeout", which is the whole point: it makes the test able
+    to tell "fell back to the class name" apart from "fell back to nothing".
+    """
 
     def __str__(self) -> str:
         raise RuntimeError("the response body has not been decoded")
@@ -402,10 +416,46 @@ def test_an_exception_whose_str_raises_does_not_take_the_retry_down_with_it() ->
     formatting would have left the same failure one line further down: the provider's error
     demoted to `__context__` while the run dies reporting someone else's bug.
 
-    The class name alone still carries a marker here, so the correct outcome is an ordinary
-    transient verdict. The formatting failing should be invisible, not fatal.
+    Asserting TRANSIENT, not merely "did not raise". The class name carries "timeout", so a
+    correct fallback still classifies. Asserting only that no exception escaped would leave the
+    fallback's CONTENT unpinned: `text = ""` would satisfy it while silently retracting the
+    comment beside it that says the class name gives the markers something to match on.
     """
-    exc = _HostileStrError()
+    exc = _HostileTimeoutError()
 
-    assert _is_transient(exc) is False  # no marker in "_hostilestrerror"
+    assert _is_transient(exc) is True
+    assert _attempts_used(exc, attempts=3) == 3
+
+
+class _HostileNameMeta(type):
+    """A metaclass whose `__name__` raises, which a plain `class` statement cannot express."""
+
+    @property
+    def __name__(cls) -> str:  # noqa: N805 - the receiver IS the class here
+        raise RuntimeError("hostile __name__")
+
+
+class _HostileEverythingError(Exception, metaclass=_HostileNameMeta):
+    """Both doors hostile: `__str__` raises, and so does the class name the fallback reads."""
+
+    def __str__(self) -> str:
+        raise RuntimeError("the response body has not been decoded")
+
+
+def test_a_class_whose_name_also_raises_does_not_escape_the_classifier() -> None:
+    """The fallback of the fallback. `type(exc).__name__` is not the safe harbour it looks like.
+
+    `__name__` on a class resolves through the METACLASS, where a `@property` is a data
+    descriptor that beats `type.__name__`. Un-nested, the recovery line sits inside the handler,
+    so its own exception escapes `_is_transient` and produces exactly what the outer guard was
+    written to stop: the provider's error demoted to `__context__` while the run reports someone
+    else's bug.
+
+    Exotic, and cheap to close. Permanent is the right verdict for an object this hostile: with
+    no readable status and no readable text there is no evidence of a transient failure, and
+    failing fast beats resending a payload blind.
+    """
+    exc = _HostileEverythingError()
+
+    assert _is_transient(exc) is False
     assert _attempts_used(exc, attempts=3) == 1
