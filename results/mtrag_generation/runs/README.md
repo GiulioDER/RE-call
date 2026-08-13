@@ -11,9 +11,27 @@
 > `[[incident-mtrag-raw-vs-conditioned-metric-comparison-2026-08-09]]`.
 
 Every artifact from the six generation runs is listed in `SHA256SUMS.txt`. The raw payloads and
-logs are archived outside the source tree; restore that archive beside this README before replaying
-the commands below. The files were written on the machine that produced them and checked again after
-transfer (48/48 clean).
+logs are not in the CURRENT tree; restore them beside this README before replaying the commands
+below. The files were written on the machine that produced them and checked again after transfer
+(48/48 clean).
+
+## 🔑 Restoring them: they are in this repository's history
+
+They were committed once, and `f83a330` ("Externalize raw benchmark artifacts") removed them, so
+every blob is still reachable from its parent. No bucket, no release asset, no external copy is
+needed:
+
+    git show f83a330^:results/mtrag_generation/runs/taskc_recall_official.predictions.jsonl.gz > taskc_recall_official.predictions.jsonl.gz
+    git ls-tree --name-only f83a330^ results/mtrag_generation/runs/   # everything available
+
+Then verify what you restored against `SHA256SUMS.txt` before reading it, which is what that file
+is for. Confirmed on 2026-08-13: all six `predictions` layers and all five layers of both official
+Task C runs restore and match, and the truncation scan over them is recorded in `../RESULTS.md`.
+
+⚠️ This sentence exists because its absence cost real time. Reading "archived outside the source
+tree", I searched three drives for a pack that was in `git log` the whole way, and reported it
+missing. **"Not in the working tree" and "not in the repository" are different claims**, and only
+the first one was ever true here.
 
 ## Why the payloads are not committed
 
@@ -27,6 +45,12 @@ logs belong in release assets or a dataset bucket. A restored archive is still v
 
 **A hash proves an artifact is unchanged. It does not keep the artifact alive.** An artifact whose
 only copy is a temp directory is not archived, however well its provenance is documented.
+
+That principle stands, and history turned out to be the durable copy it was reaching for: removing
+the files from the tree did not remove them from the repository, so `git clone` still carries them
+and the loss risk this section worried about never materialised. If they are ever moved to a bucket
+or a release asset for real, say so here WITH the location, and keep the `f83a330^` path above as
+the fallback.
 
 ## The six runs
 

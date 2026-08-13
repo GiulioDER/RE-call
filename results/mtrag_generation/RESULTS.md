@@ -209,26 +209,46 @@ carries exactly 512 completion tokens, and the only edge case is the trailing wh
 | `taskb_official` (gold, official) | 842 | 99.1 | 169 | 239 | **0** |
 | `taskc_benchmark` (benchmark-retrieved, abstain) | 842 | 66.4 | 157 | 304 | **0** |
 | `taskc_recall` (RE-call-retrieved, abstain) | 842 | 78.0 | 194 | 402 | **0** |
+| `taskc_benchmark_official` (benchmark-retrieved, official) | 842 | 97.5 | 169 | 233 | **0** |
+| `taskc_recall_official` (RE-call-retrieved, official) | 842 | 101.2 | 176 | 311 | **0** |
 
-Nothing came within 12 tokens of the ceiling. The longest answer anywhere in the recoverable set is
-402 tokens, 110 below the limit, and the independent punctuation check agrees: the three answers of
-3,368 that end without terminal punctuation are all short ones. **The numbers reported above for
-these four runs need no truncation caveat.**
+**All six runs are clean.** Nothing came within 12 tokens of the ceiling. The longest answer
+anywhere is 402 tokens, 110 below the limit, and the independent punctuation check agrees: the three
+answers of 5,052 that end without terminal punctuation are all short ones. **No number in this
+document needs a truncation caveat.**
 
-### ⛔ The gap: neither official-prompt Task C run has been checked
+### ✅ The gap, and how it closed
 
-`taskc_benchmark_official` and `taskc_recall_official` have **no recoverable rows on the machine
-that produced them**, so they are UNVERIFIED, not clean. That is the pair this document calls the
-comparison that actually measures RE-call, so it is the worst possible pair to be missing.
+The two official-prompt Task C runs were UNVERIFIED for a while, and they are the pair this document
+calls the comparison that actually measures RE-call, so the gap was on the worst possible pair. It
+is recorded here rather than quietly deleted, because how it closed is the reusable part.
 
-What is known about them:
+I reported that the payloads were "not on this disk" after searching for them. That was wrong twice
+over, and both mistakes are ordinary ones:
 
-* Their nearest neighbours are clean with wide margins, and the official prompt produced the
-  tightest length distribution of the four (max 239 on Task B against 330 for the abstain prompt),
-  so truncation is unlikely. ⚠️ That is an inference from sibling runs, not a measurement of these
-  ones, and it must not be quoted as if the check had been run.
-* The scan is cheap once the payload pack from `runs/README.md` is restored. It is
-  `scripts/scan_truncation.py`, and it reads `predictions[].text` and needs nothing else:
+* The search required `mtrag` in the FILENAME. The pack's files are named `taskb_*` and `taskc_*`,
+  so it could not have found them however long it ran. ⚠️ A search that cannot match is not
+  evidence of absence, and it reports exactly like one that found nothing.
+* It never occurred to me to look in git HISTORY for files a commit had deleted. `runs/README.md`
+  says the payloads live "outside the source tree", which is true of the current tree and hides
+  that they were committed before `f83a330` ("Externalize raw benchmark artifacts") removed them.
+  **The archive was in the repository the whole time.**
+
+Restored with `git show f83a330^:results/mtrag_generation/runs/<file>` and verified against
+`runs/SHA256SUMS.txt`: **10 of 10 files match**, which is the check that separates the real archive
+from a plausible lookalike, and is what that file exists for. All five layers of each run
+(`predictions`, `scoring`, `scored`, `algorithmic`, `fixed`) scan identically, as they should, since
+they carry the same predictions.
+
+Superseded, and kept because the reasoning was published: I argued the pair was probably clean
+because its nearest neighbours were, and because the official prompt produced the tightest length
+distribution. That inference held. ⚠️ It was still an inference, it was labelled as one, and it is
+now a measurement. The margins are wider than the ones it reasoned from: 233 and 311 tokens against
+a 512 ceiling.
+#### The command, and why its flags are not ceremony
+
+The scan is `scripts/scan_truncation.py`. It reads `predictions[].text` and needs nothing else.
+This is the invocation that produced the two rows above, against the restored pack:
 
       python results/mtrag_generation/scripts/scan_truncation.py --expect taskc_benchmark_official,taskc_recall_official --expect-rows 842 <restored>/taskc_*_official.predictions.jsonl
 
@@ -306,19 +326,18 @@ What is known about them:
   one token, drifting the default tokenizer or the default ceiling, letting a readable prediction
   vouch for an unreadable sibling, and accepting a `--expect` that names no run at all.
 
-Two further limits on the four rows that WERE scanned, stated so the audit is not read as stronger
-than it is:
+#### Provenance
 
-* They come from leftover intermediates on the production machine, not from the checksummed
-  archive, which is not on that disk. Row counts (842) and task ids match the manifests, but they
-  could not be matched against `runs/SHA256SUMS.txt`: those hashes cover gzipped files, and
-  re-gzipping does not reproduce a byte-identical container, so the comparison is inconclusive in
-  both directions rather than negative.
-* `taskb.algorithmic.jsonl` survives only as 329 of 842 records with the last one cut off
-  mid-write. That is an interrupted write of a derived artifact, not a truncated answer. No
-  truncation appears in the 329 records that could be read, and the scan still reports the file
-  UNVERIFIED, which is correct: the other 513 were never read. It carries the same predictions as
-  `taskb`, which was read in full, so nothing is lost by it.
+Every one of the six rows above was measured on a file restored from `f83a330^` and matched
+against `runs/SHA256SUMS.txt` before it was read: **6 of 6 predictions layers verified, 0
+mismatched**, and for the two official Task C runs all five layers each, 10 of 10.
+
+An earlier version of this section carried a caveat that the four abstain-prompt and Task B rows
+came from leftover intermediates in a temp directory rather than the checksummed archive, and could
+not be matched against it because re-gzipping does not reproduce a byte-identical container. That
+caveat is retired, and usefully so: re-measuring from the verified archive reproduced those four
+rows exactly, to every digit of mean, p50, p95 and max. The leftovers were faithful, which was
+worth confirming rather than assuming.
 
 ## Pending
 
@@ -331,5 +350,6 @@ Awaiting one GPU session (three algorithmic passes, ~8 min each) then the LLM ju
 the contexts differ. It needs no baseline table to be meaningful, and it is the only row in this
 document where RE-call is the variable.
 
-⚠️ Both halves of that pair are also the two runs the truncation audit above could not check. When
-their payloads are restored, scan them before scoring anything on them.
+✅ Both halves of that pair were the two runs the truncation audit could not reach, and both are now
+measured clean: 233 and 311 tokens at the longest, against a 512 ceiling. Nothing in that comparison
+is waiting on a truncation check.
