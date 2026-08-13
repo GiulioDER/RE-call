@@ -64,7 +64,19 @@ class EmptyCompletion(RuntimeError):
     Classified permanent. A filter fires on the PROMPT, and the prompt is byte-identical on every
     attempt, so the three extra calls buy the same refusal at the same price. Refusals also land on
     particular questions rather than on whole runs, so nothing upstream caps them.
+
+    ⛔ The raw `finish_reason` is carried as an ATTRIBUTE and kept out of the message. It is chosen
+    by the provider, and `benchmarks/beam/run.py:_is_terminal` substring-matches the rendered
+    exception against markers including "402" and "401", where a hit aborts the whole run instead
+    of dropping one question. Classifying by type below removes that hazard from `_is_transient`
+    and would have left it untouched one layer up, which is the same mistake in a different place.
     """
+
+    def __init__(self, message: str, *, finish_reason: object = None) -> None:
+        super().__init__(message)
+        #: Kept off `args`, so it never reaches `str(self)` and no substring classifier can read
+        #: it. Anything that genuinely wants the provider's word reads this instead.
+        self.finish_reason = finish_reason
 
 
 class NoCompletionChoices(RuntimeError):
@@ -98,6 +110,22 @@ PERMANENT_ERRORS: tuple[type[Exception], ...] = (CompletionTruncated, EmptyCompl
 #: returns False for an exception carrying no numeric status and no marker word, which is exactly
 #: what `NoCompletionChoices` is, so omitting it would silently make it fail fast.
 TRANSIENT_ERRORS: tuple[type[Exception], ...] = (NoCompletionChoices,)
+
+#: The values the OpenAI wire format actually defines for `finish_reason`. Anything else is text
+#: the provider chose, and only these are safe to render into an exception message: see
+#: `EmptyCompletion`, and `benchmarks/beam/run.py:_is_terminal`, which substring-matches that
+#: message against markers where a hit aborts an entire run.
+KNOWN_FINISH_REASONS = frozenset({"stop", "length", "content_filter", "tool_calls", "function_call"})
+
+
+def _safe_reason(reason: object) -> str:
+    """`reason` rendered for a message that another module substring-matches.
+
+    A known value is passed through, because it is the field that tells a filter refusal apart from
+    a tool-call stub and the operator needs it. Anything else is reported as unrecognised, with the
+    real value left on `EmptyCompletion.finish_reason` rather than discarded.
+    """
+    return reason if isinstance(reason, str) and reason in KNOWN_FINISH_REASONS else "unrecognised"
 
 
 def _classify(exc: Exception) -> bool:
@@ -267,24 +295,34 @@ class OpenRouterLLM:
                 f"completion hit max_tokens={self.max_tokens} and was cut off. Raise max_tokens "
                 f"(benchmarks.llm.DEFAULT_MAX_TOKENS) — do NOT score this answer."
             )
-        # Annotated rather than inferred: `resp` is `Any` out of the lazily imported SDK, so the
-        # unannotated read made this function return `Any` from a signature declaring `str`, which
-        # the typecheck job rejects. The annotation is also what lets the guard below narrow the
-        # `None` away, so the `return` is a genuine `str` rather than a silenced one.
-        content: str | None = choice.message.content
+        # `object`, not `str | None`. The SDK types this `Optional[str]` but builds its response
+        # models WITHOUT validating, so a non-conforming body (a list of content parts, say) passes
+        # straight through, and annotating the narrower type would be a lie that `.strip()` then
+        # pays for with `AttributeError: 'list' object has no attribute 'strip'` — a message naming
+        # a Python operation rather than the provider, which is what `NoCompletionChoices` exists
+        # to abolish. Narrowing by `isinstance` below is also what makes the `return` a genuine
+        # `str`, rather than the `Any` a bare read leaks out of a signature declaring `str`.
+        content: object = choice.message.content
         # Emptiness is decided on the STRIPPED text but the value handed back is untouched.
         # `generate_one` returns `.strip()`ed text because a stripped string is what it writes to a
         # submission; this is the `Completer` seam feeding arbitrary consumers, so stripping here
         # would silently change what every existing caller receives. Whitespace-only content is
         # still as unscorable as `None`, and `content or ""` returned both as `""`.
         #
-        # `finish_reason` is named because it is the only field that tells a filter refusal apart
-        # from a tool-call stub or a provider bug, and the three want different responses.
-        if not content or not content.strip():
+        # The finish reason is named because it is the only field telling a filter refusal apart
+        # from a tool-call stub or a provider bug, and the three want different responses — but
+        # only through `_safe_reason`, because the raw value is the provider's text and this
+        # message is read by another substring classifier. The raw value rides the exception.
+        if not isinstance(content, str) or not content.strip():
+            shape = "" if content is None or isinstance(content, str) else (
+                f" content came back as {type(content).__name__}, not a string;"
+            )
             raise EmptyCompletion(
-                f"the provider returned a completion with no text (finish_reason={reason!r}), so "
-                f"there is no answer. Returning it would put an unscorable empty string where a "
-                f"judge cannot tell it apart from a system that had nothing to say."
+                f"the provider returned a completion with no usable text "
+                f"(finish_reason={_safe_reason(reason)}).{shape} There is no answer. Returning it "
+                f"would put an unscorable empty string where a judge cannot tell it apart from a "
+                f"system that had nothing to say.",
+                finish_reason=reason,
             )
         return content
 

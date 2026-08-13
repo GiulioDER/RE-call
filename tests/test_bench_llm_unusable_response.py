@@ -106,13 +106,16 @@ def _install_fake_openai(
 
 
 def _choice(
-    content: str | None, finish_reason: str | None = "stop", *, carry_reason: bool = True
+    content: object, finish_reason: str | None = "stop", *, carry_reason: bool = True
 ) -> object:
     """One `choices[0]` in the SDK's shape.
 
     `content=None` is the real wire shape for a filtered completion: the key is present and null,
     not absent. `carry_reason=False` omits `finish_reason` entirely, which is how a provider that
     does not send the field looks, and how the fakes in `test_bench_llm.py` are built.
+
+    `content` is `object` rather than `str | None` because the SDK does not validate the field and
+    one arm deliberately scripts a list of content parts, which is the shape that used to crash.
     """
     attrs: dict[str, object] = {"message": types.SimpleNamespace(content=content)}
     if carry_reason:
@@ -204,6 +207,61 @@ def test_the_empty_answer_is_classified_permanent_by_type(monkeypatch: pytest.Mo
         _llm().complete("s", "u")
 
     assert len(calls) == 1, "a provider-supplied marker word must not reclassify our own error"
+
+
+def test_an_unrecognised_finish_reason_cannot_reach_a_substring_classifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ The first version of this fix interpolated `finish_reason` raw, and that was the very
+    mistake the module docstring accuses the message-based route of.
+
+    `finish_reason` is chosen by the PROVIDER, and `benchmarks/beam/run.py:_is_terminal` substring
+    matches the rendered exception against `_TERMINAL_MARKERS` ("402", "401", "insufficient_quota",
+    "requires more credits"). A terminal verdict is not one dropped question: `_run_pool` raises
+    `RunAborted` and cancels every remaining one. So a provider echoing an upstream `402` into
+    `finish_reason` could end a 1,986-question run, and classifying by TYPE one layer down bought
+    nothing while the same string still fed a second classifier one layer up.
+    """
+    from benchmarks.beam.run import _is_terminal
+
+    _install_fake_openai(monkeypatch, choices=[_choice(None, "upstream 402 refused")])
+
+    with pytest.raises(EmptyCompletion) as caught:
+        _llm().complete("s", "u")
+
+    assert not _is_terminal(caught.value), "a provider string must not be able to abort a run"
+    assert "402" not in str(caught.value)
+
+
+def test_the_raw_finish_reason_survives_on_the_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Withheld from the MESSAGE, not thrown away. The unrecognised value is the one an operator
+    most needs, so it moves to an attribute, where nothing substring-matches it."""
+    _install_fake_openai(monkeypatch, choices=[_choice(None, "upstream 402 refused")])
+
+    with pytest.raises(EmptyCompletion) as caught:
+        _llm().complete("s", "u")
+
+    assert caught.value.finish_reason == "upstream 402 refused"
+
+
+def test_non_str_content_is_refused_by_type_rather_than_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`message.content` is typed `Optional[str]` but openai-python builds response models without
+    validating, so a non-conforming body passes straight through. `not content.strip()` then raised
+    `AttributeError: 'list' object has no attribute 'strip'` from inside `_complete_once` — exactly
+    the "names a Python operation rather than the provider" failure `NoCompletionChoices` exists to
+    abolish, reintroduced by the guard meant to remove it.
+
+    `content or ""` used to hand the list back instead, which is no better: the seam is declared to
+    return `str`, so a list would have been scored as an answer or blown up further downstream.
+    """
+    _install_fake_openai(monkeypatch, choices=[_choice([{"type": "text", "text": "hi"}], "stop")])
+
+    with pytest.raises(EmptyCompletion) as caught:
+        _llm().complete("s", "u")
+
+    assert "list" in str(caught.value), "the operator needs the SHAPE that actually came back"
 
 
 # --------------------------------------------------------------------------------------------
