@@ -42,13 +42,19 @@ try:
     import voyageai.error as voyage_error
 except Exception as exc:  # pragma: no cover - the extra is absent in CI by design
     voyage_error = None
-    _voyage_import_error = repr(exc)
+    # `exc.name`, NOT a substring of the message. Only one shape of failure means "the extra is
+    # not installed", and the text cannot identify it: a chain that dies on a missing
+    # sub-dependency says `No module named 'torch'`, and a half-installed package says
+    # `No module named 'voyageai.error'`. Both would read as absence and send the reader to
+    # install what is already installed. `exc.name` is 'voyageai' for absence alone.
+    if not (isinstance(exc, ModuleNotFoundError) and exc.name == "voyageai"):
+        _voyage_import_error = repr(exc)
 
 requires_voyage = pytest.mark.skipif(
     voyage_error is None,
     reason=(
         f"voyageai present but unimportable: {_voyage_import_error}"
-        if _voyage_import_error and "No module named" not in _voyage_import_error
+        if _voyage_import_error
         else "needs the voyage extra (pip install recall-rag[voyage])"
     ),
 )
