@@ -129,7 +129,12 @@ class OpenRouterLLM:
         from openai import OpenAI  # lazy: only needed at real run time
 
         if self._client is None:
-            self._client = OpenAI(api_key=self._api_key, base_url=self.base_url)
+            # `max_retries=0` because `retry_with_backoff` in `complete` owns the retry policy.
+            # The SDK default is 2 retries, so leaving it on multiplies the two layers: one 429
+            # costs 4 x 3 = 12 requests rather than the 4 `max_attempts` asks for, and the outer
+            # full-jitter backoff (which exists so a fleet does not remarch onto the provider in
+            # lockstep) ends up wrapping an inner loop that has no jitter at all.
+            self._client = OpenAI(api_key=self._api_key, base_url=self.base_url, max_retries=0)
         extra = {} if self.max_tokens is None else {"max_tokens": self.max_tokens}
         started = time.perf_counter()
         resp = self._client.chat.completions.create(  # type: ignore[union-attr]
