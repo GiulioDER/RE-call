@@ -58,11 +58,26 @@ def tokens(n: int) -> str:
     return out
 
 
-def run(*paths: object, ceiling: int = 512, extra: list[str] | None = None) -> tuple[int, str, dict]:
-    """Returns (exit code, output, {filename: verdict}) with the verdict block parsed."""
+def run(*paths: object, ceiling: int | None = 512,
+        extra: list[str] | None = None) -> tuple[int, str, dict]:
+    """Returns (exit code, output, {filename: verdict}) with the verdict block parsed.
+
+    `--expect` is derived from the paths' own stems unless the caller supplies one, so each case
+    still measures the thing it is named for rather than the coverage rule. Cases that test the
+    coverage rule pass `extra` explicitly and that wins. `ceiling=None` omits `--ceiling`, which
+    is the only way to exercise the scanner's DEFAULT: every other call passes it, so a drifting
+    default was invisible to the whole matrix while the documented command relies on it.
+    """
+    extra = list(extra or [])
+    args = [str(p) for p in paths]
+    if not any(a == "--expect" for a in extra):
+        stems = sorted({pathlib.Path(a).name.split(".")[0] for a in args
+                        if not any(ch in a for ch in "*?[")})
+        if stems:
+            extra += ["--expect", ",".join(stems)]
     proc = subprocess.run(
-        [sys.executable, str(SCRIPT), "--ceiling", str(ceiling), *(extra or []),
-         *[str(p) for p in paths]],
+        [sys.executable, str(SCRIPT),
+         *(["--ceiling", str(ceiling)] if ceiling is not None else []), *extra, *args],
         capture_output=True, text=True, encoding=CHILD_ENCODING, errors="replace",
         env={**os.environ, "PYTHONIOENCODING": CHILD_ENCODING},
     )
@@ -192,6 +207,11 @@ def main(argv: list[str] | None = None) -> int:
             ("each file gets its own verdict",
              [write("bad.jsonl", "not json\n"), write("good.jsonl", row(fine) + "\n")], 1,
              {"bad.jsonl": UNVERIFIED, "good.jsonl": CLEAN}),
+            # The same pair in the OPPOSITE order. Without it, a scanner that only inspects
+            # reports[0] passes every case while certifying a truncated second file.
+            ("a finding in the SECOND file is not clean",
+             [write("good2.jsonl", row(fine) + "\n"), write("bad2.jsonl", row(over) + "\n")], 1,
+             {"good2.jsonl": CLEAN, "bad2.jsonl": FOUND}),
         ]
 
         for name, paths, expected, wanted in cases:
@@ -241,23 +261,32 @@ def main(argv: list[str] | None = None) -> int:
         if not ok:
             failures.append(f"the unreadable-prediction counter does not accumulate\n{out[-400:]}")
 
-        # A wildcard must not quietly decide what CLEAN is a statement about.
-        (here / "g1.jsonl").write_text(row(fine) + "\n", encoding="utf-8")
-        (here / "g2.jsonl").write_text(row(fine) + "\n", encoding="utf-8")
-        pattern = str(here / "g?.jsonl")
+        # A wildcard must not quietly decide what CLEAN is a statement about. The unit is RUNS, and
+        # a run restores several layers, so these fixtures mimic that shape: runA has two layers,
+        # runB has one, and a pattern can match all of runA while runB is absent entirely.
+        (here / "runA.predictions.jsonl").write_text(row(fine) + "\n", encoding="utf-8")
+        (here / "runA.scoring.jsonl").write_text(row(fine) + "\n", encoding="utf-8")
+        (here / "runB.predictions.jsonl").write_text(row(fine) + "\n", encoding="utf-8")
+        both = str(here / "run?.predictions.jsonl")
+        only_a = str(here / "runA.*.jsonl")
         for label, args_extra, want_code, target, must_say in [
-            ("a pattern matching both files with --expect 2 is clean",
-             ["--expect", "2"], 0, None, "2 file(s)"),
-            ("a pattern without --expect cannot certify", [], 1, None, "--expect"),
-            ("a pattern matching fewer than --expect fails", ["--expect", "3"], 1, None, "--expect 3"),
+            ("a pattern covering both runs is clean",
+             ["--expect", "runA,runB"], 0, both, "runs covered: runA, runB"),
+            ("a pattern without --expect cannot certify", [], 1, both, "--expect"),
+            # ⛔ The round-4 defect, pinned. Two files, both CLEAN, both from ONE run: a COUNT of
+            # two is satisfied while the other run is never named. Only a coverage check by name
+            # can fail this, which is why --expect takes stems.
+            ("two layers of ONE run cannot stand for two runs",
+             ["--expect", "runA,runB"], 1, only_a, "no file was scanned for runB"),
+            ("the run stems covered are always reported", [], 1, only_a, "runs covered: runA"),
             # `must_say` matters here: a pattern matching nothing exits 1 under the fallback (the
             # pattern is kept and reported ABSENT) AND under a scanner that drops the fallback and
             # scans nothing at all. Only the text tells those two apart, and the second is a
             # scanner that certifies an empty universe.
             ("a pattern matching nothing is reported ABSENT",
-             ["--expect", "2"], 1, str(here / "nothing_*.jsonl"), "ABSENT"),
+             ["--expect", "runA,runB"], 1, str(here / "nothing_*.jsonl"), "ABSENT"),
         ]:
-            code, out, _ = run(target or pattern, extra=args_extra)
+            code, out, _ = run(target, extra=args_extra)
             ok = code == want_code and must_say in out
             print(f"[{'ok  ' if ok else 'FAIL'}] exit {code} (want {want_code}) "
                   f"{'' if must_say in out else f'NO {must_say!r} IN OUTPUT '}{label}")
@@ -272,6 +301,39 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[{'ok  ' if ok else 'FAIL'}] default encoding is o200k_base (gpt-4o)")
         if not ok:
             failures.append("the default encoding is no longer o200k_base")
+
+        # The DEFAULT ceiling has the same property and had no assertion: every other call passes
+        # --ceiling, so raising the default to 4096 left the whole matrix green while the command
+        # RESULTS.md publishes, which passes no --ceiling, certified a truncated run CLEAN.
+        code, out, verdicts = run(write("default.jsonl", row(at) + "\n"), ceiling=None)
+        ok = (code == 1 and verdicts.get("default.jsonl") == FOUND
+              and "ceiling 512 completion tokens" in out)
+        print(f"[{'ok  ' if ok else 'FAIL'}] the default ceiling is 512 and finds a 512-token answer")
+        if not ok:
+            failures.append(f"default ceiling wrong: exit {code}, "
+                            f"verdict {verdicts.get('default.jsonl')}\n{out[-300:]}")
+
+        # A degenerate --expect must not satisfy the requirement it appears to satisfy.
+        for label, expect in [("--expect ,", ","), ("--expect empty", ""), ("--expect spaces", " ")]:
+            code, out, _ = run(write("cov.jsonl", row(fine) + "\n"), extra=["--expect", expect])
+            ok = code == 1 and "names no run" in out
+            print(f"[{'ok  ' if ok else 'FAIL'}] exit {code} (want 1) {label} claims nothing")
+            if not ok:
+                failures.append(f"{label} was accepted as a coverage claim\n{out[-300:]}")
+
+        # And no --expect at all cannot certify, on ANY input, not just an expanded wildcard:
+        # under bash the shell expands first, so a gate conditioned on globbing is off by default.
+        # Invoked directly rather than through run(), which now supplies --expect for every case.
+        bare = subprocess.run(
+            [sys.executable, str(SCRIPT), str(write("noexp.jsonl", row(fine) + "\n"))],
+            capture_output=True, text=True, encoding=CHILD_ENCODING, errors="replace",
+            env={**os.environ, "PYTHONIOENCODING": CHILD_ENCODING},
+        )
+        ok = bare.returncode == 1 and "which runs this was meant to cover" in bare.stdout
+        print(f"[{'ok  ' if ok else 'FAIL'}] exit {bare.returncode} (want 1) a clean literal path "
+              f"without --expect still cannot certify")
+        if not ok:
+            failures.append(f"a run without --expect certified a file anyway\n{bare.stdout[-300:]}")
 
     if args.corpus is None:
         print("[warn] no --corpus given, so the detector's LIVENESS was not checked")

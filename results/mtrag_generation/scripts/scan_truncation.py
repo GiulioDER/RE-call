@@ -33,9 +33,19 @@ a prediction object's other keys are metadata in every file this has been pointe
 
     python results/mtrag_generation/scripts/scan_truncation.py <file> [<file> ...] [--ceiling N]
 
-A wildcard argument is expanded here (PowerShell does not expand arguments), and then `--expect N`
-is REQUIRED, because a pattern that matches one of two files would otherwise certify the one it
-found and never name the one it did not.
+`--expect` is REQUIRED on every run, naming the run stems that must be covered:
+
+    ... --expect taskc_benchmark_official,taskc_recall_official <restored>/taskc_*_official.*.jsonl
+
+⚠️ Names, not a count. Completeness here is a property of RUNS, and each archived run restores five
+`.jsonl` layers, so a count is both unsatisfiable on a correct restore and satisfiable by five
+files of one run. It is required unconditionally rather than only when this script expands a
+wildcard, because under bash the SHELL expands it first and a gate conditioned on that is switched
+off by the operator's choice of shell. Nothing here can certify what nobody claimed. Every report
+also ends with the stems it covered, so the universe is legible in the report itself.
+
+A wildcard argument is expanded here as well, since PowerShell does not expand arguments and the
+operator would otherwise be told a pattern is ABSENT.
 
 Needs `tiktoken`. See `../runs/README.md` for restoring the payload pack these files come from.
 """
@@ -239,8 +249,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("files", nargs="+", type=Path)
     ap.add_argument("--ceiling", type=int, default=512, help="the --max-tokens the run sent")
     ap.add_argument("--encoding", default="o200k_base", help="gpt-4o and gpt-4o-mini use o200k_base")
-    ap.add_argument("--expect", type=int, default=None,
-                    help="how many files must be scanned; required when an argument is a wildcard")
+    ap.add_argument("--expect", default=None, metavar="STEM,STEM",
+                    help="run stems that must be covered, e.g. "
+                         "taskc_benchmark_official,taskc_recall_official; required with a wildcard")
     args = ap.parse_args(argv)
 
     print(f"ceiling {args.ceiling} completion tokens, encoding {args.encoding}\n")
@@ -287,6 +298,12 @@ def main(argv: list[str] | None = None) -> int:
     for report in reports:
         print(f"  {report.verdict:38} {report.name}")
 
+    # Always printed, so the report states its own universe in RUN terms. A reader can then see
+    # which runs a CLEAN was about without reconstructing it from a file list, and a wildcard
+    # expanded by the SHELL (which this script cannot detect at all) still shows its narrowing.
+    covered = sorted({r.name.split(".")[0] for r in reports})
+    print(f"runs covered: {', '.join(covered)}")
+
     complaints: list[str] = []
     if not reports:
         # Defence in depth, and unreachable while `_expanded` keeps a non-matching pattern in the
@@ -295,12 +312,30 @@ def main(argv: list[str] | None = None) -> int:
         # fallback, which is what the case matrix pins (a non-matching pattern must print ABSENT,
         # not merely exit non-zero). This line only matters if that fallback is ever removed.
         complaints.append("no files were scanned at all")
-    if globbed and args.expect is None:
+    if args.expect is None:
+        # Demanded ALWAYS, not only when this script did the globbing. Under bash the shell
+        # expands the pattern before argv, so `globbed` is False and a gate conditioned on it is
+        # switched off by the operator's choice of shell: a partial restore then exits 0 with a
+        # block of nothing but CLEAN. A tool cannot certify what nobody claimed, so an exit of 0
+        # requires the operator to say which runs this was supposed to cover.
         complaints.append(
-            "a wildcard was expanded but --expect N was not given, so nothing here establishes "
-            "that the pattern matched every file it should have")
-    if args.expect is not None and len(reports) != args.expect:
-        complaints.append(f"--expect {args.expect} but {len(reports)} file(s) were scanned")
+            "--expect was not given, so nothing states which runs this was meant to cover")
+    else:
+        # Stems, not a count. A count is the wrong unit: each archived run restores five `.jsonl`
+        # layers, so `--expect 2` against `taskc_*_official.*.jsonl` is unsatisfiable on a correct
+        # restore (it matches ten), while two files from ONE run satisfy it perfectly. The
+        # operator's natural repair, raising the number to whatever the pattern just printed, hands
+        # the decision straight back to the wildcard. Only names can say "these runs".
+        wanted = {stem.strip() for stem in args.expect.split(",") if stem.strip()}
+        if not wanted:
+            # `--expect ,` or `--expect ""` passed the "was it given" test and then filtered away
+            # to nothing, so `wanted - covered` was empty and the check silently became a no-op:
+            # the pre-fix scanner, reinstated by a degenerate value. Reachable in practice as
+            # `--expect "$STEMS"` with the variable unset, which is how a replay script passes it.
+            complaints.append("--expect names no run, so it claims nothing")
+        missing = sorted(wanted - set(covered))
+        if missing:
+            complaints.append(f"no file was scanned for {', '.join(missing)}")
     if any(r.verdict != "CLEAN" for r in reports):
         complaints.append("not every file came back CLEAN")
 

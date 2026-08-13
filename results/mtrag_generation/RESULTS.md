@@ -230,14 +230,20 @@ What is known about them:
 * The scan is cheap once the payload pack from `runs/README.md` is restored. It is
   `scripts/scan_truncation.py`, and it reads `predictions[].text` and needs nothing else:
 
-      python results/mtrag_generation/scripts/scan_truncation.py --expect 2 \
-          <restored>/taskc_*_official.*.jsonl
+      python results/mtrag_generation/scripts/scan_truncation.py --expect taskc_benchmark_official,taskc_recall_official <restored>/taskc_*_official.predictions.jsonl
 
   An unexpanded wildcard is globbed by the script itself, because PowerShell does not expand
-  arguments and the operator would otherwise be told the pattern is ABSENT. ⛔ `--expect N` is then
-  REQUIRED, and it is not ceremony: with only one of the two runs restored, a pattern that matches
-  one file would otherwise certify that file CLEAN and never name the other. The wildcard, not the
-  operator, would have decided what CLEAN was a statement about.
+  arguments and the operator would otherwise be told the pattern is ABSENT. ⛔ `--expect` is then
+  REQUIRED, and it names RUNS rather than counting files. That distinction is the whole guard:
+  each run restores five `.jsonl` layers (`runs/SHA256SUMS.txt`), so a count of two is
+  unsatisfiable against a correct restore of both runs, while two layers of ONE run satisfy it
+  perfectly and the other run is never named. A count cannot say "these two runs"; only names can.
+
+  `--expect` is required on EVERY run, not only when the script expands a wildcard. Under bash the
+  shell expands the pattern first, so a gate conditioned on that would be switched off by the
+  operator's choice of shell, which is the same defect one layer out. Nothing here certifies what
+  nobody claimed. Every report also ends with `runs covered: ...`, so the universe a CLEAN refers
+  to is legible in the report itself rather than reconstructed from a command line.
 
   🔑 It reports **CLEAN only when every file was fully read and every prediction in every row was
   measured**, and exits non-zero otherwise. An absent file, an empty one, a line that will not
