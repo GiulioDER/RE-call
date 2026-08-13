@@ -326,6 +326,12 @@ def test_a_filename_that_is_not_valid_utf8_is_reported_not_fatal(corpus, monkeyp
     assert "3 file(s) read" in out, "the awkward name aborted the run"
     assert "claim(s) for review" in out
     assert "supersession" in out, "the other memos' results were discarded"
+    # The awkward file's OWN result, escaped rather than dropped. Without this the test passes
+    # against a regression that quietly turns that file into an `engine_error` refusal: the
+    # count above comes from `len(documents)` and the claim above comes from another memo, so
+    # neither notices. "Showing a mangled name beats showing nothing" is the stated property,
+    # and it needs the name asserted to be a property rather than a hope.
+    assert "bad\\udcff.md: status" in out, "the awkward file's own claim was lost"
 
 
 def test_extract_show_reports_only_the_named_file(corpus, monkeypatch, capsys):

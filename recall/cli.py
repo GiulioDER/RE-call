@@ -734,8 +734,12 @@ def main(argv: list[str] | None = None) -> None:
         # Showing a mangled name beats showing nothing.
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     if hasattr(sys.stderr, "reconfigure"):
-        # Refusals name the file too, so stderr needs the same treatment or a refusal about an
-        # awkward name becomes a traceback instead of the message it was written to print.
+        # For the ENCODING, not the error handler, and the first version of this comment had it
+        # wrong: CPython already defaults stderr to `backslashreplace`, and keeps it there even
+        # under `PYTHONIOENCODING=utf-8:strict`, which sets stdout to strict alone. So deleting
+        # this line would not turn a refusal into a traceback. What it does is give stderr the
+        # same UTF-8 encoding stdout gets on a Windows console, and hold the handler if a
+        # caller has replaced stderr with a strict wrapper of its own.
         sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     # Without this the library's loggers have no handler, so every _log.info is discarded — which
     # is how `index` came to prune rows while printing nothing about it.
