@@ -7,6 +7,8 @@ import random
 import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Literal, Protocol, TypeVar, runtime_checkable
@@ -67,6 +69,74 @@ def _is_transient(exc: Exception) -> bool:
     return any(m in text for m in markers)
 
 
+#: Ceiling on a provider's ``Retry-After``, matching the one the openai SDK applies. Past it the
+#: header is ignored rather than obeyed: a proxy answering "3600" would otherwise park a corpus
+#: indexing run for an hour inside what the caller believes is a bounded retry.
+_MAX_RETRY_AFTER_S = 60.0
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """How long the provider asked us to wait, or None if it did not ask for anything usable.
+
+    Read off the exception by duck-typing, on the same rule as ``_is_transient``: no
+    provider-specific exception type is imported. Two shapes, because the two SDKs this repo
+    retries for do not agree — ``openai`` raises an error carrying an httpx ``response``, while
+    ``voyageai`` hangs a plain ``headers`` dict straight off the exception and has no
+    ``response`` attribute at all. Walking only the first shape would silently cover one of the
+    two cloud embedders while claiming both.
+
+    Both spellings are read. ``retry-after-ms`` is what OpenAI and most of its compatible proxies
+    actually send; ``Retry-After`` is the RFC one and is defined as EITHER a delay in seconds or
+    an HTTP-date, and real providers send both forms. Reading only the integer would leave the
+    pacing gap open for whichever half of them chose the other.
+
+    Anything unparseable, negative, or above the cap returns None, which puts the caller back on
+    its own jittered backoff — the behaviour that was there before, and bounded. That promise is
+    kept with a blanket ``except`` rather than a named tuple on purpose: the header is attacker-
+    adjacent input reached through a mapping this function does not control, and a plain dict can
+    hold a value of any type. ``parsedate_to_datetime`` calls ``.split()`` before it validates, so
+    a non-string raises ``AttributeError`` — which, inside ``retry_with_backoff``'s ``except
+    Exception`` block, would replace the provider's error and kill an indexing run with a stdlib
+    string-method failure instead of retrying it.
+    """
+    try:
+        return _read_retry_after(exc)
+    except Exception:  # noqa: BLE001 - a bad header must never beat the error it arrived on
+        return None
+
+
+def _read_retry_after(exc: Exception) -> float | None:
+    """The parsing half of ``_retry_after_seconds``, free to raise. See its docstring."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is None:
+        headers = getattr(exc, "headers", None)
+    get = getattr(headers, "get", None)
+    if not callable(get):
+        return None
+
+    raw_ms = get("retry-after-ms")
+    if raw_ms is not None:
+        return _capped(float(raw_ms) / 1000.0)
+
+    raw = get("retry-after")
+    if raw is None:
+        return None
+    try:
+        return _capped(float(raw))
+    except (TypeError, ValueError):
+        pass
+    when = parsedate_to_datetime(raw)
+    # A date with no zone is UTC by RFC 9110; without this, subtracting an aware `now` raises.
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return _capped((when - datetime.now(timezone.utc)).total_seconds())
+
+
+def _capped(seconds: float) -> float | None:
+    """The wait if it is both positive and within the cap, else None."""
+    return seconds if 0.0 < seconds <= _MAX_RETRY_AFTER_S else None
+
+
 def retry_with_backoff(
     fn: Callable[[], _R],
     *,
@@ -86,6 +156,22 @@ def retry_with_backoff(
     draw in [0, cap], not the cap itself. A rate-limit or 5xx typically hits every client at
     once, so a deterministic schedule marches the whole fleet back onto the provider in
     lockstep at each step; jitter spreads the retries out instead of reconverging them.
+
+    A ``Retry-After`` the provider actually sent overrides that draw. The unpaced schedule spends
+    every attempt within 1.5s at the defaults, so against a per-minute rate limit all three
+    requests land inside the same closed window and the call fails where it would have recovered.
+    Every caller switches its SDK's retry layer off, which is what makes this the layer that must
+    honour the header: the layer it replaced did. The jitter is added ON TOP of what the provider
+    asked for rather than drawn within it — waiting less than the stated time is what the header
+    exists to prevent, while a fleet handed the same number still needs spreading out.
+
+    ⚠️ That is a precondition, not an observation. A caller that leaves its SDK's retries on pays
+    this pacing TWICE, once here and once inside the transport, since ``openai``'s own
+    ``_calculate_retry_timeout`` applies the same 60s rule: a sustained ``Retry-After: 60`` under
+    four attempts costs ~183s of this layer's sleep on top of the transport's. All four call
+    sites pass ``max_retries=0`` today (both cloud embedders, ``mtrag.generation``,
+    ``benchmarks.llm``), each pinned by a request-counting test; a fifth must do the same for
+    this docstring's arithmetic to be the whole arithmetic.
     """
     last: Exception | None = None
     for i in range(attempts):
@@ -95,7 +181,9 @@ def retry_with_backoff(
             last = exc
             if i == attempts - 1 or not is_transient(exc):
                 raise
-            sleep(random.uniform(0.0, min(max_delay, base_delay * (2 ** i))))
+            jitter = random.uniform(0.0, min(max_delay, base_delay * (2 ** i)))
+            asked = _retry_after_seconds(exc)
+            sleep(jitter if asked is None else asked + jitter)
     assert last is not None  # unreachable: loop either returns or raises
     raise last
 
