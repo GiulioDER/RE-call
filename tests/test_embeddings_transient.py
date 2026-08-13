@@ -30,13 +30,27 @@ from recall.embeddings import _TRANSIENT_MARKERS, retry_with_backoff
 # Inside a test body that 90 s is billed to one item against the suite's `timeout = 120`, and
 # `timeout_method = "thread"` does not redden the item when it overruns: it `os._exit`s the whole
 # session. Out here the cost lands in collection, where nothing is timing it.
+#
+# `except Exception`, not `except ImportError`, and the width is the point. At module scope a
+# failure that is not caught aborts COLLECTION, so the whole session reports zero tests instead
+# of three red ones. That is not hypothetical on this chain: a CUDA torchvision beside a CPU
+# torch raises `RuntimeError: operator torchvision::nms does not exist` from transformers'
+# eager torchvision import, not an ImportError. The cause is kept in the skip reason rather
+# than swallowed, so a broken extra is legible under `-rs` instead of looking uninstalled.
+_voyage_import_error: str | None = None
 try:
     import voyageai.error as voyage_error
-except ImportError:  # pragma: no cover - the extra is absent in CI by design
-    voyage_error = None  # type: ignore[assignment]
+except Exception as exc:  # pragma: no cover - the extra is absent in CI by design
+    voyage_error = None
+    _voyage_import_error = repr(exc)
 
 requires_voyage = pytest.mark.skipif(
-    voyage_error is None, reason="needs the voyage extra (pip install recall-rag[voyage])"
+    voyage_error is None,
+    reason=(
+        f"voyageai present but unimportable: {_voyage_import_error}"
+        if _voyage_import_error and "No module named" not in _voyage_import_error
+        else "needs the voyage extra (pip install recall-rag[voyage])"
+    ),
 )
 
 
