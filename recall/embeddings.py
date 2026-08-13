@@ -91,7 +91,14 @@ def _is_transient(exc: Exception) -> bool:
         status = _probe(exc, "http_status")
     if isinstance(status, int):
         return status in (408, 429) or 500 <= status < 600
-    text = f"{type(exc).__name__} {exc}".lower()
+    try:
+        text = f"{type(exc).__name__} {exc}".lower()
+    except Exception:  # noqa: BLE001 - see `_probe`: a hostile __str__ must not beat the error
+        # `_probe` closes the attribute door and this closes the other one. Formatting an
+        # arbitrary exception runs ITS ``__str__``, which is free to raise — and a body that was
+        # never decoded is a realistic way for that to happen. The class name alone still gives
+        # the markers something to match on.
+        text = type(exc).__name__.lower()
     markers = (
         "429", " 500", " 502", " 503", " 504", "rate limit", "too many requests",
         "timeout", "timed out", "temporarily", "connection", "reset by peer", "unavailable",
@@ -998,8 +1005,10 @@ class OpenAICompatEmbedder:
         # `max_retries=0` because `retry_with_backoff` in `_embed_one_batch` owns the retry
         # policy. The SDK default is 2 retries, which does not replace ours but multiplies with
         # it: one 429 costs 3 x 3 = 9 requests rather than the 3 the policy asks for, and the
-        # outer full-jitter backoff (which exists so a fleet does not remarch onto the provider
-        # in lockstep) ends up wrapping an inner loop that has no jitter at all. This is the
+        # outer FULL-jitter backoff (which exists so a fleet does not remarch onto the provider
+        # in lockstep) ends up wrapping an inner loop whose own jitter is only `1 - 0.25 *
+        # random()` on its doubling schedule — a 25% smear, not a spread across the interval, so
+        # the fleet it is meant to separate stays largely in step. This is the
         # corpus indexing path, so the multiplication lands batch after batch on a provider that
         # has just said it is overloaded.
         self._client = OpenAI(api_key=key, base_url=base_url, max_retries=0)

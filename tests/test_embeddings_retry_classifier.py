@@ -385,3 +385,27 @@ def test_a_status_attribute_that_raises_does_not_take_the_retry_down_with_it() -
 
     assert _is_transient(exc) is True
     assert _attempts_used(exc) == 3
+
+
+class _HostileStrError(Exception):
+    """An error whose `__str__` raises. A body that was never decoded is one real way to get one."""
+
+    def __str__(self) -> str:
+        raise RuntimeError("the response body has not been decoded")
+
+
+def test_an_exception_whose_str_raises_does_not_take_the_retry_down_with_it() -> None:
+    """`_probe` closes the attribute door; this is the other one, and it is wider.
+
+    The text fallback formats the exception, which runs ITS `__str__`. With no status to read,
+    every hostile object reaches that line — so guarding the three attribute lookups and not the
+    formatting would have left the same failure one line further down: the provider's error
+    demoted to `__context__` while the run dies reporting someone else's bug.
+
+    The class name alone still carries a marker here, so the correct outcome is an ordinary
+    transient verdict. The formatting failing should be invisible, not fatal.
+    """
+    exc = _HostileStrError()
+
+    assert _is_transient(exc) is False  # no marker in "_hostilestrerror"
+    assert _attempts_used(exc, attempts=3) == 1

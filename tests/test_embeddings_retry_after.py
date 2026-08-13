@@ -54,14 +54,26 @@ def _rate_limited_with(headers: dict[str, str]) -> Exception:
 
 
 def _delays(exc: Exception, *, attempts: int = 2) -> list[float]:
-    """Every delay `retry_with_backoff` takes while exhausting `attempts` on `exc`."""
+    """Every delay `retry_with_backoff` takes while exhausting `attempts` on `exc`.
+
+    The recorder enforces `time.sleep`'s own contract instead of being a bare `list.append`.
+    Every "fell back to the jittered draw" assertion in this file is one-sided (`<= 2.0`), and a
+    NEGATIVE delay satisfies all of them — so dropping the `0.0 <` limb from `_capped` left the
+    whole suite green while making the real `time.sleep` raise `ValueError` from inside
+    `retry_with_backoff`'s except block, replacing the provider's error. One line here closes
+    that for every case at once, which per-test bounds would not.
+    """
     slept: list[float] = []
+
+    def _record(delay: float) -> None:
+        assert delay >= 0.0, f"time.sleep would reject this: {delay}"
+        slept.append(delay)
 
     def _always_fails() -> None:
         raise exc
 
     with pytest.raises(type(exc)):
-        retry_with_backoff(_always_fails, attempts=attempts, sleep=slept.append)
+        retry_with_backoff(_always_fails, attempts=attempts, sleep=_record)
     return slept
 
 
@@ -155,7 +167,8 @@ def test_a_voyage_error_is_paced_too_though_it_carries_no_response() -> None:
 def test_a_header_value_that_is_not_a_string_falls_back_instead_of_raising() -> None:
     """The reader duck-types, so it must survive a mapping that is not ``httpx.Headers``.
 
-    Voyage's ``headers`` is a plain dict, which can hold anything. ``parsedate_to_datetime``
+    The reader duck-types whatever mapping it is handed, and an SDK's ``headers`` can hold a
+    value of any type whichever mapping class carries it. ``parsedate_to_datetime``
     raises ``AttributeError`` rather than ``ValueError`` on a non-string (it calls ``.split()``
     before validating), and that escapes a ``(TypeError, ValueError)`` guard. Inside
     ``retry_with_backoff``'s ``except Exception`` block it would replace the provider's error, so
@@ -267,3 +280,16 @@ def test_a_date_in_the_past_is_not_treated_as_a_wait() -> None:
     past = format_datetime(datetime.now(timezone.utc) - timedelta(minutes=5), usegmt=True)
 
     assert _delays(_rate_limited_with({"Retry-After": past}))[0] <= 2.0
+
+
+def test_the_millisecond_spelling_wins_when_both_are_sent() -> None:
+    """OpenAI sends both headers together, so which one wins is a real decision, not a tie-break.
+
+    Its own reader prefers the millisecond form for being more precise than integer seconds, and
+    this one is written to match. Nothing pinned it: the only other test carrying both headers
+    has an unparseable ms value, so it cannot tell the two orders apart — the same one-sided
+    asymmetry `test_status_code_is_read_before_status` exists to close for `_is_transient`.
+    """
+    delays = _delays(_rate_limited_with({"retry-after-ms": "9000", "Retry-After": "30"}))
+
+    assert 9.0 <= delays[0] < 10.5, f"the seconds spelling appears to have won: {delays}"

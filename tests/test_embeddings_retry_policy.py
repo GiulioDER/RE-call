@@ -2,9 +2,10 @@
 
 ``retry_with_backoff`` owns retries for the cloud embedders. Every SDK ships its own retry layer
 underneath, so unless that layer is switched off the two multiply: a policy that says "three
-attempts" spends nine requests, and the outer full-jitter backoff (which exists so a fleet does
-not remarch onto the provider in lockstep) ends up wrapping an inner loop that has no jitter at
-all.
+attempts" spends nine requests, and the outer FULL-jitter backoff (which exists so a fleet does
+not remarch onto the provider in lockstep) ends up wrapping an inner loop whose own jitter is
+only ``1 - 0.25 * random()`` on its doubling schedule — a 25% smear rather than a draw across
+the interval, so it separates a fleet far less than the outer layer does.
 
 This is the more expensive place for that arithmetic to live. ``OpenAICompatEmbedder`` is not a
 benchmark path: it is what indexes a user's corpus, batch after batch, which is the traffic shape
