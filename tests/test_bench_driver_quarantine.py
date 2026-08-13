@@ -242,10 +242,14 @@ def test_an_unreadable_exception_is_not_terminal_rather_than_terminal() -> None:
     resending a payload — safe for a retry. Here False means NOT terminal, i.e. quarantine this
     one item and carry on, which is the safe direction for a run: an exception nobody can read is
     not evidence the account is dead, and a systematic version of it still surfaces through
-    whichever accounting the driver keeps — `CONSECUTIVE_FAILURE_LIMIT` in `benchmarks/run.py`
-    and mtrag, `coverage` in beam's `_run_pool`, the `failed` / `rejudge_failed` records in
-    judge_quality and rejudge. (The limit covers 2 of the 5 call sites, not all of them; an
-    earlier version of this docstring cited it as though it covered every one.)
+    whichever accounting the driver keeps: `CONSECUTIVE_FAILURE_LIMIT` in `benchmarks/run.py`,
+    `coverage` in beam's `_run_pool`, the `failed` record in judge_quality, the `rejudge_failed`
+    record in rejudge.
+
+    ⛔ The consecutive-failure floor covers ONE of the four modules that call `is_terminal`, not
+    all of them. Two earlier versions of this docstring got that wrong in two different ways —
+    first citing the limit as if it covered every site, then "2 of the 5" by counting mtrag, which
+    has its own limit and its own permanence set and never calls `is_terminal` at all.
 
     The class name is deliberately NOT folded in as a fallback the way `_is_transient` does it.
     Its markers are words; two of mine are bare digits, so a class named `Error402` would abort a

@@ -202,9 +202,14 @@ def is_terminal(exc: Exception) -> bool:
     # its own name. Empty text means "no evidence from the TEXT", not "no evidence at all": the
     # status is still read below, so an unreadable 402 is still terminal. What it does soften is
     # the account phrases, which is why an `insufficient_quota` whose body never decoded reads as
-    # one bad item — quarantined, and visible through whichever accounting its driver keeps
-    # (`CONSECUTIVE_FAILURE_LIMIT` in `benchmarks/run.py` and mtrag, `coverage` in beam's
-    # `_run_pool`, the `failed`/`rejudge_failed` records in judge_quality and rejudge).
+    # one bad item — quarantined, and visible through whichever accounting its driver keeps.
+    # This function is called from FOUR modules, and only the first has a consecutive-failure
+    # floor: `CONSECUTIVE_FAILURE_LIMIT` in `benchmarks/run.py`; `coverage` in beam's `_run_pool`;
+    # the `failed` record in judge_quality; the `rejudge_failed` record in rejudge.
+    #
+    # ⛔ NOT mtrag, which two earlier versions of this comment claimed. `benchmarks/mtrag/`
+    # defines its own `CONSECUTIVE_FAILURE_LIMIT` and its own `PERMANENT_ERROR_NAMES`, and never
+    # calls this function at all, so its counter can never see a verdict from here.
     #
     # `str.lower(...)` unbound, not `.lower()`: `str(exc)` may hand back a str SUBCLASS, and the
     # marker scans below sit OUTSIDE this guard, so a hostile `__contains__` would run there
