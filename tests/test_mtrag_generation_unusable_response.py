@@ -197,6 +197,26 @@ def test_a_completion_of_the_empty_string_is_refused_as_no_text_and_not_as_a_mis
     assert client.calls == 1
 
 
+def test_the_report_prices_a_refusal_at_the_one_request_it_cost() -> None:
+    """⚠️ The whole argument for classifying these permanent is that they cost ONE billed call
+    instead of four. The give-up message used to say "gave up after 4 attempts" regardless, so the
+    artifact that records the saving denied it: `main` copies this string verbatim into
+    `.failed.jsonl` and the `task_failed` event, and `error_type` there is `RuntimeError` for every
+    generation failure, so this count is the only attempt information an operator ever sees.
+
+    Pinned here as well as in `tests/test_mtrag_generation_retry_policy.py`, which covers the same
+    property for a 400, because these two causes are the ones this file introduces and they are
+    scattered across tasks rather than consecutive, so an operator meets them far more often."""
+    client = _Client([_choice(None, "content_filter")])
+
+    with pytest.raises(RuntimeError) as caught:
+        _generate(client)
+
+    assert "gave up after 1 attempt" in str(caught.value)
+    assert "4 attempts" not in str(caught.value), "the budget is not what this failure cost"
+    assert client.calls == 1
+
+
 def test_a_completion_of_only_whitespace_is_refused_too() -> None:
     """`.strip()` is applied before the answer is written, so `"  \\n "` reaches the submission as
     `""`. A guard that checked the raw string instead of the stripped one would pass this through

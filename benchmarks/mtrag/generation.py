@@ -567,7 +567,13 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
     flag, not the attempt count.
     """
     last: Exception | None = None
+    #: What the failure actually COST, which is not `GENERATION_ATTEMPTS` whenever the loop broke
+    #: early. Tracked separately rather than read off `attempt` after the loop, because that name
+    #: is undefined if the range is empty and the failure would then be a `NameError` raised from
+    #: the error path.
+    spent = 0
     for attempt in range(1, GENERATION_ATTEMPTS + 1):
+        spent = attempt
         try:
             response = client.chat.completions.create(
                 model=model, messages=messages, max_tokens=max_tokens, temperature=0.0
@@ -655,8 +661,13 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             # and `CONSECUTIVE_FAILURE_LIMIT` turns five such tasks into an aborted run.
             paced = _retry_after_seconds(exc) or 0.0
             time.sleep(GENERATION_BACKOFF_S * (2 ** (attempt - 1)) + paced)
+    # The count is what was SPENT, not the budget. `main` copies this string verbatim into
+    # `.failed.jsonl` and into the `task_failed` event, where `error_type` is `RuntimeError` for
+    # every generation failure, so this sentence carries the only attempt information an operator
+    # ever sees. Interpolating the budget priced every permanent failure at 4x what it cost, which
+    # is exactly backwards for the errors classified permanent BECAUSE they cost one request.
     raise RuntimeError(
-        f"generation gave up after {GENERATION_ATTEMPTS} attempts "
+        f"generation gave up after {spent} attempt{'' if spent == 1 else 's'} "
         f"({type(last).__name__}: {last}). Answers already written are kept; re-run to resume."
     ) from last
 
