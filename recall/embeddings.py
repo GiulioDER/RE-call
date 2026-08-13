@@ -49,13 +49,13 @@ def _is_transient(exc: Exception) -> bool:
     ``api_requestor`` FROM A NON-2xx RESPONSE carries the code in ``http_status``:
     ``VoyageError.__init__`` takes it as its third positional argument and the requestor passes
     the real code into it. The qualifier is the whole point, and the paragraph below depends on
-    it: errors raised anywhere else in the SDK carry a message and nothing more. An earlier reading of this
-    concluded the Voyage path had no status and left the markers to decide it, but that reading
-    came from a hand-constructed ``RateLimitError`` whose ``http_status`` was never filled in,
-    not from one the SDK raised. The markers cannot decide it: those messages are fixed strings
-    with no marker in them, so a real 500 ("The server failed to process the request.") was
-    never retried, and a 502/503/504 was retried only by the accident that "unavailable" appears
-    inside the class name ``ServiceUnavailableError``.
+    it: errors raised anywhere else in the SDK carry a message and nothing more. An earlier
+    reading concluded the Voyage path had no status and left the markers to decide it, but that
+    reading came from a hand-constructed ``RateLimitError`` whose ``http_status`` was never
+    filled in, not from one the SDK raised. The markers cannot decide it: those messages are
+    fixed strings with no marker in them, so a real 500 ("The server failed to process the
+    request.") was never retried, and a 502/503/504 was retried only by the accident that
+    "unavailable" appears inside the class name ``ServiceUnavailableError``.
 
     The markers remain as a fallback for errors that carry no status at all, which is the only
     evidence available there: ``openai.APIConnectionError``/``APITimeoutError`` carry none, and

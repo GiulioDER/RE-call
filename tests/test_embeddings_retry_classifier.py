@@ -340,10 +340,12 @@ def test_a_status_that_is_not_an_http_number_falls_back_to_text_markers() -> Non
 
     Knowingly not covered: widening the gate to `isinstance(status, (int, float))` survives every
     test here. It diverges only on a float-valued status, which no transport in this repository
-    produces, and it diverges in the safe direction anyway. Recorded here so it reads as a
-    decision rather than an oversight. It is now the only survivor of that kind: the `< 600`
-    upper bound, which this note used to stand beside, is pinned by
-    `test_a_status_above_the_band_is_not_retried`.
+    produces, and it diverges in the safe direction anyway. Left alive on the same reasoning as
+    the `< 600` upper bound, and recorded here so it reads as a decision rather than an oversight.
+
+    That reasoning still governs after the third status spelling was added. `http_status` widens
+    what can reach the numeric branch but not what the branch decides, so it gives no new route
+    to a status of 600 or above, and the survivors #298 recorded stay survivors.
     """
     exc = _StatusError("connection reset by peer", status_code=None)
     exc.status = "error"  # type: ignore[attr-defined]
@@ -456,22 +458,6 @@ def test_the_exception_type_name_is_part_of_the_matched_text(exc: Exception) -> 
     assert _attempts_used(exc) == 3
 
 
-@pytest.mark.parametrize("status", [600, 700])
-def test_a_status_above_the_band_is_not_retried(status: int) -> None:
-    """Pins the `< 600` upper bound, which was previously left alive as a knowing survivor.
-
-    The reasoning for leaving it was that no transport in this repository produces a status of
-    600 or above, and that still holds. It is pinned now anyway, because "no transport produces
-    it" is an argument about today's callers rather than about the function, and without the
-    bound the condition degrades to `500 <= status`, which calls every out-of-range number a
-    broken or non-HTTP carrier reports transient. The message is marker-free, so the numeric
-    branch is what answers.
-    """
-    exc = _StatusError("boom", status_code=status)
-    assert _is_transient(exc) is False
-    assert _attempts_used(exc) == 1
-
-
 @pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
 def test_a_status_spelled_http_status_is_read_as_a_status(status: int) -> None:
     """voyageai's spelling has to reach the numeric branch, or Voyage decides on prose alone.
@@ -487,12 +473,17 @@ def test_a_status_spelled_http_status_is_read_as_a_status(status: int) -> None:
     assert _attempts_used(exc) == 3
 
 
-@pytest.mark.parametrize("status", [400, 401, 404, 422, 600])
+@pytest.mark.parametrize("status", [400, 401, 404, 422])
 def test_a_non_retryable_http_status_is_still_not_retried(status: int) -> None:
     """Reading `http_status` must not degrade into treating its presence as transient.
 
     An implementation that retried whenever `http_status` was set would pass the test above and
     turn a bad Voyage key into three paid refusals, which is the expensive direction.
+
+    Deliberately no case at 600 or above. That would pin the `< 600` upper bound, which #298
+    recorded as a knowing survivor, and the third spelling is not a reason to reopen a decision
+    taken about the branch it feeds. See the note in
+    `test_a_status_that_is_not_an_http_number_falls_back_to_text_markers`.
     """
     exc = _HttpStatusError("boom", http_status=status)
     assert _is_transient(exc) is False
