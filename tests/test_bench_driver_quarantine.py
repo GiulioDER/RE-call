@@ -346,7 +346,7 @@ def test_a_none_score_is_excluded_by_the_paired_panel() -> None:
     `benchmarks/beam/pair.py` skipped unscored rows with the `x != x` NaN idiom, and `None != None`
     is False, so a None row was admitted into `pairs` and then hit
     `r["score"] >= PASS_THRESHOLD` — `TypeError: '>=' not supported between instances of 'NoneType'
-    and 'float'`. `_is_number` was written for exactly this trap and then applied only inside the
+    and 'float'`. `is_number` was written for exactly this trap and then applied only inside the
     module that defined it.
     """
     from benchmarks.beam import pair

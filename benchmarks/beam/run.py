@@ -170,7 +170,7 @@ def judge_answer(
         if not is_number(score):
             errors += 1
         scores.append({"nugget": nugget, "score": score, "reason": reason})
-    # ⚠️ `_is_number`, not `s["score"] == s["score"]`. That NaN test admits None, because
+    # ⚠️ `is_number`, not `s["score"] == s["score"]`. That NaN test admits None, because
     # `None == None` is True, and `statistics.mean` then raises on it — so the obvious swap of NaN
     # for None above would have turned a degraded nugget into a crash.
     usable = [s["score"] for s in scores if is_number(s["score"])]
@@ -986,7 +986,7 @@ def _main() -> None:
                 "generated_answer": row["generated_answer"],
                 "abstained": _looks_like_refusal(row["generated_answer"]),
                 "retrieval_empty": (row["memories_evaluated"] or 0) == 0,
-                # Same NaN-to-None rule as `score_question`; `_is_number` rather than a
+                # Same NaN-to-None rule as `score_question`; `is_number` rather than a
                 # `mean == mean` NaN test, because that test admits None.
                 "score": mean if is_number(mean) else None,
                 "published_score": row["published_score"],
