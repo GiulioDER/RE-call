@@ -146,10 +146,12 @@ def test_a_status_below_the_band_is_not_retried(status: int) -> None:
 
     Testing 500 stops the floor being RAISED; nothing stopped it being LOWERED, and `402 <=
     status` left every test green. Two cases, because one does not do it: with only 402, floors
-    at 422 and 499 still survived, since a floor above the value under test cannot reclassify
-    it. 499 is the value immediately below the band, so it closes every downward move at once.
+    at 413, 422, 451 and 499 all still survived, since a floor set above the value under test
+    cannot reclassify it. 499 is the value immediately below the band, and it is what actually
+    closes the floor: every downward move dies on that case alone.
 
-    402 is here as the real one rather than the boundary one. `benchmarks/llm.py` records an
+    402 therefore earns its place as the real one rather than the boundary one, plus the single
+    point-widening `status in (402, 429)` that only it kills. `benchmarks/llm.py` records an
     actual OpenRouter refusal, `402 ... You requested up to 65536 tokens, but can only afford
     64714`, that killed a BEAM run mid-arm. A credit refusal is permanent, and retrying it four
     times from that caller is the exact failure class this whole change exists to prevent.
@@ -273,6 +275,11 @@ def test_a_status_that_is_not_an_http_number_falls_back_to_text_markers() -> Non
     This is what `isinstance(status, int)` buys over `status is not None`, and it is the
     difference between falling back and crashing — `500 <= "error"` raises `TypeError` from
     inside the classifier, turning a retryable blip into a failure in the retry logic itself.
+
+    Knowingly not covered: widening the gate to `isinstance(status, (int, float))` survives every
+    test here. It diverges only on a float-valued status, which no transport in this repository
+    produces, and it diverges in the safe direction anyway. Left alive on the same reasoning as
+    the `< 600` upper bound, and recorded here so it reads as a decision rather than an oversight.
     """
     exc = _StatusError("connection reset by peer", status_code=None)
     exc.status = "error"  # type: ignore[attr-defined]
