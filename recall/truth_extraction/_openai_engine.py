@@ -35,6 +35,7 @@ from collections.abc import Mapping
 from typing import Protocol
 from urllib.parse import urlsplit
 
+from recall._chat_content import assistant_text
 from recall.truth_extraction._prompt import ExtractionPrompt
 
 OPENAI_EXTRACTION_ENGINE_ID = "recall.truth_extraction.openai"
@@ -161,20 +162,11 @@ def _text_of(reply: object) -> str:
         return ""
     message = getattr(choices[0], "message", None)
     content = getattr(message, "content", None)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        # A gateway may return `content` as a list of text blocks. Discarding that answer would
-        # refuse a WELL FORMED reply and blame the model for it, under the `json` rung, on every
-        # file. Joining the text fields reads it; anything that is not a text block contributes
-        # nothing, so a genuinely degenerate list still ends up as "".
-        return "".join(
-            block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "") or ""
-            for block in content
-        )
-    # Every remaining shape becomes "" and meets the `json` rung, which is where every unusable
-    # answer is already handled.
-    return ""
+    # Delegated, not inlined. Three OpenAI-compatible clients in this repo read this field and
+    # each had its own rule; the copy that lived here raised `TypeError` on a dict block carrying
+    # a non-str `text`, which made the "deliberately total" claim above false. Every remaining
+    # shape becomes "" and meets the `json` rung, where every unusable answer is already handled.
+    return assistant_text(content)
 
 
 def _setting(source: Mapping[str, str], name: str, default: str) -> str:

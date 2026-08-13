@@ -1,37 +1,35 @@
-"""One wire shape, one reading rule, in both OpenAI-compatible clients this repo ships.
+"""One wire shape, one reader, in all THREE OpenAI-compatible clients this repo ships.
 
 `message.content` can arrive as a LIST of text blocks rather than a string. A gateway that does
-that is returning a well formed answer in a shape the OpenAI schema also permits, and the repo
-handled it two ways:
+that is returning a well formed answer in a shape the OpenAI schema permits, and the repo handled
+it three different ways:
 
     recall/truth_extraction/_openai_engine.py:_text_of   joined the block text
-    benchmarks/llm.py:_complete_once                     refused it as unusable
+    benchmarks/llm.py:_complete_once                     refused it, naming the type
+    benchmarks/mtrag/generation.py:generate_one          crashed with AttributeError
 
-`_text_of`'s reasoning is the stronger one and its comment says why: discarding the answer "would
-refuse a WELL FORMED reply and blame the model for it". Refusing it in the benchmark client fails
-questions that the extraction client would have read correctly, and it blames the system under
-test for its gateway's encoding, which is the same class of measurement error `EmptyCompletion`
-was added to prevent.
+`_text_of`'s reasoning was the right one and its comment already said why: discarding the answer
+"would refuse a WELL FORMED reply and blame the model for it".
 
-⚠️ **THE TWO CLIENTS STILL DIVERGE, AND THAT PART IS DELIBERATE.** They now agree on how to READ
-the content and disagree only on what an EMPTY reading means, because the consequence differs:
+⚠️ **THE FIRST ATTEMPT AT THIS RECONCILIATION MIRRORED THE RULE INTO A SECOND MODULE AND PINNED
+THE PAIR WITH A CROSS-CHECK TEST. THAT FAILED TWICE OVER, WHICH IS WHY THERE IS NOW ONE FUNCTION.**
 
-    _text_of        returns ""      safe: `_batch_rungs("")` raises `ExtractionBatchRejected`,
-                                    which a reviewer sees as a batch rejection
-    _complete_once  raises          necessary: nothing downstream re-reads the answer, so "" was
-                                    SCORED as the system's answer
+  1. The cross-check table held only LISTS, so the `str` branch and the `""` fallback of both
+     readers were unpinned. Deleting `if isinstance(content, str)` from `_text_of` left it green.
+  2. It copied a latent crash. `... else getattr(block, "text", "") or ""` guards only the OBJECT
+     branch, and only against FALSY values, so a dict block carrying `{"text": None}` or
+     `{"text": 123}` reached `"".join` unconverted and raised `TypeError`. The table's "text is
+     None" case used an OBJECT block, which the `or ""` rescues, so the dict branch was never
+     exercised. Both readers agreed, on raising, and the test that existed to prove they agreed
+     said nothing.
+  3. And a THIRD reader existed that the reconciliation had not counted at all.
 
-Verified rather than assumed, in `test_an_empty_reading_is_refused_here_and_tolerated_there`.
+So the rule now lives once, in `recall/_chat_content.py`, and the tests below check that each site
+CALLS it rather than that three copies happen to match today.
 
-🔑 The reading rule is MIRRORED, not imported, and the last test in this file is what makes that
-safe. Importing `_text_of` into `benchmarks/llm.py` would make the benchmark client depend on the
-truth-extraction subsystem, which is a dependency direction a reviewer would rightly question, and
-it does not fit anyway: `_text_of` takes a whole reply and flattens an empty `choices` list into
-`""`, while `_complete_once` has to tell that case apart as `NoCompletionChoices` (transient) from
-empty content (permanent). So the coupling is pinned by a test that drives BOTH implementations
-over the same table and asserts they agree, which fails loudly if either one drifts. This session
-learned that a duplicated rule kept in step by a comment does drift: `is_terminal` ran with two of
-three status spellings for a whole branch and nothing went red.
+🔑 What an empty reading MEANS still differs per client, deliberately, and that is pinned too:
+`_text_of` returns `""` because `_batch_rungs("")` refuses it as a batch rejection a reviewer sees;
+the benchmark clients raise, because nothing downstream re-reads the answer and `""` was SCORED.
 """
 
 from __future__ import annotations
@@ -43,18 +41,32 @@ from typing import Any
 import pytest
 
 from benchmarks.llm import EmptyCompletion, OpenRouterLLM
+from recall._chat_content import assistant_text
 from recall.truth_extraction._openai_engine import _text_of
 
-#: The shapes both readers must agree on, and what the agreed reading is. Dicts and objects both
-#: appear because a gateway may serialise blocks either way, and `_text_of` handles both.
-_BLOCK_SHAPES: list[tuple[str, Any, str]] = [
+#: Every shape the reader must handle, and the reading all three clients must agree on.
+#:
+#: ⛔ The last four are the ones the first version of this file missed. `dict text=None` and
+#: `dict text=123` are the shapes that raised `TypeError`; the plain `str` entries pin the branch
+#: a lists-only table left unguarded.
+_SHAPES: list[tuple[str, Any, str]] = [
+    ("a plain string", "an answer", "an answer"),
+    ("a padded string is untouched", "  an answer  ", "  an answer  "),
     ("one text block", [{"type": "text", "text": "an answer"}], "an answer"),
-    ("two blocks join in order", [{"type": "text", "text": "an "}, {"type": "text", "text": "answer"}], "an answer"),
+    ("two blocks join in order",
+     [{"type": "text", "text": "an "}, {"type": "text", "text": "answer"}], "an answer"),
     ("object blocks, not dicts", [types.SimpleNamespace(text="an answer")], "an answer"),
-    ("a non-text block contributes nothing", [{"type": "image", "url": "x"}, {"type": "text", "text": "hi"}], "hi"),
-    ("a block whose text is None", [types.SimpleNamespace(text=None), {"type": "text", "text": "hi"}], "hi"),
-    ("an empty list reads as nothing", [], ""),
-    ("a list of nothing useful reads as nothing", [{"type": "image", "url": "x"}], ""),
+    ("a non-text block contributes nothing",
+     [{"type": "image", "url": "x"}, {"type": "text", "text": "hi"}], "hi"),
+    ("an object block whose text is None",
+     [types.SimpleNamespace(text=None), {"type": "text", "text": "hi"}], "hi"),
+    ("an empty list", [], ""),
+    ("a list of nothing useful", [{"type": "image", "url": "x"}], ""),
+    # The four that used to crash or were unpinned.
+    ("a DICT block whose text is None", [{"type": "text", "text": None}], ""),
+    ("a DICT block whose text is a number", [{"type": "text", "text": 123}], ""),
+    ("an object block whose text is a number", [types.SimpleNamespace(text=123)], ""),
+    ("content that is neither str nor list", {"text": "hi"}, ""),
 ]
 
 
@@ -82,91 +94,133 @@ def _install_fake_openai(monkeypatch: pytest.MonkeyPatch, content: Any) -> None:
 
 
 def _reply(content: Any) -> object:
-    """A whole chat completion carrying `content`, for `_text_of`, which takes the reply."""
     return types.SimpleNamespace(
         choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=content))]
     )
 
 
+# --------------------------------------------------------------------------------------------
+# 1. The shared reader.
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("label,content,expected", [pytest.param(*c, id=c[0]) for c in _SHAPES])
+def test_the_shared_reader_reads_every_shape(label: str, content: Any, expected: str) -> None:
+    assert assistant_text(content) == expected
+
+
+@pytest.mark.parametrize("label,content,expected", [pytest.param(*c, id=c[0]) for c in _SHAPES])
+def test_the_shared_reader_never_raises(label: str, content: Any, expected: str) -> None:
+    """⚠️ The property the whole module exists for. A reader that raises does not merely misread:
+    in `benchmarks/llm.py` a `TypeError` escapes past the `EmptyCompletion` guard as a bare Python
+    error, and in mtrag an `AttributeError` is not in `PERMANENT_ERROR_NAMES`, so the task pays
+    four BILLED attempts before failing."""
+    assistant_text(content)  # must not raise
+
+
+def test_the_shared_reader_survives_a_hostile_block() -> None:
+    """Blocks come off the wire, so `get` and `text` can be anything at all."""
+
+    class _HostileDict(dict):
+        def get(self, *a: Any, **k: Any) -> Any:
+            raise RuntimeError("hostile get")
+
+    class _HostileBlock:
+        @property
+        def text(self) -> str:
+            raise RuntimeError("hostile text")
+
+    for block in (_HostileDict(), _HostileBlock()):
+        with pytest.raises(RuntimeError):
+            assistant_text([block])
+
+
+# --------------------------------------------------------------------------------------------
+# 2. Every client uses it, rather than three copies that match today.
+# --------------------------------------------------------------------------------------------
+
+
 @pytest.mark.parametrize(
-    "label,content,expected",
-    [pytest.param(*case, id=case[0]) for case in _BLOCK_SHAPES if case[2]],
+    "label,content,expected", [pytest.param(*c, id=c[0]) for c in _SHAPES if c[2]]
 )
-def test_block_content_is_read_rather_than_refused(
+def test_the_benchmark_client_reads_what_the_shared_reader_reads(
     monkeypatch: pytest.MonkeyPatch, label: str, content: Any, expected: str
 ) -> None:
-    """The defect. `_complete_once` refused every one of these with `EmptyCompletion`, naming the
-    type, so a gateway that encodes text as blocks failed EVERY question of a run while the
-    extraction client read the identical body correctly."""
     _install_fake_openai(monkeypatch, content)
 
     assert OpenRouterLLM(model="m", api_key="k").complete("s", "u") == expected
 
 
 @pytest.mark.parametrize(
-    "label,content", [pytest.param(c[0], c[1], id=c[0]) for c in _BLOCK_SHAPES if not c[2]]
+    "label,content,expected", [pytest.param(*c, id=c[0]) for c in _SHAPES if c[2]]
 )
-def test_a_block_list_carrying_no_text_is_still_refused(
+def test_the_extraction_client_reads_what_the_shared_reader_reads(
+    label: str, content: Any, expected: str
+) -> None:
+    assert _text_of(_reply(content)) == expected
+
+
+@pytest.mark.parametrize(
+    "label,content,expected", [pytest.param(*c, id=c[0]) for c in _SHAPES if c[2]]
+)
+def test_the_mtrag_client_reads_what_the_shared_reader_reads(
+    label: str, content: Any, expected: str
+) -> None:
+    """The third reader, which `(content or "").strip()` crashed on with `AttributeError` for
+    every block list, at four billed attempts a task."""
+    from benchmarks.mtrag.generation import generate_one
+
+    class _Client:
+        chat = property(lambda self: self)  # type: ignore[assignment]
+
+        @property
+        def completions(self) -> "_Client":
+            return self
+
+        def create(self, **_: Any) -> object:
+            return _reply(content)
+
+    assert generate_one(_Client(), "m", [{"role": "user", "content": "x"}], 128) == expected.strip()
+
+
+# --------------------------------------------------------------------------------------------
+# 3. The empty-reading policy, which is where they SHOULD differ.
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "label,content", [pytest.param(c[0], c[1], id=c[0]) for c in _SHAPES if not c[2]]
+)
+def test_a_reading_of_nothing_is_refused_by_the_benchmark_client(
     monkeypatch: pytest.MonkeyPatch, label: str, content: Any
 ) -> None:
-    """Guards the guard. Reading blocks must not become a way to return `""` after all: a list
-    with nothing readable in it is exactly as unscorable as `content=None` was."""
+    """Guards the guard. Reading blocks must not become a new way to return `""` after all."""
     _install_fake_openai(monkeypatch, content)
 
     with pytest.raises(EmptyCompletion):
         OpenRouterLLM(model="m", api_key="k").complete("s", "u")
 
 
-def test_a_plain_string_is_still_returned_verbatim(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The overwhelmingly common path, unchanged and still unstripped."""
-    _install_fake_openai(monkeypatch, "  an answer  ")
+def test_an_unreadable_block_list_still_names_the_shape_that_arrived() -> None:
+    """⛔ Whitelisting `list` in the shape fragment made an unreadable list produce a message
+    byte-identical to `content=None`, telling the operator the model said nothing when the cause
+    was a block encoding this reader does not understand. That is the same measurement error the
+    reconciliation exists to prevent, one shape further out and with the evidence removed."""
+    from benchmarks.llm import _shape_note
 
-    assert OpenRouterLLM(model="m", api_key="k").complete("s", "u") == "  an answer  "
-
-
-def test_a_non_str_non_list_content_is_still_refused_by_type(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A dict, an int, anything else: still unusable, and the message still names the shape that
-    arrived so the operator sees a provider problem rather than an `AttributeError`."""
-    _install_fake_openai(monkeypatch, {"text": "hi"})
-
-    with pytest.raises(EmptyCompletion) as caught:
-        OpenRouterLLM(model="m", api_key="k").complete("s", "u")
-
-    assert "dict" in str(caught.value)
+    assert _shape_note(None) == ""
+    assert _shape_note("") == ""
+    assert _shape_note([]) == ""
+    assert "1 block" in _shape_note([{"type": "image", "url": "x"}])
+    assert "dict" in _shape_note({"text": "hi"})
 
 
-def test_an_empty_reading_is_refused_here_and_tolerated_there() -> None:
-    """⚠️ Pins the DELIBERATE divergence, so nobody 'reconciles' it away.
-
-    The two clients agree on the reading and disagree on the policy for an empty one, because the
-    consequence differs: `_text_of` returning "" meets `_batch_rungs`, which refuses it as a batch
-    rejection a reviewer can see, whereas `complete` returning "" was scored as the system's answer
-    with nothing downstream to catch it.
-    """
+def test_an_empty_reading_is_tolerated_by_the_extraction_client() -> None:
+    """Pins the DELIBERATE divergence, so nobody 'reconciles' it away: returning `""` is safe
+    there precisely because something downstream refuses it."""
     from recall.truth_extraction._normalize import _batch_rungs
 
-    assert _text_of(_reply([])) == "", "the extraction client tolerates an empty reading"
+    assert _text_of(_reply([])) == ""
     with pytest.raises(Exception) as caught:
         _batch_rungs("")
-    assert "json" in str(caught.value), "and something downstream refuses it"
-
-
-def test_both_clients_read_every_block_shape_identically() -> None:
-    """🔑 THE ARM THAT KEEPS THEM IN STEP, and the reason mirroring the rule is acceptable.
-
-    Drives `_text_of` and `benchmarks.llm`'s reader over the same table and asserts they agree. A
-    rule duplicated in two modules and kept in step by a comment DOES drift: in this same
-    subsystem, `is_terminal` ran with two of three status spellings for an entire branch and
-    nothing went red until a rebase surfaced it.
-    """
-    from benchmarks.llm import _assistant_text
-
-    for label, content, expected in _BLOCK_SHAPES:
-        mine = _assistant_text(content)
-        theirs = _text_of(_reply(content))
-        assert mine == theirs == expected, (
-            f"{label}: benchmarks read {mine!r}, truth_extraction read {theirs!r}, "
-            f"expected {expected!r}"
-        )
+    assert "json" in str(caught.value)

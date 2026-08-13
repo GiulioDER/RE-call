@@ -128,6 +128,7 @@ from benchmarks.llm import CompletionTruncated
 # Private on purpose, and imported rather than reimplemented: there is one definition in this
 # repository of how long a provider asked us to wait, and a second copy here would drift from it
 # exactly as the two retry policies this file just finished collapsing into one did.
+from recall._chat_content import assistant_text
 from recall.embeddings import _retry_after_seconds
 
 #: From the official `format_checker.py`. Named here so a violation fails in OUR run, with a
@@ -484,7 +485,12 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
                     f"completion hit max_tokens={max_tokens} and was cut off. Raise --max-tokens; "
                     f"do NOT score this answer."
                 )
-            return (response.choices[0].message.content or "").strip()
+            # `assistant_text`, not `content or ""`. A list of text blocks is TRUTHY, so `or ""`
+            # passed it straight through and `.strip()` raised `AttributeError` — a type that is
+            # NOT in `PERMANENT_ERROR_NAMES`, so every affected task paid four BILLED attempts
+            # before failing, and five such tasks in a row aborted the run. Shared with the other
+            # two OpenAI-compatible clients in this repo so the rule cannot drift between them.
+            return assistant_text(response.choices[0].message.content).strip()
         except CompletionTruncated:
             raise
         except Exception as exc:  # noqa: BLE001 - re-raised below once attempts are exhausted
