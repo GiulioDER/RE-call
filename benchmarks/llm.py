@@ -5,7 +5,7 @@ import time
 from collections.abc import Callable
 from typing import Protocol
 
-from recall.embeddings import retry_with_backoff
+from recall.embeddings import _is_transient, retry_with_backoff
 from recall.provider_metadata import ProviderMetadata
 
 #: The injected-LLM seam: (system_prompt, user_prompt) -> completion text. Everything downstream
@@ -36,7 +36,88 @@ class CompletionTruncated(RuntimeError):
 
     Deliberately NOT transient: `retry_with_backoff` re-raises immediately instead of paying for
     the same over-long request three more times. The fix is a bigger ceiling, not another attempt.
+
+    That is declared by membership of `PERMANENT_ERRORS` below, not left to the wording here.
+    Classifying on the message alone made the property depend on how the ceiling is SPELLED:
+    `_is_transient` falls back to substring markers that include the literal "429", and this
+    message interpolates `max_tokens`, so 16384 read as permanent (correct) while 4290, 429 and
+    1429 all read as rate limits and bought four attempts at a failure guaranteed to repeat.
+    `DEFAULT_MAX_TOKENS`'s own docstring invites the edit that lands on such a ceiling.
     """
+
+
+class EmptyCompletion(RuntimeError):
+    """A completion came back carrying no text at all.
+
+    Distinct from `CompletionTruncated` on purpose, and the distinction is the operator's next
+    action. Truncation means the completion hit OUR ceiling, so the fix is a bigger one. Empty text
+    is what an OpenAI-compatible provider returns when it filtered the completion
+    (`finish_reason == "content_filter"`) or emitted a tool call instead of prose (`"tool_calls"`),
+    and no value of `DEFAULT_MAX_TOKENS` changes either. Folding the two together would print
+    "Raise max_tokens" for a cause that constant cannot reach.
+
+    Raised rather than returned, because the returned value was `""`. `complete` is the `Completer`
+    seam every consumer downstream reads as the system's answer — the BEAM answerer, the judge —
+    and an empty answer is indistinguishable, in a results artifact, from a system that had nothing
+    to say. Nothing past this point looks at the string again.
+
+    Classified permanent. A filter fires on the PROMPT, and the prompt is byte-identical on every
+    attempt, so the three extra calls buy the same refusal at the same price. Refusals also land on
+    particular questions rather than on whole runs, so nothing upstream caps them.
+    """
+
+
+class NoCompletionChoices(RuntimeError):
+    """A 200 whose `choices` list is empty, so there is no completion to read at all.
+
+    OpenRouter answers this way when the upstream it routed to faults. `resp.choices[0]` used to be
+    indexed blind here, so this surfaced as `IndexError: list index out of range`: a message that
+    names a Python operation rather than the provider, and sends whoever reads it hunting for a bug
+    in the harness.
+
+    Deliberately TRANSIENT, unlike `EmptyCompletion` above, and it has to say so out loud — see
+    `TRANSIENT_ERRORS`. This is a fault on the provider's side of the wire rather than a property
+    of the request, so a second attempt can be served by a healthy upstream. Being wrong in this
+    direction costs at most `max_attempts` calls on one question; being wrong the other way fails a
+    call that would have succeeded.
+    """
+
+
+#: Our own failures, classified by TYPE at the point they are raised rather than left to
+#: `_is_transient`'s heuristics. Both directions are stated because neither default is right here.
+#:
+#: ⛔ Type, not message, and not name. `_is_transient`'s last resort is substring-matching the
+#: exception's rendered text against markers including "429", "timeout" and "unavailable". That
+#: text is written for a human: `CompletionTruncated` interpolates the ceiling, and
+#: `EmptyCompletion` interpolates `finish_reason`, which is a string the PROVIDER chooses. Leaving
+#: the classification to phrasing means a provider can flip our retry policy from the wire.
+PERMANENT_ERRORS: tuple[type[Exception], ...] = (CompletionTruncated, EmptyCompletion)
+
+#: ⚠️ Stated explicitly because the default here is the OPPOSITE of the one in
+#: `benchmarks/mtrag/generation.py`, which retries anything not named permanent. `_is_transient`
+#: returns False for an exception carrying no numeric status and no marker word, which is exactly
+#: what `NoCompletionChoices` is, so omitting it would silently make it fail fast.
+TRANSIENT_ERRORS: tuple[type[Exception], ...] = (NoCompletionChoices,)
+
+
+def _classify(exc: Exception) -> bool:
+    """Is `exc` worth another attempt? An OVERRIDE of the shared heuristic, not a replacement.
+
+    Only this module's own types are decided here, because only their raise sites know something
+    the rendered text cannot express: whether repeating the call reproduces the failure at full
+    price. Everything else — 429, 5xx, connection resets — still goes to `_is_transient`, which is
+    the one definition of "transient" this repo has, and dropping that delegation would mean a
+    single rate limit ends a 1,986-question run.
+
+    `_is_transient` is private to `recall.embeddings` and imported anyway: its own docstring names
+    `benchmarks/llm.py` as a caller it reasons about, so the two are already coupled by design, and
+    reimplementing the heuristic to avoid an underscore would give this repo two of them.
+    """
+    if isinstance(exc, PERMANENT_ERRORS):
+        return False
+    if isinstance(exc, TRANSIENT_ERRORS):
+        return True
+    return _is_transient(exc)
 
 
 class LLM(Protocol):
@@ -123,7 +204,9 @@ class OpenRouterLLM:
         def _once() -> str:
             return self._complete_once(system, user)
 
-        return retry_with_backoff(_once, attempts=self.max_attempts, sleep=self._sleep)
+        return retry_with_backoff(
+            _once, attempts=self.max_attempts, sleep=self._sleep, is_transient=_classify
+        )
 
     def _complete_once(self, system: str, user: str) -> str:
         from openai import OpenAI  # lazy: only needed at real run time
@@ -161,15 +244,49 @@ class OpenRouterLLM:
                 self._usage["completion_tokens"] += int(
                     getattr(resp_usage, "completion_tokens", 0) or 0
                 )
+        # Read the choice ONCE, and defensively. A 200 can carry an empty `choices` list when the
+        # upstream OpenRouter routed to faults, and indexing it blind raised `IndexError`, which
+        # named a Python operation instead of the provider fault it actually was.
+        #
+        # Everything from here down sits AFTER the usage block on purpose: the tokens were spent
+        # whatever the body turned out to carry, and `benchmarks.usage` subtracts this figure to
+        # publish `memory_layer`, so an undercount invents cost that was never incurred.
+        choices = resp.choices
+        if not choices:
+            raise NoCompletionChoices(
+                "the provider returned a 200 with an empty `choices` list, so there is no "
+                "completion to read. This is an upstream fault on the provider's side, not a "
+                "property of the request."
+            )
+        choice = choices[0]
         # A response that stopped for `length` is truncated. Fail loudly: scoring a half-written
         # answer would charge our own ceiling to the system under test.
-        if getattr(resp.choices[0], "finish_reason", None) == "length":
+        reason = getattr(choice, "finish_reason", None)
+        if reason == "length":
             raise CompletionTruncated(
                 f"completion hit max_tokens={self.max_tokens} and was cut off. Raise max_tokens "
                 f"(benchmarks.llm.DEFAULT_MAX_TOKENS) — do NOT score this answer."
             )
-        content = resp.choices[0].message.content
-        return content or ""
+        # Annotated rather than inferred: `resp` is `Any` out of the lazily imported SDK, so the
+        # unannotated read made this function return `Any` from a signature declaring `str`, which
+        # the typecheck job rejects. The annotation is also what lets the guard below narrow the
+        # `None` away, so the `return` is a genuine `str` rather than a silenced one.
+        content: str | None = choice.message.content
+        # Emptiness is decided on the STRIPPED text but the value handed back is untouched.
+        # `generate_one` returns `.strip()`ed text because a stripped string is what it writes to a
+        # submission; this is the `Completer` seam feeding arbitrary consumers, so stripping here
+        # would silently change what every existing caller receives. Whitespace-only content is
+        # still as unscorable as `None`, and `content or ""` returned both as `""`.
+        #
+        # `finish_reason` is named because it is the only field that tells a filter refusal apart
+        # from a tool-call stub or a provider bug, and the three want different responses.
+        if not content or not content.strip():
+            raise EmptyCompletion(
+                f"the provider returned a completion with no text (finish_reason={reason!r}), so "
+                f"there is no answer. Returning it would put an unscorable empty string where a "
+                f"judge cannot tell it apart from a system that had nothing to say."
+            )
+        return content
 
 
 def _usage_cost_usd(usage: object | None) -> float | None:
