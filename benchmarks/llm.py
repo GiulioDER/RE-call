@@ -115,7 +115,9 @@ TRANSIENT_ERRORS: tuple[type[Exception], ...] = (NoCompletionChoices,)
 #: the provider chose, and only these are safe to render into an exception message: see
 #: `EmptyCompletion`, and `benchmarks/beam/run.py:_is_terminal`, which substring-matches that
 #: message against markers where a hit aborts an entire run.
-KNOWN_FINISH_REASONS = frozenset({"stop", "length", "content_filter", "tool_calls", "function_call"})
+KNOWN_FINISH_REASONS = frozenset(
+    {"stop", "length", "content_filter", "tool_calls", "function_call"}
+)
 
 
 def _safe_reason(reason: object) -> str:
