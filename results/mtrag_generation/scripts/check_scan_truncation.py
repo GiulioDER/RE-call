@@ -1,33 +1,46 @@
 """Every way `scan_truncation.py` could report a false clean, driven as a case matrix.
 
 An audit tool whose failure mode is silence needs its own guard, and the guard has to be run, not
-read. The FIRST version of `scan_truncation.py` printed "0 truncated" and exited 0 for: an empty
-file, a whitespace-only file, a file of one good row behind four hundred unparseable ones, rows
-carrying no `predictions` at all, a byte-order mark that made the first row (holding the only
-over-ceiling answer) unparseable, a truncation sitting at `predictions[1]`, and a count one token
-under the ceiling. It also crashed with `UnicodeEncodeError` when it DID find something, because
-it echoed model output through `repr()` to a cp1252 console, losing the totals and every file
-after it in argv. None of that was visible by reading it.
+read. Two rounds of audit found these, none of them visible by reading the scanner: it printed
+"0 truncated" and exited 0 for an empty file, a whitespace-only file, one good row behind four
+hundred unparseable ones, rows carrying no `predictions`, a byte-order mark that made the first
+row (holding the only over-ceiling answer) unparseable, a truncation at `predictions[1]`, a count
+one token under the ceiling, and a row whose readable prediction sat beside an unreadable one. It
+also crashed with `UnicodeEncodeError` when it DID find something, because it echoed model output
+through `repr()` to a cp1252 console, losing the totals and every file after it in argv.
 
-Each case below states the exit code it must produce. Run it after any edit to the scanner:
+Run it after any edit to the scanner:
 
     python results/mtrag_generation/scripts/check_scan_truncation.py [--corpus <real .jsonl>]
 
+Each case asserts the per-file VERDICT, not merely a non-zero exit. Several inputs exit non-zero
+either way: a byte-order mark that hides an over-ceiling first row exits 1 as UNVERIFIED, so a
+case demanding only "not clean" passes whether the row was read or dropped. Verdicts are parsed
+out of the scanner's own summary block and compared per file, because a substring test over the
+whole output cannot tell which file a verdict belonged to.
+
 `--corpus` adds the liveness check that matters: against a real file the scanner must exit 0 at
-the true ceiling and 1 at `--ceiling 200`. A detector that never fires proves nothing by not
-firing.
+the true ceiling and report a finding at `--ceiling 200`. A detector that never fires proves
+nothing by not firing. A `--corpus` path that does not exist is a FAILURE, not a skip.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import subprocess
 import sys
 import tempfile
 
 SCRIPT = pathlib.Path(__file__).with_name("scan_truncation.py")
+FOUND, NEAR, UNVERIFIED, CLEAN = ("TRUNCATION FOUND", "NEAR THE CEILING", "UNVERIFIED", "CLEAN")
+
+#: Forced on the child rather than inherited. The ascii()/repr() guard only bites on a console
+#: that cannot encode the character, so on Linux, macOS, or Windows under PYTHONUTF8 an inherited
+#: UTF-8 stdout makes that case inert and the matrix reports 17/17 while the crash is live.
+CHILD_ENCODING = "cp1252"
 
 
 def row(text: str, task_id: str = "t<::>1") -> str:
@@ -45,12 +58,24 @@ def tokens(n: int) -> str:
     return out
 
 
-def run(*paths: object, ceiling: int = 512) -> tuple[int, str]:
+def run(*paths: object, ceiling: int = 512, extra: list[str] | None = None) -> tuple[int, str, dict]:
+    """Returns (exit code, output, {filename: verdict}) with the verdict block parsed."""
     proc = subprocess.run(
-        [sys.executable, str(SCRIPT), "--ceiling", str(ceiling), *[str(p) for p in paths]],
-        capture_output=True, text=True, encoding="cp1252", errors="replace",
+        [sys.executable, str(SCRIPT), "--ceiling", str(ceiling), *(extra or []),
+         *[str(p) for p in paths]],
+        capture_output=True, text=True, encoding=CHILD_ENCODING, errors="replace",
+        env={**os.environ, "PYTHONIOENCODING": CHILD_ENCODING},
     )
-    return proc.returncode, proc.stdout + proc.stderr
+    out = proc.stdout + proc.stderr
+    verdicts: dict[str, str] = {}
+    if "verdicts:" in out:
+        for line in out.split("verdicts:", 1)[1].splitlines():
+            if not line.startswith("  "):
+                continue
+            label, _, name = line.strip().rpartition(" ")
+            if label:
+                verdicts[name] = label.strip()
+    return proc.returncode, out, verdicts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--corpus", type=pathlib.Path, default=None,
                     help="a real .scoring.jsonl, for the liveness check")
     args = ap.parse_args(argv)
+    failures: list[str] = []
 
     with tempfile.TemporaryDirectory(prefix="scan_truncation_cases_") as tmp:
         here = pathlib.Path(tmp)
@@ -68,84 +94,133 @@ def main(argv: list[str] | None = None) -> int:
             return path
 
         over, at, just_under = tokens(520), tokens(512), tokens(511)
+        band_edge, outside_band = tokens(500), tokens(499)  # NEAR_BAND is 12: 500 in, 499 out
         fine = tokens(40) + "."
-        # The third field is the required exit code, the fourth the verdict that must appear.
-        # ⛔ The exit code ALONE is not enough for several of these. A byte-order mark that hides
-        # the over-ceiling first row also exits 1, as UNVERIFIED, so a case asserting only "not 0"
-        # passes whether the row was read or dropped. Found by mutating the scanner back to plain
-        # utf-8 and watching this matrix stay green.
-        FOUND, NEAR, UNVERIFIED, CLEAN = (
-            "TRUNCATION FOUND", "NEAR THE CEILING", "UNVERIFIED", "CLEAN")
-        cases: list[tuple[str, list[object], int, str]] = [
-            ("a clean file exits 0", [write("clean.jsonl", row(fine) + "\n")], 0, CLEAN),
-            ("an over-ceiling answer is found", [write("over.jsonl", row(over) + "\n")], 1, FOUND),
-            ("exactly at the ceiling is found", [write("at.jsonl", row(at) + "\n")], 1, FOUND),
-            ("one token under is escalated",
-             [write("under.jsonl", row(just_under) + "\n")], 1, NEAR),
-            ("an absent file is not clean", [here / "nope.jsonl"], 1, UNVERIFIED),
-            ("an empty file is not clean", [write("empty.jsonl", "")], 1, UNVERIFIED),
-            ("a whitespace-only file is not clean",
-             [write("blank.jsonl", "\n \n\n")], 1, UNVERIFIED),
+        many = "".join(row(fine, f"t{i}") + "\n" for i in range(300))
+
+        cases: list[tuple[str, list[object], int, dict[str, str]]] = [
+            ("a clean file exits 0", [write("clean.jsonl", row(fine) + "\n")], 0,
+             {"clean.jsonl": CLEAN}),
+            ("an over-ceiling answer is found", [write("over.jsonl", row(over) + "\n")], 1,
+             {"over.jsonl": FOUND}),
+            ("exactly at the ceiling is found", [write("at.jsonl", row(at) + "\n")], 1,
+             {"at.jsonl": FOUND}),
+            ("one token under is escalated", [write("under.jsonl", row(just_under) + "\n")], 1,
+             {"under.jsonl": NEAR}),
+            # Both edges of the near band, so its WIDTH is pinned and not just its existence.
+            ("the far edge of the near band is escalated",
+             [write("edge.jsonl", row(band_edge) + "\n")], 1, {"edge.jsonl": NEAR}),
+            ("one token outside the band is clean",
+             [write("outside.jsonl", row(outside_band) + "\n")], 0, {"outside.jsonl": CLEAN}),
+            ("an absent file is not clean", [here / "nope.jsonl"], 1,
+             {"nope.jsonl": UNVERIFIED}),
+            ("an empty file is not clean", [write("empty.jsonl", "")], 1,
+             {"empty.jsonl": UNVERIFIED}),
+            ("a whitespace-only file is not clean", [write("blank.jsonl", "\n \n\n")], 1,
+             {"blank.jsonl": UNVERIFIED}),
             ("garbage lines are not clean",
-             [write("garbage.jsonl", row(fine) + "\nnot json\n")], 1, UNVERIFIED),
+             [write("garbage.jsonl", row(fine) + "\nnot json\n")], 1,
+             {"garbage.jsonl": UNVERIFIED}),
             ("a non-dict row is not clean",
-             [write("scalar.jsonl", "42\n" + row(fine) + "\n")], 1, UNVERIFIED),
+             [write("scalar.jsonl", "42\n" + row(fine) + "\n")], 1, {"scalar.jsonl": UNVERIFIED}),
             ("a row with no predictions is not clean",
-             [write("nopred.jsonl", json.dumps({"task_id": "x"}) + "\n")], 1, UNVERIFIED),
+             [write("nopred.jsonl", json.dumps({"task_id": "x"}) + "\n")], 1,
+             {"nopred.jsonl": UNVERIFIED}),
             ("predictions: [] is not clean",
              [write("emptypred.jsonl", json.dumps({"task_id": "x", "predictions": []}) + "\n")],
-             1, UNVERIFIED),
+             1, {"emptypred.jsonl": UNVERIFIED}),
             ("text: null is not clean",
              [write("nulltext.jsonl",
                     json.dumps({"task_id": "x", "predictions": [{"text": None}]}) + "\n")],
-             1, UNVERIFIED),
-            ("a directory argument is not clean", [here], 1, UNVERIFIED),
-            # Must be FOUND, not merely non-zero: the point is that the row was READ.
+             1, {"nulltext.jsonl": UNVERIFIED}),
+            # One readable prediction must not vouch for an unreadable sibling.
+            ("a good prediction beside an unreadable one is not clean",
+             [write("sibling.jsonl", json.dumps(
+                 {"task_id": "x", "predictions": [{"text": fine}, {"response": over}]}) + "\n")],
+             1, {"sibling.jsonl": UNVERIFIED}),
+            ("a nested prediction is not clean",
+             [write("nested.jsonl", json.dumps(
+                 {"task_id": "x", "predictions": [{"text": fine}, [{"text": over}]]}) + "\n")],
+             1, {"nested.jsonl": UNVERIFIED}),
+            ("a directory argument is not clean", [here], 1, {here.name: UNVERIFIED}),
             ("a BOM must not hide the first row",
-             [write("bom.jsonl", row(over) + "\n", bom=True)], 1, FOUND),
+             [write("bom.jsonl", row(over) + "\n", bom=True)], 1, {"bom.jsonl": FOUND}),
             ("truncation at predictions[1] is found",
              [write("second.jsonl", json.dumps(
                  {"task_id": "x", "predictions": [{"text": "short."}, {"text": over}]}) + "\n")],
-             1, FOUND),
+             1, {"second.jsonl": FOUND}),
             ("a non-ascii tail does not crash the report",
-             [write("unicode.jsonl", row(over[:-1] + "→") + "\n")], 1, FOUND),
-            ("one bad file does not hide another's verdict",
-             [write("bad.jsonl", "not json\n"), write("good.jsonl", row(fine) + "\n")],
-             1, UNVERIFIED),
+             [write("unicode.jsonl", row(over[:-1] + "→") + "\n")], 1,
+             {"unicode.jsonl": FOUND}),
+            # The whole file must be read: a scanner that stops early passes every one-line case.
+            ("the LAST row of 300 is still measured",
+             [write("long.jsonl", many + row(over, "last") + "\n")], 1, {"long.jsonl": FOUND}),
+            ("300 rows with nothing wrong are clean", [write("long_clean.jsonl", many)], 0,
+             {"long_clean.jsonl": CLEAN}),
+            ("one good row behind 400 bad ones is not clean",
+             [write("mostly_bad.jsonl", row(fine) + "\n" + "not json\n" * 400)], 1,
+             {"mostly_bad.jsonl": UNVERIFIED}),
+            # A finding must outrank an unread condition, or the report hides what it was run for.
+            ("a finding is named even when the file is also unread",
+             [write("both.jsonl", row(over) + "\nnot json\n")], 1, {"both.jsonl": FOUND}),
+            ("each file gets its own verdict",
+             [write("bad.jsonl", "not json\n"), write("good.jsonl", row(fine) + "\n")], 1,
+             {"bad.jsonl": UNVERIFIED, "good.jsonl": CLEAN}),
         ]
 
-        failures: list[str] = []
-        for name, paths, expected, verdict in cases:
-            code, out = run(*paths)
+        for name, paths, expected, wanted in cases:
+            code, out, verdicts = run(*paths)
             crashed = "Traceback" in out
-            said = verdict in out
-            ok = code == expected and said and not crashed
+            wrong = {f: (verdicts.get(f), v) for f, v in wanted.items() if verdicts.get(f) != v}
+            ok = code == expected and not wrong and not crashed
             print(f"[{'ok  ' if ok else 'FAIL'}] exit {code} (want {expected}) "
-                  f"{'CRASHED ' if crashed else ''}"
-                  f"{'' if said else f'NO {verdict!r} IN OUTPUT '}{name}")
+                  f"{'CRASHED ' if crashed else ''}{'' if not wrong else f'{wrong} '}{name}")
             if not ok:
-                failures.append(f"{name}: exit {code}, wanted {expected} + {verdict!r}"
+                failures.append(f"{name}: exit {code} (want {expected}), verdicts {wrong}"
                                 f"\n{out[-400:]}")
 
-        if args.corpus and args.corpus.exists():
-            true_ceiling, _ = run(args.corpus, ceiling=512)
-            lowered, _ = run(args.corpus, ceiling=200)
-            print(f"[{'ok  ' if true_ceiling == 0 else 'FAIL'}] corpus at 512 -> {true_ceiling} (want 0)")
-            print(f"[{'ok  ' if lowered == 1 else 'FAIL'}] corpus at 200 -> {lowered} (want 1, live)")
-            if true_ceiling != 0:
-                failures.append("real corpus at its true ceiling did not come back clean")
-            if lowered != 1:
-                failures.append("DETECTOR IS DEAD: lowering the ceiling found nothing")
-        else:
-            print("[warn] no --corpus given, so the detector's LIVENESS was not checked")
+        # The statistics RESULTS.md publishes come from code no verdict can see.
+        stats = write("stats.jsonl", "".join(row(tokens(n), f"s{n}") + "\n" for n in (40, 41, 42)))
+        _, out, _ = run(stats)
+        for fragment in ("rows 3  answers 3", "p50 41", "max 42"):
+            ok = fragment in out
+            print(f"[{'ok  ' if ok else 'FAIL'}] summary line reports {fragment!r}")
+            if not ok:
+                failures.append(f"summary line missing {fragment!r}\n{out[-400:]}")
+
+        # The premise of the whole tool is the GENERATOR's encoding, and a default that drifts to
+        # another BPE changes every count without changing any verdict.
+        _, out, _ = run(stats)
+        ok = "encoding o200k_base" in out
+        print(f"[{'ok  ' if ok else 'FAIL'}] default encoding is o200k_base (gpt-4o)")
+        if not ok:
+            failures.append("the default encoding is no longer o200k_base")
+
+    if args.corpus is None:
+        print("[warn] no --corpus given, so the detector's LIVENESS was not checked")
+    elif not args.corpus.exists():
+        # A typo in the path must not silently skip the only check that proves it fires.
+        print(f"[FAIL] --corpus {args.corpus} does not exist")
+        failures.append(f"--corpus {args.corpus} does not exist, so liveness was never checked")
+    else:
+        true_ceiling, _, _ = run(args.corpus, ceiling=512)
+        lowered, _, verdicts = run(args.corpus, ceiling=200)
+        live = verdicts.get(args.corpus.name) == FOUND
+        print(f"[{'ok  ' if true_ceiling == 0 else 'FAIL'}] corpus at 512 -> {true_ceiling} (want 0)")
+        print(f"[{'ok  ' if live else 'FAIL'}] corpus at 200 -> {verdicts.get(args.corpus.name)} "
+              f"(want {FOUND}, detector is live)")
+        if true_ceiling != 0:
+            failures.append("the real corpus did not come back clean at its true ceiling")
+        if not live:
+            failures.append("DETECTOR IS DEAD: lowering the ceiling did not produce a finding")
 
     print()
     if failures:
-        print(f"{len(failures)} CASE(S) FAILED")
+        print(f"{len(failures)} CHECK(S) FAILED")
         for failure in failures:
             print(f"  - {failure}")
         return 1
-    print(f"all {len(cases)} cases behaved")
+    print("every case behaved")
     return 0
 
 

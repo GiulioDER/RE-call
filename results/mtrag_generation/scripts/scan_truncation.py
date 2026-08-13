@@ -65,6 +65,7 @@ class FileReport:
         self.rows = 0
         self.unparseable = 0
         self.no_answer = 0
+        self.unmeasurable = 0
         self.unterminated = 0
         self.error: str | None = None
         self.counts: list[int] = []
@@ -73,14 +74,27 @@ class FileReport:
 
     @property
     def unread(self) -> bool:
-        return bool(self.error) or self.unparseable > 0 or self.no_answer > 0 or self.rows == 0
+        # `unmeasurable` counts PREDICTIONS skipped, not rows. Without it, a row holding one
+        # well-shaped prediction beside one this tool cannot read (`{"response": ...}`, a nested
+        # list, a null text, a duplicate JSON key) counted as fully read, so a truncated answer in
+        # the unreadable slot came back CLEAN. One good sibling must not vouch for another.
+        return (
+            bool(self.error)
+            or self.unparseable > 0
+            or self.no_answer > 0
+            or self.unmeasurable > 0
+            or self.rows == 0
+        )
 
     @property
     def verdict(self) -> str:
+        # A fixed four-word vocabulary: CLEAN, TRUNCATION FOUND, NEAR THE CEILING, UNVERIFIED.
+        # Advice belongs in the block above, not inside the label, because the label is what
+        # `check_scan_truncation.py` matches on and what a reader greps for.
         if self.at_ceiling:
             return "TRUNCATION FOUND"
         if self.near:
-            return "NEAR THE CEILING, read these by hand"
+            return "NEAR THE CEILING"
         if self.unread:
             return "UNVERIFIED"
         return "CLEAN"
@@ -116,7 +130,8 @@ def scan(path: Path, ceiling: int, encoding_name: str) -> FileReport:
                 continue
             report.rows += 1
             task_id = _safe(row.get("task_id"))
-            texts = _texts_of(row)
+            texts, dropped = _texts_of(row)
+            report.unmeasurable += dropped
             if not texts:
                 # Distinct from an empty answer: nothing here was measured, so nothing here is
                 # evidence. Collapsing this to a 0-token row also dragged the mean and p95 down,
@@ -136,24 +151,51 @@ def scan(path: Path, ceiling: int, encoding_name: str) -> FileReport:
     return report
 
 
-def _texts_of(row: dict) -> list[str]:
-    """Every prediction string in a row. Shapes that are not strings are dropped, so the row is
-    reported as answerless rather than silently measured as zero tokens."""
+def _texts_of(row: dict) -> tuple[list[str], int]:
+    """Every prediction string in a row, and how many predictions could NOT be read.
+
+    The second number is the point. Returning only the readable ones let a row with one good
+    prediction and one unreadable one look complete, which is how a truncated answer in the
+    unreadable slot came back CLEAN. The caller escalates any non-zero count to UNVERIFIED.
+    """
     predictions = row.get("predictions")
     if isinstance(predictions, dict):  # some derived files carry a single object
         predictions = [predictions]
     if not isinstance(predictions, list):
-        return []
-    out = []
+        return [], 0 if predictions is None else 1
+    out: list[str] = []
+    dropped = 0
     for prediction in predictions:
         if isinstance(prediction, dict):
             text = prediction.get("text")
         elif isinstance(prediction, str):
             text = prediction
         else:
-            continue
+            text = None
         if isinstance(text, str) and text != "":
             out.append(text)
+        else:
+            dropped += 1
+    return out, dropped
+
+
+def _expanded(paths: list[Path]) -> list[Path]:
+    """Expand any wildcard the shell left alone.
+
+    PowerShell does not glob arguments, so `taskc_*_official.*.jsonl` reaches this script as a
+    literal. Without this the operator gets "ABSENT" for a pattern and reads it as "the files are
+    missing" rather than "my shell did not expand this". A pattern matching nothing stays in the
+    list so it is still reported ABSENT rather than silently disappearing.
+    """
+    out: list[Path] = []
+    for path in paths:
+        if path.exists() or not any(ch in str(path) for ch in "*?["):
+            out.append(path)
+            continue
+        matches = sorted(Path(path.anchor or ".").glob(
+            str(path if not path.anchor else path.relative_to(path.anchor)).replace("\\", "/")
+        ))
+        out.extend(matches or [path])
     return out
 
 
@@ -166,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"ceiling {args.ceiling} completion tokens, encoding {args.encoding}\n")
     reports: list[FileReport] = []
-    for path in args.files:
+    for path in _expanded(args.files):
         if not path.exists():
             report = FileReport(path.name)
             report.error = "file absent"
@@ -185,7 +227,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"{report.name}\n"
             f"  rows {report.rows}  answers {len(report.counts)}  "
-            f"unparseable {report.unparseable}  rows with no answer {report.no_answer}\n"
+            f"unparseable {report.unparseable}  rows with no answer {report.no_answer}  "
+            f"unreadable predictions {report.unmeasurable}\n"
             f"  answer tokens: mean "
             f"{round(sum(report.counts) / len(report.counts), 1) if report.counts else 0}  "
             f"p50 {report.percentile(0.5)}  p95 {report.percentile(0.95)}  "
@@ -197,6 +240,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         for task_id, n, tail in (report.at_ceiling + report.near)[:10]:
             print(f"    !! {task_id}  {n} tokens  ...{tail}")
+        if report.near and not report.at_ceiling:
+            print(f"     read these by hand: re-tokenising a mid-word cut need not reproduce the "
+                  f"sampled count, so within {NEAR_BAND} of the ceiling is not proof of a finish")
         print()
 
     print("verdicts:")

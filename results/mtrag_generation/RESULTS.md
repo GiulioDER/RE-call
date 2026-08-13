@@ -232,25 +232,37 @@ What is known about them:
 
       python results/mtrag_generation/scripts/scan_truncation.py <restored>/taskc_*_official.*.jsonl
 
-  🔑 It reports **CLEAN only when every file was fully read and every row carried an answer**, and
-  exits non-zero otherwise. An absent file, an empty one, a byte-order mark, a line that will not
-  parse, a row with no `predictions`, an answer that is not a string, a truncation at any
-  prediction index rather than the first, a count one token under the ceiling, or a scan that
-  raised: each ends as UNVERIFIED, never as CLEAN. That list is not decoration. Every entry on it
-  was a way the FIRST version of this script silently reported "0 truncated" for rows it had never
-  read, which an audit found before the script had been pointed at anything real.
+  (An unexpanded wildcard is globbed by the script itself, because PowerShell does not expand
+  arguments and the operator would otherwise be told the pattern is ABSENT.)
+
+  🔑 It reports **CLEAN only when every file was fully read and every prediction in every row was
+  measured**, and exits non-zero otherwise. An absent file, an empty one, a line that will not
+  parse, a row with no `predictions`, a prediction this tool cannot read even when a readable one
+  sits beside it, a truncation at any prediction index rather than the first, a count one token
+  under the ceiling, or a scan that raised: each ends as UNVERIFIED, never as CLEAN. A byte-order
+  mark is the one entry that behaves the other way round, deliberately: the file is opened as
+  `utf-8-sig` so the mark is consumed and the first row is READ, rather than dropped as
+  unparseable and taken for a clean file with one fewer row.
+
+  That list is not decoration. Every entry on it was a way an earlier version of this script
+  silently reported "0 truncated" for rows it never read, each found by audit, twice over, before
+  the script had been pointed at anything that mattered.
 
   Its detector is live rather than assumed: run it with `--ceiling 200` against `taskb` and it
-  finds rows and exits 1, so the zero at 512 is a measurement and not a dead check. That claim is
-  itself checked, by `scripts/check_scan_truncation.py`, a 17-case matrix covering every false
-  clean above plus the liveness run. Run it after any edit to the scanner:
+  reports TRUNCATION FOUND, so the zero at 512 is a measurement and not a dead check. That claim is
+  itself checked, by `scripts/check_scan_truncation.py`: 25 cases, one per false clean above, plus
+  assertions on the published statistics and on the tokenizer, plus an optional liveness run
+  against a real corpus. Run it after any edit to the scanner:
 
       python results/mtrag_generation/scripts/check_scan_truncation.py --corpus <a real .jsonl>
 
-  Each case asserts the VERDICT, not just a non-zero exit, because several of them exit non-zero
-  either way: a byte-order mark that hides an over-ceiling first row exits 1 as UNVERIFIED, so a
-  case demanding only "not clean" passes whether the row was read or dropped. Six mutations of the
-  scanner, one per mechanism, each turn exactly one case red.
+  Each case asserts the per-file VERDICT, not just a non-zero exit, because several inputs exit
+  non-zero either way: a byte-order mark that hides an over-ceiling first row exits 1 as
+  UNVERIFIED, so a case demanding only "not clean" passes whether the row was read or dropped.
+  Twelve mutations of the scanner were run against the matrix and every one turned at least one
+  case red, including the four that a weaker earlier version of this matrix let through: stopping
+  after two lines, shrinking the near band to one token, drifting the default tokenizer to another
+  BPE, and letting a readable prediction vouch for an unreadable sibling.
 
 Two further limits on the four rows that WERE scanned, stated so the audit is not read as stronger
 than it is:
