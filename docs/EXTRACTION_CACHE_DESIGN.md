@@ -137,19 +137,42 @@ Construction follows `RejectionLedger`'s discipline exactly: connect into a loca
 handle no `__exit__` can close, because `with SqliteExtractionCache(p) as c:` never reaches
 `__enter__` when `__init__` raises.
 
-**One row is corrupt: miss.** Bad JSON, unknown kind, wrong field set, wrong value type, unknown
-`schema_version`, identity columns disagreeing with the payload, or a `sqlite3.Error` on the SELECT
+A busy store is told apart from a broken one. `_ensure_schema` takes the write lock, so a
+concurrent `recall extract run --cache <same path>` lands in the same refusal after the connect
+timeout. Reporting that as "not usable" tells the user their cache is damaged when another run
+simply holds it. Same refusal, since a cache that cannot be opened cannot serve `--recheck`, but the
+message says which case it is and therefore whether retrying is the fix.
+
+**One row is corrupt: miss.** Bad JSON, unknown kind, wrong field set, wrong value type, identity
+columns disagreeing with the payload, a payload that is not text, or a `sqlite3.Error` on the SELECT
 itself. The entry is re-paid from the engine and counted. Refusing the run over one bad row would
 punish the user for a corruption they did not cause and can trivially recover from.
+
+The guard around deserialization is deliberately broad, and narrower was wrong twice. `json.loads`
+raises `RecursionError` on a deeply nested payload, which is a `RuntimeError`, and a claim dataclass
+that has gained a field raises `TypeError` from its own constructor. Neither is
+`ExtractionPayloadInvalid`, so both escaped and crashed an ingest over somebody's corpus.
 
 **A write fails: count it, do not raise.** A full disk, a read only file, a lock timeout. Raising
 here would discard every file already extracted in that run, which is the exact shape of the bug
 `_refused` in `extract.py` was written to avoid. The count is reported.
 
+Both halves of `put` are guarded broadly, for one reason learned twice. Serialization raises
+`KeyError` for a claim class absent from `_serialize._FIELDS`, which is exactly the fifth-claim-kind
+defect the guard exists for and was the one shape a `(TypeError, ValueError)` guard did not cover.
+One layer down, the same mistake: the five identity strings bind straight to TEXT columns, and a
+POSIX filename that is not valid UTF-8 arrives as a lone surrogate through `Path.glob`'s
+surrogateescape, whose binding raises `UnicodeEncodeError`, which is not a `sqlite3.Error`. Guarding
+serialization broadly and the BINDING step narrowly discarded every extraction already built.
+
 ## Counters
 
 `hits` and `misses`, mirroring `InMemoryExtractionCache` so the two are substitutable in reporting,
-plus `corrupt` (rows refused on read, which also count as misses) and `write_failures`.
+plus `corrupt` (rows refused on read, which also count as misses), `stale` and `write_failures`.
+
+`stale` is separate from `corrupt` rather than folded into it. A row from a different
+`CACHE_SCHEMA_VERSION` is a routine upgrade, not damage, and a version bump that reported every row
+in a 792 memo corpus as corrupt would be a false alarm about the user's data.
 
 The CLI prints one summary line per run. This is not decoration. "A second run hit nothing" was the
 original bug report, and a hit count is the evidence that it no longer is.
@@ -196,9 +219,40 @@ loudly on the missing `path`, which is the difference that matters.
 14. `_CLAIM_TYPES` covers exactly `CLAIM_KINDS`, and each class agrees with its own key.
 15. `extract_corpus_claims` over a warm persistent cache makes zero engine calls.
 
+Added after a mutation run broke each of these guards and watched the whole suite stay green,
+which means they were asserted in a comment and by nothing else:
+
+16. A locked store is reported as busy, not as damage.
+17. A read that fails during a run is a miss, not a crash.
+18. A payload stored as a BLOB is a miss. Only a BLOB holding VALID json distinguishes this
+    guard, because every other non-text value already fails inside `json.loads`.
+19. A `bool` where an `int` belongs is refused, which is the `isinstance` trap above.
+20. An extra top level field is refused.
+21. An unknown claim kind raises `ExtractionPayloadInvalid` at the serializer, rather than
+    reaching `_CLAIM_TYPES[kind]` as a raw `KeyError` that `get` happens to swallow.
+22. `cached` round trips, which is the total equality the serializer's docstring promises.
+23. The shared payload fixture those tests corrupt is itself valid. Without this they could all
+    pass because the fixture was malformed rather than because a guard fired, which is the same
+    defect one level up.
+
 `tests/test_cli_extract.py` gains: the file is created at PATH; a second run reports hits; a bad
 `--cache` path exits 2 before any engine call. Its existing `--recheck` test, which passes `--cache`
-as a boolean, is updated.
+as a boolean, is updated. Persistence is proven by ENGINE CALLS rather than by the file existing: a
+cache written and never read still leaves a file on disk, so asserting the path exists would have
+passed against the very flag that shipped broken.
+
+## Known limits
+
+Stated rather than left to be discovered.
+
+`CACHE_SCHEMA_VERSION` is per row, so it degrades entry by entry only for a bump that keeps the
+column list identical. A bump that adds a column refuses the whole file at open instead, because the
+`PRAGMA table_info` check compares the column tuple exactly. There is no migration path; the
+recovery is to delete the cache file, which costs a re-paid corpus and nothing else.
+
+`--cache ""`, which a shell wrapper produces from an unset variable, is refused, but by coincidence
+rather than by a check: `Path("")` normalises to `"."` and sqlite cannot open a directory. The
+behaviour is pinned by a test. The mechanism is not stated in the code.
 
 ## Verification
 
@@ -206,8 +260,14 @@ as a boolean, is updated.
 and CI runs `ruff check` only. No database is needed for any of this.
 
 Every guard is mutated and watched going red before it is claimed to work, and the mutation is run
-from two working directories. One editable install serves roughly eighteen worktrees on the
-development machine: from this worktree `import recall` resolves here, but from any other directory
-it resolves to `C:\Users\gde00\Documents\recall\recall`, a checkout that does not contain
-`truth_extraction` at all. A cwd sensitive test can therefore pass over source that is broken, so
-each run asserts `recall.__file__` before its result is believed.
+from two working directories. This is not a formality: the first mutation run over this boundary
+caught 17 of 25 and left 8 guards unpinned, which is what properties 16 to 23 above were written
+for. One survivor was left alone deliberately: `type(raw[name]) is not want` against `isinstance`
+at the top level is an equivalent mutant, since the two diverge only for `bool` against `int` and
+no top level field is an `int`. A test there would have improved the count while asserting nothing.
+
+The mutation runs from two working directories. One editable install serves roughly eighteen
+worktrees on the development machine: from this worktree `import recall` resolves here, but from any
+other directory it resolves to `C:\Users\gde00\Documents\recall\recall`, a checkout that does not
+contain `truth_extraction` at all. A cwd sensitive test can therefore pass over source that is
+broken, so each run asserts `recall.__file__` before its result is believed and aborts otherwise.

@@ -273,3 +273,137 @@ def test_a_stored_payload_is_readable_json(tmp_path):
         ).fetchone()
     body = json.loads(payload)
     assert [c["kind"] for c in body["claims"]] == [c.kind for c in ALL_CLAIM_KINDS]
+
+
+# Everything below was added after a mutation run over this boundary: each guard here was
+# broken deliberately and the whole suite stayed green, so the protection was asserted in a
+# comment and by nothing else. A guard that cannot fail is not a guard.
+
+
+def _payload(**over) -> str:
+    """A valid stored payload, so a test can corrupt exactly one thing about it."""
+    body = {
+        "file": "m.md",
+        "claims": [{"kind": "status", "value": "active", "quote": "Status: active"}],
+        "rejections": [],
+        "engine_id": "e1",
+        "model_id": "m1",
+        "revision": "r1",
+        "prompt_revision": "p1",
+        "batch_rejection": None,
+        "cached": False,
+    }
+    body.update(over)
+    return json.dumps(body)
+
+
+def test_a_valid_payload_is_accepted(tmp_path):
+    """Pins `_payload` itself. Without this the seven tests below could all pass because the
+    fixture was malformed, rather than because the guard they aim at fired."""
+    from recall.truth_extraction import _serialize
+
+    assert _serialize.extraction_from_json(_payload()).file == "m.md"
+
+
+def test_a_locked_store_is_reported_as_busy_rather_than_as_damage(tmp_path, monkeypatch):
+    """Same refusal either way, but "not usable" tells a user their cache is CORRUPT when
+    another run merely holds the lock, and only one of those readings makes retrying the fix."""
+    path = _path(tmp_path)
+    SqliteExtractionCache(path).close()
+    blocker = sqlite3.connect(path, timeout=0.1)
+    blocker.execute("BEGIN EXCLUSIVE")
+    real_connect = sqlite3.connect
+    # Only the timeout is shortened. The lock, the error and the branch under test are real;
+    # at the production 30s this identical test would just take 30 seconds to say the same.
+    monkeypatch.setattr(sqlite3, "connect", lambda p, **k: real_connect(p, timeout=0.1))
+    try:
+        with pytest.raises(ExtractionCacheRefused) as exc:
+            SqliteExtractionCache(path)
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert "busy" in str(exc.value), "a locked cache was reported as damaged"
+
+
+def test_a_read_failure_is_a_miss_not_a_crash(tmp_path):
+    """The `sqlite3.Error` guard in `get`. A store that breaks UNDER a run, rather than before
+    it, must cost one re-paid engine call and not the 791 files already extracted."""
+
+    class _Broken:
+        def execute(self, *args, **kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+
+    cache = SqliteExtractionCache(_path(tmp_path))
+    cache.put("k1", _extraction())
+    healthy = cache._conn
+    cache._conn = _Broken()
+    try:
+        assert cache.get("k1") is None, "a failed read was served as a hit"
+        assert cache.corrupt == 1
+        assert cache.misses == 1
+    finally:
+        cache._conn = healthy
+        cache.close()
+
+
+def test_a_payload_stored_as_a_blob_is_a_miss(tmp_path):
+    """`type(payload) is not str`, which only bites for a BLOB holding VALID json: every other
+    non-text value fails in `json.loads` and is caught below anyway. This module writes TEXT,
+    so a BLOB means something else wrote the row, and its bytes are not evidence about it."""
+    with SqliteExtractionCache(_path(tmp_path)) as cache:
+        cache.put("k1", _extraction())
+    with sqlite3.connect(_path(tmp_path)) as raw:
+        raw.execute(
+            "UPDATE extraction_entries SET payload = CAST(? AS BLOB) WHERE cache_key = 'k1'",
+            (_payload(engine_id="e1", model_id="m1", revision="r1", prompt_revision="p1"),),
+        )
+        raw.commit()
+    with SqliteExtractionCache(_path(tmp_path)) as cache:
+        assert cache.get("k1") is None, "a row this module did not write was served"
+        assert cache.corrupt == 1
+
+
+def test_a_bool_where_an_int_belongs_is_refused(tmp_path):
+    """`type(v) is int`, NOT `isinstance`. `bool` subclasses `int`, so `isinstance(True, int)`
+    is true: under it a `ClaimRejection` round trips its index back as `True`, which compares
+    unequal to the `1` that was stored, and `recheck` reports that as ENGINE nondeterminism."""
+    from recall.truth_extraction import _serialize
+
+    with pytest.raises(_serialize.ExtractionPayloadInvalid):
+        _serialize.extraction_from_json(
+            _payload(rejections=[{"index": True, "kind": "s", "rung": "json", "reason": "r"}])
+        )
+
+
+def test_an_extra_top_level_field_is_refused(tmp_path):
+    """An unexpected key means the payload was written by something that is not this module,
+    and a store somebody else also writes to is not one whose provenance can be trusted."""
+    from recall.truth_extraction import _serialize
+
+    with pytest.raises(_serialize.ExtractionPayloadInvalid):
+        _serialize.extraction_from_json(_payload(invented_by_another_writer=1))
+
+
+def test_an_unknown_claim_kind_is_refused_by_the_serializer(tmp_path):
+    """Refused HERE, as `ExtractionPayloadInvalid`, not merely swallowed one layer up.
+
+    `get` catches everything, so an unknown kind reaching `_CLAIM_TYPES[kind]` as a raw KeyError
+    would still read as a miss and this rung could rot unnoticed. `extraction_from_json` is a
+    module boundary in its own right, and its contract is that it raises its own type.
+    """
+    from recall.truth_extraction import _serialize
+
+    with pytest.raises(_serialize.ExtractionPayloadInvalid):
+        _serialize.extraction_from_json(
+            _payload(claims=[{"kind": "invented", "value": "active", "quote": "q"}])
+        )
+
+
+def test_the_cached_flag_round_trips(tmp_path):
+    """`_serialize` promises total equality with no carve outs. `extract.py` overrides `cached`
+    at its own read site, so storing a constant here breaks nothing TODAY, and the promise the
+    module docstring makes is the thing a later reader will rely on."""
+    from recall.truth_extraction import _serialize
+
+    entry = _extraction(cached=True)
+    assert _serialize.extraction_from_json(_serialize.extraction_to_json(entry)) == entry
