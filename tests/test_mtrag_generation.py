@@ -6,12 +6,17 @@ import json
 
 import pytest
 
+from benchmarks.llm import CompletionTruncated
 from benchmarks.mtrag import generation as gen
 
 
 #: The literal gold answer, which ships in every task's top-level `targets`. Distinctive on
 #: purpose: an assertion on a generic string could pass by luck.
 GOLD_ANSWER = "No, the Cardinals play only within the United States."
+
+#: A half-written answer, distinctive enough that finding it in a submission file is proof rather
+#: than coincidence. It reads like a real answer, which is the entire problem: a judge scores it.
+CUT_OFF_ANSWER = "The Cardinals play their home games at State Farm Stad"
 
 
 def _task(task_id: str = "conv1<::>2", answerability: str = "UNANSWERABLE") -> dict:
@@ -250,6 +255,155 @@ def test_a_transient_error_is_retried(monkeypatch) -> None:
 
     assert answer == "an answer"
     assert client.calls == 3
+
+
+#: A provider that never sends the field at all, which is a different shape from one that sends
+#: it as null. The guard reads `getattr(..., "finish_reason", None)`, and only an omitted
+#: attribute exercises that default; a `None` VALUE reaches the comparison either way.
+_ABSENT = object()
+
+
+class _TruncatingClient:
+    """A client whose every completion stops for `length`, counting the requests it is charged for.
+
+    Shaped like the SDK object `generate_one` reads: `client.chat.completions.create(...)` giving
+    a response with `choices[0].message.content` and `choices[0].finish_reason`. Pass `_ABSENT` to
+    build a choice carrying no `finish_reason` attribute whatsoever.
+    """
+
+    def __init__(self, text: str = CUT_OFF_ANSWER, finish_reason: object = "length") -> None:
+        self.calls = 0
+        self.text = text
+        self.finish_reason = finish_reason
+        self.chat = self
+
+    @property
+    def completions(self):
+        return self
+
+    def create(self, **kwargs):
+        self.calls += 1
+        attrs: dict[str, object] = {"message": type("M", (), {"content": self.text})()}
+        if self.finish_reason is not _ABSENT:
+            attrs["finish_reason"] = self.finish_reason
+        return type("R", (), {"choices": [type("C", (), attrs)()]})()
+
+
+def test_a_completion_cut_off_by_the_ceiling_is_refused_not_returned(monkeypatch) -> None:
+    """`--max-tokens` defaults to 512 here, so truncation is an everyday outcome rather than an
+    exotic one, and a truncated answer is the most dangerous shape a failure can take: it is a
+    plausible string that a judge scores as if the system produced it. That is a measurement error
+    of our own making, and it is indistinguishable from a genuine failure once it is in an
+    artifact. `benchmarks/llm.py` has raised on this for its own path since it gained a ceiling;
+    this path sent one and never looked at `finish_reason`."""
+    monkeypatch.setattr(gen.time, "sleep", lambda *_: None)
+    client = _TruncatingClient()
+
+    with pytest.raises(CompletionTruncated, match="max_tokens"):
+        gen.generate_one(client, "openai/gpt-4o", [{"role": "user", "content": "x"}], 512)
+
+
+def test_truncation_costs_exactly_one_request(monkeypatch) -> None:
+    """Every attempt is billed, and the ceiling that caused this one causes the next three too.
+    The fix is a bigger `--max-tokens`, never another attempt."""
+    slept: list[float] = []
+    monkeypatch.setattr(gen.time, "sleep", lambda seconds: slept.append(seconds))
+    client = _TruncatingClient()
+
+    with pytest.raises(CompletionTruncated):
+        gen.generate_one(client, "openai/gpt-4o", [{"role": "user", "content": "x"}], 512)
+
+    assert client.calls == 1, "a guaranteed-to-repeat failure must not burn the retry budget"
+    assert slept == [], "and must not pay the backoff either"
+    assert gen.GENERATION_ATTEMPTS > 1, "this test is only meaningful while retries exist"
+
+
+def test_the_operator_is_told_which_knob_to_turn(monkeypatch) -> None:
+    """The ceiling is this module's own `--max-tokens`, not the one in `benchmarks.llm`, so the
+    message has to name the flag the operator actually has. Being told to raise the wrong constant
+    is how a run gets repeated at the same ceiling.
+
+    Driven at 128 rather than the 512 every other test here uses, which is also the argparse
+    default: against 512 an assertion on the ceiling cannot tell an interpolated value from a
+    hardcoded one, because the two agree everywhere the suite looks."""
+    monkeypatch.setattr(gen.time, "sleep", lambda *_: None)
+    client = _TruncatingClient()
+
+    with pytest.raises(CompletionTruncated) as caught:
+        gen.generate_one(client, "openai/gpt-4o", [{"role": "user", "content": "x"}], 128)
+
+    message = str(caught.value)
+    assert "--max-tokens" in message
+    assert "128" in message, "the ceiling that was actually sent"
+    assert "512" not in message, "and not the default, which a hardcoded message would name"
+
+
+def test_a_finished_answer_is_still_returned(monkeypatch) -> None:
+    """Guards the guard: without this the new check could fire on every call and refuse the whole
+    run."""
+    monkeypatch.setattr(gen.time, "sleep", lambda *_: None)
+    client = _TruncatingClient(text="  a complete answer  ", finish_reason="stop")
+
+    assert gen.generate_one(client, "m", [{"role": "user", "content": "x"}], 512) == (
+        "a complete answer"
+    )
+    assert client.calls == 1
+
+
+@pytest.mark.parametrize(
+    "finish_reason, shape",
+    [(None, "sent as null"), (_ABSENT, "not sent at all")],
+    ids=["null", "omitted"],
+)
+def test_a_response_without_finish_reason_is_not_treated_as_truncated(
+    monkeypatch, finish_reason: object, shape: str
+) -> None:
+    """Not every provider returns the field, and absence is not evidence of truncation. Refusing
+    on a missing attribute would fail every task on such a provider, which is a worse failure than
+    the one being fixed.
+
+    Both shapes, because they reach the guard differently: a null VALUE meets the comparison, an
+    omitted ATTRIBUTE meets the `getattr` default. Parametrised after an audit showed the omitted
+    case was covered only by an unrelated fixture in the retry test above, so adding a realistic
+    `finish_reason` there would have quietly deleted the coverage this test is named for."""
+    monkeypatch.setattr(gen.time, "sleep", lambda *_: None)
+    client = _TruncatingClient(text="an answer", finish_reason=finish_reason)
+
+    assert gen.generate_one(client, "m", [{"role": "user", "content": "x"}], 512) == "an answer"
+    assert client.calls == 1, f"a completion whose stop reason was {shape} is not a retry either"
+
+
+def test_a_truncated_task_never_reaches_the_submission(tmp_path, monkeypatch) -> None:
+    """The property that actually matters, end to end: what lands in the artifact.
+
+    Raising is only half of it. The run-level quarantine catches every per-task failure, so the
+    truncated task must come out of `main` recorded as a failure and ABSENT from the submission,
+    rather than written as an answer that a judge will score.
+    """
+    monkeypatch.setattr(gen.time, "sleep", lambda *_: None)
+    tasks = [_task(task_id=f"c{i}<::>1") for i in range(3)]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+    client = _TruncatingClient()
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: client)
+
+    rc = gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+
+    assert rc == 1, "an incomplete submission must not report success through the exit code"
+    written = out.read_text(encoding="utf-8").strip()
+    assert written == "", "a truncated answer must not be written as if it were an answer"
+    failures = [
+        json.loads(line)
+        for line in out.with_suffix(out.suffix + ".failed.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert len(failures) == 3, "each truncated task must be recorded, not silently dropped"
+    assert {f["error_type"] for f in failures} == {"CompletionTruncated"}
+    assert all("--max-tokens" in f["error"] for f in failures), (
+        "the log is where an operator reads what went wrong, so the remedy has to survive into it"
+    )
+    assert client.calls == 3, "one billed request per task, not one per task per attempt"
 
 
 def test_the_submission_row_carries_every_required_field() -> None:
