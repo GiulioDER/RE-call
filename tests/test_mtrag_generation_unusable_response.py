@@ -58,6 +58,8 @@ them and `generate_one`'s own loop is the entire bill.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from benchmarks.llm import CompletionTruncated
@@ -212,8 +214,12 @@ def test_the_report_prices_a_refusal_at_the_one_request_it_cost() -> None:
     with pytest.raises(RuntimeError) as caught:
         _generate(client)
 
-    assert "gave up after 1 attempt" in str(caught.value)
-    assert "4 attempts" not in str(caught.value), "the budget is not what this failure cost"
+    # Anchored, not a substring test: "gave up after 1 attempt" also matches the ungrammatical
+    # "1 attempts", which is the tell that the number is being interpolated into fixed prose
+    # rather than described. A plain `in` here would leave that half of the fix unpinned, and
+    # would make the "4 attempts" assertion below unreachable, since it can only fail in cases
+    # this one has already caught.
+    assert re.search(r"gave up after 1 attempt\b", str(caught.value)), str(caught.value)
     assert client.calls == 1
 
 
