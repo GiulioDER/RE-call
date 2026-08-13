@@ -12,6 +12,7 @@ units; leaking it into `.score` would corrupt the trust layer's cosine threshold
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any
 
 from recall.types import ScoredChunk
@@ -35,6 +36,17 @@ class VoyageReranker:
         self.model = model
         self.top_k = top_k
         self._client = client
+        #: Guards the lazy build in `_voyage_client`. ONE instance is reached concurrently:
+        #: `benchmarks.beam.run` builds a single system before its conversation loop, that system
+        #: resolves a single reranker and passes it into every `retrieve`, and `_run_pool` maps the
+        #: scoring closure over a `ThreadPoolExecutor` (8 workers by default) with the retrieval
+        #: inside the worker. `if x is None: x = ...` is a check-then-set, so without this each
+        #: racing thread built its own `voyageai.Client` and all but one were overwritten and
+        #: dropped, still holding an HTTP connection pool nobody closes.
+        #:
+        #: The same guard as `benchmarks.llm.OpenRouterLLM._client_lock`, for the same reason and
+        #: with the same reasoning about why the build stays lazy; that comment is the longer one.
+        self._client_lock = threading.Lock()
         # Resolve the key eagerly (mirrors VoyageEmbedder) so a missing key fails at construction,
         # not after a run has started — UNLESS a client was injected, which needs no key.
         self._api_key = api_key or os.environ.get("VOYAGE_API_KEY")
@@ -42,11 +54,20 @@ class VoyageReranker:
             raise RuntimeError("VoyageReranker needs VOYAGE_API_KEY (env) or an explicit api_key")
 
     def _voyage_client(self) -> Any:
-        if self._client is None:
-            import voyageai
+        # Taken unconditionally rather than as the second half of a double-check: the unlocked
+        # fast path would save an uncontended acquire (tens of nanoseconds) off a reranking call
+        # that crosses the network, and would buy a publication argument with no settled answer on
+        # a free-threaded build, which this package's 3.14 support puts in range.
+        #
+        # The client is returned from INSIDE the critical section, so even the read of an
+        # already-built client is guarded. That costs nothing measurable here and means this
+        # method carries no unlocked read to reason about.
+        with self._client_lock:
+            if self._client is None:
+                import voyageai
 
-            self._client = voyageai.Client(api_key=self._api_key)
-        return self._client
+                self._client = voyageai.Client(api_key=self._api_key)
+            return self._client
 
     def rerank(self, query: str, hits: list[ScoredChunk]) -> list[ScoredChunk]:
         if not hits:
