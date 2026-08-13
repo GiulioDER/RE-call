@@ -178,6 +178,25 @@ def test_a_completion_with_no_text_costs_exactly_one_request() -> None:
     assert client.calls == 1, "a refusal is deterministic in the request; it must not be retried"
 
 
+def test_a_completion_of_the_empty_string_is_refused_as_no_text_and_not_as_a_missing_field() -> None:
+    """⚠️ This arm is about the SENTINEL, not about `""`. `_NO_CONTENT_FIELD` separates "the field
+    arrived carrying nothing", which is permanent, from "no field arrived", which is retried, and
+    that separation only holds while the sentinel is a value the wire cannot produce. Defining it
+    as `""` instead of `object()` would send this shape to the retried class, and nothing else in
+    this file would notice: every other arm uses `None` or whitespace.
+
+    `""` is also the exact string the caller used to write into `predictions`, so it is the one
+    value most worth being sure about."""
+    client = _Client([_choice("", "content_filter")])
+
+    with pytest.raises(RuntimeError) as caught:
+        _generate(client)
+
+    assert gen.EmptyCompletion.__name__ in str(caught.value)
+    assert gen.NoCompletionInResponse.__name__ not in str(caught.value)
+    assert client.calls == 1
+
+
 def test_a_completion_of_only_whitespace_is_refused_too() -> None:
     """`.strip()` is applied before the answer is written, so `"  \\n "` reaches the submission as
     `""`. A guard that checked the raw string instead of the stripped one would pass this through
