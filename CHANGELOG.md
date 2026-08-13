@@ -37,6 +37,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+* A benchmark completion cut off by the `max_tokens` ceiling is no longer retried when the
+  ceiling's digits happen to read like a rate limit. `retry_with_backoff` now honours an explicit
+  `recall.embeddings.NonTransientError` marker ahead of its message-text heuristic, so a failure
+  guaranteed to repeat costs one request rather than four.
 * MTRAG Task B and C generation no longer scores an answer that the token ceiling cut off.
   `benchmarks/mtrag/generation.py` sent `--max-tokens` (512 by default) and never read
   `finish_reason`, so a truncated completion was written to the submission and judged as if the
