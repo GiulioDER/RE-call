@@ -313,6 +313,20 @@ def main(argv: list[str] | None = None) -> int:
             failures.append(f"default ceiling wrong: exit {code}, "
                             f"verdict {verdicts.get('default.jsonl')}\n{out[-300:]}")
 
+        # Run coverage matches on BASENAME, so without a size claim a one-row file carrying the
+        # right name certifies a whole run. The archive's manifests record `tasks: 842`.
+        three = write("sized.jsonl", "".join(row(fine, f"n{i}") + "\n" for i in range(3)))
+        code, out, verdicts = run(three, extra=["--expect", "sized", "--expect-rows", "3"])
+        ok = code == 0 and verdicts.get("sized.jsonl") == CLEAN
+        print(f"[{'ok  ' if ok else 'FAIL'}] exit {code} (want 0) the right row count is clean")
+        if not ok:
+            failures.append(f"a correctly sized file was not clean\n{out[-300:]}")
+        code, out, verdicts = run(three, extra=["--expect", "sized", "--expect-rows", "842"])
+        ok = code == 1 and verdicts.get("sized.jsonl") == UNVERIFIED
+        print(f"[{'ok  ' if ok else 'FAIL'}] exit {code} (want 1) a short file cannot certify a run")
+        if not ok:
+            failures.append(f"a file with 3 of 842 rows was certified\n{out[-300:]}")
+
         # A degenerate --expect must not satisfy the requirement it appears to satisfy.
         for label, expect in [("--expect ,", ","), ("--expect empty", ""), ("--expect spaces", " ")]:
             code, out, _ = run(write("cov.jsonl", row(fine) + "\n"), extra=["--expect", expect])

@@ -230,7 +230,7 @@ What is known about them:
 * The scan is cheap once the payload pack from `runs/README.md` is restored. It is
   `scripts/scan_truncation.py`, and it reads `predictions[].text` and needs nothing else:
 
-      python results/mtrag_generation/scripts/scan_truncation.py --expect taskc_benchmark_official,taskc_recall_official <restored>/taskc_*_official.predictions.jsonl
+      python results/mtrag_generation/scripts/scan_truncation.py --expect taskc_benchmark_official,taskc_recall_official --expect-rows 842 <restored>/taskc_*_official.predictions.jsonl
 
   An unexpanded wildcard is globbed by the script itself, because PowerShell does not expand
   arguments and the operator would otherwise be told the pattern is ABSENT. ⛔ `--expect` is then
@@ -244,6 +244,15 @@ What is known about them:
   operator's choice of shell, which is the same defect one layer out. Nothing here certifies what
   nobody claimed. Every report also ends with `runs covered: ...`, so the universe a CLEAN refers
   to is legible in the report itself rather than reconstructed from a command line.
+
+  ⚠️ `--expect-rows 842` is not optional in spirit either. Coverage matches on the BASENAME, so
+  without a size claim a one-row file called `taskc_recall_official.predictions.jsonl` certifies
+  that run CLEAN while 841 answers go unmeasured; a name is not a size. 842 is the `tasks` field
+  in `manifests/taskc_recall_official.predictions.jsonl.manifest.json`. What survives even with
+  both flags: a file carrying the right name and the right row count but copied from somewhere
+  else is taken at face value, because the rows record `task_id` and no run identity. A CLEAN
+  therefore says "these named files were read in full and nothing in them hit the ceiling", which
+  is what an operator should quote it as.
 
   🔑 It reports **CLEAN only when every file was fully read and every prediction in every row was
   measured**, and exits non-zero otherwise. An absent file, an empty one, a line that will not
@@ -262,19 +271,21 @@ What is known about them:
 
   Its detector is live rather than assumed: run it with `--ceiling 200` against `taskb` and it
   reports TRUNCATION FOUND, so the zero at 512 is a measurement and not a dead check. That claim is
-  itself checked, by `scripts/check_scan_truncation.py`: 25 cases, one per false clean above, plus
-  assertions on the published statistics and on the tokenizer, plus an optional liveness run
-  against a real corpus. Run it after any edit to the scanner:
+  itself checked, by `scripts/check_scan_truncation.py`: a case per false clean above, plus
+  assertions on the published statistics, the tokenizer and the default ceiling, plus an optional
+  liveness run against a real corpus. It prints its own tally, which is the number to quote rather
+  than one written here, since a count in prose drifts the moment a case is added. Run it after any
+  edit to the scanner:
 
       python results/mtrag_generation/scripts/check_scan_truncation.py --corpus <a real .jsonl>
 
   Each case asserts the per-file VERDICT, not just a non-zero exit, because several inputs exit
   non-zero either way: a byte-order mark that hides an over-ceiling first row exits 1 as
   UNVERIFIED, so a case demanding only "not clean" passes whether the row was read or dropped.
-  Twelve mutations of the scanner were run against the matrix and every one turned at least one
-  case red, including the four that a weaker earlier version of this matrix let through: stopping
-  after two lines, shrinking the near band to one token, drifting the default tokenizer to another
-  BPE, and letting a readable prediction vouch for an unreadable sibling.
+  Every mutation of the scanner run against the matrix turned at least one case red, including the
+  ones a weaker earlier version let through: stopping after two lines, shrinking the near band to
+  one token, drifting the default tokenizer or the default ceiling, letting a readable prediction
+  vouch for an unreadable sibling, and accepting a `--expect` that names no run at all.
 
 Two further limits on the four rows that WERE scanned, stated so the audit is not read as stronger
 than it is:

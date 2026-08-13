@@ -81,8 +81,9 @@ class FileReport:
     """One file's verdict. `CLEAN` requires that nothing was skipped, not merely that nothing
     was found: an unread row is unverified, and unverified is not clean."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, expected_rows: int | None = None) -> None:
         self.name = name
+        self.expected_rows = expected_rows
         self.rows = 0
         self.unparseable = 0
         self.no_answer = 0
@@ -99,12 +100,16 @@ class FileReport:
         # well-shaped prediction beside one this tool cannot read (`{"response": ...}`, a nested
         # list, a null text, a duplicate JSON key) counted as fully read, so a truncated answer in
         # the unreadable slot came back CLEAN. One good sibling must not vouch for another.
+        # `expected_rows` closes the last false clean the audits found: run coverage matches on
+        # BASENAME, so a one-row file named `taskc_recall_official.predictions.jsonl` certified
+        # that run CLEAN while 841 answers were never measured. A name is not a size.
         return (
             bool(self.error)
             or self.unparseable > 0
             or self.no_answer > 0
             or self.unmeasurable > 0
             or self.rows == 0
+            or (self.expected_rows is not None and self.rows != self.expected_rows)
         )
 
     @property
@@ -139,11 +144,12 @@ def _no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
     return dict(pairs)
 
 
-def scan(path: Path, ceiling: int, encoding_name: str) -> FileReport:
+def scan(path: Path, ceiling: int, encoding_name: str,
+         expected_rows: int | None = None) -> FileReport:
     import tiktoken
 
     enc = tiktoken.get_encoding(encoding_name)
-    report = FileReport(path.name)
+    report = FileReport(path.name, expected_rows)
     # utf-8-sig, not utf-8: a BOM is a normal product of PowerShell redirection on this platform,
     # and under plain utf-8 it makes the FIRST row unparseable. A dropped first row that happened
     # to hold the only over-ceiling answer is the precise shape of a false clean.
@@ -249,6 +255,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("files", nargs="+", type=Path)
     ap.add_argument("--ceiling", type=int, default=512, help="the --max-tokens the run sent")
     ap.add_argument("--encoding", default="o200k_base", help="gpt-4o and gpt-4o-mini use o200k_base")
+    ap.add_argument("--expect-rows", type=int, default=None, metavar="N",
+                    help="rows each file must hold, from the run's manifest (`tasks`, 842 here); "
+                         "without it a CLEAN says the named files were fully measured, not that "
+                         "they are the complete runs")
     ap.add_argument("--expect", default=None, metavar="STEM,STEM",
                     help="run stems that must be covered, e.g. "
                          "taskc_benchmark_official,taskc_recall_official; required with a wildcard")
@@ -265,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{path.name}: ABSENT, so this run is UNVERIFIED rather than clean\n")
             continue
         try:
-            report = scan(path, args.ceiling, args.encoding)
+            report = scan(path, args.ceiling, args.encoding, args.expect_rows)
         except Exception as exc:  # noqa: BLE001 - one unreadable file must not hide the others
             report = FileReport(path.name)
             report.error = f"{type(exc).__name__}: {exc}"
@@ -275,7 +285,9 @@ def main(argv: list[str] | None = None) -> int:
         reports.append(report)
         print(
             f"{report.name}\n"
-            f"  rows {report.rows}  answers {len(report.counts)}  "
+            f"  rows {report.rows}"
+            f"{'' if report.expected_rows is None else f' (expected {report.expected_rows})'}"
+            f"  answers {len(report.counts)}  "
             f"unparseable {report.unparseable}  rows with no answer {report.no_answer}  "
             f"unreadable predictions {report.unmeasurable}\n"
             f"  answer tokens: mean "
