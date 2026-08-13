@@ -233,6 +233,65 @@ def test_the_client_is_built_with_an_explicit_timeout_and_no_sdk_retries(monkeyp
 
 
 @requires_openai
+def test_the_engine_paces_to_a_providers_retry_after(monkeypatch):
+    """`max_retries=0` switched the SDK's retries off, and the SDK is what honoured
+    `Retry-After`. `retry_with_backoff` picked that up in #305, so this engine inherits it, but
+    NOTHING pinned that it still reaches it.
+
+    That asymmetry is the hazard. `max_retries=0` IS pinned by the test above, so deleting the
+    `retry_with_backoff` wrapper as redundant would leave that assertion green while the engine
+    lost both its retries and its pacing. Against a per-minute rate limit the unpaced schedule
+    spends every attempt inside 1.5s, turning a recoverable 429 into a failed corpus ingest.
+
+    The real `retry_with_backoff` runs; only its `sleep` is redirected, so the arithmetic under
+    test is the shipped one rather than a copy of it.
+    """
+    import openai
+
+    import recall.embeddings as embeddings
+
+    slept: list[float] = []
+    real_retry = embeddings.retry_with_backoff
+
+    def _capturing(fn, **kwargs):
+        return real_retry(fn, **{**kwargs, "sleep": slept.append})
+
+    monkeypatch.setattr(embeddings, "retry_with_backoff", _capturing)
+
+    class _RateLimited(Exception):
+        status_code = 429
+
+        def __init__(self) -> None:
+            super().__init__("429 rate limit")
+            self.response = SimpleNamespace(headers={"retry-after": "30"})
+
+    def _create(**kwargs):
+        raise _RateLimited()
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=_create))
+
+    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+    engine = resolve_extraction_engine(
+        {
+            "RECALL_TRUTH_EXTRACTION": "1",
+            "RECALL_TRUTH_EXTRACTION_ENGINE": "openai",
+            "RECALL_EXTRACTION_API_KEY": "k",
+        }
+    )
+    assert engine is not None
+    with pytest.raises(Exception, match="rate limit"):
+        engine.run(_prompt())
+
+    assert slept, "the engine did not retry at all, so it never reached the pacing layer"
+    assert min(slept) >= 30, (
+        f"waited {min(slept)}s against a Retry-After of 30s. Ignoring the header is what "
+        "spends all three attempts inside a single rate-limit window."
+    )
+
+
+@requires_openai
 def test_a_transient_failure_is_retried_and_a_permanent_one_is_not(monkeypatch):
     import openai
 
