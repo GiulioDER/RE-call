@@ -801,7 +801,11 @@ class VoyageEmbedder:
             import voyageai
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError("VoyageEmbedder requires: pip install recall[voyage]") from exc
-        self._client = voyageai.Client(api_key=key)
+        # Stated rather than inherited: voyageai already defaults `max_retries` to 0, so this
+        # changes nothing today. It pins the same single-owner policy `OpenAICompatEmbedder`
+        # needs explicitly, so that an SDK release which starts retrying cannot quietly
+        # reintroduce the multiplication with `retry_with_backoff` in `embed` below.
+        self._client = voyageai.Client(api_key=key, max_retries=0)
         self._model = model
         self._name = f"voyage:{model}"
         self._batch_size = batch_size
@@ -864,7 +868,14 @@ class OpenAICompatEmbedder:
             from openai import OpenAI
         except ImportError as exc:  # pragma: no cover - exercised only without the SDK
             raise ImportError("OpenAICompatEmbedder requires: pip install openai") from exc
-        self._client = OpenAI(api_key=key, base_url=base_url)
+        # `max_retries=0` because `retry_with_backoff` in `_embed_one_batch` owns the retry
+        # policy. The SDK default is 2 retries, which does not replace ours but multiplies with
+        # it: one 429 costs 3 x 3 = 9 requests rather than the 3 the policy asks for, and the
+        # outer full-jitter backoff (which exists so a fleet does not remarch onto the provider
+        # in lockstep) ends up wrapping an inner loop that has no jitter at all. This is the
+        # corpus indexing path, so the multiplication lands batch after batch on a provider that
+        # has just said it is overloaded.
+        self._client = OpenAI(api_key=key, base_url=base_url, max_retries=0)
         self._model = model
         self._name = f"openai:{model}"
         self._batch_size = batch_size

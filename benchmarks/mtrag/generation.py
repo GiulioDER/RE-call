@@ -421,7 +421,13 @@ def openrouter_client(api_key: str | None = None) -> Any:
             "set OPENROUTER_API_KEY (or pass --api-key-file). Resolved eagerly so a missing key "
             "fails before the first task rather than after the run has started."
         )
-    return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=key)
+    # `max_retries=0` because `generate_one` owns the retry policy. The SDK default is 2 retries,
+    # which does not replace that loop but multiplies with it: at `GENERATION_ATTEMPTS = 4` one
+    # 429 costs 12 billed requests rather than 4, which is 3x the worst-case bill the warning
+    # above `generate_one` quotes. `PERMANENT_ERROR_NAMES` is unaffected either way: the statuses
+    # the SDK retries (408, 409, 429, 5xx) are disjoint from the 400/401/403/404 that set names,
+    # so what is removed here is the multiplication on transient failures and nothing else.
+    return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=key, max_retries=0)
 
 
 GENERATION_ATTEMPTS = 4
@@ -441,6 +447,12 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
     ⚠️ Every attempt is a billed call. Raising `GENERATION_ATTEMPTS` raises the worst-case bill by
     the same factor. An authentication error is not retried: it is not a flaky network, and
     retrying it burns the backoff and reads like one.
+
+    That arithmetic holds only because `client` comes from `openrouter_client`, which builds the
+    SDK with `max_retries=0`. A stock `openai` client retries twice inside its own transport, so
+    the worst case would be `GENERATION_ATTEMPTS` x 3 — 12 requests, not 4 — and the warning
+    above would understate the bill it exists to give by 3x. Pass a client built anywhere else
+    and this loop no longer owns the retry policy.
     """
     last: Exception | None = None
     for attempt in range(1, GENERATION_ATTEMPTS + 1):
