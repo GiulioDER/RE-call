@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.analyze import _mcnemar_from_discordant
+from benchmarks.beam.run import is_number
 
 #: Score at or above which a question counts as passed. Upstream's threshold; changing it changes
 #: every accuracy cell, so it lives here once rather than as a literal in three places.
@@ -107,7 +108,11 @@ def _aligned(
     pairs = []
     for qid in sorted(a_index):
         a, b = a_index[qid], b_index[qid]
-        if a["score"] != a["score"] or b["score"] != b["score"]:  # NaN on either side
+        # `is_number`, not the `x != x` NaN idiom that was here. `None != None` is False, so
+        # that test admitted an UNSCORED row (a judge call that never returned) straight into
+        # `pairs`, where `r["score"] >= PASS_THRESHOLD` raised TypeError and took the whole
+        # paired panel with it. Shared with `beam.run`, so one definition decides everywhere.
+        if not is_number(a["score"]) or not is_number(b["score"]):
             continue
         if a["question_type"] != b["question_type"]:
             raise ValueError(f"question {qid!r} is typed differently in the two arms")

@@ -74,7 +74,8 @@ def test_run_arm_produces_outcomes_and_aggregate() -> None:
             "answer": "",
         },
     ]
-    outcomes, agg = run_arm(_Sys(), _completer, questions)
+    outcomes, agg, dropped = run_arm(_Sys(), _completer, questions)
+    assert dropped == [], "nothing failed, so nothing is quarantined"
     assert len(outcomes) == 2
     assert all(isinstance(o, Outcome) for o in outcomes)
     assert agg["answerable_accuracy"]["n"] == 1
@@ -93,7 +94,7 @@ def test_run_arm_records_context_and_answer_for_the_results_artifact() -> None:
             "answer": "500",
         },
     ]
-    outcomes, _agg = run_arm(_Sys(), _completer, questions)
+    outcomes, _agg, _dropped = run_arm(_Sys(), _completer, questions)
     assert outcomes[0].context == "rate limit is 500 rps"
     assert outcomes[0].answer == "500 rps"
     assert outcomes[0].correct is True

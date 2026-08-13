@@ -283,6 +283,9 @@ def test_merge_only_rebuilds_the_artifact_and_its_aggregate_without_scoring(
     assert set(payload) == {
         "arm", "model", "config", "conversations", "questions", "skipped_questions",
         "usage", "provider_metadata", "cost_claims", "aggregate", "outcomes", "salvaged",
+        # Always present, empty on a clean run: `n` shrinks silently when a question is
+        # quarantined, so a reader diffing two artifacts needs the count beside it.
+        "dropped",
         "salvage",
     }
     assert payload["arm"] == "recall"
