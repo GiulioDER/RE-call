@@ -17,6 +17,22 @@ from typing import Literal, Protocol, TypeVar, runtime_checkable
 #: so the retry is transparent to the caller's type rather than widening it to `object`.
 _R = TypeVar("_R")
 
+#: The text fallback's whole vocabulary, hoisted out of `_is_transient` so a test can WALK it.
+#: Inline, each marker could be deleted with the suite staying green, which mattered because this
+#: tuple is the only evidence some callers ever get: an error carrying no numeric status reaches
+#: nothing else.
+#:
+#: ⚠️ These are substrings, not words, and that has bitten twice. `"429"` matches inside any
+#: number containing it — a 400 reading `"…resulted in 10429 tokens"` was classified a rate limit,
+#: and `benchmarks/llm.py`'s `CompletionTruncated` interpolates `max_tokens`, so a ceiling of
+#: 4290, 429 or 1429 read as one too — until that caller put the type in `PERMANENT_ERRORS` and
+#: classified it ahead of this function. That is the lesson, not the leftover: prefer classifying
+#: by TYPE or status where you can. This is the last resort, for errors that offer nothing else.
+_TRANSIENT_MARKERS = (
+    "429", " 500", " 502", " 503", " 504", "rate limit", "too many requests",
+    "timeout", "timed out", "temporarily", "connection", "reset by peer", "unavailable",
+)
+
 
 def _probe(exc: Exception, name: str) -> object | None:
     """Read ``name`` off an arbitrary exception, refusing to raise while doing it.
@@ -108,11 +124,7 @@ def _is_transient(exc: Exception) -> bool:
             # which fails fast rather than resending, and is the safe direction for an object
             # this hostile.
             text = ""
-    markers = (
-        "429", " 500", " 502", " 503", " 504", "rate limit", "too many requests",
-        "timeout", "timed out", "temporarily", "connection", "reset by peer", "unavailable",
-    )
-    return any(m in text for m in markers)
+    return any(m in text for m in _TRANSIENT_MARKERS)
 
 
 #: Ceiling on a provider's ``Retry-After``, matching the one the openai SDK applies. Past it the
