@@ -149,6 +149,44 @@ def test_a_bare_status_digit_is_read_only_when_no_status_was_carried() -> None:
     assert not is_terminal(RuntimeError("Error code: 500 - upstream blew up"))
 
 
+class _VoyageStatus(Exception):
+    """voyageai spells the status `http_status`, not `status_code`.
+
+    Not a hypothetical spelling: `recall.embeddings._is_transient` reads all three
+    (`status_code`, `status`, `http_status`) and its docstring records why the third was added —
+    until it was, NO Voyage error reached the numeric branch, so a real 500 was not retried at all
+    and a real rate limit was retried only when the wording happened to hit a text marker.
+    """
+
+    def __init__(self, message: str, http_status: int) -> None:
+        super().__init__(message)
+        self.http_status = http_status
+
+
+@pytest.mark.parametrize("status", [401, 402])
+def test_a_voyage_style_status_is_terminal_too(status: int) -> None:
+    """⛔ `is_terminal` read only `status_code`/`status` while the classifier it mirrors reads
+    three spellings, so a Voyage error whose message does not happen to contain the digits fell
+    through everything and returned False.
+
+    Reachable, and not only through the answerer: `run_arm` wraps `run_question`, which calls
+    `system.retrieve`, and retrieval EMBEDS. A revoked Voyage key would therefore be quarantined
+    one question at a time instead of aborting the run — the exact failure the terminal check
+    exists to prevent, entered through the retrieval half nobody was looking at.
+
+    The message deliberately carries no digits. An earlier version of this arm spelled the code
+    into the text and passed on the `_AMBIGUOUS_MARKERS` fallback alone, which measured the
+    fallback rather than the numeric read.
+    """
+    assert is_terminal(_VoyageStatus("unauthorized", status))
+
+
+@pytest.mark.parametrize("status", [429, 500])
+def test_a_voyage_style_transient_status_is_not_terminal(status: int) -> None:
+    """Guards the guard: reading a third spelling must not make every Voyage error terminal."""
+    assert not is_terminal(_VoyageStatus("slow down", status))
+
+
 def test_exhausted_quota_is_terminal_even_though_it_arrives_as_a_rate_limit() -> None:
     """⛔ THE REGRESSION A REVIEW CAUGHT, and the most expensive one in this change.
 

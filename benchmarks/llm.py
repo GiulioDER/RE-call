@@ -188,9 +188,15 @@ def is_terminal(exc: BaseException) -> bool:
     text = str(exc).lower()
     if any(marker in text for marker in _ACCOUNT_MARKERS):
         return True
+    # All THREE spellings, because the SDKs do not agree and `recall.embeddings._is_transient`
+    # already reads all three: `status_code` (openai), `status`, and `http_status` (voyageai).
+    # Reading only the first two left a Voyage 401 falling through to the digit markers, so a
+    # revoked key whose message did not happen to contain "401" was not terminal — and retrieval
+    # embeds, so `run_arm` would have quarantined a dead embedding key one question at a time.
     status = getattr(exc, "status_code", None)
-    if status is None:
-        status = getattr(exc, "status", None)
+    for spelling in ("status", "http_status"):
+        if status is None:
+            status = getattr(exc, spelling, None)
     if isinstance(status, int):
         return status in TERMINAL_STATUS_CODES
     return any(marker in text for marker in _AMBIGUOUS_MARKERS)
