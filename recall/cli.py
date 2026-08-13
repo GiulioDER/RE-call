@@ -133,7 +133,7 @@ def _entailment_judge(force: bool = False) -> EntailmentJudge | None:
         # `_make_embedder` was inconsistent: `resolve_entailment_judge` CONSTRUCTS the judge,
         # and QnliEntailmentJudge.__init__ eagerly builds a CrossEncoder — so a typo'd
         # RECALL_ENTAILMENT_MODEL raises huggingface's RepositoryNotFoundError (an OSError),
-        # and a missing `recall[entail]` extra raises ImportError. Both are operator errors.
+        # and a missing `recall-rag[entail]` extra raises ImportError. Both are operator errors.
         raise SystemExit(f"entailment judge: {type(exc).__name__}: {exc}") from exc
 
 
@@ -474,7 +474,7 @@ def main(argv: list[str] | None = None) -> None:
         "--entail",
         action="store_true",
         help="opt-in entailment stage: demote hits that don't answer the query "
-        "(requires recall[entail]; downloads the QNLI judge on first use)",
+        "(requires recall-rag[entail]; downloads the QNLI judge on first use)",
     )
     p_search.add_argument(
         "--evidence",

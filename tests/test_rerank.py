@@ -22,7 +22,7 @@ except ImportError:
     _HAS_ST = False
 
 
-@pytest.mark.skipif(not _HAS_ST, reason="sentence-transformers not installed (recall[rerank])")
+@pytest.mark.skipif(not _HAS_ST, reason="sentence-transformers not installed (recall-rag[rerank])")
 def test_cross_encoder_reorders_relevant_first():
     hits = [
         _hit("irrelevant", "the weather in antarctica is cold and windy"),
@@ -34,7 +34,7 @@ def test_cross_encoder_reorders_relevant_first():
     assert reranked[0].chunk.id == "relevant"
 
 
-@pytest.mark.skipif(not _HAS_ST, reason="sentence-transformers not installed (recall[rerank])")
+@pytest.mark.skipif(not _HAS_ST, reason="sentence-transformers not installed (recall-rag[rerank])")
 def test_cross_encoder_preserves_cosine_score_and_indexed_at():
     # the reranker must REORDER only: leaking raw cross-encoder logits into `score` would
     # corrupt the trust layer, which reads that field as a dense cosine

@@ -8,6 +8,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Fixed
+
+* Voyage embedding retries now read the response code. The retry classifier looked for
+  `status_code` and `status`, and `voyageai` carries neither: it spells the code `http_status` on
+  every error it raises. The whole Voyage retry decision therefore fell through to matching
+  markers in the exception message, and those messages are fixed strings with no marker in them,
+  so a real 500 arriving as "The server failed to process the request." was treated as permanent
+  and not retried at all.
+* Install commands throughout the package named the wrong distribution. The distribution is
+  `recall-rag` and only the import name is `recall`, so `pip install recall[fastembed]` and its
+  siblings installed the unrelated PyPI package of that name, which ships its own top level
+  `recall` module and shadows this one. That is the collision `docs/DEPENDENCIES.md` already
+  warned about, printed by the library's own ImportError messages.
+
 ## [0.9.4] (2026-08-12)
 
 Released straight from 0.9.2. 0.9.3 is deliberately skipped and will never exist.

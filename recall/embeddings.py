@@ -16,25 +16,40 @@ from typing import Literal, Protocol, TypeVar, runtime_checkable
 _R = TypeVar("_R")
 
 
+#: Markers matched in the exception TEXT when no numeric status is available, which for some
+#: callers is the entire retry decision rather than a fallback. Module level, not a local, so
+#: `tests/test_embeddings_transient.py` can assert one case per marker: a marker with no case
+#: is a marker that can be deleted while the suite stays green.
+_TRANSIENT_MARKERS = (
+    "429", " 500", " 502", " 503", " 504", "rate limit", "too many requests",
+    "timeout", "timed out", "temporarily", "connection", "reset by peer", "unavailable",
+)
+
+
 def _is_transient(exc: Exception) -> bool:
     """Heuristic: is this exception worth retrying?
 
     Covers rate-limit (429), server (5xx) and network/timeout errors WITHOUT importing any
     provider-specific exception type (voyageai is an optional dependency). Checks a numeric
-    ``status_code``/``status`` attribute first, then falls back to matching well-known markers
-    in the exception text. A non-transient error (e.g. 401 auth) returns False so it fails fast.
+    ``status_code``/``status``/``http_status`` attribute first, then falls back to matching
+    ``_TRANSIENT_MARKERS`` in the exception text. A non-transient error (e.g. 401 auth) returns
+    False so it fails fast.
+
+    Three spellings of the status because three generations of SDK spell it differently, and
+    the third is not exotic: ``http_status`` is what every ``voyageai`` error carries, so
+    without it the whole Voyage path decided on prose. Those messages are fixed strings with no
+    marker in them ("The server failed to process the request." for a 500), which made a real
+    Voyage 5xx permanent.
     """
     status = getattr(exc, "status_code", None)
     if status is None:
         status = getattr(exc, "status", None)
+    if status is None:
+        status = getattr(exc, "http_status", None)
     if isinstance(status, int) and (status == 429 or 500 <= status < 600):
         return True
     text = f"{type(exc).__name__} {exc}".lower()
-    markers = (
-        "429", " 500", " 502", " 503", " 504", "rate limit", "too many requests",
-        "timeout", "timed out", "temporarily", "connection", "reset by peer", "unavailable",
-    )
-    return any(m in text for m in markers)
+    return any(m in text for m in _TRANSIENT_MARKERS)
 
 
 def retry_with_backoff(
@@ -442,7 +457,7 @@ def _session_providers(model: object) -> list[str]:
 
 
 class FastEmbedEmbedder:
-    """Real local embeddings (no API key). Requires `pip install recall[fastembed]`."""
+    """Real local embeddings (no API key). Requires `pip install recall-rag[fastembed]`."""
 
     def __init__(
         self,
@@ -490,7 +505,7 @@ class FastEmbedEmbedder:
             from fastembed import TextEmbedding
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError(
-                "FastEmbedEmbedder requires the fastembed extra: pip install recall[fastembed]"
+                "FastEmbedEmbedder requires the fastembed extra: pip install recall-rag[fastembed]"
             ) from exc
         threads = resolve_thread_budget()
         kwargs: dict[str, object] = {"model_name": identity.model_name if identity else model_name}
@@ -621,7 +636,7 @@ class SentenceTransformerEmbedder:
 
         python -m recall.eval.labelled --embedder st:finetune/model ...
 
-    Requires `pip install recall[rerank]` (or `[entail]`) — both pull sentence-transformers.
+    Requires `pip install recall-rag[rerank]` (or `[entail]`) — both pull sentence-transformers.
     """
 
     def __init__(self, model: str, batch_size: int = 64) -> None:
@@ -629,7 +644,7 @@ class SentenceTransformerEmbedder:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError(
-                "SentenceTransformerEmbedder requires: pip install recall[rerank]"
+                "SentenceTransformerEmbedder requires: pip install recall-rag[rerank]"
             ) from exc
         self._model = SentenceTransformer(model)
         self._name = f"st:{model}"
@@ -687,7 +702,7 @@ class Qwen3EmbeddingEmbedder:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # pragma: no cover
             raise ImportError(
-                "Qwen3EmbeddingEmbedder requires: pip install recall[rerank]"
+                "Qwen3EmbeddingEmbedder requires: pip install recall-rag[rerank]"
             ) from exc
         threads = resolve_thread_budget()
         if threads is not None:
@@ -755,7 +770,7 @@ class Qwen3EmbeddingEmbedder:
 
 
 class VoyageEmbedder:
-    """Voyage cloud embeddings. Requires `pip install recall[voyage]` and VOYAGE_API_KEY."""
+    """Voyage cloud embeddings. Requires `pip install recall-rag[voyage]` and VOYAGE_API_KEY."""
 
     def __init__(
         self,
@@ -770,7 +785,7 @@ class VoyageEmbedder:
         try:
             import voyageai
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
-            raise ImportError("VoyageEmbedder requires: pip install recall[voyage]") from exc
+            raise ImportError("VoyageEmbedder requires: pip install recall-rag[voyage]") from exc
         self._client = voyageai.Client(api_key=key)
         self._model = model
         self._name = f"voyage:{model}"

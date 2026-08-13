@@ -172,7 +172,7 @@ cannot see it. Full table + limits: [FINDINGS.md §4](../results/FINDINGS.md).
 
 The calibrated threshold cannot see the **near-miss** class — a high-similarity memory that
 does not answer the query (baseline false-confident rate 0.40–1.00 on a held-out 10-query
-challenge set). An optional QNLI judge (v0.3, `recall[entail]`, OFF by default) demotes
+challenge set). An optional QNLI judge (v0.3, `recall-rag[entail]`, OFF by default) demotes
 non-answering hits and cuts near-miss FCR to 0.40–0.60 with the *identical judge on every
 embedder — no recalibration*, the transfer property Finding 2 proved a score threshold lacks.
 The ablation is the honest half: judge-alone *degrades* far-gap detection (0.00→0.40) — the

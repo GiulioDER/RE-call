@@ -193,9 +193,9 @@ high-similarity memory that does not answer the query — because the distractor
 threshold by construction. On a held-out 10-query near-miss set the threshold's false-confident rate
 is 0.40–1.00 per embedder.
 
-The optional entailment stage (`recall[entail]`, **off** by default) puts a QNLI cross-encoder over
-the verdict-ok hits and demotes non-answering ones to `not_entailed`, at the judge's own trained
-boundary — no per-embedder constant, and none was tuned. Three arms in
+The optional entailment stage (`recall-rag[entail]`, **off** by default) puts a QNLI cross-encoder
+over the verdict-ok hits and demotes non-answering ones to `not_entailed`, at the judge's own
+trained boundary — no per-embedder constant, and none was tuned. Three arms in
 [`RESULTS.md` §3](RESULTS.md). What they establish:
 
 - **The same judge transfers across embedders with zero retuning** — precisely the property a score

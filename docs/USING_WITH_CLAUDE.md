@@ -76,7 +76,8 @@ Intervals disjoint from the baseline through k=10 — the largest single retriev
 this project, roughly twice the best embedder effect, and it lifts every question category
 including multi-hop.
 
-**Off by default because it costs ~1 050 ms per query on CPU** (needs `pip install recall[rerank]`).
+**Off by default because it costs ~1 050 ms per query on CPU** (needs
+`pip install recall-rag[rerank]`).
 For an agent answering a person that is usually invisible next to the model call which follows, and
 the answer is materially better. For high-volume automated retrieval, or constrained hardware,
 leave it off.

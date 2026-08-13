@@ -313,7 +313,7 @@ def _fastembed_available() -> bool:
 #: intentional CI condition into a red build.
 requires_fastembed = pytest.mark.skipif(
     not _fastembed_available(),
-    reason="needs the fastembed extra (pip install recall[fastembed])",
+    reason="needs the fastembed extra (pip install recall-rag[fastembed])",
 )
 
 

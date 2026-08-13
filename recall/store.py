@@ -695,7 +695,7 @@ class PgVectorStore:
             from psycopg_pool import ConnectionPool
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise ImportError(
-                "pool_size requires the pool extra: pip install recall[pool]"
+                "pool_size requires the pool extra: pip install recall-rag[pool]"
             ) from exc
 
         # `configure` runs on every connection the pool creates, not just the first — the vector

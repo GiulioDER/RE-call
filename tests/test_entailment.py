@@ -130,7 +130,7 @@ except ImportError:
     _HAS_ST = False
 
 
-@pytest.mark.skipif(not _HAS_ST, reason="sentence-transformers not installed (recall[entail])")
+@pytest.mark.skipif(not _HAS_ST, reason="sentence-transformers not installed (recall-rag[entail])")
 def test_qnli_judge_separates_answering_from_adjacent_text():
     from recall.entailment import QnliEntailmentJudge
 

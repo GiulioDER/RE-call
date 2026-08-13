@@ -696,7 +696,7 @@ def results_to_markdown(results: list[AblationResult]) -> str:
 
 
 def save_charts(results: list[AblationResult], out_dir: Path) -> list[Path]:
-    """Write nDCG-by-config and guard-effect charts. Requires `pip install recall[eval]`."""
+    """Write nDCG-by-config and guard-effect charts. Requires `pip install recall-rag[eval]`."""
     import matplotlib
 
     matplotlib.use("Agg")

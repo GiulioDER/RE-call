@@ -125,7 +125,7 @@ def test_semantic_lint_flags_only_the_planted_orphan(tmp_path):
 
         emb = FastEmbedEmbedder()
     except Exception:  # pragma: no cover - fastembed extra not installed
-        pytest.skip("fastembed not installed (recall[fastembed])")
+        pytest.skip("fastembed not installed (recall-rag[fastembed])")
 
     corpus = _planted_corpus(tmp_path)
     # threshold 0.70 = bge-small's calibrated value (FINDINGS §2). Below it (e.g. 0.60) the
@@ -155,7 +155,7 @@ def test_long_multichunk_memo_still_finds_its_prior(tmp_path):
 
         emb = FastEmbedEmbedder()
     except Exception:  # pragma: no cover
-        pytest.skip("fastembed not installed (recall[fastembed])")
+        pytest.skip("fastembed not installed (recall-rag[fastembed])")
 
     from recall.semantic_lint import semantic_lint
 
@@ -187,7 +187,7 @@ def test_duplicate_basenames_in_subdirs_are_not_misqueried(tmp_path):
 
         emb = FastEmbedEmbedder()
     except Exception:  # pragma: no cover
-        pytest.skip("fastembed not installed (recall[fastembed])")
+        pytest.skip("fastembed not installed (recall-rag[fastembed])")
 
     from recall.semantic_lint import semantic_lint
 
@@ -229,7 +229,7 @@ def test_cli_lint_semantic_reports_the_orphan(tmp_path, capsys):
 
         FastEmbedEmbedder()
     except Exception:  # pragma: no cover
-        pytest.skip("fastembed not installed (recall[fastembed])")
+        pytest.skip("fastembed not installed (recall-rag[fastembed])")
 
     from recall.cli import main
 
@@ -253,7 +253,7 @@ def test_mutually_similar_pair_is_reported_once_not_both_directions(tmp_path):
 
         emb = FastEmbedEmbedder()
     except Exception:  # pragma: no cover
-        pytest.skip("fastembed not installed (recall[fastembed])")
+        pytest.skip("fastembed not installed (recall-rag[fastembed])")
 
     from recall.semantic_lint import semantic_lint
 
