@@ -3803,7 +3803,7 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'rerank'", specifier = ">=3.0" },
     { name = "torch", marker = "extra == 'sparse'", specifier = ">=2.0,<3" },
     { name = "transformers", marker = "extra == 'sparse'", specifier = ">=4.40,<6" },
-    { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.2" },
+    { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.2.2" },
 ]
 provides-extras = ["fastembed", "pool", "mcp", "voyage", "s3", "sparse", "rerank", "entail", "eval", "extract", "finetune", "langchain", "llamaindex", "bench", "dev"]
 
