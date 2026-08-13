@@ -225,7 +225,7 @@ def test_a_claim_class_that_gained_a_field_is_refused_not_silently_defaulted(tmp
             "cached": False,
         }
     )
-    with pytest.raises(_serialize.ExtractionPayloadInvalid):
+    with pytest.raises(_serialize.ExtractionPayloadInvalid, match="claim 0 has fields"):
         _serialize.extraction_from_json(payload)
 
 
@@ -282,10 +282,14 @@ def test_a_stored_payload_is_readable_json(tmp_path):
         ).fetchone()
     body = json.loads(payload)
     assert [c["kind"] for c in body["claims"]] == [c.kind for c in ALL_CLAIM_KINDS]
-    # `sort_keys=True` was asserted by nothing: round trip equality is identical either way, so
-    # the stored BYTE form was free to vary. It costs nothing to pin, and a stable payload is
-    # what lets a cache file be diffed or hashed at all. `json.loads` preserves document order.
-    assert list(body) == sorted(body), "the stored payload's key order is not deterministic"
+    # The whole BYTE form, not just the top level key order. `sort_keys=True` was asserted by
+    # nothing, and the first fix for that only checked `list(body) == sorted(body)`, which
+    # covers the nine outer keys and neither the keys inside each claim nor `separators`. A
+    # re-dump comparison pins all three at once: drop either flag, or reorder the dict literal,
+    # and this fails. Round trip EQUALITY is blind to all of it, which is why it needs saying.
+    assert payload == json.dumps(
+        json.loads(payload), sort_keys=True, separators=(",", ":")
+    ), "the stored payload's byte form is not deterministic"
 
 
 # Everything below was added after a mutation run over this boundary: each guard here was
@@ -341,6 +345,35 @@ def test_a_locked_store_is_reported_as_busy_rather_than_as_damage(tmp_path, monk
         blocker.rollback()
         blocker.close()
     assert "busy" in str(exc.value), "a locked cache was reported as damaged"
+
+
+@pytest.mark.parametrize(
+    "message,busy",
+    [
+        ("database is locked", True),
+        ("database table is locked", True),
+        ("database is busy", True),
+        # Mixed case, because every other case here is already lowercase and so could not
+        # exercise the `.lower()`: deleting it left them all green.
+        ("Database Is LOCKED", True),
+        ("file is not a database", False),
+        ("no such table: extraction_entries", False),
+    ],
+)
+def test_the_busy_predicate_classifies_each_message(message, busy):
+    """`_is_busy` is a pure function, so its two disjuncts are testable directly.
+
+    Only the "locked" half carried weight before: deleting `or "busy" in text` left the whole
+    suite green, because every message SQLite produces for contention on the statements
+    `_ensure_schema` runs says "locked". The "busy" half is defensive breadth against builds
+    and versions that word it differently, and defensive breadth that nothing exercises is
+    indistinguishable from dead code to the next reader. Pinned here rather than deleted,
+    because the cost of the branch is one `or` and the cost of being wrong is telling a user
+    their cache is damaged when another run merely holds it.
+    """
+    from recall.truth_extraction._sqlite_cache import _is_busy
+
+    assert _is_busy(sqlite3.OperationalError(message)) is busy
 
 
 def test_a_read_failure_is_a_miss_not_a_crash(tmp_path):
@@ -408,7 +441,7 @@ def test_an_extra_top_level_field_is_refused(tmp_path):
     and a store somebody else also writes to is not one whose provenance can be trusted."""
     from recall.truth_extraction import _serialize
 
-    with pytest.raises(_serialize.ExtractionPayloadInvalid):
+    with pytest.raises(_serialize.ExtractionPayloadInvalid, match="payload has fields"):
         _serialize.extraction_from_json(_payload(invented_by_another_writer=1))
 
 
@@ -421,7 +454,7 @@ def test_an_unknown_claim_kind_is_refused_by_the_serializer(tmp_path):
     """
     from recall.truth_extraction import _serialize
 
-    with pytest.raises(_serialize.ExtractionPayloadInvalid):
+    with pytest.raises(_serialize.ExtractionPayloadInvalid, match="has kind 'invented'"):
         _serialize.extraction_from_json(
             _payload(claims=[{"kind": "invented", "value": "active", "quote": "q"}])
         )
@@ -493,7 +526,12 @@ class _TrackedConnection:
     # in `_sqlite_cache` uses that form today, but its own comment plans for `autocommit=False`,
     # which is exactly where a `with` around a transaction would appear.
     def __enter__(self):
-        return self._real.__enter__()
+        # Returns SELF, not the real connection. sqlite3's `__enter__` hands back the
+        # connection, so delegating the return value would put the UNWRAPPED object in the
+        # caller's hands and any `close()` on it would go unrecorded, quietly disarming the
+        # only thing this class exists to observe.
+        self._real.__enter__()
+        return self
 
     def __exit__(self, *exc):
         return self._real.__exit__(*exc)
@@ -816,5 +854,5 @@ def test_leaving_the_context_manager_closes_the_handle(tmp_path):
     `__exit__` left all of them green: `close` is pinned only through the CLI's own finally."""
     with SqliteExtractionCache(_path(tmp_path)) as cache:
         cache.put("k1", _extraction())
-    with pytest.raises(sqlite3.ProgrammingError):
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         cache._conn.execute("SELECT 1")
