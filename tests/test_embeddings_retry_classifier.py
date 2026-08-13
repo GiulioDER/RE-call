@@ -302,10 +302,11 @@ def test_the_fallback_matches_case_insensitively() -> None:
     the one shape `_is_transient`'s docstring names as depending on it.
 
     Not subsumed by `test_the_fallback_normalises_every_word_not_just_the_first`, though it looks
-    like it should be. On the `.lower()` mutation the wider test is stronger, reddening eight
-    items to this one. But this message matches exactly ONE marker, "connection", where every
-    message in the wider test matches two or matches a different one, so deleting "connection"
-    reddens this test and leaves all four of those green. Both measured.
+    like it should be. On the `.lower()` mutation the wider test is stronger: that mutation
+    reddens eight items with the voyage extra installed and seven without it, four of them from
+    the wider test against this test's one. But this message matches exactly ONE marker,
+    "connection", where every message in the wider test matches two or matches a different one,
+    so deleting "connection" reddens this test and leaves all four of those green. Both measured.
     """
     exc = RuntimeError("Connection error.")
     assert _is_transient(exc) is True
@@ -502,10 +503,10 @@ def test_an_http_status_that_was_never_filled_in_falls_back_to_the_markers() -> 
     """The attribute PRESENT and None is the shape voyageai's client-side errors have.
 
     `Timeout` and `APIConnectionError` are raised with a message and nothing else, so
-    `http_status` sits at its constructor default. On the request path they are the only voyage
-    errors the markers still decide, and they are the two most worth retrying. (Other message-only
-    raises exist off that path, in the keyless-client and local-model checks; none carries a
-    marker, so they fail fast, which is right for them.)
+    `http_status` sits at its constructor default. Of the errors `api_requestor` raises, they are
+    the only two the markers still decide, and they are the two most worth retrying. (Message-only
+    raises exist elsewhere in the SDK as well, in the keyless-client and local-model checks and in
+    the response-object layer. None carries a marker, so they fail fast, which is right for them.)
 
     Reading the attribute's PRESENCE rather than its value would stop those retrying. Measured
     with the extra installed, that mutant is caught here and by the voyage-gated twin below, and

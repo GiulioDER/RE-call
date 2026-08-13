@@ -45,10 +45,11 @@ def _is_transient(exc: Exception) -> bool:
     found on is an extraction engine that lives on an unlanded branch, so do not go looking for
     it in this tree.
 
-    THREE spellings are read, and the third is not exotic. Every ``voyageai`` error RAISED FROM A
-    RESPONSE carries the code in ``http_status``: ``VoyageError.__init__`` takes it as its third
-    positional argument and ``api_requestor`` passes the real code into it. "From a response" is
-    the whole qualifier, and the paragraph below depends on it. An earlier reading of this
+    THREE spellings are read, and the third is not exotic. Every ``voyageai`` error raised by
+    ``api_requestor`` FROM A NON-2xx RESPONSE carries the code in ``http_status``:
+    ``VoyageError.__init__`` takes it as its third positional argument and the requestor passes
+    the real code into it. The qualifier is the whole point, and the paragraph below depends on
+    it: errors raised anywhere else in the SDK carry a message and nothing more. An earlier reading of this
     concluded the Voyage path had no status and left the markers to decide it, but that reading
     came from a hand-constructed ``RateLimitError`` whose ``http_status`` was never filled in,
     not from one the SDK raised. The markers cannot decide it: those messages are fixed strings
