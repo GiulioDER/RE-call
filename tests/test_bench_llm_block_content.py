@@ -67,6 +67,8 @@ _SHAPES: list[tuple[str, Any, str]] = [
     ("a DICT block whose text is a number", [{"type": "text", "text": 123}], ""),
     ("an object block whose text is a number", [types.SimpleNamespace(text=123)], ""),
     ("content that is neither str nor list", {"text": "hi"}, ""),
+    ("content is None", None, ""),
+    ("blocks carrying only whitespace", [{"type": "text", "text": "   "}], "   "),
 ]
 
 
@@ -119,7 +121,14 @@ def test_the_shared_reader_never_raises(label: str, content: Any, expected: str)
 
 
 def test_the_shared_reader_survives_a_hostile_block() -> None:
-    """Blocks come off the wire, so `get` and `text` can be anything at all."""
+    """⛔ This arm used to assert `pytest.raises(RuntimeError)` under a name promising the
+    opposite, while the module docstring claimed the function MUST NEVER RAISE. The claim was
+    false and the test pinned the falsity.
+
+    Blocks come off the wire, so `get`, `text` and even iteration can be anything at all. A reader
+    that raises escapes `benchmarks/llm.py` past the `EmptyCompletion` guard as a bare Python
+    error, and in mtrag lands on a type outside `PERMANENT_ERROR_NAMES`, costing four billed
+    attempts."""
 
     class _HostileDict(dict):
         def get(self, *a: Any, **k: Any) -> Any:
@@ -130,9 +139,16 @@ def test_the_shared_reader_survives_a_hostile_block() -> None:
         def text(self) -> str:
             raise RuntimeError("hostile text")
 
-    for block in (_HostileDict(), _HostileBlock()):
-        with pytest.raises(RuntimeError):
-            assistant_text([block])
+    class _HostileList(list):
+        def __iter__(self) -> Any:
+            raise RuntimeError("hostile iter")
+
+    assert assistant_text([_HostileDict()]) == ""
+    assert assistant_text([_HostileBlock()]) == ""
+    assert assistant_text(_HostileList([1])) == ""
+    assert assistant_text([_HostileBlock(), {"type": "text", "text": "hi"}]) == "hi", (
+        "one hostile block must not cost the readable ones"
+    )
 
 
 # --------------------------------------------------------------------------------------------
@@ -141,7 +157,7 @@ def test_the_shared_reader_survives_a_hostile_block() -> None:
 
 
 @pytest.mark.parametrize(
-    "label,content,expected", [pytest.param(*c, id=c[0]) for c in _SHAPES if c[2]]
+    "label,content,expected", [pytest.param(*c, id=c[0]) for c in _SHAPES if c[2].strip()]
 )
 def test_the_benchmark_client_reads_what_the_shared_reader_reads(
     monkeypatch: pytest.MonkeyPatch, label: str, content: Any, expected: str
@@ -151,9 +167,7 @@ def test_the_benchmark_client_reads_what_the_shared_reader_reads(
     assert OpenRouterLLM(model="m", api_key="k").complete("s", "u") == expected
 
 
-@pytest.mark.parametrize(
-    "label,content,expected", [pytest.param(*c, id=c[0]) for c in _SHAPES if c[2]]
-)
+@pytest.mark.parametrize("label,content,expected", [pytest.param(*c, id=c[0]) for c in _SHAPES])
 def test_the_extraction_client_reads_what_the_shared_reader_reads(
     label: str, content: Any, expected: str
 ) -> None:
@@ -161,7 +175,7 @@ def test_the_extraction_client_reads_what_the_shared_reader_reads(
 
 
 @pytest.mark.parametrize(
-    "label,content,expected", [pytest.param(*c, id=c[0]) for c in _SHAPES if c[2]]
+    "label,content,expected", [pytest.param(*c, id=c[0]) for c in _SHAPES if c[2].strip()]
 )
 def test_the_mtrag_client_reads_what_the_shared_reader_reads(
     label: str, content: Any, expected: str
@@ -189,7 +203,7 @@ def test_the_mtrag_client_reads_what_the_shared_reader_reads(
 
 
 @pytest.mark.parametrize(
-    "label,content", [pytest.param(c[0], c[1], id=c[0]) for c in _SHAPES if not c[2]]
+    "label,content", [pytest.param(c[0], c[1], id=c[0]) for c in _SHAPES if not c[2].strip()]
 )
 def test_a_reading_of_nothing_is_refused_by_the_benchmark_client(
     monkeypatch: pytest.MonkeyPatch, label: str, content: Any
@@ -208,11 +222,23 @@ def test_an_unreadable_block_list_still_names_the_shape_that_arrived() -> None:
     reconciliation exists to prevent, one shape further out and with the evidence removed."""
     from benchmarks.llm import _shape_note
 
-    assert _shape_note(None) == ""
-    assert _shape_note("") == ""
-    assert _shape_note([]) == ""
-    assert "1 block" in _shape_note([{"type": "image", "url": "x"}])
-    assert "dict" in _shape_note({"text": "hi"})
+    assert _shape_note(None, "") == ""
+    assert _shape_note("", "") == ""
+    assert _shape_note([], "") == ""
+    assert "no readable text" in _shape_note([{"type": "image", "url": "x"}], "")
+    assert "dict" in _shape_note({"text": "hi"}, "")
+    # Read, but only whitespace: a MODEL fault, not a gateway encoding this reader cannot read.
+    assert "only whitespace" in _shape_note([{"type": "text", "text": "   "}], "   ")
+    # ⛔ No digits. This message is deliberately kept free of them: `is_terminal` and
+    # `_is_transient` substring-match rendered exceptions on the bare markers "401" and "402",
+    # and a count would render one for a 402-block list.
+    assert not any(ch.isdigit() for ch in _shape_note([{"x": 1}] * 402, ""))
+
+    class _HostileLen(list):
+        def __len__(self) -> int:
+            raise RuntimeError("hostile len")
+
+    _shape_note(_HostileLen([1]), "")  # must not raise while an exception is being built
 
 
 def test_an_empty_reading_is_tolerated_by_the_extraction_client() -> None:
@@ -224,3 +250,42 @@ def test_an_empty_reading_is_tolerated_by_the_extraction_client() -> None:
     with pytest.raises(Exception) as caught:
         _batch_rungs("")
     assert "json" in str(caught.value)
+
+
+def test_mtrag_refuses_an_empty_reading_instead_of_submitting_it() -> None:
+    """⛔ THE REGRESSION READING BLOCKS INTRODUCED, and the reason this file exists at all.
+
+    `generate_one` returns straight into `predictions`, and `main` counts the task as done, so an
+    empty reading was written to the MTRAG submission as the system's answer with rc=0. Before
+    block lists were read, `(content or "").strip()` raised `AttributeError` on them, so the task
+    was quarantined LOUDLY into `.failed.jsonl` with rc=1. Reading them correctly routed every
+    UNREADABLE block list into the silent hole `content=None` was already in.
+
+    Measured before the fix: content `[{"type": "reasoning", "reasoning": "..."}]` produced
+    `predictions: [{"text": ""}]`, `written=1`, `failed=0`, rc=0, in one billed call.
+
+    Re-raised directly rather than wrapped, exactly as `CompletionTruncated` already is: "gave up
+    after 4 attempts, re-run to resume" is advice that cannot work for a body this reader cannot
+    read, and it costs ONE billed attempt instead of four.
+    """
+    from benchmarks.mtrag.generation import generate_one
+
+    calls = {"n": 0}
+
+    class _Client:
+        @property
+        def chat(self) -> "_Client":
+            return self
+
+        @property
+        def completions(self) -> "_Client":
+            return self
+
+        def create(self, **_: Any) -> object:
+            calls["n"] += 1
+            return _reply([{"type": "reasoning", "reasoning": "thinking..."}])
+
+    with pytest.raises(EmptyCompletion):
+        generate_one(_Client(), "m", [{"role": "user", "content": "x"}], 128)
+
+    assert calls["n"] == 1, "a shape that cannot be read repeats; it must not be retried"

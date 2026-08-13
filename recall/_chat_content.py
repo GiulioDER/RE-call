@@ -48,7 +48,18 @@ def assistant_text(content: object) -> str:
     if not isinstance(content, list):
         return ""
     parts: list[str] = []
-    for block in content:
-        text = block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
+    try:
+        blocks = list(content)
+    except Exception:  # noqa: BLE001 - see the module docstring: this reader must never raise
+        return ""
+    for block in blocks:
+        # Guarded per block, because `get` and `text` come off the wire and can be anything: a
+        # dict subclass with a hostile `get`, an SDK object whose `text` is a computed property.
+        # `getattr(..., None)` swallows only `AttributeError`, so without this the invariant above
+        # was false and the test that claimed to prove it asserted the opposite.
+        try:
+            text = block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
+        except Exception:  # noqa: BLE001 - a reader must never beat the answer it is reading
+            text = None
         parts.append(text if isinstance(text, str) else "")
     return "".join(parts)

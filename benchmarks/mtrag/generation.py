@@ -123,12 +123,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from benchmarks.llm import CompletionTruncated
+from benchmarks.llm import CompletionTruncated, EmptyCompletion
+from recall._chat_content import assistant_text
 
 # Private on purpose, and imported rather than reimplemented: there is one definition in this
 # repository of how long a provider asked us to wait, and a second copy here would drift from it
 # exactly as the two retry policies this file just finished collapsing into one did.
-from recall._chat_content import assistant_text
 from recall.embeddings import _retry_after_seconds
 
 #: From the official `format_checker.py`. Named here so a violation fails in OUR run, with a
@@ -490,8 +490,29 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             # NOT in `PERMANENT_ERROR_NAMES`, so every affected task paid four BILLED attempts
             # before failing, and five such tasks in a row aborted the run. Shared with the other
             # two OpenAI-compatible clients in this repo so the rule cannot drift between them.
-            return assistant_text(response.choices[0].message.content).strip()
-        except CompletionTruncated:
+            answer = assistant_text(response.choices[0].message.content).strip()
+            if not answer:
+                # ⛔ An empty reading is REFUSED, not returned. `main` writes whatever this
+                # returns straight into `predictions` and counts the task as done, so returning
+                # "" put an unscorable empty answer in the submission with rc=0 — the exact
+                # defect PR #307 fixed in `benchmarks/llm.py`, which nothing here guarded.
+                #
+                # Reading block lists (rather than crashing on them) is what made this urgent:
+                # `(content or "").strip()` raised `AttributeError` on a block list, so the task
+                # was quarantined loudly. Reading it correctly routed every UNREADABLE block list
+                # into the silent hole that `content=None` was already in.
+                raise EmptyCompletion(
+                    f"the provider returned a completion with no usable text "
+                    f"(finish_reason={getattr(response.choices[0], 'finish_reason', None)!r}). "
+                    f"Writing it would put an unscorable empty prediction in the submission."
+                )
+            return answer
+        except (CompletionTruncated, EmptyCompletion):
+            # Re-raised directly, for the reason truncation already is: wrapping these in
+            # "gave up after 4 attempts, re-run to resume" gives the operator advice that cannot
+            # work. Neither a ceiling that cut this attempt nor a body this reader cannot read
+            # changes on the next three, and the caller's per-task quarantine keeps both out of
+            # the submission, which is the only safe place for them.
             raise
         except Exception as exc:  # noqa: BLE001 - re-raised below once attempts are exhausted
             last = exc
