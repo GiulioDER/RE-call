@@ -8,9 +8,9 @@ nothing), so they must not be consulted once the transport has already stated th
 
 The cost of the false positive is not one wasted attempt. `retry_with_backoff` resends the whole
 payload, and a caller whose payload is a prompt carrying a whole document body pays for the
-refusal on every attempt. `benchmarks/llm.py` is that shape in this repository, sending the
-retrieved context `benchmarks/pipeline.py` builds; the case this was found on is an extraction
-engine on an unlanded branch, which is not in this tree.
+refusal on every attempt. `recall/truth_extraction/_openai_engine.py` is the case it was found
+on, its prompt embedding a whole memo body; `benchmarks/llm.py` is the same shape, sending the
+retrieved context `benchmarks/pipeline.py` builds.
 """
 
 import pytest
@@ -161,19 +161,33 @@ def test_a_status_below_the_band_is_not_retried(status: int) -> None:
     assert _attempts_used(exc) == 1
 
 
-@pytest.mark.parametrize("status", [408, 409])
-def test_a_server_returned_timeout_or_conflict_is_not_retried_here(status: int) -> None:
-    """The exclusion `_is_transient`'s docstring calls deliberate, now enforced.
+def test_a_server_returned_408_is_retried() -> None:
+    """408 is transient, and deliberately so as of the `max_retries=0` change.
 
-    openai's own client retries both (409 with the comment "Retry on lock timeouts"), so this is
-    a place where we knowingly differ from the SDK. Widening the branch to `status in (408, 409,
-    429)` left all fourteen tests green, which made "deliberate" a claim no test could check —
-    the same shape as the defects the earlier rounds here fixed.
+    This assertion is INVERTED from what it was. It previously pinned 408 as permanent, on the
+    reasoning that 429 and 5xx was the numeric contract and widening it was a separate decision.
+    Widening it then became that separate decision: once every caller builds its SDK client with
+    `max_retries=0`, nothing underneath retries a 408 any more, so excluding it here would newly
+    stop retrying something that had been retried all along.
 
-    Prose is marker-free on purpose: the natural wording for a 408 contains "timeout", which
-    would let the fallback answer and hide whichever way the numeric branch went.
+    Prose is marker-free on purpose. The natural wording for a 408 contains "timeout", which
+    would let the fallback answer and hide whichever way the numeric branch went — the exact
+    coincidence the docstring gives as the reason 408 belongs in the numeric branch at all.
     """
-    exc = _StatusError("the gateway gave up waiting", status_code=status)
+    exc = _StatusError("the gateway gave up waiting", status_code=408)
+    assert _is_transient(exc) is True
+    assert _attempts_used(exc) == 3
+
+
+def test_a_server_returned_409_is_not_retried() -> None:
+    """409 is the one status openai's own client retries that nothing retries now.
+
+    The SDK calls it a lock timeout, which is a semantic of its stateful endpoints. Ours are
+    stateless POSTs with no resource to lock, so a 409 is a real conflict and resending cannot
+    resolve it. Keeping this pinned is what stops 408 and 409 being quietly treated as one case,
+    which is how the SDK treats them and is the thing we are deliberately not copying.
+    """
+    exc = _StatusError("two writers disagreed", status_code=409)
     assert _is_transient(exc) is False
     assert _attempts_used(exc) == 1
 
@@ -283,5 +297,91 @@ def test_a_status_that_is_not_an_http_number_falls_back_to_text_markers() -> Non
     """
     exc = _StatusError("connection reset by peer", status_code=None)
     exc.status = "error"  # type: ignore[attr-defined]
+    assert _is_transient(exc) is True
+    assert _attempts_used(exc) == 3
+
+
+class _HttpStatusError(Exception):
+    """A voyageai-shaped error: the status lives on `http_status` and nowhere else."""
+
+    def __init__(self, message: str, http_status: int) -> None:
+        super().__init__(message)
+        self.http_status = http_status
+
+
+def test_a_status_spelled_http_status_reaches_the_numeric_branch() -> None:
+    """The third spelling, and the one whose absence made a whole provider path accidental.
+
+    Until `http_status` was read, NO voyageai error reached the numeric branch, because that SDK
+    uses neither `status_code` nor `status`. A `ServerError` on an HTTP 500 was therefore not
+    retried at all, on the corpus indexing path whose entire reason for retrying is surviving
+    exactly that. The message here is marker-free so only the numeric branch can answer.
+    """
+    exc = _HttpStatusError("the server failed to process the request.", http_status=500)
+    assert not hasattr(exc, "status_code") and not hasattr(exc, "status")
+    assert _is_transient(exc) is True
+    assert _attempts_used(exc) == 3
+
+
+def test_a_permanent_status_spelled_http_status_is_still_refused() -> None:
+    """The other direction, so the third lookup cannot only ever ADD retries.
+
+    Same asymmetry the `status` limb was caught on in an earlier round: a limb tested in one
+    direction admits an implementation that is wrong in the other.
+    """
+    exc = _HttpStatusError(f"Error code: 400 - {_OVERFLOW}", http_status=400)
+    assert _is_transient(exc) is False
+    assert _attempts_used(exc) == 1
+
+
+def test_the_real_voyage_errors_reach_the_numeric_branch() -> None:
+    """Pins the stubs above against the SDK that actually raises these.
+
+    A hand-built stub proves only that the stub matches itself; this is what would notice if
+    voyageai renamed `http_status`. Both wordings are deliberately ones the text markers do NOT
+    match, so a pass here means the numeric branch answered.
+    """
+    voyageai_error = pytest.importorskip(
+        "voyageai.error", reason="needs the voyage extra (pip install recall[voyage])"
+    )
+
+    server = voyageai_error.ServerError(
+        "the server failed to process the request.", http_status=500
+    )
+    assert server.http_status == 500  # the attribute the fix reads; guards a rename
+    assert _is_transient(server) is True
+
+    limited = voyageai_error.RateLimitError("please slow down", http_status=429)
+    assert _is_transient(limited) is True
+
+    denied = voyageai_error.AuthenticationError("the key was not accepted", http_status=401)
+    assert _is_transient(denied) is False
+
+
+class _HostileError(Exception):
+    """An error whose status attribute RAISES when read, as a deprecated alias can.
+
+    Not contrived: `aiohttp.ClientResponseError.code` raises `DeprecationWarning` (fatal under
+    `-W error`), and any library is free to make a status a lazily-parsed property.
+    """
+
+    @property
+    def status_code(self) -> int:
+        raise RuntimeError("reading this attribute is deprecated")
+
+
+def test_a_status_attribute_that_raises_does_not_take_the_retry_down_with_it() -> None:
+    """`getattr(x, name, None)` swallows only `AttributeError`, and a property may raise anything.
+
+    This matters more than a misclassification. `_is_transient` is called from INSIDE
+    `retry_with_backoff`'s `except Exception` block, so a classifier that raises does not merely
+    guess wrong: it replaces the provider's error with its own, and the run dies reporting a
+    stdlib or deprecation error instead of the rate limit that actually happened.
+
+    The message carries a marker, so the correct outcome is a normal fallback verdict of
+    transient — the probe failing should be invisible, not fatal.
+    """
+    exc = _HostileError("connection reset by peer")
+
     assert _is_transient(exc) is True
     assert _attempts_used(exc) == 3

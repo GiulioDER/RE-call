@@ -119,3 +119,34 @@ def test_a_success_costs_exactly_one_request(
         assert generation.generate_one(client, "stub/model", _MESSAGES, max_tokens=16) == "ok"
 
         assert stub.count == 1
+
+
+def test_a_retry_after_header_paces_this_loop_too(
+    monkeypatch: pytest.MonkeyPatch, instant_backoff: None
+) -> None:
+    """Switching the SDK's retries off took this loop's `Retry-After` compliance with them.
+
+    `openrouter_client` passes `max_retries=0`, so the transport layer that obeyed the header is
+    gone, and nothing in `generate_one` read it. Its fixed 2/4/8 ladder spends all four attempts
+    inside 14s, so a per-minute rate limit that the stock client would simply have waited out
+    fails the task — and `CONSECUTIVE_FAILURE_LIMIT` turns five such tasks into an aborted run.
+    Cheaper per failure and strictly less able to survive one is not the trade this change was
+    making, so the loop honours the header itself now.
+
+    `GENERATION_BACKOFF_S` is zeroed by the fixture, so anything slept here is the provider's ask
+    and nothing else.
+    """
+    slept: list[float] = []
+    monkeypatch.setattr(generation.time, "sleep", slept.append)
+
+    with provider_stub(CHAT_OK) as stub:
+        stub.arm(429, "please slow down")
+        stub.headers = {"Retry-After": "20"}
+        client = stub.track(
+            openai.OpenAI(api_key="k", base_url=stub.base_url, max_retries=0, timeout=5.0)
+        )
+        with pytest.raises(RuntimeError):
+            generation.generate_one(client, "m", _MESSAGES, max_tokens=16)
+
+    assert slept, "the loop never slept, so it cannot have paced anything"
+    assert all(d >= 20.0 for d in slept), f"a 20s cooldown was not waited out: {slept}"

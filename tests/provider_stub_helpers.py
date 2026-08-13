@@ -62,6 +62,9 @@ class ProviderStub:
         self.body: dict[str, Any] = {}
         self.count = 0
         self.base_url = f"http://127.0.0.1:{port}/v1"
+        #: Extra response headers, for tests about what a provider ASKS for rather than what it
+        #: returns. `Retry-After` is the reason this exists.
+        self.headers: dict[str, str] = {}
         #: Clients registered with `track`, closed before the listener stops. See `provider_stub`.
         self.clients: list[Any] = []
         #: Recorded so teardown can prove these threads actually ended. Keep-alive means one
@@ -102,6 +105,8 @@ def _handler_for(stub: ProviderStub) -> type[BaseHTTPRequestHandler]:
             self.send_response(stub.status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(raw)))
+            for name, value in stub.headers.items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(raw)
 

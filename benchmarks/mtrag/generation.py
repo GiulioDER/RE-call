@@ -123,6 +123,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+# Private on purpose, and imported rather than reimplemented: there is one definition in this
+# repository of how long a provider asked us to wait, and a second copy here would drift from it
+# exactly as the two retry policies this file just finished collapsing into one did.
+from recall.embeddings import _retry_after_seconds
+
 #: From the official `format_checker.py`. Named here so a violation fails in OUR run, with a
 #: message naming the limit, rather than at submission.
 MAX_CONTEXTS = 10
@@ -425,7 +430,8 @@ def openrouter_client(api_key: str | None = None) -> Any:
     # which does not replace that loop but multiplies with it: at `GENERATION_ATTEMPTS = 4` one
     # 429 costs 12 billed requests rather than 4, which is 3x the worst-case bill the warning
     # above `generate_one` quotes. `PERMANENT_ERROR_NAMES` is unaffected either way: the statuses
-    # the SDK retries (408, 409, 429, 5xx) are disjoint from the 400/401/403/404 that set names,
+    # the SDK retries (408, 409, 429, 5xx, plus ANY status on which the provider sends
+    # `x-should-retry: true`) are all but disjoint from the 400/401/403/404 that set names,
     # so what is removed here is the multiplication on transient failures and nothing else.
     return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=key, max_retries=0)
 
@@ -465,7 +471,14 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             last = exc
             if type(exc).__name__ in PERMANENT_ERROR_NAMES or attempt == GENERATION_ATTEMPTS:
                 break
-            time.sleep(GENERATION_BACKOFF_S * (2 ** (attempt - 1)))
+            # `+ _retry_after_seconds` for the same reason `retry_with_backoff` does it, and it
+            # is this loop's problem for the same reason: `openrouter_client` passes
+            # `max_retries=0`, so the transport layer that used to obey `Retry-After` is gone and
+            # nothing else here reads it. The fixed ladder spends all four attempts inside 14s,
+            # so a per-minute rate limit the stock client would have waited out fails the task,
+            # and `CONSECUTIVE_FAILURE_LIMIT` turns five such tasks into an aborted run.
+            paced = _retry_after_seconds(exc) or 0.0
+            time.sleep(GENERATION_BACKOFF_S * (2 ** (attempt - 1)) + paced)
     raise RuntimeError(
         f"generation gave up after {GENERATION_ATTEMPTS} attempts "
         f"({type(last).__name__}: {last}). Answers already written are kept; re-run to resume."
