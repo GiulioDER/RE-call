@@ -199,11 +199,19 @@ def is_terminal(exc: Exception) -> bool:
     #
     # The fallback is EMPTY, not `type(exc).__name__` as `_is_transient` uses. Its markers are
     # words; two of mine are bare digits, so a class named `Error402` would abort a whole run on
-    # its own name. Empty text means "not terminal", which quarantines this one item and lets
-    # `CONSECUTIVE_FAILURE_LIMIT` bound the damage — an exception nobody can read is not evidence
-    # the account is dead.
+    # its own name. Empty text means "no evidence from the TEXT", not "no evidence at all": the
+    # status is still read below, so an unreadable 402 is still terminal. What it does soften is
+    # the account phrases, which is why an `insufficient_quota` whose body never decoded reads as
+    # one bad item — quarantined, and visible through whichever accounting its driver keeps
+    # (`CONSECUTIVE_FAILURE_LIMIT` in `benchmarks/run.py` and mtrag, `coverage` in beam's
+    # `_run_pool`, the `failed`/`rejudge_failed` records in judge_quality and rejudge).
+    #
+    # `str.lower(...)` unbound, not `.lower()`: `str(exc)` may hand back a str SUBCLASS, and the
+    # marker scans below sit OUTSIDE this guard, so a hostile `__contains__` would run there
+    # instead. The unbound method returns an exact `str` for any subclass, which is the immunity
+    # `_is_transient` gets for free by building its text from an f-string.
     try:
-        text = str(exc).lower()
+        text = str.lower(str(exc))
     except Exception:  # noqa: BLE001 - a classifier must never beat the error it is classifying
         text = ""
     if any(marker in text for marker in _ACCOUNT_MARKERS):

@@ -241,8 +241,11 @@ def test_an_unreadable_exception_is_not_terminal_rather_than_terminal() -> None:
     Empty text makes `_is_transient` return False, i.e. permanent, which fails fast rather than
     resending a payload — safe for a retry. Here False means NOT terminal, i.e. quarantine this
     one item and carry on, which is the safe direction for a run: an exception nobody can read is
-    not evidence the account is dead, and `CONSECUTIVE_FAILURE_LIMIT` still bounds the damage at
-    five in a row if it turns out to be systematic.
+    not evidence the account is dead, and a systematic version of it still surfaces through
+    whichever accounting the driver keeps — `CONSECUTIVE_FAILURE_LIMIT` in `benchmarks/run.py`
+    and mtrag, `coverage` in beam's `_run_pool`, the `failed` / `rejudge_failed` records in
+    judge_quality and rejudge. (The limit covers 2 of the 5 call sites, not all of them; an
+    earlier version of this docstring cited it as though it covered every one.)
 
     The class name is deliberately NOT folded in as a fallback the way `_is_transient` does it.
     Its markers are words; two of mine are bare digits, so a class named `Error402` would abort a
@@ -254,6 +257,54 @@ def test_an_unreadable_exception_is_not_terminal_rather_than_terminal() -> None:
             raise RuntimeError("undecoded body")
 
     assert is_terminal(Error402()) is False, "a class NAME must not be read as a status code"
+
+
+def test_an_unreadable_exception_that_states_its_status_is_still_terminal() -> None:
+    """⛔ The property the empty-text fallback exists to PRESERVE, and the one nothing pinned.
+
+    A mutation replacing the handler body with `return False` survived all 44 arms, while flipping
+    a real HTTP 402 whose body never decoded from terminal to quarantined — an empty account back
+    to being dropped one question at a time, which is the failure this whole line of work started
+    from.
+
+    The trace that has to hold: `__str__` raises, so `text` is empty and the account markers cannot
+    fire; the status is then read through `_probe` and 402 decides. Empty text must mean "no
+    evidence from the text", not "no evidence at all".
+    """
+
+    class _Unreadable402(Exception):
+        status_code = 402
+
+        def __str__(self) -> str:
+            raise RuntimeError("undecoded body")
+
+    assert is_terminal(_Unreadable402()) is True, (
+        "the status is still evidence even when the message is not"
+    )
+
+
+def test_the_marker_scan_cannot_run_code_the_exception_supplied() -> None:
+    """The last robustness divergence from `_is_transient`, which is immune by construction.
+
+    `_is_transient` builds its text with an f-string, which always yields an exact `str`. This
+    function used `str(exc).lower()`, and a `str` SUBCLASS that overrides both `lower` and
+    `__contains__` puts user code inside the marker scans — which sit OUTSIDE the guard, so it
+    raises there instead. `str.lower(...)` unbound returns an exact `str` for any subclass, so the
+    scans can only ever run the built-in.
+    """
+
+    class _EvilStr(str):
+        def lower(self) -> "_EvilStr":
+            return self
+
+        def __contains__(self, item: object) -> bool:
+            raise RuntimeError("hostile contains")
+
+    class _Hostile(Exception):
+        def __str__(self) -> str:
+            return _EvilStr("boom")
+
+    assert is_terminal(_Hostile()) is False
 
 
 def test_the_first_spelling_that_answers_wins() -> None:
