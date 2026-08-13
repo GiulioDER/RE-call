@@ -189,6 +189,66 @@ label-stratified analysis. The prompt adopted is the paper's own, justified inde
 `neutral` variant that was derived from label stratification is not used — but no dev-set gain that
 depended on label access should be claimed to transfer to the sealed set.
 
+## Truncation audit (added 2026-08-13)
+
+Every run above sent `--max-tokens 512` through a generator that never read `finish_reason`, so a
+completion the ceiling cut off came back as an ordinary string, was written to the submission and
+was judged as if the system had produced it. The code path is fixed (`generate_one` now raises
+`CompletionTruncated`, and the per-task quarantine keeps such a task out of the submission), but
+the fix is forward-only: these runs predate it, and **the stop reason was never recorded**, so for
+the artifacts it has to be reconstructed.
+
+Reconstructed by re-tokenising every stored answer with the generator's own encoding (gpt-4o,
+`o200k_base`). This is close to exact rather than a proxy: a completion stopped by the ceiling
+carries exactly 512 completion tokens, and the only edge case is the trailing whitespace token that
+`.strip()` removes.
+
+| run | rows | mean | p95 | max | at/over 512 |
+|---|---|---|---|---|---|
+| `taskb` (gold, abstain) | 842 | 64.4 | 156 | 330 | **0** |
+| `taskb_official` (gold, official) | 842 | 99.1 | 169 | 239 | **0** |
+| `taskc_benchmark` (benchmark-retrieved, abstain) | 842 | 66.4 | 157 | 304 | **0** |
+| `taskc_recall` (RE-call-retrieved, abstain) | 842 | 78.0 | 194 | 402 | **0** |
+
+Nothing came within 12 tokens of the ceiling. The longest answer anywhere in the recoverable set is
+402 tokens, 110 below the limit, and the independent punctuation check agrees: the three answers of
+3,368 that end without terminal punctuation are all short ones. **The numbers reported above for
+these four runs need no truncation caveat.**
+
+### ⛔ The gap: neither official-prompt Task C run has been checked
+
+`taskc_benchmark_official` and `taskc_recall_official` have **no recoverable rows on the machine
+that produced them**, so they are UNVERIFIED, not clean. That is the pair this document calls the
+comparison that actually measures RE-call, so it is the worst possible pair to be missing.
+
+What is known about them:
+
+* Their nearest neighbours are clean with wide margins, and the official prompt produced the
+  tightest length distribution of the four (max 239 on Task B against 330 for the abstain prompt),
+  so truncation is unlikely. ⚠️ That is an inference from sibling runs, not a measurement of these
+  ones, and it must not be quoted as if the check had been run.
+* The scan is cheap once the payload pack from `runs/README.md` is restored. It is
+  `scripts/scan_truncation.py`, it reads `predictions[].text` and needs nothing else, and it exits
+  non-zero on a truncation found OR a file absent, so it can gate a scoring step without letting
+  "never checked" pass as "clean":
+
+      python results/mtrag_generation/scripts/scan_truncation.py <restored>/taskc_*_official.*.jsonl
+
+  Its detector is live rather than assumed: run it with `--ceiling 200` against `taskb` and it
+  finds rows, so the zero at 512 is a measurement and not a dead check.
+
+Two further limits on the four rows that WERE scanned, stated so the audit is not read as stronger
+than it is:
+
+* They come from leftover intermediates on the production machine, not from the checksummed
+  archive, which is not on that disk. Row counts (842) and task ids match the manifests, but they
+  could not be matched against `runs/SHA256SUMS.txt`: those hashes cover gzipped files, and
+  re-gzipping does not reproduce a byte-identical container, so the comparison is inconclusive in
+  both directions rather than negative.
+* `taskb.algorithmic.jsonl` survives only as 329 of 842 records with the last one cut off
+  mid-write. That is an interrupted write of a derived artifact, not a truncated answer; its 329
+  records are clean.
+
 ## Pending
 
 Awaiting one GPU session (three algorithmic passes, ~8 min each) then the LLM judge on each:
@@ -199,3 +259,6 @@ Awaiting one GPU session (three algorithmic passes, ~8 min each) then the LLM ju
 `taskc_recall_official` vs `taskc_benchmark_official`: same harness, same prompt, same model, only
 the contexts differ. It needs no baseline table to be meaningful, and it is the only row in this
 document where RE-call is the variable.
+
+⚠️ Both halves of that pair are also the two runs the truncation audit above could not check. When
+their payloads are restored, scan them before scoring anything on them.
