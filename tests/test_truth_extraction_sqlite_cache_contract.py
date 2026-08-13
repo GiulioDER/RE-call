@@ -100,16 +100,24 @@ def test_rejections_and_the_batch_rung_survive(tmp_path):
     assert got.batch_rejection.rung == "json"
 
 
-def test_an_entry_is_not_served_to_a_different_engine_identity(tmp_path):
-    """Serving one engine's answer for another makes the audit record wrong about its origin."""
+@pytest.mark.parametrize(
+    "column", ["engine_id", "model_id", "engine_revision", "prompt_revision"]
+)
+def test_an_entry_is_not_served_to_a_different_engine_identity(tmp_path, column):
+    """Serving one engine's answer for another makes the audit record wrong about its origin.
+
+    Parametrised over ALL FOUR identity columns. Tampering with `engine_id` alone left three
+    quarters of this cross-check unpinned: each of the other three could stop being compared
+    with the whole suite green, and this is the guard the cache key exists to enforce.
+    """
     with SqliteExtractionCache(_path(tmp_path)) as cache:
         cache.put("k1", _extraction(engine_id="e1"))
-        # Same key, different identity recorded in the row: the read must refuse it.
-        with sqlite3.connect(_path(tmp_path)) as raw:
-            raw.execute("UPDATE extraction_entries SET engine_id = 'OTHER' WHERE cache_key = 'k1'")
-            raw.commit()
+    # Same key, different identity recorded in the row: the read must refuse it.
+    with contextlib.closing(sqlite3.connect(_path(tmp_path))) as raw:
+        raw.execute(f"UPDATE extraction_entries SET {column} = 'OTHER' WHERE cache_key = 'k1'")
+        raw.commit()
     with SqliteExtractionCache(_path(tmp_path)) as cache:
-        assert cache.get("k1") is None
+        assert cache.get("k1") is None, f"a row whose {column} was swapped was served"
         assert cache.corrupt >= 1, "the mismatch was not counted"
 
 
@@ -466,36 +474,95 @@ def test_a_failed_commit_is_rolled_back_rather_than_left_pending(tmp_path):
         assert len(cache) == 1
 
 
-def test_a_refused_open_closes_the_connection_it_made(tmp_path, monkeypatch):
+class _TrackedConnection:
+    """A real connection that records its own close, so a leak is assertable on any OS."""
+
+    def __init__(self, real, closed, kwargs):
+        self._real = real
+        self._closed = closed
+        self._kwargs = kwargs
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def close(self):
+        self._closed.append(True)
+        self._real.close()
+
+
+def _track_connections(monkeypatch):
+    """Patch `sqlite3.connect` to hand back tracked connections. Returns (closed, kwargs)."""
+    closed: list[bool] = []
+    seen: list[dict] = []
+    real_connect = sqlite3.connect
+
+    def _connect(p, **kwargs):
+        seen.append(dict(kwargs))
+        return _TrackedConnection(real_connect(p, **kwargs), closed, kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", _connect)
+    return closed, seen
+
+
+@pytest.mark.parametrize("wreck", ["foreign_table", "not_a_database"])
+def test_a_refused_open_closes_the_connection_it_made(tmp_path, monkeypatch, wreck):
     """The `connection.close()` on the refusal path, which the module argues for at length.
+
+    Both refusal branches, because they are different code. A foreign table raises
+    `ExtractionCacheRefused` straight out of `_ensure_schema`, while a file that is not a
+    database raises `sqlite3.DatabaseError` and takes the `isinstance` arm below it. Covering
+    only the first left the arm that the busy and corrupt paths BOTH live on unexercised.
 
     Asserted on the close CALL rather than on unlinking the file: an open handle blocks
     deletion on Windows and not on POSIX, so a `Path.unlink()` assertion would pass on Linux CI
     whatever the code did, which is the same defect this whole file exists to remove.
     """
     path = _path(tmp_path)
-    real_connect = sqlite3.connect
-    with contextlib.closing(real_connect(path)) as raw:
-        raw.execute("CREATE TABLE extraction_entries (id INTEGER PRIMARY KEY, whatever TEXT)")
-        raw.commit()
+    if wreck == "foreign_table":
+        with contextlib.closing(sqlite3.connect(path)) as raw:
+            raw.execute("CREATE TABLE extraction_entries (id INTEGER PRIMARY KEY, other TEXT)")
+            raw.commit()
+    else:
+        path.write_bytes(b"\xff\xd8\xff\xe0 this is a jpeg, not a database" * 8)
 
-    closed: list[bool] = []
-
-    class _Tracked:
-        def __init__(self, real):
-            self._real = real
-
-        def __getattr__(self, name):
-            return getattr(self._real, name)
-
-        def close(self):
-            closed.append(True)
-            self._real.close()
-
-    monkeypatch.setattr(sqlite3, "connect", lambda p, **k: _Tracked(real_connect(p, **k)))
+    closed, _ = _track_connections(monkeypatch)
     with pytest.raises(ExtractionCacheRefused):
         SqliteExtractionCache(path)
-    assert closed, "the refusal path leaked its sqlite handle"
+    assert closed, f"the {wreck} refusal path leaked its sqlite handle"
+
+
+def test_a_failure_that_is_not_sqlites_passes_through_unwrapped(tmp_path, monkeypatch):
+    """The bare `raise` under the `isinstance(exc, sqlite3.Error)` arm.
+
+    Without it every BaseException is relabelled as a cache problem, so a Ctrl-C during open
+    reaches the user as "extraction cache at <path> is not usable": an interrupt reported as
+    data damage. The handle must still be released on the way past.
+    """
+
+    class _Sentinel(Exception):
+        pass
+
+    closed, _ = _track_connections(monkeypatch)
+    monkeypatch.setattr(
+        SqliteExtractionCache,
+        "_ensure_schema",
+        lambda self, connection: (_ for _ in ()).throw(_Sentinel("not a cache problem")),
+    )
+    with pytest.raises(_Sentinel):
+        SqliteExtractionCache(_path(tmp_path))
+    assert closed, "the pass-through path leaked its sqlite handle"
+
+
+def test_the_connect_timeout_is_the_production_value(tmp_path, monkeypatch):
+    """Pins the 30s constant itself.
+
+    The busy test below forces `timeout=0.1` over whatever the call site passed, so it proves
+    the branch and says nothing about the number. Dropping the argument entirely would fall
+    back to sqlite3's 5s default with every test still green.
+    """
+    _, seen = _track_connections(monkeypatch)
+    SqliteExtractionCache(_path(tmp_path)).close()
+    assert seen and seen[0].get("timeout") == 30.0
 
 
 def test_a_cache_under_a_directory_that_does_not_exist_is_created(tmp_path):
@@ -530,3 +597,174 @@ def test_a_parent_that_is_itself_a_file_is_refused_too(tmp_path):
     occupied.write_text("", encoding="utf-8", newline="\n")
     with pytest.raises(ExtractionCacheRefused, match="could not be opened"):
         SqliteExtractionCache(occupied / "tx.sqlite3")
+
+
+# A third round, from a review that enumerated guards from the SOURCE rather than from either
+# previous list. The two that matter most are here: three quarters of the identity cross-check
+# above, and the whole top level type loop below, whose deletion turns a malformed row into an
+# accepted HIT rather than into a refusal.
+
+
+@pytest.mark.parametrize(
+    "field,bad",
+    [
+        ("file", 123),
+        ("engine_id", ["e1"]),
+        ("model_id", 123),
+        ("revision", None),
+        ("prompt_revision", 1.5),
+        ("cached", 1),
+    ],
+)
+def test_a_top_level_field_of_the_wrong_type_is_refused(field, bad):
+    """Deleting this loop does not make a bad row refuse LOUDLY, it makes it ACCEPTED.
+
+    `FileExtraction(file=123)` is then served as a hit, and since `recheck` compares whole
+    extractions for equality, the wrong type surfaces to the user as engine nondeterminism.
+    """
+    from recall.truth_extraction import _serialize
+
+    with pytest.raises(_serialize.ExtractionPayloadInvalid, match=f"{field!r} is"):
+        _serialize.extraction_from_json(_payload(**{field: bad}))
+
+
+@pytest.mark.parametrize("field", ["claims", "rejections"])
+def test_a_claims_or_rejections_field_that_is_not_a_list_is_refused(field):
+    """Built from `_payload`, and the first attempt was not, which is why this comment exists.
+
+    A bare `{"claims": 5}` is missing every other top level key, so the key set guard refuses it
+    first and the list check never runs: the test passed while the guard it named could be
+    deleted. Mutation caught it. The `match=` pins the reason so it cannot drift back.
+    """
+    from recall.truth_extraction import _serialize
+
+    with pytest.raises(_serialize.ExtractionPayloadInvalid, match="expected list"):
+        _serialize.extraction_from_json(_payload(**{field: 5}))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "not json at all",
+        "5",
+    ],
+    ids=["bad_json", "not_an_object"],
+)
+def test_a_malformed_payload_raises_this_modules_own_type(text):
+    """`extraction_from_json` is a module boundary, and its contract is its own exception type.
+
+    Each of these raised something else before: `json.JSONDecodeError` from the parse, and
+    `TypeError: 'int' object is not iterable` from the shape guards. `get` catches everything,
+    so the suite could not see the difference and the contract was asserted by nothing.
+    """
+    from recall.truth_extraction import _serialize
+
+    with pytest.raises(_serialize.ExtractionPayloadInvalid):
+        _serialize.extraction_from_json(text)
+
+
+@pytest.mark.parametrize(
+    "field,bad",
+    [
+        ("claims", [5]),
+        ("rejections", [5]),
+        ("batch_rejection", 5),
+    ],
+)
+def test_a_member_that_is_not_an_object_raises_this_modules_own_type(field, bad):
+    from recall.truth_extraction import _serialize
+
+    with pytest.raises(_serialize.ExtractionPayloadInvalid):
+        _serialize.extraction_from_json(_payload(**{field: bad}))
+
+
+@pytest.mark.parametrize(
+    "batch",
+    [
+        {"index": True, "kind": "*", "rung": "json", "reason": "r"},
+        {"index": -1, "kind": "*", "rung": "json", "reason": "r", "extra": "x"},
+    ],
+    ids=["bool_index", "extra_field"],
+)
+def test_a_batch_rejection_is_validated_like_any_other(batch):
+    """It goes through the same checker; only a well formed one was ever round tripped."""
+    from recall.truth_extraction import _serialize
+
+    with pytest.raises(_serialize.ExtractionPayloadInvalid, match="batch rejection"):
+        _serialize.extraction_from_json(_payload(batch_rejection=batch))
+
+
+def test_a_row_from_an_older_cache_version_is_stale_too(tmp_path):
+    """`!=`, not `>`. The design stores the version per ROW so a store written across a bump
+    degrades entry by entry, and it is the OLDER direction that a bump actually produces."""
+    with SqliteExtractionCache(_path(tmp_path)) as cache:
+        cache.put("k1", _extraction())
+    with contextlib.closing(sqlite3.connect(_path(tmp_path))) as raw:
+        raw.execute(
+            "UPDATE extraction_entries SET schema_version = ? WHERE cache_key = 'k1'",
+            (CACHE_SCHEMA_VERSION - 1,),
+        )
+        raw.commit()
+    with SqliteExtractionCache(_path(tmp_path)) as cache:
+        assert cache.get("k1") is None
+        assert cache.stale == 1
+        assert cache.corrupt == 0
+
+
+def test_a_corrupt_row_is_healed_by_the_next_run(tmp_path):
+    """`INSERT OR REPLACE`, which is the only thing that repairs a damaged entry.
+
+    `put` is reached only after a miss, so the write back lands on the SAME key. Under
+    `INSERT OR IGNORE` the damage would be permanent: every later run would re-pay the engine
+    for that file and keep reporting it as corrupt, with nothing able to clear it.
+    """
+    with SqliteExtractionCache(_path(tmp_path)) as cache:
+        cache.put("k1", _extraction())
+    with contextlib.closing(sqlite3.connect(_path(tmp_path))) as raw:
+        raw.execute("UPDATE extraction_entries SET payload = 'not json' WHERE cache_key = 'k1'")
+        raw.commit()
+    with SqliteExtractionCache(_path(tmp_path)) as cache:
+        assert cache.get("k1") is None
+        cache.put("k1", _extraction())  # what an ingest does after the miss
+    with SqliteExtractionCache(_path(tmp_path)) as cache:
+        assert cache.get("k1") is not None, "the damaged row was never repaired"
+        assert cache.corrupt == 0
+
+
+def test_a_rollback_that_also_fails_does_not_abort_the_ingest(tmp_path):
+    """A disk that fails COMMIT is the one most likely to also fail ROLLBACK.
+
+    The inner try/except is what keeps that from escaping `put` and discarding every extraction
+    already built, which is the promise the module docstring makes.
+    """
+
+    class _BothFail:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, *args, **kwargs):
+            return self._real.execute(*args, **kwargs)
+
+        def commit(self):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        def rollback(self):
+            raise sqlite3.OperationalError("disk I/O error")
+
+    with SqliteExtractionCache(_path(tmp_path)) as cache:
+        healthy = cache._conn
+        cache._conn = _BothFail(healthy)
+        try:
+            cache.put("k1", _extraction())  # must return, not raise
+            assert cache.write_failures == 1
+        finally:
+            cache._conn = healthy
+
+
+def test_leaving_the_context_manager_closes_the_handle(tmp_path):
+    """Every `with SqliteExtractionCache(...)` in this file relies on `__exit__`, and a no-op
+    `__exit__` left all of them green: `close` is pinned only through the CLI's own finally."""
+    with SqliteExtractionCache(_path(tmp_path)) as cache:
+        cache.put("k1", _extraction())
+    with pytest.raises(sqlite3.ProgrammingError):
+        cache._conn.execute("SELECT 1")

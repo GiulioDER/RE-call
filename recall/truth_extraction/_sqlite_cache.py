@@ -114,12 +114,19 @@ class SqliteExtractionCache:
                 # not treated as one; sqlite initialises it, which is the right answer for
                 # `--cache` pointed at a freshly `touch`ed path.
                 #
-                # A BUSY store is told apart from a broken one. `_ensure_schema` takes the write
-                # lock, so a concurrent `recall extract run --cache <same path>` lands here
-                # after the connect timeout, and reporting that as "not usable" tells the user
-                # their cache is damaged when another run simply holds it. Same refusal, since
-                # a cache that cannot be opened cannot serve `--recheck`, but the message says
-                # which one it is and therefore whether retrying is the fix.
+                # A BUSY store is told apart from a broken one. The CREATE TABLE statement in
+                # `_ensure_schema` takes the write lock, so a concurrent
+                # `recall extract run --cache <same path>` lands here after the connect
+                # timeout, and reporting that as "not usable" tells the user their cache is
+                # damaged when another run simply holds it. Same refusal, since a cache that
+                # cannot be opened cannot serve `--recheck`, but the message says which one it
+                # is and therefore whether retrying is the fix.
+                #
+                # The statement itself, NOT the `commit()` under it: sqlite3 issues its
+                # implicit BEGIN for DML only, so DDL self-commits and that call is a no-op
+                # under legacy transaction control. It is kept because it stops being one under
+                # `autocommit=False`, which is where this connection goes if it ever needs
+                # explicit transactions.
                 if _is_busy(exc):
                     raise ExtractionCacheRefused(
                         f"extraction cache at {self._path} is busy: {exc}. Another run is "

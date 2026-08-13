@@ -250,6 +250,31 @@ Added after a review mutated four guards the list above had never enumerated:
     at all, and a shallow test would have reported property 27 as covered while running none of
     it.
 
+Added after a review enumerated guards from the SOURCE rather than from either list above:
+
+29. No identity column can be swapped without refusal. Parametrised over all four: tampering
+    with `engine_id` alone left three quarters of the cross-check unpinned, and this is the
+    guard the cache key exists to enforce.
+30. A top level field of the wrong type is refused. Deleting that loop does not make a bad row
+    refuse loudly, it makes it ACCEPTED and served as a hit, which `recheck` then reports as
+    engine nondeterminism.
+31. A malformed payload raises this module's own exception type rather than `JSONDecodeError`
+    or `TypeError`. `get` catches everything, so the suite could not otherwise see the
+    difference and the boundary's contract was asserted by nothing.
+32. `claims` and `rejections` must be lists, and a member that is not an object is refused.
+33. A batch rejection is validated like any other, not just round tripped when well formed.
+34. A row from an OLDER cache version is stale too. `!=`, not `>`: the older direction is the
+    one a version bump actually produces, and it was the untested one.
+35. A corrupt row is healed by the next run. `INSERT OR REPLACE` is the only thing that repairs
+    a damaged entry; under `OR IGNORE` the damage would be permanent and every later run would
+    re-pay the engine for that file forever.
+36. Both refusal branches release the handle, and a failure that is not sqlite's passes through
+    unwrapped, so a Ctrl-C during open is not reported to the user as data damage.
+37. A rollback that itself fails does not abort the ingest. A disk that fails COMMIT is the one
+    most likely to also fail ROLLBACK.
+38. The connect timeout is the production value, and leaving the context manager closes the
+    handle.
+
 `tests/test_cli_extract.py` gains: the file is created at PATH; a second run reports hits; a bad
 `--cache` path exits 2 before any engine call. Its existing `--recheck` test, which passes `--cache`
 as a boolean, is updated. Persistence is proven by ENGINE CALLS rather than by the file existing: a
@@ -269,6 +294,18 @@ recovery is to delete the cache file, which costs a re-paid corpus and nothing e
 rather than by a check: `Path("")` normalises to `"."` and sqlite cannot open a directory. The
 behaviour is pinned by a test. The mechanism is not stated in the code.
 
+Creating the parent directory is a check then act, so two `recall extract run --cache <new
+dir>/tx.sqlite3` processes racing between the `exists()` and the `mkdir` can give one of them
+`FileExistsError`, refused as "could not be created" for a directory that plainly does exist. The
+`exist_ok=True` that would absorb it is unreachable behind the `exists()` precondition. Left as is
+rather than fixed, because dropping the precondition moves the parent-is-a-file case from the
+connect guard to the mkdir guard and therefore changes which message a user sees, which is a
+behaviour change and not a test change.
+
+The `"busy" in text` half of `_is_busy` appears unreachable: SQLite's own strings for `SQLITE_BUSY`
+and `SQLITE_LOCKED` are "database is locked" and "database table is locked", and no real message
+containing "busy" could be constructed. Only the "locked" half is exercised.
+
 ## Verification
 
 `python -m ruff check .` and mypy, both clean. `ruff format` is never run: 348 of 406 files fail it
@@ -278,9 +315,21 @@ Every guard is mutated and watched going red before it is claimed to work, and t
 from two working directories. This is not a formality. The first run over this boundary caught 17 of
 25 and left 8 guards unpinned, which is what properties 16 to 23 above were written for. A review
 then mutated four guards that run's LIST had never enumerated, and all four survived, which is
-properties 24 to 28. That is the sharper lesson: mutating the guards you thought of proves only that
-you thought of them, and the three that survived longest were each argued for at length in a comment
-or a docstring.
+properties 24 to 28. A second review enumerated guards from the source instead of from any list and
+ran 51 mutants: 25 killed, 26 survived, 6 of those genuinely equivalent. That is properties 29 to
+38, and the sharper lesson: mutating the guards you thought of proves only that you thought of them,
+and the ones that survived longest were each argued for at length in a comment or a docstring.
+
+Two of the tests written to close those gaps were themselves defective in the same way, and only
+mutation found it. Both raised for the wrong REASON: a bare `{"claims": 5}` is refused by the
+key set guard before the list check it was written for, and a hand built rejection dict would have
+been refused by the field set branch before the type branch if a field were ever added to
+`ClaimRejection`. Both are now built from the shared fixture with `match=` pinning the reason. A
+test that raises is not the same as a test that raises because of the guard it names.
+
+Guard restoration is verified from git after every run, not trusted to the harness. A run killed by
+a timeout takes its `finally` with it: one SIGTERM left `entry.model_id` weakened to `model_id` in
+the identity cross-check, on disk, in a tree that otherwise looked finished.
 
 One survivor is left alone deliberately. `type(raw[name]) is not want` against `isinstance` at the
 top level is an equivalent mutant: `_TOP_LEVEL_SCALARS` holds five `str` fields and one `bool`,
