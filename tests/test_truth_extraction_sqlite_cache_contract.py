@@ -21,6 +21,7 @@ Properties, one test each:
 import contextlib
 import json
 import sqlite3
+from dataclasses import replace
 
 import pytest
 
@@ -316,6 +317,51 @@ def test_a_cache_key_is_unchanged_for_an_ordinary_filename(tmp_path):
     assert _hashable("memo_2026-01-01.md") == "memo_2026-01-01.md"
     assert _hashable("Åcme.md") == "Åcme.md", "valid non-ASCII must not be rewritten either"
     assert _hashable("bad\udcff.md").startswith("\x00surrogate:")
+
+
+def test_two_different_documents_never_share_a_key():
+    """`_hashable` must be INJECTIVE, and the first version was not.
+
+    It argued that its NUL marker cannot occur in a real filename, which is true of `file` and
+    `corpus_names` and false of `human_body`: that is file CONTENT, a NUL survives `read_text`,
+    and a body literally beginning with the marker mapped onto the surrogate string that marker
+    encodes. Two different documents then shared a cache key and one was served for the other,
+    which is the single failure this module exists to prevent, introduced by the guard for it.
+    """
+    from recall.truth_extraction._cache import _hashable
+
+    surrogate = "\udcff"
+    impostor = "\x00surrogate:" + surrogate.encode("utf-8", "surrogatepass").hex()
+    assert surrogate != impostor
+    assert _hashable(surrogate) != _hashable(impostor), "two documents collided on one key"
+
+
+def test_a_surrogate_in_the_engine_identity_does_not_raise():
+    """All seven hashed fields, not the three that happened to be filenames.
+
+    `model_id` and `revision` come from `RECALL_EXTRACTION_MODEL` / `..._REVISION`, and
+    `os.environ` decodes with surrogateescape on POSIX by the same mechanism that puts a lone
+    surrogate in a filename. Worse blast radius than the filename case, too: an engine identity
+    is fixed for the run, so it raises on file 1 of 792 rather than on the one awkward memo.
+    """
+    from recall.truth_extraction._cache import extraction_cache_key
+    from recall.truth_extraction._prompt import build_extraction_prompt
+
+    class _Engine:
+        engine_id = "e\udcff"
+        model_id = "m\udcff"
+        revision = "r\udcff"
+
+    prompt = build_extraction_prompt(file="m.md", human_body="x", corpus_names=("m.md",))
+    assert extraction_cache_key(engine=_Engine(), prompt=prompt).startswith("tx_")
+
+    # `revision` too, and it is built directly because `build_extraction_prompt` always sets it
+    # from the module constant, so no reachable input can carry a surrogate there TODAY. Pinned
+    # anyway: the invariant is "every hashed field goes through `_hashable`", uniform over the
+    # dict, and a field whose guard cannot be observed is one a later edit silently drops.
+    assert extraction_cache_key(
+        engine=_Engine(), prompt=replace(prompt, revision="p\udcff")
+    ).startswith("tx_")
 
 
 def test_a_stored_payload_is_readable_json(tmp_path):

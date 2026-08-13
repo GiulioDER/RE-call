@@ -33,6 +33,11 @@ class _EngineIdentity(Protocol):
     revision: str
 
 
+#: Prefix for the stand-in. NUL cannot appear in a path on either platform, and a body that
+#: does contain it is handled by diverting it too, which is what keeps `_hashable` injective.
+_SURROGATE_MARK = "\x00surrogate:"
+
+
 def _hashable(text: str) -> str:
     """`text` unchanged when it is valid UTF-8, and a stable stand-in when it is not.
 
@@ -44,24 +49,42 @@ def _hashable(text: str) -> str:
     discarded every file already extracted. Hardening the cache's own writes against the same
     byte, as `put` does, was pointless while the key computation one frame earlier still threw.
 
-    The valid-UTF-8 path returns the string itself, so no existing cache entry changes key. The
-    NUL prefix cannot occur in a real filename, so the stand-in cannot collide with one.
+    The valid-UTF-8 path returns the string itself, so no existing cache entry changes key.
+
+    INJECTIVE, and the first version was not. It reasoned that the NUL prefix cannot occur in a
+    real filename, which is true of `file` and `corpus_names` and false of `human_body`: that is
+    file CONTENT, a NUL survives `read_text` intact, and a body literally beginning with the
+    marker collided with the surrogate string that marker encodes. Two different documents then
+    shared a cache key and one was served for the other, which is the single failure this whole
+    module exists to prevent, introduced by the guard meant to protect it. So a string that
+    already starts with the marker is diverted too, and the map is one to one: a diverted output
+    always starts with the marker, a passed-through one never can.
     """
     try:
         text.encode("utf-8")
     except UnicodeEncodeError:
-        return "\x00surrogate:" + text.encode("utf-8", "surrogatepass").hex()
-    return text
+        pass
+    else:
+        if not text.startswith(_SURROGATE_MARK):
+            return text
+    return _SURROGATE_MARK + text.encode("utf-8", "surrogatepass").hex()
 
 
 def extraction_cache_key(*, engine: _EngineIdentity, prompt: ExtractionPrompt) -> str:
     """Content hash of every input that can change the answer."""
+    # EVERY string, not the three that happened to be filenames. The identity fields come from
+    # the environment (`RECALL_EXTRACTION_MODEL`, `RECALL_EXTRACTION_REVISION`, and the host in
+    # `RECALL_EXTRACTION_BASE_URL`), and `os.environ` decodes with surrogateescape on POSIX by
+    # exactly the mechanism that puts a lone surrogate in a filename. Guarding three of seven
+    # fields is the asymmetry this module criticises elsewhere, and here it is worse: an engine
+    # identity is fixed for the run, so it would raise on file 1 of 792 rather than on the one
+    # awkward memo. The property is "this never raises", not "these fields are safe".
     return "tx_" + canonical_sha256(
         {
-            "engine_id": engine.engine_id,
-            "model_id": engine.model_id,
-            "engine_revision": engine.revision,
-            "prompt_revision": prompt.revision,
+            "engine_id": _hashable(engine.engine_id),
+            "model_id": _hashable(engine.model_id),
+            "engine_revision": _hashable(engine.revision),
+            "prompt_revision": _hashable(prompt.revision),
             "file": _hashable(prompt.file),
             "human_body": _hashable(prompt.human_body),
             "corpus_names": tuple(sorted(_hashable(n) for n in prompt.corpus_names)),

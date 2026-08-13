@@ -725,7 +725,18 @@ def _run_extract(args: argparse.Namespace) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):  # clean UTF-8 output on Windows consoles
-        sys.stdout.reconfigure(encoding="utf-8")
+        # `errors=` as well as `encoding=`, because reconfiguring the encoding RESETS errors to
+        # strict. The inherited handler is surrogateescape, and dropping it made every `print`
+        # of a filename raise for a name that is not valid UTF-8: `recall extract run` over a
+        # corpus holding one such file exited 1 with EMPTY stdout, throwing away a completed
+        # extraction at the REPORT step. That is the same "one bad memo kills the run" failure
+        # the extractor guards against everywhere else, arriving at the last possible moment.
+        # Showing a mangled name beats showing nothing.
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    if hasattr(sys.stderr, "reconfigure"):
+        # Refusals name the file too, so stderr needs the same treatment or a refusal about an
+        # awkward name becomes a traceback instead of the message it was written to print.
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     # Without this the library's loggers have no handler, so every _log.info is discarded — which
     # is how `index` came to prune rows while printing nothing about it.
     configure_logging()

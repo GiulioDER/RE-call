@@ -307,6 +307,27 @@ def test_a_cache_path_holding_another_database_is_refused(corpus, tmp_path, monk
     assert "claim(s) for review" not in captured.out, "it read the corpus before refusing"
 
 
+def test_a_filename_that_is_not_valid_utf8_is_reported_not_fatal(corpus, monkeypatch, capsys):
+    """The END of the path, which every earlier version of this test stopped short of.
+
+    `main()` reconfigures stdout to UTF-8, and reconfiguring the encoding RESETS errors to
+    strict, dropping the inherited surrogateescape. So a name that is not valid UTF-8 raised at
+    the `print`, and `recall extract run` over a corpus holding one exited 1 with EMPTY stdout,
+    throwing away a completed extraction at the REPORT step. The library layer was fixed first
+    and this still crashed, which is why the property is asserted here, at the entry point a
+    user actually invokes, rather than one frame inside it.
+
+    Run through `main()` deliberately, since `main()` is where the reconfigure lives.
+    """
+    _enable(monkeypatch)
+    (corpus / "bad\udcff.md").write_bytes(b"Status: deprecated\n")
+    main(["extract", "run", str(corpus)])
+    out = capsys.readouterr().out
+    assert "3 file(s) read" in out, "the awkward name aborted the run"
+    assert "claim(s) for review" in out
+    assert "supersession" in out, "the other memos' results were discarded"
+
+
 def test_extract_show_reports_only_the_named_file(corpus, monkeypatch, capsys):
     _enable(monkeypatch)
     main(["extract", "show", str(corpus / "new_2026-02-01.md")])
