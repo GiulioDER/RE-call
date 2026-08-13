@@ -4,7 +4,9 @@
 The `openai` SDK ships its own retry layer underneath, and unless it is switched off the two
 multiply: a policy that says "four attempts" spends twelve requests, and the outer full-jitter
 backoff (which exists so a fleet does not remarch onto the provider in lockstep) ends up
-wrapping an inner loop that has no jitter at all.
+wrapping an inner loop that smears its own doubling schedule by only ``1 - 0.25 * random()`` — a
+25% jitter rather than a draw across the interval, so it separates a fleet far less than the
+layer wrapping it.
 
 That arithmetic is worst exactly where it hurts most. A benchmark run makes thousands of calls
 back to back, which is the traffic shape a provider rate-limits; answering a 429 with triple the
