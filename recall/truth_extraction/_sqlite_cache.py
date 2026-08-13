@@ -87,8 +87,22 @@ class SqliteExtractionCache:
         self.stale = 0
         self.write_failures = 0
         try:
-            if self._path.parent and not self._path.parent.exists():
-                self._path.parent.mkdir(parents=True, exist_ok=True)
+            # Unconditional, which is simpler and NOT a concurrency fix. The previous form
+            # guarded this with `not ...exists()`, and that check then act loses no race: the
+            # act is `mkdir(exist_ok=True)`, so a process that loses to another creating the
+            # directory between the check and the call has its FileExistsError absorbed by the
+            # flag. `recall/rewrite.py` still carries the guarded form and is fine.
+            #
+            # What the precondition did cost is TESTABILITY. Single process, the guard is never
+            # false when the directory exists, so `exist_ok=True` never ran, and mutating it
+            # away changed nothing any test could see. Unconditional, it runs on every open, so
+            # removing the flag now fails loudly.
+            #
+            # `exist_ok=True` still refuses a parent that exists as a FILE, because pathlib
+            # re-raises unless the existing path is a directory. That is why a parent which is
+            # a file refuses HERE rather than at the connect below, which is the one
+            # user-visible difference between the two forms.
+            self._path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise ExtractionCacheRefused(
                 f"extraction cache directory for {self._path} could not be created: {exc}"

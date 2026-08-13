@@ -574,29 +574,49 @@ def test_a_cache_under_a_directory_that_does_not_exist_is_created(tmp_path):
     assert path.exists(), "the parent directory was not created"
 
 
-def test_a_parent_that_cannot_be_created_is_refused_not_a_traceback(tmp_path):
+@pytest.mark.parametrize("depth", ["direct_parent", "grandparent"])
+def test_a_parent_that_cannot_be_created_is_refused_not_a_traceback(tmp_path, depth):
     """`default_ledger_path` walks straight into a `.recall` name already taken by a file.
 
     `RejectionLedger` hardened the connect and left the mkdir above it raw, so this escaped as a
     bare OSError instead of the module's own refusal type. Same shape, same guard, pinned here.
 
-    Nested one level deeper than looks necessary, and the shallow version is why: for
-    `<file>/tx.sqlite3` the parent IS the file, `Path.exists()` on it is True, and the mkdir
-    block is skipped entirely. That path refuses too, but from the connect guard below, so a
-    shallow test would have reported this guard as covered while never running a line of it.
+    Both depths, and they used to differ: while the mkdir was guarded by `not ...exists()`, the
+    direct-parent case skipped the block entirely, because `Path.exists()` is true for a file,
+    and refused at the connect instead. Now that the mkdir is unconditional, `exist_ok=True`
+    still re-raises for a parent that exists as a FILE, so both refuse here.
     """
     occupied = tmp_path / "notadir"
     occupied.write_text("", encoding="utf-8", newline="\n")
+    target = occupied / "tx.sqlite3" if depth == "direct_parent" else occupied / "s" / "t.db"
     with pytest.raises(ExtractionCacheRefused, match="could not be created"):
-        SqliteExtractionCache(occupied / "sub" / "tx.sqlite3")
+        SqliteExtractionCache(target)
 
 
-def test_a_parent_that_is_itself_a_file_is_refused_too(tmp_path):
-    """The shallow case from the docstring above: still refused, by the connect guard."""
-    occupied = tmp_path / "notadir"
-    occupied.write_text("", encoding="utf-8", newline="\n")
+def test_a_cache_path_that_is_a_directory_is_refused(tmp_path):
+    """Keeps the CONNECT translation pinned now that both parent cases refuse at the mkdir.
+
+    `--cache <a directory>` is the reachable way to fail there: the parent exists and is a
+    directory, so the mkdir is a no-op, and sqlite refuses to open the directory itself. It is
+    also the mechanism behind `--cache ""`, which normalises to `"."`.
+    """
     with pytest.raises(ExtractionCacheRefused, match="could not be opened"):
-        SqliteExtractionCache(occupied / "tx.sqlite3")
+        SqliteExtractionCache(tmp_path)
+
+
+def test_a_parent_directory_that_already_exists_is_not_an_error(tmp_path):
+    """`exist_ok=True`, which is what makes the mkdir safe to run unconditionally.
+
+    Deliberately NOT described as a concurrency test. The guarded form this replaced also
+    absorbed concurrent creation, because its act was already `mkdir(exist_ok=True)`. What the
+    guard cost was reach: single process it never ran, so the flag could be deleted with every
+    test green. Unconditional, deleting it fails here and in most of this file.
+    """
+    parent = tmp_path / "already"
+    parent.mkdir()
+    with SqliteExtractionCache(parent / "tx.sqlite3") as cache:
+        cache.put("k1", _extraction())
+        assert cache.get("k1") is not None
 
 
 # A third round, from a review that enumerated guards from the SOURCE rather than from either

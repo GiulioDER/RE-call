@@ -274,6 +274,12 @@ Added after a review enumerated guards from the SOURCE rather than from either l
     most likely to also fail ROLLBACK.
 38. The connect timeout is the production value, and leaving the context manager closes the
     handle.
+39. A parent that cannot be created is refused at BOTH depths, direct parent and grandparent.
+40. A cache path that is a directory is refused, which is what keeps the connect translation
+    pinned now that both parent cases refuse at the mkdir.
+41. A parent directory that already exists is not an error, which is what makes `exist_ok=True`
+    reachable from a single process test. It is NOT evidence about concurrency; see the section
+    below on the race that was not one.
 
 `tests/test_cli_extract.py` gains: the file is created at PATH; a second run reports hits; a bad
 `--cache` path exits 2 before any engine call. Its existing `--recheck` test, which passes `--cache`
@@ -294,17 +300,40 @@ recovery is to delete the cache file, which costs a re-paid corpus and nothing e
 rather than by a check: `Path("")` normalises to `"."` and sqlite cannot open a directory. The
 behaviour is pinned by a test. The mechanism is not stated in the code.
 
-Creating the parent directory is a check then act, so two `recall extract run --cache <new
-dir>/tx.sqlite3` processes racing between the `exists()` and the `mkdir` can give one of them
-`FileExistsError`, refused as "could not be created" for a directory that plainly does exist. The
-`exist_ok=True` that would absorb it is unreachable behind the `exists()` precondition. Left as is
-rather than fixed, because dropping the precondition moves the parent-is-a-file case from the
-connect guard to the mkdir guard and therefore changes which message a user sees, which is a
-behaviour change and not a test change.
-
 The `"busy" in text` half of `_is_busy` appears unreachable: SQLite's own strings for `SQLITE_BUSY`
 and `SQLITE_LOCKED` are "database is locked" and "database table is locked", and no real message
 containing "busy" could be constructed. Only the "locked" half is exercised.
+
+## The parent directory, and a race that was not one
+
+`self._path.parent.mkdir(parents=True, exist_ok=True)` runs unconditionally. This is recorded
+carefully because the change was made for a stated reason that turned out to be false, and the
+correction matters more than the change.
+
+The previous form guarded the mkdir with `not self._path.parent.exists()`. A review called that a
+check then act two concurrent runs could lose, and it is a check then act, but it loses nothing:
+the ACT is `mkdir(exist_ok=True)`, so a process that loses to another creating the directory
+between the check and the call has its `FileExistsError` absorbed by the flag. A forced interleave
+confirms it on Windows and Linux, at depth one and depth three. There was no race, and
+`recall/rewrite.py` still carries the guarded form for `RejectionLedger`, correctly, and should not
+be "fixed" by a later reader.
+
+What the precondition did cost is TESTABILITY, and only that. Single process, the guard is never
+false when the directory exists, so `exist_ok=True` never ran and mutating it away changed nothing
+any test could observe. Unconditional, it runs on every open, so removing the flag now fails
+loudly. That is a real but modest benefit: a simpler line and one more guard that can fail.
+
+The cost is one user-visible difference. `exist_ok=True` re-raises when the existing path is a FILE
+rather than a directory, so `--cache <file>/x.db` refuses at the mkdir with "could not be created"
+instead of at the connect with "could not be opened". Same refusal, same exit 2. The connect
+translation stays pinned by `--cache <a directory>`, which is the reachable way to reach it now,
+and is also the mechanism behind `--cache ""` normalising to `"."`.
+
+Note what the tests here do and do not pin. They pin the refusal point and message for a file
+parent, and that `exist_ok` is load bearing. They do NOT pin the absence of check then act: several
+variants that reintroduce a guard around the mkdir survive the suite, and given the paragraph above
+they are behaviourally equivalent to the shipped line, so no test could kill them. A mutant that
+cannot change behaviour is not evidence of a missing test.
 
 ## Verification
 
