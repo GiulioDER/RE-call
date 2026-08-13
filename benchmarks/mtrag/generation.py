@@ -123,6 +123,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from benchmarks.llm import CompletionTruncated
+
 # Private on purpose, and imported rather than reimplemented: there is one definition in this
 # repository of how long a provider asked us to wait, and a second copy here would drift from it
 # exactly as the two retry policies this file just finished collapsing into one did.
@@ -459,6 +461,15 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
     the worst case would be `GENERATION_ATTEMPTS` x 3 — 12 requests, not 4 — and the warning
     above would understate the bill it exists to give by 3x. Pass a client built anywhere else
     and this loop no longer owns the retry policy.
+
+    A completion that stopped for `length` raises `CompletionTruncated` rather than returning.
+    `--max-tokens` defaults to 512, so this is an everyday outcome, and the returned string is the
+    worst shape a failure can take: a plausible half-answer that the judge scores as if the system
+    had produced it, which is a measurement error of OUR configuration wearing the costume of a
+    model failure. The caller's per-task quarantine then keeps it out of the submission entirely,
+    which is the only safe place for it. It is neither retried nor wrapped: the ceiling that cut
+    this attempt cuts the next three identically, and the operator needs to be told which flag to
+    raise, not "gave up after 4 attempts, re-run to resume", which is the wrong advice here.
     """
     last: Exception | None = None
     for attempt in range(1, GENERATION_ATTEMPTS + 1):
@@ -466,7 +477,16 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             response = client.chat.completions.create(
                 model=model, messages=messages, max_tokens=max_tokens, temperature=0.0
             )
+            # Absence is not evidence: a provider that omits the field is not reporting truncation,
+            # and refusing on a missing attribute would fail every task on such a provider.
+            if getattr(response.choices[0], "finish_reason", None) == "length":
+                raise CompletionTruncated(
+                    f"completion hit max_tokens={max_tokens} and was cut off. Raise --max-tokens; "
+                    f"do NOT score this answer."
+                )
             return (response.choices[0].message.content or "").strip()
+        except CompletionTruncated:
+            raise
         except Exception as exc:  # noqa: BLE001 - re-raised below once attempts are exhausted
             last = exc
             if type(exc).__name__ in PERMANENT_ERROR_NAMES or attempt == GENERATION_ATTEMPTS:

@@ -35,6 +35,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   an id minted under a vocabulary that could not express validity must not be mistaken for one
   minted under a vocabulary that can. Anyone holding stored `ip_` ids must re-derive them.
 
+### Fixed
+
+* MTRAG Task B and C generation no longer scores an answer that the token ceiling cut off.
+  `benchmarks/mtrag/generation.py` sent `--max-tokens` (512 by default) and never read
+  `finish_reason`, so a truncated completion was written to the submission and judged as if the
+  system had produced it. It now raises `CompletionTruncated`, unretried because the same ceiling
+  cuts every further attempt, and the existing per-task quarantine keeps the task out of the
+  submission and in the failures log.
+
 ## [0.9.4] (2026-08-12)
 
 Released straight from 0.9.2. 0.9.3 is deliberately skipped and will never exist.
