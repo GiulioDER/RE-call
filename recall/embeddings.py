@@ -20,15 +20,45 @@ def _is_transient(exc: Exception) -> bool:
     """Heuristic: is this exception worth retrying?
 
     Covers rate-limit (429), server (5xx) and network/timeout errors WITHOUT importing any
-    provider-specific exception type (voyageai is an optional dependency). Checks a numeric
-    ``status_code``/``status`` attribute first, then falls back to matching well-known markers
-    in the exception text. A non-transient error (e.g. 401 auth) returns False so it fails fast.
+    provider-specific exception type (voyageai is an optional dependency). A non-transient error
+    (e.g. 401 auth) returns False so it fails fast.
+
+    A numeric ``status_code``/``status`` is DECISIVE: when the transport has stated the status,
+    that answer is returned and the text markers below are never consulted. They used to be, and
+    they could overturn a correct verdict — the marker ``"429"`` is a substring of any number
+    containing it, so ``"…your messages resulted in 10429 tokens"`` made a permanent HTTP 400
+    context-length overflow look like a rate limit. That is the worst case to be wrong on:
+    ``retry_with_backoff`` resends the entire payload, so a caller whose payload is a prompt with
+    a whole document body inside it pays for the same refused request on every attempt (three by
+    default, four from ``benchmarks/llm.py``), and no retry can make an over-long prompt fit.
+    ``benchmarks/llm.py`` is that shape here; the case this was actually found on is an
+    extraction engine that lives on an unlanded branch, so do not go looking for it in this tree.
+
+    The markers remain as a fallback for errors that carry no status at all — voyageai spells it
+    ``http_status``, and ``openai.APIConnectionError``/``APITimeoutError`` carry none — which is
+    the only evidence available there.
+
+    So "network/timeout" above means a CLIENT-side timeout, which arrives with no status and
+    keeps the fallback. A server that RETURNS 408 (or 409, which openai's own client retries as a
+    lock timeout) is not retried here, because 429 and 5xx is the numeric contract this docstring
+    has always claimed. That exclusion is deliberate; widening it is a change to what "transient"
+    means, and it belongs in the numeric branch rather than in a text marker that would re-open
+    the hole above.
+
+    It is also THIS FUNCTION'S exclusion and not yet the system's. ``OpenAICompatEmbedder`` below
+    and ``benchmarks/llm.py`` both build their ``OpenAI`` client without ``max_retries=0``, and
+    the SDK retries 408, 409, 429 and 5xx twice on its own before this classifier is consulted at
+    all — so end to end a 408 is currently retried anyway, and for THOSE statuses every attempt
+    counted here is three requests. A 400 or 402 is not in the SDK's retry set, so those attempts
+    stay one request each, and the 10429 overflow this docstring opens on is one of those.
+    Fixing the missing ``max_retries=0`` is tracked separately; until it lands, do not read this
+    function's numeric contract as describing what reaches the provider.
     """
     status = getattr(exc, "status_code", None)
     if status is None:
         status = getattr(exc, "status", None)
-    if isinstance(status, int) and (status == 429 or 500 <= status < 600):
-        return True
+    if isinstance(status, int):
+        return status == 429 or 500 <= status < 600
     text = f"{type(exc).__name__} {exc}".lower()
     markers = (
         "429", " 500", " 502", " 503", " 504", "rate limit", "too many requests",
