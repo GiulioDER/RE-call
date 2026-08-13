@@ -25,9 +25,10 @@ import pytest
 from recall.embeddings import _TRANSIENT_MARKERS, retry_with_backoff
 
 # Imported at MODULE scope, not with `importorskip` inside the tests that need it. Importing
-# voyageai costs ~90 s on a machine that has the extra, because it pulls langchain_text_splitters
-# -> sentence_transformers -> transformers, and `pytest-timeout` clocks only the test protocol.
-# Inside a test body that 90 s is billed to one item against the suite's `timeout = 120`, and
+# voyageai costs 75 to 105 s on a machine that has the extra, varying with load, because it pulls
+# langchain_text_splitters -> sentence_transformers -> transformers, and `pytest-timeout` clocks
+# only the test protocol. Inside a test body that is billed to ONE item against the suite's
+# `timeout = 120` (measured `90.88s call`, which is the run that provoked this), and
 # `timeout_method = "thread"` does not redden the item when it overruns: it `os._exit`s the whole
 # session. Out here the cost lands in collection, where nothing is timing it.
 #
@@ -40,7 +41,7 @@ from recall.embeddings import _TRANSIENT_MARKERS, retry_with_backoff
 _voyage_import_error: str | None = None
 try:
     import voyageai.error as voyage_error
-except Exception as exc:  # pragma: no cover - the extra is absent in CI by design
+except Exception as exc:
     voyage_error = None
     # `exc.name`, NOT a substring of the message. Only one shape of failure means "the extra is
     # not installed", and the text cannot identify it: a chain that dies on a missing
