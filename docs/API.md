@@ -28,6 +28,8 @@ only from returned hits whose verdict and provenance satisfy the caller's policy
 | `recall index` | Index a markdown corpus. |
 | `recall search` | Query an indexed corpus through the trust layer. |
 | `recall reasoning` | Inspect projections, proposals, traces, audits, and opt-in reasoning queries without changing ordinary retrieval behavior. |
+| `recall extract` | Extract structured truth claims from memo prose. Reads only; writes nothing. Off unless `RECALL_TRUTH_EXTRACTION=1`. |
+| `recall rewrite` | Review extracted claims and declare accepted ones in corpus frontmatter. Dry run by default; `--reviewer` and `--note` are required. |
 | `recall lint` | Validate memo frontmatter and corpus shape. |
 | `recall check` | Validate one memo, optionally in strict mode. |
 | `recall demo` | Run the bundled five-minute product example. |
@@ -48,6 +50,20 @@ The MCP server is `python -m recall_mcp.server`. Its supported tools are:
 | `recall_reasoning_projection` | Inspect the generation-bound reasoning graph projection. |
 | `recall_reasoning_proposals` | Inspect inference proposals as review candidates. |
 | `recall_reasoning_audit` | Report reasoning integration state and diagnostics. |
+| `recall_rewrite_plan` | Report which key a proposal would declare, in which file. Writes nothing. |
+
+**There is deliberately no `recall_rewrite_apply`.** Nothing reaches corpus metadata without a
+named human, and the MCP client is the model: letting it supply a reviewer id and an audit note
+would make that gate a formality it satisfies by typing a string, so the gate becomes a field
+rather than a person. This surface proposes; a human declares at `recall rewrite apply`.
+`recall_mcp/` makes no file write call of any kind, and two tests hold that line, one for a write
+call and one for a write import.
+
+`recall_rewrite_plan` hands off a **claim key**, not a proposal id. Its proposals come from the
+deterministic rules over the store graph while `recall rewrite apply` resolves ids against the
+filesystem extractor, and provider, tenant, generation and pipeline are all hashed into a
+proposal id, so those two id spaces are disjoint. Claim keys are generation independent, which is
+also why the rejection ledger is keyed by them.
 
 Authentication, tenant isolation, and transport modes are documented in [AUTH.md](AUTH.md).
 Reasoning policy and operational behavior are documented in

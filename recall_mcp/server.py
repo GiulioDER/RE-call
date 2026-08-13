@@ -57,6 +57,7 @@ from recall_mcp.service import (
     reasoning_projection,
     reasoning_proposals,
     reasoning_query,
+    rewrite_plan,
     search_memory,
     startup_retrieval_profile,
 )
@@ -987,11 +988,47 @@ def build_server() -> MCPServer:
             open_world_hint=False,
         ),
     )
-    async def recall_reasoning_proposals(ctx: Context[dict, object]) -> str:
-        """List side effect free inference proposals for human review."""
+    async def recall_reasoning_proposals(
+        ctx: Context[dict, object], include_extracted: bool = False
+    ) -> str:
+        """List side effect free inference proposals for human review.
+
+        `include_extracted` adds proposals replayed from prose extraction recorded at ingest.
+        It defaults to False so existing behaviour is byte identical, mirroring `include_text`
+        on the projection tool, and it refuses when nothing was recorded rather than returning
+        an empty list that reads as "the extractor found nothing".
+        """
         store = _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_proposals"):
-            return await _to_thread(lambda: reasoning_proposals(store).model_dump_json(indent=2))
+            return await _to_thread(
+                lambda: reasoning_proposals(
+                    store, include_extracted=include_extracted
+                ).model_dump_json(indent=2)
+            )
+
+    @mcp.tool(
+        name="recall_rewrite_plan",
+        annotations=ToolAnnotations(
+            title="Plan a corpus rewrite",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_rewrite_plan(ctx: Context[dict, object], proposal_id: str) -> str:
+        """Show which key a proposal would declare, in which file. Writes nothing.
+
+        There is deliberately no `recall_rewrite_apply`. The MCP client is the model, so
+        letting it supply a reviewer id and an audit note would make the named human gate a
+        formality it satisfies by typing a string: the gate becomes a field, not a person.
+        This surface proposes; a human applies at `recall rewrite apply`.
+        """
+        store = _require(SCOPE_READ, ctx)
+        with METRICS.timer("recall_tool_latency_ms", tool="rewrite_plan"):
+            return await _to_thread(
+                lambda: rewrite_plan(store, proposal_id=proposal_id).model_dump_json(indent=2)
+            )
 
     @mcp.tool(
         name="recall_reasoning_audit",

@@ -32,6 +32,7 @@ want to audit a claim or reproduce a benchmark.
 | [REASONING_API.md](REASONING_API.md) | Typed reasoning request and response surface, provider ports, serialization, and validation rules. |
 | [REASONING_GRAPH.md](REASONING_GRAPH.md) | Generation-bound reasoning graph projection schema and invariants. |
 | [REASONING_RELEASE_NOTES.md](REASONING_RELEASE_NOTES.md) | Experimental reasoning release notes, migration notes, and limitations. |
+| [TRUTH_EXTRACTION_DESIGN.md](TRUTH_EXTRACTION_DESIGN.md) | Model backed extraction of truth claims from prose, the validation ladder, and the reviewed write path back into corpus frontmatter. |
 
 ## Evidence and limits
 

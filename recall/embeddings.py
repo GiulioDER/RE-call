@@ -16,10 +16,10 @@ from typing import Literal, Protocol, TypeVar, runtime_checkable
 _R = TypeVar("_R")
 
 
-#: Markers matched in the exception TEXT when no numeric status is available, which for some
-#: callers is the entire retry decision rather than a fallback. Module level, not a local, so
-#: `tests/test_embeddings_transient.py` can assert one case per marker: a marker with no case
-#: is a marker that can be deleted while the suite stays green.
+#: Markers matched in the exception TEXT when no numeric status is available, which for the
+#: callers that reach it is the entire retry decision rather than a fallback to one. Module
+#: level, not a local, so `tests/test_embeddings_retry_classifier.py` can assert one case per
+#: marker: a marker with no case is a marker that can be deleted while the suite stays green.
 _TRANSIENT_MARKERS = (
     "429", " 500", " 502", " 503", " 504", "rate limit", "too many requests",
     "timeout", "timed out", "temporarily", "connection", "reset by peer", "unavailable",
@@ -30,24 +30,61 @@ def _is_transient(exc: Exception) -> bool:
     """Heuristic: is this exception worth retrying?
 
     Covers rate-limit (429), server (5xx) and network/timeout errors WITHOUT importing any
-    provider-specific exception type (voyageai is an optional dependency). Checks a numeric
-    ``status_code``/``status``/``http_status`` attribute first, then falls back to matching
-    ``_TRANSIENT_MARKERS`` in the exception text. A non-transient error (e.g. 401 auth) returns
-    False so it fails fast.
+    provider-specific exception type (voyageai is an optional dependency). A non-transient error
+    (e.g. 401 auth) returns False so it fails fast.
 
-    Three spellings of the status because three generations of SDK spell it differently, and
-    the third is not exotic: ``http_status`` is what every ``voyageai`` error carries, so
-    without it the whole Voyage path decided on prose. Those messages are fixed strings with no
-    marker in them ("The server failed to process the request." for a 500), which made a real
-    Voyage 5xx permanent.
+    A numeric ``status_code``/``status``/``http_status`` is DECISIVE: when the transport has
+    stated the status, that answer is returned and the text markers below are never consulted.
+    They used to be, and they could overturn a correct verdict — the marker ``"429"`` is a
+    substring of any number containing it, so ``"…your messages resulted in 10429 tokens"`` made
+    a permanent HTTP 400 context-length overflow look like a rate limit. That is the worst case
+    to be wrong on: ``retry_with_backoff`` resends the entire payload, so a caller whose payload
+    is a prompt with a whole document body inside it pays for the same refused request on every
+    attempt (three by default, four from ``benchmarks/llm.py``), and no retry can make an
+    over-long prompt fit.
+    ``benchmarks/llm.py`` is that shape here; the case this was actually found on is an
+    extraction engine that lives on an unlanded branch, so do not go looking for it in this tree.
+
+    THREE spellings are read, and the third is not exotic. Every ``voyageai`` error carries the
+    response code in ``http_status``: ``VoyageError.__init__`` takes it as its third positional
+    argument and ``api_requestor`` passes the real code into it. An earlier reading of this
+    concluded the Voyage path had no status and left the markers to decide it, but that reading
+    came from a hand-constructed ``RateLimitError`` whose ``http_status`` was never filled in,
+    not from one the SDK raised. The markers cannot decide it: those messages are fixed strings
+    with no marker in them, so a real 500 ("The server failed to process the request.") was
+    never retried, and a 502/503/504 was retried only by the accident that "unavailable" appears
+    inside the class name ``ServiceUnavailableError``.
+
+    The markers remain as a fallback for errors that carry no status at all, which is the only
+    evidence available there: ``openai.APIConnectionError``/``APITimeoutError`` carry none, and
+    neither do voyageai's CLIENT-side ``Timeout``/``APIConnectionError``, which are raised with a
+    message alone and so leave ``http_status`` at its constructor default. A slot that exists but
+    was never filled in has said nothing, which is why the read tests the VALUE and not the
+    attribute's presence.
+
+    So "network/timeout" above means a CLIENT-side timeout, which arrives with no status and
+    keeps the fallback. A server that RETURNS 408 (or 409, which openai's own client retries as a
+    lock timeout) is not retried here, because 429 and 5xx is the numeric contract this docstring
+    has always claimed. That exclusion is deliberate; widening it is a change to what "transient"
+    means, and it belongs in the numeric branch rather than in a text marker that would re-open
+    the hole above.
+
+    It is also THIS FUNCTION'S exclusion and not yet the system's. ``OpenAICompatEmbedder`` below
+    and ``benchmarks/llm.py`` both build their ``OpenAI`` client without ``max_retries=0``, and
+    the SDK retries 408, 409, 429 and 5xx twice on its own before this classifier is consulted at
+    all — so end to end a 408 is currently retried anyway, and for THOSE statuses every attempt
+    counted here is three requests. A 400 or 402 is not in the SDK's retry set, so those attempts
+    stay one request each, and the 10429 overflow this docstring opens on is one of those.
+    Fixing the missing ``max_retries=0`` is tracked separately; until it lands, do not read this
+    function's numeric contract as describing what reaches the provider.
     """
     status = getattr(exc, "status_code", None)
     if status is None:
         status = getattr(exc, "status", None)
     if status is None:
         status = getattr(exc, "http_status", None)
-    if isinstance(status, int) and (status == 429 or 500 <= status < 600):
-        return True
+    if isinstance(status, int):
+        return status == 429 or 500 <= status < 600
     text = f"{type(exc).__name__} {exc}".lower()
     return any(m in text for m in _TRANSIENT_MARKERS)
 
