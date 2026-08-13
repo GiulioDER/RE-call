@@ -265,8 +265,13 @@ What is known about them:
     prediction object that also carries a readable `text` is not inspected, because in every file
     this has been pointed at a prediction's other keys are metadata.
 
-  A CLEAN therefore says: **these named files were read in full, they are the size their manifest
-  claims, and nothing in their `predictions[].text` reached the ceiling.**
+  A CLEAN therefore says: **these named files were read in full, and nothing in their
+  `predictions[].text` reached the ceiling the command stated.** It says they are the size their
+  manifest claims ONLY when the command passed a number to `--expect-rows`; under
+  `--expect-rows unclaimed` the verdict word is identical and the header line is the only place
+  the disclaimer appears, so read the header before quoting a CLEAN. The stated ceiling is
+  refused if it is outside 1 to 65,536, but within that range it is the operator's claim, not a
+  fact the scan can check: a ceiling higher than the run actually sent will report no findings.
 
   🔑 It reports **CLEAN only when every file was fully read and every prediction in every row was
   measured**, and exits non-zero otherwise. An absent file, an empty one, a line that will not

@@ -31,11 +31,14 @@ just the first. ⚠️ The guarantee is over `predictions[].text` only: an answe
 other key INSIDE a prediction object that also carries a readable `text` is not inspected, because
 a prediction object's other keys are metadata in every file this has been pointed at.
 
-    python results/mtrag_generation/scripts/scan_truncation.py <file> [<file> ...] [--ceiling N]
+    python .../scan_truncation.py --expect STEM,STEM --expect-rows N|unclaimed [--ceiling N] <file>...
 
-`--expect` is REQUIRED on every run, naming the run stems that must be covered:
+`--expect` and `--expect-rows` are both REQUIRED on every run: the first names the run stems that
+must be covered, the second the row count each file must hold (the `tasks` field of the run's
+manifest), or the literal `unclaimed` to state that this run makes no claim about size.
 
-    ... --expect taskc_benchmark_official,taskc_recall_official <restored>/taskc_*_official.*.jsonl
+    ... --expect taskc_benchmark_official,taskc_recall_official --expect-rows 842 \
+        <restored>/taskc_*_official.predictions.jsonl
 
 ⚠️ Names, not a count. Completeness here is a property of RUNS, and each archived run restores five
 `.jsonl` layers, so a count is both unsatisfiable on a correct restore and satisfiable by five
@@ -277,6 +280,15 @@ def main(argv: list[str] | None = None) -> int:
     # tool cannot certify what nobody claimed, and "I am not claiming size" is itself a claim that
     # belongs in the report.
     size_complaints: list[str] = []
+    # A ceiling no run ever sent cannot certify anything: at `--ceiling 100000` a file holding a
+    # 520-token answer came back CLEAN, because nothing constrained the one parameter the whole
+    # measurement is about. 65,536 is the largest `max_tokens` this harness has ever reserved
+    # (gpt-5's model maximum, recorded in `benchmarks/llm.py`), and the archive's own manifests
+    # record `max_tokens: 512`, so anything above the model maximum is a typo or a misreading.
+    if args.ceiling < 1 or args.ceiling > 65536:
+        size_complaints.append(
+            f"--ceiling {args.ceiling} is outside any ceiling a run could have sent "
+            f"(1 to 65536, and this archive's manifests record 512)")
     expect_rows: int | None = None
     if args.expect_rows is None:
         size_complaints.append(

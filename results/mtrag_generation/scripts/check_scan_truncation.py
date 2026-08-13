@@ -346,6 +346,21 @@ def main(argv: list[str] | None = None) -> int:
             if not ok:
                 failures.append(f"{label}: exit {code} (want {want_code})\n{out[-300:]}")
 
+        # A ceiling nobody could have sent must not certify anything. Driven at a real over-ceiling
+        # answer, so the mutant that drops the bound is caught by a false CLEAN rather than by an
+        # argument-parsing detail.
+        at_512 = write("ceilingclaim.jsonl", row(at, "c0") + "\n")
+        for label, ceiling_arg, want in [("absurdly high", "100000", 1), ("zero", "0", 1),
+                                         ("the real one", "512", 1)]:
+            code, out, _ = run(at_512, ceiling=None,
+                               extra=["--expect", "ceilingclaim", "--expect-rows", "1",
+                                      "--ceiling", ceiling_arg])
+            ok = code == want
+            print(f"[{'ok  ' if ok else 'FAIL'}] exit {code} (want {want}) a {label} ceiling cannot "
+                  f"certify a 512-token answer")
+            if not ok:
+                failures.append(f"ceiling {ceiling_arg} gave exit {code}\n{out[-300:]}")
+
         # Two independent guards refuse `--expect-rows 0`: the parse-time rejection, and
         # `expected_rows is not None` in `unread`. Either alone makes the case above exit 1, so
         # that case pins the PAIR and neither member. Assert the parse-time complaint's own text,
