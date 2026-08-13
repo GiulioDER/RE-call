@@ -213,6 +213,49 @@ def test_a_status_probe_that_raises_does_not_beat_the_error_it_is_probing() -> N
     assert is_terminal(_Hostile("boom")) is False
 
 
+def test_a_raising_str_does_not_beat_the_error_it_is_probing_either() -> None:
+    """⛔ The sibling of the arm above, and the door the first fix left open.
+
+    `is_terminal` computes `str(exc).lower()` BEFORE it reads any status, because the account
+    phrases have to outrank the status. Formatting an arbitrary exception runs ITS `__str__`,
+    which is free to raise — an undecoded response body is a realistic way for that to happen.
+    So the previous commit closed the attribute door with `_probe` and left this one, and its own
+    sentence ("`is_terminal` raised while `_is_transient` returned False on the same object")
+    stayed true with `__str__` substituted for `http_status`.
+
+    `benchmarks/rejudge.py` is where it costs most: its non-terminal branch never formats `exc`,
+    so nothing else would have raised, and an escape there kills the whole re-judge loop and
+    discards every record already re-judged, because the output is written only after the loop.
+    """
+
+    class _HostileStr(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("undecoded body")
+
+    assert is_terminal(_HostileStr()) is False
+
+
+def test_an_unreadable_exception_is_not_terminal_rather_than_terminal() -> None:
+    """The DIRECTION of the fallback, which is the opposite of `_is_transient`'s and deliberate.
+
+    Empty text makes `_is_transient` return False, i.e. permanent, which fails fast rather than
+    resending a payload — safe for a retry. Here False means NOT terminal, i.e. quarantine this
+    one item and carry on, which is the safe direction for a run: an exception nobody can read is
+    not evidence the account is dead, and `CONSECUTIVE_FAILURE_LIMIT` still bounds the damage at
+    five in a row if it turns out to be systematic.
+
+    The class name is deliberately NOT folded in as a fallback the way `_is_transient` does it.
+    Its markers are words; two of mine are bare digits, so a class named `Error402` would abort a
+    run on its name alone.
+    """
+
+    class Error402(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("undecoded body")
+
+    assert is_terminal(Error402()) is False, "a class NAME must not be read as a status code"
+
+
 def test_the_first_spelling_that_answers_wins() -> None:
     """Pins first-non-None precedence, which a mutation to last-non-None survived.
 

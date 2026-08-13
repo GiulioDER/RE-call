@@ -190,7 +190,22 @@ def is_terminal(exc: Exception) -> bool:
     """
     if isinstance(exc, PERMANENT_ERRORS + TRANSIENT_ERRORS):
         return False
-    text = str(exc).lower()
+    # Guarded for the same reason `_probe` exists, and it is the OTHER door: formatting an
+    # arbitrary exception runs ITS `__str__`, which is free to raise — an undecoded response body
+    # is a realistic way for that to happen. Unguarded, this raised out of a function every caller
+    # invokes from inside `except Exception as exc:`, so it replaced the provider's error and took
+    # the quarantine with it. `_is_transient` guards the same line; closing only the attribute door
+    # left this one open with the identical failure.
+    #
+    # The fallback is EMPTY, not `type(exc).__name__` as `_is_transient` uses. Its markers are
+    # words; two of mine are bare digits, so a class named `Error402` would abort a whole run on
+    # its own name. Empty text means "not terminal", which quarantines this one item and lets
+    # `CONSECUTIVE_FAILURE_LIMIT` bound the damage — an exception nobody can read is not evidence
+    # the account is dead.
+    try:
+        text = str(exc).lower()
+    except Exception:  # noqa: BLE001 - a classifier must never beat the error it is classifying
+        text = ""
     if any(marker in text for marker in _ACCOUNT_MARKERS):
         return True
     # All THREE spellings, because the SDKs do not agree and `recall.embeddings._is_transient`
