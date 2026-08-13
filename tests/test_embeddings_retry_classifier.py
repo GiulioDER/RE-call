@@ -301,11 +301,11 @@ def test_the_fallback_matches_case_insensitively() -> None:
     `"Connection error."` with a capital C. Dropping the `.lower()` retracts the fallback from
     the one shape `_is_transient`'s docstring names as depending on it.
 
-    This is the NAMED shape, not the primary guard. Since the marker half was folded into this
-    file, `test_the_fallback_normalises_every_word_not_just_the_first` subsumes it: that mutation
-    now reddens seven items rather than this one, and this case survives every mutation that one
-    does. It is kept because the string is a real SDK's real output, which the wider test's
-    synthetic reason phrases are not.
+    Not subsumed by `test_the_fallback_normalises_every_word_not_just_the_first`, though it looks
+    like it should be. On the `.lower()` mutation the wider test is stronger, reddening eight
+    items to this one. But this message matches exactly ONE marker, "connection", where every
+    message in the wider test matches two or matches a different one, so deleting "connection"
+    reddens this test and leaves all four of those green. Both measured.
     """
     exc = RuntimeError("Connection error.")
     assert _is_transient(exc) is True
@@ -502,10 +502,15 @@ def test_an_http_status_that_was_never_filled_in_falls_back_to_the_markers() -> 
     """The attribute PRESENT and None is the shape voyageai's client-side errors have.
 
     `Timeout` and `APIConnectionError` are raised with a message and nothing else, so
-    `http_status` sits at its constructor default. Those are the two errors most worth retrying,
-    and after this change they are the ONLY voyage errors the markers still decide, so reading
-    the attribute's presence rather than its value would stop them retrying while every other
-    test here stayed green. Measured: that mutant survives the whole file without this case.
+    `http_status` sits at its constructor default. On the request path they are the only voyage
+    errors the markers still decide, and they are the two most worth retrying. (Other message-only
+    raises exist off that path, in the keyless-client and local-model checks; none carries a
+    marker, so they fail fast, which is right for them.)
+
+    Reading the attribute's PRESENCE rather than its value would stop those retrying. Measured
+    with the extra installed, that mutant is caught here and by the voyage-gated twin below, and
+    by nothing else. CI installs `.[dev]`, which has no voyage extra, so without THIS case the
+    mutant would ship green there.
     """
     exc = _HttpStatusError("connection reset by peer", http_status=None)
     assert _is_transient(exc) is True
@@ -519,11 +524,21 @@ def test_http_status_is_read_after_status_code_not_before() -> None:
     secondary value overrule the one the transport actually stated. No SDK sets both today, which
     is why this cannot be provoked from a real error, and it is exactly why a test has to say so:
     the ordering is otherwise free to drift with nothing to catch it.
+
+    Both directions, as `test_status_code_is_read_before_status` does for the first two lookups.
+    Pinning only the first left an implementation in which `http_status` may REFUSE but never
+    grant, which survived every other case in this file. That direction suppresses a retry the
+    stated status asked for, which costs an outage rather than a wasted request.
     """
-    exc = _StatusError("this request will never fit", status_code=400)
-    exc.http_status = 503  # type: ignore[attr-defined]
-    assert _is_transient(exc) is False
-    assert _attempts_used(exc) == 1
+    permanent_first = _StatusError("this request will never fit", status_code=400)
+    permanent_first.http_status = 503  # type: ignore[attr-defined]
+    assert _is_transient(permanent_first) is False
+    assert _attempts_used(permanent_first) == 1
+
+    transient_first = _StatusError("slow down", status_code=429)
+    transient_first.http_status = 400  # type: ignore[attr-defined]
+    assert _is_transient(transient_first) is True
+    assert _attempts_used(transient_first) == 3
 
 
 @requires_voyage
@@ -531,8 +546,12 @@ def test_a_real_voyage_client_side_error_still_decides_on_its_text() -> None:
     """The empty-slot case above, against the SDK's own classes rather than a stand-in.
 
     `api_requestor` raises both of these with a message alone, so the number this change added is
-    genuinely absent here and the markers are the whole decision. "timeout" and "connection" are
-    each carried by the class name as well as the message.
+    genuinely absent here and the markers are the whole decision.
+
+    Where the evidence sits differs between the two, which is why both are here. `Timeout`
+    carries "timeout" in its class name and "timed out" in its message, two different markers.
+    `APIConnectionError`'s message carries no marker at all, so its class name is the only
+    evidence, and this case therefore depends on the `type(exc).__name__` prefix as well.
     """
     for exc in (
         voyage_error.Timeout("Request timed out"),
