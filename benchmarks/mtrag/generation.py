@@ -455,19 +455,24 @@ class EmptyCompletion(RuntimeError):
     """
 
 
-class NoCompletionChoices(RuntimeError):
-    """A 200 whose `choices` list is empty, so there is no completion to read at all.
+class NoCompletionInResponse(RuntimeError):
+    """A 200 whose body carries no completion to read: `choices` is empty, or its first choice has
+    no `message` object at all.
 
-    OpenRouter answers this way when the upstream it routed to faults. `response.choices[0]` used
-    to raise `IndexError` here, which reported as `generation gave up after 4 attempts (IndexError:
-    list index out of range)`: a message that names a Python operation rather than the provider,
-    and sends whoever reads it hunting for a bug in the harness.
+    OpenRouter answers this way when the upstream it routed to faults. Both shapes used to surface
+    as the Python operation that tripped over them, `IndexError: list index out of range` and
+    `AttributeError: 'NoneType' object has no attribute 'content'`, wrapped in `generation gave up
+    after 4 attempts`: messages that name neither the provider nor the fault, and send whoever
+    reads them hunting for a bug in the harness. The SDK builds responses leniently rather than
+    validating them, so a missing required field arrives as `None` rather than as a parse error.
 
-    Deliberately NOT permanent, unlike `EmptyCompletion` above. This is a fault on the provider's
-    side of the wire, not a property of the request, so a second attempt can be served by a healthy
-    upstream. Being wrong in this direction is cheap and capped: `CONSECUTIVE_FAILURE_LIMIT` stops
-    the run after 5 tasks in a row, or 20 attempts. Being wrong the other way fails a task that
-    would have succeeded.
+    Deliberately NOT permanent, unlike `EmptyCompletion` above, and the two are split by CAUSE
+    rather than by symptom. A malformed response body is a fault on the provider's side of the
+    wire, so a second attempt can be served by a healthy upstream; a `message` that arrived intact
+    carrying no text is the model having produced nothing, which no attempt changes. Being wrong in
+    this direction is cheap and capped: a malformed body is systematic, so it fails tasks
+    consecutively and `CONSECUTIVE_FAILURE_LIMIT` stops the run after 5 of them, or 20 attempts.
+    Being wrong the other way fails a task that would have succeeded.
     """
 
 
@@ -476,11 +481,55 @@ class NoCompletionChoices(RuntimeError):
 #: `EmptyCompletion` are ours, so they contribute `__name__` rather than a literal — a rename then
 #: follows the class instead of silently restoring the retry it is here to prevent.
 #:
-#: `NoCompletionChoices` is deliberately absent; see its docstring for why it is worth retrying.
+#: `NoCompletionInResponse` is deliberately absent; see its docstring for why it is worth retrying.
 PERMANENT_ERROR_NAMES = frozenset(
     {"AuthenticationError", "PermissionDeniedError", "NotFoundError", "BadRequestError",
      CompletionTruncated.__name__, EmptyCompletion.__name__}
 )
+
+
+#: Tells "the `content` field arrived carrying null", which is a completion with no text, apart
+#: from "no `content` field arrived at all", which is a malformed body. The two are different
+#: faults with different causes, so they are classified differently, and `None` cannot express
+#: both.
+_NO_CONTENT_FIELD = object()
+
+
+def completion_text(content: object) -> str:
+    """The text of a `message.content`, whatever shape it arrived in, stripped.
+
+    A gateway may send `content` as a LIST of blocks rather than as a string. `(content or "")`
+    left such a list truthy and `.strip()` then raised `AttributeError: 'list' object has no
+    attribute 'strip'`, so a well formed answer became four billed attempts and a failed task, with
+    the model blamed for a shape the reader did not know how to open.
+
+    Mirrors `_text_of` in `recall/truth_extraction/_openai_engine.py`, which reads the same shape
+    for the same reason, with one deliberate difference: that reader's dict branch is
+    `block.get("text", "")`, whose default cannot fire on a key that is PRESENT and null, so
+    `"".join` over it raises `TypeError`. Only actual strings are taken here, which makes a null
+    block, a non-text block and a bare string in the list all contribute nothing rather than
+    crashing on the way past. Not shared as one function because that one returns "" for an empty
+    `choices` list too, and this module needs that case told apart: it is `NoCompletionInResponse`,
+    which is retried, from `EmptyCompletion`, which is not.
+
+    ⚠️ Every remaining shape becomes "", which the caller turns into `EmptyCompletion`, and that is
+    a DELIBERATE departure from the cause-based split the two error types otherwise follow. A
+    `content` this cannot open is arguably a malformed body, so arguably the retried class; it is
+    treated as no text instead, because no gateway is known to send one and inventing a third
+    classification for a shape nobody can name would be guesswork with a retry bill attached. The
+    cost of being wrong is one task failing permanently that a re-run could have recovered. If such
+    a shape ever shows up in `.failed.jsonl` reported as "no text", this is the line to revisit.
+    """
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            text = block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
+        return "".join(parts).strip()
+    return ""
 
 
 def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_tokens: int) -> str:
@@ -503,18 +552,37 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             response = client.chat.completions.create(
                 model=model, messages=messages, max_tokens=max_tokens, temperature=0.0
             )
-            # Read the choice ONCE, and defensively. A 200 can carry an empty `choices` list when
-            # OpenRouter's upstream faults, and indexing it blind raised `IndexError`: a type that
-            # is not in `PERMANENT_ERROR_NAMES`, so the task paid four attempts and then reported
-            # a Python operation instead of the provider fault it actually was.
+            # Read the choice ONCE, and defensively, down to the field the answer comes out of. A
+            # 200 can carry an empty `choices` list when OpenRouter's upstream faults, and the SDK
+            # constructs a missing `message` as `None` rather than refusing to parse. Indexing and
+            # dereferencing those blind raised `IndexError` and `AttributeError`, neither in
+            # `PERMANENT_ERROR_NAMES`, so each cost four attempts and then reported the Python
+            # operation that tripped instead of the provider fault it actually was.
             choices = response.choices
             if not choices:
-                raise NoCompletionChoices(
+                raise NoCompletionInResponse(
                     "the provider returned a 200 with an empty `choices` list, so there is no "
                     "completion to read. This is an upstream fault on the provider's side, not a "
                     "property of the request."
                 )
             choice = choices[0]
+            # Read the whole path to the text in ONE step, against a sentinel. `message` can fail
+            # to arrive as an object in four ways (key omitted, set to null, some other type, or an
+            # object with no `content` field), and every one of them used to reach `.content` and
+            # raise `AttributeError`. Checking them one field at a time is how this fix twice
+            # stopped one field short of the answer: `choices` was hardened while `message` was
+            # left bare, then `message` while `.content` was left bare. A sentinel collapses all
+            # four into the same question, which is the only one that matters here: did a `content`
+            # field arrive at all? `None` is a legitimate ANSWER to that question and falls through
+            # to the emptiness check below, where it is classified differently on purpose.
+            content = getattr(getattr(choice, "message", None), "content", _NO_CONTENT_FIELD)
+            if content is _NO_CONTENT_FIELD:
+                raise NoCompletionInResponse(
+                    "the provider returned a 200 whose first choice carries no `message.content` "
+                    f"field (finish_reason={getattr(choice, 'finish_reason', None)!r}), so there "
+                    "is no completion to read. This is an upstream fault on the provider's side, "
+                    "not a property of the request."
+                )
 
             # A completion that stopped for `length` hit OUR ceiling; the provider is healthy and
             # the answer is half-written. Returning it would put a fluent, on-topic, mid-sentence
@@ -533,8 +601,8 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
                     "— do NOT score this answer."
                 )
 
-            answer = (choice.message.content or "").strip()
-            # Checked AFTER `.strip()`, because that is the string the caller writes: whitespace
+            answer = completion_text(content)
+            # Checked AFTER stripping, because that is the string the caller writes: whitespace
             # reaches `predictions` as `""` exactly like `content=None` does. Returning it was the
             # bug. `submission_row` is fed straight from here and nothing between the two looks at
             # the answer again, so this is the only place an empty prediction can be stopped.
