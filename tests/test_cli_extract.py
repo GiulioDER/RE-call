@@ -15,6 +15,7 @@ Properties, one test each:
 import pytest
 
 from recall.cli import main
+from recall.truth_extraction._engine import DeterministicExtractionEngine
 
 ENABLED = {"RECALL_TRUTH_EXTRACTION": "1"}
 
@@ -207,13 +208,103 @@ def test_recheck_without_cache_refuses_before_extracting(corpus, monkeypatch, ca
     assert "claim(s) for review" not in captured.out, "it extracted before refusing"
 
 
-def test_recheck_actually_checks_the_files_it_extracted(corpus, monkeypatch, capsys):
+def test_recheck_actually_checks_the_files_it_extracted(corpus, tmp_path, monkeypatch, capsys):
     """Passing different corpus_names than the run made every lookup miss, silently."""
     _enable(monkeypatch)
-    main(["extract", "run", str(corpus), "--cache", "--recheck"])
+    main(["extract", "run", str(corpus), "--cache", str(tmp_path / "tx.sqlite3"), "--recheck"])
     out = capsys.readouterr().out
     assert "recheck: 2 checked" in out
     assert "not measured" not in out
+
+
+def test_the_cache_persists_between_runs(corpus, tmp_path, monkeypatch, capsys):
+    """The reason `--cache` takes a PATH. It was briefly a boolean, when nothing persisted.
+
+    Proven by ENGINE CALLS, not by the file existing: a cache that is written and never read
+    would still leave a file on disk.
+    """
+    _enable(monkeypatch)
+    cache_path = tmp_path / "tx.sqlite3"
+
+    main(["extract", "run", str(corpus), "--cache", str(cache_path)])
+    first = capsys.readouterr().out
+    assert cache_path.exists(), "nothing was written to the path"
+    assert "1 claim(s) for review" in first
+
+    calls: list[str] = []
+    real_run = DeterministicExtractionEngine.run
+
+    def _counted(self, prompt):
+        calls.append(prompt.file)
+        return real_run(self, prompt)
+
+    monkeypatch.setattr(DeterministicExtractionEngine, "run", _counted)
+    main(["extract", "run", str(corpus), "--cache", str(cache_path)])
+    second = capsys.readouterr().out
+
+    assert calls == [], f"the engine was re-asked for {calls}; the cache did not persist"
+    assert "1 claim(s) for review" in second, "the cached run lost the claim"
+
+
+def test_the_cache_is_closed_and_reported_even_when_the_run_raises(
+    corpus, tmp_path, monkeypatch, capsys
+):
+    """Closing after the last print meant any exception leaked the connection AND skipped the
+    one line that makes a silently degraded cache visible."""
+    import recall.truth_extraction.extract as extract_mod
+    from recall.truth_extraction._sqlite_cache import SqliteExtractionCache
+
+    _enable(monkeypatch)
+    opened: list[SqliteExtractionCache] = []
+    real_init = SqliteExtractionCache.__init__
+
+    def _tracking_init(self, path):
+        real_init(self, path)
+        self.write_failures = 1  # force the report line so its absence is detectable
+        opened.append(self)
+
+    monkeypatch.setattr(SqliteExtractionCache, "__init__", _tracking_init)
+    monkeypatch.setattr(
+        extract_mod,
+        "extract_corpus_claims",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        main(["extract", "run", str(corpus), "--cache", str(tmp_path / "tx.sqlite3")])
+
+    assert opened, "no cache was opened, so this proves nothing"
+    assert "write failure(s)" in capsys.readouterr().out, "the counters were never reported"
+    with pytest.raises(Exception):
+        opened[0]._conn.execute("SELECT 1")  # closed
+
+
+def test_an_empty_cache_path_is_refused_rather_than_silently_ignored(
+    corpus, monkeypatch, capsys
+):
+    """`--cache "$CACHE"` with CACHE unset ran a full uncached run and said nothing."""
+    _enable(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(["extract", "run", str(corpus), "--cache", ""])
+    assert exc.value.code == 2
+
+
+def test_a_cache_path_holding_another_database_is_refused(corpus, tmp_path, monkeypatch, capsys):
+    """Refused at OPEN, before a memo is read, not halfway through somebody's corpus."""
+    import sqlite3
+
+    _enable(monkeypatch)
+    foreign = tmp_path / "not-ours.sqlite3"
+    with sqlite3.connect(foreign) as raw:
+        raw.execute("CREATE TABLE extraction_entries (id INTEGER PRIMARY KEY, whatever TEXT)")
+        raw.commit()
+
+    with pytest.raises(SystemExit) as exc:
+        main(["extract", "run", str(corpus), "--cache", str(foreign)])
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    assert "extraction_entries" in captured.err
+    assert "claim(s) for review" not in captured.out, "it read the corpus before refusing"
 
 
 def test_extract_show_reports_only_the_named_file(corpus, monkeypatch, capsys):

@@ -646,57 +646,81 @@ def _run_extract(args: argparse.Namespace) -> None:
     # Validated BEFORE any extraction runs. Deferring it meant a user paid for a whole corpus of
     # model calls and then got exit 2 on a flag combination knowable at parse time, with a
     # complete looking report already printed above the error.
-    if getattr(args, "recheck", False) and not getattr(args, "cache", False):
+    if getattr(args, "recheck", False) and getattr(args, "cache", None) is None:
         print(
-            "recall extract: --recheck needs --cache; there is nothing to re-check against "
-            "an empty cache",
+            "recall extract: --recheck needs --cache PATH; there is nothing to re-check "
+            "against an empty cache",
             file=sys.stderr,
         )
         raise SystemExit(2)
 
     cache = None
-    if getattr(args, "cache", False):
-        from recall.truth_extraction._cache import InMemoryExtractionCache
+    if getattr(args, "cache", None) is not None:
+        from recall.truth_extraction._sqlite_cache import (
+            ExtractionCacheRefused,
+            SqliteExtractionCache,
+        )
 
-        cache = InMemoryExtractionCache()
+        try:
+            cache = SqliteExtractionCache(args.cache)
+        except ExtractionCacheRefused as exc:
+            # Refused at OPEN, before a single memo is read, because the alternative is
+            # discovering halfway through a corpus that the path was somebody else's database.
+            print(f"recall extract: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
 
-    extractions = extract_corpus_claims(
-        documents, engine=engine, corpus_names=corpus_names, cache=cache
-    )
-    for name, reason in unreadable:
-        print(f"  UNREADABLE {name}: {reason}")
-    for item in extractions:
-        for claim in item.claims:
-            print(f"  {item.file}: {claim.kind}")
-            print(f"      quote {claim.quote!r}")
-        for refusal in item.rejections:
-            print(f"  SKIP {item.file}: {refusal.rung}: {refusal.reason}")
-        if item.batch_rejection is not None:
-            print(
-                f"  REFUSED {item.file}: {item.batch_rejection.rung}: "
-                f"{item.batch_rejection.reason}"
-            )
-    total = sum(len(item.claims) for item in extractions)
-    print(f"\n{len(documents)} file(s) read, {total} claim(s) for review")
-
-    if cache is not None and getattr(args, "recheck", False):
-        from recall.truth_extraction._cache import recheck_cached_extractions
-
-        # The SAME `corpus_names` the extraction ran with. `extraction_cache_key` hashes them,
-        # so passing the document keys instead produced a different key for every file, every
-        # lookup missed, and the report read "0 checked, rate not measured" without saying why.
-        report = recheck_cached_extractions(
+    try:
+        extractions = extract_corpus_claims(
             documents, engine=engine, corpus_names=corpus_names, cache=cache
         )
-        rate = "not measured" if report.mismatch_rate is None else f"{report.mismatch_rate:.3f}"
-        print(
-            f"recheck: {report.checked} checked, {report.mismatched} mismatched, "
-            f"{report.errored} errored, rate {rate}"
-        )
+        for name, reason in unreadable:
+            print(f"  UNREADABLE {name}: {reason}")
+        for item in extractions:
+            for claim in item.claims:
+                print(f"  {item.file}: {claim.kind}")
+                print(f"      quote {claim.quote!r}")
+            for refusal in item.rejections:
+                print(f"  SKIP {item.file}: {refusal.rung}: {refusal.reason}")
+            if item.batch_rejection is not None:
+                print(
+                    f"  REFUSED {item.file}: {item.batch_rejection.rung}: "
+                    f"{item.batch_rejection.reason}"
+                )
+        total = sum(len(item.claims) for item in extractions)
+        print(f"\n{len(documents)} file(s) read, {total} claim(s) for review")
 
-    # Dry run is the ONLY run. This command has no --apply, because declaring a claim needs a
-    # named human at `recall rewrite apply`, not a flag here.
-    print("nothing written — review with `recall rewrite plan`")
+        if cache is not None and getattr(args, "recheck", False):
+            from recall.truth_extraction._cache import recheck_cached_extractions
+
+            # The SAME `corpus_names` the extraction ran with. `extraction_cache_key` hashes them,
+            # so passing the document keys instead produced a different key for every file, every
+            # lookup missed, and the report read "0 checked, rate not measured" without saying why.
+            report = recheck_cached_extractions(
+                documents, engine=engine, corpus_names=corpus_names, cache=cache
+            )
+            rate = "not measured" if report.mismatch_rate is None else f"{report.mismatch_rate:.3f}"
+            print(
+                f"recheck: {report.checked} checked, {report.mismatched} mismatched, "
+                f"{report.errored} errored, rate {rate}"
+            )
+
+        # Dry run is the ONLY run. This command has no --apply, because declaring a claim needs a
+        # named human at `recall rewrite apply`, not a flag here.
+        print("nothing written — review with `recall rewrite plan`")
+    finally:
+        if cache is not None:
+            # try/finally, so the counters are REPORTED and the sqlite connection closed on
+            # every exit path. Doing it only after the last print meant any exception in
+            # extraction, printing or recheck leaked the connection and, worse, skipped the
+            # one line that makes a silently degraded cache visible.
+            if cache.write_failures or cache.corrupt or cache.stale:
+                # Read directly, not through getattr with a default: a renamed counter must
+                # break a test, not quietly report a degraded run as clean.
+                print(
+                    f"cache: {cache.write_failures} write failure(s), "
+                    f"{cache.corrupt} unusable, {cache.stale} from an older cache version"
+                )
+            cache.close()
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -955,15 +979,16 @@ def main(argv: list[str] | None = None) -> None:
         help="re-call the engine on cached keys and report the mismatch rate, to MEASURE "
         "whether determinism holds rather than assume it (needs --cache)",
     )
-    # A boolean, deliberately NOT a path. An earlier version took `--cache PATH`, ignored the
-    # path entirely and built a process-local cache, so the flag could never do the one thing
-    # its help promised: nothing was written to PATH and a second run hit nothing. Advertising
-    # a persistence this does not have is worse than not offering it.
+    # A PATH again, now that there is a store behind it. It was briefly a boolean, because an
+    # earlier version accepted a path, ignored it entirely and built a process-local cache, so
+    # nothing was written to PATH and a second run hit nothing. Advertising a persistence that
+    # does not exist is worse than not offering it; the flag came back when the persistence did.
     p_extract_run.add_argument(
         "--cache",
-        action="store_true",
-        help="keep a process-local extraction cache for this run. NOT persisted between runs; "
-        "its purpose is to make --recheck possible.",
+        default=None,
+        metavar="PATH",
+        help="persist extraction results at PATH, so re-ingesting an unchanged memo does not "
+        "re-pay for it. Also what makes --recheck possible.",
     )
     _extract_show_blurb = (
         "Show the claims and refusals for a single file. Targets are resolved against the "
