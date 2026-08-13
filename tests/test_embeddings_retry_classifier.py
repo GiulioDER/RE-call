@@ -15,7 +15,7 @@ retrieved context `benchmarks/pipeline.py` builds.
 
 import pytest
 
-from recall.embeddings import _is_transient, retry_with_backoff
+from recall.embeddings import _TRANSIENT_MARKERS, _is_transient, retry_with_backoff
 
 #: Module scope, matching `test_embeddings_retry_after`: `voyageai` drags `transformers` in
 #: behind it and takes ~75s cold, which is most of the 120s per-test timeout. An `importorskip`
@@ -459,3 +459,131 @@ def test_a_class_whose_name_also_raises_does_not_escape_the_classifier() -> None
 
     assert _is_transient(exc) is False
     assert _attempts_used(exc, attempts=3) == 1
+
+
+def _marker_exception(message: str) -> Exception:
+    """The exception every marker case is built from, in both the ledger and the pin.
+
+    One factory, because the isolation check and the behavioural test must agree on the exact
+    text `_is_transient` will see. Two independent literals is how they stop agreeing.
+    """
+    return RuntimeError(message)
+
+
+#: One message per marker in `_TRANSIENT_MARKERS`, each carrying THAT marker and no other. The
+#: isolation is not asserted by eye: `test_each_marker_case_matches_exactly_one_marker` proves it,
+#: so deleting a marker reddens exactly the case that pins it.
+MARKER_CASES: tuple[tuple[str, str], ...] = (
+    ("429", "http 429 returned by the api"),
+    (" 500", "http 500 returned by the api"),
+    (" 502", "http 502 returned by the api"),
+    (" 503", "http 503 returned by the api"),
+    (" 504", "http 504 returned by the api"),
+    ("rate limit", "rate limit exceeded for this key"),
+    ("too many requests", "too many requests"),
+    ("timeout", "read timeout while awaiting a response"),
+    ("timed out", "the request timed out"),
+    ("temporarily", "the service is temporarily degraded"),
+    ("connection", "connection aborted by the client"),
+    ("reset by peer", "socket forcibly reset by peer"),
+    ("unavailable", "backend is currently unavailable"),
+)
+
+
+def test_every_marker_has_a_case() -> None:
+    """A marker added to the classifier without a case here is a marker nothing pins.
+
+    Equality rather than a subset check, and ordered, so the two lists are maintained together in
+    both directions: a marker deleted from the classifier fails here too.
+    """
+    assert tuple(marker for marker, _ in MARKER_CASES) == _TRANSIENT_MARKERS
+
+
+def test_each_marker_case_matches_exactly_one_marker() -> None:
+    """Each case's message must isolate its own marker, or the case pins nothing.
+
+    A message matching two markers stays green when either is deleted, which is precisely the
+    failure this half of the file exists to prevent: "connection reset by peer", the phrase the
+    fallback test above uses, carries both "connection" and "reset by peer", so it cannot pin
+    either one.
+    """
+    for marker, message in MARKER_CASES:
+        # Built from the SAME factory the parametrized test raises, not from a hardcoded
+        # "RuntimeError " prefix. Those were two independent literals agreeing by convention:
+        # changing the exception type below to `ConnectionError` kept this check green while
+        # every case silently gained a second match, which killed the per-marker pin without
+        # reddening anything.
+        exc = _marker_exception(message)
+        text = f"{type(exc).__name__} {exc}".lower()
+        matched = [m for m in _TRANSIENT_MARKERS if m in text]
+        assert matched == [marker], f"{message!r} matched {matched}, expected only {marker!r}"
+
+
+@pytest.mark.parametrize(
+    ("marker", "message"), MARKER_CASES, ids=[marker.strip() for marker, _ in MARKER_CASES]
+)
+def test_a_status_less_error_is_retried_on_each_marker(marker: str, message: str) -> None:
+    """Every marker is load bearing on its own, because where it is reached it is all there is."""
+    exc = _marker_exception(message)
+    assert _is_transient(exc) is True, f"marker {marker!r} did not classify as transient"
+    assert _attempts_used(exc) == 3
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Connection Reset By Peer",
+        "Service Temporarily Unavailable",
+        "Read Timeout",
+        "Too Many Requests",
+    ],
+)
+def test_the_fallback_normalises_every_word_not_just_the_first(message: str) -> None:
+    """Widens the `.lower()` guard above past the single shape it uses.
+
+    Every marker these messages match is capitalised in ALL of its words, which is what makes
+    them bite. The shape that would NOT pin it is a message whose MATCHED marker is already
+    lowercase in it: `RuntimeError("Connection reset by peer")` matches "reset by peer" with or
+    without the fold, so it proves nothing. "Service Temporarily Unavailable" is the literal HTTP
+    503 reason phrase, so this is the shape a real 503 body arrives in.
+    """
+    exc = RuntimeError(message)
+    assert _is_transient(exc) is True
+    assert _attempts_used(exc) == 3
+
+
+@pytest.mark.parametrize("exc", [TimeoutError("boom"), ConnectionError("boom")])
+def test_the_exception_type_name_is_part_of_the_matched_text(exc: Exception) -> None:
+    """Pins the `type(exc).__name__` prefix on the matched text.
+
+    `TimeoutError("boom")` and `ConnectionError("boom")` say nothing transient in their message;
+    the evidence is entirely in the class name, and both are raised with an empty or unhelpful
+    message by real client stacks. Dropping the prefix loses them.
+    """
+    assert _is_transient(exc) is True
+    assert _attempts_used(exc) == 3
+
+
+def test_http_status_is_read_after_status_code_not_before() -> None:
+    """The third lookup is ordered too, for the reason the first two are.
+
+    Each limb is decisive, so an implementation reading `http_status` FIRST lets a stale or
+    secondary value overrule the one the transport actually stated. No SDK sets both today, which
+    is why this cannot be provoked from a real error, and it is exactly why a test has to say so:
+    the ordering is otherwise free to drift with nothing to catch it. Both reorderings shipped
+    green before this existed.
+
+    Both directions, as `test_status_code_is_read_before_status` does for the first two lookups.
+    Pinning only the first leaves an implementation in which `http_status` may REFUSE but never
+    grant, which survives every other case in this file. That direction suppresses a retry the
+    stated status asked for, which costs an outage rather than a wasted request.
+    """
+    permanent_first = _StatusError("this request will never fit", status_code=400)
+    permanent_first.http_status = 503  # type: ignore[attr-defined]
+    assert _is_transient(permanent_first) is False
+    assert _attempts_used(permanent_first) == 1
+
+    transient_first = _StatusError("slow down", status_code=429)
+    transient_first.http_status = 400  # type: ignore[attr-defined]
+    assert _is_transient(transient_first) is True
+    assert _attempts_used(transient_first) == 3
