@@ -176,9 +176,15 @@ class SqliteExtractionCache:
                 f"prompt_revision, payload FROM {_TABLE} WHERE cache_key = ?",
                 (key,),
             ).fetchone()
-        except sqlite3.Error:
+        except (sqlite3.Error, UnicodeError):
             # A locked or externally damaged store is a miss, not a traceback partway through
             # somebody's corpus. The cost of being wrong here is one re-paid engine call.
+            #
+            # `UnicodeError` for the same reason `put` catches it, and the two must agree: `key`
+            # binds to a TEXT column here too. Production keys are ASCII by construction
+            # ("tx_" + a sha256 hex), so this is symmetry rather than a live escape, and a guard
+            # that holds on the write path and not the read path is the kind of asymmetry that
+            # becomes a defect the moment the key format changes.
             self._note_unusable()
             return None
         if row is None:

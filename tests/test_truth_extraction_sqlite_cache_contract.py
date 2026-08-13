@@ -263,10 +263,15 @@ def test_a_stale_row_is_not_reported_as_corruption(tmp_path):
         assert cache.corrupt == 0, "an older cache version was reported as damage"
 
 
-def test_a_filename_that_is_not_valid_utf8_does_not_abort_the_ingest(tmp_path):
+def test_a_filename_that_is_not_valid_utf8_does_not_destroy_the_cache(tmp_path):
     """A POSIX filename that is not valid UTF-8 arrives as a lone surrogate through
     `Path.glob`'s surrogateescape, and binding it raises UnicodeEncodeError, which is not a
     sqlite3.Error. Same shape as the KeyError: serialization guarded broadly, binding narrowly.
+
+    Renamed. It used to say `..._does_not_abort_the_ingest`, and that was false: the ingest died
+    one frame earlier, in `extraction_cache_key`, which is computed before and independently of
+    any cache. This test only ever proved the CACHE survives. The ingest property it claimed now
+    has its own test below, and the defect it named is fixed.
     """
     with SqliteExtractionCache(_path(tmp_path)) as cache:
         cache.put("k1", _extraction(file="bad\udcff.md"))
@@ -276,6 +281,41 @@ def test_a_filename_that_is_not_valid_utf8_does_not_abort_the_ingest(tmp_path):
         # bad bind had destroyed satisfied it exactly like a healthy one.
         cache.put("k2", _extraction())
         assert cache.get("k2") is not None, "the failed write left the cache unusable"
+
+
+def test_a_filename_that_is_not_valid_utf8_does_not_abort_the_ingest(tmp_path):
+    """The property the test above used to claim, now tested where it actually lives.
+
+    `extract_file_claims` computes `extraction_cache_key` unconditionally, before any cache and
+    outside the guard that keeps one bad memo from killing a run, so a single filename that is
+    not valid UTF-8 raised UnicodeEncodeError and discarded every file already extracted. With
+    no cache passed at all, which is what makes the point: this was never a cache defect.
+    """
+    from recall.truth_extraction._engine import DeterministicExtractionEngine
+    from recall.truth_extraction.extract import extract_corpus_claims
+
+    documents = {"good_2026-01-01.md": "A plain memo.\n", "bad\udcff.md": "Another memo.\n"}
+    results = extract_corpus_claims(
+        documents,
+        engine=DeterministicExtractionEngine(),
+        corpus_names=tuple(sorted(documents)),
+        cache=None,
+    )
+    assert len(results) == 2, "one undecodable filename discarded the whole corpus"
+
+
+def test_a_cache_key_is_unchanged_for_an_ordinary_filename(tmp_path):
+    """The surrogate fix must not renumber every existing entry.
+
+    `_hashable` returns the string itself for valid UTF-8, so a cache written before it still
+    hits afterwards. A stand-in applied unconditionally would have silently invalidated every
+    entry in every user's store, which reads as "the cache stopped working".
+    """
+    from recall.truth_extraction._cache import _hashable
+
+    assert _hashable("memo_2026-01-01.md") == "memo_2026-01-01.md"
+    assert _hashable("Åcme.md") == "Åcme.md", "valid non-ASCII must not be rewritten either"
+    assert _hashable("bad\udcff.md").startswith("\x00surrogate:")
 
 
 def test_a_stored_payload_is_readable_json(tmp_path):
@@ -406,6 +446,20 @@ def test_a_read_failure_is_a_miss_not_a_crash(tmp_path):
         cache.close()
 
 
+def test_a_key_that_cannot_be_bound_is_a_miss_not_a_crash(tmp_path):
+    """`get` and `put` must agree about what a bad bind does.
+
+    `put` caught `(sqlite3.Error, UnicodeError)` and argued for the pair at length while `get`
+    caught only the first, so the same lone surrogate was swallowed on the write path and raised
+    on the read path. Latent rather than live, since production keys are "tx_" plus a sha256
+    hex, but a guard that holds on one side of a store and not the other is a defect waiting for
+    the key format to change.
+    """
+    with SqliteExtractionCache(_path(tmp_path)) as cache:
+        assert cache.get("bad\udcff") is None
+        assert cache.corrupt == 1, "the unbindable key was not counted"
+
+
 def test_a_payload_stored_as_a_blob_is_a_miss(tmp_path):
     """`type(payload) is not str`, which only bites for a BLOB holding VALID json: every other
     non-text value fails in `json.loads` and is caught below anyway. This module writes TEXT,
@@ -452,6 +506,30 @@ def test_an_extra_top_level_field_is_refused(tmp_path):
 
     with pytest.raises(_serialize.ExtractionPayloadInvalid, match="payload has fields"):
         _serialize.extraction_from_json(_payload(invented_by_another_writer=1))
+
+
+def _top_level_keys():
+    from recall.truth_extraction import _serialize
+
+    return sorted(_serialize._TOP_LEVEL_KEYS)
+
+
+@pytest.mark.parametrize("dropped", _top_level_keys())
+def test_a_missing_top_level_field_is_refused(dropped):
+    """The SUBSET direction, which the superset test above cannot reach.
+
+    Weakening `set(raw) != _TOP_LEVEL_KEYS` to `not set(raw) <= _TOP_LEVEL_KEYS` survived the
+    whole suite, and under that weakening a payload missing one key raises a bare `KeyError` out
+    of the scalar loop below it. That guard is the only thing standing between an untrusted
+    payload and a raw KeyError, which is the same shape as the unhashable-kind defect one line
+    down: an exact-match check whose exactness nothing tested.
+    """
+    from recall.truth_extraction import _serialize
+
+    body = json.loads(_payload())
+    del body[dropped]
+    with pytest.raises(_serialize.ExtractionPayloadInvalid, match="payload has fields"):
+        _serialize.extraction_from_json(json.dumps(body))
 
 
 def test_an_unknown_claim_kind_is_refused_by_the_serializer(tmp_path):
@@ -661,11 +739,19 @@ def test_the_connection_tracker_survives_a_with_block(tmp_path, monkeypatch):
     caller's hands and lose the close this class exists to observe.
     """
     closed, _ = _track_connections(monkeypatch)
-    conn = sqlite3.connect(tmp_path / "plain.db")
+    path = tmp_path / "plain.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE t (a INTEGER)")
+    conn.commit()
     with conn as inside:
         assert inside is conn, "the wrapper handed back the raw connection"
+        inside.execute("INSERT INTO t (a) VALUES (1)")
     inside.close()
     assert closed, "a close through the context manager went unrecorded"
+    # `__exit__` delegates the COMMIT, and asserting only on `__enter__` left that half dead: a
+    # no-op `__exit__` kept every test green while dropping the transaction it is there to end.
+    with contextlib.closing(sqlite3.connect(path)) as fresh:
+        assert fresh.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 1
 
 
 def test_the_connect_timeout_is_the_production_value(tmp_path, monkeypatch):
@@ -782,8 +868,12 @@ def test_a_claims_or_rejections_field_that_is_not_a_list_is_refused(field):
     [
         ("not json at all", "not JSON"),
         ("5", "not an object"),
+        # RecursionError out of `json.loads` is a RuntimeError, so `except ValueError` alone let
+        # it escape as a foreign type. The cache path already caught it broadly and had its own
+        # test; the EXPORTED function did not, which is the caller this module promises.
+        ("[" * 200_000 + "]" * 200_000, "not JSON"),
     ],
-    ids=["bad_json", "not_an_object"],
+    ids=["bad_json", "not_an_object", "too_deeply_nested"],
 )
 def test_a_malformed_payload_raises_this_modules_own_type(text, expected):
     """`extraction_from_json` is a module boundary, and its contract is its own exception type.

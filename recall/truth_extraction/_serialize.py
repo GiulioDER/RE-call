@@ -137,9 +137,10 @@ def _claim_from_object(obj: object, *, index: int) -> ExtractedClaim:
         raise ExtractionPayloadInvalid(
             f"claim {index} has kind {kind!r}, not one of {sorted(_CLAIM_TYPES)}"
         )
-    # No `cast` here any more: the `type(kind) is not str` guard above narrows `kind` for mypy,
-    # so the cast the untyped membership test used to need is now redundant and rejected by
-    # `warn_redundant_casts`. A pleasant side effect of guarding for the right reason.
+    # No `cast` here any more. Precisely: mypy never NEEDED it, because `kind` was `Any` off an
+    # untyped `pop` and `Any` indexes anything; the cast was tolerated, not required. Narrowing
+    # `kind` to `str` is what turns it into a cast `warn_redundant_casts` rejects, so the guard
+    # forces its removal rather than merely permitting it.
     cls = _CLAIM_TYPES[kind]
     # No cast on the result: `_CLAIM_TYPES` values are already the four claim classes, so mypy
     # infers the union and a cast here is redundant, which `warn_unused_ignores` reports as an
@@ -187,7 +188,12 @@ def extraction_from_json(text: str) -> FileExtraction:
     """
     try:
         raw = json.loads(text)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
+        # `RecursionError` as well, and it is not hypothetical: a deeply nested payload raises
+        # it out of `json.loads`, it is a `RuntimeError` rather than a `ValueError`, and it was
+        # the one input that still escaped this module as a foreign type. `_sqlite_cache.get`
+        # already catches everything and names this case, so the cache path was safe; the
+        # EXPORTED function was not, and that is the caller this module makes a promise to.
         raise ExtractionPayloadInvalid(f"payload is not JSON: {exc}") from exc
     if type(raw) is not dict:
         raise ExtractionPayloadInvalid(f"payload is {type(raw).__name__}, not an object")

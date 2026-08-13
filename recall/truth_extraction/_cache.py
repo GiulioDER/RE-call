@@ -33,6 +33,27 @@ class _EngineIdentity(Protocol):
     revision: str
 
 
+def _hashable(text: str) -> str:
+    """`text` unchanged when it is valid UTF-8, and a stable stand-in when it is not.
+
+    A POSIX filename is bytes, not text. One that is not valid UTF-8 reaches here as a lone
+    surrogate through `Path.glob`'s surrogateescape, and `canonical_sha256` encodes as UTF-8, so
+    hashing it raised `UnicodeEncodeError`. That is computed unconditionally by
+    `extract_file_claims`, BEFORE and independently of any cache, and outside the guard that
+    keeps one bad memo from killing a run: a single such filename aborted the whole ingest and
+    discarded every file already extracted. Hardening the cache's own writes against the same
+    byte, as `put` does, was pointless while the key computation one frame earlier still threw.
+
+    The valid-UTF-8 path returns the string itself, so no existing cache entry changes key. The
+    NUL prefix cannot occur in a real filename, so the stand-in cannot collide with one.
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return "\x00surrogate:" + text.encode("utf-8", "surrogatepass").hex()
+    return text
+
+
 def extraction_cache_key(*, engine: _EngineIdentity, prompt: ExtractionPrompt) -> str:
     """Content hash of every input that can change the answer."""
     return "tx_" + canonical_sha256(
@@ -41,9 +62,9 @@ def extraction_cache_key(*, engine: _EngineIdentity, prompt: ExtractionPrompt) -
             "model_id": engine.model_id,
             "engine_revision": engine.revision,
             "prompt_revision": prompt.revision,
-            "file": prompt.file,
-            "human_body": prompt.human_body,
-            "corpus_names": tuple(sorted(prompt.corpus_names)),
+            "file": _hashable(prompt.file),
+            "human_body": _hashable(prompt.human_body),
+            "corpus_names": tuple(sorted(_hashable(n) for n in prompt.corpus_names)),
         }
     )[:32]
 
