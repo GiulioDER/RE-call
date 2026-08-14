@@ -334,7 +334,9 @@ class RewritePlan:
 
     edit_file: str          # root-relative path of the memo that gains the key
     key: str                # `supersedes` | `contradicts` | `same_entity` | ...
-    value: str              # the other document, written verbatim as the fact named it
+    value: str              # the other document, as a memo can carry it: verbatim for every
+                            # name the corpus can spell, and reduced to the basename when only
+                            # a directory above it cannot (see `_writable_reference`)
     block: Destination
     claim: str              # the ledger key for this claim
     fact_id: str
@@ -450,10 +452,19 @@ def _writable_reference(value: str) -> str:
     would read the same to every resolver and still be wrong: the derived block's dedup
     recognises the line it wrote by comparing the value, so a spelling that changes between
     runs is an entry appended forever.
+
+    The invariant is CHECKED rather than assumed, by asking `supersedes_key` whether the trim
+    changed anything. A bare corpus name is not the only shape a value arrives in: `[[name]]`
+    is what the corpus's own author writes and what a provider can hand over, and splitting
+    that on the last `/` cuts inside the brackets, taking the marker with the discarded half
+    and leaving `old.md]]`, which resolves to nothing. Refusing it whole is the honest
+    outcome. Rewriting it into `[[old.md]]` would be this module editing a reference it was
+    handed, which is where a writer starts guessing at what a human meant.
     """
     if NAME_STAND_IN_MARK not in value:
         return value
-    return value.rsplit("/", 1)[-1]
+    trimmed = value.rsplit("/", 1)[-1]
+    return trimmed if supersedes_key(trimmed) == supersedes_key(value) else value
 
 
 def _refuse_stand_in_reference(value: str) -> None:

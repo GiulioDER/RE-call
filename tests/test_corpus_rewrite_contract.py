@@ -416,6 +416,34 @@ def test_a_unicode_line_separator_cannot_smuggle_a_title_past_the_guard(tmp_path
     assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == before
 
 
+def test_a_stand_in_wrapped_by_a_provider_is_refused_rather_than_trimmed_into_nonsense(
+    tmp_path: Path,
+) -> None:
+    """The trim is only allowed where it is invisible to `supersedes_key`.
+
+    `[[name]]` is a spelling the corpus's own author uses and `_refuse_stand_in_reference`
+    names as reachable from a provider. Splitting such a value on the last `/` cut inside the
+    brackets: the marker went with the discarded half, so nothing refused it, and the leftover
+    `old.md]]` resolved to a document that does not exist. A trim that changes what a reader
+    resolves is not a trim, it is an edit of the reference, so the value is left whole and
+    refused instead. Rewriting it into `[[old.md]]` would be this module editing a reference
+    it was handed, which is how a writer starts guessing at what a human meant.
+    """
+    _corpus(tmp_path)
+    folder = "legal\udcff"
+    (tmp_path / folder).mkdir()
+    _memo(tmp_path, f"{folder}/old_decision_2026-01-01.md", _OLD)
+    before = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+
+    from recall.frontmatter import encodable_name
+
+    wrapped = "[[" + encodable_name(f"{folder}/old_decision_2026-01-01.md") + "]]"
+    with pytest.raises(RewriteRefused, match="(?i)stand-in"):
+        apply_rewrite(tmp_path, _fact(subject_id=wrapped), apply=True)
+
+    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == before
+
+
 def test_an_ordinary_nested_reference_is_written_exactly_as_the_corpus_names_it(
     tmp_path: Path,
 ) -> None:
