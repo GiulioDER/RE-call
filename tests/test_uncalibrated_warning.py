@@ -15,13 +15,18 @@ pin the signal.
 from __future__ import annotations
 
 import logging
+import os
+import pathlib
+import re
+import subprocess
+import sys
 
 import pytest
 
 from recall.calibration import ENV_VAR, Calibration, save
 from recall.embeddings import HashingEmbedder
 from recall.index import Indexer
-from recall.trust import _WARNED_UNCALIBRATED
+from recall.trust import _WARNED_UNCALIBRATED, _warn_uncalibrated
 from tests.conftest import dev_search_uncalibrated
 from tests.conftest import requires_db
 
@@ -152,4 +157,76 @@ def test_the_warning_names_the_embedder_and_the_remedy(tmp_path, make_store, cap
 
     msg = next(r.getMessage() for r in caplog.records if "no calibration found" in r.getMessage())
     assert embedder.name in msg
-    assert "recall calibrate" in msg
+    assert "recall calibration calibrate" in msg
+
+
+def _argparse_rejects(command: str, cwd) -> bool:
+    """True when the CLI refuses `command` as unparseable, rather than for any later reason.
+
+    Only argparse is under test here, and it runs before the DSN is ever dialled, so the run is
+    pointed at a closed local port: whatever happens after parsing is irrelevant and must not be
+    allowed to hang.
+
+    `cwd` is a scratch directory so no repository `.env` is picked up, and PYTHONPATH pins the
+    import to THIS checkout. One editable install serves many worktrees here, so a bare
+    `python -m recall.cli` run from elsewhere would parse a different tree's CLI and the result
+    would say nothing about this one.
+    """
+    tokens = command.split()
+    assert tokens[0] == "recall", f"expected a `recall` command, got {command!r}"
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    env = {**os.environ, "PYTHONPATH": str(repo_root)}
+    argv = [
+        sys.executable,
+        "-m",
+        "recall.cli",
+        "--serving-dsn",
+        "postgresql://u:p@127.0.0.1:1/db?connect_timeout=1",
+        *tokens[1:],
+    ]
+    done = subprocess.run(
+        argv, capture_output=True, text=True, cwd=cwd, env=env, timeout=120
+    )
+    return "unrecognized arguments" in done.stderr or "invalid choice" in done.stderr
+
+
+def test_the_remedy_the_warning_prints_is_a_command_that_actually_parses(tmp_path):
+    """The warning names a command to run. For several releases it named one that cannot run.
+
+    The generation-bound measurement lives under the `calibration` subcommand group. Top-level
+    `calibrate` takes a POSITIONAL queries file and defines neither `--generation` nor `--queries`,
+    so `recall calibrate --generation G --queries FILE --publish` exits 2 on argparse. The test
+    that was supposed to pin this asserted the substring "recall calibrate", which the broken form
+    satisfies, so the guard could never have caught it.
+
+    Run the string the warning actually prints. It may fail for any later reason, the closed port
+    being the likely one, but it must not fail because the CLI does not understand it.
+    """
+    _WARNED_UNCALIBRATED.discard("probe-embedder")
+    logger = logging.getLogger("recall.trust")
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    logger.addHandler(handler)
+    try:
+        _warn_uncalibrated("probe-embedder")
+    finally:
+        logger.removeHandler(handler)
+        _WARNED_UNCALIBRATED.discard("probe-embedder")
+
+    msg = next(r.getMessage() for r in records if "no calibration found" in r.getMessage())
+    quoted = re.findall(r"`([^`]+)`", msg)
+    assert quoted, f"the warning names no command at all: {msg!r}"
+    command = next(c for c in quoted if c.startswith("recall "))
+
+    assert not _argparse_rejects(command, tmp_path), (
+        f"the warning tells the reader to run {command!r}, and the CLI rejects it as unparseable"
+    )
+
+    # Canary. The check above is only meaningful if it can fail, so prove it still catches the
+    # exact form this test exists to prevent. Without this, a checker that silently stopped
+    # detecting anything would look identical to a clean run.
+    broken = "recall calibrate --generation G --queries FILE --publish"
+    assert _argparse_rejects(broken, tmp_path), (
+        "the parse check no longer detects the historical broken form, so it is proving nothing"
+    )
