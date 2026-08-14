@@ -49,7 +49,7 @@ feature, plus `_MODEL`, plus the provider settings.
 
 ```
 RECALL_REASONING=1
-RECALL_REASONING_MODEL=deepseek/deepseek-chat
+RECALL_REASONING_MODEL=openai/gpt-4o-mini
 RECALL_REASONING_BASE_URL=https://openrouter.ai/api/v1
 RECALL_REASONING_API_KEY=sk-or-...
 ```
@@ -158,10 +158,10 @@ Only for the two cloud providers. Verified against the live OpenRouter catalogue
 
 | Order | label | value | description |
 |---|---|---|---|
-| 1 | `deepseek chat` | `deepseek/deepseek-chat` | `Low cost general model, a good default` |
-| 2 | `deepseek r1` | `deepseek/deepseek-r1` | `Reasoning tuned, slower and dearer than chat` |
-| 3 | `llama 3.3 70b` | `meta-llama/llama-3.3-70b-instruct` | `Open weights, the cheapest option here` |
-| 4 | `gpt-4o mini` | `openai/gpt-4o-mini` | `Small and fast, a good balance` |
+| 1 | `gpt-4o mini` | `openai/gpt-4o-mini` | `Small, fast and inexpensive, the default` |
+| 2 | `deepseek chat` | `deepseek/deepseek-chat` | `Low cost general model, strong for the price` |
+| 3 | `deepseek r1` | `deepseek/deepseek-r1` | `Reasoning tuned, slower and dearer than chat` |
+| 4 | `llama 3.3 70b` | `meta-llama/llama-3.3-70b-instruct` | `Open weights, the cheapest option here` |
 | 5 | `claude sonnet 4.5` | `anthropic/claude-sonnet-4.5` | `Best quality and the dearest, matching the truth extraction default` |
 | 6 | `enter a model id` | `` | `Type an id yourself, for anything not listed` |
 
