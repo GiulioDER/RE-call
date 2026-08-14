@@ -80,19 +80,9 @@ def test_cli_demo_shows_supersession_redirect(capsys, cli_table):
     assert "rate_limits_v2.md" in out   # the successor is surfaced
 
 
-@pytest.mark.xfail(
-    reason=(
-        "CONTRADICTION INSIDE THE MERGE, not a regression. This test asserts the process-global "
-        "calibration form exits 2 and writes nothing, while the `calibrate` command the same merge "
-        "introduced deliberately exits 1 with 'NOT CERTIFIED' and SAVES the artifact, because the "
-        "file records why the threshold was rejected and deleting it would destroy that evidence. "
-        "Both cannot hold. Verified pre-existing: checking out master's own recall/cli.py and "
-        "running this test in the same environment fails identically, so the CLI restore did not "
-        "cause it. Marked xfail so it stops masking new failures; the design decision is open."
-    ),
-    strict=False,
-)
-def test_cli_legacy_process_global_calibration_form_is_rejected(tmp_path):
+def test_cli_legacy_process_global_calibration_form_preserves_the_rejected_artifact(
+    tmp_path, monkeypatch
+):
     import json
 
     (tmp_path / "a.md").write_text("cats purr loudly", encoding="utf-8")
@@ -106,10 +96,15 @@ def test_cli_legacy_process_global_calibration_form_is_rejected(tmp_path):
         ),
         encoding="utf-8",
     )
+    monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit) as exc:
         main(["--embedder", "hashing", "calibrate", str(queries)])
-    assert exc.value.code == 2
-    assert not (tmp_path / "calibration.json").exists()
+    assert exc.value.code == 1
+
+    artifact = tmp_path / "calibration.json"
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert payload["certified"] is False
+    assert payload["certification_reason"]
 
 
 @requires_db

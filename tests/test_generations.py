@@ -1283,6 +1283,12 @@ def test_a_thematic_break_object_is_never_reused_into_a_new_generation(manager) 
     pipeline = _pipeline("model-a")
     first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
     manager.promote(first, unsafe_development=True)
+    with manager._connect() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE recall_chunks_v1 SET metadata = metadata - %s "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            ("body_rule_version", manager.tenant_id, first),
+        )
 
     must_run = _Embedder(9)
     second = manager.create(manifest, pipeline)
@@ -1290,6 +1296,16 @@ def test_a_thematic_break_object_is_never_reused_into_a_new_generation(manager) 
 
     assert stats.reused_objects == 0, "an object whose body moved must not be reused"
     assert must_run.calls == 1, "it must be re-chunked and re-embedded, not copied"
+
+    manager.validate(second.generation_id)
+    manager.promote(second.generation_id, unsafe_development=True)
+
+    reused_after_repair = _Embedder(11)
+    third = manager.create(manifest, pipeline)
+    third_stats = manager.build(third.generation_id, reader, reused_after_repair, lambda text: [text])
+
+    assert third_stats.reused_objects == 1, "the repaired source should reuse on later generations"
+    assert reused_after_repair.calls == 0, "reuse should avoid a second repair re-embed"
 
 
 @requires_db
