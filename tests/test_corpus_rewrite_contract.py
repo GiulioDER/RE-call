@@ -416,6 +416,39 @@ def test_a_unicode_line_separator_cannot_smuggle_a_title_past_the_guard(tmp_path
     assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == before
 
 
+def test_a_reference_to_a_file_named_only_by_a_stand_in_is_refused_before_any_write(
+    tmp_path: Path,
+) -> None:
+    """A file the corpus names by a stand-in has no spelling a memo can carry.
+
+    `corpus_proposals` names such a file by what `encodable_name` returns, which is what keeps
+    the review queue alive, and that name is right for an id and for a report. Written into a
+    memo it would be a lie: `lint`, `check`, `fix` and the store resolve a declared edge by
+    comparing raw filenames, so the line reads as a real edge to a human and as an unresolved
+    one to every reader in this package, with the trust layer never demoting the memo the edge
+    supersedes. Silence is the one outcome worse than a refusal here.
+
+    The check is a comparison against the real name rather than a re-test of UTF-8 validity,
+    because `encodable_name` also diverts a VALID name carrying the escape's own characters,
+    and that one is unresolvable for the reader in exactly the same way. One code path, no
+    branch on the reason: a filename holding a backslash cannot exist on Windows, so a second
+    case here would be a test that only ever runs on half the machines that read it.
+    """
+    _corpus(tmp_path)
+    awkward = "bad\udcff_2026-01-01.md"
+    _memo(tmp_path, awkward, _OLD)
+    before = (tmp_path / "new_decision_2026-06-01.md").read_bytes()
+
+    from recall.frontmatter import encodable_name
+
+    stand_in = encodable_name(awkward)
+    assert stand_in != awkward, "this name needs no stand-in, so the test proves nothing"
+    with pytest.raises(RewriteRefused, match="(?i)stand-in"):
+        apply_rewrite(tmp_path, _fact(subject_id=stand_in), apply=True)
+
+    assert (tmp_path / "new_decision_2026-06-01.md").read_bytes() == before
+
+
 def test_a_value_wrapped_in_whitespace_is_refused_so_the_dedup_can_match_it(
     tmp_path: Path,
 ) -> None:

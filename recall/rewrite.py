@@ -67,6 +67,7 @@ from recall.atomic_write import atomic_write_bytes
 from recall.frontmatter import (
     VALIDITY_KEYS,
     dominant_newline,
+    encodable_name,
     insert_frontmatter_line,
     line_terminator,
     parse_frontmatter,
@@ -428,6 +429,42 @@ def _refuse_unwritable_value(value: str) -> None:
         )
 
 
+def _refuse_unnamable_reference(root: Path, value: str) -> None:
+    """A written reference must name a file every reader of the corpus can find.
+
+    A filename that is not valid UTF-8 has no spelling a memo can carry: the memo is written as
+    UTF-8, so the raw name cannot go in, and `corpus_proposals` therefore names such a file by
+    the stand-in `encodable_name` returns. That stand-in is the right answer for an id and for
+    a report, and the wrong one for a corpus file. `lint`, `check`, `fix`, `store` and the
+    reasoning graph all resolve a declared edge by comparing raw filenames, so the line would
+    read as a real edge to a human and as an unresolved one to every reader in this package,
+    with the trust layer never demoting the memo it supersedes. Teaching one of those readers
+    the stand-in would only make it the one that disagrees with the other four.
+
+    The rule is "the corpus name is not the file's name", not "the file's name is not UTF-8".
+    Those come apart for the second kind of name `encodable_name` diverts, one carrying the
+    escape's own characters, and that name is unresolvable for the reader in exactly the same
+    way — so the check is a comparison against the real name rather than a re-test of validity.
+
+    Scoped to a value that could BE a stand-in — `encodable_name` always leaves ``\\u`` behind —
+    so the ordinary case costs a substring test and never walks the corpus. A value carrying
+    those characters that names no such file is left alone: it may well be a real filename, and
+    refusing it would be this function inventing a rule about backslashes.
+    """
+    if "\\u" not in value:
+        return
+    key = supersedes_key(value)
+    for path in root.rglob("*.md"):
+        stand_in = encodable_name(path.name)
+        if stand_in != path.name and supersedes_key(stand_in) == key:
+            raise RewriteRefused(
+                f"refusing to write: {value!r} is this corpus's stand-in for a file whose real "
+                f"name it does not spell, and no reader of the corpus resolves a stand-in. "
+                f"Rename the file first; the edge can be declared once it has a name a memo "
+                f"can hold."
+            )
+
+
 def _readable_text(raw: bytes, rel: str) -> str:
     """The memo decoded, or a refusal naming it.
 
@@ -455,8 +492,16 @@ def _readable_text(raw: bytes, rel: str) -> str:
 def _resolve(root: Path, ref: str) -> str:
     """The one corpus file `ref` names, root-relative. Zero or several matches is a refusal."""
     key = supersedes_key(ref)
+    # `ref` is a corpus NAME, and `corpus_proposals` guarantees those are encodable, so the
+    # file side must be compared in the same spelling or the two can never meet. A memo whose
+    # filename is not valid UTF-8 is named `bad\udcff.md` in every proposal and `bad<lone
+    # surrogate>.md` on disk: matching raw found zero files and refused the write with "matches
+    # 0 files in the corpus" about a file sitting right there. The match is on the escaped
+    # form; what is RETURNED stays the real path, because that is what gets opened and written.
     matches = sorted(
-        f.relative_to(root).as_posix() for f in root.rglob("*.md") if supersedes_key(f.name) == key
+        f.relative_to(root).as_posix()
+        for f in root.rglob("*.md")
+        if supersedes_key(encodable_name(f.name)) == key
     )
     if len(matches) != 1:
         raise RewriteRefused(
@@ -510,10 +555,16 @@ def corpus_proposals(root: Path, glob: str = "**/*.md") -> tuple[InferencePropos
     read_paths = corpus_paths if root.is_dir() else [root]
 
     def _key(path: Path) -> str:
+        # `encodable_name` at the boundary, not at each of the places a name is later hashed,
+        # serialised or printed. A filename that is not valid UTF-8 is a lone surrogate here,
+        # and it reached `canonical_sha256` through the graph's node ids: one such file raised
+        # `UnicodeEncodeError` out of `build_reasoning_graph` and returned NO proposals at all,
+        # about a corpus whose other memos are ordinary. Every ordinary name is returned
+        # unchanged, so no existing proposal id moves.
         try:
-            return path.relative_to(corpus_root).as_posix()
+            return encodable_name(path.relative_to(corpus_root).as_posix())
         except ValueError:
-            return path.name
+            return encodable_name(path.name)
 
     # The whole corpus is read for the GRAPH, while only `read_paths` is extracted FROM. A
     # supersession proposal needs a graph node for its target as well as a corpus name for it:
@@ -583,6 +634,7 @@ def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:
     routed = route_relation(checked.relation, checked.subject_id, checked.object_id)
     block = destination(routed.key)
     _refuse_unwritable_value(routed.value)
+    _refuse_unnamable_reference(root if root.is_dir() else root.parent, routed.value)
     return RewritePlan(
         edit_file=_resolve(root, routed.edit_file),
         key=routed.key,

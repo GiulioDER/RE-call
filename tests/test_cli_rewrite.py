@@ -195,6 +195,118 @@ def test_an_unreadable_memo_does_not_remove_its_neighbours_proposals(corpus, cap
     assert found, "an undecodable neighbour deleted the proposal from the review queue"
 
 
+def test_a_filename_that_is_not_valid_utf8_does_not_kill_the_review_queue(corpus):
+    """A POSIX filename is bytes. One that is not valid UTF-8 arrives as a lone surrogate
+    through `Path.glob`'s surrogateescape, and every corpus name is hashed into a
+    `reasoning_graph` node id by `canonical_sha256`, which encodes as UTF-8. So one such file
+    raised UnicodeEncodeError out of `build_reasoning_graph` and took the WHOLE queue with it:
+    not one proposal was returned, about a corpus whose other memos are perfectly ordinary.
+    """
+    (corpus / "bad\udcff.md").write_bytes(b"# bad\n\nNothing to declare.\n")
+    found = [p for p in corpus_proposals(corpus) if p.proposed_relation == "supersedes"]
+    assert found, "one unnamable file emptied the review queue"
+
+
+def test_plan_survives_a_filename_that_is_not_valid_utf8(corpus, capsys):
+    """Through `main()`, because the library layer is not where this path ends.
+
+    The sibling defect on `recall extract` was fixed one frame inside the CLI and the run still
+    died at the REPORT step, on the `print` of the same name. Asserting the property at
+    `corpus_proposals` alone would have declared that fix complete too.
+    """
+    (corpus / "bad\udcff.md").write_bytes(b"# bad\n\nNothing to declare.\n")
+    main(["rewrite", "plan", str(corpus)])
+    out = capsys.readouterr().out
+    assert "supersedes" in out, "the queue printed nothing about a corpus that states one"
+    assert "0 proposal(s)" not in out
+
+
+def test_an_unnamable_file_does_not_renumber_its_neighbours_proposals(corpus):
+    """A proposal id is what a reviewer types into `apply`, and it is hashed from the corpus
+    names, so one awkward file arriving must not renumber the queue around it.
+
+    This pins the neighbours against EACH OTHER, not against the ids this command produced
+    before the fix: a stand-in applied to every name would satisfy it, because both readings
+    would then churn together. The half it cannot see is `encodable_name` returning an ordinary
+    name unchanged, which is asserted where it is decidable, on the function itself.
+    """
+    before = [p.id for p in corpus_proposals(corpus)]
+    assert before, "the corpus states a supersession the deterministic engine should find"
+    (corpus / "bad\udcff.md").write_bytes(b"# bad\n\nNothing to declare.\n")
+    assert [p.id for p in corpus_proposals(corpus)] == before, "the ids churned"
+
+
+@pytest.fixture
+def unnamable_corpus(tmp_path):
+    """A corpus whose SUPERSEDING memo is the one that cannot be named in UTF-8.
+
+    So the proposal's edit target is the awkward file itself, which is what makes the write
+    path answer rather than route around it.
+    """
+    (tmp_path / OLD).write_text("# old\n\nThe original call.\n", encoding="utf-8", newline="\n")
+    (tmp_path / "bad\udcff.md").write_bytes(
+        f"# bad\n\nThis memo supersedes {OLD} after review.\n".encode()
+    )
+    return tmp_path
+
+
+def test_a_proposal_from_an_unnamable_file_can_still_be_applied(unnamable_corpus, capsys):
+    """A queue item that can never be applied is not much better than the crash it replaced.
+
+    The corpus name is now the escape `bad\\udcff.md`, while the file on disk is still named
+    with the surrogate, so `_resolve` matched the escape against raw names, found nothing, and
+    refused with "matches 0 files in the corpus" about a file sitting right there. That is the
+    fabricated refusal `supersedes_key` was written to end, in a second place.
+    """
+    found = [p for p in corpus_proposals(unnamable_corpus) if p.proposed_relation == "supersedes"]
+    assert found, "the awkward memo states a supersession"
+    main(["rewrite", "apply", str(unnamable_corpus), "--proposal", found[0].id,
+          "--reviewer", "gde", "--note", "Read both memos.", "--apply"])
+    written = (unnamable_corpus / "bad\udcff.md").read_text(encoding="utf-8")
+    assert "supersedes:" in written, "the edit was refused about the file it names"
+    assert "supersedes:" not in (unnamable_corpus / OLD).read_text(encoding="utf-8")
+
+
+def test_an_applied_edge_on_an_unnamable_file_does_not_come_back_as_unreviewed(
+    unnamable_corpus, capsys
+):
+    """`plan` marks a proposal the memo already states DECLARED, by opening that memo.
+
+    It opened `root / <corpus name>`, which for this file is the escape and not a path that
+    exists, so the read failed and every run offered the same accepted proposal again as
+    unreviewed work. A queue that never converges is the defect the DECLARED mark exists for.
+    """
+    found = [p for p in corpus_proposals(unnamable_corpus) if p.proposed_relation == "supersedes"]
+    main(["rewrite", "apply", str(unnamable_corpus), "--proposal", found[0].id,
+          "--reviewer", "gde", "--note", "Read both memos.", "--apply"])
+    capsys.readouterr()
+    main(["rewrite", "plan", str(unnamable_corpus)])
+    out = capsys.readouterr().out
+    assert "DECLARED" in out, "an accepted proposal came back as unreviewed"
+    assert "review  " not in out
+
+
+def test_verify_reports_an_edge_that_names_a_file_only_by_its_stand_in(
+    unnamable_corpus, capsys
+):
+    """The stand-in is a name for the QUEUE, never a name for the corpus.
+
+    `lint`, `check`, `fix` and the store all resolve a declared edge by comparing raw
+    filenames, so a memo carrying the escape states an edge no reader in this package
+    resolves. `verify` says so, and `rewrite apply` refuses to write one in the first place —
+    see `test_a_reference_to_a_file_named_only_by_a_stand_in_is_refused_before_any_write` in
+    test_corpus_rewrite_contract.py. Teaching this one command to resolve the escape would have
+    made it the only reader in the package that did.
+    """
+    (unnamable_corpus / NEW).write_text(
+        "---\nsupersedes: bad\\udcff.md\n---\n# new\n\nBody.\n", encoding="utf-8", newline="\n"
+    )
+    with pytest.raises(SystemExit) as exc:
+        main(["rewrite", "verify", str(unnamable_corpus)])
+    assert exc.value.code == 1
+    assert "UNRESOLVED" in capsys.readouterr().out
+
+
 def test_verify_refuses_an_ambiguous_target(tmp_path, capsys):
     """Two files sharing a basename resolve to two files and therefore to none.
 

@@ -356,7 +356,7 @@ def _rejected_claims(ledger_path: Path) -> frozenset[str]:
 def _already_declared(root: Path, proposal: object) -> bool:
     """True when the memo already states this proposal's key, so it needs no second review."""
     from recall.frontmatter import parse_frontmatter
-    from recall.rewrite import RewriteRefused, destination, route_relation
+    from recall.rewrite import RewriteRefused, _resolve, destination, route_relation
 
     try:
         routed = route_relation(
@@ -368,7 +368,16 @@ def _already_declared(root: Path, proposal: object) -> bool:
             # A derived-block key is multi valued for `contradicts` and `same_entity`, so
             # "already there" is not a property of the key alone. Left to the write path.
             return False
-        path = (root if root.is_dir() else root.parent) / routed.edit_file
+        corpus_root = root if root.is_dir() else root.parent
+        path = corpus_root / routed.edit_file
+        if not path.is_file():
+            # Falls back to the write path's OWN resolution, for the corpus names that are not
+            # usable relative paths. A memo whose filename is not valid UTF-8 is named by the
+            # stand-in `encodable_name` returns, so the join above opens nothing and every run
+            # re-offered an edge that memo already declares as unreviewed work. A queue that
+            # never converges is the defect DECLARED exists to prevent. The join stays first
+            # because this runs once per proposal and `_resolve` walks the whole corpus.
+            path = corpus_root / _resolve(corpus_root, routed.edit_file)
         meta, _ = parse_frontmatter(path.read_text(encoding="utf-8-sig"))
     except (RewriteRefused, UnicodeDecodeError, OSError):
         return False
@@ -565,6 +574,7 @@ def _run_extract(args: argparse.Namespace) -> None:
     running a different engine than the one named would make the audit record wrong about how a
     claim was produced.
     """
+    from recall.frontmatter import encodable_name
     from recall.truth_extraction import resolve_extraction_engine
     from recall.truth_extraction.extract import extract_corpus_claims
 
@@ -624,10 +634,14 @@ def _run_extract(args: argparse.Namespace) -> None:
         # recursive, so `legal/policy.md` and `eng/policy.md` collapsed onto one dict key: one
         # file was silently dropped, and the ladder's "matches N files in the corpus" refusal
         # could never fire, because the index had deduplicated the ambiguity away.
+        #
+        # `encodable_name` for the same reason it is in `rewrite._key`: a filename that is not
+        # valid UTF-8 is a lone surrogate here, and it flows into the prompt, the cache key and
+        # the report. Each of those was hardened separately; the boundary is one place.
         try:
-            return path.relative_to(corpus_root).as_posix()
+            return encodable_name(path.relative_to(corpus_root).as_posix())
         except ValueError:
-            return path.name
+            return encodable_name(path.name)
 
     documents: dict[str, str] = {}
     unreadable: list[tuple[str, str]] = []

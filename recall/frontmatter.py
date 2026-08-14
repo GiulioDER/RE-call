@@ -202,3 +202,42 @@ def supersedes_key(value: str) -> str:
     if v.lower().endswith(".md"):
         v = v[:-3]
     return v.rsplit("/", 1)[-1].strip()
+
+
+def encodable_name(name: str) -> str:
+    """``name`` itself when it encodes as UTF-8, and a readable stand-in when it does not.
+
+    A POSIX filename is bytes, not text. One that is not valid UTF-8 arrives as a lone
+    surrogate through `Path.glob`'s surrogateescape, and everything downstream of a corpus name
+    eventually encodes it: `canonical_sha256` hashes it into a `reasoning_graph` node id,
+    `canonical_json` serialises it, an HTTP client would send it. Each of those raised
+    `UnicodeEncodeError`, and each was patched where it raised — a cache key here, a `print`
+    there — while the next consumer kept inheriting the same landmine. `recall rewrite plan`
+    was the third, and it did not degrade: one such file in a corpus emptied the whole review
+    queue. This is the boundary those consumers share, so the guard belongs here.
+
+    Two properties, and the second is the one that is easy to lose:
+
+    **A name that needs no stand-in gets none.** The output is hashed into the proposal ids a
+    reviewer types into `recall rewrite apply`, so rewriting every name would renumber every
+    queue that already exists. `caffè.md` is good UTF-8 and is returned untouched.
+
+    **INJECTIVE**, or the guard against a crash quietly costs a document. The stand-in is the
+    backslash escape a reader already sees, because `recall`'s streams print with
+    ``errors="backslashreplace"`` and a mangled name beats no name. But a file may legitimately
+    be NAMED ``bad\\udcff.md``, and mapping the surrogate onto it would give two documents one
+    key in the caller's dict and one node id in the graph — the same collision the
+    corpus-relative key exists to prevent. So a name already carrying that escape's own
+    characters is diverted too, and its backslashes are doubled: a diverted output always
+    contains ``\\u``, a passed-through one never does, and doubling makes the escape reversible.
+    That is the single case where an ordinary name's id changes, and it is a name that cannot
+    be told apart from an escape.
+    """
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        pass
+    else:
+        if "\\u" not in name:
+            return name
+    return name.replace("\\", "\\\\").encode("utf-8", "backslashreplace").decode("utf-8")
