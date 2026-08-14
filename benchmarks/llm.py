@@ -290,7 +290,18 @@ def _safe_reason(reason: object) -> str:
     a tool-call stub and the operator needs it. Anything else is reported as unrecognised, with the
     real value left on `EmptyCompletion.finish_reason` rather than discarded.
     """
-    return reason if isinstance(reason, str) and reason in KNOWN_FINISH_REASONS else "unrecognised"
+    # Guarded like `_shape_note`, and for the same reason: this is evaluated while an
+    # `EmptyCompletion` is being built, so a raise replaces the typed error with an untyped one and
+    # loses the classification that keeps it out of the retry loop. `isinstance` consults
+    # `__class__` and `in` calls `__hash__`, so both halves can run provider-supplied code.
+    # `str.__str__` rather than the object itself, so a `str` subclass cannot smuggle a hostile
+    # `__format__` into the f-string that interpolates this.
+    try:
+        if isinstance(reason, str) and reason in KNOWN_FINISH_REASONS:
+            return str.__str__(reason)
+    except Exception:  # noqa: BLE001 - a renderer must never beat the error it renders
+        pass
+    return "unrecognised"
 
 
 def _classify(exc: Exception) -> bool:

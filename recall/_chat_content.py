@@ -69,7 +69,11 @@ def _read(content: object) -> str:
         # was false and the test that claimed to prove it asserted the opposite.
         try:
             text = block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
+            # ⛔ The narrowing is INSIDE the guard too. `isinstance` consults `__class__`, so a
+            # hostile block VALUE (not just a hostile block) escaped to the outer guard and
+            # collapsed the WHOLE reading to "", turning a mostly-readable answer into an
+            # `EmptyCompletion` — while this module's test asserted the opposite property.
+            parts.append(text if isinstance(text, str) else "")
         except Exception:  # noqa: BLE001 - a reader must never beat the answer it is reading
-            text = None
-        parts.append(text if isinstance(text, str) else "")
+            parts.append("")
     return "".join(parts)

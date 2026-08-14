@@ -163,6 +163,35 @@ def test_the_shared_reader_survives_a_hostile_block() -> None:
     assert assistant_text([_HostileBlock(), {"type": "text", "text": "hi"}]) == "hi", (
         "one hostile block must not cost the readable ones"
     )
+    # ⛔ The same property for a hostile VALUE rather than a hostile BLOCK. `isinstance(text, str)`
+    # sat OUTSIDE the per-block guard, so this escaped to the outer one and collapsed the whole
+    # reading to "" — while the assertion just above claimed exactly this could not happen. A
+    # mostly-readable answer then became an `EmptyCompletion`, and `_shape_note` reported "no
+    # readable text" when readable text was right there.
+    assert assistant_text(
+        [{"text": "AAA"}, {"text": _HostileClass()}, {"text": "BBB"}]
+    ) == "AAABBB", "a hostile block VALUE must cost its own block, not the whole answer"
+
+
+def test_safe_reason_survives_a_hostile_finish_reason() -> None:
+    """`_safe_reason` is evaluated inside mtrag's `try` while an `EmptyCompletion` is built, so a
+    raise there turns the intended single-billed-call typed refusal into four attempts and an
+    untyped wrapper. Its sibling `_shape_note` got this guard; it did not. `isinstance` consults
+    `__class__`, and `reason in KNOWN_FINISH_REASONS` calls `__hash__`."""
+    from benchmarks.llm import _safe_reason
+
+    class _HostileClass:
+        @property
+        def __class__(self) -> type:  # type: ignore[override]
+            raise RuntimeError("hostile __class__")
+
+    class _HashBoom(str):
+        def __hash__(self) -> int:
+            raise RuntimeError("hostile hash")
+
+    assert _safe_reason(_HostileClass()) == "unrecognised"
+    assert _safe_reason(_HashBoom("stop")) == "unrecognised"
+    assert _safe_reason("stop") == "stop", "guards the guard: a known reason still comes through"
 
 
 # --------------------------------------------------------------------------------------------
