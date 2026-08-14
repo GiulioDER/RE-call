@@ -119,26 +119,55 @@ def _handler_for(stub: ProviderStub) -> type[BaseHTTPRequestHandler]:
 def _stop(
     server: ThreadingHTTPServer, thread: threading.Thread, stub: ProviderStub, *, join: float
 ) -> list[str]:
-    """Close the clients, stop the listener, and report any thread that outlived the block.
+    """Close the clients, stop the listener, and report any teardown problem: a close that
+    raised, or a thread that outlived the block.
 
     Returns the leaks rather than asserting them, so the caller decides whether they are worth
     raising. Each step is guarded: a client whose ``close`` raises must not be able to skip the
     server shutdown behind it, or one bad teardown leaks the listening socket into the rest of
     the session.
-    """
-    for client in stub.clients:
-        close = getattr(client, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:  # noqa: BLE001 - teardown must continue to the shutdown below
-                pass
-    try:
-        server.shutdown()
-    finally:
-        server.server_close()
 
-    leaks: list[str] = []
+    That guarantee is structural, a ``finally`` around the whole close phase, rather than a bet on
+    the breadth of an ``except``. Catching ``Exception`` leaves ``KeyboardInterrupt`` and
+    ``SystemExit`` free to skip the shutdown and strand the listener plus its accept loop for the
+    rest of the session, which is the exact outcome the paragraph above promises cannot happen.
+    Neither is exotic here: a ``KeyboardInterrupt`` is delivered at an arbitrary bytecode boundary
+    in the main thread, so Ctrl-C during a slow teardown lands inside the close loop as readily as
+    anywhere else. One residual is deliberate and measured: a ``BaseException`` raised while
+    closing still skips the REMAINING closes, so a handler thread can outlive that teardown. The
+    listener cannot, and on a ``KeyboardInterrupt`` the process is ending regardless.
+
+    A close that raises is reported rather than swallowed. Passing silently left the operator
+    reading "a stub handler thread outlived the test" about a connection nobody could close, five
+    seconds of joins away from the actual cause and pointing at the wrong subsystem.
+    """
+    problems: list[str] = []
+    try:
+        try:
+            for index, client in enumerate(stub.clients):
+                close = getattr(client, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception as exc:  # noqa: BLE001 - reported below, never fatal
+                        problems.append(
+                            f"closing tracked client {index} "
+                            f"({type(client).__name__}) raised: {exc!r}"
+                        )
+        finally:
+            try:
+                server.shutdown()
+            finally:
+                server.server_close()
+    except BaseException as escaping:
+        # `problems` is read below the whole block, so anything escaping the shutdown phase, or a
+        # BaseException out of a close, would otherwise discard every failure recorded up to that
+        # point and restore exactly the silence this reporting was added to remove.
+        for note in problems:
+            escaping.add_note(note)
+        raise
+
+    leaks: list[str] = list(problems)
     thread.join(timeout=join)
     if thread.is_alive():
         leaks.append("the stub's accept loop outlived the test")
@@ -159,7 +188,8 @@ def provider_stub(ok_body: dict[str, Any]) -> Iterator[ProviderStub]:
     process cannot see. The restore is armed BEFORE the listener is built, so that a bind failure
     on a locked-down runner cannot leak a stripped environment into every test that follows.
 
-    A leaked thread is reported only when the body itself succeeded. Raising it from a ``finally``
+    A teardown problem, a close that raised or a leaked thread, is reported only when the body
+    itself succeeded. Raising it from a ``finally``
     unconditionally would replace the assertion the test actually failed on, demoting the real
     message to ``__context__`` and leaving "a stub handler thread outlived the test" as the
     headline for a failure that has nothing to do with threads. That is reachable in normal use:
