@@ -59,8 +59,8 @@ class NonTransientError(Exception):
     removing it, and leaves the same fragility for every other caller of ``retry_with_backoff``:
     the two sites in this module and ``recall/truth_extraction/_openai_engine.py``, none of which
     passes a custom classifier. ``benchmarks/llm.py`` had already protected its own path with a
-    ``PERMANENT_ERRORS`` tuple, which is precisely why this went unnoticed — the one caller with a
-    fix was the one everybody read.
+    ``PERMANENT_ERRORS`` tuple. Both callers had a fix, by two different mechanisms, which is why
+    this went unnoticed: the hazard lives in the DEFAULT classifier, which neither of them uses.
 
     Inherited ALONGSIDE the exception's own base, never instead of it, so existing
     ``except RuntimeError`` still catches.
@@ -153,7 +153,17 @@ def _is_transient(exc: Exception) -> bool:
         status = _probe(exc, "status")
     if status is None:
         status = _probe(exc, "http_status")
-    if isinstance(status, int):
+    # `issubclass(type(status), int)`, not `isinstance`. `_probe` guards READING the attribute;
+    # the value it hands back is still arbitrary provider data, and `isinstance` reads ITS
+    # `__class__`, which can raise — the same argument as the marker check above, one
+    # indirection in, and the door that stayed open when that one was closed. `issubclass`
+    # on `type(...)` also keeps int-SUBCLASS semantics (an `IntEnum` status), which
+    # `type(status) is int` would silently drop.
+    # The second `isinstance` is for the TYPE CHECKER, not the runtime, and it is safe: it runs
+    # only once `issubclass` has proved `type(status)` is an int subclass, so CPython's
+    # `PyType_IsSubtype` fast path answers it without ever consulting `__class__`. Written the
+    # other way round it would be the unguarded read again.
+    if issubclass(type(status), int) and isinstance(status, int):
         return status in (408, 429) or 500 <= status < 600
     try:
         text = f"{type(exc).__name__} {exc}".lower()

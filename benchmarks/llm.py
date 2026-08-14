@@ -264,7 +264,13 @@ def is_terminal(exc: Exception) -> bool:
     for spelling in ("status", "http_status"):
         if status is None:
             status = _probe(exc, spelling)
-    if isinstance(status, int):
+    # `issubclass(type(status), int)`, not `isinstance`. `_probe` guards READING the attribute;
+    # the value it hands back is still arbitrary provider data, and `isinstance` reads ITS
+    # `__class__`, which can raise — the same argument as the marker check above, one
+    # indirection in, and the door that stayed open when that one was closed. `issubclass`
+    # on `type(...)` also keeps int-SUBCLASS semantics (an `IntEnum` status), which
+    # `type(status) is int` would silently drop.
+    if issubclass(type(status), int):
         return status in TERMINAL_STATUS_CODES
     return any(marker in text for marker in _AMBIGUOUS_MARKERS)
 

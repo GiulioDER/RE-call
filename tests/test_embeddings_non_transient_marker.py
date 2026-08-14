@@ -17,8 +17,8 @@ only for ceilings spelled without a marker. Measured against `_is_transient` bef
 
 ⚠️ That table is about `_is_transient` ALONE, and an earlier version of this docstring turned it
 into an end-to-end cost claim it does not support. No bill was ever paid: `OpenRouterLLM.complete`
-passes `is_transient=_classify`, which short-circuits on its own `PERMANENT_ERRORS` tuple, so the
-one caller that raises this type already billed ONE request rather than four. The 4x is what a
+passes `is_transient=_classify`, and `benchmarks/mtrag/generation.py` re-raises this type out of
+its own loop, so BOTH callers that raise it already billed ONE request rather than four. The 4x is what a
 caller using the DEFAULT classifier would pay, which is the hazard being closed here, not a loss
 already taken. `DEFAULT_MAX_TOKENS`'s own docstring invites the edit that lands on such a ceiling
 ("Raise it if that ever happens"), and the next caller of `retry_with_backoff` has no reason to
@@ -199,7 +199,10 @@ def _all_marker_subclasses() -> list[type]:
     work = list(NonTransientError.__subclasses__())
     while work:
         cls = work.pop()
-        if cls not in seen:
+        # ⛔ IDENTITY, not `in`. `cls not in seen` is `==`, and a metaclass overriding `__eq__`
+        # makes two distinct subclasses compare equal, so the walk silently drops one of them —
+        # along with whatever status it was carrying. Measured: two such classes, one returned.
+        if not any(c is cls for c in seen):
             seen.append(cls)
             work.extend(cls.__subclasses__())
     return seen
@@ -256,11 +259,65 @@ def test_no_marker_subclass_smuggles_in_a_retryable_status() -> None:
         # ⛔ And on an INSTANCE. `_probe` reads the instance, and every SDK sets its status in
         # `__init__`, so that is where a real wrapper would carry one — invisible to a class-level
         # read. Adding `self.status_code = 429` to `EmptyCompletion.__init__` was green before.
-        try:
-            probe = cls("probe")
-        except Exception:  # noqa: BLE001 - a subclass needing other arguments is not a failure
-            continue
+        probe = None
+        for args in (("probe",), ("probe", "upstream"), ()):
+            try:
+                probe = cls(*args)
+                break
+            except Exception:  # noqa: BLE001 - try the next shape
+                continue
+        # ⛔ NOT `continue`. The hazard this test names is "someone mixes the marker into a wrapper
+        # carrying an upstream 429", and a wrapper is the subclass most likely to take a second
+        # constructor argument — so a bare skip abandoned exactly the shape it exists to catch.
+        # Measured: a two-argument subclass setting `status_code = 429` was green.
+        assert probe is not None, (
+            f"{cls.__name__} could not be constructed by this walk, so its instances are "
+            f"UNCHECKED; teach the walk its signature rather than skipping it"
+        )
         for spelling in ("status_code", "status", "http_status"):
             assert getattr(probe, spelling, None) is None, (
                 f"{cls.__name__} instances carry {spelling} behind the marker"
             )
+
+
+def test_a_hostile_status_VALUE_does_not_beat_the_error_either() -> None:
+    """⛔ The same argument ONE INDIRECTION IN, and the door left open when the marker check was
+    closed. `_probe` guards READING `status_code`; the value it hands back is still arbitrary
+    provider data, and `isinstance(status, int)` reads ITS `__class__`.
+
+    Measured before the fix: all three classifiers raised on this object, including
+    `_is_transient`, the one the previous commit had declared total.
+
+    `issubclass(type(status), int)` also keeps int-SUBCLASS semantics, so an `IntEnum` status still
+    classifies, which `type(status) is int` would have silently dropped.
+    """
+    from benchmarks.llm import _classify, is_terminal
+
+    class _HostileValue:
+        @property
+        def __class__(self) -> type:  # type: ignore[override]
+            raise ValueError("hostile status __class__")
+
+    class _CarriesIt(Exception):
+        @property
+        def status_code(self) -> object:
+            return _HostileValue()
+
+    exc = _CarriesIt("boom")
+
+    assert _is_transient(exc) is False
+    assert is_terminal(exc) is False
+    assert _classify(exc) is False
+
+
+def test_an_int_subclass_status_still_classifies() -> None:
+    """Guards the guard: the fix must not become `type(status) is int`, which would stop reading a
+    perfectly good `IntEnum` status that providers and wrappers do use."""
+    import enum
+
+    class _Code(enum.IntEnum):
+        RATE_LIMITED = 429
+        UNAUTHORIZED = 401
+
+    assert _is_transient(type("S", (Exception,), {"status_code": _Code.RATE_LIMITED})("x")) is True
+    assert _is_transient(type("S", (Exception,), {"status_code": _Code.UNAUTHORIZED})("x")) is False

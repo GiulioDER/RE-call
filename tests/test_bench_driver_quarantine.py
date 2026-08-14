@@ -1017,6 +1017,20 @@ def test_neither_local_classifier_beats_the_error_it_is_classifying() -> None:
     hostile = _HostileClass.__new__(_HostileClass)
 
     assert is_terminal(hostile) is False
-    assert isinstance(_classify(hostile), bool), (
-        "it must reach a verdict from the evidence that remains, not escape the handler"
+    assert _classify(hostile) is False, (
+        "the DIRECTION, not merely a bool: True is the expensive side, where `retry_with_backoff` "
+        "buys four billed attempts at a failure nothing could classify. The `is_terminal` "
+        "assertion beside this one already pins its direction; this one asserted only the type."
     )
+
+    # ⛔ The never-raise property of BOTH classifiers rests on these tuples' members having a plain
+    # metaclass, exactly as `_is_transient`'s rests on `NonTransientError` having one. That premise
+    # is pinned there and was not pinned here — the same "fixed it in one file" shape. Measured:
+    # giving a `PERMANENT_ERRORS` member a raising `__subclasscheck__` makes both raise again.
+    from benchmarks.llm import PERMANENT_ERRORS, TRANSIENT_ERRORS
+
+    for cls in PERMANENT_ERRORS + TRANSIENT_ERRORS:
+        assert type(cls) is type, (
+            f"{cls.__name__} has a custom metaclass; `issubclass` would run its "
+            f"`__subclasscheck__` and the classifiers could raise again"
+        )
