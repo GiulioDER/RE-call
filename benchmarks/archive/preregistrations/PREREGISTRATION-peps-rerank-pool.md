@@ -61,6 +61,26 @@ null is corpus-specific in a way this experiment cannot attribute.
   asserts this itself and exits non-zero otherwise).
 - **I4** `candidate_k` is echoed in the report and must equal what was requested.
 
+## Already measured (arm-independent, frozen before predictions)
+
+Census of supersession evidence over the same 733 `.rst`, at `python/peps` SHA
+`5981b2a292610104eb30735423504c52fe454650`. No model, no human judgement, so it constrains no arm
+and is not a prediction: `results/truth_extraction/census.json`.
+
+| quantity | value |
+|---|---|
+| `n_files` | 733 |
+| `n_header_edges` | 47 |
+| `n_prose_marker_files` | 209 |
+| `n_marker_without_header` | 175 |
+| `n_restated_in_prose` | 8 |
+| **recall ceiling** | **17.0%** |
+
+Of those 8 restatements, only 3 are stated by the superseded PEP's own body, the text
+`build_gold.py` actually hashes as the frozen question's input; the other 5 are stated only by
+the successor's body, a sentence no extractor fed that input ever sees. See
+`results/truth_extraction/census.json`'s `restatements` and `_provenance.note` for the detail.
+
 ## What this does NOT settle
 
 The private memory corpus. PEPs is a third corpus, so a positive result supports the FORM

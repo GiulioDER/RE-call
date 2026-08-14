@@ -1,0 +1,192 @@
+{
+ "1": {
+  "candidate_target": "pep-0012",
+  "evidence_sentence": "As of 05-Jan-2016, this PEP is officially deprecated and replaced by :pep:`12`.",
+  "source_pep": "pep-0009"
+ },
+ "10": {
+  "candidate_target": "pep-0288",
+  "evidence_sentence": ":pep:`342` replaces generator attributes, however, with a concept from an earlier revision of :pep:`288`, the *yield expression*.",
+  "source_pep": "pep-0342"
+ },
+ "11": {
+  "candidate_target": "pep-0004",
+  "evidence_sentence": "Some obsolete features are slowly deprecated according to the guidelines in :pep:`4`.",
+  "source_pep": "pep-0290"
+ },
+ "12": {
+  "candidate_target": "pep-0345",
+  "evidence_sentence": "Combined with :pep:`345`, the current proposal supersedes :pep:`262`.",
+  "source_pep": "pep-0376"
+ },
+ "13": {
+  "candidate_target": "pep-0402",
+  "evidence_sentence": "At PyCon 2012, we had a discussion about namespace packages at which :pep:`382` and :pep:`402` were rejected, to be replaced by this PEP [3]_.",
+  "source_pep": "pep-0420"
+ },
+ "14": {
+  "candidate_target": "pep-0387",
+  "evidence_sentence": "- be soft-deprecated (see :pep:`387`); - for all known use cases of the API, have a documented alternative or workaround; - have tests to ensure it keeps working (except for 1:1 renames using ``#define`` or ``typedef``); - be documented (except if it was never mentioned in previous versions of the documentation); and - be approved by the C API working group.",
+  "source_pep": "pep-0743"
+ },
+ "15": {
+  "candidate_target": "pep-0345",
+  "evidence_sentence": "note:: This PEP was superseded by :pep:`345` and :pep:`376`, which were accepted.",
+  "source_pep": "pep-0262"
+ },
+ "16": {
+  "candidate_target": "pep-0393",
+  "evidence_sentence": ":pep:`393` deprecated some unicode APIs, and introduced ``wchar_t *wstr``, and ``Py_ssize_t wstr_length`` in the Unicode structure to support these deprecated APIs.",
+  "source_pep": "pep-0623"
+ },
+ "17": {
+  "candidate_target": "pep-0567",
+  "evidence_sentence": "Due to its breadth and the lack of general consensus on some aspects, this PEP has been withdrawn and superseded by a simpler :pep:`567`, which has been accepted and included in Python 3.",
+  "source_pep": "pep-0550"
+ },
+ "18": {
+  "candidate_target": "pep-3137",
+  "evidence_sentence": "This PEP has partially been superseded by :pep:`3137`.",
+  "source_pep": "pep-0358"
+ },
+ "19": {
+  "candidate_target": "pep-0281",
+  "evidence_sentence": "I'm quite happy to have it make PEP 281 obsolete.",
+  "source_pep": "pep-0279"
+ },
+ "2": {
+  "candidate_target": "pep-0382",
+  "evidence_sentence": "At PyCon 2012, we had a discussion about namespace packages at which :pep:`382` and :pep:`402` were rejected, to be replaced by this PEP [3]_.",
+  "source_pep": "pep-0420"
+ },
+ "20": {
+  "candidate_target": "pep-0634",
+  "evidence_sentence": "Note: the ``__match_args__ is None`` handling in this PEP replaces the special casing of ``bool``, ``bytearray``, ``bytes``, ``dict``, ``float``, ``frozenset``, ``int``, ``list``, ``set``, ``str``, and ``tuple`` in :pep:`634`.",
+  "source_pep": "pep-0642"
+ },
+ "21": {
+  "candidate_target": "pep-0659",
+  "evidence_sentence": "Specialization replaces slow bytecode instructions with faster variants [#pep659]_.",
+  "source_pep": "pep-0703"
+ },
+ "22": {
+  "candidate_target": "pep-0279",
+  "evidence_sentence": "In commenting on :pep:`279`'s ``enumerate()`` function, this PEP's author offered, \"I'm quite happy to have it make :pep:`281` obsolete.",
+  "source_pep": "pep-0281"
+ },
+ "23": {
+  "candidate_target": "pep-0004",
+  "evidence_sentence": ":pep:`4` lists all modules that have been deprecated in the stdlib.",
+  "source_pep": "pep-3108"
+ },
+ "24": {
+  "candidate_target": "pep-0004",
+  "evidence_sentence": "The new module shall be deprecated and listed in :pep:`4`.",
+  "source_pep": "pep-0294"
+ },
+ "25": {
+  "candidate_target": "pep-0422",
+  "evidence_sentence": ":pep:`PEP 422 <422#order-preserving-classes>` introduced a new \"namespace\" keyword arg to class definitions that effectively replaces the need to ``__prepare__()``.",
+  "source_pep": "pep-0520"
+ },
+ "26": {
+  "candidate_target": "pep-0384",
+  "evidence_sentence": "* new language syntax * new standard library changes (see below) * new deprecation warnings * removal of previously deprecated features * changes to the emitted bytecode * changes to the AST * any other significant changes to the compilation toolchain * changes to the core interpreter eval loop * binary incompatible changes to the C ABI (although the :pep:`384` stable ABI must still be preserved) * bug fixes",
+  "source_pep": "pep-0413"
+ },
+ "27": {
+  "candidate_target": "pep-0345",
+  "evidence_sentence": "See :pep:`PEP 345 about Obsolete-Dist <345#obsoletes-dist-multiple-use>` and `setup.",
+  "source_pep": "pep-0423"
+ },
+ "28": {
+  "candidate_target": "pep-0262",
+  "evidence_sentence": "Combined with :pep:`345`, the current proposal supersedes :pep:`262`.",
+  "source_pep": "pep-0376"
+ },
+ "29": {
+  "candidate_target": "pep-0324",
+  "evidence_sentence": "+ subprocess module replaces it (:pep:`324`).",
+  "source_pep": "pep-3108"
+ },
+ "3": {
+  "candidate_target": "pep-0503",
+  "evidence_sentence": "The format of this URL is ``/<project>/`` where the ``<project>`` is replaced by the :pep:`503` normalized name for that project, so a project named \"Silly_Walk\" would have a URL like ``/silly-walk/``.",
+  "source_pep": "pep-0691"
+ },
+ "30": {
+  "candidate_target": "pep-0697",
+  "evidence_sentence": "- makes it cumbersome to add/obsolete/adjust the required info (for example, in :PEP:`697` I gave meaning to negative values of an existing field; adding a new field would be cleaner in similar situations); - increases the number of API calls between an extension and the interpreter.",
+  "source_pep": "pep-0820"
+ },
+ "31": {
+  "candidate_target": "pep-0387",
+  "evidence_sentence": "Moreover, configuration options can be added, deprecated and removed following the usual :pep:`387` deprecation process.",
+  "source_pep": "pep-0741"
+ },
+ "32": {
+  "candidate_target": "pep-0698",
+  "evidence_sentence": "override` decorator from :pep:`698` and the base class method it overrides is deprecated, the type checker should produce a diagnostic.",
+  "source_pep": "pep-0702"
+ },
+ "33": {
+  "candidate_target": "pep-0585",
+  "evidence_sentence": "Dict` has been deprecated (although not planned for removal) by :pep:`585`.",
+  "source_pep": "pep-0764"
+ },
+ "34": {
+  "candidate_target": "pep-0387",
+  "evidence_sentence": "The ``PyInit_*`` export hook will be :ref:`soft-deprecated <pep387-soft-deprecation>`.",
+  "source_pep": "pep-0793"
+ },
+ "35": {
+  "candidate_target": "pep-0409",
+  "evidence_sentence": "3): ``raise exc from None`` * :pep:`409` -- Suppressing exception context (superseded by the :pep:`415`)",
+  "source_pep": "pep-0490"
+ },
+ "36": {
+  "candidate_target": "pep-0376",
+  "evidence_sentence": "note:: This PEP was superseded by :pep:`345` and :pep:`376`, which were accepted.",
+  "source_pep": "pep-0262"
+ },
+ "37": {
+  "candidate_target": "pep-0387",
+  "evidence_sentence": ", :pep:`387` and the :exc:`DeprecationWarning` documentation) as an additional way to mark deprecated functionality.",
+  "source_pep": "pep-0702"
+ },
+ "38": {
+  "candidate_target": "pep-0691",
+  "evidence_sentence": "The FAQ of :pep:`691` was clear that the HTML API is not being deprecated, and this PEP does not change that position.",
+  "source_pep": "pep-0700"
+ },
+ "4": {
+  "candidate_target": "pep-0702",
+  "evidence_sentence": "deprecated()`` in :pep:`702`, so it was dropped from this proposal.",
+  "source_pep": "pep-0727"
+ },
+ "5": {
+  "candidate_target": "pep-0691",
+  "evidence_sentence": "Unlike with :pep:`691` there are significant benefits to doing so, so it is likely that support for the legacy upload API to be (responsibly) deprecated and removed at some point in the future.",
+  "source_pep": "pep-0694"
+ },
+ "6": {
+  "candidate_target": "pep-3101",
+  "evidence_sentence": "Binary formatting is not being added to the % operator because :pep:`3101` (Advanced String Formatting) already supports binary, % formatting will be deprecated in the future.",
+  "source_pep": "pep-3127"
+ },
+ "7": {
+  "candidate_target": "pep-0324",
+  "evidence_sentence": "+ subprocess module replaces it (:pep:`324`).",
+  "source_pep": "pep-3108"
+ },
+ "8": {
+  "candidate_target": "pep-0384",
+  "evidence_sentence": "* new language syntax * any updates acceptable in a standard library release * new deprecation warnings * removal of previously deprecated features * changes to the AST * changes to the emitted bytecode that require altering the magic number * binary incompatible changes to the C ABI (although the :pep:`384` stable ABI must still be preserved)",
+  "source_pep": "pep-0413"
+ },
+ "9": {
+  "candidate_target": "pep-0415",
+  "evidence_sentence": "3): ``raise exc from None`` * :pep:`409` -- Suppressing exception context (superseded by the :pep:`415`)",
+  "source_pep": "pep-0490"
+ }
+}
