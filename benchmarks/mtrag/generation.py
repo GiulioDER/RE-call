@@ -397,6 +397,14 @@ def previous_prompt(out: Path) -> str | None:
     return prompt if isinstance(prompt, str) else None
 
 
+class CheckpointChanged(RuntimeError):
+    """The output file moved under a repair that was about to rewrite it.
+
+    Distinct from an `OSError` because the cause is another RUN rather than the filesystem, and the
+    operator's fix is a different `--out` rather than a permission or a disk.
+    """
+
+
 def submission_answer(row: object) -> str:
     """The prediction text a written row carries, stripped, or "" if it carries none.
 
@@ -404,15 +412,24 @@ def submission_answer(row: object) -> str:
     a judge: no `predictions` key, an empty list, an entry that is not an object, a `text` that is
     null or not a string, and a `text` of whitespace all score as a failure by the system under
     test rather than as an answer.
+
+    ⚠️ EVERY entry is considered, not just the first. `submission_row` writes exactly one, so a
+    row with more is a file this module did not write, which `--contexts-from` already reads and
+    hand-merged submissions produce. `drop_answerless_rows` deletes the whole ROW on the strength
+    of this answer, so reading only `predictions[0]` would destroy a real answer sitting behind a
+    blank one. Deleting is irreversible and regenerating a task is not, so the cheap error has to
+    be the second.
     """
     if not isinstance(row, dict):
         return ""
     predictions = row.get("predictions")
-    if not isinstance(predictions, list) or not predictions:
+    if not isinstance(predictions, list):
         return ""
-    first = predictions[0]
-    text = first.get("text") if isinstance(first, dict) else None
-    return text.strip() if isinstance(text, str) else ""
+    for entry in predictions:
+        text = entry.get("text") if isinstance(entry, dict) else None
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    return ""
 
 
 def already_done(path: Path) -> set[str]:
@@ -460,19 +477,40 @@ def drop_answerless_rows(path: Path, task_ids: set[str]) -> int:
     will replace shrinks the artifact without repairing it, which is a worse failure than the one
     being fixed here.
 
+    An id already carrying an answer elsewhere in the file is in scope too, whatever `task_ids`
+    says. Such a row is a duplicate that already exists, so `already_done` reports the task as
+    finished and it never becomes pending: without this the twin could never be removed, and the
+    run would exit 0 over an artifact the official checker rejects, which is the false green this
+    whole guard exists to kill. Dropping it leaves exactly the good row, so nothing is unreplaced.
+
     Lines that do not parse are KEPT verbatim. They carry no `task_id`, so they cannot become a
     duplicate, and `already_done` already treats them as absent; rewriting them away would be a
     second, unrelated change to what an interrupted write leaves behind.
 
-    The rewrite is atomic and only happens when there is something to drop. A checkpoint is not
-    worth replacing to change nothing: the window in which the file does not exist would be pure
-    risk, paid on every ordinary resume.
+    ⚠️ This rewrites the run's ONLY checkpoint for work that cost real money, so it is held to the
+    standard `benchmarks/mtrag/multiquery.py:write_manifest` already sets for a far cheaper file:
+    staged in a PID-suffixed sibling, flushed and fsynced before the swap, swapped with
+    `os.replace`, and the scratch removed in a `finally`. Covers process death; NOT full power-loss
+    safety, since the containing directory is not fsynced and cannot portably be on Windows.
+
+    It only happens when there is something to drop, because a checkpoint is not worth replacing to
+    change nothing: the window would be pure risk paid on every ordinary resume.
+
+    Read-modify-write with no lock, so it refuses rather than races. Nothing under `benchmarks/`
+    takes a lock on an output, and a row appended by a second run between the read and the swap
+    would be destroyed by the swap after being paid for. A size that moved is enough to detect it
+    and is cheaper than a lock protocol this module is the only user of.
     """
     if not path.exists():
         return 0
+    size_before = path.stat().st_size
+    answered = already_done(path)
     kept: list[str] = []
     dropped = 0
-    with path.open(encoding="utf-8") as handle:
+    # `newline=""` so the lines arrive with their own terminators intact. Universal-newline mode
+    # strips the CR before the line is kept, which on Windows silently rewrote every CRLF row that
+    # `main` had appended into LF, and split any torn line containing a bare CR into two.
+    with path.open(encoding="utf-8", newline="") as handle:
         for line in handle:
             try:
                 row = json.loads(line)
@@ -481,7 +519,11 @@ def drop_answerless_rows(path: Path, task_ids: set[str]) -> int:
                 continue
             answerless = (
                 isinstance(row, dict)
-                and str(row.get("task_id")) in task_ids
+                # `"task_id" in row` before reading it: `str(row.get("task_id"))` renders a missing
+                # key as "None", and a task whose id is null puts that same string in `task_ids`,
+                # which made every untagged row in the file a match.
+                and "task_id" in row
+                and (str(row["task_id"]) in task_ids or str(row["task_id"]) in answered)
                 and not submission_answer(row)
             )
             if answerless:
@@ -490,11 +532,27 @@ def drop_answerless_rows(path: Path, task_ids: set[str]) -> int:
                 kept.append(line)
     if not dropped:
         return 0
-    # `newline=""` because the lines already carry their own terminators: letting the platform
-    # translate them would rewrite every line ending in the file on a Windows run.
-    tmp = path.with_suffix(path.suffix + ".pruned")
-    tmp.write_text("".join(kept), encoding="utf-8", newline="")
-    os.replace(tmp, path)
+    # The prune owns every byte it writes back, so it is where the terminator is guaranteed. A last
+    # line without one glues the next appended row onto it: two rows become one unparseable line,
+    # losing both the kept answer and the one just paid for, and it does not self-heal, because the
+    # glued line reads as malformed on every later resume.
+    if kept and not kept[-1].endswith(("\n", "\r")):
+        kept[-1] += "\n"
+    if path.stat().st_size != size_before:
+        raise CheckpointChanged(
+            f"{path} grew from {size_before} to {path.stat().st_size} bytes while it was being "
+            "read, which means another run is appending to it. Rewriting it now would destroy "
+            "rows that run has already paid for. Give each run its own --out."
+        )
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.pruned")
+    try:
+        with tmp.open("w", encoding="utf-8", newline="") as handle:
+            handle.write("".join(kept))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
     return dropped
 
 
@@ -892,7 +950,22 @@ def main(argv: list[str] | None = None) -> int:
     # artifact written before `generate_one` grew its guards can hold rows with an empty
     # `predictions` text; `already_done` no longer counts those as finished, so without this the
     # regenerated answer would land BESIDE the empty row rather than replace it.
-    repaired = drop_answerless_rows(args.out, {str(t["task_id"]) for t in pending})
+    try:
+        repaired = drop_answerless_rows(args.out, {str(t["task_id"]) for t in pending})
+    except (OSError, CheckpointChanged) as exc:
+        # `os.replace` raises on Windows whenever another process holds the destination open, which
+        # a tail, an editor or a virus scanner will do. Letting it escape killed an 842-task resume
+        # with a raw traceback before a single task was attempted. The file is untouched at this
+        # point, so refusing is the correct outcome: appending beside rows that should have been
+        # replaced would produce the duplicate the repair exists to prevent.
+        print(
+            json.dumps({"event": "repair_failed", "output": str(args.out),
+                        "error_type": type(exc).__name__, "error": str(exc), "note":
+                        "the existing rows carrying no answer could not be removed, so nothing was "
+                        "appended; the output is unchanged and no task was attempted"}),
+            flush=True,
+        )
+        return 1
     if repaired:
         print(
             json.dumps({"event": "repaired", "answerless_rows_dropped": repaired, "note":

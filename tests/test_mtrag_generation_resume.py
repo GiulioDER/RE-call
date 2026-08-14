@@ -165,8 +165,204 @@ def test_pruning_a_file_that_does_not_exist_is_not_an_error(tmp_path) -> None:
 
 
 # --------------------------------------------------------------------------------------------
+# 2b. The rewrite touches the run's ONLY checkpoint, so it is held to the standard
+#     `benchmarks/mtrag/multiquery.py:write_manifest` already sets for a far cheaper file.
+# --------------------------------------------------------------------------------------------
+
+
+def test_an_answer_in_a_later_prediction_entry_is_not_destroyed(tmp_path) -> None:
+    """⚠️ The one shape where the prune could delete model output that was PAID FOR. Emptiness was
+    judged from `predictions[0]` alone while the whole ROW is what gets deleted, so a row whose
+    first entry is blank and whose second carries the answer was read as answerless and removed.
+
+    `submission_row` only ever writes one entry, so this needs a file this module did not write:
+    `--contexts-from` already reads a foreign file, and hand-merged or concatenated submissions are
+    the realistic source. Deleting is irreversible; regenerating a task is not. The cheap error has
+    to be the second one."""
+    out = tmp_path / "preds.jsonl"
+    row = json.dumps({
+        "task_id": "t<::>1", "predictions": [{"text": ""}, {"text": "THE REAL ANSWER"}],
+    }) + "\n"
+    out.write_text(row, encoding="utf-8")
+
+    assert gen.already_done(out) == {"t<::>1"}, "the row does carry an answer"
+    assert gen.drop_answerless_rows(out, {"t<::>1"}) == 0
+    assert "THE REAL ANSWER" in out.read_text(encoding="utf-8")
+
+
+def test_a_prediction_entry_that_is_not_an_object_carries_no_answer(tmp_path) -> None:
+    """Stated by `submission_answer`'s docstring and otherwise unpinned."""
+    out = tmp_path / "preds.jsonl"
+    out.write_text(
+        json.dumps({"task_id": "t<::>1", "predictions": ["not an object"]}) + "\n", encoding="utf-8"
+    )
+
+    assert gen.already_done(out) == set()
+
+
+def test_kept_lines_are_preserved_byte_for_byte_including_their_endings(tmp_path) -> None:
+    """⚠️ Asserted on BYTES, because `read_text` normalises endings and cannot see this at all.
+
+    `main` appends through a text handle, so on Windows the rows it writes carry CRLF. Reading them
+    back in universal-newline mode strips the CR before the line is kept, so the prune silently
+    rewrote the whole existing checkpoint to LF and the run then appended CRLF: one artifact, two
+    conventions, from a function whose docstring promises the kept lines are untouched. A torn line
+    containing a bare CR was split in two by the same mechanism."""
+    out = tmp_path / "preds.jsonl"
+    keep = _row("keep<::>1", "real").replace("\n", "\r\n").encode("utf-8")
+    drop = _row("redo<::>1", "").replace("\n", "\r\n").encode("utf-8")
+    out.write_bytes(keep + drop)
+
+    assert gen.drop_answerless_rows(out, {"redo<::>1"}) == 1
+    assert out.read_bytes() == keep, "the surviving line must come back exactly as it went in"
+
+
+def test_a_file_whose_last_line_lacks_a_newline_does_not_glue_the_next_row_onto_it(
+    tmp_path,
+) -> None:
+    """The prune owns every byte of the file it rewrites, so it is the place to guarantee the
+    terminator. Without it the next appended row lands on the end of the last kept line, turning
+    two rows into one unparseable line: the kept answer and the newly paid-for one are both lost,
+    and it does not self-heal, because the glued line then reads as malformed forever."""
+    out = tmp_path / "preds.jsonl"
+    out.write_text(_row("redo<::>1", "") + _row("keep<::>1", "real").rstrip("\n"), encoding="utf-8")
+
+    assert gen.drop_answerless_rows(out, {"redo<::>1"}) == 1
+
+    with out.open("a", encoding="utf-8") as handle:
+        handle.write(_row("new<::>1", "fresh"))
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert [r["task_id"] for r in rows] == ["keep<::>1", "new<::>1"]
+
+
+def test_a_row_with_no_task_id_is_never_matched_by_a_scope_entry(tmp_path) -> None:
+    """`str(row.get("task_id"))` renders a missing key as the string "None", so a task whose id is
+    null, which `load_generation_tasks` permits since it only checks the key is present, put "None"
+    in the scope set and made every untagged answerless row in the file a match."""
+    out = tmp_path / "preds.jsonl"
+    orphan = json.dumps({"predictions": [{"text": ""}], "note": "belongs to no task"}) + "\n"
+    out.write_text(orphan, encoding="utf-8")
+
+    assert gen.drop_answerless_rows(out, {str(None)}) == 0
+    assert out.read_text(encoding="utf-8") == orphan
+
+
+def test_the_replacement_is_atomic_rather_than_a_write_over_the_checkpoint(tmp_path, monkeypatch) -> None:
+    """⚠️ The docstring claims atomicity and nothing held it to that. An in-place `write_text` over
+    the output passes every other arm in this file while turning any interruption into a truncated
+    checkpoint: this is the run's only record of answers that cost real money.
+
+    Pinned by making the rename fail. The original must still be intact afterwards, which is only
+    true if the new body was staged somewhere else first."""
+    out = tmp_path / "preds.jsonl"
+    original = _row("keep<::>1", "real") + _row("redo<::>1", "")
+    out.write_text(original, encoding="utf-8")
+
+    def refuse(*a, **k):
+        raise PermissionError("another process holds the destination open")
+
+    monkeypatch.setattr(gen.os, "replace", refuse)
+
+    with pytest.raises(OSError):
+        gen.drop_answerless_rows(out, {"redo<::>1"})
+
+    assert out.read_text(encoding="utf-8") == original, "the checkpoint must survive a failed swap"
+    assert list(tmp_path.glob("*.pruned*")) == [], "a failed repair must not leave its scratch file"
+
+
+def test_the_scratch_file_cannot_collide_with_a_sibling_or_another_run(tmp_path, monkeypatch) -> None:
+    """The staging path is the only thing keeping the prune from writing over something else.
+    `.failed.jsonl` is a real sibling `main` maintains, and two runs against one `--out` would
+    otherwise stage into the same name and promote each other's partial bodies."""
+    seen: list[str] = []
+    real = gen.os.replace
+
+    def record(src, dst):
+        seen.append(str(src))
+        return real(src, dst)
+
+    monkeypatch.setattr(gen.os, "replace", record)
+    out = tmp_path / "preds.jsonl"
+    out.write_text(_row("redo<::>1", ""), encoding="utf-8")
+
+    gen.drop_answerless_rows(out, {"redo<::>1"})
+
+    assert len(seen) == 1
+    staged = seen[0]
+    assert str(gen.os.getpid()) in staged, "two concurrent runs must not stage into one path"
+    assert not staged.endswith(".failed.jsonl") and not staged.endswith(".manifest.json")
+
+
+def test_a_file_that_grew_while_being_read_is_not_rewritten_over(tmp_path, monkeypatch) -> None:
+    """Read, modify, write, with no lock anywhere in `benchmarks/`. A row appended between the read
+    and the swap is destroyed by the swap, and it is a row a second run has already PAID for. Two
+    runs sharing an `--out` is operator error, but the cost of it here is silently losing answers,
+    so the prune refuses rather than races.
+
+    The concurrent appender is simulated at the only seam that sits inside the read loop: growth
+    that begins after the first line has been parsed is exactly the window the check has to close.
+    """
+    out = tmp_path / "preds.jsonl"
+    out.write_text(_row("redo<::>1", "") + _row("keep<::>1", "real"), encoding="utf-8")
+    real_loads = gen.json.loads
+
+    def append_a_row_mid_read(*a, **k):
+        if not getattr(append_a_row_mid_read, "done", False):
+            append_a_row_mid_read.done = True
+            with out.open("a", encoding="utf-8") as handle:
+                handle.write(_row("paid<::>1", "an answer a second run just paid for"))
+        return real_loads(*a, **k)
+
+    monkeypatch.setattr(gen.json, "loads", append_a_row_mid_read)
+
+    with pytest.raises(RuntimeError):
+        gen.drop_answerless_rows(out, {"redo<::>1"})
+
+    monkeypatch.undo()
+    assert "paid<::>1" in out.read_text(encoding="utf-8"), "the concurrent row must survive"
+    assert "keep<::>1" in out.read_text(encoding="utf-8")
+
+
+def test_an_already_duplicated_task_is_repaired_even_though_it_is_not_pending(tmp_path) -> None:
+    """The duplicate this function exists to prevent could not be removed once it existed. A file
+    holding both an answerless row and a real one under one id reads as done, so the id never
+    reached the scope set, the twin stayed, and the run exited 0 over an artifact the official
+    checker rejects: the same false green this whole change set out to kill."""
+    out = tmp_path / "preds.jsonl"
+    out.write_text(_row("t<::>1", "") + _row("t<::>1", "real"), encoding="utf-8")
+
+    assert gen.drop_answerless_rows(out, set()) == 1, (
+        "dropping it leaves exactly the good row, so nothing is left unreplaced"
+    )
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert [r["predictions"][0]["text"] for r in rows] == ["real"]
+
+
+# --------------------------------------------------------------------------------------------
 # 3. End to end through `main`, which is where the defect was actually reachable.
 # --------------------------------------------------------------------------------------------
+
+
+def test_a_repair_that_cannot_be_written_stops_the_run_instead_of_tracebacking(
+    tmp_path, monkeypatch
+) -> None:
+    """On Windows `os.replace` raises if any process holds the destination open, which a tail, an
+    editor or a virus scanner will do. Letting that escape killed an 842-task resume with a raw
+    traceback before a single task was attempted. The file is intact at that point, so refusing to
+    append beside the stale rows is the right outcome, and it has to be reported as a failure."""
+    tasks = [_task(task_id="b<::>1")]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+    _resumable(out, _row("b<::>1", ""))
+
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+    monkeypatch.setattr(gen, "generate_one", lambda *a, **k: "an answer")
+    monkeypatch.setattr(gen.os, "replace", lambda *a, **k: (_ for _ in ()).throw(PermissionError("held")))
+
+    rc = gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+
+    assert rc == 1, "a run that could not repair its checkpoint must not report success"
+    assert out.read_text(encoding="utf-8") == _row("b<::>1", ""), "the checkpoint is untouched"
 
 
 def test_a_rerun_repairs_an_artifact_written_before_the_guards(tmp_path, monkeypatch) -> None:
