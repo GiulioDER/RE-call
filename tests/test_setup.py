@@ -3,7 +3,15 @@ from __future__ import annotations
 import io
 import pytest
 
-from recall.setup import HardwareProbe, embedder_choices, run_setup_wizard
+from recall.setup import (
+    HardwareProbe,
+    LOCAL_PROVIDER,
+    OPENAI_BASE_URL,
+    OPENROUTER_BASE_URL,
+    embedder_choices,
+    reasoning_provider_choices,
+    run_setup_wizard,
+)
 
 
 def test_embedder_choices_hide_cloud_when_security_is_required():
@@ -1177,3 +1185,77 @@ def test_setup_surfaces_schema_apply_failures(tmp_path, monkeypatch):
             input_fn=lambda _prompt="": next(answers),
             print_fn=lambda *a, **k: None,
         )
+
+
+def test_reasoning_providers_hide_cloud_when_security_is_required(monkeypatch):
+    """Reasoning sends the query AND the retrieved evidence to the provider, which exposes more
+    than embedding does. Somebody who said their data must not leave the machine must not be
+    walked into a cloud provider three prompts later."""
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=100 * 1024**3,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    choices = reasoning_provider_choices(probe, security_required=True)
+    assert [c.value for c in choices] == [LOCAL_PROVIDER]
+
+
+def test_reasoning_providers_offer_cloud_when_security_is_not_required(monkeypatch):
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=100 * 1024**3,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    choices = reasoning_provider_choices(probe, security_required=False)
+    assert [c.value for c in choices] == [
+        LOCAL_PROVIDER,
+        OPENROUTER_BASE_URL,
+        OPENAI_BASE_URL,
+    ]
+    assert all(c.available for c in choices)
+
+
+def test_reasoning_providers_mark_cloud_unavailable_without_the_openai_package(monkeypatch):
+    """Offered but marked, never hidden: hiding makes the product look like it lacks the feature
+    and leaves no way to ask for it. This is the same rule the embedder menu follows."""
+    monkeypatch.setattr("recall.setup._module_available", lambda name: name != "openai")
+    probe = HardwareProbe(
+        cpu_count=8,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=100 * 1024**3,
+        internet=True,
+        fastembed_available=True,
+        sentence_transformers_available=True,
+    )
+    choices = reasoning_provider_choices(probe, security_required=False)
+    assert choices[0].available is True
+    assert [c.available for c in choices[1:]] == [False, False]
+    assert 'pip install "recall-rag[extract]"' in choices[1].unavailable_note
+
+
+def test_the_first_reasoning_provider_is_always_runnable(monkeypatch):
+    """`_choose` raises unless choices[0].available. A local endpoint needs no key and no
+    internet, so it is the only entry that can lead the menu unconditionally."""
+    monkeypatch.setattr("recall.setup._module_available", lambda name: False)
+    probe = HardwareProbe(
+        cpu_count=1,
+        gpu=None,
+        cuda_available=False,
+        free_bytes=0,
+        internet=False,
+        fastembed_available=False,
+        sentence_transformers_available=False,
+    )
+    choices = reasoning_provider_choices(probe, security_required=False)
+    assert choices[0].available is True

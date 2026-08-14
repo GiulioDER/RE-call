@@ -17,6 +17,23 @@ from recall.eval.calibrate import CalibrationReport
 SETUP_BEGIN = "# recall setup begin"
 SETUP_END = "# recall setup end"
 DEFAULT_ENV_PATH = Path(".env")
+
+#: OpenAI compatible endpoints the reasoning arm can be pointed at. The base URL is the only
+#: record of which provider was chosen: `_host_of` in the truth extraction engine already turns
+#: it into an audit identity, so a separate provider name would be a second source of truth for
+#: the same fact.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+
+#: Sentinel for "ask me for a base URL", distinct from any real URL.
+LOCAL_PROVIDER = "local"
+
+#: Ollama's OpenAI compatible endpoint, offered as the default for a local server.
+LOCAL_BASE_URL_DEFAULT = "http://localhost:11434/v1"
+
+#: A local server ignores the key, and the OpenAI client refuses an empty one.
+LOCAL_API_KEY = "local"
+
 DEFAULT_CALIBRATION_PATH = Path("calibration.json")
 MODEL_DOWNLOAD_FLOOR_BYTES = 1_500_000_000
 CLAUDE_MD_BEGIN = "<!-- recall setup begin -->"
@@ -530,6 +547,62 @@ def entailment_choices(probe: HardwareProbe) -> list[Choice]:
                 description="Stronger local judge, larger and unpinned by default",
             )
         )
+    return choices
+
+
+def reasoning_provider_choices(
+    probe: HardwareProbe,
+    *,
+    security_required: bool,
+) -> list[Choice]:
+    """Providers for the optional reasoning arm, local first.
+
+    Local leads because `_choose` refuses a menu whose first entry is unavailable, and a local
+    endpoint is the only option that needs neither a key nor internet. It is therefore the only
+    entry that can be offered unconditionally.
+
+    Cloud entries are withheld entirely under `security_required`, rather than being offered and
+    marked. That differs from how an uninstalled package is handled, and deliberately: a missing
+    package is a thing the user can go and fix, whereas the security answer is a decision they
+    already made, and re-offering it invites them to undo it by accident.
+    """
+    choices = [
+        Choice(
+            label="local endpoint",
+            value=LOCAL_PROVIDER,
+            description="An OpenAI compatible server you run yourself, such as Ollama or vLLM",
+        )
+    ]
+    if security_required:
+        return choices
+
+    openai_installed = _module_available("openai")
+    blockers: list[str] = []
+    if not openai_installed:
+        blockers.append('the openai package is not installed, pip install "recall-rag[extract]"')
+    if not probe.internet:
+        blockers.append("no internet connection was detected")
+    note = "; ".join(blockers)
+    runnable = openai_installed and probe.internet
+
+    choices.append(
+        Choice(
+            label="openrouter",
+            value=OPENROUTER_BASE_URL,
+            description="Many providers behind one key, including cheap models",
+            available=runnable,
+            unavailable_note=note,
+        )
+    )
+    choices.append(
+        Choice(
+            label="openai",
+            value=OPENAI_BASE_URL,
+            description="OpenAI directly, for an existing OpenAI key",
+            available=runnable,
+            unavailable_note=note,
+        )
+    )
     return choices
 
 
