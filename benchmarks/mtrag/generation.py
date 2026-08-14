@@ -445,6 +445,12 @@ def openrouter_client(api_key: str | None = None) -> Any:
     return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=key, max_retries=0)
 
 
+#: Distinguishes "the field is not there" from "the field is there and null". `getattr(..., None)`
+#: cannot: a missing `message` is a MALFORMED BODY (the provider's fault, transient, worth another
+#: route) while a `content` that arrived null is an EMPTY ANSWER (permanent, one billed call).
+#: Collapsing the two would price a malformed body at one attempt, or an empty answer at four.
+_NO_CONTENT_FIELD = object()
+
 GENERATION_ATTEMPTS = 4
 GENERATION_BACKOFF_S = 2.0
 #: Consecutive per-task failures that stop the run. One task can fail on its own merits (a
@@ -479,7 +485,9 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
     raise, not "gave up after 4 attempts, re-run to resume", which is the wrong advice here.
     """
     last: Exception | None = None
+    spent = 0
     for attempt in range(1, GENERATION_ATTEMPTS + 1):
+        spent = attempt
         try:
             response = client.chat.completions.create(
                 model=model, messages=messages, max_tokens=max_tokens, temperature=0.0
@@ -520,7 +528,23 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             # NOT in `PERMANENT_ERROR_NAMES`, so every affected task paid four BILLED attempts
             # before failing, and five such tasks in a row aborted the run. Shared with the other
             # two OpenAI-compatible clients in this repo so the rule cannot drift between them.
-            content = choice.message.content
+            # ⛔ ONE FIELD FURTHER than the `choices` guard above, because stopping there left the
+            # next dereference blind: a 200 whose first choice carries `message: null` raised
+            # `AttributeError: 'NoneType' object has no attribute 'content'` at four billed calls,
+            # which is the failure class this guard exists to abolish, reached through the field
+            # along. `assistant_text` is total, so `message` was the only crash surface left here.
+            #
+            # A SENTINEL, not `getattr(..., None)`, because the two cases must not merge. A missing
+            # `message` is a malformed body: the provider's fault, transient, worth another route.
+            # A `content` that arrived and is null is an empty ANSWER: permanent, and it has to
+            # keep falling through to the `EmptyCompletion` below at one billed call, not four.
+            content = getattr(getattr(choice, "message", None), "content", _NO_CONTENT_FIELD)
+            if content is _NO_CONTENT_FIELD:
+                raise NoCompletionChoices(
+                    "the provider returned a 200 whose first choice carries no `message.content` "
+                    "field at all, so there is no completion to read. This is an upstream fault "
+                    "on the provider's side, not a property of the request."
+                )
             raw = assistant_text(content)
             answer = raw.strip()
             if not answer:
@@ -571,7 +595,11 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             paced = _retry_after_seconds(exc) or 0.0
             time.sleep(GENERATION_BACKOFF_S * (2 ** (attempt - 1)) + paced)
     raise RuntimeError(
-        f"generation gave up after {GENERATION_ATTEMPTS} attempts "
+        # `spent`, not `GENERATION_ATTEMPTS`. A permanent cause BREAKS at the first attempt, so
+        # interpolating the budget priced every early break at 4x what it cost — and with
+        # `cause_type` now recorded beside it, the row read `cause_type=BadRequestError` next to
+        # "after 4 attempts" for a failure that billed once: two accurate fields and one wrong.
+        f"generation gave up after {spent} attempt{'' if spent == 1 else 's'} "
         f"({type(last).__name__}: {last}). Answers already written are kept; re-run to resume."
     ) from last
 

@@ -81,7 +81,15 @@ class EmptyCompletion(RuntimeError):
 
 
 class NoCompletionChoices(RuntimeError):
-    """A 200 whose `choices` list is empty, so there is no completion to read at all.
+    """A 200 whose `choices` list is empty or absent, so there is no completion to read at all.
+
+    "or absent": `not choices` takes this branch for `None` too, which is what the SDK surfaces
+    when the body omits the field entirely. That is OpenRouter's documented failure shape, so it is
+    the realistic case rather than the exotic one, and the raise site says so; this docstring used
+    to name only the empty one.
+
+    `benchmarks/mtrag/generation.py` raises this same type for the same shape, and widens it once
+    more: a first choice carrying no `message.content` FIELD is the same class of malformed body.
 
     OpenRouter answers this way when the upstream it routed to faults. `resp.choices[0]` used to be
     indexed blind here, so this surfaced as `IndexError: list index out of range`: a message that

@@ -173,7 +173,7 @@ def test_an_ordinary_completion_is_unaffected() -> None:
 
 
 def test_the_failure_record_names_the_typed_cause_not_just_the_wrapper(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """⛔ END TO END THROUGH `main`, ON THE ARTIFACT A READER OPENS.
 
@@ -216,3 +216,90 @@ def test_the_failure_record_names_the_typed_cause_not_just_the_wrapper(
     assert logged[0]["cause_type"] == "NoCompletionChoices", (
         "and the TYPED CAUSE beside it, which is the field a systematic fault can be counted by"
     )
+
+    # ⛔ THE OTHER HALF, which a mutation showed was unpinned: deleting `cause_type` from the
+    # `task_failed` event alone left the whole suite green. The event is what an operator WATCHES
+    # during a paid 842-task run; `.failed.jsonl` is only read afterwards, so the live half is the
+    # one that matters first and it was the one with no test.
+    events = [
+        _json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("{") and '"task_failed"' in line
+    ]
+    assert events, "the run must announce the failure as it happens, not only in the file"
+    assert events[0]["cause_type"] == "NoCompletionChoices"
+
+
+def test_a_choice_carrying_no_message_names_the_provider_too() -> None:
+    """⛔ The guard stopped ONE FIELD SHORT. `choices` was hardened and `choice.message.content`
+    still dereferenced blind, so a 200 whose first choice carries `message: null` produced
+
+        AttributeError: 'NoneType' object has no attribute 'content'
+
+    at four billed calls — the exact failure class this file exists to abolish, reached through
+    the next field along. `assistant_text` is total, so `message` was the only crash surface left
+    on this path.
+
+    A MISSING `message` is a malformed body, so it is the provider's fault and transient. An
+    `arrived-but-null` CONTENT is different: text that is not there is not a malformed body, and
+    it must keep falling through to the permanent `EmptyCompletion` below. The sentinel is what
+    tells those two apart; `getattr(..., None)` could not.
+    """
+    client = _Client([types.SimpleNamespace(message=None, finish_reason="stop")])
+
+    with pytest.raises(RuntimeError) as caught:
+        generate_one(client, "openai/gpt-4o", [{"role": "user", "content": "x"}], 128)
+
+    assert "AttributeError" not in str(caught.value)
+    assert type(caught.value.__cause__) is NoCompletionChoices
+
+
+def test_a_choice_whose_content_is_null_is_still_a_permanent_empty_completion() -> None:
+    """Guards the guard above. Hardening `message` must not swallow the case where the field IS
+    there and carries nothing: that is an empty answer, which is permanent and costs ONE call, not
+    a malformed body, which is transient and costs four."""
+    from benchmarks.llm import EmptyCompletion
+
+    client = _Client([types.SimpleNamespace(message=types.SimpleNamespace(content=None),
+                                            finish_reason="stop")])
+
+    with pytest.raises(EmptyCompletion):
+        generate_one(client, "openai/gpt-4o", [{"role": "user", "content": "x"}], 128)
+
+    assert client.calls == 1, "an empty answer repeats; it must not be retried"
+
+
+def test_the_give_up_message_prices_the_attempts_actually_spent() -> None:
+    """The message interpolated the BUDGET, not the attempts reached, so a cause that breaks early
+    was priced at 4x what it cost. With `cause_type` now beside it, the record read
+    `cause_type=BadRequestError` next to "after 4 attempts" for a failure that billed once: two
+    accurate fields and one wrong one in the same line."""
+
+    class _Permanent(Exception):
+        pass
+
+    _Permanent.__name__ = "BadRequestError"  # matched by NAME in PERMANENT_ERROR_NAMES
+
+    calls = {"n": 0}
+
+    class _Failing:
+        @property
+        def chat(self) -> "_Failing":
+            return self
+
+        @property
+        def completions(self) -> "_Failing":
+            return self
+
+        def create(self, **_: Any) -> object:
+            calls["n"] += 1
+            raise _Permanent("input is not valid for this model")
+
+    with pytest.raises(RuntimeError) as caught:
+        generate_one(_Failing(), "openai/gpt-4o", [{"role": "user", "content": "x"}], 128)
+
+    assert calls["n"] == 1, "a permanent error must break at the first attempt"
+    assert "1 attempt" in str(caught.value), (
+        f"priced the budget rather than the spend: {caught.value}"
+    )
+    assert "4 attempts" not in str(caught.value)

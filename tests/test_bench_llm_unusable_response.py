@@ -92,7 +92,9 @@ def _install_fake_openai(
             if raises is not None:
                 raise raises
             return types.SimpleNamespace(
-                choices=list(choices if choices is not None else []), usage=usage
+                # NOT `list(...)`: one arm scripts `choices=None`, the shape the SDK surfaces
+                # when the body omits the field, and coercing it would hide that arm.
+                choices=choices, usage=usage
             )
 
     class _FakeOpenAI:
@@ -413,3 +415,22 @@ def test_a_no_choices_response_is_still_counted_as_spend(monkeypatch: pytest.Mon
 
     assert llm.usage() == {"calls": 1, "prompt_tokens": 9, "completion_tokens": 0}
     assert llm.provider_metadata().latency_ms is not None, "the call took time and it was billed"
+
+
+def test_an_absent_choices_field_is_named_as_such(monkeypatch: pytest.MonkeyPatch) -> None:
+    """⛔ The `llm.py` HALF of a wording a comment claims is "kept word-for-word in step" with
+    `benchmarks/mtrag/generation.py`. Only the mtrag half was pinned, so reverting this side alone
+    left the suite green: a claimed invariant with a test on one of its two sides.
+
+    The shape matters as well as the wording. `not choices` takes the branch for `None`, which is
+    what the SDK surfaces when the body omits `choices` entirely — OpenRouter's documented failure
+    shape, and the one this stub had no arm for.
+    """
+    _install_fake_openai(monkeypatch, choices=None)
+
+    with pytest.raises(NoCompletionChoices) as caught:
+        _llm().complete("s", "u")
+
+    assert "absent" in str(caught.value), (
+        "the message must name the shape that arrived, and stay in step with the mtrag raise site"
+    )
