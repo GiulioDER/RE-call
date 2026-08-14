@@ -73,6 +73,15 @@ def test_passes_query_texts_and_model_to_the_client() -> None:
     assert call["top_k"] == 2  # defaults to len(hits): rerank ALL, trust layer truncates to k
 
 
+def test_can_truncate_documents_before_calling_voyage() -> None:
+    hits = [_hit("a", "abcdefghij", 0.9), _hit("b", "klmnopqrst", 0.8)]
+    client = _FakeClient(order=[0, 1])
+
+    VoyageReranker(max_document_chars=4, client=client).rerank("q", hits)
+
+    assert client.calls[0]["documents"] == ["abcd", "klmn"]
+
+
 def test_explicit_top_k_returns_exactly_that_many_still_identity_preserving() -> None:
     hits = [_hit("a", "alpha", 0.9), _hit("b", "bravo", 0.8), _hit("c", "charlie", 0.7)]
     client = _FakeClient(order=[2, 0, 1])

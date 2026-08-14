@@ -36,6 +36,7 @@ locomo10.json
 # not lose paid-for work. A publishable artifact is copied out deliberately — it is not committed
 # by whoever happened to run the benchmark last.
 benchmarks/results/
+.benchdata/
 # Benchmark run logs — transient. The JSON reports beside them are the artifact.
 results/locomo/*.log
 

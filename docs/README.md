@@ -21,6 +21,7 @@ want to audit a claim or reproduce a benchmark.
 | [SECURITY_MODEL.md](SECURITY_MODEL.md) | Detailed threat model behind the root security policy. |
 | [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) | MCP setup and tool behavior. |
 | [REASONING_OPERATIONS.md](REASONING_OPERATIONS.md) | Opt-in reasoning commands, MCP tools, failure behavior, review policy, and metrics. |
+| [BETA_RECRUITING.md](BETA_RECRUITING.md) | Compliant beta recruiting from public discussions without harvesting emails. |
 
 ## Architecture
 
@@ -50,6 +51,10 @@ want to audit a claim or reproduce a benchmark.
 | Document | Scope |
 |---|---|
 | [RESEARCH_PROTOCOL.md](RESEARCH_PROTOCOL.md) | Rules for benchmark runs, artifact retention, and post-run review. |
+| [VISIBILITY_BENCHMARKS.md](VISIBILITY_BENCHMARKS.md) | Public leaderboard submission track for Kaggle AgentEval, EnterpriseRAG-Bench, LiveRAG, and CRAG. |
+| [ENTERPRISE_RAG_VAST.md](ENTERPRISE_RAG_VAST.md) | Vast.ai GPU runbook for the EnterpriseRAG-Bench SPLADE arm. |
+| [ENTERPRISE_RAG_SUBMISSION.md](ENTERPRISE_RAG_SUBMISSION.md) | EnterpriseRAG-Bench answer artifacts, score summaries, and reproduction steps for leaderboard review. |
+| [ENTERPRISE_RAG_ONYX_EMAIL.md](ENTERPRISE_RAG_ONYX_EMAIL.md) | Draft submission email, verifier links, artifact hashes, and finalization checklist for Onyx. |
 | [archive/CHANGELOG_FULL.md](archive/CHANGELOG_FULL.md) | Full historical changelog. |
 | [RAG_TRAINING_STUDY.md](RAG_TRAINING_STUDY.md) | When fine-tuning embeddings helps, and when it does not. |
 | [ENTAILMENT_SUPERSESSION_STUDY.md](ENTAILMENT_SUPERSESSION_STUDY.md) | Near-miss abstention, entailment, and write-time supersession. |

@@ -31,10 +31,14 @@ class VoyageReranker:
         model: str = "rerank-2.5",
         api_key: str | None = None,
         top_k: int | None = None,
+        max_document_chars: int | None = None,
         client: Any | None = None,
     ) -> None:
         self.model = model
         self.top_k = top_k
+        if max_document_chars is not None and max_document_chars < 1:
+            raise ValueError("max_document_chars must be positive when set")
+        self.max_document_chars = max_document_chars
         self._client = client
         #: Guards the lazy build in `_voyage_client`. ONE instance is reached concurrently:
         #: `benchmarks.beam.run` builds a single system before its conversation loop, that system
@@ -73,7 +77,10 @@ class VoyageReranker:
         if not hits:
             return hits
         limit = self.top_k if self.top_k is not None else len(hits)
-        documents = [h.chunk.text for h in hits]
+        documents = [
+            h.chunk.text[: self.max_document_chars] if self.max_document_chars else h.chunk.text
+            for h in hits
+        ]
         result = self._voyage_client().rerank(query, documents, model=self.model, top_k=limit)
         # `result.results` is sorted by descending relevance; each item's `.index` points back into
         # `documents`. Reorder the ORIGINAL ScoredChunk objects — identity preserved, scores intact.

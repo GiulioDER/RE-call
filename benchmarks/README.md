@@ -11,6 +11,7 @@ Published result tables live in `results/`; benchmark code and protocols live he
 | [systems.py](systems.py) | RE-call and comparator adapters. |
 | [pipeline.py](pipeline.py) | Generator, judge, aggregation, and shared records. |
 | [latency.py](latency.py) | Isolated memory-layer latency measurement. |
+| [enterprise_rag.py](enterprise_rag.py) | EnterpriseRAG-Bench answer-file runner for public leaderboard submission. |
 | [claim_gate.py](claim_gate.py) | Published-number gate for result documents. |
 | [ladder/](ladder/) | Answerability ladder benchmark. |
 | [beam/](beam/) | BEAM harness integration and related probes. |
@@ -26,6 +27,7 @@ Published result tables live in `results/`; benchmark code and protocols live he
 | [archive/preregistrations/README.md](archive/preregistrations/README.md) | Archived preregistrations for follow-up benchmark arms. |
 | [REVIEW.md](REVIEW.md) | Adversarial review of the LOCOMO article claims. |
 | [SUITE-DESIGN.md](SUITE-DESIGN.md) | Evaluation suite design and benchmark tracks. |
+| [../docs/VISIBILITY_BENCHMARKS.md](../docs/VISIBILITY_BENCHMARKS.md) | Public leaderboard submission track and artifact contract. |
 | [EXPERIMENT-CONVENTION.md](EXPERIMENT-CONVENTION.md) | Prior-work search convention for new experiments. |
 | [VOYAGE_REFERENCE.md](VOYAGE_REFERENCE.md) | Voyage model reference and experiment recommendations. |
 

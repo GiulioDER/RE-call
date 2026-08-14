@@ -1,0 +1,129 @@
+{
+  "aggregate_stats": {
+    "average_completeness_pct": 53.48,
+    "average_correctness_pct": 65.6,
+    "average_invalid_extra_docs": 6.94,
+    "average_recall_pct": 77.48,
+    "combined_correctness_completeness_score": 48.03,
+    "completed_questions": 500,
+    "num_corrected_questions": 16,
+    "skipped_rows": "N/A",
+    "total_questions": 500
+  },
+  "benchmark": "EnterpriseRAG-Bench",
+  "benchmark_repo": "https://github.com/onyx-dot-app/EnterpriseRAG-Bench",
+  "completed_question_count": 500,
+  "created_at_unix": 1786715522,
+  "evaluator_options": "default metrics_based_eval with citation stripping and document correction enabled",
+  "judge": {
+    "mixed_reasoning": true,
+    "model": "openai/gpt-5.4",
+    "provider": "OpenRouter",
+    "segments": [
+      {
+        "question_id_end": "qst_0214",
+        "question_id_start": "qst_0001",
+        "reasoning": "medium",
+        "rows": 214
+      },
+      {
+        "question_id_end": "qst_0500",
+        "question_id_start": "qst_0215",
+        "reasoning": "off",
+        "rows": 286
+      }
+    ]
+  },
+  "note": "Full default evaluator local run with disclosed mixed judge settings. Rows qst_0001 through qst_0214 used openai/gpt-5.4 medium reasoning. Rows qst_0215 through qst_0500 used openai/gpt-5.4 with reasoning disabled through OpenRouter.",
+  "question_type_stats": {
+    "basic": {
+      "average_completeness_pct": 57.52,
+      "average_correctness_pct": 70.86,
+      "average_invalid_extra_docs": 7.19,
+      "average_recall_pct": 81.14,
+      "combined_correctness_completeness_score": 54.07,
+      "count": 175
+    },
+    "completeness": {
+      "average_completeness_pct": 24.52,
+      "average_correctness_pct": 35.0,
+      "average_invalid_extra_docs": 5.0,
+      "average_recall_pct": 53.32,
+      "combined_correctness_completeness_score": 18.96,
+      "count": 20
+    },
+    "conflicting_info": {
+      "average_completeness_pct": 51.2,
+      "average_correctness_pct": 50.0,
+      "average_invalid_extra_docs": 6.8,
+      "average_recall_pct": 75.0,
+      "combined_correctness_completeness_score": 38.41,
+      "count": 20
+    },
+    "constrained": {
+      "average_completeness_pct": 68.7,
+      "average_correctness_pct": 70.0,
+      "average_invalid_extra_docs": 6.8,
+      "average_recall_pct": 86.67,
+      "combined_correctness_completeness_score": 54.0,
+      "count": 30
+    },
+    "high_level": {
+      "average_completeness_pct": 61.83,
+      "average_correctness_pct": 40.0,
+      "average_invalid_extra_docs": 0.0,
+      "average_recall_pct": 0.0,
+      "combined_correctness_completeness_score": 40.0,
+      "count": 10
+    },
+    "info_not_found": {
+      "average_completeness_pct": 100.0,
+      "average_correctness_pct": 100.0,
+      "average_invalid_extra_docs": 0.0,
+      "average_recall_pct": 0.0,
+      "combined_correctness_completeness_score": 100.0,
+      "count": 20
+    },
+    "intra_document_reasoning": {
+      "average_completeness_pct": 69.49,
+      "average_correctness_pct": 80.0,
+      "average_invalid_extra_docs": 7.1,
+      "average_recall_pct": 90.0,
+      "combined_correctness_completeness_score": 66.16,
+      "count": 40
+    },
+    "miscellaneous": {
+      "average_completeness_pct": 85.08,
+      "average_correctness_pct": 100.0,
+      "average_invalid_extra_docs": 7.0,
+      "average_recall_pct": 100.0,
+      "combined_correctness_completeness_score": 85.08,
+      "count": 20
+    },
+    "project_related": {
+      "average_completeness_pct": 23.39,
+      "average_correctness_pct": 37.5,
+      "average_invalid_extra_docs": 5.92,
+      "average_recall_pct": 51.21,
+      "combined_correctness_completeness_score": 11.39,
+      "count": 40
+    },
+    "semantic": {
+      "average_completeness_pct": 40.51,
+      "average_correctness_pct": 60.0,
+      "average_invalid_extra_docs": 7.24,
+      "average_recall_pct": 75.2,
+      "combined_correctness_completeness_score": 36.65,
+      "count": 125
+    }
+  },
+  "source_results_sha256": "7692d4936a54d57c15c4d2fe30f93acdc0418193b802430e560ba1b018b9dd31",
+  "validation": {
+    "api_status_errors": 0,
+    "has_qst_0500": true,
+    "llm_failures": 0,
+    "num_corrected_questions": 16,
+    "remote_protocol_errors_final_segment": 0,
+    "unique_question_ids": 500
+  }
+}

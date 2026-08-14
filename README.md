@@ -392,6 +392,20 @@ Important benchmark documents:
 | [benchmarks/PREREGISTRATION.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/PREREGISTRATION.md) | Pre-registered rules for the main memory benchmark. |
 | [benchmarks/archive/preregistrations/README.md](https://github.com/GiulioDER/RE-call/blob/master/benchmarks/archive/preregistrations/README.md) | Archived preregistrations for follow-up benchmark arms. |
 
+## When not to use RE-call
+
+Use something else if you need managed hosting, per-chunk ACLs, automatic truth extraction from
+prose, or a memory system that rewrites facts for you. RE-call is a retrieval library over your
+PostgreSQL database, not a hosted memory platform.
+
+## What this does not do
+
+RE-call is a retrieval library with an opt-in reasoning layer, not a general reasoning system. It
+does not infer every missing supersession edge, prove that an on-topic memory answers a near-miss
+question, promote proposals into corpus truth, or replace database operations with a managed
+service. It returns the trust signals the caller needs, and it refuses to pretend that a nearest
+match is always usable evidence.
+
 ## Reproduce
 
 ```bash

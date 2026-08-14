@@ -1,0 +1,57 @@
+{
+  "benchmark": "EnterpriseRAG-Bench",
+  "started_at": "2026-08-13T23:05:56.334812+00:00",
+  "finished_at": "2026-08-14T05:00:20.992824+00:00",
+  "elapsed_s": 21264.658,
+  "recall_revision": "858e1af6870a93aadec859a6d71b6ec807fcaf72",
+  "recall_version": "0.9.2",
+  "questions": {
+    "path": ".benchdata/enterprise-rag-v1.0.0/questions.jsonl",
+    "sha256": "f9524b9157cd43aae36b99333a124738804306ea6d07f332d49faa6d3d147905"
+  },
+  "documents": [
+    {
+      "path": ".benchdata/enterprise-rag-v1.0.0/all_documents.zip",
+      "sha256": "9d1174928696ad08bc15f3f104739519de633c1605a4ec2034e0e3c0087bc5cd"
+    }
+  ],
+  "index": {
+    "table": "ber_voy_lex_12k_full",
+    "tenant": "enterprise-rag-voyage-lexical-chunk12k-full",
+    "pool_size": 4,
+    "reset": false,
+    "skipped": true,
+    "documents": 0,
+    "chunks": 0
+  },
+  "retrieval": {
+    "embedder": "voyage:voyage-4-large",
+    "embedding_profile": "voyage:voyage-4-large",
+    "k": 8,
+    "candidate_k": 200,
+    "gap_threshold": 0.5,
+    "sparse_backend": "both",
+    "splade_model": "prithivida/Splade_PP_en_v1",
+    "splade_backfill": null,
+    "reranker": "voyage:rerank-2.5"
+  },
+  "answering": {
+    "mode": "openrouter",
+    "model": "openai/gpt-4o",
+    "max_context_chars": 12000
+  },
+  "outputs": {
+    "answers": "results/enterprise_rag/vast_voyage_lexical_splade_from_vps2.answers.jsonl",
+    "rows": 500,
+    "new_rows": 310,
+    "resumed_rows": 190
+  },
+  "retrieval_metrics": {
+    "questions_with_expected_docs": 470,
+    "document_recall": 0.6612685560053981,
+    "exact_doc_set_coverage": 0.7212765957446808,
+    "expected_docs": 741,
+    "hit_expected_docs": 490
+  },
+  "calibration": null
+}

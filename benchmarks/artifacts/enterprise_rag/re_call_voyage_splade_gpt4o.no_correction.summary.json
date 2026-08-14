@@ -1,0 +1,101 @@
+{
+  "aggregate_stats": {
+    "average_completeness_pct": 63.79,
+    "average_correctness_pct": 63.2,
+    "average_invalid_extra_docs": 6.94,
+    "average_recall_pct": 77.34,
+    "combined_correctness_completeness_score": 54.85,
+    "completed_questions": 500,
+    "num_corrected_questions": 0,
+    "skipped_rows": 0,
+    "total_questions": 500
+  },
+  "benchmark": "EnterpriseRAG-Bench",
+  "benchmark_commit": "d36685e273713975ee20299bbf1ab64165575b3c",
+  "benchmark_repo": "https://github.com/onyx-dot-app/EnterpriseRAG-Bench",
+  "created_at_unix": 1786697352,
+  "note": "gpt-4o local comparison, no correction, no citation stripping",
+  "question_type_stats": {
+    "basic": {
+      "average_completeness_pct": 68.94,
+      "average_correctness_pct": 70.86,
+      "average_invalid_extra_docs": 7.19,
+      "average_recall_pct": 81.14,
+      "combined_correctness_completeness_score": 63.27,
+      "count": 175
+    },
+    "completeness": {
+      "average_completeness_pct": 32.95,
+      "average_correctness_pct": 35.0,
+      "average_invalid_extra_docs": 4.95,
+      "average_recall_pct": 52.32,
+      "combined_correctness_completeness_score": 26.5,
+      "count": 20
+    },
+    "conflicting_info": {
+      "average_completeness_pct": 55.14,
+      "average_correctness_pct": 45.0,
+      "average_invalid_extra_docs": 6.5,
+      "average_recall_pct": 72.5,
+      "combined_correctness_completeness_score": 36.24,
+      "count": 20
+    },
+    "constrained": {
+      "average_completeness_pct": 80.65,
+      "average_correctness_pct": 63.33,
+      "average_invalid_extra_docs": 6.8,
+      "average_recall_pct": 86.67,
+      "combined_correctness_completeness_score": 58.78,
+      "count": 30
+    },
+    "high_level": {
+      "average_completeness_pct": 50.5,
+      "average_correctness_pct": 40.0,
+      "average_invalid_extra_docs": 0.0,
+      "average_recall_pct": 0.0,
+      "combined_correctness_completeness_score": 30.0,
+      "count": 10
+    },
+    "info_not_found": {
+      "average_completeness_pct": 100.0,
+      "average_correctness_pct": 100.0,
+      "average_invalid_extra_docs": 0.0,
+      "average_recall_pct": 0.0,
+      "combined_correctness_completeness_score": 100.0,
+      "count": 20
+    },
+    "intra_document_reasoning": {
+      "average_completeness_pct": 80.68,
+      "average_correctness_pct": 77.5,
+      "average_invalid_extra_docs": 7.1,
+      "average_recall_pct": 90.0,
+      "combined_correctness_completeness_score": 72.35,
+      "count": 40
+    },
+    "miscellaneous": {
+      "average_completeness_pct": 90.25,
+      "average_correctness_pct": 100.0,
+      "average_invalid_extra_docs": 7.0,
+      "average_recall_pct": 100.0,
+      "combined_correctness_completeness_score": 90.25,
+      "count": 20
+    },
+    "project_related": {
+      "average_completeness_pct": 37.63,
+      "average_correctness_pct": 35.0,
+      "average_invalid_extra_docs": 6.08,
+      "average_recall_pct": 51.35,
+      "combined_correctness_completeness_score": 18.54,
+      "count": 40
+    },
+    "semantic": {
+      "average_completeness_pct": 52.86,
+      "average_correctness_pct": 54.4,
+      "average_invalid_extra_docs": 7.24,
+      "average_recall_pct": 75.2,
+      "combined_correctness_completeness_score": 44.76,
+      "count": 125
+    }
+  },
+  "source_results_sha256": "2b0a5444b95d5d342dc306a6c9bd9592da7bca98f27aed37bee0d766314cd87a"
+}
