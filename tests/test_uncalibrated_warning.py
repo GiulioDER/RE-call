@@ -163,9 +163,20 @@ def test_the_warning_names_the_embedder_and_the_remedy(tmp_path, make_store, cap
 def _argparse_rejects(command: str, cwd) -> bool:
     """True when the CLI refuses `command` as unparseable, rather than for any later reason.
 
-    Only argparse is under test here, and it runs before the DSN is ever dialled, so the run is
-    pointed at a closed local port: whatever happens after parsing is irrelevant and must not be
-    allowed to hang.
+    Keyed on the process outcome, not on message substrings. A first version matched
+    "unrecognized arguments" or "invalid choice", which are only two of argparse's phrasings:
+    dropping the required `--generation` produces "the following arguments are required" and was
+    reported as ACCEPTED, so the guard would have gone green on a warning naming an unrunnable
+    command. Measured behaviour of this CLI: every parse failure exits 2 and prints a usage block
+    first, while a command that parses and then fails on a missing file exits 1 with no usage.
+    Application code that raises SystemExit(2) of its own prints no usage block, so requiring both
+    keeps this from reading a later failure as a parse error.
+
+    Only argparse is under test, and it runs before the DSN is dialled, so the run is pointed at a
+    closed local port. stdin is closed because a subcommand that decided to prompt would otherwise
+    inherit the terminal and block forever, and the timeout is set well under the repository's
+    120s per-test limit so that a hang surfaces as this test failing rather than as pytest-timeout
+    calling os._exit on the whole session.
 
     `cwd` is a scratch directory so no repository `.env` is picked up, and PYTHONPATH pins the
     import to THIS checkout. One editable install serves many worktrees here, so a bare
@@ -185,9 +196,15 @@ def _argparse_rejects(command: str, cwd) -> bool:
         *tokens[1:],
     ]
     done = subprocess.run(
-        argv, capture_output=True, text=True, cwd=cwd, env=env, timeout=120
+        argv,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        timeout=30,
     )
-    return "unrecognized arguments" in done.stderr or "invalid choice" in done.stderr
+    return done.returncode == 2 and done.stderr.lstrip().startswith("usage:")
 
 
 def test_the_remedy_the_warning_prints_is_a_command_that_actually_parses(tmp_path):
@@ -214,19 +231,34 @@ def test_the_remedy_the_warning_prints_is_a_command_that_actually_parses(tmp_pat
         logger.removeHandler(handler)
         _WARNED_UNCALIBRATED.discard("probe-embedder")
 
-    msg = next(r.getMessage() for r in records if "no calibration found" in r.getMessage())
+    msg = next(
+        (r.getMessage() for r in records if "no calibration found" in r.getMessage()), None
+    )
+    assert msg is not None, f"the uncalibrated warning was never emitted; got {records!r}"
     quoted = re.findall(r"`([^`]+)`", msg)
     assert quoted, f"the warning names no command at all: {msg!r}"
-    command = next(c for c in quoted if c.startswith("recall "))
+    command = next((c for c in quoted if c.startswith("recall ")), None)
+    assert command is not None, (
+        f"the warning quotes {quoted!r} but none of it is a `recall` command to run: {msg!r}"
+    )
 
     assert not _argparse_rejects(command, tmp_path), (
         f"the warning tells the reader to run {command!r}, and the CLI rejects it as unparseable"
     )
 
-    # Canary. The check above is only meaningful if it can fail, so prove it still catches the
-    # exact form this test exists to prevent. Without this, a checker that silently stopped
-    # detecting anything would look identical to a clean run.
-    broken = "recall calibrate --generation G --queries FILE --publish"
-    assert _argparse_rejects(broken, tmp_path), (
-        "the parse check no longer detects the historical broken form, so it is proving nothing"
-    )
+    # Canaries. The check above is only meaningful if it can fail, so prove it still catches the
+    # ways this instruction can break. One historical form is not enough: the first version of
+    # the checker caught exactly that string and silently accepted a command missing a required
+    # argument, which is the likelier future regression.
+    must_be_rejected = {
+        "the historical broken form": (
+            "recall calibrate --generation G --queries FILE --publish"
+        ),
+        "a missing required argument": "recall calibration calibrate --queries FILE --publish",
+        "a misspelled subcommand": "recall calibration calibratte --generation G --queries FILE",
+    }
+    for description, broken in must_be_rejected.items():
+        assert _argparse_rejects(broken, tmp_path), (
+            f"the parse check no longer detects {description} ({broken!r}), "
+            "so it is proving nothing"
+        )
