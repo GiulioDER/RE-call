@@ -397,13 +397,40 @@ def previous_prompt(out: Path) -> str | None:
     return prompt if isinstance(prompt, str) else None
 
 
+def submission_answer(row: object) -> str:
+    """The prediction text a written row carries, stripped, or "" if it carries none.
+
+    Every shape that is not a non-blank string collapses to "", because they are the same thing to
+    a judge: no `predictions` key, an empty list, an entry that is not an object, a `text` that is
+    null or not a string, and a `text` of whitespace all score as a failure by the system under
+    test rather than as an answer.
+    """
+    if not isinstance(row, dict):
+        return ""
+    predictions = row.get("predictions")
+    if not isinstance(predictions, list) or not predictions:
+        return ""
+    first = predictions[0]
+    text = first.get("text") if isinstance(first, dict) else None
+    return text.strip() if isinstance(text, str) else ""
+
+
 def already_done(path: Path) -> set[str]:
-    """Task ids already in the output, so a re-run does not pay for them twice.
+    """Task ids already in the output CARRYING AN ANSWER, so a re-run does not pay for them twice.
 
     A malformed trailing line, which is the shape an interrupted write leaves, is ignored rather
     than fatal: that task is simply regenerated. Re-doing one answer is the cheap error here;
     treating a truncated file as complete is the expensive one. Same rule as
     `scripts/encode_sparse.py --resume`, for the same reason.
+
+    ⚠️ Carrying an answer is checked, not just carrying a `task_id`. Counting the id alone was
+    right while every written row necessarily held an answer, and stopped being right the moment
+    this module could write `predictions: [{"text": ""}]`, which it did for every `content_filter`
+    and `tool_calls` completion before `generate_one` grew its guards. Those guards fix new runs
+    and leave OLD artifacts stranded: re-running the identical command over one skipped the empty
+    rows, wrote nothing, and exited 0 over a file that cannot be submitted. The `incomplete` gate
+    cannot catch that either, since it reports tasks that failed IN THIS RUN and these are never
+    attempted.
     """
     if not path.exists():
         return set()
@@ -414,9 +441,61 @@ def already_done(path: Path) -> set[str]:
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(row, dict) and "task_id" in row:
+            if isinstance(row, dict) and "task_id" in row and submission_answer(row):
                 done.add(str(row["task_id"]))
     return done
+
+
+def drop_answerless_rows(path: Path, task_ids: set[str]) -> int:
+    """Remove rows for `task_ids` that carry no answer. Returns how many went.
+
+    ⚠️ Required by `already_done`'s emptiness check rather than merely tidy. The output is opened
+    in APPEND mode and IS the run's checkpoint, so regenerating a task whose empty row is still on
+    disk would leave TWO rows under one `task_id`: one unscorable and one real, in a format whose
+    checker expects one row per task, read by a judge that would score whichever it met first.
+    Repairing the artifact and corrupting it differ by exactly this call.
+
+    `task_ids` is the set this run is about to regenerate, and nothing outside it is touched. Under
+    `--limit`, or against a task list that no longer carries an id, dropping a row that nothing
+    will replace shrinks the artifact without repairing it, which is a worse failure than the one
+    being fixed here.
+
+    Lines that do not parse are KEPT verbatim. They carry no `task_id`, so they cannot become a
+    duplicate, and `already_done` already treats them as absent; rewriting them away would be a
+    second, unrelated change to what an interrupted write leaves behind.
+
+    The rewrite is atomic and only happens when there is something to drop. A checkpoint is not
+    worth replacing to change nothing: the window in which the file does not exist would be pure
+    risk, paid on every ordinary resume.
+    """
+    if not path.exists():
+        return 0
+    kept: list[str] = []
+    dropped = 0
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                kept.append(line)
+                continue
+            answerless = (
+                isinstance(row, dict)
+                and str(row.get("task_id")) in task_ids
+                and not submission_answer(row)
+            )
+            if answerless:
+                dropped += 1
+            else:
+                kept.append(line)
+    if not dropped:
+        return 0
+    # `newline=""` because the lines already carry their own terminators: letting the platform
+    # translate them would rewrite every line ending in the file on a Windows run.
+    tmp = path.with_suffix(path.suffix + ".pruned")
+    tmp.write_text("".join(kept), encoding="utf-8", newline="")
+    os.replace(tmp, path)
+    return dropped
 
 
 def openrouter_client(api_key: str | None = None) -> Any:
@@ -809,6 +888,18 @@ def main(argv: list[str] | None = None) -> int:
     # would leave a task that failed once and later succeeded sitting in the log forever, so the
     # file would over-report while the "done" event under-reported, and the two would disagree.
     failures_path.unlink(missing_ok=True)
+    # Before the file is opened for APPEND, and only for the tasks about to be regenerated. An
+    # artifact written before `generate_one` grew its guards can hold rows with an empty
+    # `predictions` text; `already_done` no longer counts those as finished, so without this the
+    # regenerated answer would land BESIDE the empty row rather than replace it.
+    repaired = drop_answerless_rows(args.out, {str(t["task_id"]) for t in pending})
+    if repaired:
+        print(
+            json.dumps({"event": "repaired", "answerless_rows_dropped": repaired, "note":
+                        "rows carrying no answer, from a run that predates the empty-completion "
+                        "guards; they are regenerated below rather than left beside the new ones"}),
+            flush=True,
+        )
     with args.out.open("a", encoding="utf-8") as handle:
         for position, task in enumerate(pending, 1):
             try:
