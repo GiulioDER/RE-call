@@ -1027,26 +1027,32 @@ def test_every_embedder_option_declares_its_width() -> None:
     assert all(c.dim for c in choices), [c.label for c in choices if not c.dim]
 
 
-def test_an_embedder_wider_than_the_table_is_refused_and_asked_again(tmp_path, monkeypatch):
-    """Found here rather than on the first write, which is after the model and corpus are read.
-
-    Remove the conflict check in `run_setup_wizard` and this goes red: the wizard accepts the
-    1024-wide choice, never re-asks, and the leftover answer runs the iterator dry.
-    """
+def test_setup_auto_prepares_an_empty_mismatched_table(tmp_path, monkeypatch):
     monkeypatch.setattr("recall.setup.probe_hardware", lambda: _roomy_probe(10 * 1024**3))
     monkeypatch.setattr("recall.setup._module_available", lambda name: False)
     monkeypatch.setattr(
-        "recall.setup._schema_dim_conflict",
+        "recall.setup._schema_prepare_state",
         lambda dsn, dim, table=None: (
-            "recall_chunks_v1 uses vector(384), requested dimension is 1024"
-            if dim != 384 else None
+            "conflict",
+            "recall_chunks_v1 uses vector(384), requested dimension is 1024",
         ),
+    )
+    monkeypatch.setattr(
+        "recall.setup._table_row_counts",
+        lambda dsn, tables: {name: 0 for name in tables},
+    )
+    dropped: list[str] = []
+    applied: list[tuple[str, str, int]] = []
+
+    monkeypatch.setattr("recall.setup._drop_default_schema_family", lambda dsn: dropped.append(dsn))
+    monkeypatch.setattr(
+        "recall.schema.apply_migrations",
+        lambda dsn, *, table, dim: applied.append((dsn, table, dim)) or (),
     )
     answers = iter([
         "n",  # security
         "", "", "",  # API keys
-        "4",  # fastembed large, 1024 wide, refused against a 384 table
-        "2",  # fastembed small, 384 wide, accepted
+        "4",  # fastembed large, 1024 wide
         "1",  # reranker
         "1",  # sparse
         "n",  # scaffold
@@ -1056,6 +1062,7 @@ def test_an_embedder_wider_than_the_table_is_refused_and_asked_again(tmp_path, m
 
     run_setup_wizard(
         dsn="postgresql://example/recall",
+        migration_dsn="postgresql://owner/recall",
         env_path=tmp_path / ".env",
         input_fn=lambda _prompt="": next(answers),
         print_fn=lambda *a, **k: print(*a, **k, file=output),
@@ -1063,9 +1070,13 @@ def test_an_embedder_wider_than_the_table_is_refused_and_asked_again(tmp_path, m
 
     text = output.getvalue()
     assert "uses vector(384), requested dimension is 1024" in text
-    assert "schema --dim 1024" in text
+    assert "default schema is empty, so the wizard will rebuild it now" in text
+    assert dropped == ["postgresql://owner/recall"]
+    assert applied == [("postgresql://owner/recall", "chunks", 1024)]
     assert next(answers, None) is None
-    assert "RECALL_EMBEDDER=fastembed" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "RECALL_EMBEDDER=fastembed:BAAI/bge-large-en-v1.5" in (
+        tmp_path / ".env"
+    ).read_text(encoding="utf-8")
 
 
 def test_an_unreachable_database_is_not_treated_as_a_conflict() -> None:
@@ -1075,41 +1086,41 @@ def test_an_unreachable_database_is_not_treated_as_a_conflict() -> None:
     assert _schema_dim_conflict("postgresql://nobody@127.0.0.1:1/nothing", 384) is None
 
 
-def test_a_table_no_offered_embedder_matches_stops_instead_of_looping(tmp_path, monkeypatch):
-    """A 512-wide table matches none of 64, 384, 768 or 1024, so re-asking never ends.
-
-    Bounding on the menu size alone was wrong: it only caught a menu of one. Replace the
-    `all(... in refused ...)` check with `len(embedders) == 1` and this hangs, or in a scripted
-    caller dies with StopIteration once the answers run out.
-    """
+def test_setup_requires_a_migration_dsn_to_fix_a_dimension_mismatch(tmp_path, monkeypatch):
     monkeypatch.setattr("recall.setup.probe_hardware", lambda: _roomy_probe(10 * 1024**3))
     monkeypatch.setattr("recall.setup._module_available", lambda name: False)
     monkeypatch.setattr(
-        "recall.setup._schema_dim_conflict",
-        lambda dsn, dim, table=None: f"table uses vector(512), requested dimension is {dim}",
+        "recall.setup._schema_prepare_state",
+        lambda dsn, dim, table=None: ("needs_apply", "table needs schema migration(s)"),
     )
-    answers = iter(["n", "", "", "", "1", "2", "3", "4"])  # every embedder, each refused
+    applied: list[tuple[str, str, int]] = []
+    monkeypatch.setattr(
+        "recall.schema.apply_migrations",
+        lambda dsn, *, table, dim: applied.append((dsn, table, dim)) or (),
+    )
+    answers = iter(["n", "", "", "", "4", "1", "1", "n", "n"])
 
-    with pytest.raises(SystemExit, match="no embedder on offer matches"):
-        run_setup_wizard(
-            dsn="postgresql://example/recall",
-            env_path=tmp_path / ".env",
-            input_fn=lambda _prompt="": next(answers),
-            print_fn=lambda *a, **k: None,
-        )
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        env_path=tmp_path / ".env",
+        input_fn=lambda _prompt="": next(answers),
+        print_fn=lambda *a, **k: None,
+    )
+
+    assert applied == [("postgresql://example/recall", "chunks", 1024)]
 
 
 def test_the_width_check_asks_about_the_table_the_caller_uses(tmp_path, monkeypatch):
     """Checking a hard-coded `chunks` would refuse over a table a `--table` user does not use."""
     seen: list[str | None] = []
 
-    def spy(dsn: str, dim: int, table: str | None = None) -> None:
+    def spy(dsn: str, dim: int, table: str | None = None) -> tuple[str, None]:
         seen.append(table)
-        return None
+        return "compatible", None
 
     monkeypatch.setattr("recall.setup.probe_hardware", lambda: _roomy_probe(10 * 1024**3))
     monkeypatch.setattr("recall.setup._module_available", lambda name: False)
-    monkeypatch.setattr("recall.setup._schema_dim_conflict", spy)
+    monkeypatch.setattr("recall.setup._schema_prepare_state", spy)
     answers = iter(["n", "", "", "", "2", "1", "1", "n", "n"])
 
     run_setup_wizard(
@@ -1123,22 +1134,46 @@ def test_the_width_check_asks_about_the_table_the_caller_uses(tmp_path, monkeypa
     assert seen == ["my_project_chunks"]
 
 
-def test_the_printed_schema_command_is_runnable(tmp_path, monkeypatch):
-    """`schema --dim N` alone is an argparse error: the subcommand `apply` is required."""
+def test_setup_refuses_to_rebuild_a_populated_mismatched_table(tmp_path, monkeypatch):
     monkeypatch.setattr("recall.setup.probe_hardware", lambda: _roomy_probe(10 * 1024**3))
     monkeypatch.setattr("recall.setup._module_available", lambda name: False)
     monkeypatch.setattr(
-        "recall.setup._schema_dim_conflict",
-        lambda dsn, dim, table=None: ("mismatch" if dim != 384 else None),
+        "recall.setup._schema_prepare_state",
+        lambda dsn, dim, table=None: ("conflict", "mismatch" if dim == 1024 else None),
     )
-    answers = iter(["n", "", "", "", "4", "2", "1", "1", "n", "n"])
-    output = io.StringIO()
-
-    run_setup_wizard(
-        dsn="postgresql://example/recall",
-        env_path=tmp_path / ".env",
-        input_fn=lambda _prompt="": next(answers),
-        print_fn=lambda *a, **k: print(*a, **k, file=output),
+    monkeypatch.setattr(
+        "recall.setup._table_row_counts",
+        lambda dsn, tables: {name: (17 if name == "chunks" else 0) for name in tables},
     )
+    answers = iter(["n", "", "", "", "4"])
 
-    assert "recall schema --dim 1024 apply" in output.getvalue()
+    with pytest.raises(SystemExit, match="already contains data: chunks=17"):
+        run_setup_wizard(
+            dsn="postgresql://example/recall",
+            migration_dsn="postgresql://owner/recall",
+            env_path=tmp_path / ".env",
+            input_fn=lambda _prompt="": next(answers),
+            print_fn=lambda *a, **k: None,
+        )
+
+
+def test_setup_surfaces_schema_apply_failures(tmp_path, monkeypatch):
+    monkeypatch.setattr("recall.setup.probe_hardware", lambda: _roomy_probe(10 * 1024**3))
+    monkeypatch.setattr("recall.setup._module_available", lambda name: False)
+    monkeypatch.setattr(
+        "recall.setup._schema_prepare_state",
+        lambda dsn, dim, table=None: ("needs_apply", "table needs schema migration(s)"),
+    )
+    monkeypatch.setattr(
+        "recall.schema.apply_migrations",
+        lambda dsn, *, table, dim: (_ for _ in ()).throw(PermissionError("no create privilege")),
+    )
+    answers = iter(["n", "", "", "", "4"])
+
+    with pytest.raises(SystemExit, match="Original error: PermissionError: no create privilege"):
+        run_setup_wizard(
+            dsn="postgresql://example/recall",
+            env_path=tmp_path / ".env",
+            input_fn=lambda _prompt="": next(answers),
+            print_fn=lambda *a, **k: None,
+        )
