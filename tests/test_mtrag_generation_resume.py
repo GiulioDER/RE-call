@@ -424,6 +424,13 @@ def test_an_answer_that_cannot_be_encoded_fails_its_task_and_not_the_run(
         ),
         pytest.param(lambda r: r("a<::>1", "x") + "{ half a row", 1, "the torn tail", id="torn"),
         pytest.param(lambda r: r("a<::>1", "x") + "\n\n", 0, "blank lines are not rows", id="blank"),
+        pytest.param(
+            lambda r: r("a<::>1", "x") + "{ half\n" + r("b<::>1", "y") + "{ other half", 2,
+            "the count is how many lines the operator has to delete, so it has to ACCUMULATE: two "
+            "kills at different points is what a flaky disk produces, and reporting 1 would stop "
+            "them after the first",
+            id="two-fragments",
+        ),
     ],
 )
 def test_the_fragment_count_sees_the_lines_the_official_checker_sees(
@@ -454,6 +461,34 @@ def test_the_fragment_count_survives_a_checkpoint_torn_mid_character(tmp_path) -
                     + torn[: torn.index("é".encode("utf-8")) + 1])
 
     assert gen.unparsable_rows(out) == 1
+
+
+def test_each_answer_reaches_the_disk_before_the_next_one_is_paid_for(tmp_path, monkeypatch) -> None:
+    """The checkpoint contract, observed from the only vantage point that can see it: INSIDE the
+    run. Buffered, the ~8 KiB wrapper holds several rows, so a kill loses every answer still in it,
+    all of them already billed, and no assertion made after `main` returns can tell the two apart
+    because closing the handle flushes anyway.
+
+    So the stub reads the output as it is called: by the time task two is requested, task one's
+    answer must already be on disk."""
+    tasks = [_task(task_id="a<::>1"), _task(task_id="b<::>1")]
+    root = _mtrag_root(tmp_path, tasks)
+    out = tmp_path / "preds.jsonl"
+    seen_on_disk: list[int] = []
+
+    def answer_and_peek(*a, **k):
+        seen_on_disk.append(len(out.read_text(encoding="utf-8").splitlines()))
+        return "an answer"
+
+    monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
+    monkeypatch.setattr(gen, "generate_one", answer_and_peek)
+
+    gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)])
+
+    assert seen_on_disk == [0, 1], (
+        "the previous answer must be durable before the next call is billed, not held in a buffer "
+        f"until the file is closed: saw {seen_on_disk}"
+    )
 
 
 def test_a_write_failure_is_not_filed_as_a_task_that_had_no_answer(tmp_path, monkeypatch) -> None:
