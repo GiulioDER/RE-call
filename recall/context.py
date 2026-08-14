@@ -11,6 +11,7 @@ from recall.embedding_registry import (
     ContextMode,
     find_registered_profile,
 )
+from recall.frontmatter import frontmatter_span
 
 __all__ = [
     "NEIGHBOR_MAX_CHARS",
@@ -163,13 +164,20 @@ def document_title(raw: str, body: str, source: str) -> str:
     nested under any other mapping, and because the scan returns on its first hit a nested title
     appearing above the real one won \u2014 silently embedding a sub-object's label as the document's.
     Indentation is the only thing that distinguishes the two, so it cannot be stripped before the
-    comparison.
+    comparison. `frontmatter_span` accepts an indented line as a member OF the block; this scan
+    still refuses it as THE title. Two different questions, kept apart.
+
+    Whether there is a block at all is `frontmatter_span`'s call, not this function's. Scanning
+    forward for the next ``---`` pairs a leading horizontal rule with a later one and reads a
+    ``title:`` line out of the prose between them as the document's own.
+
+    The split matches `frontmatter_span`'s exactly. `splitlines` also breaks on a bare ``\\r``,
+    a form feed and U+2028, so slicing its list with an index counted over ``split("\\n")`` would
+    address the wrong lines on any document carrying one.
     """
-    lines = raw.splitlines()
-    if lines and lines[0].lstrip("\ufeff").strip() == "---":
-        for line in lines[1:]:
-            if line.strip() == "---":
-                break
+    span = frontmatter_span(raw)
+    if span is not None:
+        for line in raw.split("\n")[1:span]:
             if line[:1].isspace():
                 continue
             key, separator, value = line.partition(":")

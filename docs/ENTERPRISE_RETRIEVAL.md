@@ -36,7 +36,7 @@ Three context modes build the text handed to the embedder. They are declared by 
 
 | Rule | Behaviour |
 |---|---|
-| Title precedence | frontmatter `title`, then the first H1, then the root-relative basename. The frontmatter key must be **top level**; an indented `title:` belongs to a sub-object and is skipped. The basename is taken from the whole path, before any cap |
+| Title precedence | frontmatter `title`, then the first H1, then the root-relative basename. The frontmatter key must be **top level**; an indented `title:` belongs to a sub-object and is skipped. Whether there is a block at all is `frontmatter_span`'s call: a leading `---` followed by prose is markdown's thematic break, not an open fence, so a `title:` line sitting in that prose is **not** the document's title. The basename is taken from the whole path, before any cap |
 | Paths | root-relative only. An absolute path, a drive letter, a UNC path or any `..` segment is **refused**, in every mode including `none`. `root_relative_source` validates and **does not truncate**: the cap belongs to the rendered field, because a cap applied inside the guard runs after its own checks and can reintroduce what they refused. The refusal names the rule, never the path, since the value it fires on is an absolute host path |
 | Control characters | stripped from every structural field (title, source, section hierarchy). The chunk is content and is left exactly as stored |
 | Caps | title 256 characters, source 256, section hierarchy 512 |

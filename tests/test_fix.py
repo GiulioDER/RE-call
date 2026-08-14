@@ -146,6 +146,26 @@ def test_apply_preserves_existing_frontmatter_keys_and_body(tmp_path):
     assert body.rstrip().endswith("tail")
 
 
+def test_apply_prepends_a_block_rather_than_writing_into_prose(tmp_path):
+    """A leading ``---`` is a horizontal rule, not an open frontmatter block.
+
+    Scanning forward for the next ``---`` put ``supersedes:`` in the middle of the author's own
+    prose. This is the one path in the package that rewrites a user's memo in place, so the
+    damage was on disk: the inserted key then DID parse as frontmatter, and the whole first
+    section dropped out of retrieval as a side effect of a lint fix.
+    """
+    _write(tmp_path, "old_thing_2026.md", "# old\n\nbody")
+    prose = "---\n\n# new\n\nThis supersedes [[old_thing_2026]].\n\n---\n\nContact ops.\n"
+    _write(tmp_path, "new.md", prose)
+    proposals, _ = propose_fixes(tmp_path)
+    apply_proposal(tmp_path, proposals[0])
+
+    text = (tmp_path / "new.md").read_text(encoding="utf-8")
+    meta, body = parse_frontmatter(text)
+    assert meta["supersedes"] == "old_thing_2026"
+    assert body == prose, "the author's document survives byte for byte, opening rule included"
+
+
 def test_applying_makes_the_edge_real_end_to_end(tmp_path):
     """The point of the feature: after the fix, the corpus lints clean and the edge exists."""
     from recall.lint import lint_corpus

@@ -101,6 +101,17 @@ def test_an_indented_frontmatter_title_does_not_outrank_the_documents_own() -> N
     assert document_title(raw, "\nbody.\n", "team/notes.md") == "The Real Title"
 
 
+def test_a_title_is_not_lifted_from_prose_between_two_thematic_breaks() -> None:
+    """A leading ``---`` is also a horizontal rule, and this scan used to pair it with the next.
+
+    Any ``title:`` line in the prose caught between the two rules was then read as the
+    document's own title, so a memo could be labelled by a sentence a reader would never have
+    taken for metadata. `frontmatter_span` refuses the pairing, and the H1 wins as it should.
+    """
+    raw = "---\n\nSome prose.\n\ntitle: not a real title\n\n---\n\n# Real Heading\n"
+    assert document_title(raw, raw, "team/notes.md") == "Real Heading"
+
+
 # ---------------------------------------------------------------------------------------------
 # Rule 2. Root-relative paths only; strip control characters from structural fields.
 # ---------------------------------------------------------------------------------------------

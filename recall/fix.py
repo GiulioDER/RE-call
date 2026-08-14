@@ -367,6 +367,13 @@ def apply_proposal(root: Path, p: Proposal) -> None:
     writers of the user's own memos and the parser that reads them share one definition of a line
     and one of a leading BOM.
 
+    It now also shares the parser's definition of WHETHER a block exists at all. A leading
+    horizontal rule is not frontmatter, and the old write path scanned forward for the next
+    ``---`` anyway, inserted `supersedes:` into the middle of the author's prose, and then
+    caused that inserted key to parse as frontmatter on the next read. `insert_frontmatter_line`
+    now asks `frontmatter_span`, so a thematic-break opening gets a real block prepended above it
+    rather than being edited in place.
+
     The target is checked before anything is opened. `propose_fixes` already refuses a value no
     reader could resolve, so these fire only for a `Proposal` built elsewhere — but relying on
     that is exactly what the apply loop was doing when `UnicodeEncodeError` walked past its
