@@ -102,6 +102,8 @@ class ErasureResult:
 #: The media types whose body is derived by `parse_frontmatter`. Anything else is chunked as it
 #: arrived, so the frontmatter pairing rule cannot have moved its body.
 _MARKDOWN_MEDIA_TYPES = frozenset({"text/markdown", "text/x-markdown"})
+_BODY_RULE_VERSION_KEY = "body_rule_version"
+_BODY_RULE_VERSION = "frontmatter-pairing-2026-08-11"
 
 
 def _body_rule_changed(media_type: str, text: str) -> bool:
@@ -120,8 +122,9 @@ def _body_rule_changed(media_type: str, text: str) -> bool:
     affected file rebuilds once and is skipped afterwards. This is a pure function of the
     object's text with nowhere to record that the rebuild already happened, because reuse is
     keyed on tenant, URI, sha256 and pipeline fingerprint and none of those can carry a body
-    rule term. An affected object is therefore re-chunked and re-embedded on EVERY future
-    generation build, not just the first.
+    rule term. The generation path therefore persists a marker in chunk metadata and requires it
+    only for this affected subset, so the first post-fix rebuild runs once and later generations
+    can reuse that repaired source.
 
     Accepted rather than fixed: the cost falls only on objects that actually contain the defect,
     and removing it means either a new term in `PipelineIdentity`, which re-embeds every corpus,
@@ -401,15 +404,26 @@ class GenerationManager:
         source_uri: str,
         source_sha256: str,
         object_version_id: str,
+        *,
+        require_body_rule_version: str | None = None,
     ) -> int:
         source = conn.execute(
             "SELECT c.generation_id FROM recall_chunks_v1 c "
             "JOIN recall_generations g "
             "ON g.tenant_id = c.tenant_id AND g.generation_id = c.generation_id "
             "WHERE c.tenant_id = %s AND c.source_uri = %s AND c.source_sha256 = %s "
+            "AND (%s OR c.metadata ->> %s = %s) "
             "AND g.pipeline_fingerprint = %s AND g.state IN ('active', 'ready', 'retired') "
             "ORDER BY g.activated_at DESC NULLS LAST, g.created_at DESC LIMIT 1",
-            (self.tenant_id, source_uri, source_sha256, pipeline_fingerprint),
+            (
+                self.tenant_id,
+                source_uri,
+                source_sha256,
+                require_body_rule_version is None,
+                _BODY_RULE_VERSION_KEY,
+                require_body_rule_version,
+                pipeline_fingerprint,
+            ),
         ).fetchone()
         if source is None:
             return 0
@@ -512,15 +526,17 @@ class GenerationManager:
                     if self._is_tombstoned(conn, entry.uri):
                         tombstoned += 1
                         continue
-                    reused = 0 if _body_rule_changed(entry.media_type, text) else (
-                        self._reuse_source(
-                            conn,
-                            generation_id,
-                            pipeline.fingerprint,
-                            entry.uri,
-                            entry.sha256,
-                            entry.version_id,
-                        )
+                    body_rule_changed = _body_rule_changed(entry.media_type, text)
+                    reused = self._reuse_source(
+                        conn,
+                        generation_id,
+                        pipeline.fingerprint,
+                        entry.uri,
+                        entry.sha256,
+                        entry.version_id,
+                        require_body_rule_version=(
+                            _BODY_RULE_VERSION if body_rule_changed else None
+                        ),
                     )
                     if reused:
                         reused_objects += 1
@@ -565,6 +581,11 @@ class GenerationManager:
                             text=piece,
                             metadata={
                                 **metadata,
+                                **(
+                                    {_BODY_RULE_VERSION_KEY: _BODY_RULE_VERSION}
+                                    if body_rule_changed
+                                    else {}
+                                ),
                                 "file": PurePosixPath(entry.uri).name,
                                 "ord": ordinal,
                                 "content_hash": entry.sha256,
