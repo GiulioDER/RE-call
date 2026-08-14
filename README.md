@@ -32,6 +32,10 @@
   <a href="#evidence">Evidence</a>
 </p>
 
+<p align="center">
+  <a href="https://giulioder.github.io/RE-call/">Beginner setup site, test version</a>
+</p>
+
 ## Why RE-call
 
 Nearest-match retrieval cannot tell the difference between what is true and what merely reads like

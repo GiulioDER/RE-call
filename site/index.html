@@ -31,13 +31,16 @@
         <p class="eyebrow">Field Guide</p>
         <h1>Install RE-call without guessing what each part does.</h1>
         <p class="hero-summary">
-          This site turns the repo’s technical docs into a first time setup path. It is written for
-          people who want the exact links, the exact commands, and a plain explanation of why each
-          option matters.
+          This site turns the repo docs into a first run path: exact links, exact commands, and a
+          plain explanation of what each choice changes.
         </p>
         <div class="hero-actions">
           <a class="button" href="requirements.html">Start with requirements</a>
           <a class="button-secondary" href="installation.html">Jump to installation</a>
+        </div>
+        <div class="warning">
+          <div class="warning-title">Test version</div>
+          <p>This onboarding site is a first test version. Expect refinement, tighter screenshots, and sharper edge case coverage later.</p>
         </div>
         <div class="signal-strip">
           <div class="signal-item">
@@ -61,25 +64,25 @@
         <article>
           <p class="kicker">01 · Prepare the machine</p>
           <h2>Get the right downloads first</h2>
-          <p>I list the official download pages for Python, Docker Desktop, PostgreSQL, pgvector references, and Claude Code, plus the simplest choice for beginners.</p>
+          <p>Official download pages, the safest beginner choices, and what each dependency is for.</p>
           <a class="button-secondary" href="requirements.html">Open requirements</a>
         </article>
         <article>
           <p class="kicker">02 · Run the local stack</p>
           <h2>Follow the install sequence step by step</h2>
-          <p>The installation guide gives the exact order: start the database, install RE-call, apply schema, then run the setup wizard.</p>
+          <p>Database first, package second, schema third, setup fourth.</p>
           <a class="button-secondary" href="installation.html">Open installation</a>
         </article>
         <article>
           <p class="kicker">03 · Feed it real memory</p>
           <h2>Build a corpus from your own material</h2>
-          <p>I explain what belongs in a corpus, how to structure markdown memories, and how calibration changes once you move from the demo sample to your own data.</p>
+          <p>What belongs in memory, how to structure it, and how calibration changes once you leave the demo sample.</p>
           <a class="button-secondary" href="corpus.html">Open corpus guide</a>
         </article>
         <article>
           <p class="kicker">04 · Connect Claude Code</p>
           <h2>Teach Claude to check memory before it acts</h2>
-          <p>This page explains the MCP config, the scaffolded `CLAUDE.md` block, the starter `memory/MEMORY.md`, and the self recall loop.</p>
+          <p>MCP config, the scaffolded `CLAUDE.md` block, `memory/MEMORY.md`, and the self recall loop.</p>
           <a class="button-secondary" href="claude-code.html">Open Claude Code guide</a>
         </article>
       </div>
@@ -91,8 +94,8 @@
           <p class="eyebrow">Audience</p>
           <h2>Who this manual is for</h2>
           <p class="lede">
-            Use this path if you are comfortable copying commands but you do not want to reverse
-            engineer the architecture before you get your first local result.
+            Use this path if you can run commands but do not want to reverse engineer the stack
+            before the first successful result.
           </p>
           <div class="pill-row">
             <span class="pill">Windows PowerShell supported</span>
@@ -106,13 +109,13 @@
           <p class="eyebrow">Why this site exists</p>
           <h2>The repo docs are accurate, but they assume you already know the moving parts.</h2>
           <p>
-            RE-call stores memory in PostgreSQL, indexes it with pgvector, and can add trust,
-            calibration, and Claude integration on top. That is powerful, but for a first run it
-            also means you need a simple order of operations. This site gives that order.
+            RE-call stores memory in PostgreSQL, indexes it with pgvector, and layers trust,
+            calibration, and Claude integration on top. For a first run, what matters most is the
+            order of operations. This site gives that order.
           </p>
           <div class="callout">
             <div class="callout-title">The shortest successful path</div>
-            <p>Install Python and Docker Desktop, start the bundled PostgreSQL plus pgvector container, install `recall-rag[fastembed]`, apply the schema, then run `python -m recall.cli setup`.</p>
+            <p>Install Python and Docker Desktop, start the bundled pgvector container, install `recall-rag[fastembed]`, apply the schema, then run `python -m recall.cli setup`.</p>
           </div>
         </section>
 
