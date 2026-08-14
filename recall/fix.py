@@ -37,10 +37,13 @@ from pathlib import Path
 
 from recall.atomic_write import atomic_write_bytes
 from recall.frontmatter import (
+    NAME_STAND_IN_MARK,
+    encodable_name,
     has_line_break,
     insert_frontmatter_line,
     parse_frontmatter,
     supersedes_key,
+    writable_reference,
 )
 from recall.lint import DEFAULT_GLOB
 from recall.observability import get_logger
@@ -272,9 +275,36 @@ def propose_fixes(
             resolved = candidates[0]
             if resolved == name:
                 continue  # self-reference: lint reports it separately
-            # passive voice: the OTHER file is the one that supersedes this memo
-            writer = edit_file if edit_file is not None else resolved
-            value = target_name if edit_file is not None else name
+            if edit_file is not None:
+                writer, value = edit_file, target_name
+            else:
+                # Passive voice: the OTHER file is the one that supersedes this memo, so the
+                # value is THIS memo's own corpus path. That makes this the only branch whose
+                # value is a corpus NAME rather than a reference read out of a body this
+                # package has already decoded as UTF-8, and so the only one that needs the
+                # boundary the sibling commands share. A POSIX filename is bytes: one that is
+                # not valid UTF-8 arrives as a lone surrogate through `Path.glob`, and
+                # `insert_frontmatter_line` encodes the value as UTF-8 — which raised out of
+                # the apply loop, uncaught, after earlier memos in the same run had already
+                # been rewritten. `writer` is a path this package OPENS, so it stays exactly as
+                # the filesystem handed it over.
+                writer = resolved
+                value = writable_reference(encodable_name(name))
+                if NAME_STAND_IN_MARK in value:
+                    # `writable_reference` has already dropped the directories no reader
+                    # compares, so a marker still here is on the FILE's own name and no
+                    # spelling is left: the raw name cannot enter a UTF-8 memo, and `lint`,
+                    # `check`, `fix`, `store` and the reasoning graph all resolve a declared
+                    # edge by comparing raw filenames, so the stand-in would read as an edge to
+                    # a human and as an unresolved one to every reader here. Refused at PROPOSE
+                    # time, so the dry run says so before `--apply` has written anything.
+                    unfixable.append(Unfixable(
+                        name,
+                        f"has a name that is not valid UTF-8, so the edge {writer} would "
+                        f"declare names a file no reader of the corpus resolves. Rename it "
+                        f"first; the edge can be declared once it has a name a memo can hold",
+                    ))
+                    continue
             if writer in existing:
                 unfixable.append(Unfixable(
                     writer,
@@ -336,7 +366,34 @@ def apply_proposal(root: Path, p: Proposal) -> None:
     survived a 28-test suite. The insertion now goes through `recall/frontmatter.py`, so the two
     writers of the user's own memos and the parser that reads them share one definition of a line
     and one of a leading BOM.
+
+    The target is checked before anything is opened. `propose_fixes` already refuses a value no
+    reader could resolve, so these fire only for a `Proposal` built elsewhere — but relying on
+    that is exactly what the apply loop was doing when `UnicodeEncodeError` walked past its
+    `except` and left a partial run behind. `UnreadableMemo` is the vocabulary that loop already
+    reports as SKIP, so containment does not depend on who built the proposal.
+
+    Two checks, because the two spellings of one unnamable file need different sentences. A raw
+    surrogate is what `insert_frontmatter_line` cannot encode. A stand-in encodes perfectly and
+    resolves for nobody, and it is the one a reviewer can hand back after reading it in a
+    report, so "is not valid UTF-8" would be a false thing to say about the value in front of
+    them and would name nothing they could act on.
     """
+    if NAME_STAND_IN_MARK in p.target:
+        # The marker is stripped from the message: it carries a NUL, which is there to keep two
+        # names apart and not for a reviewer to read.
+        raise UnreadableMemo(
+            f"{p.edit_file} cannot declare supersedes: "
+            f"{p.target.replace(NAME_STAND_IN_MARK, '')!r}, this corpus's stand-in for a file "
+            f"whose name is not valid UTF-8, which no reader of the corpus resolves"
+        )
+    try:
+        p.target.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise UnreadableMemo(
+            f"{p.edit_file} cannot declare supersedes: {p.target!r}, which is not valid UTF-8 "
+            f"({exc.reason})"
+        ) from exc
     f = root / p.edit_file if root.is_dir() else root
     raw = f.read_bytes()
     try:
