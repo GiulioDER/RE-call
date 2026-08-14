@@ -18,6 +18,15 @@ Hi Joachim,
 
 I would like to submit RE-call for the EnterpriseRAG-Bench leaderboard.
 
+Before the links, I want to disclose the main caveat clearly. The local score
+below is a mixed judge run because I was trying to keep evaluation cost bounded.
+Rows `qst_0001` through `qst_0214` were scored with `openai/gpt-5.4` medium
+reasoning through OpenRouter. Rows `qst_0215` through `qst_0500` were scored
+with `openai/gpt-5.4` through OpenRouter with reasoning disabled. I do not
+believe reasoning disabled improved the score; it was a budget compromise, and
+the answer file is public so you can rerun it under your preferred homogeneous
+judge configuration if needed.
+
 Public verification material:
 
 | Item | Link |
@@ -49,13 +58,8 @@ Answer artifact provenance:
 Evaluation disclosure:
 
 The local score below uses the official EnterpriseRAG metrics based evaluation
-flow, including citation stripping and document correction. I need to disclose
-one caveat: because of budget constraints, the local score is a mixed judge run.
-Rows `qst_0001` through `qst_0214` were scored with `openai/gpt-5.4` medium
-reasoning through OpenRouter. Rows `qst_0215` through `qst_0500` were scored
-with `openai/gpt-5.4` through OpenRouter with reasoning disabled. The answer
-file itself is public, so please rerun it under your preferred homogeneous judge
-configuration if that is required for leaderboard inclusion.
+flow, including citation stripping and document correction. The mixed judge
+configuration is recorded in the linked local score summary.
 
 Submitted score:
 
@@ -72,6 +76,11 @@ Submitted score:
 
 The answer file is public and should be directly evaluable with your official
 benchmark release plus the reproduction commands in the guide above.
+
+If you are open to it, I would also appreciate a short conversation about RAG
+benchmarks and what you consider the most meaningful evaluation signals for
+systems like this. Visibility and credible external validation are the main
+things I am trying to improve next.
 
 Best,
 Giulio
