@@ -14,6 +14,7 @@ import os
 
 import pytest
 
+from recall.cli import main
 from recall.fix import (
     Proposal,
     UnreadableMemo,
@@ -21,7 +22,7 @@ from recall.fix import (
     extract_edges,
     propose_fixes,
 )
-from recall.frontmatter import parse_frontmatter, supersedes_key
+from recall.frontmatter import encodable_name, parse_frontmatter, supersedes_key
 
 
 def _write(d, name, text):
@@ -599,3 +600,165 @@ def test_one_edge_spelled_twice_is_refused_once_and_never_also_proposed(tmp_path
     assert unfixable == [], (
         f"one declarable edge needs no human, so nothing may be reported, got {unfixable!r}"
     )
+# --- a name a memo can hold ---------------------------------------------------------------------
+#
+# A POSIX filename is bytes, and one that is not valid UTF-8 arrives as a lone surrogate through
+# `Path.glob`'s surrogateescape. The PASSIVE branch writes the REFERRING memo's own path as the
+# value of `supersedes:`, and `insert_frontmatter_line` encodes that as UTF-8 — so the apply loop
+# died with an uncaught `UnicodeEncodeError`, AFTER earlier memos in the same run had already been
+# rewritten and without the summary line the loop's own guard exists to print. The value is the
+# only thing here that gets encoded; `edit_file` is a path that gets OPENED, and stays raw.
+
+BAD = "bad\udcff_2026-03-01.md"
+
+
+def _superseded_by_new(root, name):
+    """`name` states that it is superseded by `new_2026-02-01.md`.
+
+    Passive voice, so the edge belongs on the TARGET and its value is `name` — which is the
+    spelling this corpus may not be able to write.
+    """
+    (root / name).write_bytes(b"Superseded by [[new_2026-02-01]].\n")
+    (root / "new_2026-02-01.md").write_bytes(b"the newer one\n")
+
+
+def test_propose_fixes_refuses_an_edge_valued_at_a_name_no_reader_resolves(tmp_path):
+    """Refused at PROPOSE time, so the dry run says so before anything has been written.
+
+    `lint`, `check`, `fix`, `store` and the reasoning graph all resolve a declared edge by
+    comparing raw filenames, so no spelling of this name reads as an edge to all of them: the
+    raw one cannot go into a UTF-8 memo, and the stand-in resolves for nobody. Proposing it
+    would offer a reviewer an edge that can only ever be applied or refused, never resolved.
+    """
+    _superseded_by_new(tmp_path, BAD)
+
+    proposals, unfixable = propose_fixes(tmp_path)
+
+    assert proposals == [], "proposed an edge whose value no memo can carry"
+    assert [u.file for u in unfixable] == [BAD]
+    assert "not valid UTF-8" in unfixable[0].reason
+
+
+def test_apply_proposal_refuses_a_target_it_cannot_encode(tmp_path):
+    """The same guard at the WRITE boundary, because `apply_proposal` is reachable on its own.
+
+    `UnreadableMemo` is the vocabulary the apply loop already catches and reports as SKIP, so a
+    proposal built by hand cannot abort a run that has already rewritten memos — which is the
+    failure being fixed, reachable without going through `propose_fixes` at all.
+    """
+    _superseded_by_new(tmp_path, BAD)
+    target = tmp_path / "new_2026-02-01.md"
+    before = target.read_bytes()
+
+    with pytest.raises(UnreadableMemo, match="not valid UTF-8"):
+        apply_proposal(tmp_path, Proposal(
+            edit_file="new_2026-02-01.md",
+            target=BAD,
+            evidence_file=BAD,
+            evidence="Superseded by [[new_2026-02-01]].",
+        ))
+
+    assert target.read_bytes() == before, "the memo was rewritten by a refused proposal"
+
+
+def test_apply_proposal_refuses_a_stand_in_target(tmp_path):
+    """The other spelling of the same file, and the one that encodes perfectly.
+
+    A stand-in is what a reviewer reads in a report, so it is the spelling they can hand back,
+    and `str.encode` has no complaint about it: every character is ordinary. It needs its own
+    check and its own sentence, because "is not valid UTF-8" is false about the value in front
+    of them and names nothing they could act on. What is wrong with it is that no reader of the
+    corpus resolves it, which is the thing to say.
+    """
+    _superseded_by_new(tmp_path, BAD)
+    target = tmp_path / "new_2026-02-01.md"
+    before = target.read_bytes()
+    stand_in = encodable_name(BAD)
+    assert stand_in.encode("utf-8"), "the stand-in encodes; the other guard cannot see it"
+
+    with pytest.raises(UnreadableMemo, match="stand-in"):
+        apply_proposal(tmp_path, Proposal(
+            edit_file="new_2026-02-01.md",
+            target=stand_in,
+            evidence_file=BAD,
+            evidence="Superseded by [[new_2026-02-01]].",
+        ))
+
+    assert target.read_bytes() == before, "the memo was rewritten by a refused proposal"
+
+
+def test_lint_fix_apply_finishes_the_run_when_one_memo_cannot_be_named(tmp_path, capsys):
+    """Through `main()`, because a partial apply is what the user is left holding.
+
+    The unnamable memo sorts between the two ordinary ones, so the loop had already rewritten
+    `aaa` when it died. What made that the worst outcome rather than merely a bad one is the
+    missing summary: the run printed no count, so the state of the corpus after it could only
+    be recovered by reading every memo. The loop's own comment says its guard exists to prevent
+    exactly this, and `UnicodeEncodeError` walked straight past it.
+    """
+    (tmp_path / "aaa_2026-05-01.md").write_bytes(b"Supersedes [[zzz_2026-04-01]].\n")
+    (tmp_path / "zzz_2026-04-01.md").write_bytes(b"the older one\n")
+    _superseded_by_new(tmp_path, BAD)
+
+    main(["lint", str(tmp_path), "--fix", "--apply"])
+
+    out = capsys.readouterr().out
+    assert "wrote 1 edge(s)" in out, "the run ended without saying what it had written"
+    meta, _ = parse_frontmatter((tmp_path / "aaa_2026-05-01.md").read_text(encoding="utf-8-sig"))
+    assert meta["supersedes"] == "zzz_2026-04-01", "the ordinary edge was lost with the run"
+    assert "supersedes:" not in (tmp_path / "new_2026-02-01.md").read_text(encoding="utf-8")
+
+
+def test_a_memo_under_an_unnamable_directory_still_gets_its_edge(tmp_path):
+    """Only the FILE's own name has to be spellable, not every directory above it.
+
+    `supersedes_key` reduces a reference to the stem of its last segment, and every reader in
+    the package compares through it, so `sub/old.md` and `old.md` name the same document to all
+    of them. Refusing this would invent a restriction the package does not have, about a file
+    whose own name was never the problem.
+    """
+    sub = tmp_path / "sub\udcff"
+    sub.mkdir()
+    _superseded_by_new(tmp_path, "sub\udcff/old_2026-03-01.md")
+
+    proposals, unfixable = propose_fixes(tmp_path)
+
+    assert [p.target for p in proposals] == ["old_2026-03-01.md"], f"refused, or wrote {unfixable}"
+    apply_proposal(tmp_path, proposals[0])
+    meta, _ = parse_frontmatter((tmp_path / "new_2026-02-01.md").read_text(encoding="utf-8-sig"))
+    assert meta["supersedes"] == "old_2026-03-01.md"
+
+
+def test_an_ordinary_directory_survives_into_the_written_value(tmp_path):
+    """The trim above applies to the awkward name and to nothing else.
+
+    A value that needs no trimming and gets one still reads the same to every resolver, and is
+    still wrong: `lint`'s dedup recognises a declared edge by comparing the value, so a
+    spelling that changes between runs is an edge re-proposed forever. Passes before the fix,
+    and is here to keep the trim from widening into the ordinary case.
+    """
+    (tmp_path / "sub").mkdir()
+    _superseded_by_new(tmp_path, "sub/old_2026-03-01.md")
+
+    proposals, _ = propose_fixes(tmp_path)
+
+    assert [p.target for p in proposals] == ["sub/old_2026-03-01.md"]
+
+
+def test_the_memo_that_cannot_be_named_still_gains_its_own_edge(tmp_path):
+    """The neighbouring case, which already worked and must keep working.
+
+    Active voice puts the edge on the awkward memo ITSELF, and its target is an ordinary name.
+    Nothing unnamable is written, so there is nothing to refuse: `edit_file` is only ever
+    opened, and the filesystem is where that name came from. Passes before the fix; a guard
+    written against the value rather than against the path is what keeps it passing.
+    """
+    (tmp_path / BAD).write_bytes(b"Supersedes [[zzz_2026-04-01]].\n")
+    (tmp_path / "zzz_2026-04-01.md").write_bytes(b"the older one\n")
+
+    proposals, _ = propose_fixes(tmp_path)
+
+    assert [(p.edit_file, p.target) for p in proposals] == [(BAD, "zzz_2026-04-01")]
+    apply_proposal(tmp_path, proposals[0])
+    meta, _ = parse_frontmatter((tmp_path / BAD).read_text(encoding="utf-8-sig"))
+    assert meta["supersedes"] == "zzz_2026-04-01"

@@ -297,3 +297,42 @@ def _encodable_segment(segment: str) -> str:
             return segment
     escaped = segment.replace("\\", "\\\\").encode("utf-8", "backslashreplace").decode("utf-8")
     return NAME_STAND_IN_MARK + escaped
+
+
+def writable_reference(value: str) -> str:
+    """The value as a memo can carry it, with the segments no reader looks at dropped.
+
+    `supersedes_key` reduces a reference to the stem of its LAST segment, and `rewrite._resolve`,
+    `lint`, `check`, `fix` and the store all compare through it, so `legal/old.md` and `old.md`
+    name the same document to every one of them. That makes a directory whose name is not valid
+    UTF-8 a different case from a FILE whose name is not: the basename is still a reference every
+    reader resolves, and refusing it invented a restriction this package does not have, about a
+    file whose own name was never the problem. Verified by asking a reader rather than by
+    reasoning: `rewrite verify` resolves the edge this writes.
+
+    Only when the marker survives into the last segment is there nothing writable left. Saying so
+    is left to the CALLER, because the two writers of the user's memos refuse in different
+    vocabularies — `rewrite` raises `RewriteRefused`, `fix` records an `Unfixable` its dry run
+    prints — while "is any of this writable" has one answer, and this module is where both
+    writers already share one. Each names that surviving segment when it refuses: the file's own
+    name is what has to change. Ambiguity is unaffected either way, because the stem is what was
+    being compared already, so dropping the directory cannot make two documents collide that did
+    not collide before.
+
+    A value carrying no marker is returned untouched, directories and all. Trimming those too
+    would read the same to every resolver and still be wrong: a derived block's dedup recognises
+    the line it wrote by comparing the value, so a spelling that changes between runs is an entry
+    appended forever.
+
+    The invariant is CHECKED rather than assumed, by asking `supersedes_key` whether the trim
+    changed anything. A bare corpus name is not the only shape a value arrives in: `[[name]]` is
+    what the corpus's own author writes and what a provider can hand over, and splitting that on
+    the last `/` cuts inside the brackets, taking the marker with the discarded half and leaving
+    `old.md]]`, which resolves to nothing. Refusing it whole is the honest outcome. Rewriting it
+    into `[[old.md]]` would be this module editing a reference it was handed, which is where a
+    writer starts guessing at what a human meant.
+    """
+    if NAME_STAND_IN_MARK not in value:
+        return value
+    trimmed = value.rsplit("/", 1)[-1]
+    return trimmed if supersedes_key(trimmed) == supersedes_key(value) else value
