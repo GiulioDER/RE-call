@@ -123,7 +123,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from benchmarks.llm import CompletionTruncated
+from benchmarks.llm import CompletionTruncated, EmptyCompletion, _safe_reason, _shape_note
+from recall._chat_content import assistant_text
 
 # Private on purpose, and imported rather than reimplemented: there is one definition in this
 # repository of how long a provider asked us to wait, and a second copy here would drift from it
@@ -477,15 +478,60 @@ def generate_one(client: Any, model: str, messages: list[dict[str, str]], max_to
             response = client.chat.completions.create(
                 model=model, messages=messages, max_tokens=max_tokens, temperature=0.0
             )
+            # Read once. It was indexed three times below, and the empty-`choices` guard that
+            # `benchmarks/llm.py` has is still missing here (see the branch note in the module
+            # docstring), so this at least keeps the three reads from disagreeing.
+            choice = response.choices[0]
             # Absence is not evidence: a provider that omits the field is not reporting truncation,
             # and refusing on a missing attribute would fail every task on such a provider.
-            if getattr(response.choices[0], "finish_reason", None) == "length":
+            reason = getattr(choice, "finish_reason", None)
+            if reason == "length":
                 raise CompletionTruncated(
                     f"completion hit max_tokens={max_tokens} and was cut off. Raise --max-tokens; "
                     f"do NOT score this answer."
                 )
-            return (response.choices[0].message.content or "").strip()
-        except CompletionTruncated:
+            # `assistant_text`, not `content or ""`. A list of text blocks is TRUTHY, so `or ""`
+            # passed it straight through and `.strip()` raised `AttributeError` — a type that is
+            # NOT in `PERMANENT_ERROR_NAMES`, so every affected task paid four BILLED attempts
+            # before failing, and five such tasks in a row aborted the run. Shared with the other
+            # two OpenAI-compatible clients in this repo so the rule cannot drift between them.
+            content = choice.message.content
+            raw = assistant_text(content)
+            answer = raw.strip()
+            if not answer:
+                # ⛔ An empty reading is REFUSED, not returned. `main` writes whatever this
+                # returns straight into `predictions` and counts the task as done, so returning
+                # "" put an unscorable empty answer in the submission with rc=0 — the exact
+                # defect PR #307 fixed in `benchmarks/llm.py`, which nothing here guarded.
+                #
+                # Reading block lists (rather than crashing on them) is what made this urgent:
+                # `(content or "").strip()` raised `AttributeError` on a block list, so the task
+                # was quarantined loudly. Reading it correctly routed every UNREADABLE block list
+                # into the silent hole that `content=None` was already in.
+                # ⚠️ Through `_safe_reason`, and the raw value on the ATTRIBUTE, exactly as
+                # `EmptyCompletion`'s own docstring mandates. Rendering the provider's chosen
+                # string with `!r` put untrusted text into a message, which is the hazard that
+                # docstring exists to close — and a `finish_reason` whose `__repr__` raises turned
+                # this single-billed-call typed refusal into four attempts and an untyped wrapper,
+                # because the f-string is evaluated inside the `try`.
+                #
+                # `_shape_note` distinguishes the three causes this message used to conflate: a
+                # block list this reader could not read, blocks holding only whitespace, and a
+                # shape that is neither. `.failed.jsonl` is the only record of why a task was
+                # quarantined, and on 842 tasks those want different responses.
+                raise EmptyCompletion(
+                    f"the provider returned a completion with no usable text "
+                    f"(finish_reason={_safe_reason(reason)}).{_shape_note(content, raw)} "
+                    f"Writing it would put an unscorable empty prediction in the submission.",
+                    finish_reason=reason,
+                )
+            return answer
+        except (CompletionTruncated, EmptyCompletion):
+            # Re-raised directly, for the reason truncation already is: wrapping these in
+            # "gave up after 4 attempts, re-run to resume" gives the operator advice that cannot
+            # work. Neither a ceiling that cut this attempt nor a body this reader cannot read
+            # changes on the next three, and the caller's per-task quarantine keeps both out of
+            # the submission, which is the only safe place for them.
             raise
         except Exception as exc:  # noqa: BLE001 - re-raised below once attempts are exhausted
             last = exc

@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 from typing import Protocol
 
+from recall._chat_content import assistant_text
 from recall.embeddings import _is_transient, _probe, retry_with_backoff
 from recall.provider_metadata import ProviderMetadata
 
@@ -242,6 +243,46 @@ def is_terminal(exc: Exception) -> bool:
     return any(marker in text for marker in _AMBIGUOUS_MARKERS)
 
 
+def _shape_note(content: object, answer: str) -> str:
+    """A fragment naming what actually arrived, when that is what an operator needs to see.
+
+    Takes the READING as well as the content, because the two failures it distinguishes look
+    identical from the content alone: blocks this reader could not read (a gateway encoding fault)
+    and blocks that were read and held only whitespace (a model fault). Naming the first for both
+    is the same misdiagnosis this note was added to fix, one shape further out.
+
+    ⛔ No count, and no other number. This message is the one `EmptyCompletion` deliberately keeps
+    free of digits: `is_terminal` and `_is_transient` both substring-match rendered exceptions on
+    the bare markers "401" and "402", and a list of 402 blocks would render one. The type-based
+    short-circuit in `PERMANENT_ERRORS` currently stops that reaching either classifier, but a
+    message that is safe only because of a guard elsewhere is the arrangement this file has twice
+    been bitten by.
+
+    Never raises: it is evaluated while building an exception, so a raise here would replace the
+    typed `EmptyCompletion` with an untyped error and lose the classification that keeps it out of
+    the retry loop. `len()` and `type().__name__` can both raise on a hostile object, which is the
+    same reason `is_terminal` guards `str(exc)`.
+    """
+    try:
+        # Inside the guard with everything else: `isinstance` consults `__class__` when the type
+        # check misses, and that can raise. This line sat outside and made the "never raises"
+        # claim below false.
+        if content is None or isinstance(content, str):
+            return ""
+        if isinstance(content, list):
+            # `not content` calls `__bool__`, which calls `__len__` — so even the emptiness test
+            # runs code the provider supplied. That is why the whole body is inside the guard
+            # rather than just the parts that obviously compute something.
+            if not content:
+                return ""
+            if answer:
+                return " content came back as text blocks carrying only whitespace;"
+            return " content came back as text blocks carrying no readable text;"
+        return f" content came back as {type(content).__name__}, not a string;"
+    except Exception:  # noqa: BLE001 - a diagnostic must never beat the error it describes
+        return " content came back in a shape this reader could not describe;"
+
+
 def _safe_reason(reason: object) -> str:
     """`reason` rendered for a message that another module substring-matches.
 
@@ -249,7 +290,18 @@ def _safe_reason(reason: object) -> str:
     a tool-call stub and the operator needs it. Anything else is reported as unrecognised, with the
     real value left on `EmptyCompletion.finish_reason` rather than discarded.
     """
-    return reason if isinstance(reason, str) and reason in KNOWN_FINISH_REASONS else "unrecognised"
+    # Guarded like `_shape_note`, and for the same reason: this is evaluated while an
+    # `EmptyCompletion` is being built, so a raise replaces the typed error with an untyped one and
+    # loses the classification that keeps it out of the retry loop. `isinstance` consults
+    # `__class__` and `in` calls `__hash__`, so both halves can run provider-supplied code.
+    # `str.__str__` rather than the object itself, so a `str` subclass cannot smuggle a hostile
+    # `__format__` into the f-string that interpolates this.
+    try:
+        if isinstance(reason, str) and reason in KNOWN_FINISH_REASONS:
+            return str.__str__(reason)
+    except Exception:  # noqa: BLE001 - a renderer must never beat the error it renders
+        pass
+    return "unrecognised"
 
 
 def _classify(exc: Exception) -> bool:
@@ -472,10 +524,9 @@ class OpenRouterLLM:
         # from a tool-call stub or a provider bug, and the three want different responses — but
         # only through `_safe_reason`, because the raw value is the provider's text and this
         # message is read by another substring classifier. The raw value rides the exception.
-        if not isinstance(content, str) or not content.strip():
-            shape = "" if content is None or isinstance(content, str) else (
-                f" content came back as {type(content).__name__}, not a string;"
-            )
+        answer = assistant_text(content)
+        if not answer.strip():
+            shape = _shape_note(content, answer)
             raise EmptyCompletion(
                 f"the provider returned a completion with no usable text "
                 f"(finish_reason={_safe_reason(reason)}).{shape} There is no answer. Returning it "
@@ -483,7 +534,7 @@ class OpenRouterLLM:
                 f"system that had nothing to say.",
                 finish_reason=reason,
             )
-        return content
+        return answer
 
 
 def _usage_cost_usd(usage: object | None) -> float | None:
